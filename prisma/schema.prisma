@@ -1,0 +1,183 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --- Sistema de Autenticação e Usuários ---
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  password      String
+  role          Role      @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  accounts      MarketplaceAccount[]
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+// --- Gestão de Produtos e Estoque Central ---
+
+model Product {
+  id          String    @id @default(cuid())
+  sku         String    @unique // SKU único como identificador central
+  name        String
+  description String?
+  price       Decimal   @db.Decimal(10, 2)
+  stock       Int       @default(0) // Estoque central (Fonte da Verdade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relações com anúncios nos marketplaces
+  listings    ProductListing[]
+  stockLogs   StockLog[]
+  orderItems  OrderItem[]
+}
+
+// --- Integração com Marketplaces ---
+
+model MarketplaceAccount {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id])
+  platform        Platform        // MERCADO_LIVRE ou SHOPEE
+  accountName     String          // Nome amigável para identificar a conta
+  
+  // Credenciais de API
+  accessToken     String
+  refreshToken    String
+  expiresAt       DateTime
+  externalUserId  String?         // ID do usuário na plataforma (ex: seller_id)
+  
+  status          AccountStatus   @default(ACTIVE)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  listings        ProductListing[]
+  orders          Order[]
+  syncLogs        SyncLog[]
+}
+
+enum Platform {
+  MERCADO_LIVRE
+  SHOPEE
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+}
+
+// Relaciona o produto central com o anúncio no marketplace
+model ProductListing {
+  id                   String             @id @default(cuid())
+  productId            String
+  product              Product            @relation(fields: [productId], references: [id])
+  marketplaceAccountId String
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  
+  externalListingId    String             // ID do anúncio no ML ou Shopee
+  externalSku          String?            // SKU usado na plataforma (pode ser diferente do central)
+  status               String             // active, paused, closed, etc.
+  
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@unique([marketplaceAccountId, externalListingId])
+}
+
+// --- Gestão de Pedidos ---
+
+model Order {
+  id                   String             @id @default(cuid())
+  marketplaceAccountId String
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  
+  externalOrderId      String             @unique // ID do pedido na plataforma
+  status               OrderStatus        @default(PENDING)
+  totalAmount          Decimal            @db.Decimal(10, 2)
+  customerName         String?
+  customerEmail        String?
+  
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  items                OrderItem[]
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  
+  quantity  Int
+  unitPrice Decimal  @db.Decimal(10, 2)
+}
+
+// --- Monitoramento e Logs ---
+
+model StockLog {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  
+  change      Int      // Quantidade alterada (ex: -1, +5)
+  reason      String   // Ex: "Venda ML #123", "Ajuste Manual", "Entrada de NF"
+  previousStock Int
+  newStock    Int
+  
+  createdAt   DateTime @default(now())
+}
+
+model SyncLog {
+  id                   String             @id @default(cuid())
+  marketplaceAccountId String
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  
+  type                 SyncType
+  status               SyncStatus
+  message              String?            // Detalhes do erro ou sucesso
+  payload              Json?              // Dados enviados/recebidos para debug
+  
+  createdAt            DateTime           @default(now())
+}
+
+enum SyncType {
+  STOCK_UPDATE
+  ORDER_IMPORT
+  AUTH_REFRESH
+  PRODUCT_SYNC
+}
+
+enum SyncStatus {
+  SUCCESS
+  FAILURE
+  WARNING
+}
+
