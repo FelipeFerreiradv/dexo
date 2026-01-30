@@ -20,4 +20,10 @@ export interface ProductCreate {
 export interface ProductRepository {
   create(data: ProductCreate): Promise<Product>;
   findBySku(sku: string): Promise<Product | null>;
+  findAll(options?: {
+    search?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ products: Product[]; total: number }>;
+  delete(id: string): Promise<void>;
 }
