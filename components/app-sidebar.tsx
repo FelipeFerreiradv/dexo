@@ -1,7 +1,7 @@
-"use client"
+"use client";
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Package,
@@ -10,7 +10,7 @@ import {
   FileText,
   Store,
   ShoppingBag,
-} from "lucide-react"
+} from "lucide-react";
 
 import {
   Sidebar,
@@ -26,13 +26,13 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarSeparator,
-} from "@/components/ui/sidebar"
+} from "@/components/ui/sidebar";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import { ChevronRight } from "lucide-react"
+} from "@/components/ui/collapsible";
+import { ChevronRight } from "lucide-react";
 
 const mainNavItems = [
   {
@@ -50,7 +50,7 @@ const mainNavItems = [
     href: "/estoque",
     icon: Warehouse,
   },
-]
+];
 
 const integrationItems = [
   {
@@ -63,7 +63,7 @@ const integrationItems = [
     href: "/integracoes/shopee",
     icon: ShoppingBag,
   },
-]
+];
 
 const systemItems = [
   {
@@ -71,10 +71,10 @@ const systemItems = [
     href: "/logs",
     icon: FileText,
   },
-]
+];
 
 export function AppSidebar() {
-  const pathname = usePathname()
+  const pathname = usePathname();
 
   return (
     <Sidebar collapsible="icon">
@@ -84,7 +84,7 @@ export function AppSidebar() {
             <Package className="size-4" />
           </div>
           <span className="font-semibold text-sm group-data-[collapsible=icon]:hidden">
-            GHD Platform
+            Sistema Sombra
           </span>
         </div>
       </SidebarHeader>
@@ -174,5 +174,5 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
     </Sidebar>
-  )
+  );
 }

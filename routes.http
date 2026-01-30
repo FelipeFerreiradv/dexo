@@ -1,0 +1,29 @@
+GET http://localhost:3333/users
+
+###
+
+POST http://localhost:3333/users
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "email": "fedfgaddfg@gmail.com",
+  "password": "djfbsdiuf738745"
+}
+
+###
+
+GET http://localhost:3333/products
+
+###
+
+POST http://localhost:3333/products
+Content-Type: application/json
+
+{
+  "sku": "12345",
+  "name": "Rodas de Carro",
+  "description": "Rodas de carro aro 15",
+  "stock": 10,
+  "price": 100
+}

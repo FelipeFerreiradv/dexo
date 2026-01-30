@@ -1,10 +1,10 @@
-"use client"
+"use client";
 
-import { useTheme } from "next-themes"
-import { Search, Moon, Sun, User, Settings, LogOut } from "lucide-react"
+import { useTheme } from "next-themes";
+import { Search, Moon, Sun, User, Settings, LogOut } from "lucide-react";
 
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,19 +12,21 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { SidebarTrigger } from "@/components/ui/sidebar"
+} from "@/components/ui/dropdown-menu";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 
 export function AppHeader() {
-  const { theme, setTheme } = useTheme()
+  const { theme, setTheme } = useTheme();
 
   return (
     <header className="sticky top-0 z-50 flex h-14 items-center gap-4 border-b bg-background px-4 md:px-6">
       <SidebarTrigger className="-ml-1" />
-      
+
       <div className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold text-foreground">GHD Platform</h1>
+        <h1 className="text-lg font-semibold text-foreground">
+          Projeto Sombra
+        </h1>
       </div>
 
       <div className="flex-1 flex items-center justify-center max-w-xl mx-auto">
@@ -87,5 +89,5 @@ export function AppHeader() {
         </DropdownMenu>
       </div>
     </header>
-  )
+  );
 }

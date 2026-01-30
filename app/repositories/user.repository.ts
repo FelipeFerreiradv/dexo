@@ -1,0 +1,42 @@
+import { Prisma } from "@prisma/client";
+import { User, UserCreate, UserRepository } from "../interfaces/user.interface";
+import prisma from "../lib/prisma";
+
+class UserRepositoryPrisma implements UserRepository {
+  async create(data: UserCreate): Promise<User> {
+    try {
+      const result = await prisma.user.create({
+        data: {
+          name: data.name,
+          email: data.email,
+          password: data.password,
+        },
+      });
+      return result;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        console.error("PrismaCode:", err.code);
+        console.error("PrismaMeta:", err.meta);
+        console.error(err.message);
+      } else {
+        console.error(err);
+      }
+      throw err;
+    }
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    try {
+      const data = await prisma.user.findUnique({
+        where: {
+          email,
+        },
+      });
+      return data || null;
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+export { UserRepositoryPrisma };
