@@ -1,13 +1,10 @@
 import React from "react";
 import type { Metadata, Viewport } from "next";
 
-import { SessionProvider } from "next-auth/react";
-
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
-import { ThemeProvider } from "@/components/theme-provider";
-import { MainLayout } from "@/components/main-layout";
+import { Providers } from "./providers";
 
 import {
   Geist,
@@ -70,16 +67,7 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body className={`font-sans antialiased`}>
-        <SessionProvider>
-          <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-          >
-            <MainLayout>{children}</MainLayout>
-          </ThemeProvider>
-        </SessionProvider>
+        <Providers>{children}</Providers>
         <Analytics />
       </body>
     </html>
