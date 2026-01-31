@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 import { Providers } from "./providers";
+import { MainLayoutWrapper } from "@/components/main-layout-wrapper";
 
 import {
   Geist,
@@ -67,7 +68,9 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body className={`font-sans antialiased`}>
-        <Providers>{children}</Providers>
+        <Providers>
+          <MainLayoutWrapper>{children}</MainLayoutWrapper>
+        </Providers>
         <Analytics />
       </body>
     </html>

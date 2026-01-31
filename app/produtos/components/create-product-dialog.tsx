@@ -25,7 +25,10 @@ const productSchema = z.object({
     .string()
     .min(1, "SKU é obrigatório")
     .max(50, "SKU deve ter no máximo 50 caracteres")
-    .regex(/^[A-Za-z0-9-_]+$/, "SKU deve conter apenas letras, números, - ou _"),
+    .regex(
+      /^[A-Za-z0-9-_]+$/,
+      "SKU deve conter apenas letras, números, - ou _",
+    ),
   name: z
     .string()
     .min(3, "Nome deve ter pelo menos 3 caracteres")
@@ -78,7 +81,7 @@ export function CreateProductDialog({
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true);
     try {
-      const response = await fetch("/api/products", {
+      const response = await fetch("http://localhost:3333/products", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -99,7 +102,7 @@ export function CreateProductDialog({
     } catch (error) {
       onToast(
         error instanceof Error ? error.message : "Erro ao criar produto",
-        "error"
+        "error",
       );
     } finally {
       setIsSubmitting(false);

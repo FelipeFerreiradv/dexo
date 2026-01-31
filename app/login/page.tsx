@@ -9,7 +9,7 @@ export const metadata = {
 
 export default function LoginPage() {
   return (
-    <main className="min-h-screen flex">
+    <main className="h-screen w-screen flex overflow-hidden">
       {/* Left Side - Hero Section (Hidden on mobile) */}
       <section className="hidden lg:flex lg:w-1/2 xl:w-3/5" aria-hidden="true">
         <LoginHero />
@@ -18,8 +18,8 @@ export default function LoginPage() {
       {/* Right Side - Login Form */}
       <section className="w-full lg:w-1/2 xl:w-2/5 flex flex-col bg-[#F2F2F0]">
         {/* Mobile Header */}
-        <header className="lg:hidden p-6 bg-gradient-to-r from-[#F2E205] to-[#F2CB05]">
-          <div className="flex items-center gap-3">
+        <header className="lg:hidden p-0 bg-gradient-to-r from-[#F2E205] to-[#F2CB05]">
+          <div className="flex items-center gap-3 p-6">
             <div className="w-10 h-10 rounded-xl bg-[#0D0D0D] flex items-center justify-center">
               <Package className="w-5 h-5 text-[#F2E205]" />
             </div>
@@ -31,8 +31,8 @@ export default function LoginPage() {
         </header>
 
         {/* Form Container */}
-        <div className="flex-1 flex items-center justify-center p-6 sm:p-8 lg:p-12">
-          <div className="w-full max-w-md">
+        <div className="flex-1 flex items-center justify-center p-6 sm:p-8 lg:p-0">
+          <div className="w-full max-w-md px-6 sm:px-8 lg:px-12">
             {/* Header */}
             <div className="mb-8 text-center lg:text-left">
               <h2 className="text-2xl sm:text-3xl font-bold text-[#0D0D0D]">
@@ -61,7 +61,7 @@ export default function LoginPage() {
             {/* Help Section */}
             <div className="text-center">
               <p className="text-sm text-[#0D0D0D]/60">
-                Entre em contato com o suporte para recuperar seu acesso ou 
+                Entre em contato com o suporte para recuperar seu acesso ou
                 criar uma nova conta.
               </p>
               <button

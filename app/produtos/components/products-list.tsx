@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Search, Pencil, Trash2, Package, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  Search,
+  Pencil,
+  Trash2,
+  Package,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,43 +67,41 @@ export function ProductsList() {
   const [isLoading, setIsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const showToast = useCallback((message: string, type: "success" | "error") => {
-    const id = Date.now();
-    setToasts((prev) => [...prev, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  }, []);
+  const showToast = useCallback(
+    (message: string, type: "success" | "error") => {
+      const id = Date.now();
+      setToasts((prev) => [...prev, { id, message, type }]);
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 4000);
+    },
+    [],
+  );
 
-  const fetchProducts = useCallback(async (page: number = 1, searchTerm: string = "") => {
-    setIsLoading(true);
-    try {
-      const params = new URLSearchParams({
-        page: page.toString(),
-        limit: "10",
-      });
-      if (searchTerm) {
-        params.set("search", searchTerm);
+  const fetchProducts = useCallback(
+    async (page: number = 1, searchTerm: string = "") => {
+      setIsLoading(true);
+      try {
+        // TODO: Implementar GET /api/routes/products com paginação e busca
+        // Por enquanto, mostrando estado vazio enquanto você implementa o endpoint
+        setProducts([]);
+        setPagination({
+          page: 1,
+          limit: 10,
+          total: 0,
+          totalPages: 0,
+        });
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : "Erro ao buscar produtos",
+          "error",
+        );
+      } finally {
+        setIsLoading(false);
       }
-
-      const response = await fetch(`/api/products?${params}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Erro ao buscar produtos");
-      }
-
-      setProducts(data.products);
-      setPagination(data.pagination);
-    } catch (error) {
-      showToast(
-        error instanceof Error ? error.message : "Erro ao buscar produtos",
-        "error"
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [showToast]);
+    },
+    [showToast],
+  );
 
   useEffect(() => {
     fetchProducts(1, search);
@@ -115,24 +120,8 @@ export function ProductsList() {
       return;
     }
 
-    try {
-      const response = await fetch(`/api/products?id=${id}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Erro ao excluir produto");
-      }
-
-      showToast("Produto excluído com sucesso!", "success");
-      fetchProducts(pagination.page, search);
-    } catch (error) {
-      showToast(
-        error instanceof Error ? error.message : "Erro ao excluir produto",
-        "error"
-      );
-    }
+    // TODO: Implementar DELETE /api/routes/products/:id
+    showToast("Funcionalidade em desenvolvimento", "error");
   };
 
   const formatPrice = (price: number) => {
@@ -219,9 +208,13 @@ export function ProductsList() {
                         <TableRow>
                           <TableHead>SKU</TableHead>
                           <TableHead>Nome</TableHead>
-                          <TableHead className="hidden md:table-cell">Preço</TableHead>
+                          <TableHead className="hidden md:table-cell">
+                            Preço
+                          </TableHead>
                           <TableHead>Estoque</TableHead>
-                          <TableHead className="hidden lg:table-cell">Criado em</TableHead>
+                          <TableHead className="hidden lg:table-cell">
+                            Criado em
+                          </TableHead>
                           <TableHead className="text-right">Ações</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -245,7 +238,9 @@ export function ProductsList() {
                               {formatPrice(product.price)}
                             </TableCell>
                             <TableCell>
-                              <Badge variant={getStockBadgeVariant(product.stock)}>
+                              <Badge
+                                variant={getStockBadgeVariant(product.stock)}
+                              >
                                 {product.stock} un.
                               </Badge>
                             </TableCell>
@@ -260,7 +255,10 @@ export function ProductsList() {
                                   title="Editar"
                                   onClick={() => {
                                     // Future implementation
-                                    showToast("Funcionalidade em desenvolvimento", "error");
+                                    showToast(
+                                      "Funcionalidade em desenvolvimento",
+                                      "error",
+                                    );
                                   }}
                                 >
                                   <Pencil className="size-4" />
@@ -269,7 +267,9 @@ export function ProductsList() {
                                   variant="ghost"
                                   size="icon-sm"
                                   title="Excluir"
-                                  onClick={() => handleDelete(product.id, product.name)}
+                                  onClick={() =>
+                                    handleDelete(product.id, product.name)
+                                  }
                                 >
                                   <Trash2 className="size-4 text-destructive" />
                                 </Button>
@@ -313,7 +313,10 @@ export function ProductsList() {
                               variant="ghost"
                               size="icon-sm"
                               onClick={() => {
-                                showToast("Funcionalidade em desenvolvimento", "error");
+                                showToast(
+                                  "Funcionalidade em desenvolvimento",
+                                  "error",
+                                );
                               }}
                             >
                               <Pencil className="size-4" />
@@ -321,7 +324,9 @@ export function ProductsList() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
-                              onClick={() => handleDelete(product.id, product.name)}
+                              onClick={() =>
+                                handleDelete(product.id, product.name)
+                              }
                             >
                               <Trash2 className="size-4 text-destructive" />
                             </Button>

@@ -8,10 +8,24 @@ export function LoginHero() {
       {/* Decorative Pattern */}
       <div className="absolute inset-0 opacity-10">
         <div className="absolute top-0 left-0 w-full h-full">
-          <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <svg
+            className="w-full h-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+          >
             <defs>
-              <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse">
-                <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#0D0D0D" strokeWidth="0.5"/>
+              <pattern
+                id="grid"
+                width="10"
+                height="10"
+                patternUnits="userSpaceOnUse"
+              >
+                <path
+                  d="M 10 0 L 0 0 0 10"
+                  fill="none"
+                  stroke="#0D0D0D"
+                  strokeWidth="0.5"
+                />
               </pattern>
             </defs>
             <rect width="100" height="100" fill="url(#grid)" />
@@ -20,7 +34,7 @@ export function LoginHero() {
       </div>
 
       {/* Content */}
-      <div className="relative z-10 flex flex-col justify-center h-full p-8 lg:p-12">
+      <div className="relative z-10 flex flex-col justify-center h-full p-8 lg:p-12 w-full">
         <div className="max-w-lg">
           {/* Logo/Brand Area */}
           <div className="mb-8">
@@ -37,8 +51,8 @@ export function LoginHero() {
 
           {/* Description */}
           <p className="text-[#0D0D0D]/70 text-base lg:text-lg leading-relaxed mb-10">
-            Gerencie seu estoque de forma centralizada com integracoes diretas 
-            ao Mercado Livre e Shopee. Simplifique suas operacoes e tome 
+            Gerencie seu estoque de forma centralizada com integracoes diretas
+            ao Mercado Livre e Shopee. Simplifique suas operacoes e tome
             decisoes baseadas em dados.
           </p>
 

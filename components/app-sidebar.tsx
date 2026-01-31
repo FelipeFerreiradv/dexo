@@ -1,7 +1,9 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Session } from "next-auth";
 import {
   LayoutDashboard,
   Package,
@@ -73,8 +75,19 @@ const systemItems = [
   },
 ];
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  session: Session | null;
+}
+
+export function AppSidebar({ session }: AppSidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  // Se não houver sessão, redireciona para login
+  if (!session) {
+    router.push("/login");
+    return null;
+  }
 
   return (
     <Sidebar collapsible="icon">
