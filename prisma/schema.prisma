@@ -34,10 +34,33 @@ model Product {
   stock       Int       @default(0) // Estoque central (Fonte da Verdade)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  // --- Campos de Autopeças (todos opcionais) ---
+  costPrice       Decimal?       @db.Decimal(10, 2) // Preço de custo
+  markup          Decimal?       @db.Decimal(10, 2)  // Margem de lucro (%)
+  brand           String?        // Marca da peça
+  model           String?        // Modelo do veículo
+  year            String?        // Ano compatível (ex: "2018-2022")
+  version         String?        // Versão do veículo
+  category        String?        // Categoria da peça
+  location        String?        // Localização no estoque
+  partNumber      String?        // Part Number (OEM)
+  quality         Quality?       // Qualidade da peça
+  isSecurityItem  Boolean        @default(false) // Item de segurança
+  isTraceable     Boolean        @default(false) // Item rastreável
+  sourceVehicle   String?        // Veículo de origem (para sucata)
+
   // Relações
   listings    ProductListing[]
   stockLogs   StockLog[]
   orderItems  OrderItem[]
+}
+
+enum Quality {
+  SUCATA      // Peça de desmanche
+  SEMINOVO    // Usado em bom estado
+  NOVO        // Peça nova/original
+  RECONDICIONADO // Recondicionado/refurbished
 }
 
 // --- Integração com Marketplaces ---
@@ -132,7 +155,7 @@ model StockLog {
 model SyncLog {
   id                   String             @id @default(cuid())
   marketplaceAccountId String
-  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
   type                 SyncType
   status               SyncStatus
   message              String?

@@ -1,0 +1,145 @@
+### FASE 1 - TESTE DE ENDPOINTS OAUTH MERCADO LIVRE
+### Use a extensão REST Client (Huachao Mao) para executar as requisições
+
+### Variáveis
+@baseUrl = https://36ee98ca2344.ngrok-free.app
+@userId = test-user-id-123
+@platform = MERCADO_LIVRE
+
+###
+### 1️⃣ VERIFICAR BANCO DE DADOS
+### Abra Prisma Studio para verificar dados em tempo real
+### npm run prisma:studio
+###
+
+###
+### 2️⃣ TESTE 1: Iniciar autenticação OAuth
+### Este endpoint retorna a URL para redirecionamento + state
+### Substitua o userId pelo seu ID real de usuário autenticado
+POST {{baseUrl}}/marketplace/ml/auth
+Content-Type: application/json
+
+###
+### RESPOSTA ESPERADA:
+### {
+###   "authUrl": "https://auth.mercadolibre.com.br/authorization?client_id=...",
+###   "state": "randomstate123..."
+### }
+
+###
+### 3️⃣ TESTE 2: Verificar status de conexão (sem conectar)
+### Deve retornar "não conectado"
+### Nota: Requer user autenticado (NextAuth)
+GET {{baseUrl}}/marketplace/ml/status
+Authorization: Bearer seu-token-aqui
+
+###
+### RESPOSTA ESPERADA:
+### {
+###   "connected": false,
+###   "platform": "MERCADO_LIVRE",
+###   "message": "Nenhuma conta MERCADO_LIVRE conectada"
+### }
+
+###
+### 4️⃣ TESTE 3: Simular callback OAuth
+### Este é o fluxo completo após usuário autorizar no Mercado Livre:
+### 1. Usuário clica em "Conectar Mercado Livre"
+### 2. É redirecionado para https://auth.mercadolibre.com.br
+### 3. Autoriza a aplicação
+### 4. Mercado Livre redireciona para: http://localhost:3333/marketplace/ml/callback?code=...&state=...
+### 5. Salvamos as credenciais no banco de dados
+
+### ⚠️ IMPORTANTE: 
+### Para testar este endpoint, você precisa:
+### 1. Criar app em https://developers.mercadolibre.com.br/
+### 2. Configurar Redirect URI: http://localhost:3333/marketplace/ml/callback
+### 3. Obter Client ID e Client Secret
+### 4. Preencher .env com valores reais
+### 5. Executar o fluxo OAuth completo
+
+GET {{baseUrl}}/marketplace/ml/callback?code=TG-XXXXXXXXXXXX&state=randomstate123
+Authorization: Bearer seu-token-aqui
+
+###
+### RESPOSTA ESPERADA (após fluxo completo):
+### {
+###   "success": true,
+###   "message": "Conta conectada com sucesso",
+###   "account": {
+###     "id": "clxxx...",
+###     "platform": "MERCADO_LIVRE",
+###     "status": "ACTIVE",
+###     "connectedAt": "2024-02-03T10:30:00Z"
+###   }
+### }
+
+###
+### 5️⃣ TESTE 4: Verificar status após conectar (simulado)
+GET {{baseUrl}}/marketplace/ml/status
+Authorization: Bearer seu-token-aqui
+
+###
+### RESPOSTA ESPERADA (após conexão bem-sucedida):
+### {
+###   "connected": true,
+###   "platform": "MERCADO_LIVRE",
+###   "status": "ACTIVE",
+###   "message": "Conta MERCADO_LIVRE conectada"
+### }
+
+###
+### 6️⃣ TESTE 5: Desconectar Mercado Livre
+DELETE {{baseUrl}}/marketplace/ml
+Authorization: Bearer seu-token-aqui
+
+###
+### RESPOSTA ESPERADA:
+### {
+###   "success": true,
+###   "message": "Conta desconectada com sucesso"
+### }
+
+###
+### ═══════════════════════════════════════════════════════════════════════════
+### CHECKLIST DE TESTES - MARQUE QUANDO COMPLETAR:
+### ═══════════════════════════════════════════════════════════════════════════
+
+### ✅ TESTES BÁSICOS (SEM OAUTH REAL):
+### [ ] Backend está rodando (npm run dev)
+### [ ] Banco de dados está conectado
+### [ ] Rotas estão registradas em api.ts
+### [ ] Imports estão corretos (sem erros de compilação)
+### [ ] Prisma Studio mostra a tabela MarketplaceAccount
+
+### ✅ TESTES COM REST CLIENT:
+### [ ] POST /marketplace/ml/auth retorna authUrl + state
+### [ ] GET /marketplace/ml/status retorna "não conectado"
+### [ ] DELETE /marketplace/ml retorna erro (não existe conta)
+
+### ✅ TESTES COM OAUTH REAL (Requer credenciais ML):
+### [ ] Criar app em developers.mercadolibre.com.br
+### [ ] Preencher ML_CLIENT_ID e ML_CLIENT_SECRET no .env
+### [ ] Fazer login no frontend
+### [ ] Clicar em "Conectar Mercado Livre"
+### [ ] Ser redirecionado para auth.mercadolibre.com.br
+### [ ] Autorizar aplicação
+### [ ] Ser redirecionado de volta para callback
+### [ ] Conta estar salva no banco de dados
+### [ ] GET /marketplace/ml/status retorna "conectado"
+### [ ] Tokens são refresh automaticamente
+
+### ✅ CASOS DE ERRO:
+### [ ] State inválido retorna erro 500
+### [ ] Code inválido retorna erro 500
+### [ ] User não autenticado retorna erro 401
+### [ ] Token expirado trigger renovação automática
+
+### ═══════════════════════════════════════════════════════════════════════════
+### PRÓXIMAS ETAPAS:
+### ═══════════════════════════════════════════════════════════════════════════
+### ✅ FASE 1 COMPLETA: OAuth Infrastructure ✓
+### ⏭️ FASE 2: ML API Client - Listar/Criar produtos no Mercado Livre
+### ⏭️ FASE 3: Listing Operations - Sincronizar produtos
+### ⏭️ FASE 4: Frontend UI - Componentes para conectar marketplace
+### ⏭️ FASE 5: Sync Engine - Sincronização automática

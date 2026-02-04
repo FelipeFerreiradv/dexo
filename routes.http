@@ -6,9 +6,9 @@ POST http://localhost:3333/users
 Content-Type: application/json
 
 {
-  "name": "John Doe",
-  "email": "fedfgaddfg@gmail.com",
-  "password": "djfbsdiuf738745"
+  "name": "Felipe Ferreira",
+  "email": "fefelbf@gmail.com",
+  "password": "123456"
 }
 
 ###
@@ -27,3 +27,60 @@ Content-Type: application/json
   "stock": 10,
   "price": 100
 }
+
+###
+# ====================================================================
+# MARKETPLACE - MERCADO LIVRE
+# Configuração: ML_CLIENT_ID=6715080148832481
+# Redirect URI: https://36ee98ca2344.ngrok-free.app/marketplace/ml/callback
+# ====================================================================
+
+### Iniciar OAuth (retorna URL para autorização)
+# userId: cml7fm1v80000vsd8x0sbzf2o (Felipe Ferreira)
+POST http://localhost:3333/marketplace/ml/auth
+Content-Type: application/json
+
+{
+  "userId": "cml7fm1v80000vsd8x0sbzf2o"
+}
+
+###
+
+### Verificar status da conexão ML
+GET http://localhost:3333/marketplace/ml/status
+email: fefelbf@gmail.com
+
+###
+
+### Desconectar conta ML
+DELETE http://localhost:3333/marketplace/ml
+email: fefelbf@gmail.com
+
+###
+# ====================================================================
+# SINCRONIZAÇÃO - FASE 2
+# ====================================================================
+
+### Importar itens do Mercado Livre
+# Busca todos os anúncios e tenta vincular por SKU
+POST http://localhost:3333/marketplace/ml/import
+email: fefelbf@gmail.com
+
+###
+
+### Listar vínculos produto-anúncio
+GET http://localhost:3333/marketplace/ml/listings
+email: fefelbf@gmail.com
+
+###
+
+### Sincronizar estoque de TODOS os produtos para ML
+POST http://localhost:3333/marketplace/ml/sync
+email: fefelbf@gmail.com
+
+###
+
+### Sincronizar estoque de UM produto específico
+# Substitua PRODUCT_ID pelo ID do produto
+POST http://localhost:3333/marketplace/ml/sync/
+email: fefelbf@gmail.com

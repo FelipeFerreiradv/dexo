@@ -42,7 +42,7 @@ export function LoginHero() {
               <Package className="w-8 h-8 text-[#F2E205]" />
             </div>
             <h1 className="text-3xl lg:text-4xl font-bold text-[#0D0D0D] leading-tight">
-              GHD Platform
+              Dexos Plataform
             </h1>
             <p className="mt-2 text-lg text-[#0D0D0D]/80 font-medium">
               Sistema de Gestao de Estoque

@@ -30,7 +30,7 @@ const _sourceSerif_4 = V0_Font_Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "GHD Platform - Sistema de Gestão de Estoque",
+  title: "Nexos Platform - Sistema de Gestão de Estoque",
   description:
     "Sistema de Gestão de Estoque Centralizado com integrações Mercado Livre e Shopee",
   generator: "v0.app",

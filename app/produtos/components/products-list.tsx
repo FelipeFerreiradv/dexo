@@ -30,6 +30,9 @@ import {
 } from "@/components/ui/card";
 import { ProductSkeleton } from "./product-skeleton";
 import { CreateProductDialog } from "./create-product-dialog";
+import { EditProductDialog } from "./edit-product-dialog";
+
+type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 
 interface Product {
   id: string;
@@ -40,6 +43,27 @@ interface Product {
   stock: number;
   createdAt: string;
   updatedAt: string;
+  // Campos de autopeças
+  costPrice?: number | null;
+  markup?: number | null;
+  brand?: string | null;
+  model?: string | null;
+  year?: string | null;
+  version?: string | null;
+  category?: string | null;
+  location?: string | null;
+  partNumber?: string | null;
+  quality?: Quality | null;
+  isSecurityItem?: boolean;
+  isTraceable?: boolean;
+  sourceVehicle?: string | null;
+}
+
+interface ProductFormData {
+  name: string;
+  description: string;
+  price: number;
+  stock: number;
 }
 
 interface Pagination {
@@ -66,6 +90,8 @@ export function ProductsList() {
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -82,15 +108,25 @@ export function ProductsList() {
     async (page: number = 1, searchTerm: string = "") => {
       setIsLoading(true);
       try {
-        // TODO: Implementar GET /api/routes/products com paginação e busca
-        // Por enquanto, mostrando estado vazio enquanto você implementa o endpoint
-        setProducts([]);
-        setPagination({
-          page: 1,
-          limit: 10,
-          total: 0,
-          totalPages: 0,
+        const params = new URLSearchParams({
+          page: page.toString(),
+          limit: "10",
         });
+        if (searchTerm) {
+          params.set("search", searchTerm);
+        }
+
+        const response = await fetch(
+          `http://localhost:3333/products?${params}`,
+        );
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Erro ao buscar produtos");
+        }
+
+        setProducts(data.products);
+        setPagination(data.pagination);
       } catch (error) {
         showToast(
           error instanceof Error ? error.message : "Erro ao buscar produtos",
@@ -120,8 +156,54 @@ export function ProductsList() {
       return;
     }
 
-    // TODO: Implementar DELETE /api/routes/products/:id
-    showToast("Funcionalidade em desenvolvimento", "error");
+    try {
+      const response = await fetch(`http://localhost:3333/products/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Erro ao excluir produto");
+      }
+
+      showToast("Produto excluído com sucesso!", "success");
+      fetchProducts(pagination.page, search);
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : "Erro ao excluir produto",
+        "error",
+      );
+    }
+  };
+
+  const handleEditClick = (product: Product) => {
+    setEditingProduct(product);
+    setIsEditDialogOpen(true);
+  };
+
+  const handleEdit = async (id: string, productData: ProductFormData) => {
+    try {
+      const response = await fetch(`http://localhost:3333/products/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(productData),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Erro ao atualizar produto");
+      }
+
+      showToast("Produto atualizado com sucesso!", "success");
+      fetchProducts(pagination.page, search);
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : "Erro ao atualizar produto",
+        "error",
+      );
+    }
   };
 
   const formatPrice = (price: number) => {
@@ -253,13 +335,7 @@ export function ProductsList() {
                                   variant="ghost"
                                   size="icon-sm"
                                   title="Editar"
-                                  onClick={() => {
-                                    // Future implementation
-                                    showToast(
-                                      "Funcionalidade em desenvolvimento",
-                                      "error",
-                                    );
-                                  }}
+                                  onClick={() => handleEditClick(product)}
                                 >
                                   <Pencil className="size-4" />
                                 </Button>
@@ -312,12 +388,7 @@ export function ProductsList() {
                             <Button
                               variant="ghost"
                               size="icon-sm"
-                              onClick={() => {
-                                showToast(
-                                  "Funcionalidade em desenvolvimento",
-                                  "error",
-                                );
-                              }}
+                              onClick={() => handleEditClick(product)}
                             >
                               <Pencil className="size-4" />
                             </Button>
@@ -385,6 +456,23 @@ export function ProductsList() {
           )}
         </CardContent>
       </Card>
+
+      {editingProduct && (
+        <EditProductDialog
+          product={editingProduct}
+          open={isEditDialogOpen}
+          onOpenChange={(open) => {
+            setIsEditDialogOpen(open);
+            if (!open) {
+              // Limpar o produto em edição quando fechar o modal
+              // para garantir que ao reabrir, pegue dados atualizados da lista
+              setEditingProduct(null);
+            }
+          }}
+          onProductUpdated={() => fetchProducts(pagination.page, search)}
+          onToast={showToast}
+        />
+      )}
     </div>
   );
 }

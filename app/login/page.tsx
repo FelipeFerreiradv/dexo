@@ -3,8 +3,8 @@ import { LoginHero } from "@/components/login/login-hero";
 import { Package } from "lucide-react";
 
 export const metadata = {
-  title: "Login | GHD Platform",
-  description: "Acesse o sistema de gestao de estoque GHD Platform",
+  title: "Login | Nexos Platform",
+  description: "Acesse o sistema de gestao de estoque Nexos Platform",
 };
 
 export default function LoginPage() {
@@ -24,7 +24,9 @@ export default function LoginPage() {
               <Package className="w-5 h-5 text-[#F2E205]" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-[#0D0D0D]">GHD Platform</h1>
+              <h1 className="text-lg font-bold text-[#0D0D0D]">
+                Nexos Platform
+              </h1>
               <p className="text-xs text-[#0D0D0D]/70">Gestao de Estoque</p>
             </div>
           </div>
@@ -75,7 +77,7 @@ export default function LoginPage() {
             {/* Footer */}
             <footer className="mt-12 text-center lg:hidden">
               <p className="text-xs text-[#0D0D0D]/40">
-                2025 GHD Platform. Todos os direitos reservados.
+                2025 Nexos Platform. Todos os direitos reservados.
               </p>
             </footer>
           </div>

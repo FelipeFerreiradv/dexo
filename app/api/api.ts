@@ -5,6 +5,8 @@ import { fastify } from "fastify";
 import fastifyCors from "@fastify/cors";
 import { userRoutes } from "../routes/user.routes";
 import { productRoutes } from "../routes/product.routes";
+import { marketplaceRoutes } from "../routes/marketplace.routes";
+import { dashboardRoutes } from "../routes/dashboard.routes";
 
 const api = fastify({ logger: true });
 
@@ -20,6 +22,14 @@ api.register(userRoutes, {
 
 api.register(productRoutes, {
   prefix: "/products",
+});
+
+api.register(marketplaceRoutes, {
+  prefix: "/marketplace",
+});
+
+api.register(dashboardRoutes, {
+  prefix: "/dashboard",
 });
 
 try {
