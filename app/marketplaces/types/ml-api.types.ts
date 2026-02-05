@@ -61,3 +61,24 @@ export interface MLItemUpdatePayload {
   available_quantity?: number;
   status?: "active" | "paused" | "closed";
 }
+
+// Payload para criar item
+export interface MLItemCreatePayload {
+  title: string;
+  category_id: string;
+  price: number;
+  currency_id: string;
+  available_quantity: number;
+  buying_mode: string;
+  listing_type_id: string;
+  condition: string;
+  pictures: Array<{
+    source: string;
+  }>;
+  seller_custom_field?: string;
+  attributes?: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
+}

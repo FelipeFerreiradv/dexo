@@ -34,6 +34,7 @@ interface Listing {
   productId: string;
   externalListingId: string;
   externalSku: string | null;
+  permalink: string | null;
   status: string;
   createdAt: string;
   product?: {
@@ -212,7 +213,10 @@ export function MLListingsTab() {
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" asChild>
                         <a
-                          href={`https://www.mercadolivre.com.br/anuncio/${listing.externalListingId}`}
+                          href={
+                            listing.permalink ||
+                            `https://produto.mercadolivre.com.br/${listing.externalListingId}`
+                          }
                           target="_blank"
                           rel="noopener noreferrer"
                         >

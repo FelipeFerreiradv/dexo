@@ -2,7 +2,7 @@
 ### Use a extensão REST Client (Huachao Mao) para executar as requisições
 
 ### Variáveis
-@baseUrl = https://36ee98ca2344.ngrok-free.app
+@baseUrl =  https://3ce0ce0cc9f6.ngrok-free.app
 @userId = test-user-id-123
 @platform = MERCADO_LIVRE
 

@@ -130,6 +130,28 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Busca conta de marketplace por externalUserId e plataforma
+   * Usado principalmente para webhooks, onde só temos o user_id do ML
+   */
+  static async findByExternalUserId(
+    externalUserId: string,
+    platform: Platform,
+  ) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: {
+          externalUserId,
+          platform,
+        },
+      });
+
+      return account;
+    } catch (error) {
+      throw new Error(`Erro ao buscar conta por externalUserId: ${error}`);
+    }
+  }
+
+  /**
    * Deleta conta de marketplace e todos os registros relacionados
    */
   static async deleteAccount(id: string): Promise<void> {

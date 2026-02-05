@@ -13,6 +13,7 @@ export class ListingRepository {
     marketplaceAccountId: string;
     externalListingId: string;
     externalSku?: string;
+    permalink?: string;
     status: string;
   }) {
     try {
@@ -22,6 +23,7 @@ export class ListingRepository {
           marketplaceAccountId: data.marketplaceAccountId,
           externalListingId: data.externalListingId,
           externalSku: data.externalSku || null,
+          permalink: data.permalink || null,
           status: data.status,
         },
       });
@@ -129,11 +131,15 @@ export class ListingRepository {
   }
 
   /**
-   * Conta quantos listings uma conta tem
+   * Busca listing por ID interno
    */
-  static async countByAccount(marketplaceAccountId: string) {
-    return prisma.productListing.count({
-      where: { marketplaceAccountId },
+  static async findById(listingId: string) {
+    return prisma.productListing.findUnique({
+      where: { id: listingId },
+      include: {
+        product: true,
+        marketplaceAccount: true,
+      },
     });
   }
 }

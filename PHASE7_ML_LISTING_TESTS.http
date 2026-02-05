@@ -1,0 +1,285 @@
+### FASE 7 - TESTE COMPLETO DE CRIAÇÃO DE ANÚNCIOS NO MERCADO LIVRE
+### Use a extensão REST Client (Huachao Mao) para executar as requisições
+
+### Variáveis
+@baseUrl = http://localhost:3333
+@ngrokUrl = https://3ce0ce0cc9f6.ngrok-free.app
+@userId = cml7fm1v80000vsd8x0sbzf2o
+@productId = cml8ydwhb0000vs2w7nruq0va
+@externalListingId = MLB123456789  # Substitua pelo valor retornado na criação do anúncio
+@accessToken = ak2akPnMXX1SOffkfblPDntQyqCZaekr  # Insira o access token válido do ML
+@userEmail = fefelbf@gmail.com  # EMAIL DO USUÁRIO AUTENTICADO
+
+### ========================================================================
+### PRÉ-REQUISITOS PARA OS TESTES
+### ========================================================================
+
+### 1️⃣ OBTENHA O EMAIL DO USUÁRIO AUTENTICADO
+### - Faça login no frontend (http://localhost:3000)
+### - Abra o DevTools (F12) > Console
+### - Execute o código do arquivo get-user-info.js
+### - OU execute manualmente:
+###   fetch('/api/auth/session').then(r=>r.json()).then(s=>console.log('Email:', s.user?.email))
+### - Copie o email retornado e substitua em @userEmail
+### - OU verifique no banco de dados na tabela User
+
+### 2️⃣ VERIFIQUE SE O SERVIDOR ESTÁ RODANDO
+### Backend: pnpm api (porta 3333)
+### Frontend: pnpm dev (porta 3000)
+### Ngrok: npx ngrok http 3333
+
+### 3️⃣ VERIFICAR CONEXÃO COM MERCADO LIVRE
+GET {{baseUrl}}/marketplace/ml/status
+email: {{userEmail}}
+
+### RESPOSTA ESPERADA (conectado):
+### {
+###   "connected": true,
+###   "platform": "MERCADO_LIVRE",
+###   "accountName": "Nome da Conta",
+###   "userId": "..."
+### }
+
+### 3️⃣ CRIAR UM PRODUTO DE TESTE (se necessário)
+POST {{baseUrl}}/products
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "sku": "TEST-001",
+  "name": "Produto de Teste ML",
+  "description": "Descrição do produto para teste de anúncio no Mercado Livre",
+  "price": 99.90,
+  "stock": 10,
+  "imageUrl": "http://localhost:3333/uploads/test-image.jpg",
+  "category": "Acessórios para Veículos",
+  "quality": "NOVO"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "id": "uuid-do-produto",
+###   "sku": "TEST-001",
+###   ...
+### }
+
+### TESTE 0: Verificar autenticação (teste básico)
+### Este teste verifica se o header email está correto
+GET {{baseUrl}}/marketplace/ml/status
+email: {{userEmail}}
+
+### RESPOSTA ESPERADA (conectado):
+### {
+###   "connected": true,
+###   "platform": "MERCADO_LIVRE",
+###   "accountName": "Nome da Conta",
+###   "userId": "..."
+### }
+
+### ========================================================================
+### 🔧 ALTERNATIVA: USAR SCRIPT POWERSHELL (MAIS CONFIÁVEL)
+### ========================================================================
+
+### Execute o script test-ml-listings.ps1 no terminal PowerShell:
+### .\test-ml-listings.ps1 -UserEmail "seu-email@gmail.com" -ProductId "uuid-do-produto"
+
+### Ou com valores padrão:
+### .\test-ml-listings.ps1
+
+### ========================================================================
+### 🔧 ALTERNATIVA: USAR CURL DIRETAMENTE (MAIS CONFIÁVEL)
+### ========================================================================
+
+### Se a extensão REST Client não funcionar, use estes comandos curl no terminal:
+
+### TESTE 0 - Verificar autenticação:
+# curl -X GET "http://localhost:3333/marketplace/ml/status" -H "email: {{userEmail}}" -H "Content-Type: application/json"
+
+### TESTE 1 - Criar anúncio simples:
+# curl -X POST "http://localhost:3333/listings/ml" -H "email: {{userEmail}}" -H "Content-Type: application/json" -d "{\"productId\": \"{{productId}}\"}"
+
+### TESTE 2 - Criar anúncio com categoria:
+# curl -X POST "http://localhost:3333/listings/ml" -H "email: {{userEmail}}" -H "Content-Type: application/json" -d "{\"productId\": \"{{productId}}\", \"categoryId\": \"MLB1747\"}"
+
+### ========================================================================
+### TESTES COM EXTENSÃO REST CLIENT
+### ========================================================================
+
+### TESTE 1: Criar anúncio com dados mínimos
+POST {{baseUrl}}/listings/ml
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "productId": "{{productId}}"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "success": true,
+###   "message": "Anúncio criado com sucesso",
+###   "listingId": "uuid-do-vinculo-local",
+###   "externalListingId": "MLB123456789"
+### }
+
+### TESTE 2: Criar anúncio com categoria específica do ML
+POST {{baseUrl}}/listings/ml
+Content-Type: application/json
+
+{
+  "productId": "{{productId}}",
+  "categoryId": "MLB1747"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "success": true,
+###   "message": "Anúncio criado com sucesso",
+###   "listingId": "uuid-do-vinculo-local",
+###   "externalListingId": "MLB123456790"
+### }
+
+### TESTE 3: Tentar criar anúncio sem productId (deve falhar)
+POST {{baseUrl}}/listings/ml
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "categoryId": "MLB1747"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "error": "Dados incompletos",
+###   "message": "productId é obrigatório"
+### }
+
+### TESTE 4: Tentar criar anúncio com produto inexistente (deve falhar)
+POST {{baseUrl}}/listings/ml
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "productId": "produto-inexistente-uuid"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "success": false,
+###   "error": "Produto não encontrado"
+### }
+
+### TESTE 5: Tentar criar anúncio sem conta ML conectada (deve falhar)
+### Para este teste, desconecte temporariamente a conta do ML via frontend
+### ou remova o registro da tabela MarketplaceAccount no banco
+POST {{baseUrl}}/listings/ml
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "productId": "{{productId}}"
+}
+
+### RESPOSTA ESPERADA:
+### {
+###   "success": false,
+###   "error": "Conta do Mercado Livre não conectada ou sem credenciais"
+### }
+
+### ========================================================================
+### VERIFICAÇÕES PÓS-CRIAÇÃO
+### ========================================================================
+
+### 1️⃣ VERIFICAR VÍNCULO CRIADO NO BANCO
+### Execute no terminal: npx prisma studio
+### Verifique na tabela ProductListing se foi criado o vínculo
+
+### 2️⃣ VERIFICAR ANÚNCIO NO MERCADO LIVRE
+### Acesse: https://www.mercadolivre.com.br/anuncios/lista
+### Procure pelo anúncio criado
+
+### 3️⃣ VERIFICAR DADOS DO ANÚNCIO VIA API DO ML
+### Substitua o externalListingId pela ID retornada
+GET https://api.mercadolibre.com/items/{{externalListingId}}
+Authorization: Bearer {{accessToken}}
+
+### ========================================================================
+### TESTE DE INTEGRAÇÃO COMPLETA (FRONTEND)
+### ========================================================================
+
+### 1️⃣ CRIAR PRODUTO VIA FRONTEND
+### - Acesse /produtos
+### - Clique em "Novo Produto"
+### - Preencha todos os campos incluindo imagem
+### - Marque "Criar anúncio no Mercado Livre"
+### - Selecione categoria do ML
+### - Clique em "Criar Produto"
+
+### 2️⃣ VERIFICAR RESULTADO
+### - Produto deve ser criado no banco
+### - Anúncio deve ser criado no ML
+### - Deve aparecer toast de sucesso
+### - Verificar na conta do ML se o anúncio apareceu
+
+### ========================================================================
+### TESTES DE BORDA E ERROS
+### ========================================================================
+
+### TESTE: Produto sem imagem
+POST {{baseUrl}}/products
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "sku": "TEST-SEM-IMAGEM",
+  "name": "Produto sem Imagem",
+  "price": 50.00,
+  "stock": 5
+}
+
+### Depois criar anúncio:
+POST {{baseUrl}}/listings/ml
+Content-Type: application/json
+
+{
+  "productId": "id-do-produto-sem-imagem"
+}
+
+### RESPOSTA ESPERADA: Deve criar anúncio sem imagem
+
+### TESTE: Produto com estoque zero
+POST {{baseUrl}}/products
+email: {{userEmail}}
+Content-Type: application/json
+
+{
+  "sku": "TEST-SEM-ESTOQUE",
+  "name": "Produto sem Estoque",
+  "price": 25.00,
+  "stock": 0
+}
+
+### Depois criar anúncio:
+POST {{baseUrl}}/listings/ml
+Content-Type: application/json
+
+{
+  "productId": "id-do-produto-sem-estoque"
+}
+
+### RESPOSTA ESPERADA: Deve criar anúncio com quantidade 0
+
+### ========================================================================
+### LIMPEZA DOS DADOS DE TESTE
+### ========================================================================
+
+### REMOVER ANÚNCIOS DE TESTE DO ML
+### DELETE https://api.mercadolibre.com/items/{{externalListingId}}
+### Authorization: Bearer {{accessToken}}
+
+### REMOVER PRODUTOS DE TESTE
+DELETE {{baseUrl}}/products/{{productId}}
+email: {{userEmail}}
+
+### REMOVER VÍNCULOS
+### Execute no Prisma Studio para remover registros da tabela ProductListing

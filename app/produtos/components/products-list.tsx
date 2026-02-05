@@ -28,6 +28,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+
+// NextAuth
+import { useSession } from "next-auth/react";
 import { ProductSkeleton } from "./product-skeleton";
 import { CreateProductDialog } from "./create-product-dialog";
 import { EditProductDialog } from "./edit-product-dialog";
@@ -57,6 +60,7 @@ interface Product {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string | null;
+  imageUrl?: string | null;
 }
 
 interface ProductFormData {
@@ -80,6 +84,7 @@ interface Toast {
 }
 
 export function ProductsList() {
+  const { data: session } = useSession();
   const [products, setProducts] = useState<Product[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
@@ -159,6 +164,9 @@ export function ProductsList() {
     try {
       const response = await fetch(`http://localhost:3333/products/${id}`, {
         method: "DELETE",
+        headers: {
+          email: session?.user?.email || "",
+        },
       });
 
       if (!response.ok) {
@@ -288,6 +296,7 @@ export function ProductsList() {
                     <Table>
                       <TableHeader>
                         <TableRow>
+                          <TableHead>Imagem</TableHead>
                           <TableHead>SKU</TableHead>
                           <TableHead>Nome</TableHead>
                           <TableHead className="hidden md:table-cell">
@@ -303,6 +312,22 @@ export function ProductsList() {
                       <TableBody>
                         {products.map((product) => (
                           <TableRow key={product.id} className="cursor-pointer">
+                            <TableCell>
+                              {product.imageUrl ? (
+                                <img
+                                  src={product.imageUrl}
+                                  alt={product.name}
+                                  className="w-12 h-12 object-cover rounded border"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              ) : (
+                                <div className="w-12 h-12 bg-muted rounded border flex items-center justify-center">
+                                  <Package className="w-6 h-6 text-muted-foreground" />
+                                </div>
+                              )}
+                            </TableCell>
                             <TableCell className="font-mono text-sm">
                               {product.sku}
                             </TableCell>
@@ -364,22 +389,44 @@ export function ProductsList() {
                         key={product.id}
                         className="rounded-lg border bg-card p-4 space-y-3"
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-1">
-                            <p className="font-medium">{product.name}</p>
-                            <p className="font-mono text-xs text-muted-foreground">
-                              {product.sku}
-                            </p>
+                        <div className="flex items-start gap-3">
+                          {product.imageUrl ? (
+                            <img
+                              src={product.imageUrl}
+                              alt={product.name}
+                              className="w-16 h-16 object-cover rounded border flex-shrink-0"
+                              onError={(e) => {
+                                e.currentTarget.style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="w-16 h-16 bg-muted rounded border flex items-center justify-center flex-shrink-0">
+                              <Package className="w-8 h-8 text-muted-foreground" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="space-y-1 min-w-0 flex-1">
+                                <p className="font-medium truncate">
+                                  {product.name}
+                                </p>
+                                <p className="font-mono text-xs text-muted-foreground">
+                                  {product.sku}
+                                </p>
+                              </div>
+                              <Badge
+                                variant={getStockBadgeVariant(product.stock)}
+                              >
+                                {product.stock} un.
+                              </Badge>
+                            </div>
+                            {product.description && (
+                              <p className="text-sm text-muted-foreground line-clamp-2 mt-2">
+                                {product.description}
+                              </p>
+                            )}
                           </div>
-                          <Badge variant={getStockBadgeVariant(product.stock)}>
-                            {product.stock} un.
-                          </Badge>
                         </div>
-                        {product.description && (
-                          <p className="text-sm text-muted-foreground line-clamp-2">
-                            {product.description}
-                          </p>
-                        )}
                         <div className="flex items-center justify-between pt-2 border-t">
                           <span className="text-lg font-semibold">
                             {formatPrice(product.price)}

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { MarketplaceUseCase } from "../marketplaces/usecases/marketplace.usercase";
 import { SyncUseCase } from "../marketplaces/usecases/sync.usercase";
+import { WebhookUseCase } from "../marketplaces/usecases/webhook.usercase";
 import { ListingRepository } from "../marketplaces/repositories/listing.repository";
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
@@ -368,4 +369,60 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  // ====================================================================
+  // ROTAS DE WEBHOOK - Fase 5.3
+  // ====================================================================
+
+  /**
+   * POST /marketplace/ml/webhook
+   * Endpoint para receber webhooks do Mercado Livre
+   * Processa notificações de pedidos automaticamente
+   * NÃO requer autenticação - validação é feita via application_id
+   */
+  app.post<{
+    Body: any;
+    Reply: { success: boolean; message: string; data?: any };
+  }>("/ml/webhook", async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const payload = request.body;
+
+      // Validar payload do webhook
+      if (!WebhookUseCase.validateWebhookPayload(payload)) {
+        return reply.status(400).send({
+          success: false,
+          message: "Payload de webhook inválido",
+        });
+      }
+
+      // Processar webhook de pedido
+      const result = await WebhookUseCase.processOrderWebhook(payload);
+
+      if (!result.success) {
+        // Log do erro mas retorna 200 para não fazer ML tentar novamente
+        console.error("[Webhook] Erro ao processar:", result.error);
+        return reply.status(200).send({
+          success: false,
+          message: result.error || "Erro ao processar webhook",
+        });
+      }
+
+      // Retornar sucesso
+      return reply.send({
+        success: true,
+        message: "Webhook processado com sucesso",
+        data: {
+          userId: result.userId,
+          orderId: result.orderId,
+          action: result.action,
+        },
+      });
+    } catch (error) {
+      console.error("[Webhook] Erro interno:", error);
+      return reply.status(500).send({
+        success: false,
+        message: "Erro interno do servidor",
+      });
+    }
+  });
 }

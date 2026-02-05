@@ -14,6 +14,8 @@ import {
   DollarSign,
   Car,
   ClipboardCheck,
+  Image,
+  ShoppingCart,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUpload } from "@/components/ui/image-upload";
 import {
   Select,
   SelectContent,
@@ -39,6 +42,9 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { CurrencyInput } from "@/components/ui/currency-input";
+
+// NextAuth
+import { useSession } from "next-auth/react";
 
 // Schema de validação com campos de autopeças
 const productSchema = z.object({
@@ -60,6 +66,19 @@ const productSchema = z.object({
     .max(500, "Descrição deve ter no máximo 500 caracteres")
     .optional(),
   partNumber: z.string().max(100).optional().nullable(),
+
+  // Step 1.5: Imagem
+  imageUrl: z
+    .string()
+    .min(1, "Imagem é obrigatória")
+    .refine((value) => {
+      // Aceitar URLs completas (http/https) ou URLs relativas que começam com /
+      return /^https?:\/\/.+/.test(value) || /^\/.+/.test(value);
+    }, "URL da imagem inválida"),
+
+  // Step 4: Anúncio Mercado Livre (opcional)
+  createMLListing: z.boolean().optional(),
+  mlCategory: z.string().optional(),
 
   // Step 2: Preços e Estoque
   price: z
@@ -353,13 +372,20 @@ const STEPS = [
   },
   {
     id: 2,
+    title: "Imagem",
+    description: "Foto do produto",
+    icon: Image,
+    fields: ["imageUrl"],
+  },
+  {
+    id: 3,
     title: "Preços e Estoque",
     description: "Valores e quantidade",
     icon: DollarSign,
     fields: ["price", "stock", "costPrice", "markup", "location"],
   },
   {
-    id: 3,
+    id: 4,
     title: "Veículo e Peça",
     description: "Dados de autopeças",
     icon: Car,
@@ -376,7 +402,14 @@ const STEPS = [
     ],
   },
   {
-    id: 4,
+    id: 5,
+    title: "Mercado Livre",
+    description: "Criar anúncio (opcional)",
+    icon: ShoppingCart,
+    fields: ["createMLListing", "mlCategory"],
+  },
+  {
+    id: 6,
     title: "Revisão",
     description: "Confirme os dados",
     icon: ClipboardCheck,
@@ -390,6 +423,7 @@ export function CreateProductDialog({
   onProductCreated,
   onToast,
 }: CreateProductDialogProps) {
+  const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -411,6 +445,9 @@ export function CreateProductDialog({
       name: "",
       description: "",
       partNumber: "",
+      imageUrl: "",
+      createMLListing: false,
+      mlCategory: "",
       price: 0,
       stock: 0,
       costPrice: null,
@@ -507,12 +544,16 @@ export function CreateProductDialog({
         partNumber: data.partNumber || undefined,
         quality: data.quality || undefined,
         sourceVehicle: data.sourceVehicle || undefined,
+        createListing: data.createMLListing || false,
+        createListingCategoryId: data.mlCategory || undefined,
       };
 
+      // Criar produto primeiro
       const response = await fetch("http://localhost:3333/products", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          email: session?.user?.email || "",
         },
         body: JSON.stringify(cleanData),
       });
@@ -524,6 +565,7 @@ export function CreateProductDialog({
       }
 
       onToast("Produto criado com sucesso!", "success");
+
       handleClose();
       onProductCreated();
     } catch (error) {
@@ -736,8 +778,40 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 2: Preços e Estoque */}
+          {/* Step 2: Imagem */}
           {currentStep === 2 && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Foto do Produto *</Label>
+                <Controller
+                  name="imageUrl"
+                  control={control}
+                  render={({ field }) => (
+                    <ImageUpload
+                      value={field.value}
+                      onChange={field.onChange}
+                      onError={(error: string) => {
+                        console.error("Erro no upload:", error);
+                        onToast("Erro ao fazer upload da imagem", "error");
+                      }}
+                    />
+                  )}
+                />
+                {errors.imageUrl && (
+                  <p className="text-sm text-destructive">
+                    {errors.imageUrl.message}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Faça upload de uma foto clara do produto. Máximo 5MB,
+                  formatos: JPG, PNG, WebP.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Preços e Estoque */}
+          {currentStep === 3 && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -841,8 +915,8 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 3: Veículo e Peça */}
-          {currentStep === 3 && (
+          {/* Step 4: Veículo e Peça */}
+          {currentStep === 4 && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -991,8 +1065,70 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 4: Revisão */}
-          {currentStep === 4 && (
+          {/* Step 5: Mercado Livre */}
+          {currentStep === 5 && (
+            <div className="space-y-4">
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Controller
+                    name="createMLListing"
+                    control={control}
+                    render={({ field }) => (
+                      <Switch
+                        id="createMLListing"
+                        checked={field.value || false}
+                        onCheckedChange={field.onChange}
+                      />
+                    )}
+                  />
+                  <Label htmlFor="createMLListing" className="cursor-pointer">
+                    Criar anúncio no Mercado Livre
+                  </Label>
+                </div>
+
+                <p className="text-sm text-muted-foreground">
+                  Selecione esta opção para criar automaticamente um anúncio do
+                  produto no Mercado Livre. Você pode escolher uma categoria
+                  específica ou usar a sugerida automaticamente.
+                </p>
+
+                {watch("createMLListing") && (
+                  <div className="space-y-2">
+                    <Label htmlFor="mlCategory">
+                      Categoria no Mercado Livre
+                    </Label>
+                    <Controller
+                      name="mlCategory"
+                      control={control}
+                      render={({ field }) => (
+                        <Select
+                          onValueChange={field.onChange}
+                          value={field.value || watch("category") || ""}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione uma categoria..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ML_CATEGORIES.map((cat) => (
+                              <SelectItem key={cat.id} value={cat.value}>
+                                {cat.value}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Categoria sugerida: {watch("category") || "Nenhuma"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 6: Revisão */}
+          {currentStep === 6 && (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/30 p-4">
                 <h4 className="mb-3 font-medium">Identificação</h4>
@@ -1020,6 +1156,24 @@ export function CreateProductDialog({
                         {formValues.description}
                       </span>
                     </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <h4 className="mb-3 font-medium">Imagem</h4>
+                <div className="text-sm">
+                  {formValues.imageUrl ? (
+                    <div className="space-y-2">
+                      <img
+                        src={formValues.imageUrl}
+                        alt="Produto"
+                        className="h-24 w-24 rounded-lg object-cover border"
+                      />
+                      <p className="text-muted-foreground">Imagem carregada</p>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">Nenhuma imagem</p>
                   )}
                 </div>
               </div>
@@ -1121,6 +1275,35 @@ export function CreateProductDialog({
                       </span>
                     )}
                   </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <h4 className="mb-3 font-medium">Mercado Livre</h4>
+                <div className="text-sm">
+                  {formValues.createMLListing ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                          Anúncio será criado
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">
+                          Categoria:
+                        </span>{" "}
+                        <span className="font-medium">
+                          {formValues.mlCategory ||
+                            formValues.category ||
+                            "Não especificada"}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      Anúncio não será criado
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

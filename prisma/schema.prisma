@@ -50,6 +50,9 @@ model Product {
   isTraceable     Boolean        @default(false) // Item rastreável
   sourceVehicle   String?        // Veículo de origem (para sucata)
 
+  // --- Imagem do Produto ---
+  imageUrl        String?        // URL da imagem principal
+
   // Relações
   listings    ProductListing[]
   stockLogs   StockLog[]
@@ -101,6 +104,7 @@ model ProductListing {
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
   externalListingId    String
   externalSku          String?
+  permalink            String?
   status               String
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt

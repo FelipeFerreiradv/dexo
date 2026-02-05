@@ -5,7 +5,14 @@ import {
   MLItemDetails,
   MLMultigetResponse,
   MLItemUpdatePayload,
+  MLItemCreatePayload,
 } from "../types/ml-api.types";
+import {
+  MLOrderDetails,
+  MLOrdersSearchResponse,
+  MLOrdersSearchParams,
+  MLOrderStatus,
+} from "../types/ml-order.types";
 
 /**
  * Cliente para API do Mercado Livre
@@ -296,5 +303,215 @@ export class MLApiService {
     price: number,
   ): Promise<MLItemDetails> {
     return this.updateItem(accessToken, itemId, { price });
+  }
+
+  // ====================================================================
+  // MÉTODOS DE ORDERS (PEDIDOS)
+  // ====================================================================
+
+  /**
+   * Busca pedidos de um vendedor com filtros
+   * @param accessToken Token de acesso OAuth
+   * @param params Parâmetros de busca
+   */
+  static async getSellerOrders(
+    accessToken: string,
+    params: MLOrdersSearchParams,
+  ): Promise<MLOrdersSearchResponse> {
+    try {
+      const url = new URL("/orders/search", ML_CONSTANTS.API_URL);
+
+      // Parâmetro obrigatório: seller
+      url.searchParams.set("seller", params.seller);
+
+      // Parâmetros opcionais
+      if (params.status) {
+        url.searchParams.set("order.status", params.status);
+      }
+      if (params.dateCreatedFrom) {
+        url.searchParams.set("order.date_created.from", params.dateCreatedFrom);
+      }
+      if (params.dateCreatedTo) {
+        url.searchParams.set("order.date_created.to", params.dateCreatedTo);
+      }
+      if (params.sort) {
+        url.searchParams.set("sort", params.sort);
+      }
+      if (params.offset !== undefined) {
+        url.searchParams.set("offset", params.offset.toString());
+      }
+      if (params.limit !== undefined) {
+        url.searchParams.set("limit", params.limit.toString());
+      }
+      if (params.tags) {
+        url.searchParams.set("tags", params.tags);
+      }
+
+      console.log(`[ML API] Fetching orders: ${url.toString()}`);
+
+      const response = await axios.get<MLOrdersSearchResponse>(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 15000,
+      });
+
+      console.log(
+        `[ML API] Found ${response.data.results.length} orders (total: ${response.data.paging.total})`,
+      );
+
+      return response.data;
+    } catch (error) {
+      console.error("[ML API] Error fetching orders:", error);
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao buscar pedidos: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Busca todos os pedidos paginados (com limite de segurança)
+   * @param accessToken Token de acesso OAuth
+   * @param sellerId ID do vendedor
+   * @param status Status dos pedidos (opcional)
+   * @param maxOrders Limite máximo de pedidos a buscar (padrão: 100)
+   */
+  static async getAllSellerOrders(
+    accessToken: string,
+    sellerId: string,
+    status?: MLOrderStatus,
+    maxOrders: number = 100,
+  ): Promise<MLOrderDetails[]> {
+    const allOrders: MLOrderDetails[] = [];
+    let offset = 0;
+    const limit = 50; // ML aceita no máximo 50 por página
+
+    try {
+      while (allOrders.length < maxOrders) {
+        const response = await this.getSellerOrders(accessToken, {
+          seller: sellerId,
+          status,
+          offset,
+          limit,
+          sort: "date_desc", // Mais recentes primeiro
+        });
+
+        allOrders.push(...response.results);
+
+        // Verificar se há mais páginas
+        if (
+          response.results.length < limit ||
+          allOrders.length >= response.paging.total
+        ) {
+          break;
+        }
+
+        offset += limit;
+
+        // Pequena pausa para evitar rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // Limitar ao máximo especificado
+      return allOrders.slice(0, maxOrders);
+    } catch (error) {
+      console.error("[ML API] Error fetching all orders:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtém detalhes de um pedido específico
+   * @param accessToken Token de acesso OAuth
+   * @param orderId ID do pedido no ML
+   */
+  static async getOrderDetails(
+    accessToken: string,
+    orderId: string,
+  ): Promise<MLOrderDetails> {
+    try {
+      const response = await axios.get<MLOrderDetails>(
+        `${ML_CONSTANTS.API_URL}/orders/${orderId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          timeout: 10000,
+        },
+      );
+
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao obter detalhes do pedido: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Busca pedidos recentes (últimos N dias)
+   * @param accessToken Token de acesso OAuth
+   * @param sellerId ID do vendedor
+   * @param days Número de dias para trás (padrão: 7)
+   * @param status Status dos pedidos (opcional, padrão: "paid")
+   */
+  static async getRecentOrders(
+    accessToken: string,
+    sellerId: string,
+    days: number = 7,
+    status: MLOrderStatus = "paid",
+  ): Promise<MLOrderDetails[]> {
+    const dateFrom = new Date();
+    dateFrom.setDate(dateFrom.getDate() - days);
+
+    const response = await this.getSellerOrders(accessToken, {
+      seller: sellerId,
+      status,
+      dateCreatedFrom: dateFrom.toISOString(),
+      sort: "date_desc",
+      limit: 50,
+    });
+
+    return response.results;
+  }
+
+  /**
+   * Cria um novo item no Mercado Livre
+   * @param accessToken Token de acesso OAuth
+   * @param payload Dados do item a ser criado
+   */
+  static async createItem(
+    accessToken: string,
+    payload: MLItemCreatePayload,
+  ): Promise<MLItemDetails> {
+    try {
+      const response = await axios.post<MLItemDetails>(
+        `${ML_CONSTANTS.API_URL}/items`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const errorData = error.response?.data;
+        const errorMessage = errorData
+          ? JSON.stringify(errorData)
+          : error.message;
+        throw new Error(`Erro ao criar item: ${errorMessage}`);
+      }
+      throw error;
+    }
   }
 }

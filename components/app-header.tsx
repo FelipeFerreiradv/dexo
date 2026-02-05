@@ -42,9 +42,7 @@ export function AppHeader({ session }: AppHeaderProps) {
       <SidebarTrigger className="-ml-1" />
 
       <div className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold text-foreground">
-          Projeto Sombra
-        </h1>
+        <h1 className="text-lg font-semibold text-foreground">Nexos Company</h1>
       </div>
 
       <div className="flex-1 flex items-center justify-center max-w-xl mx-auto">

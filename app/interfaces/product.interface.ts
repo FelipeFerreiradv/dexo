@@ -25,6 +25,9 @@ export interface Product {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+
+  // Imagem do produto
+  imageUrl?: string;
 }
 
 export interface ProductCreate {
@@ -48,6 +51,13 @@ export interface ProductCreate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+
+  // Imagem do produto (obrigatória)
+  imageUrl: string;
+
+  // Opção para criar anúncio no ML automaticamente
+  createListing?: boolean;
+  createListingCategoryId?: string;
 }
 
 export interface ProductUpdate {
@@ -70,6 +80,9 @@ export interface ProductUpdate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+
+  // Imagem do produto
+  imageUrl?: string;
 }
 
 export interface ProductRepository {

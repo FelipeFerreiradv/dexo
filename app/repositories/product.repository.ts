@@ -33,6 +33,8 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     isSecurityItem: item.isSecurityItem ?? undefined,
     isTraceable: item.isTraceable ?? undefined,
     sourceVehicle: item.sourceVehicle ?? undefined,
+    // Imagem do produto
+    imageUrl: item.imageUrl ?? undefined,
   };
 }
 
@@ -60,6 +62,8 @@ class ProductRepositoryPrisma implements ProductRepository {
           isSecurityItem: data.isSecurityItem ?? false,
           isTraceable: data.isTraceable ?? false,
           sourceVehicle: data.sourceVehicle ?? null,
+          // Imagem do produto
+          imageUrl: data.imageUrl,
         },
       });
 
@@ -124,6 +128,28 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async delete(id: string): Promise<void> {
     try {
+      // Verificar se o produto tem pedidos associados
+      const orderItemsCount = await prisma.orderItem.count({
+        where: { productId: id },
+      });
+
+      if (orderItemsCount > 0) {
+        throw new Error(
+          "Não é possível deletar o produto pois ele possui pedidos associados",
+        );
+      }
+
+      // Deletar logs de estoque relacionados
+      await prisma.stockLog.deleteMany({
+        where: { productId: id },
+      });
+
+      // Deletar listings relacionados ao produto
+      await prisma.productListing.deleteMany({
+        where: { productId: id },
+      });
+
+      // Agora pode deletar o produto
       await prisma.product.delete({
         where: { id },
       });
@@ -177,6 +203,8 @@ class ProductRepositoryPrisma implements ProductRepository {
           ...(data.sourceVehicle !== undefined && {
             sourceVehicle: data.sourceVehicle,
           }),
+          // Imagem do produto
+          ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
         },
       });
 

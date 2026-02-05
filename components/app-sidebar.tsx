@@ -47,10 +47,15 @@ const mainNavItems = [
     href: "/produtos",
     icon: Package,
   },
+  // {
+  //   title: "Estoque",
+  //   href: "/estoque",
+  //   icon: Warehouse,
+  // },
   {
-    title: "Estoque",
-    href: "/estoque",
-    icon: Warehouse,
+    title: "Pedidos",
+    href: "/pedidos",
+    icon: ShoppingBag,
   },
 ];
 
@@ -97,7 +102,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
             <Package className="size-4" />
           </div>
           <span className="font-semibold text-sm group-data-[collapsible=icon]:hidden">
-            Sistema Sombra
+            Nexos Company
           </span>
         </div>
       </SidebarHeader>

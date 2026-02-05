@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUpload } from "@/components/ui/image-upload";
 import {
   Select,
   SelectContent,
@@ -26,6 +27,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+
+// NextAuth
+import { useSession } from "next-auth/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -368,6 +372,7 @@ const productEditSchema = z.object({
   isSecurityItem: z.boolean().optional(),
   isTraceable: z.boolean().optional(),
   sourceVehicle: z.string().max(200).optional().nullable(),
+  imageUrl: z.string().url("URL da imagem inválida").optional().nullable(),
 });
 
 type ProductEditFormData = z.infer<typeof productEditSchema>;
@@ -397,6 +402,7 @@ interface Product {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string | null;
+  imageUrl?: string | null;
 }
 
 interface EditProductDialogProps {
@@ -421,6 +427,7 @@ export function EditProductDialog({
   onProductUpdated,
   onToast,
 }: EditProductDialogProps) {
+  const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showAutopartsSection, setShowAutopartsSection] = useState(false);
 
@@ -466,6 +473,7 @@ export function EditProductDialog({
       isSecurityItem: product.isSecurityItem || false,
       isTraceable: product.isTraceable || false,
       sourceVehicle: product.sourceVehicle || "",
+      imageUrl: product.imageUrl || null,
     },
   });
 
@@ -556,6 +564,7 @@ export function EditProductDialog({
         partNumber: data.partNumber || undefined,
         quality: data.quality || undefined,
         sourceVehicle: data.sourceVehicle || undefined,
+        imageUrl: data.imageUrl || undefined,
       };
 
       const response = await fetch(
@@ -564,6 +573,7 @@ export function EditProductDialog({
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
+            email: session?.user?.email || "",
           },
           body: JSON.stringify(cleanData),
         },
@@ -659,6 +669,33 @@ export function EditProductDialog({
                   {errors.description.message}
                 </p>
               )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Foto do Produto</Label>
+              <Controller
+                name="imageUrl"
+                control={control}
+                render={({ field }) => (
+                  <ImageUpload
+                    value={field.value || undefined}
+                    onChange={field.onChange}
+                    onError={(error: string) => {
+                      console.error("Erro no upload:", error);
+                      // You might want to show a toast here
+                    }}
+                  />
+                )}
+              />
+              {errors.imageUrl && (
+                <p className="text-sm text-destructive">
+                  {errors.imageUrl.message}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Faça upload de uma nova foto ou mantenha a atual. Máximo 5MB,
+                formatos: JPG, PNG, WebP.
+              </p>
             </div>
           </div>
 
