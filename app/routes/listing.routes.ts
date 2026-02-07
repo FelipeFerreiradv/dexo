@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { SystemLogService } from "../services/system-log.service";
 
 export async function listingRoutes(app: FastifyInstance) {
   /**
@@ -38,10 +39,27 @@ export async function listingRoutes(app: FastifyInstance) {
         );
 
         if (!result.success) {
+          // Registrar log de erro na criação de anúncio
+          await SystemLogService.logSyncError(
+            userId,
+            "LISTING_CREATE",
+            "MercadoLivre",
+            result.error || "Erro desconhecido",
+          );
           return reply.status(400).send({
             error: "Erro ao criar anúncio",
             message: result.error,
           });
+        }
+
+        // Registrar log de criação de anúncio
+        if (result.listingId) {
+          await SystemLogService.logListingCreate(
+            userId,
+            result.listingId,
+            body.productId,
+            "MercadoLivre",
+          );
         }
 
         return reply.status(201).send({

@@ -3,6 +3,7 @@ import { ProductUseCase } from "../usecases/product.usercase";
 import { ProductCreate, ProductUpdate } from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { SystemLogService } from "../services/system-log.service";
 
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
@@ -79,6 +80,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           isTraceable,
           sourceVehicle,
           imageUrl,
+        });
+
+        // Registrar log de criação do produto
+        const user = (request as any).user;
+        await SystemLogService.logProductCreate(user?.id, data.id, {
+          sku: data.sku,
+          name: data.name,
+          stock: data.stock,
+          price: data.price,
         });
 
         // Se solicitado, criar anúncio no ML
@@ -180,10 +190,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             .send({ error: "ID do produto é obrigatório" });
         }
 
-        await productUseCase.delete(id);
+        const result = await productUseCase.delete(id);
 
-        return reply.status(204).send({
-          message: "Produto excluído com sucesso",
+        if (!result.success) {
+          return reply.status(500).send({
+            error: "Erro ao excluir produto",
+            message: result.message,
+          });
+        }
+
+        // Registrar log de exclusão do produto
+        const user = (request as any).user;
+        await SystemLogService.logProductDelete(user?.id, id, "Produto");
+
+        return reply.status(200).send({
+          message: result.message,
+          listingResults: result.listingResults,
         });
       } catch (error) {
         return reply.status(500).send({
@@ -251,7 +273,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
-        const data = await productUseCase.update(id, {
+        const result = await productUseCase.update(id, {
           name,
           description,
           price,
@@ -273,7 +295,18 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           imageUrl,
         });
 
-        return reply.status(200).send(data);
+        // Registrar log de atualização do produto
+        const user = (request as any).user;
+        await SystemLogService.logProductUpdate(user?.id, id, {
+          name: result.product.name,
+          stock: result.product.stock,
+          price: result.product.price,
+        });
+
+        return reply.status(200).send({
+          ...result.product,
+          syncResults: result.syncResults,
+        });
       } catch (error) {
         return reply.status(500).send({
           error:

@@ -10,9 +10,12 @@
 import prisma from "@/app/lib/prisma";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
+import { ShopeeApiService } from "../services/shopee-api.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import type { MLItemDetails } from "../types/ml-api.types";
+import type { MLItemUpdatePayload } from "../types/ml-api.types";
+import type { ShopeeItem } from "../types/shopee-api.types";
 
 // Tipos para resultados de sincronização
 export interface ImportResult {
@@ -35,6 +38,8 @@ export interface SyncResult {
   externalListingId: string;
   previousStock?: number;
   newStock?: number;
+  previousPrice?: number;
+  newPrice?: number;
   error?: string;
 }
 
@@ -89,17 +94,103 @@ export class SyncUseCase {
     );
 
     result.totalItems = itemsDetails.length;
+    console.log(`[IMPORT] Starting to process ${result.totalItems} items...`);
 
-    // 4. Processar cada item
+    // 4. Preparar dados para processamento otimizado
+    const externalItemIds = itemsDetails.map((item) => item.id);
+    const skus = itemsDetails
+      .map((item) => this.extractSku(item))
+      .filter(Boolean) as string[];
+
+    // Buscar listings existentes em lote
+    const existingListings = await prisma.productListing.findMany({
+      where: {
+        marketplaceAccountId: account.id,
+        externalListingId: { in: externalItemIds },
+      },
+    });
+    const existingListingsMap = new Map(
+      existingListings.map((listing) => [listing.externalListingId, listing]),
+    );
+
+    // Buscar produtos por SKU em lote
+    const products =
+      skus.length > 0
+        ? await prisma.product.findMany({
+            where: { sku: { in: skus } },
+          })
+        : [];
+    const productsMap = new Map(
+      products.map((product) => [product.sku, product]),
+    );
+
+    console.log(
+      `[IMPORT] Found ${existingListings.length} existing listings and ${products.length} matching products`,
+    );
+
+    // 5. Processar cada item
+    let processedCount = 0;
     for (const item of itemsDetails) {
       try {
-        const processedItem = await this.processImportedItem(item, account.id);
+        const sku = this.extractSku(item);
+        const existingListing = existingListingsMap.get(item.id);
+        const product = sku ? productsMap.get(sku) : null;
+
+        let processedItem: ImportResult["items"][0];
+
+        if (existingListing) {
+          // Já existe, atualizar status se necessário
+          if (existingListing.status !== item.status) {
+            await ListingRepository.updateStatus(
+              existingListing.id,
+              item.status,
+            );
+          }
+
+          processedItem = {
+            externalListingId: item.id,
+            title: item.title,
+            sku,
+            linkedProductId: existingListing.productId,
+            status: "linked",
+          };
+        } else {
+          // Tentar vincular por SKU se disponível
+          const linkedProductId = product ? product.id : null;
+
+          // Se encontrou produto, criar listing
+          if (linkedProductId) {
+            await ListingRepository.createListing({
+              productId: linkedProductId,
+              marketplaceAccountId: account.id,
+              externalListingId: item.id,
+              externalSku: sku || undefined,
+              status: item.status,
+            });
+          }
+
+          processedItem = {
+            externalListingId: item.id,
+            title: item.title,
+            sku,
+            linkedProductId,
+            status: linkedProductId ? "linked" : "unlinked",
+          };
+        }
+
         result.items.push(processedItem);
 
         if (processedItem.status === "linked") {
           result.linkedItems++;
         } else {
           result.unlinkedItems++;
+        }
+
+        processedCount++;
+        if (processedCount % 100 === 0) {
+          console.log(
+            `[IMPORT] Processed ${processedCount}/${result.totalItems} items (${result.linkedItems} linked, ${result.unlinkedItems} unlinked)`,
+          );
         }
       } catch (error) {
         const errorMessage =
@@ -112,8 +203,13 @@ export class SyncUseCase {
           linkedProductId: null,
           status: "error",
         });
+        processedCount++;
       }
     }
+
+    console.log(
+      `[IMPORT] Completed processing ${processedCount} items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
+    );
 
     // 5. Registrar log da importação
     await this.logSync(
@@ -128,67 +224,187 @@ export class SyncUseCase {
   }
 
   /**
-   * Processa um item importado do ML
-   * Nota: ProductListing.productId é required, então só criamos listing se houver produto
+   * Importa todos os itens do Shopee e tenta vincular automaticamente por SKU
    */
-  private static async processImportedItem(
-    item: MLItemDetails,
-    accountId: string,
-  ): Promise<ImportResult["items"][0]> {
-    const sku = this.extractSku(item);
+  static async importShopeeItems(userId: string): Promise<ImportResult> {
+    const result: ImportResult = {
+      totalItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      errors: [],
+      items: [],
+    };
 
-    // Verificar se já existe um listing para este item
-    const existingListing = await ListingRepository.findByExternalListingId(
-      accountId,
-      item.id,
+    // 1. Buscar conta do marketplace
+    const account = await MarketplaceRepository.findByUserIdAndPlatform(
+      userId,
+      Platform.SHOPEE,
     );
 
-    if (existingListing) {
-      // Já existe, atualizar status se necessário
-      if (existingListing.status !== item.status) {
-        await ListingRepository.updateStatus(existingListing.id, item.status);
+    if (!account || !account.accessToken || !account.shopId) {
+      throw new Error("Conta do Shopee não conectada ou sem credenciais");
+    }
+
+    // 2. Buscar todos os itens da loja
+    const itemList = await ShopeeApiService.getItemList(
+      account.accessToken,
+      account.shopId,
+      { offset: 0, page_size: 100, item_status: ["NORMAL"] }, // Apenas itens normais/ativos
+    );
+
+    if (itemList.item.length === 0) {
+      return result;
+    }
+
+    result.totalItems = itemList.item.length;
+    console.log(
+      `[IMPORT] Starting to process ${result.totalItems} Shopee items...`,
+    );
+
+    // 3. Buscar detalhes dos itens
+    const itemDetails: ShopeeItem[] = [];
+    for (const item of itemList.item) {
+      try {
+        const detail = await ShopeeApiService.getItemDetail(
+          account.accessToken,
+          account.shopId,
+          item.item_id,
+        );
+        itemDetails.push(detail);
+      } catch (error) {
+        console.error(
+          `Erro ao buscar detalhes do item ${item.item_id}:`,
+          error,
+        );
       }
-
-      return {
-        externalListingId: item.id,
-        title: item.title,
-        sku,
-        linkedProductId: existingListing.productId,
-        status: "linked",
-      };
     }
 
-    // Tentar vincular por SKU se disponível
-    let linkedProductId: string | null = null;
+    // 4. Preparar dados para processamento otimizado
+    const externalItemIds = itemDetails.map((item) => item.item_id.toString());
+    const skus = itemDetails
+      .map((item) => item.item_sku)
+      .filter(Boolean) as string[];
 
-    if (sku) {
-      const product = await prisma.product.findUnique({
-        where: { sku: sku },
-      });
+    // Buscar listings existentes
+    const existingListings = await prisma.productListing.findMany({
+      where: {
+        marketplaceAccountId: account.id,
+        externalListingId: { in: externalItemIds },
+      },
+    });
+    const existingListingsMap = new Map(
+      existingListings.map((listing) => [listing.externalListingId, listing]),
+    );
 
-      if (product) {
-        linkedProductId = product.id;
+    // Buscar produtos por SKU
+    const products =
+      skus.length > 0
+        ? await prisma.product.findMany({
+            where: { sku: { in: skus } },
+          })
+        : [];
+    const productsMap = new Map(
+      products.map((product) => [product.sku, product]),
+    );
+
+    console.log(
+      `[IMPORT] Found ${existingListings.length} existing listings and ${products.length} matching products`,
+    );
+
+    // 5. Processar cada item
+    let processedCount = 0;
+    for (const item of itemDetails) {
+      try {
+        const sku = item.item_sku;
+        const externalId = item.item_id.toString();
+        const existingListing = existingListingsMap.get(externalId);
+        const product = sku ? productsMap.get(sku) : null;
+
+        let processedItem: ImportResult["items"][0];
+
+        if (existingListing) {
+          // Já existe, atualizar status se necessário
+          const newStatus =
+            item.status === "NORMAL" ? "active" : item.status.toLowerCase();
+          if (existingListing.status !== newStatus) {
+            await ListingRepository.updateStatus(existingListing.id, newStatus);
+          }
+
+          processedItem = {
+            externalListingId: externalId,
+            title: item.item_name,
+            sku,
+            linkedProductId: existingListing.productId,
+            status: "linked",
+          };
+        } else {
+          // Tentar vincular por SKU se disponível
+          const linkedProductId = product ? product.id : null;
+
+          // Se encontrou produto, criar listing
+          if (linkedProductId) {
+            await ListingRepository.createListing({
+              productId: linkedProductId,
+              marketplaceAccountId: account.id,
+              externalListingId: externalId,
+              externalSku: sku || undefined,
+              status:
+                item.status === "NORMAL" ? "active" : item.status.toLowerCase(),
+            });
+          }
+
+          processedItem = {
+            externalListingId: externalId,
+            title: item.item_name,
+            sku,
+            linkedProductId,
+            status: linkedProductId ? "linked" : "unlinked",
+          };
+        }
+
+        result.items.push(processedItem);
+
+        if (processedItem.status === "linked") {
+          result.linkedItems++;
+        } else {
+          result.unlinkedItems++;
+        }
+
+        processedCount++;
+        if (processedCount % 50 === 0) {
+          console.log(
+            `[IMPORT] Processed ${processedCount}/${result.totalItems} Shopee items (${result.linkedItems} linked, ${result.unlinkedItems} unlinked)`,
+          );
+        }
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        result.errors.push(`Item ${item.item_id}: ${errorMessage}`);
+        result.items.push({
+          externalListingId: item.item_id.toString(),
+          title: item.item_name,
+          sku: item.item_sku,
+          linkedProductId: null,
+          status: "error",
+        });
+        processedCount++;
       }
     }
 
-    // Se encontrou produto, criar listing
-    if (linkedProductId) {
-      await ListingRepository.createListing({
-        productId: linkedProductId,
-        marketplaceAccountId: accountId,
-        externalListingId: item.id,
-        externalSku: sku || undefined,
-        status: item.status,
-      });
-    }
+    console.log(
+      `[IMPORT] Completed processing ${processedCount} Shopee items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
+    );
 
-    return {
-      externalListingId: item.id,
-      title: item.title,
-      sku,
-      linkedProductId,
-      status: linkedProductId ? "linked" : "unlinked",
-    };
+    // Registrar log da importação
+    await this.logSync(
+      account.id,
+      SyncType.PRODUCT_SYNC,
+      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.totalItems} itens do Shopee, ${result.linkedItems} vinculados`,
+      { totalItems: result.totalItems, linkedItems: result.linkedItems },
+    );
+
+    return result;
   }
 
   /**
@@ -217,9 +433,9 @@ export class SyncUseCase {
   }
 
   /**
-   * Sincroniza o estoque de um produto específico para o ML
+   * Sincroniza o estoque de um produto específico para todos os marketplaces conectados
    */
-  static async syncProductStock(productId: string): Promise<SyncResult> {
+  static async syncProductStock(productId: string): Promise<SyncResult[]> {
     // 1. Buscar produto com seus listings
     const product = await prisma.product.findUnique({
       where: { id: productId },
@@ -233,98 +449,56 @@ export class SyncUseCase {
     });
 
     if (!product) {
-      return {
-        success: false,
-        productId,
-        externalListingId: "",
-        error: "Produto não encontrado",
-      };
-    }
-
-    // 2. Filtrar listings do Mercado Livre
-    const mlListings = product.listings.filter(
-      (listing) =>
-        listing.marketplaceAccount.platform === Platform.MERCADO_LIVRE,
-    );
-
-    if (mlListings.length === 0) {
-      return {
-        success: false,
-        productId,
-        externalListingId: "",
-        error: "Produto não vinculado ao Mercado Livre",
-      };
-    }
-
-    // 3. Sincronizar cada listing (pode haver múltiplas contas)
-    const results: SyncResult[] = [];
-
-    for (const listing of mlListings) {
-      const account = listing.marketplaceAccount;
-
-      if (!account.accessToken) {
-        results.push({
+      return [
+        {
           success: false,
           productId,
-          externalListingId: listing.externalListingId,
-          error: "Conta sem token de acesso",
-        });
-        continue;
-      }
+          externalListingId: "",
+          error: "Produto não encontrado",
+        },
+      ];
+    }
+
+    if (product.listings.length === 0) {
+      return [
+        {
+          success: false,
+          productId,
+          externalListingId: "",
+          error: "Produto não vinculado a nenhum marketplace",
+        },
+      ];
+    }
+
+    // 2. Sincronizar cada listing baseado na plataforma
+    const results: SyncResult[] = [];
+
+    for (const listing of product.listings) {
+      const account = listing.marketplaceAccount;
 
       try {
-        // Buscar estoque atual no ML para log
-        const currentItem = await MLApiService.getItemDetails(
-          account.accessToken,
-          listing.externalListingId,
-        );
+        let result: SyncResult;
 
-        const previousStock = currentItem?.available_quantity ?? 0;
+        switch (account.platform) {
+          case Platform.MERCADO_LIVRE:
+            result = await this.syncMLProductStock(listing, product);
+            break;
+          case Platform.SHOPEE:
+            result = await this.syncShopeeProductStock(listing, product);
+            break;
+          default:
+            result = {
+              success: false,
+              productId,
+              externalListingId: listing.externalListingId,
+              error: `Plataforma ${account.platform} não suportada`,
+            };
+        }
 
-        // Atualizar estoque no ML
-        await MLApiService.updateItemStock(
-          account.accessToken,
-          listing.externalListingId,
-          product.stock,
-        );
-
-        // Registrar log
-        await this.logSync(
-          account.id,
-          SyncType.STOCK_UPDATE,
-          SyncStatus.SUCCESS,
-          `Estoque do produto ${product.name} atualizado: ${previousStock} → ${product.stock}`,
-          {
-            productId,
-            externalListingId: listing.externalListingId,
-            previousStock,
-            newStock: product.stock,
-          },
-        );
-
-        results.push({
-          success: true,
-          productId,
-          externalListingId: listing.externalListingId,
-          previousStock,
-          newStock: product.stock,
-        });
+        results.push(result);
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
-
-        await this.logSync(
-          account.id,
-          SyncType.STOCK_UPDATE,
-          SyncStatus.FAILURE,
-          `Erro ao atualizar estoque: ${errorMessage}`,
-          {
-            productId,
-            externalListingId: listing.externalListingId,
-            error: errorMessage,
-          },
-        );
-
         results.push({
           success: false,
           productId,
@@ -334,21 +508,178 @@ export class SyncUseCase {
       }
     }
 
-    // Retornar primeiro resultado (ou agregar se necessário)
-    return (
-      results[0] || {
-        success: false,
-        productId,
-        externalListingId: "",
-        error: "Nenhum listing processado",
-      }
-    );
+    return results;
   }
 
   /**
-   * Sincroniza o estoque de todos os produtos vinculados ao ML
+   * Sincroniza estoque de um produto para Mercado Livre
    */
-  static async syncAllStock(userId: string): Promise<SyncAllResult> {
+  private static async syncMLProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta sem token de acesso",
+      };
+    }
+
+    try {
+      // Buscar estoque atual no ML para log
+      const currentItem = await MLApiService.getItemDetails(
+        account.accessToken,
+        listing.externalListingId,
+      );
+
+      const previousStock = currentItem?.available_quantity ?? 0;
+
+      // Atualizar estoque no ML
+      await MLApiService.updateItemStock(
+        account.accessToken,
+        listing.externalListingId,
+        product.stock,
+      );
+
+      // Registrar log
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} atualizado: ${previousStock} → ${product.stock}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          previousStock,
+          newStock: product.stock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        previousStock,
+        newStock: product.stock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao atualizar estoque: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Sincroniza estoque de um produto para Shopee
+   */
+  private static async syncShopeeProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken || !account.shopId) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta sem token de acesso ou shopId",
+      };
+    }
+
+    try {
+      // Buscar item atual no Shopee para log
+      const currentItem = await ShopeeApiService.getItemDetail(
+        account.accessToken,
+        account.shopId,
+        parseInt(listing.externalListingId),
+      );
+
+      const previousStock = currentItem.stock_info[0]?.stock_quantity ?? 0;
+
+      // Atualizar estoque no Shopee
+      await ShopeeApiService.updateItemStock(
+        account.accessToken,
+        account.shopId,
+        parseInt(listing.externalListingId),
+        product.stock,
+      );
+
+      // Registrar log
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} atualizado: ${previousStock} → ${product.stock}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          previousStock,
+          newStock: product.stock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        previousStock,
+        newStock: product.stock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao atualizar estoque: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Sincroniza o estoque de todos os produtos vinculados a um marketplace específico
+   */
+  static async syncAllStock(
+    userId: string,
+    platform: Platform,
+  ): Promise<SyncAllResult> {
     const result: SyncAllResult = {
       total: 0,
       successful: 0,
@@ -359,11 +690,11 @@ export class SyncUseCase {
     // 1. Buscar conta do marketplace
     const account = await MarketplaceRepository.findByUserIdAndPlatform(
       userId,
-      Platform.MERCADO_LIVRE,
+      platform,
     );
 
     if (!account) {
-      throw new Error("Conta do Mercado Livre não encontrada");
+      throw new Error(`Conta do ${platform} não encontrada`);
     }
 
     // 2. Buscar todos os listings vinculados a produtos
@@ -382,13 +713,20 @@ export class SyncUseCase {
     for (const listing of listings) {
       if (!listing.product) continue;
 
-      const syncResult = await this.syncProductStock(listing.product.id);
-      result.results.push(syncResult);
+      const syncResults = await this.syncProductStock(listing.product.id);
 
-      if (syncResult.success) {
-        result.successful++;
-      } else {
-        result.failed++;
+      // Filtrar apenas os resultados para este listing
+      const relevantResult = syncResults.find(
+        (r) => r.externalListingId === listing.externalListingId,
+      );
+
+      if (relevantResult) {
+        result.results.push(relevantResult);
+        if (relevantResult.success) {
+          result.successful++;
+        } else {
+          result.failed++;
+        }
       }
     }
 
@@ -404,6 +742,274 @@ export class SyncUseCase {
         failed: result.failed,
       },
     );
+
+    return result;
+  }
+
+  /**
+   * Sincroniza dados completos de um produto para um anúncio específico
+   * Atualiza preço, estoque e outros campos suportados pelo marketplace
+   */
+  static async syncProductData(
+    productId: string,
+    externalListingId: string,
+    marketplaceAccountId: string,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId,
+      externalListingId,
+    };
+
+    try {
+      // 1. Buscar produto
+      const product = await prisma.product.findUnique({
+        where: { id: productId },
+      });
+
+      if (!product) {
+        throw new Error(`Produto ${productId} não encontrado`);
+      }
+
+      // 2. Buscar conta do marketplace
+      const account = await prisma.marketplaceAccount.findUnique({
+        where: { id: marketplaceAccountId },
+      });
+
+      if (!account || !account.accessToken) {
+        throw new Error(
+          "Conta do marketplace não encontrada ou sem token de acesso",
+        );
+      }
+
+      // 3. Roteamento baseado na plataforma
+      switch (account.platform) {
+        case Platform.MERCADO_LIVRE:
+          return await this.syncMLProductData(
+            product,
+            externalListingId,
+            account,
+          );
+        case Platform.SHOPEE:
+          return await this.syncShopeeProductData(
+            product,
+            externalListingId,
+            account,
+          );
+        default:
+          throw new Error(
+            `Plataforma ${account.platform} não suportada para sincronização completa`,
+          );
+      }
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+
+      // Registrar log de erro
+      await this.logSync(
+        marketplaceAccountId,
+        SyncType.PRODUCT_SYNC,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar produto ${productId}: ${result.error}`,
+        {
+          productId,
+          externalListingId,
+          error: result.error,
+        },
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Sincroniza dados completos para Mercado Livre
+   */
+  private static async syncMLProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    try {
+      // Verificar status do anúncio antes de atualizar
+      const currentItem = await MLApiService.getItemDetails(
+        account.accessToken,
+        externalListingId,
+      );
+
+      console.log(`[SYNC] Status atual do anúncio: ${currentItem.status}`);
+
+      // Preparar dados para atualização baseados no status
+      const updateData: MLItemUpdatePayload = {};
+
+      // Sempre sincronizar preço e estoque (campos suportados pela API)
+      updateData.price = Number(product.price);
+      updateData.available_quantity = product.stock;
+
+      // Só sincronizar título e descrição se o anúncio estiver ativo
+      // Anúncios pausados não permitem atualização de título/descrição
+      if (currentItem.status === "active") {
+        // Sincronizar nome se foi alterado
+        if (product.name && product.name !== currentItem.title) {
+          updateData.title = product.name;
+        }
+
+        // Sincronizar descrição se foi alterada
+        if (product.description) {
+          updateData.description = product.description;
+        }
+      }
+
+      // Sincronizar categoria se foi alterada (geralmente não permitida em anúncios ativos)
+      if (product.category) {
+        console.log(
+          `[SYNC] Categoria detectada mas não sincronizada: ${product.category}`,
+        );
+      }
+
+      // Sincronizar imagem se foi alterada (pode não ser permitido em anúncios ativos)
+      if (product.imageUrl) {
+        console.log(
+          `[SYNC] Imagem detectada mas pode não ser sincronizada em anúncio ativo`,
+        );
+      }
+
+      console.log(`[SYNC] Dados a serem enviados para ML:`, updateData);
+
+      // Só fazer a atualização se houver dados para atualizar
+      if (Object.keys(updateData).length > 0) {
+        const updatedItem = await MLApiService.updateItem(
+          account.accessToken,
+          externalListingId,
+          updateData,
+        );
+        console.log(`[SYNC] Resposta do ML:`, updatedItem);
+
+        result.success = true;
+        result.previousStock = currentItem.available_quantity;
+        result.newStock = product.stock;
+        result.previousPrice = currentItem.price;
+        result.newPrice = Number(product.price);
+
+        // Registrar log de sucesso
+        await this.logSync(
+          account.id,
+          SyncType.PRODUCT_SYNC,
+          SyncStatus.SUCCESS,
+          `Produto ${product.sku} sincronizado: preço R$ ${product.price}, estoque ${product.stock}, título "${product.name}"`,
+          {
+            productId: product.id,
+            externalListingId,
+            price: product.price,
+            stock: product.stock,
+            title: product.name,
+            description: product.description,
+            imageUrl: product.imageUrl,
+          },
+        );
+      } else {
+        console.log(`[SYNC] Nenhum dado para atualizar`);
+        throw new Error(
+          "Anúncio ativo - apenas preço e estoque podem ser sincronizados",
+        );
+      }
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+    }
+
+    return result;
+  }
+
+  /**
+   * Sincroniza dados completos para Shopee
+   */
+  private static async syncShopeeProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    try {
+      if (!account.shopId) {
+        throw new Error("ShopId não encontrado para conta Shopee");
+      }
+
+      // Buscar item atual no Shopee
+      const currentItem = await ShopeeApiService.getItemDetail(
+        account.accessToken,
+        account.shopId,
+        parseInt(externalListingId),
+      );
+
+      console.log(`[SYNC] Status atual do item Shopee: ${currentItem.status}`);
+
+      // Preparar dados para atualização
+      const updateData: any = {
+        item_id: parseInt(externalListingId),
+      };
+
+      // Sempre sincronizar preço e estoque
+      updateData.price = Number(product.price);
+      updateData.stock = product.stock;
+
+      // Sincronizar título se foi alterado
+      if (product.name && product.name !== currentItem.item_name) {
+        updateData.item_name = product.name;
+      }
+
+      // Sincronizar descrição se foi alterada
+      if (
+        product.description &&
+        product.description !== currentItem.description
+      ) {
+        updateData.description = product.description;
+      }
+
+      console.log(`[SYNC] Dados a serem enviados para Shopee:`, updateData);
+
+      // Fazer a atualização
+      const updatedItem = await ShopeeApiService.updateItem(
+        account.accessToken,
+        account.shopId,
+        updateData,
+      );
+      console.log(`[SYNC] Resposta do Shopee:`, updatedItem);
+
+      result.success = true;
+      result.previousStock = currentItem.stock_info[0]?.stock_quantity ?? 0;
+      result.newStock = product.stock;
+      result.previousPrice = currentItem.price_info[0]?.current_price ?? 0;
+      result.newPrice = Number(product.price);
+
+      // Registrar log de sucesso
+      await this.logSync(
+        account.id,
+        SyncType.PRODUCT_SYNC,
+        SyncStatus.SUCCESS,
+        `Produto ${product.sku} sincronizado: preço R$ ${product.price}, estoque ${product.stock}, título "${product.name}"`,
+        {
+          productId: product.id,
+          externalListingId,
+          price: product.price,
+          stock: product.stock,
+          title: product.name,
+          description: product.description,
+          imageUrl: product.imageUrl,
+        },
+      );
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+    }
 
     return result;
   }

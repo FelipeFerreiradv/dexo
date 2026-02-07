@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { UserUseCase } from "../usecases/user.usercase";
 import { UserCreate } from "../interfaces/user.interface";
+import { SystemLogService } from "../services/system-log.service";
 
 //Create User Routes, POST/GET
 export const userRoutes = async (fastify: FastifyInstance) => {
@@ -18,6 +19,17 @@ export const userRoutes = async (fastify: FastifyInstance) => {
           email,
           password,
         });
+
+        // Registrar log de criação de usuário
+        await SystemLogService.logUserActivity(
+          data.id,
+          `Novo usuário criado: ${data.name} (${data.email})`,
+          {
+            resource: "User",
+            resourceId: data.id,
+          },
+        );
+
         return reply.status(201).send(data);
       } catch (error) {
         reply.status(500).send({

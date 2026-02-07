@@ -13,6 +13,8 @@ import { dashboardRoutes } from "../routes/dashboard.routes";
 import { orderRoutes } from "../routes/order.routes";
 import { uploadRoutes } from "../routes/upload.routes";
 import { listingRoutes } from "../routes/listing.routes";
+import { systemLogRoutes } from "../routes/system-log.routes";
+import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
 
@@ -32,6 +34,9 @@ api.register(fastifyStatic, {
   root: join(process.cwd(), "public"),
   prefix: "/",
 });
+
+// Middleware de logging - deve ser registrado antes das rotas
+api.addHook("onRequest", loggingMiddleware);
 
 api.register(userRoutes, {
   prefix: "/users",
@@ -59,6 +64,10 @@ api.register(uploadRoutes, {
 
 api.register(listingRoutes, {
   prefix: "/listings",
+});
+
+api.register(systemLogRoutes, {
+  prefix: "/system-logs",
 });
 
 try {

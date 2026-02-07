@@ -85,6 +85,25 @@ export interface ProductUpdate {
   imageUrl?: string;
 }
 
+export interface ProductUpdateResult {
+  product: Product;
+  syncResults?: {
+    totalListings: number;
+    successful: number;
+    failed: number;
+    results: Array<{
+      success: boolean;
+      productId: string;
+      externalListingId: string;
+      previousStock?: number;
+      newStock?: number;
+      previousPrice?: number;
+      newPrice?: number;
+      error?: string;
+    }>;
+  };
+}
+
 export interface ProductRepository {
   create(data: ProductCreate): Promise<Product>;
   findBySku(sku: string): Promise<Product | null>;

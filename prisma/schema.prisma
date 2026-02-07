@@ -17,6 +17,7 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   accounts      MarketplaceAccount[]
+  systemLogs    SystemLog[]
 }
 
 enum Role {
@@ -77,6 +78,7 @@ model MarketplaceAccount {
   refreshToken    String
   expiresAt       DateTime
   externalUserId  String?
+  shopId          Int?            // ID da loja no Shopee (obrigatório para Shopee)
   status          AccountStatus   @default(ACTIVE)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -178,6 +180,28 @@ enum SyncStatus {
   SUCCESS
   FAILURE
   WARNING
+}
+
+// --- Sistema de Logs do Sistema ---
+model SystemLog {
+  id          String      @id @default(cuid())
+  userId      String?     // Usuário que realizou a ação (null para ações automáticas)
+  user        User?       @relation(fields: [userId], references: [id])
+  action      String      // "LOGIN", "CREATE_PRODUCT", "CREATE_ORDER", etc.
+  resource    String?     // "Product", "Order", "User", etc.
+  resourceId  String?     // ID do recurso afetado
+  details     Json?       // Dados adicionais (antes/depois, erros, etc.)
+  ipAddress   String?     // IP do usuário
+  userAgent   String?     // User agent do navegador
+  level       LogLevel    // "INFO", "WARNING", "ERROR"
+  message     String      // Mensagem descritiva
+  createdAt   DateTime    @default(now())
+}
+
+enum LogLevel {
+  INFO
+  WARNING
+  ERROR
 }
 
 // Adicione os outros models que você tinha...

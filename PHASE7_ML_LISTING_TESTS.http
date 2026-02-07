@@ -3,7 +3,7 @@
 
 ### Variáveis
 @baseUrl = http://localhost:3333
-@ngrokUrl = https://3ce0ce0cc9f6.ngrok-free.app
+@ngrokUrl =   https://f29d-179-193-10-206.ngrok-free.app
 @userId = cml7fm1v80000vsd8x0sbzf2o
 @productId = cml8ydwhb0000vs2w7nruq0va
 @externalListingId = MLB123456789  # Substitua pelo valor retornado na criação do anúncio

@@ -57,9 +57,15 @@ export interface MLMultigetResponse {
 
 // Payload para atualizar item
 export interface MLItemUpdatePayload {
+  title?: string;
   price?: number;
   available_quantity?: number;
   status?: "active" | "paused" | "closed";
+  pictures?: Array<{
+    source: string;
+  }>;
+  category_id?: string;
+  description?: string;
 }
 
 // Payload para criar item

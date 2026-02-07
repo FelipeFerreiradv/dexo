@@ -7,6 +7,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { OrderUseCase } from "../marketplaces/usecases/order.usercase";
 import { orderRepository } from "../repositories/order.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { SystemLogService } from "../services/system-log.service";
 
 export async function orderRoutes(app: FastifyInstance) {
   // ====================================================================
@@ -41,6 +42,20 @@ export async function orderRoutes(app: FastifyInstance) {
           userId,
           days,
           deductStock,
+        );
+
+        // Registrar log de importação de pedidos
+        await SystemLogService.logSyncComplete(
+          userId,
+          "ORDER_IMPORT",
+          "MercadoLivre",
+          {
+            imported: result.imported,
+            alreadyExists: result.alreadyExists,
+            errors: result.errors,
+            days,
+            deductStock,
+          },
         );
 
         return reply.status(200).send({

@@ -17,6 +17,7 @@ export class MarketplaceRepository {
     accessToken: string;
     refreshToken: string;
     expiresAt: Date;
+    shopId?: number;
   }) {
     try {
       const account = await prisma.marketplaceAccount.create({
@@ -28,6 +29,7 @@ export class MarketplaceRepository {
           accessToken: data.accessToken,
           refreshToken: data.refreshToken,
           expiresAt: data.expiresAt,
+          shopId: data.shopId,
           status: AccountStatus.ACTIVE,
         },
       });
@@ -126,6 +128,22 @@ export class MarketplaceRepository {
       return account;
     } catch (error) {
       throw new Error(`Erro ao atualizar status: ${error}`);
+    }
+  }
+
+  /**
+   * Atualiza apenas o shopId da conta
+   */
+  static async updateShopId(id: string, shopId: number) {
+    try {
+      const account = await prisma.marketplaceAccount.update({
+        where: { id },
+        data: { shopId },
+      });
+
+      return account;
+    } catch (error) {
+      throw new Error(`Erro ao atualizar shopId: ${error}`);
     }
   }
 
