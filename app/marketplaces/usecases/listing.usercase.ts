@@ -1,16 +1,21 @@
 import { Platform } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
+import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingRepository } from "../repositories/listing.repository";
+import CategoryRepository from "../repositories/category.repository";
 import { MLItemCreatePayload } from "../types/ml-api.types";
 import { ShopeeItemCreatePayload } from "../types/shopee-api.types";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
+import { ML_CATEGORY_OPTIONS } from "../../lib/product-parser";
+import { AccountStatus } from "@prisma/client";
 
 export interface CreateListingResult {
   success: boolean;
   listingId?: string;
   externalListingId?: string;
+  permalink?: string;
   error?: string;
 }
 
@@ -137,7 +142,7 @@ export class ListingUseCase {
     categoryId?: string,
   ): Promise<CreateListingResult> {
     try {
-      const account = await MarketplaceRepository.findByUserIdAndPlatform(
+      let account = await MarketplaceRepository.findByUserIdAndPlatform(
         userId,
         Platform.MERCADO_LIVRE,
       );
@@ -147,6 +152,49 @@ export class ListingUseCase {
           success: false,
           error: "Conta do Mercado Livre não conectada ou sem credenciais",
         };
+      }
+
+      // Verificar se token expirou e tentar renovação automática (melhor experiência para o usuário)
+      const now = new Date();
+      if (account.expiresAt < now) {
+        try {
+          console.debug(
+            `[ListingUseCase] ML token expired for account ${account.id}, attempting refresh`,
+          );
+          const refreshed = await MLOAuthService.refreshAccessToken(
+            account.refreshToken,
+          );
+
+          console.debug(
+            `[ListingUseCase] ML token refresh returned, updating DB tokens`,
+          );
+          const updated = await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+          });
+
+          // usar tokens renovados
+          account = updated as any;
+          console.debug(
+            `[ListingUseCase] Account tokens updated, using accessToken=${account.accessToken}`,
+          );
+        } catch (refreshErr) {
+          // marcar conta como erro e informar usuário para reconectar
+          await MarketplaceRepository.updateStatus(
+            account.id,
+            AccountStatus.ERROR,
+          );
+          console.warn(
+            `[ListingUseCase] Failed to refresh token for account ${account.id}:`,
+            refreshErr?.message || refreshErr,
+          );
+          return {
+            success: false,
+            error:
+              "Conta do Mercado Livre expirou ou token inválido — reconecte a conta",
+          };
+        }
       }
 
       // 2. Buscar dados do produto
@@ -159,6 +207,85 @@ export class ListingUseCase {
         };
       }
 
+      // Resolve categoryId: accept a validated external ML id OR map an internal ML_CATALOG id -> externalId
+      let resolvedCategoryId: string | undefined;
+      if (categoryId) {
+        // Distinguish between a likely external ML id (alphanumeric only) and internal ML_CATALOG ids (contain hyphen or other chars).
+        const looksLikeExternalId = /^[A-Za-z0-9]+$/.test(categoryId);
+
+        if (looksLikeExternalId) {
+          // Caller provided an *external-like* id — accept only if present in DB (prevents using synthetic/internal ids stored via fallback sync)
+          let fromDb = null;
+          try {
+            fromDb = await CategoryRepository.findByExternalId(categoryId);
+          } catch (e) {
+            fromDb = null;
+          }
+
+          if (fromDb) {
+            resolvedCategoryId = categoryId; // already an external id
+          } else {
+            // Not found in DB — do not assume it's valid for ML; leave undefined to use fallback later
+            resolvedCategoryId = undefined;
+            console.warn(
+              `[ListingUseCase] Provided external-like categoryId='${categoryId}' not found in DB; will attempt resolution/fallback`,
+            );
+          }
+        } else {
+          // Treat categoryId as internal ML_CATALOG id and resolve it via ML_CATEGORY_OPTIONS -> DB fullPath lookup / on-demand sync
+          const child = ML_CATEGORY_OPTIONS.find((c) => c.id === categoryId);
+          if (child) {
+            let found = null;
+            try {
+              found = await CategoryRepository.findByFullPath(child.value);
+            } catch (e) {
+              found = null;
+            }
+
+            if (!found) {
+              try {
+                const { SyncUseCase } = await import("./sync.usercase");
+                await SyncUseCase.syncMLCategories(userId, "MLB");
+                try {
+                  found = await CategoryRepository.findByFullPath(child.value);
+                } catch (e2) {
+                  found = null;
+                }
+              } catch (syncErr) {
+                console.warn(
+                  "[ListingUseCase] on-demand ML category sync failed:",
+                  syncErr?.message || syncErr,
+                );
+              }
+            }
+
+            if (found && /^[A-Za-z0-9]+$/.test(found.externalId || "")) {
+              // Only accept DB externalId values that look like real ML external ids (alphanumeric)
+              resolvedCategoryId = found.externalId;
+            } else {
+              // If DB contains a synthetic/hyphenated 'externalId' (e.g. from static ML_CATALOG fallback), treat as unresolved
+              resolvedCategoryId = undefined;
+              console.warn(
+                `[ListingUseCase] DB mapping for '${child.value}' contains invalid externalId='${found?.externalId}'; ignoring and using fallback category for ML payload`,
+              );
+            }
+          } else {
+            // Last-resort: the caller may have provided a fullPath string — try lookup by fullPath
+            const found2 = await CategoryRepository.findByFullPath(
+              categoryId,
+            ).catch(() => null);
+            if (found2 && /^[A-Za-z0-9]+$/.test(found2.externalId || "")) {
+              resolvedCategoryId = found2.externalId;
+            } else {
+              resolvedCategoryId = undefined;
+              console.warn(
+                `[ListingUseCase] DB mapping for fullPath='${categoryId}' contains invalid externalId='${found2?.externalId}'; using fallback category for ML payload`,
+              );
+            }
+          }
+        }
+      }
+
       // 3. Preparar payload para criação do anúncio
       // Detectar moeda baseada no site da conta (temporário - TODO: implementar detecção dinâmica)
       const currencyId =
@@ -169,7 +296,7 @@ export class ListingUseCase {
 
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
-        category_id: categoryId || "MLB271107", // Usar categoria fornecida ou padrão
+        category_id: resolvedCategoryId || "MLB271107", // Usar categoria resolvida ou padrão
         price: product.price, // Usar preço real do produto
         currency_id: currencyId,
         available_quantity: Math.min(product.stock, 999999), // ML limita quantidade máxima
@@ -202,6 +329,23 @@ export class ListingUseCase {
         seller_custom_field: product.sku,
       };
 
+      // Include shipping dimensions when available (cm / kg)
+      if (
+        product.heightCm ||
+        product.widthCm ||
+        product.lengthCm ||
+        product.weightKg
+      ) {
+        payload.shipping = {
+          dimensions: {
+            height: product.heightCm ?? undefined,
+            width: product.widthCm ?? undefined,
+            length: product.lengthCm ?? undefined,
+            weight: product.weightKg ?? undefined,
+          },
+        };
+      }
+
       // Adicionar descrição se existir
       // Removido temporariamente para debug
       // if (product.description) {
@@ -230,6 +374,24 @@ export class ListingUseCase {
         JSON.stringify(mlItem, null, 2),
       );
 
+      // 4.1. Após criar o item no ML, enviar a descrição completa (se existir)
+      // usando a API de update (ML separa criação e conteúdo/description em endpoints diferentes).
+      if (product.description) {
+        try {
+          const mlDescription = this.buildMLDescription(product);
+          await MLApiService.updateItem(account.accessToken, mlItem.id, {
+            description: mlDescription,
+          });
+          console.log("[ListingUseCase] ML item description updated");
+        } catch (err) {
+          // Log e continuar — não falhar a criação do anúncio apenas por falha na descrição
+          console.error(
+            "[ListingUseCase] Failed to update ML item description:",
+            err,
+          );
+        }
+      }
+
       // 5. Criar vínculo local (ProductListing)
       const listing = await ListingRepository.createListing({
         productId,
@@ -246,6 +408,7 @@ export class ListingUseCase {
         success: true,
         listingId: listing.id,
         externalListingId: mlItem.id,
+        permalink: mlItem.permalink,
       };
     } catch (error) {
       console.error("[ListingUseCase] Error creating ML listing:", error);
