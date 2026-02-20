@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "vercel-build": "prisma generate && next build",
+    "postinstall": "prisma generate",
     "start": "next start",
     "api": "tsx watch app/api/api.ts",
     "lint": "next lint",
