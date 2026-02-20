@@ -3,6 +3,7 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import CategoryRepository from "../repositories/category.repository";
 import { MLItemCreatePayload } from "../types/ml-api.types";
@@ -365,14 +366,55 @@ export class ListingUseCase {
         `[ListingUseCase] Payload being sent:`,
         JSON.stringify(payload, null, 2),
       );
-      const mlItem = await MLApiService.createItem(
-        account.accessToken,
-        payload,
-      );
-      console.log(
-        `[ListingUseCase] ML response:`,
-        JSON.stringify(mlItem, null, 2),
-      );
+
+      // Envolver createItem para tratar erros específicos do ML (ex: seller.unable_to_list)
+      let mlItem: any;
+      try {
+        mlItem = await MLApiService.createItem(account.accessToken, payload);
+        console.log(
+          `[ListingUseCase] ML response:`,
+          JSON.stringify(mlItem, null, 2),
+        );
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+
+        // Caso conhecido: vendedor está impedido de anunciar (restrição do ML)
+        if (
+          errMsg.includes("seller.unable_to_list") ||
+          errMsg.includes("User is unable to list")
+        ) {
+          // marcar conta como ERROR para evitar novas tentativas automáticas
+          await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+
+          // registrar log do sistema com detalhes do erro ML
+          try {
+            await SystemLogService.logError(
+              "CREATE_LISTING",
+              `Falha ao criar anúncio no ML: ${errMsg}`,
+              {
+                userId,
+                resource: "MarketplaceAccount",
+                resourceId: account.id,
+                details: { mlError: errMsg },
+              },
+            );
+          } catch (logErr) {
+            console.error(
+              "[ListingUseCase] Failed to record system log for ML restriction:",
+              logErr,
+            );
+          }
+
+          return {
+            success: false,
+            error:
+              "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+          };
+        }
+
+        // Repropagar erro desconhecido para o catch externo
+        throw err;
+      }
 
       // 4.1. Após criar o item no ML, enviar a descrição completa (se existir)
       // usando a API de update (ML separa criação e conteúdo/description em endpoints diferentes).
