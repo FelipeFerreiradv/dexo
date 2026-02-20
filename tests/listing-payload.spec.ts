@@ -58,6 +58,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
       .spyOn(MarketplaceRepository, "findByUserIdAndPlatform")
       .mockResolvedValue(mockAccount as any);
 
+    // Default: pre-check should succeed unless overridden by a specific test
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({ id: 123, nickname: "seller" } as any);
+    vi.spyOn(MLApiService, "getSellerItemIds").mockResolvedValue([] as any);
+
     vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue(
       mockProduct as any,
     );
@@ -322,6 +326,47 @@ describe("ListingUseCase → ML payload with measurements", () => {
     expect(logSpy).toHaveBeenCalled();
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/restri[cç]ão|impossibilitado|Seller Center|restrictions_coliving/i);
+  });
+
+  it("pre-check detects seller restriction before createItem", async () => {
+    // ensure getUserInfo returns a seller id
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({ id: 123, nickname: "seller" } as any);
+
+    // simulate ML indicating seller is unable to list during capability check
+    vi.spyOn(MLApiService, "getSellerItemIds").mockRejectedValue(new Error('{"message":"seller.unable_to_list","error":"User is unable to list.","status":403}') );
+
+    const updateStatusSpy = vi.spyOn(MarketplaceRepository, "updateStatus").mockResolvedValue({} as any);
+    const logSpy = vi.spyOn((await import("../app/services/system-log.service")).SystemLogService, "logError").mockResolvedValue(undefined as any);
+
+    const createSpy = vi.spyOn(MLApiService, "createItem");
+
+    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+
+    expect(updateStatusSpy).toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalled();
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/restri[cç]ão|impossibilitado|restrictions_coliving/i);
+  });
+
+  it("returns error when product has no image", async () => {
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+      id: "prod-1",
+      sku: "SKU-1",
+      name: "Calota Exemplo",
+      description: "Descrição da calota",
+      price: 100,
+      stock: 5,
+      imageUrl: undefined,
+    } as any);
+
+    const createSpy = vi.spyOn(MLApiService, "createItem");
+
+    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/imagem/i);
   });
 
   it("refreshes expired ML token before creating listing", async () => {

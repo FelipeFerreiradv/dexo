@@ -198,6 +198,65 @@ export class ListingUseCase {
         }
       }
 
+      // Pre-check: validar que o seller pode criar anúncios (detectar restrições antes de montar payload)
+      try {
+        const mlUserInfo = await MLOAuthService.getUserInfo(account.accessToken);
+        const sellerId = mlUserInfo?.id?.toString();
+        if (sellerId) {
+          try {
+            // chamada leve para confirmar capacidade de listar (pede 1 id apenas)
+            await MLApiService.getSellerItemIds(account.accessToken, sellerId, "active", 1);
+          } catch (preErr: any) {
+            const preMsg = preErr instanceof Error ? preErr.message : String(preErr);
+            if (
+              preMsg.includes("seller.unable_to_list") ||
+              preMsg.includes("User is unable to list")
+            ) {
+              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+              await SystemLogService.logError(
+                "CREATE_LISTING",
+                `Pre-check: vendedor bloqueado no ML: ${preMsg}`,
+                {
+                  userId,
+                  resource: "MarketplaceAccount",
+                  resourceId: account.id,
+                  details: { mlError: preMsg },
+                },
+              );
+
+              return {
+                success: false,
+                error:
+                  "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+              };
+            }
+
+            if (
+              preMsg.toLowerCase().includes("unauthorized") ||
+              preMsg.toLowerCase().includes("invalid access token")
+            ) {
+              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+              return {
+                success: false,
+                error: "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+              };
+            }
+
+            console.warn("[ListingUseCase] ML pre-check warning:", preMsg);
+          }
+        }
+      } catch (infoErr: any) {
+        const msg = infoErr instanceof Error ? infoErr.message : String(infoErr);
+        if (msg.toLowerCase().includes("unauthorized") || msg.toLowerCase().includes("invalid access token")) {
+          await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+          return {
+            success: false,
+            error: "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+          };
+        }
+        console.warn("[ListingUseCase] getUserInfo pre-check failed, continuing:", msg);
+      }
+
       // 2. Buscar dados do produto
       const product =
         await ListingUseCase.productRepository.findById(productId);
@@ -205,6 +264,14 @@ export class ListingUseCase {
         return {
           success: false,
           error: "Produto não encontrado",
+        };
+      }
+
+      // Validar pré-requisitos do produto antes de enviar ao ML (ex.: imagem obrigatória)
+      if (!product.imageUrl) {
+        return {
+          success: false,
+          error: "Produto precisa ter imagem para criar anúncio no Mercado Livre",
         };
       }
 

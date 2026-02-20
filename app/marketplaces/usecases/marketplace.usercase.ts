@@ -1,6 +1,8 @@
 import { MLOAuthService } from "../services/ml-oauth.service";
+import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { SystemLogService } from "../../services/system-log.service";
 import { Platform, AccountStatus } from "@prisma/client";
 
 /**
@@ -155,6 +157,44 @@ export class MarketplaceUseCase {
             message: "Token expirado. Reconecte sua conta.",
           };
         }
+      }
+
+      // Capability check: detectar restrições do seller (ex.: seller.unable_to_list)
+      try {
+        const userInfo = await MLOAuthService.getUserInfo(account.accessToken);
+        const sellerId = userInfo?.id?.toString();
+        if (sellerId) {
+          try {
+            await MLApiService.getSellerItemIds(account.accessToken, sellerId, "active", 1);
+          } catch (capErr: any) {
+            const capMsg = capErr instanceof Error ? capErr.message : String(capErr);
+            if (capMsg.includes("seller.unable_to_list") || capMsg.includes("User is unable to list")) {
+              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+              await SystemLogService.logError(
+                "CREATE_LISTING",
+                `Capability check failed: ${capMsg}`,
+                { userId, resource: "MarketplaceAccount", resourceId: account.id, details: { mlError: capMsg } },
+              );
+
+              return {
+                connected: false,
+                account,
+                message: "Conta do Mercado Livre com restrição. Reconecte.",
+              };
+            }
+
+            if (capMsg.toLowerCase().includes("unauthorized") || capMsg.toLowerCase().includes("invalid access token")) {
+              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+              return {
+                connected: false,
+                account,
+                message: "Token expirado. Reconecte sua conta.",
+              };
+            }
+          }
+        }
+      } catch (capCheckErr) {
+        console.warn("[MarketplaceUseCase] capability check failed:", capCheckErr);
       }
 
       return {
