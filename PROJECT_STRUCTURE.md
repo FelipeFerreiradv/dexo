@@ -106,7 +106,6 @@ ghd-plataform/
 ├─ node_modules/
 ├─ package-lock.json
 ├─ package.json
-├─ pnpm-lock.yaml
 ├─ postcss.config.mjs
 ├─ prisma/
 │ ├─ app/

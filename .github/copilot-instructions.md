@@ -8,8 +8,8 @@ Sistema de Gestão de Estoque Centralizado (Centralized Inventory Management Sys
 
 ### Two Separate Servers
 
-1. **Next.js App** (`pnpm dev` → port 3000): Frontend + NextAuth authentication
-2. **Fastify API** (`pnpm api` → port 3333): Backend REST API for business logic
+1. **Next.js App** (`npm run dev` → port 3000): Frontend + NextAuth authentication
+2. **Fastify API** (`npm run api` → port 3333): Backend REST API for business logic
 
 ### Layer Structure (Clean Architecture in `/app`)
 
@@ -83,11 +83,11 @@ marketplaces/
 ## Development Commands
 
 ```bash
-pnpm dev          # Next.js frontend (port 3000)
-pnpm api          # Fastify backend (port 3333) - uses tsx watch
-pnpm build        # Production build
-pnpm lint         # ESLint
-pnpm lint:prettier:fix  # Format code
+npm run dev          # Next.js frontend (port 3000)
+npm run api          # Fastify backend (port 3333) - uses tsx watch
+npm run build        # Production build
+npm run lint         # ESLint
+npm run lint:prettier:fix  # Format code
 ```
 
 ### Database
