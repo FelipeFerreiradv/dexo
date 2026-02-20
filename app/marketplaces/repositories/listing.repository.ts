@@ -15,6 +15,13 @@ export class ListingRepository {
     externalSku?: string;
     permalink?: string;
     status: string;
+    // optional retry metadata
+    retryAttempts?: number;
+    nextRetryAt?: Date | null;
+    lastError?: string | null;
+    retryEnabled?: boolean;
+    // category that was requested when attempting the ML create (useful for retries)
+    requestedCategoryId?: string | null;
   }) {
     try {
       const listing = await prisma.productListing.create({
@@ -25,6 +32,11 @@ export class ListingRepository {
           externalSku: data.externalSku || null,
           permalink: data.permalink || null,
           status: data.status,
+          retryAttempts: data.retryAttempts ?? 0,
+          nextRetryAt: data.nextRetryAt ?? null,
+          lastError: data.lastError ?? null,
+          retryEnabled: data.retryEnabled ?? false,
+          requestedCategoryId: data.requestedCategoryId ?? null,
         },
       });
       return listing;
@@ -88,6 +100,51 @@ export class ListingRepository {
   }
 
   /**
+   * Encontra placeholders pendentes para retry (externals que começam com PENDING_)
+   * ou listings marcados com retryEnabled=true e nextRetryAt <= now
+   */
+  static async findPendingRetries(cutoff: Date, limit = 100) {
+    return prisma.productListing.findMany({
+      where: {
+        AND: [
+          {
+            OR: [
+              { externalListingId: { startsWith: "PENDING_" } },
+              { retryEnabled: true },
+            ],
+          },
+          {
+            OR: [{ nextRetryAt: { lte: cutoff } }, { nextRetryAt: null }],
+          },
+        ],
+      },
+      include: { product: true, marketplaceAccount: true },
+      orderBy: { updatedAt: "asc" },
+      take: limit,
+    });
+  }
+
+  static async incrementRetryAttempts(
+    listingId: string,
+    data: {
+      lastError?: string | null;
+      nextRetryAt?: Date | null;
+      retryEnabled?: boolean;
+    },
+  ) {
+    return prisma.productListing.update({
+      where: { id: listingId },
+      data: {
+        retryAttempts: { increment: 1 },
+        lastError: data.lastError ?? undefined,
+        nextRetryAt:
+          data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
+        retryEnabled: data.retryEnabled ?? undefined,
+      },
+    });
+  }
+
+  /**
    * Lista todos os listings de um produto
    */
   static async findAllByProduct(productId: string) {
@@ -118,6 +175,45 @@ export class ListingRepository {
     return prisma.productListing.update({
       where: { id: listingId },
       data: { externalSku },
+    });
+  }
+
+  /**
+   * Atualiza campos principais de um listing quando o item for publicado no ML
+   */
+  static async updateListing(
+    listingId: string,
+    data: {
+      externalListingId?: string;
+      externalSku?: string;
+      permalink?: string | null;
+      status?: string;
+      // retry metadata updates
+      retryAttempts?: number;
+      nextRetryAt?: Date | null;
+      lastError?: string | null;
+      retryEnabled?: boolean;
+      // optionally update requestedCategoryId
+      requestedCategoryId?: string | null;
+    },
+  ) {
+    return prisma.productListing.update({
+      where: { id: listingId },
+      data: {
+        externalListingId: data.externalListingId || undefined,
+        externalSku: data.externalSku || undefined,
+        permalink: data.permalink === undefined ? undefined : data.permalink,
+        status: data.status || undefined,
+        retryAttempts: data.retryAttempts ?? undefined,
+        nextRetryAt:
+          data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
+        lastError: data.lastError === undefined ? undefined : data.lastError,
+        retryEnabled: data.retryEnabled ?? undefined,
+        requestedCategoryId:
+          data.requestedCategoryId === undefined
+            ? undefined
+            : data.requestedCategoryId,
+      },
     });
   }
 

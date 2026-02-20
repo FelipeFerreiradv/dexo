@@ -1,4 +1,9 @@
-import { User, UserCreate, UserRepository } from "../interfaces/user.interface";
+import {
+  User,
+  UserCreate,
+  UserRepository,
+  UserUpdate,
+} from "../interfaces/user.interface";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
 
 export class UserUseCase {
@@ -7,12 +12,22 @@ export class UserUseCase {
     this.userRepository = new UserRepositoryPrisma();
   }
 
-  async create({ name, email, password }: UserCreate): Promise<User> {
+  async create({
+    name,
+    email,
+    password,
+    defaultProductDescription,
+  }: UserCreate): Promise<User> {
     const verifyUserExists = await this.userRepository.findByEmail(email);
     if (verifyUserExists) {
       throw new Error("User already exists");
     }
-    const user = await this.userRepository.create({ name, email, password });
+    const user = await this.userRepository.create({
+      name,
+      email,
+      password,
+      defaultProductDescription,
+    });
     return user;
   }
 
@@ -23,6 +38,11 @@ export class UserUseCase {
     } else if (user.password !== password) {
       throw new Error("Invalid password");
     }
+    return user;
+  }
+
+  async updateSettings(id: string, data: UserUpdate): Promise<User> {
+    const user = await this.userRepository.update(id, data);
     return user;
   }
 }

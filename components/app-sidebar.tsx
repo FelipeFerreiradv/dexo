@@ -102,7 +102,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
             <Package className="size-4" />
           </div>
           <span className="font-semibold text-sm group-data-[collapsible=icon]:hidden">
-            Nexos Company
+            Dexo Company
           </span>
         </div>
       </SidebarHeader>

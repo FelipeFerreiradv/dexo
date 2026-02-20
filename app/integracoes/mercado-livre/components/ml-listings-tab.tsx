@@ -211,19 +211,38 @@ export function MLListingsTab() {
                     </TableCell>
                     <TableCell>{getStatusBadge(listing.status)}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" asChild>
-                        <a
-                          href={
-                            listing.permalink ||
-                            `https://produto.mercadolivre.com.br/${listing.externalListingId}`
-                          }
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                          <span className="sr-only">Ver no ML</span>
-                        </a>
-                      </Button>
+                      {(() => {
+                        const isPlaceholder =
+                          !listing.permalink ||
+                          (listing.externalListingId || "").startsWith(
+                            "PENDING_",
+                          );
+
+                        if (isPlaceholder) {
+                          return (
+                            <Button variant="ghost" size="sm" disabled>
+                              <AlertCircle className="h-4 w-4 text-muted-foreground/70" />
+                              <span className="sr-only">Anúncio pausado</span>
+                            </Button>
+                          );
+                        }
+
+                        return (
+                          <Button variant="ghost" size="sm" asChild>
+                            <a
+                              href={
+                                listing.permalink ||
+                                `https://produto.mercadolivre.com.br/${listing.externalListingId}`
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              <span className="sr-only">Ver no ML</span>
+                            </a>
+                          </Button>
+                        );
+                      })()}
                     </TableCell>
                   </TableRow>
                 ))}

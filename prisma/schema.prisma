@@ -14,6 +14,7 @@ model User {
   email         String    @unique
   password      String
   role          Role      @default(USER)
+  defaultProductDescription String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   accounts      MarketplaceAccount[]
@@ -44,12 +45,20 @@ model Product {
   year            String?        // Ano compatível (ex: "2018-2022")
   version         String?        // Versão do veículo
   category        String?        // Categoria da peça
+  mlCategoryId    String?        // FK para categoria do Mercado Livre (MarketplaceCategory.id)
+  mlCategory      MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
   location        String?        // Localização no estoque
   partNumber      String?        // Part Number (OEM)
   quality         Quality?       // Qualidade da peça
   isSecurityItem  Boolean        @default(false) // Item de segurança
   isTraceable     Boolean        @default(false) // Item rastreável
   sourceVehicle   String?        // Veículo de origem (para sucata)
+
+  // --- Medidas / Peso (nova funcionalidade) ---
+  heightCm        Int?           // Altura em centímetros
+  widthCm         Int?           // Largura em centímetros
+  lengthCm        Int?           // Comprimento em centímetros
+  weightKg        Decimal?       @db.Decimal(6, 2) // Peso em quilogramas (2 casas decimais)
 
   // --- Imagem do Produto ---
   imageUrl        String?        // URL da imagem principal
@@ -108,10 +117,37 @@ model ProductListing {
   externalSku          String?
   permalink            String?
   status               String
+
+  // Retry metadata for placeholder listings (persistent retry state)
+  retryAttempts        Int                @default(0)
+  nextRetryAt          DateTime?
+  lastError            String?
+  retryEnabled         Boolean            @default(false)
+
+  // Category requested when the listing was attempted (useful for retrying placeholders)
+  requestedCategoryId  String?
+
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   @@unique([marketplaceAccountId, externalListingId])
 }
+
+// Tabela com categorias do Marketplace (ex: Mercado Livre)
+model MarketplaceCategory {
+  id               String   @id @default(cuid())
+  externalId       String   @unique
+  siteId           String
+  name             String
+  fullPath         String
+  pathFromRoot     Json
+  parentExternalId String?
+  keywords         String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  products Product[] @relation("ProductMlCategory")
+}
+
 
 // --- Gestão de Pedidos ---
 model Order {

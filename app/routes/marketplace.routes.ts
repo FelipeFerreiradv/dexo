@@ -4,10 +4,12 @@ import { SyncUseCase } from "../marketplaces/usecases/sync.usercase";
 import { WebhookUseCase } from "../marketplaces/usecases/webhook.usercase";
 import { ListingRepository } from "../marketplaces/repositories/listing.repository";
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
+import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { Platform } from "@prisma/client";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
+import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 
 /**
  * Rotas para gerenciar conexões com marketplaces
@@ -107,6 +109,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       connected: boolean;
       platform: string;
       status?: string;
+      restricted?: boolean;
       message: string;
     };
   }>(
@@ -127,6 +130,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           connected: statusData.connected,
           platform: Platform.MERCADO_LIVRE,
           status: statusData.account?.status,
+          restricted: (statusData as any).restricted || false,
           message: statusData.message,
         });
       } catch (error) {
@@ -288,6 +292,93 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sincronizar estoque",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/ml/retry-pending
+   * Força execução do worker que re-tenta publicar placeholders pendentes
+   */
+  app.post(
+    "/ml/retry-pending",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        // run worker once immediately (non-blocking to client)
+        void ListingRetryService.runOnce();
+        await SystemLogService.log(
+          userId,
+          "RETRY_LISTINGS_TRIGGER",
+          "User triggered retry for pending ML placeholders",
+        );
+        return reply
+          .status(202)
+          .send({ success: true, message: "Retry iniciado" });
+      } catch (err) {
+        return reply
+          .status(500)
+          .send({
+            error: "Erro ao iniciar retry",
+            message: err instanceof Error ? err.message : String(err),
+          });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/ml/sync-categories
+   * Sincroniza categorias do Mercado Livre (busca via API e grava no DB)
+   */
+  app.post<{
+    Reply: { success: boolean; categoriesSynced?: number; message?: string };
+  }>(
+    "/ml/sync-categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const res = await SyncUseCase.syncMLCategories(userId, "MLB");
+        return reply.send({ success: true, categoriesSynced: res.categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar categorias",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/categories
+   * Lista categorias ML já sincronizadas (id = externalId, value = fullPath)
+   */
+  app.get<{
+    Reply: { categories: Array<{ id: string; value: string }> };
+  }>(
+    "/ml/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const data = await CategoryRepository.listFlattenedOptions("MLB");
+        // Only expose externalIds that look like real ML external IDs (alphanumeric);
+        // ignore synthetic/fallback ids (e.g. ids from static ML_CATALOG with hyphens).
+        // Expose both ML external IDs and synthetic/fallback ids that may
+        // contain hyphens (e.g. from the static `ML_CATALOG` children).
+        // We only exclude obviously malformed ids (empty/null).
+        const categories = data
+          .filter(
+            (c) =>
+              typeof c.externalId === "string" && c.externalId.trim() !== "",
+          )
+          .map((c) => ({ id: c.externalId, value: c.fullPath }));
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

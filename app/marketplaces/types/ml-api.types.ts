@@ -87,4 +87,15 @@ export interface MLItemCreatePayload {
     value_id?: string;
     value_name?: string;
   }>;
+
+  // Optional shipping/package dimensions (cms / kg) — forwarded to ML when set
+  shipping?: {
+    mode?: string;
+    dimensions?: {
+      height?: number; // cm
+      width?: number; // cm
+      length?: number; // cm
+      weight?: number; // kg
+    };
+  };
 }

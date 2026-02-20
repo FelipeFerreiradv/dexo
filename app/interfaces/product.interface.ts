@@ -26,6 +26,12 @@ export interface Product {
   isTraceable?: boolean;
   sourceVehicle?: string;
 
+  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
+  heightCm?: number; // altura em centímetros
+  widthCm?: number; // largura em centímetros
+  lengthCm?: number; // comprimento em centímetros
+  weightKg?: number; // peso em quilogramas
+
   // Imagem do produto
   imageUrl?: string;
 }
@@ -36,6 +42,7 @@ export interface ProductCreate {
   description?: string;
   stock: number;
   price: number;
+  userId: string; // Adicionado para buscar descrição padrão do usuário
 
   // Campos de autopeças (opcionais)
   costPrice?: number;
@@ -51,6 +58,12 @@ export interface ProductCreate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+
+  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
+  heightCm?: number;
+  widthCm?: number;
+  lengthCm?: number;
+  weightKg?: number;
 
   // Imagem do produto (obrigatória)
   imageUrl: string;
@@ -80,6 +93,12 @@ export interface ProductUpdate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+
+  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
+  heightCm?: number;
+  widthCm?: number;
+  lengthCm?: number;
+  weightKg?: number;
 
   // Imagem do produto
   imageUrl?: string;

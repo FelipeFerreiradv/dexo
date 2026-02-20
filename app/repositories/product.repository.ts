@@ -33,6 +33,13 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     isSecurityItem: item.isSecurityItem ?? undefined,
     isTraceable: item.isTraceable ?? undefined,
     sourceVehicle: item.sourceVehicle ?? undefined,
+
+    // Medidas / peso
+    heightCm: item.heightCm ?? undefined,
+    widthCm: item.widthCm ?? undefined,
+    lengthCm: item.lengthCm ?? undefined,
+    weightKg: item.weightKg?.toNumber() ?? undefined,
+
     // Imagem do produto
     imageUrl: item.imageUrl ?? undefined,
   };
@@ -62,14 +69,27 @@ class ProductRepositoryPrisma implements ProductRepository {
           isSecurityItem: data.isSecurityItem ?? false,
           isTraceable: data.isTraceable ?? false,
           sourceVehicle: data.sourceVehicle ?? null,
+
+          // Medidas / peso
+          heightCm: data.heightCm ?? null,
+          widthCm: data.widthCm ?? null,
+          lengthCm: data.lengthCm ?? null,
+          weightKg: data.weightKg ?? null,
+
           // Imagem do produto
           imageUrl: data.imageUrl,
         },
       });
 
       return mapPrismaToProduct(result);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Erro Prisma ao criar produto:", error);
+
+      // Prisma unique constraint (sku) -> normalize message
+      if (error?.code === "P2002" && error?.meta?.target?.includes("sku")) {
+        throw new Error("Produto com esse sku já existe");
+      }
+
       throw new Error(
         error instanceof Error ? error.message : "Erro ao criar produto",
       );
@@ -203,6 +223,13 @@ class ProductRepositoryPrisma implements ProductRepository {
           ...(data.sourceVehicle !== undefined && {
             sourceVehicle: data.sourceVehicle,
           }),
+
+          // Medidas / peso
+          ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
+          ...(data.widthCm !== undefined && { widthCm: data.widthCm }),
+          ...(data.lengthCm !== undefined && { lengthCm: data.lengthCm }),
+          ...(data.weightKg !== undefined && { weightKg: data.weightKg }),
+
           // Imagem do produto
           ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
         },

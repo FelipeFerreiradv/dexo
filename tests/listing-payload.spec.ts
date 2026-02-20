@@ -59,7 +59,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
       .mockResolvedValue(mockAccount as any);
 
     // Default: pre-check should succeed unless overridden by a specific test
-    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({ id: 123, nickname: "seller" } as any);
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      id: 123,
+      nickname: "seller",
+    } as any);
     vi.spyOn(MLApiService, "getSellerItemIds").mockResolvedValue([] as any);
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue(
@@ -111,12 +114,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
   });
 
   it("resolves internal ML child id (MLB1765-01) to external category id before sending to ML API (on-demand sync when DB missing)", async () => {
-    const createSpy = vi
-      .spyOn(MLApiService, "createItem")
-      .mockResolvedValue({
-        id: "MLB555",
-        permalink: "https://ml.ai/item/MLB555",
-      } as any);
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB555",
+      permalink: "https://ml.ai/item/MLB555",
+    } as any);
 
     // Simulate DB missing mapping initially, then being available after a sync.
     const categoryRepo =
@@ -166,12 +167,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
   });
 
   it("falls back to default ML category when internal child id cannot be resolved", async () => {
-    const createSpy = vi
-      .spyOn(MLApiService, "createItem")
-      .mockResolvedValue({
-        id: "MLB999",
-        permalink: "https://ml.ai/item/MLB999",
-      } as any);
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB999",
+      permalink: "https://ml.ai/item/MLB999",
+    } as any);
 
     // Ensure DB has no mapping and on-demand sync doesn't populate it
     const categoryRepo =
@@ -208,12 +207,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
   });
 
   it("does not accept hyphenated/internal-looking categoryId as an external id (prevents sending synthetic IDs to ML)", async () => {
-    const createSpy = vi
-      .spyOn(MLApiService, "createItem")
-      .mockResolvedValue({
-        id: "MLB999",
-        permalink: "https://ml.ai/item/MLB999",
-      } as any);
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB999",
+      permalink: "https://ml.ai/item/MLB999",
+    } as any);
 
     // Simulate DB incorrectly containing a hyphenated 'externalId' (from fallback sync)
     const categoryRepo =
@@ -256,12 +253,10 @@ describe("ListingUseCase → ML payload with measurements", () => {
   });
 
   it("ignores DB mapping whose externalId looks synthetic/hyphenated when resolving by fullPath", async () => {
-    const createSpy = vi
-      .spyOn(MLApiService, "createItem")
-      .mockResolvedValue({
-        id: "MLB999",
-        permalink: "https://ml.ai/item/MLB999",
-      } as any);
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB999",
+      permalink: "https://ml.ai/item/MLB999",
+    } as any);
 
     // Simulate CategoryRepository.findByFullPath returning a record but with a hyphenated externalId (invalid for ML)
     const categoryRepo =
@@ -300,7 +295,7 @@ describe("ListingUseCase → ML payload with measurements", () => {
 
   it("returns error and marks account when ML returns seller.unable_to_list", async () => {
     const err = new Error(
-      'Erro ao criar item: {"message":"seller.unable_to_list","error":"User is unable to list.","status":403,"cause":["restrictions_coliving"]}'
+      'Erro ao criar item: {"message":"seller.unable_to_list","error":"User is unable to list.","status":403,"cause":["restrictions_coliving"]}',
     );
 
     vi.spyOn(MLApiService, "createItem").mockRejectedValue(err);
@@ -322,35 +317,93 @@ describe("ListingUseCase → ML payload with measurements", () => {
       "MLB271107",
     );
 
-    expect(updateStatusSpy).toHaveBeenCalled();
+    // must NOT mark the account as ERROR for seller.unable_to_list (policy restriction)
+    expect(updateStatusSpy).not.toHaveBeenCalledWith(
+      expect.any(String),
+      "ERROR",
+    );
     expect(logSpy).toHaveBeenCalled();
     expect(res.success).toBe(false);
-    expect(res.error).toMatch(/restri[cç]ão|impossibilitado|Seller Center|restrictions_coliving/i);
-  });
+    expect(res.error).toMatch(
+      /restri[cç]ão|impossibilitado|Seller Center|restrictions_coliving/i,
+    );
+  }, 15000);
 
   it("pre-check detects seller restriction before createItem", async () => {
     // ensure getUserInfo returns a seller id
-    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({ id: 123, nickname: "seller" } as any);
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      id: 123,
+      nickname: "seller",
+    } as any);
 
     // simulate ML indicating seller is unable to list during capability check
-    vi.spyOn(MLApiService, "getSellerItemIds").mockRejectedValue(new Error('{"message":"seller.unable_to_list","error":"User is unable to list.","status":403}') );
+    vi.spyOn(MLApiService, "getSellerItemIds").mockRejectedValue(
+      new Error(
+        '{"message":"seller.unable_to_list","error":"User is unable to list.","status":403}',
+      ),
+    );
 
-    const updateStatusSpy = vi.spyOn(MarketplaceRepository, "updateStatus").mockResolvedValue({} as any);
-    const logSpy = vi.spyOn((await import("../app/services/system-log.service")).SystemLogService, "logError").mockResolvedValue(undefined as any);
+    const updateStatusSpy = vi
+      .spyOn(MarketplaceRepository, "updateStatus")
+      .mockResolvedValue({} as any);
+    const logSpy = vi
+      .spyOn(
+        (await import("../app/services/system-log.service")).SystemLogService,
+        "logError",
+      )
+      .mockResolvedValue(undefined as any);
 
     const createSpy = vi.spyOn(MLApiService, "createItem");
 
-    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
 
-    expect(updateStatusSpy).toHaveBeenCalled();
+    expect(updateStatusSpy).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalled();
     expect(createSpy).not.toHaveBeenCalled();
     expect(res.success).toBe(false);
-    expect(res.error).toMatch(/restri[cç]ão|impossibilitado|restrictions_coliving/i);
+    expect(res.error).toMatch(
+      /restri[cç]ão|impossibilitado|restrictions_coliving/i,
+    );
+  }, 15000);
+
+  it("pre-check transient seller restriction recovers on retry and proceeds to create", async () => {
+    // simulate transient failure on first capability check, success on retry
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      id: 123,
+    } as any);
+    const getSellerSpy = vi
+      .spyOn(MLApiService, "getSellerItemIds")
+      .mockRejectedValueOnce(
+        new Error('{"message":"seller.unable_to_list","status":403}'),
+      )
+      .mockResolvedValueOnce([] as any);
+
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB-TRANSIENT",
+      permalink: "https://ml.ai/item/MLB-TRANSIENT",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(getSellerSpy).toHaveBeenCalled();
+    expect(createSpy).toHaveBeenCalled();
+    expect(res.success).toBe(true);
+    expect(res.externalListingId).toBe("MLB-TRANSIENT");
   });
 
   it("returns error when product has no image", async () => {
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+    vi.spyOn(
+      ProductRepositoryPrisma.prototype,
+      "findById",
+    ).mockResolvedValueOnce({
       id: "prod-1",
       sku: "SKU-1",
       name: "Calota Exemplo",
@@ -362,7 +415,11 @@ describe("ListingUseCase → ML payload with measurements", () => {
 
     const createSpy = vi.spyOn(MLApiService, "createItem");
 
-    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
 
     expect(createSpy).not.toHaveBeenCalled();
     expect(res.success).toBe(false);
@@ -379,18 +436,41 @@ describe("ListingUseCase → ML payload with measurements", () => {
       expiresAt: new Date(Date.now() - 1000),
     } as any;
 
-    vi.spyOn(MarketplaceRepository, "findByUserIdAndPlatform").mockResolvedValueOnce(expiredAccount as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findByUserIdAndPlatform",
+    ).mockResolvedValueOnce(expiredAccount as any);
 
     // Mock refresh to return new tokens
-    const refreshSpy = vi.spyOn(MLOAuthService, "refreshAccessToken").mockResolvedValue({ accessToken: "fresh-token", refreshToken: "rt-new", expiresIn: 3600 } as any);
+    const refreshSpy = vi
+      .spyOn(MLOAuthService, "refreshAccessToken")
+      .mockResolvedValue({
+        accessToken: "fresh-token",
+        refreshToken: "rt-new",
+        expiresIn: 3600,
+      } as any);
 
     // Ensure updateTokens writes the refreshed token back
-    const updatedAccount = { ...expiredAccount, accessToken: "fresh-token", refreshToken: "rt-new", expiresAt: new Date(Date.now() + 3600 * 1000) } as any;
-    const updateTokensSpy = vi.spyOn(MarketplaceRepository, "updateTokens").mockResolvedValueOnce(updatedAccount as any);
+    const updatedAccount = {
+      ...expiredAccount,
+      accessToken: "fresh-token",
+      refreshToken: "rt-new",
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+    } as any;
+    const updateTokensSpy = vi
+      .spyOn(MarketplaceRepository, "updateTokens")
+      .mockResolvedValueOnce(updatedAccount as any);
 
-    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({ id: "MLB321", permalink: "https://ml.ai/item/MLB321" } as any);
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB321",
+      permalink: "https://ml.ai/item/MLB321",
+    } as any);
 
-    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
 
     console.log("TEST-DEBUG res=>", res);
 
@@ -398,6 +478,77 @@ describe("ListingUseCase → ML payload with measurements", () => {
     expect(updateTokensSpy).toHaveBeenCalled();
     expect(createSpy).toHaveBeenCalledWith("fresh-token", expect.any(Object));
     expect(res.success).toBe(true);
+  });
+
+  it("reactivates INACTIVE account when capability re-check succeeds", async () => {
+    const inactiveAccount = {
+      id: "acct-inactive",
+      accessToken: "ok-token",
+      refreshToken: "rt-ok",
+      accountName: "MLB",
+      expiresAt: new Date(Date.now() + 3600 * 1000),
+      status: "INACTIVE",
+    } as any;
+
+    vi.spyOn(
+      MarketplaceRepository,
+      "findByUserIdAndPlatform",
+    ).mockResolvedValueOnce(inactiveAccount as any);
+
+    // capability check succeeds
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      id: 123,
+    } as any);
+    vi.spyOn(MLApiService, "getSellerItemIds").mockResolvedValue([] as any);
+
+    const updateStatusSpy = vi
+      .spyOn(MarketplaceRepository, "updateStatus")
+      .mockResolvedValue({ ...inactiveAccount, status: "ACTIVE" } as any);
+
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB777",
+      permalink: "https://ml.ai/item/MLB777",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(updateStatusSpy).toHaveBeenCalledWith("acct-inactive", "ACTIVE");
+    expect(createSpy).toHaveBeenCalled();
+    expect(res.success).toBe(true);
+  });
+
+  it("retries on seller.unable_to_list from createItem and succeeds on retry", async () => {
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      id: 123,
+    } as any);
+
+    // First createItem call fails with seller.unable_to_list, second succeeds
+    const createSpy = vi
+      .spyOn(MLApiService, "createItem")
+      .mockRejectedValueOnce(
+        new Error('{"message":"seller.unable_to_list","status":403}'),
+      )
+      .mockResolvedValueOnce({
+        id: "MLB-Retry",
+        permalink: "https://ml.ai/item/MLB-Retry",
+      } as any);
+
+    // getSellerItemIds used for quick re-check should succeed
+    vi.spyOn(MLApiService, "getSellerItemIds").mockResolvedValue([] as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(res.success).toBe(true);
+    expect(res.externalListingId).toBe("MLB-Retry");
   });
 
   it("returns error when ML token expired and refresh fails", async () => {
@@ -409,15 +560,26 @@ describe("ListingUseCase → ML payload with measurements", () => {
       expiresAt: new Date(Date.now() - 1000),
     } as any;
 
-    vi.spyOn(MarketplaceRepository, "findByUserIdAndPlatform").mockResolvedValueOnce(expiredAccount as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findByUserIdAndPlatform",
+    ).mockResolvedValueOnce(expiredAccount as any);
 
     // Fail refresh
-    vi.spyOn(MLOAuthService, "refreshAccessToken").mockRejectedValue(new Error("refresh failed"));
-    const updateStatusSpy = vi.spyOn(MarketplaceRepository, "updateStatus").mockResolvedValue({} as any);
+    vi.spyOn(MLOAuthService, "refreshAccessToken").mockRejectedValue(
+      new Error("refresh failed"),
+    );
+    const updateStatusSpy = vi
+      .spyOn(MarketplaceRepository, "updateStatus")
+      .mockResolvedValue({} as any);
 
     const createSpy = vi.spyOn(MLApiService, "createItem");
 
-    const res = await ListingUseCase.createMLListing("user-1", "prod-1", "MLB271107");
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
 
     expect(updateStatusSpy).toHaveBeenCalled();
     expect(createSpy).not.toHaveBeenCalled();

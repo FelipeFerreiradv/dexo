@@ -138,6 +138,30 @@ export function MLSyncTab() {
     }
   }, [session?.user?.email]);
 
+  // Forçar retry imediato de placeholders pendentes
+  const handleRetryPending = useCallback(async () => {
+    if (!session?.user?.email) return;
+    setError(null);
+
+    try {
+      const res = await fetch(
+        "http://localhost:3333/marketplace/ml/retry-pending",
+        {
+          method: "POST",
+          headers: { email: session.user.email },
+        },
+      );
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.message || "Erro ao iniciar retry");
+      }
+      // not much to show immediately — background worker will run
+      setSyncResult((s) => s ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao iniciar retry");
+    }
+  }, [session?.user?.email]);
+
   return (
     <div className="space-y-4">
       {error && (
@@ -159,19 +183,26 @@ export function MLSyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button onClick={handleImport} disabled={isImporting}>
-            {isImporting ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Importando...
-              </>
-            ) : (
-              <>
-                <Download className="mr-2 h-4 w-4" />
-                Importar Anúncios do ML
-              </>
-            )}
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={handleSync} disabled={isSyncing}>
+              {isSyncing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sincronizando...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Sincronizar Estoque com ML
+                </>
+              )}
+            </Button>
+
+            <Button variant="outline" onClick={handleRetryPending}>
+              <Upload className="mr-2 h-4 w-4" />
+              Re-tentar anúncios pendentes
+            </Button>
+          </div>
 
           {/* Resultado da importação */}
           {importResult && (

@@ -1,0 +1,68 @@
+﻿{
+    "categories":  [
+                       {
+                           "id":  "MLB1765",
+                           "value":  "Acessórios para Veículos"
+                       },
+                       {
+                           "id":  "MLB1765-01",
+                           "value":  "Acessórios para Veículos \u003e Peças de Carros e Caminhonetes \u003e Suspensão e Direção \u003e Cubo de Roda"
+                       },
+                       {
+                           "id":  "MLB1754",
+                           "value":  "Carroceria e Lataria"
+                       },
+                       {
+                           "id":  "MLB1754-01",
+                           "value":  "Carroceria e Lataria \u003e Portas"
+                       },
+                       {
+                           "id":  "MLB1750-01",
+                           "value":  "Elétrica \u003e Alternador"
+                       },
+                       {
+                           "id":  "MLB1750",
+                           "value":  "Elétrica Automotiva"
+                       },
+                       {
+                           "id":  "MLB1758",
+                           "value":  "Filtros"
+                       },
+                       {
+                           "id":  "MLB1749",
+                           "value":  "Freios"
+                       },
+                       {
+                           "id":  "MLB1749-01",
+                           "value":  "Freios \u003e Pastilhas e Discos"
+                       },
+                       {
+                           "id":  "MLB1747",
+                           "value":  "Motor e Peças"
+                       },
+                       {
+                           "id":  "MLB1747-02",
+                           "value":  "Motor e Peças \u003e Componentes"
+                       },
+                       {
+                           "id":  "MLB1747-01",
+                           "value":  "Motor e Peças \u003e Motor"
+                       },
+                       {
+                           "id":  "MLB1764",
+                           "value":  "Outros"
+                       },
+                       {
+                           "id":  "MLB1748",
+                           "value":  "Suspensão"
+                       },
+                       {
+                           "id":  "MLB1748-01",
+                           "value":  "Suspensão \u003e Amortecedor"
+                       },
+                       {
+                           "id":  "MLB1748-02",
+                           "value":  "Suspensão \u003e Mola"
+                       }
+                   ]
+}

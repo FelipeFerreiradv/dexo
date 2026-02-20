@@ -70,10 +70,38 @@ api.register(systemLogRoutes, {
   prefix: "/system-logs",
 });
 
+// Temporary debug endpoint for client-side diagnostics (DEV ONLY)
+const __DEBUG_LOGS: Array<{ ts: number; payload: any }> = [];
+api.post("/debug/client-log", async (req, reply) => {
+  try {
+    const payload = await req.body;
+    __DEBUG_LOGS.push({ ts: Date.now(), payload });
+    // limit stored logs
+    if (__DEBUG_LOGS.length > 200) __DEBUG_LOGS.shift();
+    api.log.info({ msg: "client-log", payload });
+    return reply.status(200).send({ ok: true });
+  } catch (err) {
+    api.log.error("Error handling client log", err);
+    return reply.status(500).send({ ok: false });
+  }
+});
+
+// Retrieve recent client logs (DEV ONLY)
+api.get("/debug/client-log", async (req, reply) => {
+  return reply.status(200).send({ logs: __DEBUG_LOGS.slice(-50) });
+});
+
+import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+
 try {
-  api.listen({
-    port: 3333,
-  });
+  api
+    .listen({
+      port: 3333,
+    })
+    .then(() => {
+      // start background retry loop for placeholder listings
+      ListingRetryService.start();
+    });
 } catch (err) {
   api.log.error(err);
   process.exit(1);

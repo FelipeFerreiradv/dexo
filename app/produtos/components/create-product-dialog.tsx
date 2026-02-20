@@ -885,19 +885,40 @@ export function CreateProductDialog({
             const source = (watchName || "").toString().toLowerCase();
             const tokens = source.split(/\s+/).filter(Boolean);
 
-            // 1) try to find a detailed ML category whose value or keywords contain any token
-            let childMatch = ML_CATEGORY_OPTIONS.find((ch) => {
-              const v = ch.value.toLowerCase();
-              if (tokens.some((t) => v.includes(t) || t.includes(v)))
-                return true;
-              return ch.keywords?.some((kw) =>
-                tokens.some(
-                  (t) =>
-                    kw.toLowerCase().includes(t) ||
-                    t.includes(kw.toLowerCase()),
-                ),
-              );
-            });
+            // 1) Prefer backend-synced mlOptions: try to find a detailed ML category
+            // whose fullPath contains any token. If not found, fall back to the
+            // static `ML_CATEGORY_OPTIONS` (which includes keyword hints).
+            let childMatch:
+              | { id: string; value: string; keywords?: string[] }
+              | undefined;
+
+            if (mlOptions && mlOptions.length > 0) {
+              const externalMatch = mlOptions.find((c) => {
+                const v = (c.value || "").toLowerCase();
+                return tokens.some((t) => v.includes(t) || t.includes(v));
+              });
+              if (externalMatch) {
+                childMatch = {
+                  id: externalMatch.id,
+                  value: externalMatch.value,
+                };
+              }
+            }
+
+            if (!childMatch) {
+              childMatch = ML_CATEGORY_OPTIONS.find((ch) => {
+                const v = ch.value.toLowerCase();
+                if (tokens.some((t) => v.includes(t) || t.includes(v)))
+                  return true;
+                return ch.keywords?.some((kw) =>
+                  tokens.some(
+                    (t) =>
+                      kw.toLowerCase().includes(t) ||
+                      t.includes(kw.toLowerCase()),
+                  ),
+                );
+              });
+            }
 
             // 2) fallback: try to map measurement key -> ML category
             if (!childMatch && measurements) {
@@ -913,15 +934,29 @@ export function CreateProductDialog({
               });
 
               if (matchedKey) {
-                // try to find an ML child that mentions this key/token
+                // try to find an ML child that mentions this key/token; prefer mlOptions
                 const mk = matchedKey.toLowerCase();
-                childMatch = ML_CATEGORY_OPTIONS.find((ch) => {
-                  const v = ch.value.toLowerCase();
-                  if (v.includes(mk)) return true;
-                  return ch.keywords?.some((kw) =>
-                    kw.toLowerCase().includes(mk),
+
+                if (mlOptions && mlOptions.length > 0) {
+                  const externalByMk = mlOptions.find((c) =>
+                    (c.value || "").toLowerCase().includes(mk),
                   );
-                });
+                  if (externalByMk)
+                    childMatch = {
+                      id: externalByMk.id,
+                      value: externalByMk.value,
+                    };
+                }
+
+                if (!childMatch) {
+                  childMatch = ML_CATEGORY_OPTIONS.find((ch) => {
+                    const v = ch.value.toLowerCase();
+                    if (v.includes(mk)) return true;
+                    return ch.keywords?.some((kw) =>
+                      kw.toLowerCase().includes(mk),
+                    );
+                  });
+                }
 
                 // if still no childMatch, try matching tokens of the key against children
                 if (!childMatch) {
@@ -1188,6 +1223,12 @@ export function CreateProductDialog({
           } else {
             onToast("Anúncio criado (vínculo local registrado)", "success");
           }
+        } else if (result.listing.skipped) {
+          // Listing was intentionally skipped (e.g. account in vacation mode)
+          onToast(
+            `Anúncio não criado: ${result.listing.error || "Motivo não informado"}${(result.listing as any).mlError ? ` — detalhes ML: ${(result.listing as any).mlError}` : ""}`,
+            "warning",
+          );
         } else {
           onToast(
             `Produto criado, mas falha ao criar anúncio: ${result.listing.error || "Erro desconhecido"}`,
@@ -1751,9 +1792,22 @@ export function CreateProductDialog({
                   name="category"
                   control={control}
                   render={({ field }) => {
-                    const detailed = ML_CATEGORY_OPTIONS.find(
-                      (c) => c.id === watch("mlCategory"),
-                    )?.value;
+                    const detailed =
+                      // Prefer backend synced detailed value by id
+                      mlOptions.find((c) => c.id === watch("mlCategory"))
+                        ?.value ||
+                      // Fallback: if backend doesn't have mlCategory, try to find
+                      // a backend option that matches current top-level category
+                      mlOptions.find(
+                        (c) => c.value.split(" > ")[0] === watch("category"),
+                      )?.value ||
+                      // Then fallback to static parser by id or by top-level match
+                      ML_CATEGORY_OPTIONS.find(
+                        (c) => c.id === watch("mlCategory"),
+                      )?.value ||
+                      ML_CATEGORY_OPTIONS.find(
+                        (c) => c.value.split(" > ")[0] === watch("category"),
+                      )?.value;
 
                     return (
                       <Select
@@ -1771,7 +1825,10 @@ export function CreateProductDialog({
                         </SelectTrigger>
                         <SelectContent>
                           {ML_CATEGORIES.map((cat) => (
-                            <SelectItem key={cat.id} value={cat.value}>
+                            <SelectItem
+                              key={`${cat.id}-${cat.value}`}
+                              value={cat.value}
+                            >
                               {cat.value}
                             </SelectItem>
                           ))}
@@ -1850,7 +1907,11 @@ export function CreateProductDialog({
                         id="createMLListing"
                         checked={field.value || false}
                         onCheckedChange={field.onChange}
-                        disabled={mlConnected === false || mlAccountStatus === 'ERROR'}
+                        disabled={
+                          mlConnected === false ||
+                          mlAccountStatus === "ERROR" ||
+                          mlAccountStatus === "INACTIVE"
+                        }
                       />
                     )}
                   />
@@ -1865,15 +1926,24 @@ export function CreateProductDialog({
                   específica ou usar a sugerida automaticamente.
                 </p>
 
-                {mlAccountStatus === 'ERROR' && (
+                {mlAccountStatus === "ERROR" && (
                   <p className="text-sm text-red-600">
-                    Conta do Mercado Livre com restrição — anúncios bloqueados. Reconecte a conta ou verifique o Seller Center.
+                    Conta do Mercado Livre com restrição — anúncios bloqueados.
+                    Reconecte a conta ou verifique o Seller Center.
+                  </p>
+                )}
+
+                {mlAccountStatus === "INACTIVE" && (
+                  <p className="text-sm text-yellow-600">
+                    Conta do Mercado Livre em modo férias/inativa — ative a
+                    venda no Seller Center para criar anúncios.
                   </p>
                 )}
 
                 {mlConnected === false && (
                   <p className="text-sm text-yellow-600">
-                    Conta do Mercado Livre não conectada — conecte sua conta em Integrações para habilitar a criação de anúncios.
+                    Conta do Mercado Livre não conectada — conecte sua conta em
+                    Integrações para habilitar a criação de anúncios.
                   </p>
                 )}
 
@@ -1885,36 +1955,75 @@ export function CreateProductDialog({
                     <Controller
                       name="mlCategory"
                       control={control}
-                      render={({ field }) => (
-                        <Select
-                          onValueChange={(val) => {
-                            field.onChange(val);
-                            // When user selects a detailed ML category, set the top-level category accordingly
-                            const parent = ML_CATALOG.find((p) =>
-                              p.children?.some((ch) => ch.id === val),
-                            );
-                            if (parent) setValue("category", parent.value);
-                          }}
-                          value={
-                            field.value ||
-                            ML_CATEGORIES.find(
-                              (c) => c.value === watch("category"),
-                            )?.id ||
-                            ""
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione uma categoria..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ML_CATEGORY_OPTIONS.map((cat) => (
-                              <SelectItem key={cat.id} value={cat.id}>
-                                {cat.value}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
+                      render={({ field }) => {
+                        // Prefer backend-synced mlOptions when available, fallback to static ML_CATEGORY_OPTIONS
+                        const optionsSource =
+                          mlOptions && mlOptions.length > 0
+                            ? mlOptions
+                            : ML_CATEGORY_OPTIONS.map((c) => ({
+                                id: c.id,
+                                value: c.value,
+                              }));
+
+                        // Decide selected id: explicit field value or best match by top-level category
+                        const selectedId =
+                          field.value ||
+                          optionsSource.find(
+                            (o) =>
+                              o.value.split(" > ")[0] === watch("category"),
+                          )?.id ||
+                          "";
+
+                        const selectedLabel =
+                          // prefer explicit selection label
+                          optionsSource.find((o) => o.id === field.value)
+                            ?.value ||
+                          // prefer option matched via top-level from backend
+                          optionsSource.find((o) => o.id === selectedId)
+                            ?.value ||
+                          // fallback to static detailed option matching top-level
+                          ML_CATEGORY_OPTIONS.find(
+                            (c) =>
+                              c.value.split(" > ")[0] === watch("category"),
+                          )?.value ||
+                          watch("category") ||
+                          undefined;
+
+                        return (
+                          <Select
+                            onValueChange={(val) => {
+                              field.onChange(val);
+                              // Resolve parent label from optionsSource and set top-level category accordingly
+                              const sel = optionsSource.find(
+                                (o) => o.id === val,
+                              );
+                              if (sel && sel.value) {
+                                const parentLabel = sel.value
+                                  .split(" > ")[0]
+                                  .trim();
+                                setValue("category", parentLabel);
+                              }
+                            }}
+                            value={selectedId}
+                          >
+                            <SelectTrigger>
+                              <SelectValue>
+                                {selectedLabel || "Selecione uma categoria..."}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {optionsSource.map((cat) => (
+                                <SelectItem
+                                  key={`${cat.id}-${cat.value}`}
+                                  value={cat.id}
+                                >
+                                  {cat.value}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        );
+                      }}
                     />
                     <p className="text-xs text-muted-foreground">
                       Categoria sugerida: {watch("category") || "Nenhuma"}

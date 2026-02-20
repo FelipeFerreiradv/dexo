@@ -11,6 +11,8 @@ import prisma from "@/app/lib/prisma";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
+import CategoryRepository from "../repositories/category.repository";
+import { ML_CATALOG } from "../../lib/product-parser";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import type { MLItemDetails } from "../types/ml-api.types";
@@ -407,6 +409,139 @@ export class SyncUseCase {
     return result;
   }
 
+  // Sincroniza categorias do Mercado Livre para DB (siteId ex: "MLB")
+  static async syncMLCategories(userId: string, siteId: string = "MLB") {
+    const account = await MarketplaceRepository.findByUserIdAndPlatform(
+      userId,
+      Platform.MERCADO_LIVRE,
+    );
+    const accountId = account?.id;
+
+    try {
+      let cats: { id: string; name: string }[] | null = null;
+      try {
+        cats = await MLApiService.getSiteCategories(siteId);
+        console.log(
+          `[SYNC] Fetched ${cats.length} site categories for ${siteId}`,
+        );
+      } catch (err) {
+        console.warn(
+          "[SYNC] Could not fetch site categories from ML API, falling back to static ML_CATALOG:",
+          err?.message || err,
+        );
+      }
+
+      const entries: any[] = [];
+      let processed = 0;
+
+      if (cats && cats.length > 0) {
+        for (const c of cats) {
+          try {
+            const data = await MLApiService.getCategory(c.id);
+            const path = data.path_from_root || [];
+            const fullPath = path.map((p: any) => p.name).join(" > ");
+            const parent = path.length > 1 ? path[path.length - 2].id : null;
+
+            entries.push({
+              externalId: c.id,
+              siteId,
+              name: c.name,
+              fullPath,
+              pathFromRoot: path,
+              parentExternalId: parent,
+              keywords: null,
+            });
+
+            processed++;
+            if (processed % 20 === 0)
+              await new Promise((r) => setTimeout(r, 100));
+          } catch (err) {
+            console.warn(
+              `[SYNC] Failed to fetch category ${c.id}:`,
+              err?.message || err,
+            );
+          }
+        }
+      } else {
+        // Fallback: use static ML_CATALOG defined in product-parser
+        for (const parent of ML_CATALOG) {
+          // Insert parent entry
+          entries.push({
+            externalId: parent.id,
+            siteId,
+            name: parent.value,
+            fullPath: parent.value,
+            pathFromRoot: [{ id: parent.id, name: parent.value }],
+            parentExternalId: null,
+            keywords: parent.keywords?.join(",") || null,
+          });
+
+          if (parent.children && parent.children.length > 0) {
+            for (const child of parent.children) {
+              entries.push({
+                externalId: child.id,
+                siteId,
+                name: child.value.split(" > ").slice(-1)[0],
+                fullPath: child.value,
+                pathFromRoot: [
+                  { id: parent.id, name: parent.value },
+                  { id: child.id, name: child.value.split(" > ").slice(-1)[0] },
+                ],
+                parentExternalId: parent.id,
+                keywords: child.keywords?.join(",") || null,
+              });
+            }
+          }
+        }
+      }
+
+      if (entries.length > 0) {
+        await CategoryRepository.upsertMany(entries as any[]);
+      }
+
+      // Registro de log: se tivermos conta ML, registrar via logSync (SyncLog), caso contrário usar SystemLogService
+      if (accountId) {
+        await this.logSync(
+          accountId,
+          SyncType.PRODUCT_SYNC,
+          SyncStatus.SUCCESS,
+          `Categorias ML sincronizadas (${entries.length}) for ${siteId}`,
+          { siteId, count: entries.length },
+        );
+      } else {
+        await (
+          await import("@/app/services/system-log.service")
+        ).SystemLogService.logSyncComplete(
+          userId,
+          "CATEGORY_SYNC",
+          "MercadoLivre",
+          { siteId, count: entries.length },
+        );
+      }
+
+      return { success: true, categories: entries.length };
+    } catch (error) {
+      if (accountId) {
+        await this.logSync(
+          accountId,
+          SyncType.PRODUCT_SYNC,
+          SyncStatus.FAILURE,
+          `Erro ao sincronizar categorias ML: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } else {
+        await (
+          await import("@/app/services/system-log.service")
+        ).SystemLogService.logSyncError(
+          userId,
+          "CATEGORY_SYNC",
+          "MercadoLivre",
+          `Erro ao sincronizar categorias ML: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw error;
+    }
+  }
+
   /**
    * Extrai o SKU de um item do ML (pode estar em diferentes lugares)
    */
@@ -526,6 +661,35 @@ export class SyncUseCase {
         productId: product.id,
         externalListingId: listing.externalListingId,
         error: "Conta sem token de acesso",
+      };
+    }
+
+    // Skip syncing for local placeholder listings (created when ML refused/paused)
+    if (
+      listing.externalListingId &&
+      String(listing.externalListingId).startsWith("PENDING_")
+    ) {
+      try {
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.WARNING,
+          `Anúncio local (placeholder) — não existe no Mercado Livre: ${listing.externalListingId}`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+          },
+        );
+      } catch (e) {
+        /* ignore logging failures */
+      }
+
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Anúncio local (placeholder) — não existe no Mercado Livre. Sincronização ignorada.",
       };
     }
 
@@ -836,6 +1000,25 @@ export class SyncUseCase {
     };
 
     try {
+      // If the externalListingId is a local placeholder, skip remote calls
+      if (String(externalListingId).startsWith("PENDING_")) {
+        // Record a sync warning and return
+        try {
+          await this.logSync(
+            account.id,
+            SyncType.PRODUCT_SYNC,
+            SyncStatus.WARNING,
+            `Sincronização ignorada para placeholder local ${externalListingId}`,
+            { productId: product.id, externalListingId },
+          );
+        } catch (e) {
+          /* ignore logging failures */
+        }
+
+        result.error =
+          "Anúncio local (placeholder) — não existe no Mercado Livre. Operação ignorada.";
+        return result;
+      }
       // Verificar status do anúncio antes de atualizar
       const currentItem = await MLApiService.getItemDetails(
         account.accessToken,

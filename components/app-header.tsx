@@ -18,6 +18,8 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { signOut } from "next-auth/react";
+import { useState } from "react";
+import ConfigModal from "./config-modal";
 
 interface AppHeaderProps {
   session: Session | null;
@@ -26,6 +28,7 @@ interface AppHeaderProps {
 export function AppHeader({ session }: AppHeaderProps) {
   const { theme, setTheme } = useTheme();
   const router = useRouter();
+  const [configOpen, setConfigOpen] = useState(false);
 
   // Se não houver sessão, redireciona para login
   if (!session) {
@@ -42,7 +45,7 @@ export function AppHeader({ session }: AppHeaderProps) {
       <SidebarTrigger className="-ml-1" />
 
       <div className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold text-foreground">Nexos Company</h1>
+        <h1 className="text-lg font-semibold text-foreground">Dexo Company</h1>
       </div>
 
       <div className="flex-1 flex items-center justify-center max-w-xl mx-auto">
@@ -94,7 +97,7 @@ export function AppHeader({ session }: AppHeaderProps) {
               <User className="mr-2 size-4" />
               <span>Perfil</span>
             </DropdownMenuItem>
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setConfigOpen(true)}>
               <Settings className="mr-2 size-4" />
               <span>Configurações</span>
             </DropdownMenuItem>
@@ -109,6 +112,9 @@ export function AppHeader({ session }: AppHeaderProps) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* Config modal */}
+      <ConfigModal open={configOpen} onOpenChange={(v) => setConfigOpen(v)} />
     </header>
   );
 }

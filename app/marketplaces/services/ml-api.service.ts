@@ -196,6 +196,51 @@ export class MLApiService {
   }
 
   /**
+   * Lista categorias de um site (ex: 'MLB') - endpoint público
+   */
+  static async getSiteCategories(
+    siteId: string,
+  ): Promise<{ id: string; name: string }[]> {
+    try {
+      const response = await axios.get(
+        `${ML_CONSTANTS.API_URL}/sites/${siteId}/categories`,
+      );
+      return response.data as { id: string; name: string }[];
+    } catch (error) {
+      console.error(
+        `[ML API] Error fetching site categories for ${siteId}:`,
+        error,
+      );
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao obter categorias do site: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Obtém detalhes de uma categoria (inclui path_from_root)
+   */
+  static async getCategory(categoryId: string): Promise<any> {
+    try {
+      const response = await axios.get(
+        `${ML_CONSTANTS.API_URL}/categories/${categoryId}`,
+      );
+      return response.data;
+    } catch (error) {
+      console.error(`[ML API] Error fetching category ${categoryId}:`, error);
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao obter dados da categoria: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Busca item por SKU (seller_custom_field ou atributo SELLER_SKU)
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor

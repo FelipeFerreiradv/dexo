@@ -36,298 +36,18 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { CurrencyInput } from "@/components/ui/currency-input";
+import {
+  parseTitleToFields,
+  suggestCategoryFromTitle,
+  mapSuggestedCategory,
+  ML_CATALOG,
+  ML_CATEGORIES,
+  ML_CATEGORY_OPTIONS,
+} from "../../lib/product-parser"; // ML_CATALOG + ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
+import { getMeasurementsForCategory } from "../../lib/ml-measurements";
+import { shouldApplyAutoDescription } from "./auto-description.util";
 
-// Categorias do Mercado Livre para Autopeças
-const ML_CATEGORIES = [
-  {
-    id: "MLB1747",
-    value: "Acessórios para Veículos",
-    keywords: ["acessório", "acessorios", "tapete", "capa", "volante", "pedal"],
-  },
-  {
-    id: "MLB1748",
-    value: "Motor e Peças",
-    keywords: [
-      "motor",
-      "biela",
-      "pistão",
-      "piston",
-      "virabrequim",
-      "cabeçote",
-      "valvula",
-      "válvula",
-      "junta",
-      "bloco",
-      "cárter",
-      "carter",
-      "bronzina",
-      "anéis",
-      "aneis",
-    ],
-  },
-  {
-    id: "MLB1749",
-    value: "Peças Automotivas",
-    keywords: ["peça", "peças", "reposição", "automotiva"],
-  },
-  {
-    id: "MLB1750",
-    value: "Suspensão",
-    keywords: [
-      "suspensão",
-      "amortecedor",
-      "mola",
-      "pivô",
-      "pivo",
-      "bandeja",
-      "bieleta",
-      "batente",
-      "coifa",
-      "terminal",
-      "bucha",
-      "buchas",
-    ],
-  },
-  {
-    id: "MLB1751",
-    value: "Freios",
-    keywords: [
-      "freio",
-      "disco",
-      "pastilha",
-      "lonas",
-      "tambor",
-      "pinça",
-      "pinca",
-      "cilindro",
-      "flexível",
-      "flexivel",
-      "abs",
-    ],
-  },
-  {
-    id: "MLB1752",
-    value: "Direção",
-    keywords: [
-      "direção",
-      "direcao",
-      "caixa de direção",
-      "bomba direção",
-      "terminal",
-      "barra",
-      "axial",
-      "hidráulico",
-      "hidraulico",
-    ],
-  },
-  {
-    id: "MLB1753",
-    value: "Elétrica",
-    keywords: [
-      "elétrica",
-      "eletrica",
-      "alternador",
-      "motor de arranque",
-      "partida",
-      "bobina",
-      "vela",
-      "cabo",
-      "chicote",
-      "sensor",
-      "módulo",
-      "modulo",
-      "central",
-      "ecu",
-      "fusível",
-      "fusivel",
-      "relé",
-      "rele",
-    ],
-  },
-  {
-    id: "MLB1754",
-    value: "Transmissão",
-    keywords: [
-      "transmissão",
-      "transmissao",
-      "câmbio",
-      "cambio",
-      "embreagem",
-      "platô",
-      "plato",
-      "disco",
-      "atuador",
-      "diferencial",
-      "junta homocinética",
-      "homocinética",
-      "homocinetica",
-      "cardã",
-      "cardan",
-      "semieixo",
-      "trambulador",
-      "sincronizador",
-    ],
-  },
-  {
-    id: "MLB1755",
-    value: "Arrefecimento",
-    keywords: [
-      "arrefecimento",
-      "radiador",
-      "ventoinha",
-      "bomba d'água",
-      "bomba dagua",
-      "válvula termostática",
-      "termostatica",
-      "mangueira",
-      "reservatório",
-      "reservatorio",
-    ],
-  },
-  {
-    id: "MLB1756",
-    value: "Escapamento",
-    keywords: [
-      "escapamento",
-      "catalisador",
-      "silencioso",
-      "coletor",
-      "downpipe",
-      "ponteira",
-      "abraçadeira",
-      "abracadeira",
-      "flexível",
-      "flexivel",
-    ],
-  },
-  {
-    id: "MLB1757",
-    value: "Injeção Eletrônica",
-    keywords: [
-      "injeção",
-      "injecao",
-      "bico",
-      "corpo de borboleta",
-      "tbi",
-      "maf",
-      "sensor",
-      "sonda",
-      "lambda",
-      "regulador",
-      "pressão combustível",
-      "bomba combustível",
-    ],
-  },
-  {
-    id: "MLB1758",
-    value: "Iluminação",
-    keywords: [
-      "farol",
-      "lanterna",
-      "pisca",
-      "luz",
-      "lâmpada",
-      "lampada",
-      "xenon",
-      "led",
-      "milha",
-      "neblina",
-      "refletor",
-    ],
-  },
-  {
-    id: "MLB1759",
-    value: "Carroceria e Estrutura",
-    keywords: [
-      "carroceria",
-      "paralama",
-      "parachoque",
-      "porta",
-      "capô",
-      "capo",
-      "tampa",
-      "longarina",
-      "coluna",
-      "assoalho",
-      "teto",
-    ],
-  },
-  {
-    id: "MLB1760",
-    value: "Vidros",
-    keywords: [
-      "vidro",
-      "parabrisa",
-      "para-brisa",
-      "vigia",
-      "lateral",
-      "retrovisor",
-    ],
-  },
-  {
-    id: "MLB1761",
-    value: "Interior",
-    keywords: [
-      "painel",
-      "console",
-      "banco",
-      "forro",
-      "carpete",
-      "acabamento",
-      "maçaneta",
-      "macaneta",
-      "interruptor",
-    ],
-  },
-  {
-    id: "MLB1762",
-    value: "Ar Condicionado",
-    keywords: [
-      "ar condicionado",
-      "compressor",
-      "condensador",
-      "evaporador",
-      "filtro cabine",
-      "gás",
-      "gas",
-    ],
-  },
-  {
-    id: "MLB1763",
-    value: "Filtros",
-    keywords: [
-      "filtro",
-      "óleo",
-      "oleo",
-      "ar",
-      "combustível",
-      "combustivel",
-      "cabine",
-      "polen",
-    ],
-  },
-  {
-    id: "MLB1764",
-    value: "Pneus e Rodas",
-    keywords: ["pneu", "roda", "aro", "calota", "parafuso", "porca"],
-  },
-];
-
-// Função para sugerir categoria baseada no título
-function suggestCategory(title: string): string | null {
-  const lowerTitle = title.toLowerCase();
-
-  for (const category of ML_CATEGORIES) {
-    for (const keyword of category.keywords) {
-      if (lowerTitle.includes(keyword.toLowerCase())) {
-        return category.value;
-      }
-    }
-  }
-
-  return null;
-}
-
+// Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
 // Schema de validação com campos de autopeças
 const productEditSchema = z.object({
   name: z
@@ -372,6 +92,32 @@ const productEditSchema = z.object({
   isSecurityItem: z.boolean().optional(),
   isTraceable: z.boolean().optional(),
   sourceVehicle: z.string().max(200).optional().nullable(),
+
+  // Medidas / peso (cm / kg)
+  heightCm: z
+    .number({ invalid_type_error: "Altura deve ser um número" })
+    .int("Altura deve ser um número inteiro")
+    .min(0, "Altura inválida")
+    .optional()
+    .nullable(),
+  widthCm: z
+    .number({ invalid_type_error: "Largura deve ser um número" })
+    .int("Largura deve ser um número inteiro")
+    .min(0, "Largura inválida")
+    .optional()
+    .nullable(),
+  lengthCm: z
+    .number({ invalid_type_error: "Comprimento deve ser um número" })
+    .int("Comprimento deve ser um número inteiro")
+    .min(0, "Comprimento inválido")
+    .optional()
+    .nullable(),
+  weightKg: z
+    .number({ invalid_type_error: "Peso deve ser um número" })
+    .min(0, "Peso inválido")
+    .optional()
+    .nullable(),
+
   imageUrl: z.string().url("URL da imagem inválida").optional().nullable(),
 });
 
@@ -429,11 +175,33 @@ export function EditProductDialog({
 }: EditProductDialogProps) {
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [defaultDescription, setDefaultDescription] = useState("");
   const [showAutopartsSection, setShowAutopartsSection] = useState(false);
+  const [mlOptions, setMlOptions] = useState<{ id: string; value: string }[]>(
+    [],
+  );
 
   // Referências para valores originais do produto (para detectar edições do usuário)
   const originalNameRef = useRef(product.name);
   const originalPartNumberRef = useRef(product.partNumber || "");
+  const originalBrandRef = useRef(product.brand || "");
+  const originalModelRef = useRef(product.model || "");
+  const originalYearRef = useRef(product.year || "");
+  const originalCategoryRef = useRef(product.category || "");
+
+  // Auto-detection ref to track previously auto-detected fields (so we don't overwrite manual edits)
+  const autoDetectedRef = useRef<{
+    brand?: string;
+    model?: string;
+    year?: string;
+    category?: string;
+    mlCategory?: string;
+    // measurements auto-detected from category
+    heightCm?: number;
+    widthCm?: number;
+    lengthCm?: number;
+    weightKg?: number;
+  } | null>(null);
 
   // Verificar se há campos de autopeças preenchidos
   const hasAutopartsData = !!(
@@ -448,11 +216,12 @@ export function EditProductDialog({
   const {
     register,
     handleSubmit,
-    formState: { errors },
+    formState: { errors, dirtyFields },
     setValue,
     reset,
     control,
     watch,
+    trigger,
   } = useForm<ProductEditFormData>({
     resolver: zodResolver(productEditSchema),
     defaultValues: {
@@ -467,13 +236,21 @@ export function EditProductDialog({
       year: product.year || "",
       version: product.version || "",
       category: product.category || "",
+      mlCategory: "",
       location: product.location || "",
       partNumber: product.partNumber || "",
       quality: product.quality || null,
       isSecurityItem: product.isSecurityItem || false,
       isTraceable: product.isTraceable || false,
       sourceVehicle: product.sourceVehicle || "",
-      imageUrl: product.imageUrl || null,
+
+      // Medidas (preenchidas se existirem)
+      heightCm: product.heightCm ?? undefined,
+      widthCm: product.widthCm ?? undefined,
+      lengthCm: product.lengthCm ?? undefined,
+      weightKg: product.weightKg ?? undefined,
+
+      imageUrl: product.imageUrl || undefined,
     },
   });
 
@@ -482,12 +259,61 @@ export function EditProductDialog({
   const watchPartNumber = watch("partNumber");
   const watchCostPrice = watch("costPrice");
   const watchPrice = watch("price");
+  const watchCategory = watch("category");
+  const watchMlCategory = watch("mlCategory");
+
+  // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
+  const fetchDefaultDescription = async () => {
+    try {
+      if (!product.description) {
+        // Preferir buscar por id quando disponível
+        if (session?.user?.id) {
+          try {
+            const resp = await fetch(
+              `http://localhost:3333/users/${session.user.id}`,
+            );
+            if (resp.ok) {
+              const user = await resp.json();
+              const desc = user.defaultProductDescription || "";
+              setDefaultDescription(desc);
+              if (!product.description && desc) setValue("description", desc);
+              return;
+            }
+          } catch (err) {
+            // continue to fallback
+          }
+        }
+
+        if (session?.user?.email) {
+          const resp2 = await fetch(`http://localhost:3333/users/me`, {
+            headers: { email: session.user.email },
+          });
+          if (resp2.ok) {
+            const user = await resp2.json();
+            const desc = user.defaultProductDescription || "";
+            setDefaultDescription(desc);
+            if (!product.description && desc) setValue("description", desc);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Erro ao buscar descrição padrão (edit dialog):", err);
+    }
+  };
 
   useEffect(() => {
     if (open) {
+      // Reset previous auto-detection when opening dialog so it's recalculated
+      autoDetectedRef.current = null;
+
       // Atualizar refs com valores originais do produto
       originalNameRef.current = product.name;
       originalPartNumberRef.current = product.partNumber || "";
+      originalBrandRef.current = product.brand || "";
+      originalModelRef.current = product.model || "";
+      originalYearRef.current = product.year || "";
+      originalCategoryRef.current = product.category || "";
 
       reset({
         name: product.name,
@@ -507,25 +333,97 @@ export function EditProductDialog({
         isSecurityItem: product.isSecurityItem || false,
         isTraceable: product.isTraceable || false,
         sourceVehicle: product.sourceVehicle || "",
+
+        // Medidas
+        heightCm: product.heightCm ?? undefined,
+        widthCm: product.widthCm ?? undefined,
+        lengthCm: product.lengthCm ?? undefined,
+        weightKg: product.weightKg ?? undefined,
+        imageUrl: product.imageUrl || undefined,
       });
       // Abrir seção de autopeças se houver dados
       setShowAutopartsSection(hasAutopartsData);
-    }
-  }, [open, product, reset, hasAutopartsData]);
 
-  // Auto descrição - só atualiza se o usuário editou o nome ou partNumber
+      // Buscar categorias ML quando abrir o diálogo
+      (async () => {
+        try {
+          const base =
+            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
+            "http://localhost:3333";
+          const resp = await fetch(`${base}/marketplace/ml/categories`, {
+            headers: { email: session?.user?.email || "" },
+          });
+          if (resp.ok) {
+            const json = await resp.json();
+            setMlOptions(json.categories || []);
+          }
+        } catch (err) {
+          console.error("Erro ao buscar categorias ML:", err);
+        }
+      })();
+
+      // buscar descrição padrão do usuário (se necessário)
+      void fetchDefaultDescription();
+    }
+  }, [
+    open,
+    product,
+    reset,
+    hasAutopartsData,
+    session?.user?.email,
+    session?.user?.id,
+  ]);
+
+  // Aplicar descrição padrão quando carregada (se produto não tiver descrição)
   useEffect(() => {
-    const nameChanged = watchName !== originalNameRef.current;
-    const partNumberChanged = watchPartNumber !== originalPartNumberRef.current;
-
-    if (watchName && (nameChanged || partNumberChanged)) {
-      let autoDescription = watchName;
-      if (watchPartNumber) {
-        autoDescription += `\nPart Number: ${watchPartNumber}`;
-      }
-      setValue("description", autoDescription);
+    if (defaultDescription && !product.description) {
+      setValue("description", defaultDescription);
     }
-  }, [watchName, watchPartNumber, setValue]);
+  }, [defaultDescription, product.description, setValue]);
+
+  // Auto descrição - só atualiza se o usuário editou o nome ou partNumber.
+  // Proteção adicional: não sobrescrever a `defaultDescription` automaticamente ao
+  // abrir o diálogo (caso ela tenha sido aplicada) — somente sobrescreve quando o
+  // usuário realmente editar o `name` / `partNumber`.
+  useEffect(() => {
+    if (!open) return;
+
+    const currentDescription = watch("description");
+
+    const apply = shouldApplyAutoDescription({
+      open,
+      watchName,
+      originalName: originalNameRef.current,
+      watchPartNumber,
+      originalPartNumber: originalPartNumberRef.current,
+      currentDescription,
+      defaultDescription,
+      dirtyName: !!dirtyFields.name,
+      dirtyPartNumber: !!dirtyFields.partNumber,
+    });
+
+    if (!apply) return;
+
+    // build auto-description (user edited name/partNumber)
+    let autoDescription = watchName;
+    if (watchPartNumber) {
+      autoDescription += `\nPart Number: ${watchPartNumber}`;
+    }
+
+    setValue("description", autoDescription, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+  }, [
+    open,
+    watchName,
+    watchPartNumber,
+    setValue,
+    defaultDescription,
+    dirtyFields.name,
+    dirtyFields.partNumber,
+  ]);
 
   // Cálculo automático da margem
   useEffect(() => {
@@ -535,17 +433,563 @@ export function EditProductDialog({
     }
   }, [watchCostPrice, watchPrice, setValue]);
 
-  // Sugestão automática de categoria - só atualiza se o usuário editou o nome
+  // Debounced auto-fill for edit dialog as well
+  // Only run when dialog is open to avoid racing with `reset()` that sets
+  // original refs on open.
+  const editAutoFillTimer = useRef<number | null>(null);
   useEffect(() => {
-    const nameChanged = watchName !== originalNameRef.current;
+    if (!open) return;
 
-    if (watchName && nameChanged) {
-      const suggested = suggestCategory(watchName);
-      if (suggested) {
-        setValue("category", suggested);
+    const nameChanged = watchName !== originalNameRef.current;
+    if (!watchName || !nameChanged) return;
+
+    if (editAutoFillTimer.current) clearTimeout(editAutoFillTimer.current);
+    editAutoFillTimer.current = window.setTimeout(() => {
+      const detected = parseTitleToFields(watchName);
+
+      // Prefer dynamic ML categories first
+      let mapping: {
+        topLevel?: string;
+        detailedId?: string;
+        detailedValue?: string;
+      } = {};
+      const tl = watchName.toLowerCase();
+      const byFull = mlOptions.find((c) => tl.includes(c.value.toLowerCase()));
+      if (byFull)
+        mapping = {
+          topLevel: byFull.value.split(" > ")[0].trim(),
+          detailedId: byFull.id,
+          detailedValue: byFull.value,
+        };
+      else {
+        const byLast = mlOptions.find((c) => {
+          const last = c.value.split(" > ").slice(-1)[0].toLowerCase();
+          return tl.includes(last);
+        });
+        if (byLast)
+          mapping = {
+            topLevel: byLast.value.split(" > ")[0].trim(),
+            detailedId: byLast.id,
+            detailedValue: byLast.value,
+          };
       }
+
+      if (!mapping.detailedId) {
+        const suggested = suggestCategoryFromTitle(watchName);
+        const suggestedForMapping = detected.category || suggested || undefined;
+        if (suggestedForMapping)
+          mapping = mapSuggestedCategory(suggestedForMapping);
+      }
+
+      const norm = (s?: string) => (s || "").toString().trim().toLowerCase();
+      const prev = autoDetectedRef.current || ({} as any);
+
+      // brand
+      const currentBrand = watch("brand");
+      const shouldUpdateBrand =
+        !currentBrand ||
+        norm(prev.brand) === norm(currentBrand) ||
+        currentBrand === originalBrandRef.current;
+      if (
+        typeof window !== "undefined" &&
+        window.location.hostname === "localhost"
+      ) {
+        console.debug("[auto-fill][edit] decision brand", {
+          shouldUpdateBrand,
+          currentBrand,
+          prevBrand: prev.brand,
+          detectedBrand: detected.brand,
+          inputMounted: !!document.getElementById("edit-brand"),
+          inputDom: document.getElementById("edit-brand")?.value,
+        });
+      }
+      if (shouldUpdateBrand) {
+        if (detected.brand) {
+          setValue("brand", detected.brand, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug("[auto-fill][edit] post-set brand", watch("brand"));
+              console.debug(
+                "[auto-fill][edit] dom brand after set",
+                document.getElementById("edit-brand")?.value,
+              );
+            }, 50);
+          }
+        } else if (!currentBrand) {
+          setValue("brand", "", {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug(
+                "[auto-fill][edit] post-clear brand",
+                watch("brand"),
+              );
+              console.debug(
+                "[auto-fill][edit] dom brand after clear",
+                document.getElementById("edit-brand")?.value,
+              );
+            }, 50);
+          }
+        }
+      }
+
+      // model
+      const currentModel = watch("model");
+      const shouldUpdateModel =
+        !currentModel ||
+        norm(prev.model) === norm(currentModel) ||
+        currentModel === originalModelRef.current;
+      if (
+        typeof window !== "undefined" &&
+        window.location.hostname === "localhost"
+      ) {
+        console.debug("[auto-fill][edit] decision model", {
+          shouldUpdateModel,
+          currentModel,
+          prevModel: prev.model,
+          detectedModel: detected.model,
+          inputMounted: !!document.getElementById("edit-model"),
+          inputDom: document.getElementById("edit-model")?.value,
+        });
+      }
+      if (shouldUpdateModel) {
+        if (detected.model) {
+          setValue("model", detected.model, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug("[auto-fill][edit] post-set model", watch("model"));
+              console.debug(
+                "[auto-fill][edit] dom model after set",
+                document.getElementById("edit-model")?.value,
+              );
+            }, 50);
+          }
+        } else if (!currentModel) {
+          setValue("model", "", {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug(
+                "[auto-fill][edit] post-clear model",
+                watch("model"),
+              );
+              console.debug(
+                "[auto-fill][edit] dom model after clear",
+                document.getElementById("edit-model")?.value,
+              );
+            }, 50);
+          }
+        }
+      }
+
+      // year
+      const currentYear = watch("year");
+      const shouldUpdateYear =
+        !currentYear ||
+        norm(prev.year) === norm(currentYear) ||
+        currentYear === originalYearRef.current;
+      if (
+        typeof window !== "undefined" &&
+        window.location.hostname === "localhost"
+      ) {
+        console.debug("[auto-fill][edit] decision year", {
+          shouldUpdateYear,
+          currentYear,
+          prevYear: prev.year,
+          detectedYear: detected.year,
+          inputMounted: !!document.getElementById("edit-year"),
+          inputDom: document.getElementById("edit-year")?.value,
+        });
+      }
+      if (shouldUpdateYear) {
+        if (detected.year) {
+          setValue("year", detected.year, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug("[auto-fill][edit] post-set year", watch("year"));
+              console.debug(
+                "[auto-fill][edit] dom year after set",
+                document.getElementById("edit-year")?.value,
+              );
+            }, 50);
+          }
+        } else if (!currentYear) {
+          setValue("year", "", {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(() => {
+              console.debug("[auto-fill][edit] post-clear year", watch("year"));
+              console.debug(
+                "[auto-fill][edit] dom year after clear",
+                document.getElementById("edit-year")?.value,
+              );
+            }, 50);
+          }
+        }
+      }
+
+      // ensure Controller inputs reflect changes
+      void trigger(["brand", "model", "year"]);
+
+      // category (allow overwrite when field is unchanged from original product)
+      const currentCategory = watch("category");
+      const currentMlCategory = watch("mlCategory");
+      const shouldUpdateCategory =
+        !currentCategory ||
+        norm(prev.category) === norm(currentCategory) ||
+        currentCategory === originalCategoryRef.current;
+
+      if (shouldUpdateCategory) {
+        if (mapping.topLevel) {
+          setValue("category", mapping.topLevel, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        } else if (detected.category) {
+          setValue("category", detected.category, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        }
+
+        // mlCategory: follow same policy as create dialog (set/clear only when user didn't manually edit)
+        const prevMl = prev.mlCategory;
+        const isPrevAutoMl =
+          prevMl && norm(prevMl) === norm(currentMlCategory || "");
+
+        if (mapping.detailedId) {
+          // try to resolve internal detailed id to an external id from mlOptions
+          const externalFromMlOptions = mlOptions.find(
+            (c) => c.value === mapping.detailedValue,
+          )?.id;
+
+          // Only allow internal mapping.detailedId when we have NO synced mlOptions;
+          // otherwise prefer externalFromMlOptions or clear field to avoid auto-sending internal ids.
+          const resolvedMlCategory =
+            externalFromMlOptions ??
+            (mlOptions && mlOptions.length === 0 ? mapping.detailedId : "");
+
+          if (!currentMlCategory || isPrevAutoMl) {
+            if (resolvedMlCategory) {
+              setValue("mlCategory", resolvedMlCategory, {
+                shouldDirty: true,
+                shouldTouch: true,
+                shouldValidate: true,
+              });
+            } else {
+              setValue("mlCategory", "", {
+                shouldDirty: true,
+                shouldTouch: true,
+                shouldValidate: true,
+              });
+            }
+          }
+        } else {
+          if (isPrevAutoMl && currentMlCategory) {
+            setValue("mlCategory", "", {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          }
+        }
+
+        // ensure select controllers update
+        void trigger(["category", "mlCategory"]);
+      }
+
+      // Measurements: try to auto-fill from category when available
+      try {
+        const measurements = getMeasurementsForCategory(
+          mapping.topLevel || detected.category,
+          mapping.detailedValue,
+        );
+
+        // height
+        const currentHeight = watch("heightCm");
+        const prevHeight = prev.heightCm;
+        const shouldUpdateHeight =
+          currentHeight === null ||
+          currentHeight === undefined ||
+          prevHeight === currentHeight;
+        if (shouldUpdateHeight) {
+          if (measurements?.heightCm !== undefined) {
+            setValue("heightCm", measurements.heightCm, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+            if (
+              typeof window !== "undefined" &&
+              window.location.hostname === "localhost"
+            )
+              console.debug(
+                "[auto-fill][edit] post-set heightCm",
+                watch("heightCm"),
+              );
+          }
+        }
+
+        // width
+        const currentWidth = watch("widthCm");
+        const prevWidth = prev.widthCm;
+        const shouldUpdateWidth =
+          currentWidth === null ||
+          currentWidth === undefined ||
+          prevWidth === currentWidth;
+        if (shouldUpdateWidth) {
+          if (measurements?.widthCm !== undefined) {
+            setValue("widthCm", measurements.widthCm, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+            if (
+              typeof window !== "undefined" &&
+              window.location.hostname === "localhost"
+            )
+              console.debug(
+                "[auto-fill][edit] post-set widthCm",
+                watch("widthCm"),
+              );
+          }
+        }
+
+        // length
+        const currentLength = watch("lengthCm");
+        const prevLength = prev.lengthCm;
+        const shouldUpdateLength =
+          currentLength === null ||
+          currentLength === undefined ||
+          prevLength === currentLength;
+        if (shouldUpdateLength) {
+          if (measurements?.lengthCm !== undefined) {
+            setValue("lengthCm", measurements.lengthCm, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+            if (
+              typeof window !== "undefined" &&
+              window.location.hostname === "localhost"
+            )
+              console.debug(
+                "[auto-fill][edit] post-set lengthCm",
+                watch("lengthCm"),
+              );
+          }
+        }
+
+        // weight
+        const currentWeight = watch("weightKg");
+        const prevWeight = prev.weightKg;
+        const shouldUpdateWeight =
+          currentWeight === null ||
+          currentWeight === undefined ||
+          prevWeight === currentWeight;
+        if (shouldUpdateWeight) {
+          if (measurements?.weightKg !== undefined) {
+            setValue("weightKg", measurements.weightKg, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+            if (
+              typeof window !== "undefined" &&
+              window.location.hostname === "localhost"
+            )
+              console.debug(
+                "[auto-fill][edit] post-set weightKg",
+                watch("weightKg"),
+              );
+          }
+        }
+
+        // trigger validation/render for measurements (ensure Controllers update)
+        void trigger(["heightCm", "widthCm", "lengthCm", "weightKg"]);
+      } catch (err) {
+        /* ignore measurement lookup errors */
+      }
+
+      // store detected (merge — preserve previously-detected values when parser returns undefined)
+      autoDetectedRef.current = {
+        brand: detected.brand ?? autoDetectedRef.current?.brand,
+        model: detected.model ?? autoDetectedRef.current?.model,
+        year: detected.year ?? autoDetectedRef.current?.year,
+        category:
+          mapping.topLevel ||
+          detected.category ||
+          autoDetectedRef.current?.category,
+        mlCategory:
+          mlOptions.find((c) => c.value === mapping.detailedValue)?.id ??
+          autoDetectedRef.current?.mlCategory,
+        // preserve measurement-derived autos
+        heightCm:
+          getMeasurementsForCategory(
+            mapping.topLevel || detected.category,
+            mapping.detailedValue,
+          )?.heightCm ?? autoDetectedRef.current?.heightCm,
+        widthCm:
+          getMeasurementsForCategory(
+            mapping.topLevel || detected.category,
+            mapping.detailedValue,
+          )?.widthCm ?? autoDetectedRef.current?.widthCm,
+        lengthCm:
+          getMeasurementsForCategory(
+            mapping.topLevel || detected.category,
+            mapping.detailedValue,
+          )?.lengthCm ?? autoDetectedRef.current?.lengthCm,
+        weightKg:
+          getMeasurementsForCategory(
+            mapping.topLevel || detected.category,
+            mapping.detailedValue,
+          )?.weightKg ?? autoDetectedRef.current?.weightKg,
+      };
+    }, 300);
+
+    return () => {
+      if (editAutoFillTimer.current) clearTimeout(editAutoFillTimer.current);
+    };
+  }, [watchName, setValue, mlOptions, trigger]);
+
+  // When category (top-level or mlCategory) changes, update measurements accordingly (same logic as create dialog).
+  useEffect(() => {
+    const category = watchCategory;
+    const detailedValue = mlOptions.find(
+      (c) => c.id === watchMlCategory,
+    )?.value;
+    const prev = autoDetectedRef.current || ({} as any);
+
+    try {
+      const measurements = getMeasurementsForCategory(category, detailedValue);
+
+      // read current field values directly to avoid re-running effect on measurement updates
+      const currentHeight = watch("heightCm");
+      const currentWidth = watch("widthCm");
+      const currentLength = watch("lengthCm");
+      const currentWeight = watch("weightKg");
+
+      // helper to decide update
+      const shouldReplace = (current: any, prevAuto: any) =>
+        current === null || current === undefined || prevAuto === current;
+
+      if (measurements) {
+        if (shouldReplace(currentHeight, prev.heightCm))
+          setValue("heightCm", measurements.heightCm ?? undefined, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        if (shouldReplace(currentWidth, prev.widthCm))
+          setValue("widthCm", measurements.widthCm ?? undefined, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        if (shouldReplace(currentLength, prev.lengthCm))
+          setValue("lengthCm", measurements.lengthCm ?? undefined, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        if (shouldReplace(currentWeight, prev.weightKg))
+          setValue("weightKg", measurements.weightKg ?? undefined, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+
+        // force validation/update so Controllers reflect the new values immediately
+        void trigger(["heightCm", "widthCm", "lengthCm", "weightKg"]);
+
+        // update prev auto-detected measurements
+        autoDetectedRef.current = {
+          ...autoDetectedRef.current,
+          heightCm: measurements.heightCm ?? autoDetectedRef.current?.heightCm,
+          widthCm: measurements.widthCm ?? autoDetectedRef.current?.widthCm,
+          lengthCm: measurements.lengthCm ?? autoDetectedRef.current?.lengthCm,
+          weightKg: measurements.weightKg ?? autoDetectedRef.current?.weightKg,
+          category: category || autoDetectedRef.current?.category,
+          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
+        };
+      } else {
+        // no measurements for this category: clear fields only if they were previously auto-filled
+        if (
+          prev.heightCm !== undefined &&
+          (currentHeight === prev.heightCm || currentHeight === null)
+        )
+          setValue("heightCm", undefined, { shouldDirty: true });
+        if (
+          prev.widthCm !== undefined &&
+          (currentWidth === prev.widthCm || currentWidth === null)
+        )
+          setValue("widthCm", undefined, { shouldDirty: true });
+        if (
+          prev.lengthCm !== undefined &&
+          (currentLength === prev.lengthCm || currentLength === null)
+        )
+          setValue("lengthCm", undefined, { shouldDirty: true });
+        if (
+          prev.weightKg !== undefined &&
+          (currentWeight === prev.weightKg || currentWeight === null)
+        )
+          setValue("weightKg", undefined, { shouldDirty: true });
+
+        autoDetectedRef.current = {
+          ...autoDetectedRef.current,
+          heightCm: undefined,
+          widthCm: undefined,
+          lengthCm: undefined,
+          weightKg: undefined,
+          category: category || autoDetectedRef.current?.category,
+          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
+        };
+      }
+    } catch (err) {
+      /* ignore */
     }
-  }, [watchName, setValue]);
+  }, [watchCategory, watchMlCategory, mlOptions, setValue]);
 
   const onSubmit = async (data: ProductEditFormData) => {
     setIsSubmitting(true);
@@ -564,6 +1008,13 @@ export function EditProductDialog({
         partNumber: data.partNumber || undefined,
         quality: data.quality || undefined,
         sourceVehicle: data.sourceVehicle || undefined,
+
+        // Medidas
+        heightCm: data.heightCm ?? undefined,
+        widthCm: data.widthCm ?? undefined,
+        lengthCm: data.lengthCm ?? undefined,
+        weightKg: data.weightKg ?? undefined,
+
         imageUrl: data.imageUrl || undefined,
       };
 
@@ -844,10 +1295,16 @@ export function EditProductDialog({
 
                 <div className="space-y-2">
                   <Label htmlFor="edit-brand">Marca</Label>
-                  <Input
-                    id="edit-brand"
-                    placeholder="Ex: Bosch, Denso"
-                    {...register("brand")}
+                  <Controller
+                    name="brand"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-brand"
+                        placeholder="Ex: Bosch, Denso"
+                        {...field}
+                      />
+                    )}
                   />
                 </div>
               </div>
@@ -855,19 +1312,31 @@ export function EditProductDialog({
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="edit-model">Modelo</Label>
-                  <Input
-                    id="edit-model"
-                    placeholder="Ex: Civic, Corolla"
-                    {...register("model")}
+                  <Controller
+                    name="model"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-model"
+                        placeholder="Ex: Civic, Corolla"
+                        {...field}
+                      />
+                    )}
                   />
                 </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="edit-year">Ano</Label>
-                  <Input
-                    id="edit-year"
-                    placeholder="Ex: 2018-2022"
-                    {...register("year")}
+                  <Controller
+                    name="year"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-year"
+                        placeholder="Ex: 2018-2022"
+                        {...field}
+                      />
+                    )}
                   />
                 </div>
 
@@ -889,24 +1358,130 @@ export function EditProductDialog({
                   <Controller
                     name="category"
                     control={control}
-                    render={({ field }) => (
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value || undefined}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecione uma categoria..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ML_CATEGORIES.map((cat) => (
-                            <SelectItem key={cat.id} value={cat.value}>
-                              {cat.value}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
+                    render={({ field }) => {
+                      // Prefer mlOptions fullPath when available. When multiple mlOptions
+                      // share the same top-level, pick the most specific (longest) path.
+                      const mlById = mlOptions.find(
+                        (c) => c.id === watch("mlCategory"),
+                      )?.value;
+
+                      const candidates = mlOptions.filter(
+                        (c) => c.value.split(" > ")[0] === watch("category"),
+                      );
+                      const mlByTopLevel = candidates.sort(
+                        (a, b) => b.value.length - a.value.length,
+                      )[0]?.value;
+
+                      const staticById = ML_CATEGORY_OPTIONS.find(
+                        (c) => c.id === watch("mlCategory"),
+                      )?.value;
+                      const staticByTop = ML_CATEGORY_OPTIONS.find(
+                        (c) => c.value.split(" > ")[0] === watch("category"),
+                      )?.value;
+
+                      const detailed =
+                        mlById || mlByTopLevel || staticById || staticByTop;
+
+                      return (
+                        <Select
+                          onValueChange={(val) => {
+                            field.onChange(val);
+                            // Se usuário alterar categoria top-level manualmente, limpar mlCategory
+                            setValue("mlCategory", "");
+                          }}
+                          value={field.value || undefined}
+                        >
+                          <SelectTrigger>
+                            <SelectValue>
+                              {detailed || field.value || undefined}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ML_CATEGORIES.map((cat) => (
+                              <SelectItem
+                                key={`${cat.id}-${cat.value}`}
+                                value={cat.value}
+                              >
+                                {cat.value}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      );
+                    }}
                   />
+
+                  <div className="mt-2">
+                    <Label>Categoría no Mercado Livre (opcional)</Label>
+                    <Controller
+                      name="mlCategory"
+                      control={control}
+                      render={({ field }) => {
+                        const optionsSource =
+                          mlOptions && mlOptions.length > 0
+                            ? mlOptions
+                            : ML_CATEGORY_OPTIONS.map((c) => ({
+                                id: c.id,
+                                value: c.value,
+                              }));
+
+                        // Pick selectedId: prefer explicit field value, otherwise choose
+                        // a candidate whose top-level matches current category (prefer most specific)
+                        const candidateMatches = optionsSource.filter(
+                          (o) => o.value.split(" > ")[0] === watch("category"),
+                        );
+                        const candidateByTop = candidateMatches.sort(
+                          (a, b) => b.value.length - a.value.length,
+                        )[0];
+                        const selectedId =
+                          field.value || candidateByTop?.id || "";
+
+                        const selectedLabel =
+                          optionsSource.find((o) => o.id === field.value)
+                            ?.value ||
+                          (candidateByTop && candidateByTop.value) ||
+                          ML_CATEGORY_OPTIONS.find(
+                            (c) =>
+                              c.value.split(" > ")[0] === watch("category"),
+                          )?.value ||
+                          watch("category") ||
+                          undefined;
+
+                        return (
+                          <Select
+                            onValueChange={(val) => {
+                              field.onChange(val);
+                              const sel = optionsSource.find(
+                                (o) => o.id === val,
+                              );
+                              if (sel && sel.value) {
+                                const parent = sel.value.split(" > ")[0].trim();
+                                setValue("category", parent);
+                              }
+                            }}
+                            value={selectedId}
+                          >
+                            <SelectTrigger>
+                              <SelectValue>
+                                {selectedLabel ||
+                                  "Selecione uma subcategoria ML (opcional)"}
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {optionsSource.map((cat) => (
+                                <SelectItem
+                                  key={`${cat.id}-${cat.value}`}
+                                  value={cat.id}
+                                >
+                                  {cat.value.split(" > ").slice(-1)[0]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        );
+                      }}
+                    />
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     Sugerida ao editar nome
                   </p>
@@ -932,6 +1507,118 @@ export function EditProductDialog({
                 <p className="text-xs text-muted-foreground">
                   Para peças de sucata, informe o veículo de origem
                 </p>
+              </div>
+
+              {/* Medidas (cm / kg) */}
+              <div className="mt-2 grid grid-cols-4 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-heightCm">Altura (cm)</Label>
+                  <Controller
+                    name="heightCm"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-heightCm"
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    )}
+                  />
+                  {errors.heightCm && (
+                    <p className="text-sm text-destructive">
+                      {errors.heightCm.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-widthCm">Largura (cm)</Label>
+                  <Controller
+                    name="widthCm"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-widthCm"
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    )}
+                  />
+                  {errors.widthCm && (
+                    <p className="text-sm text-destructive">
+                      {errors.widthCm.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-lengthCm">Comprimento (cm)</Label>
+                  <Controller
+                    name="lengthCm"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-lengthCm"
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    )}
+                  />
+                  {errors.lengthCm && (
+                    <p className="text-sm text-destructive">
+                      {errors.lengthCm.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-weightKg">Peso (kg)</Label>
+                  <Controller
+                    name="weightKg"
+                    control={control}
+                    render={({ field }) => (
+                      <Input
+                        id="edit-weightKg"
+                        type="number"
+                        step="0.01"
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    )}
+                  />
+                  {errors.weightKg && (
+                    <p className="text-sm text-destructive">
+                      {errors.weightKg.message}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-6 pt-2">

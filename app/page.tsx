@@ -15,6 +15,10 @@ import {
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { authOptions } from "./lib/auth";
+import ProductsByCategory from "@/components/charts/products-by-category";
+import OrdersOverTime from "@/components/charts/orders-over-time";
+import StockDistribution from "@/components/charts/stock-distribution";
+import StockChanges from "@/components/charts/stock-changes";
 
 interface DashboardStats {
   totalProducts: number;
@@ -33,6 +37,35 @@ interface MarketplaceIntegration {
   accountName: string | null;
   status: string;
   updatedAt: string;
+}
+
+interface CategoryItem {
+  category: string;
+  count: number;
+}
+
+interface StockDistributionItem {
+  range: string;
+  count: number;
+}
+
+interface OrderOverTimeItem {
+  date: string;
+  orders: number;
+  totalAmount: number;
+}
+
+interface StockChangeItem {
+  productId: string;
+  productName: string;
+  productSku?: string | null;
+  productImageUrl?: string | null;
+  changes: {
+    date: string;
+    change: number;
+    previousStock: number;
+    newStock: number;
+  }[];
 }
 
 async function getDashboardStats(): Promise<DashboardStats | null> {
@@ -131,6 +164,59 @@ export default async function Home() {
     getDashboardStats(),
     getMarketplaceIntegrations(userSession.user?.email || ""),
   ]);
+
+  // Buscar dados de gráficos
+  const [productsByCategory, stockDistribution, ordersOverTime, stockChanges] =
+    await Promise.all([
+      (async () => {
+        try {
+          const res = await fetch(
+            "http://localhost:3333/dashboard/products-by-category",
+            { cache: "no-store" },
+          );
+          if (!res.ok) return [] as CategoryItem[];
+          return (await res.json()) as CategoryItem[];
+        } catch {
+          return [] as CategoryItem[];
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch(
+            "http://localhost:3333/dashboard/stock-distribution",
+            { cache: "no-store" },
+          );
+          if (!res.ok) return [] as StockDistributionItem[];
+          return (await res.json()) as StockDistributionItem[];
+        } catch {
+          return [] as StockDistributionItem[];
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch(
+            "http://localhost:3333/dashboard/orders-over-time?days=30",
+            { cache: "no-store" },
+          );
+          if (!res.ok) return [] as OrderOverTimeItem[];
+          return (await res.json()) as OrderOverTimeItem[];
+        } catch {
+          return [] as OrderOverTimeItem[];
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch(
+            "http://localhost:3333/dashboard/stock-changes?days=7",
+            { cache: "no-store" },
+          );
+          if (!res.ok) return [] as StockChangeItem[];
+          return (await res.json()) as StockChangeItem[];
+        } catch {
+          return [] as StockChangeItem[];
+        }
+      })(),
+    ]);
 
   const activeIntegrations = integrations.filter((i) => i.status === "ACTIVE");
 
@@ -316,6 +402,50 @@ export default async function Home() {
                 ))}
               </div>
             )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Produtos por Categoria</CardTitle>
+            <CardDescription>Composição do catálogo</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ProductsByCategory data={productsByCategory} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Pedidos (30 dias)</CardTitle>
+            <CardDescription>Tendência de pedidos</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OrdersOverTime data={ordersOverTime} />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Distribuição de Estoque</CardTitle>
+            <CardDescription>Contagem por faixa</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <StockDistribution data={stockDistribution} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Alterações de Estoque (7 dias)</CardTitle>
+            <CardDescription>Produtos com mais alterações</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <StockChanges data={stockChanges} />
           </CardContent>
         </Card>
       </div>

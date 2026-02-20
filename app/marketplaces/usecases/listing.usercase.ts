@@ -18,6 +18,9 @@ export interface CreateListingResult {
   externalListingId?: string;
   permalink?: string;
   error?: string;
+  skipped?: boolean;
+  // raw ML error payload (when available) to let callers decide handling/retries
+  mlError?: string;
 }
 
 export class ListingUseCase {
@@ -160,7 +163,7 @@ export class ListingUseCase {
       if (account.expiresAt < now) {
         try {
           console.debug(
-            `[ListingUseCase] ML token expired for account ${account.id}, attempting refresh`,
+            `[ListingUseCase] ML token expired for account ${account?.id || "<no-account>"}, attempting refresh`,
           );
           const refreshed = await MLOAuthService.refreshAccessToken(
             account.refreshToken,
@@ -175,11 +178,17 @@ export class ListingUseCase {
             expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
           });
 
-          // usar tokens renovados
-          account = updated as any;
-          console.debug(
-            `[ListingUseCase] Account tokens updated, using accessToken=${account.accessToken}`,
-          );
+          // usar tokens renovados — only reassign if update returned a value
+          if (updated) {
+            account = updated as any;
+            console.debug(
+              `[ListingUseCase] Account tokens updated, using accessToken=${account.accessToken}`,
+            );
+          } else {
+            console.warn(
+              `[ListingUseCase] updateTokens returned empty for account ${account?.id}`,
+            );
+          }
         } catch (refreshErr) {
           // marcar conta como erro e informar usuário para reconectar
           await MarketplaceRepository.updateStatus(
@@ -187,7 +196,7 @@ export class ListingUseCase {
             AccountStatus.ERROR,
           );
           console.warn(
-            `[ListingUseCase] Failed to refresh token for account ${account.id}:`,
+            `[ListingUseCase] Failed to refresh token for account ${account?.id || "<no-account>"}:`,
             refreshErr?.message || refreshErr,
           );
           return {
@@ -197,48 +206,139 @@ export class ListingUseCase {
           };
         }
       }
-
+      // If account appears INACTIVE in DB, attempt an immediate capability re-check
+      // (user may have just reactivated sales in Seller Center). If the re-check
+      // succeeds, mark the account ACTIVE so the listing flow proceeds.
+      if (account.status !== AccountStatus.ACTIVE) {
+        try {
+          console.debug(
+            `[ListingUseCase] account ${account?.id || "<no-account>"} status is ${account?.status}; attempting capability re-check before failing`,
+          );
+          const mlUserInfo = await MLOAuthService.getUserInfo(
+            account.accessToken,
+          );
+          const sellerId = mlUserInfo?.id?.toString();
+          if (sellerId) {
+            await MLApiService.getSellerItemIds(
+              account.accessToken,
+              sellerId,
+              "active",
+              1,
+            );
+            // re-activate account in DB
+            const updatedStatus = await MarketplaceRepository.updateStatus(
+              account.id,
+              AccountStatus.ACTIVE,
+            );
+            if (updatedStatus) {
+              account = updatedStatus as any;
+              console.info(
+                `[ListingUseCase] account ${account?.id || "<no-account>"} reactivated after capability re-check`,
+              );
+            } else {
+              console.warn(
+                `[ListingUseCase] updateStatus returned empty for account ${account?.id}`,
+              );
+            }
+          }
+        } catch (recheckErr) {
+          console.debug(
+            `[ListingUseCase] capability re-check for account ${account?.id || "<no-account>"} failed: ${recheckErr?.message || recheckErr}`,
+          );
+          // continue — the later pre-check will still detect vacation/restriction
+        }
+      }
       // Pre-check: validar que o seller pode criar anúncios (detectar restrições antes de montar payload)
+      let sellerId: string | undefined;
       try {
-        const mlUserInfo = await MLOAuthService.getUserInfo(account.accessToken);
-        const sellerId = mlUserInfo?.id?.toString();
+        const mlUserInfo = await MLOAuthService.getUserInfo(
+          account.accessToken,
+        );
+        sellerId = mlUserInfo?.id?.toString();
         if (sellerId) {
           try {
             // chamada leve para confirmar capacidade de listar (pede 1 id apenas)
-            await MLApiService.getSellerItemIds(account.accessToken, sellerId, "active", 1);
+            await MLApiService.getSellerItemIds(
+              account.accessToken,
+              sellerId,
+              "active",
+              1,
+            );
           } catch (preErr: any) {
-            const preMsg = preErr instanceof Error ? preErr.message : String(preErr);
+            const preMsg =
+              preErr instanceof Error ? preErr.message : String(preErr);
             if (
               preMsg.includes("seller.unable_to_list") ||
               preMsg.includes("User is unable to list")
             ) {
-              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
-              await SystemLogService.logError(
-                "CREATE_LISTING",
-                `Pre-check: vendedor bloqueado no ML: ${preMsg}`,
-                {
-                  userId,
-                  resource: "MarketplaceAccount",
-                  resourceId: account.id,
-                  details: { mlError: preMsg },
-                },
-              );
+              // Seller restriction detected during pre-check. Try *more* retries
+              // before treating as permanent — ML can be eventually consistent when the
+              // seller disables vacation / restriction in Seller Center.
+              let recovered = false;
+              try {
+                // increase attempts and backoff to cover short propagation delays
+                for (let attempt = 1; attempt <= 5; attempt++) {
+                  await new Promise((r) => setTimeout(r, attempt * 700));
+                  try {
+                    await MLApiService.getSellerItemIds(
+                      account.accessToken,
+                      sellerId!,
+                      "active",
+                      1,
+                    );
+                    recovered = true;
+                    break;
+                  } catch (e) {
+                    // continue retrying
+                    console.debug(
+                      `[ListingUseCase] pre-check retry ${attempt} failed for account ${account?.id || "<no-account>"}`,
+                    );
+                  }
+                }
+              } catch (e) {
+                /* ignore */
+              }
 
-              return {
-                success: false,
-                error:
-                  "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
-              };
+              if (recovered) {
+                // treat as transient — continue flow so listing creation will be attempted
+                console.info(
+                  `[ListingUseCase] pre-check seller restriction recovered for account ${account?.id || "<no-account>"}`,
+                );
+              } else {
+                // Not recovered: record ML error and return skipped (no creation)
+                await SystemLogService.logError(
+                  "CREATE_LISTING",
+                  `Pre-check: vendedor bloqueado no ML: ${preMsg}`,
+                  {
+                    userId,
+                    resource: "MarketplaceAccount",
+                    resourceId: account.id,
+                    details: { mlError: preMsg },
+                  },
+                );
+
+                return {
+                  success: false,
+                  skipped: true,
+                  error:
+                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                  mlError: preMsg,
+                };
+              }
             }
 
             if (
               preMsg.toLowerCase().includes("unauthorized") ||
               preMsg.toLowerCase().includes("invalid access token")
             ) {
-              await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+              await MarketplaceRepository.updateStatus(
+                account.id,
+                AccountStatus.ERROR,
+              );
               return {
                 success: false,
-                error: "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+                error:
+                  "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
               };
             }
 
@@ -246,15 +346,26 @@ export class ListingUseCase {
           }
         }
       } catch (infoErr: any) {
-        const msg = infoErr instanceof Error ? infoErr.message : String(infoErr);
-        if (msg.toLowerCase().includes("unauthorized") || msg.toLowerCase().includes("invalid access token")) {
-          await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
+        const msg =
+          infoErr instanceof Error ? infoErr.message : String(infoErr);
+        if (
+          msg.toLowerCase().includes("unauthorized") ||
+          msg.toLowerCase().includes("invalid access token")
+        ) {
+          await MarketplaceRepository.updateStatus(
+            account.id,
+            AccountStatus.ERROR,
+          );
           return {
             success: false,
-            error: "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+            error:
+              "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
           };
         }
-        console.warn("[ListingUseCase] getUserInfo pre-check failed, continuing:", msg);
+        console.warn(
+          "[ListingUseCase] getUserInfo pre-check failed, continuing:",
+          msg,
+        );
       }
 
       // 2. Buscar dados do produto
@@ -271,7 +382,8 @@ export class ListingUseCase {
       if (!product.imageUrl) {
         return {
           success: false,
-          error: "Produto precisa ter imagem para criar anúncio no Mercado Livre",
+          error:
+            "Produto precisa ter imagem para criar anúncio no Mercado Livre",
         };
       }
 
@@ -450,37 +562,183 @@ export class ListingUseCase {
           errMsg.includes("seller.unable_to_list") ||
           errMsg.includes("User is unable to list")
         ) {
-          // marcar conta como ERROR para evitar novas tentativas automáticas
-          await MarketplaceRepository.updateStatus(account.id, AccountStatus.ERROR);
-
-          // registrar log do sistema com detalhes do erro ML
+          // Attempt quick re-checks before giving up — seller restrictions can be
+          // transient. Do NOT mark account as ERROR here; keep it connected.
+          let recovered = false;
           try {
-            await SystemLogService.logError(
-              "CREATE_LISTING",
-              `Falha ao criar anúncio no ML: ${errMsg}`,
-              {
-                userId,
-                resource: "MarketplaceAccount",
-                resourceId: account.id,
-                details: { mlError: errMsg },
-              },
-            );
-          } catch (logErr) {
-            console.error(
-              "[ListingUseCase] Failed to record system log for ML restriction:",
-              logErr,
-            );
+            // ensure we have sellerId (may not be populated if earlier pre-check was skipped)
+            if (!sellerId) {
+              const _u = await MLOAuthService.getUserInfo(account.accessToken);
+              sellerId = _u?.id?.toString();
+            }
+
+            if (sellerId) {
+              // extend quick re-check window
+              for (let attempt = 1; attempt <= 4; attempt++) {
+                await new Promise((r) => setTimeout(r, attempt * 700));
+                try {
+                  await MLApiService.getSellerItemIds(
+                    account.accessToken,
+                    sellerId,
+                    "active",
+                    1,
+                  );
+                  recovered = true;
+                  break;
+                } catch (e) {
+                  console.debug(
+                    `[ListingUseCase] create-item recheck ${attempt} failed for account ${account?.id || "<no-account>"}`,
+                  );
+                }
+              }
+            }
+          } catch (e) {
+            /* ignore */
           }
 
-          return {
-            success: false,
-            error:
-              "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
-          };
+          if (recovered) {
+            // Try creating the item again with a small retry loop
+            for (let attempt = 1; attempt <= 3 && !mlItem; attempt++) {
+              try {
+                if (attempt > 1) {
+                  await new Promise((r) => setTimeout(r, attempt * 700));
+                }
+                mlItem = await MLApiService.createItem(
+                  account.accessToken,
+                  payload,
+                );
+                console.log(
+                  `[ListingUseCase] ML create succeeded on retry (attempt ${attempt})`,
+                );
+                break;
+              } catch (retryCreateErr) {
+                console.debug(
+                  `[ListingUseCase] createItem retry ${attempt} failed:`,
+                  retryCreateErr?.message || retryCreateErr,
+                );
+                // continue retrying
+              }
+            }
+          }
+
+          // If we still don't have an mlItem, record a system log and create a local placeholder
+          if (!mlItem) {
+            try {
+              await SystemLogService.logError(
+                "CREATE_LISTING",
+                `Falha ao criar anúncio no ML: ${errMsg}`,
+                {
+                  userId,
+                  resource: "MarketplaceAccount",
+                  resourceId: account.id,
+                  details: { mlError: errMsg },
+                },
+              );
+            } catch (logErr) {
+              console.error(
+                "[ListingUseCase] Failed to record system log for ML restriction:",
+                logErr,
+              );
+            }
+
+            // create a local placeholder listing if not existent
+            try {
+              const existing = await ListingRepository.findByProductAndAccount(
+                productId,
+                account.id,
+              );
+              if (!existing) {
+                const placeholderId = `PENDING_${Date.now()}`;
+                const initialRetryDelayMs = 30 * 1000; // try again after 30s
+                const placeholder = await ListingRepository.createListing({
+                  productId,
+                  marketplaceAccountId: account.id,
+                  externalListingId: placeholderId,
+                  externalSku: product?.sku || undefined,
+                  permalink: undefined,
+                  status: "paused",
+                  retryAttempts: 0,
+                  nextRetryAt: new Date(Date.now() + initialRetryDelayMs),
+                  lastError: errMsg,
+                  retryEnabled: true,
+                  requestedCategoryId: payload.category_id || null,
+                });
+
+                // Record a system log referencing the newly created placeholder listing
+                try {
+                  await SystemLogService.logError(
+                    "CREATE_LISTING",
+                    `Placeholder criado localmente após falha ML: ${errMsg}`,
+                    {
+                      userId,
+                      resource: "ProductListing",
+                      resourceId: placeholder.id,
+                      details: { mlError: errMsg },
+                    },
+                  );
+                } catch (logErr) {
+                  console.warn(
+                    "Failed to write SystemLog for placeholder listing:",
+                    logErr,
+                  );
+                }
+
+                return {
+                  success: false,
+                  skipped: true,
+                  listingId: placeholder.id,
+                  error:
+                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                  mlError: errMsg,
+                };
+              } else {
+                // If existing placeholder found, attach ML error log to it as well
+                try {
+                  await SystemLogService.logError(
+                    "CREATE_LISTING",
+                    `Anúncio existente marcado após falha ML: ${errMsg}`,
+                    {
+                      userId,
+                      resource: "ProductListing",
+                      resourceId: existing.id,
+                      details: { mlError: errMsg },
+                    },
+                  );
+                } catch (logErr) {
+                  console.warn(
+                    "Failed to write SystemLog for existing placeholder listing:",
+                    logErr,
+                  );
+                }
+
+                return {
+                  success: false,
+                  skipped: true,
+                  listingId: existing.id,
+                  error:
+                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                  mlError: errMsg,
+                };
+              }
+            } catch (phErr) {
+              console.error(
+                "[ListingUseCase] Failed to create placeholder after ML failure:",
+                phErr,
+              );
+              return {
+                success: false,
+                skipped: true,
+                error:
+                  "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+              };
+            }
+          }
+
+          // If we recovered and mlItem was created by the retry above, continue the normal flow
         }
 
-        // Repropagar erro desconhecido para o catch externo
-        throw err;
+        // If we recovered and have mlItem, continue normal flow; otherwise rethrow
+        if (!mlItem) throw err;
       }
 
       // 4.1. Após criar o item no ML, enviar a descrição completa (se existir)
