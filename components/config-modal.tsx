@@ -48,20 +48,7 @@ export default function ConfigModal({ open, onOpenChange }: ConfigModalProps) {
   const fetchUserSettings = async () => {
     setLoading(true);
     try {
-      // Preferir /users/:id quando id interno estiver disponível
-      if (session?.user?.id) {
-        const response = await fetch(
-          `http://localhost:3333/users/${session.user.id}`,
-        );
-        if (response.ok) {
-          const user = await response.json();
-          setDefaultDescription(user.defaultProductDescription || "");
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Fallback: usar /users/me com header email
+      // sempre usamos /users/me com header email para evitar 404s
       if (session?.user?.email) {
         const resp = await fetch(`http://localhost:3333/users/me`, {
           headers: { email: session.user.email },

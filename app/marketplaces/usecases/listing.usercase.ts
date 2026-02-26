@@ -555,6 +555,9 @@ export class ListingUseCase {
           JSON.stringify(mlItem, null, 2),
         );
       } catch (err: any) {
+        // capture raw mlError object attached by MLApiService
+        const parsedMl =
+          err && (err as any).mlError ? (err as any).mlError : null;
         const errMsg = err instanceof Error ? err.message : String(err);
 
         // Caso conhecido: vendedor está impedido de anunciar (restrição do ML)
@@ -562,6 +565,25 @@ export class ListingUseCase {
           errMsg.includes("seller.unable_to_list") ||
           errMsg.includes("User is unable to list")
         ) {
+          // log entire object for debugging
+          try {
+            await SystemLogService.logError(
+              "CREATE_LISTING",
+              `Falha ao criar anúncio no ML (seller.unable_to_list): ${errMsg}`,
+              {
+                userId,
+                resource: "MarketplaceAccount",
+                resourceId: account.id,
+                details: { mlError: parsedMl || errMsg },
+              },
+            );
+          } catch (logErr) {
+            console.error(
+              "[ListingUseCase] failed to log detailed ML error:",
+              logErr,
+            );
+          }
+
           // Attempt quick re-checks before giving up — seller restrictions can be
           // transient. Do NOT mark account as ERROR here; keep it connected.
           let recovered = false;
@@ -631,7 +653,7 @@ export class ListingUseCase {
                   userId,
                   resource: "MarketplaceAccount",
                   resourceId: account.id,
-                  details: { mlError: errMsg },
+                  details: { mlError: parsedMl || errMsg },
                 },
               );
             } catch (logErr) {
@@ -673,7 +695,7 @@ export class ListingUseCase {
                       userId,
                       resource: "ProductListing",
                       resourceId: placeholder.id,
-                      details: { mlError: errMsg },
+                      details: { mlError: parsedMl || errMsg },
                     },
                   );
                 } catch (logErr) {
@@ -701,7 +723,7 @@ export class ListingUseCase {
                       userId,
                       resource: "ProductListing",
                       resourceId: existing.id,
-                      details: { mlError: errMsg },
+                      details: { mlError: parsedMl || errMsg },
                     },
                   );
                 } catch (logErr) {

@@ -95,9 +95,10 @@ export function ShopeeConnectionTab() {
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
             email: userEmail,
+            "Content-Type": "application/json",
           },
+          body: JSON.stringify({}),
         },
       );
 

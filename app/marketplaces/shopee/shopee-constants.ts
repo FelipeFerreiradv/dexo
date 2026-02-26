@@ -41,4 +41,11 @@ export function validateShopeeConfig(): void {
       throw new Error(`Variável de ambiente ${envVar} não configurada`);
     }
   }
+
+  // debug info
+  console.log("[ShopeeConfig] partnerId", process.env.SHOPEE_PARTNER_ID);
+  console.log(
+    "[ShopeeConfig] key length",
+    process.env.SHOPEE_PARTNER_KEY?.length,
+  );
 }

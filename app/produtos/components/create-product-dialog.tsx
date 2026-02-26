@@ -240,6 +240,10 @@ export function CreateProductDialog({
   );
   const [mlConnected, setMlConnected] = useState<boolean | null>(null);
   const [mlAccountStatus, setMlAccountStatus] = useState<string | null>(null);
+  const [mlRestricted, setMlRestricted] = useState<boolean>(false);
+  const [mlRestrictionMessage, setMlRestrictionMessage] = useState<
+    string | null
+  >(null);
 
   const {
     register,
@@ -316,44 +320,23 @@ export function CreateProductDialog({
 
   // Busca descrição padrão do usuário
   const fetchDefaultDescription = useCallback(async () => {
-    // Tentar usar id (quando disponível). Caso contrário, usar /me com header email como fallback.
+    // Sempre usamos o endpoint /users/me com header email para evitar 404s
     try {
-      // Preferir buscar por id (quando id interno existir)
-      if (session?.user?.id) {
-        try {
-          const resp = await fetch(
-            `http://localhost:3333/users/${session.user.id}`,
-          );
-          if (resp.ok) {
-            const user = await resp.json();
-            const desc = user.defaultProductDescription || "";
-            setDefaultDescription(desc);
-            setValue("description", desc);
-            return;
-          }
-          // se 404, cair para fallback
-        } catch (err) {
-          // continue to fallback
-        }
-      }
-
-      // Fallback: buscar /users/me pelo header `email` (mais confiável quando session.id não é o internal id)
       if (session?.user?.email) {
-        const resp2 = await fetch(`http://localhost:3333/users/me`, {
+        const resp = await fetch(`http://localhost:3333/users/me`, {
           headers: { email: session.user.email },
         });
-        if (resp2.ok) {
-          const user = await resp2.json();
+        if (resp.ok) {
+          const user = await resp.json();
           const desc = user.defaultProductDescription || "";
           setDefaultDescription(desc);
           setValue("description", desc);
-          return;
         }
       }
     } catch (error) {
       console.error("Erro ao buscar descrição padrão:", error);
     }
-  }, [session?.user?.email, session?.user?.id, setValue]);
+  }, [session?.user?.email, setValue]);
 
   // Import shared parser
   // NOTE: keep logic same, just using central util to avoid duplication
@@ -394,6 +377,8 @@ export function CreateProductDialog({
               const statusJson = await respStatus.json();
               setMlConnected(Boolean(statusJson.connected));
               setMlAccountStatus(statusJson.status || null);
+              setMlRestricted(Boolean(statusJson.restricted));
+              setMlRestrictionMessage(statusJson.message || null);
             }
           } catch (sErr) {
             console.error("Erro ao buscar status ML:", sErr);
@@ -1933,7 +1918,15 @@ export function CreateProductDialog({
                   </p>
                 )}
 
-                {mlAccountStatus === "INACTIVE" && (
+                {mlRestricted && (
+                  <p className="text-sm text-red-600">
+                    Conta do Mercado Livre com restrição de política — não é
+                    possível criar anúncios.{" "}
+                    {mlRestrictionMessage || "Verifique o Seller Center."}
+                  </p>
+                )}
+
+                {!mlRestricted && mlAccountStatus === "INACTIVE" && (
                   <p className="text-sm text-yellow-600">
                     Conta do Mercado Livre em modo férias/inativa — ative a
                     venda no Seller Center para criar anúncios.

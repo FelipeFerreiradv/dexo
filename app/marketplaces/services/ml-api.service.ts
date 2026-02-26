@@ -554,7 +554,10 @@ export class MLApiService {
         const errorMessage = errorData
           ? JSON.stringify(errorData)
           : error.message;
-        throw new Error(`Erro ao criar item: ${errorMessage}`);
+        const err = new Error(`Erro ao criar item: ${errorMessage}`);
+        // attach parsed ML payload for callers to inspect
+        (err as any).mlError = errorData || null;
+        throw err;
       }
       throw error;
     }

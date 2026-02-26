@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import axios from "axios";
-import { SHOPEE_CONSTANTS, validateShopeeConfig } from "../shopee/shopee-constants";
+import {
+  SHOPEE_CONSTANTS,
+  validateShopeeConfig,
+} from "../shopee/shopee-constants";
 import {
   ShopeeAuthParams,
   ShopeeAuthUrl,
@@ -46,6 +49,9 @@ export class ShopeeOAuthService {
       baseString += body;
     }
 
+    // debug log baseString
+    console.log("[ShopeeOAuth] baseString=", JSON.stringify(baseString));
+
     // Gerar assinatura HMAC-SHA256
     const signature = crypto
       .createHmac("sha256", SHOPEE_CONSTANTS.PARTNER_KEY!)
@@ -65,10 +71,13 @@ export class ShopeeOAuthService {
     const redirect = redirectUri || SHOPEE_CONSTANTS.REDIRECT_URI;
 
     // Gerar assinatura para o endpoint de autorização
+    // Shopee exige que o domínio (origin) do redirect esteja no texto assinado.
+    const redirectDomain = new URL(redirect).origin;
     const signature = this.generateSignature({
       partner_id: partnerId,
       api_path: "/api/v2/shop/auth_partner",
       timestamp,
+      body: redirectDomain, // domain-only
     });
 
     // Construir URL de autorização

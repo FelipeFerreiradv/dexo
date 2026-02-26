@@ -89,9 +89,9 @@ interface Pagination {
 }
 
 interface Toast {
-  id: number;
+  id: string; // use uuid to avoid duplicate keys when multiple toasts fire in same ms
   message: string;
-  type: "success" | "error";
+  type: "success" | "error" | "warning";
 }
 
 export function ProductsList() {
@@ -111,7 +111,7 @@ export function ProductsList() {
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
-      const id = Date.now();
+      const id = crypto.randomUUID();
       setToasts((prev) => [...prev, { id, message, type }]);
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));

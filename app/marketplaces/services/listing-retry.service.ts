@@ -118,6 +118,10 @@ export class ListingRetryService {
           );
         } catch (createErr) {
           const rawMsg = String(createErr?.message || createErr);
+          const parsed =
+            createErr && (createErr as any).mlError
+              ? (createErr as any).mlError
+              : null;
           console.log(
             `[ListingRetryService] createItem error for ${cand.id}: ${rawMsg}`,
           );
@@ -136,9 +140,12 @@ export class ListingRetryService {
             await SystemLogService.logError(
               "RETRY_LISTING",
               `createItem non-retryable policy error for placeholder ${cand.id}: ${rawMsg}`,
-              { resource: "ProductListing", resourceId: cand.id },
+              {
+                resource: "ProductListing",
+                resourceId: cand.id,
+                details: { mlError: parsed || rawMsg },
+              },
             );
-
             continue;
           }
 

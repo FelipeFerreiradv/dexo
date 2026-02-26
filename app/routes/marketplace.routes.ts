@@ -143,6 +143,92 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   );
 
   /**
+   * GET /marketplace/ml/diagnostic
+   * Executa uma série de verificações internas e chamadas à API Mercado Livre
+   * para ajudar a diagnosticar problemas de conexão ou restrições.
+   */
+  app.get<{ Reply: any }>(
+    "/ml/diagnostic",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const logs: any = {};
+      const userId = request.user!.id;
+      try {
+        logs.user = await prisma.user.findUnique({ where: { id: userId } });
+        const account = await prisma.marketplaceAccount.findFirst({
+          where: { userId, platform: Platform.MERCADO_LIVRE },
+        });
+        logs.marketplaceAccount = account;
+
+        if (account) {
+          try {
+            const { MLOAuthService } =
+              await import("../marketplaces/services/ml-oauth.service");
+            const sellerInfo = await MLOAuthService.getUserInfo(
+              account.accessToken,
+            );
+            logs.sellerInfo = sellerInfo;
+
+            const { MLApiService } =
+              await import("../marketplaces/services/ml-api.service");
+            try {
+              await MLApiService.getSellerItemIds(sellerInfo.id);
+              logs.preCheck = "ok";
+            } catch (err: any) {
+              logs.preCheckError = err?.message || String(err);
+            }
+
+            try {
+              const dummyPayload = {
+                title: "TESTE DIAGNOSTICO",
+                category_id: "MLB271107",
+                price: 1,
+                currency_id: "BRL",
+                available_quantity: 1,
+                buying_mode: "buy_it_now",
+                listing_type_id: "bronze",
+                condition: "new",
+                seller_custom_field: "DIAG",
+              };
+              const created = await MLApiService.createItem(
+                sellerInfo.id,
+                dummyPayload,
+              );
+              logs.create = "ok";
+              logs.createdItem = created;
+
+              // tentar encerrar imediatamente para não deixar anúncio visível
+              if (created && created.id) {
+                try {
+                  await MLApiService.updateItem(
+                    account.accessToken,
+                    created.id,
+                    {
+                      status: "closed",
+                    } as any,
+                  );
+                  logs.createdClosed = true;
+                } catch (err2) {
+                  logs.createdClosedError = err2?.message || String(err2);
+                }
+              }
+            } catch (err: any) {
+              logs.createError = err?.message || String(err);
+              logs.createResponse = err;
+            }
+          } catch (err: any) {
+            logs.sellerInfoError = err?.message || String(err);
+          }
+        }
+
+        return reply.send(logs);
+      } catch (err: any) {
+        return reply.status(500).send({ error: err.message, logs });
+      }
+    },
+  );
+
+  /**
    * DELETE /marketplace/ml
    * Desconecta conta do Mercado Livre
    */
@@ -319,12 +405,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           .status(202)
           .send({ success: true, message: "Retry iniciado" });
       } catch (err) {
-        return reply
-          .status(500)
-          .send({
-            error: "Erro ao iniciar retry",
-            message: err instanceof Error ? err.message : String(err),
-          });
+        return reply.status(500).send({
+          error: "Erro ao iniciar retry",
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
     },
   );

@@ -42,9 +42,9 @@ interface OrderStats {
 }
 
 interface Toast {
-  id: number;
+  id: string;
   message: string;
-  type: "success" | "error";
+  type: "success" | "error" | "warning";
 }
 
 export function OrdersList() {
@@ -71,7 +71,7 @@ export function OrdersList() {
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
-      const id = Date.now();
+      const id = crypto.randomUUID();
       setToasts((prev) => [...prev, { id, message, type }]);
       setTimeout(() => {
         setToasts((prev) => prev.filter((toast) => toast.id !== id));

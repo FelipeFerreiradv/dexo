@@ -32,6 +32,12 @@
 GET {{baseUrl}}/marketplace/ml/status
 email: {{userEmail}}
 
+### 🔍 DIAGNÓSTICO COMPLETO
+# esta chamada executa checagens internas e tenta criar/encerrar um anúncio de teste
+GET {{baseUrl}}/marketplace/ml/diagnostic
+email: {{userEmail}}
+
+
 ### RESPOSTA ESPERADA (conectado):
 ### {
 ###   "connected": true,

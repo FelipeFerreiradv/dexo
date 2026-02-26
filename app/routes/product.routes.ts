@@ -206,10 +206,34 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 /restrictions_\w+/i.test(mlError) ||
                 /restrictions_coliving/i.test(mlError)
               ) {
-                console.debug(
-                  "[product.routes] skipped due to ML policy restriction, not rechecking account:",
-                  mlError,
-                );
+                // ML returned a policy-like restriction. Do a quick real-time status
+                // check before deciding to skip completely: sometimes ML returns
+                // transient policy flags while the seller has already reactivated sales.
+                try {
+                  const quick = await MarketplaceUseCase.getAccountStatus(
+                    userCheck.id,
+                    Platform.MERCADO_LIVRE,
+                  );
+
+                  // If account is connected and not restricted anymore, attempt immediate retry
+                  if (quick?.connected && !quick?.restricted) {
+                    listingResult = await ListingUseCase.createMLListing(
+                      userCheck.id,
+                      data.id,
+                      createListingCategoryId,
+                    );
+                  } else {
+                    console.debug(
+                      "[product.routes] skipped due to ML policy restriction, not rechecking account:",
+                      mlError,
+                    );
+                  }
+                } catch (e) {
+                  console.debug(
+                    "[product.routes] quick status check failed for policy restriction:",
+                    e?.message || e,
+                  );
+                }
               } else {
                 try {
                   const maxRechecks = 5;

@@ -265,36 +265,15 @@ export function EditProductDialog({
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   const fetchDefaultDescription = async () => {
     try {
-      if (!product.description) {
-        // Preferir buscar por id quando disponível
-        if (session?.user?.id) {
-          try {
-            const resp = await fetch(
-              `http://localhost:3333/users/${session.user.id}`,
-            );
-            if (resp.ok) {
-              const user = await resp.json();
-              const desc = user.defaultProductDescription || "";
-              setDefaultDescription(desc);
-              if (!product.description && desc) setValue("description", desc);
-              return;
-            }
-          } catch (err) {
-            // continue to fallback
-          }
-        }
-
-        if (session?.user?.email) {
-          const resp2 = await fetch(`http://localhost:3333/users/me`, {
-            headers: { email: session.user.email },
-          });
-          if (resp2.ok) {
-            const user = await resp2.json();
-            const desc = user.defaultProductDescription || "";
-            setDefaultDescription(desc);
-            if (!product.description && desc) setValue("description", desc);
-            return;
-          }
+      if (!product.description && session?.user?.email) {
+        const resp = await fetch(`http://localhost:3333/users/me`, {
+          headers: { email: session.user.email },
+        });
+        if (resp.ok) {
+          const user = await resp.json();
+          const desc = user.defaultProductDescription || "";
+          setDefaultDescription(desc);
+          if (!product.description && desc) setValue("description", desc);
         }
       }
     } catch (err) {
