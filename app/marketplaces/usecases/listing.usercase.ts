@@ -1,4 +1,4 @@
-import { Platform } from "@prisma/client";
+﻿import { Platform } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
@@ -27,23 +27,24 @@ export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
 
   /**
-   * Cria um anúncio em qualquer marketplace suportado
+   * Cria um anÃºncio em qualquer marketplace suportado
    */
   static async createListing(
     userId: string,
     productId: string,
     platform: Platform,
     categoryId?: string,
+    accountId?: string,
   ): Promise<CreateListingResult> {
     switch (platform) {
       case Platform.MERCADO_LIVRE:
-        return this.createMLListing(userId, productId, categoryId);
+        return this.createMLListing(userId, productId, categoryId, accountId);
       case Platform.SHOPEE:
-        return this.createShopeeListing(userId, productId, categoryId);
+        return this.createShopeeListing(userId, productId, categoryId, accountId);
       default:
         return {
           success: false,
-          error: `Plataforma ${platform} não suportada`,
+          error: `Plataforma ${platform} nÃ£o suportada`,
         };
     }
   }
@@ -63,7 +64,7 @@ export class ListingUseCase {
   }
 
   /**
-   * Constrói um título completo para o anúncio do ML
+   * ConstrÃ³i um tÃ­tulo completo para o anÃºncio do ML
    */
   private static buildMLTitle(product: any): string {
     const parts: string[] = [];
@@ -71,27 +72,27 @@ export class ListingUseCase {
     // Adicionar nome do produto
     parts.push(product.name);
 
-    // Adicionar marca se disponível
+    // Adicionar marca se disponÃ­vel
     if (product.brand) {
       parts.push(product.brand);
     }
 
-    // Adicionar modelo se disponível
+    // Adicionar modelo se disponÃ­vel
     if (product.model) {
       parts.push(product.model);
     }
 
-    // Adicionar ano se disponível
+    // Adicionar ano se disponÃ­vel
     if (product.year) {
       parts.push(product.year);
     }
 
-    // Adicionar versão se disponível
+    // Adicionar versÃ£o se disponÃ­vel
     if (product.version) {
       parts.push(product.version);
     }
 
-    // Adicionar partNumber se disponível
+    // Adicionar partNumber se disponÃ­vel
     if (product.partNumber) {
       parts.push(`PN: ${product.partNumber}`);
     }
@@ -102,164 +103,186 @@ export class ListingUseCase {
   }
 
   /**
-   * Constrói uma descrição completa para o anúncio do ML
+   * ConstrÃ³i uma descriÃ§Ã£o completa para o anÃºncio do ML
    */
   private static buildMLDescription(product: any): string {
     const parts: string[] = [];
 
-    // Descrição principal
+    // DescriÃ§Ã£o principal
     if (product.description) {
       parts.push(product.description);
     }
 
-    // Detalhes técnicos
+    // Detalhes tÃ©cnicos
     const details: string[] = [];
     if (product.brand) details.push(`Marca: ${product.brand}`);
     if (product.model) details.push(`Modelo: ${product.model}`);
     if (product.year) details.push(`Ano: ${product.year}`);
-    if (product.version) details.push(`Versão: ${product.version}`);
+    if (product.version) details.push(`VersÃ£o: ${product.version}`);
     if (product.partNumber)
-      details.push(`Número da Peça: ${product.partNumber}`);
+      details.push(`NÃºmero da PeÃ§a: ${product.partNumber}`);
     if (product.quality) details.push(`Qualidade: ${product.quality}`);
-    if (product.location) details.push(`Localização: ${product.location}`);
+    if (product.location) details.push(`LocalizaÃ§Ã£o: ${product.location}`);
 
     if (details.length > 0) {
-      parts.push("Detalhes Técnicos:");
+      parts.push("Detalhes TÃ©cnicos:");
       parts.push(details.join("\n"));
     }
 
-    // SKU para referência
+    // SKU para referÃªncia
     parts.push(`SKU: ${product.sku}`);
 
     return parts.join("\n\n");
   }
 
   /**
-   * Cria um anúncio no Mercado Livre para um produto
-   * @param userId ID do usuário
+   * Cria um anÃºncio no Mercado Livre para um produto
+   * @param userId ID do usuÃ¡rio
    * @param productId ID do produto
-   * @param categoryId ID da categoria do ML (opcional, será inferida se não fornecida)
+   * @param categoryId ID da categoria do ML (opcional, serÃ¡ inferida se nÃ£o fornecida)
    */
   static async createMLListing(
     userId: string,
     productId: string,
     categoryId?: string,
+    accountId?: string,
   ): Promise<CreateListingResult> {
     try {
-      let account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        Platform.MERCADO_LIVRE,
-      );
+      let account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.MERCADO_LIVRE,
+          );
+
+      // Se múltiplas contas ativas e accountId não foi informado, exigir escolha explícita
+      if (!account && !accountId) {
+        const allActive = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MERCADO_LIVRE,
+        );
+        const active = (allActive || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta do Mercado Livre para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
 
       if (!account || !account.accessToken) {
         return {
           success: false,
-          error: "Conta do Mercado Livre não conectada ou sem credenciais",
+          error: "Conta do Mercado Livre nÃ£o conectada ou sem credenciais",
         };
       }
+      let acc: NonNullable<typeof account> = account; // narrow to non-null
 
-      // Verificar se token expirou e tentar renovação automática (melhor experiência para o usuário)
+      // Verificar se token expirou e tentar renovaÃ§Ã£o automÃ¡tica (melhor experiÃªncia para o usuÃ¡rio)
       const now = new Date();
-      if (account.expiresAt < now) {
+      if (acc.expiresAt < now) {
         try {
           console.debug(
-            `[ListingUseCase] ML token expired for account ${account?.id || "<no-account>"}, attempting refresh`,
+            `[ListingUseCase] ML token expired for account ${acc.id || "<no-account>"}, attempting refresh`,
           );
           const refreshed = await MLOAuthService.refreshAccessToken(
-            account.refreshToken,
+            acc.refreshToken,
           );
 
           console.debug(
             `[ListingUseCase] ML token refresh returned, updating DB tokens`,
           );
-          const updated = await MarketplaceRepository.updateTokens(account.id, {
+          const updated = await MarketplaceRepository.updateTokens(acc.id, {
             accessToken: refreshed.accessToken,
             refreshToken: refreshed.refreshToken,
             expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
           });
 
-          // usar tokens renovados — only reassign if update returned a value
+          // usar tokens renovados â€” only reassign if update returned a value
           if (updated) {
             account = updated as any;
+            acc = updated;
             console.debug(
-              `[ListingUseCase] Account tokens updated, using accessToken=${account.accessToken}`,
+              `[ListingUseCase] Account tokens updated, using accessToken=${acc.accessToken}`,
             );
           } else {
             console.warn(
-              `[ListingUseCase] updateTokens returned empty for account ${account?.id}`,
+              `[ListingUseCase] updateTokens returned empty for account ${acc.id}`,
             );
           }
         } catch (refreshErr) {
-          // marcar conta como erro e informar usuário para reconectar
+          // marcar conta como erro e informar usuÃ¡rio para reconectar
           await MarketplaceRepository.updateStatus(
-            account.id,
+            acc.id,
             AccountStatus.ERROR,
           );
           console.warn(
-            `[ListingUseCase] Failed to refresh token for account ${account?.id || "<no-account>"}:`,
-            refreshErr?.message || refreshErr,
+            `[ListingUseCase] Failed to refresh token for account ${acc.id || "<no-account>"}:`,
+            (refreshErr as any)?.message || refreshErr,
           );
           return {
             success: false,
             error:
-              "Conta do Mercado Livre expirou ou token inválido — reconecte a conta",
+              "Conta do Mercado Livre expirou ou token invÃ¡lido â€” reconecte a conta",
           };
         }
       }
       // If account appears INACTIVE in DB, attempt an immediate capability re-check
       // (user may have just reactivated sales in Seller Center). If the re-check
       // succeeds, mark the account ACTIVE so the listing flow proceeds.
-      if (account.status !== AccountStatus.ACTIVE) {
+      if (acc.status !== AccountStatus.ACTIVE) {
         try {
           console.debug(
-            `[ListingUseCase] account ${account?.id || "<no-account>"} status is ${account?.status}; attempting capability re-check before failing`,
+            `[ListingUseCase] account ${acc.id || "<no-account>"} status is ${acc.status}; attempting capability re-check before failing`,
           );
-          const mlUserInfo = await MLOAuthService.getUserInfo(
-            account.accessToken,
-          );
+          const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
           const sellerId = mlUserInfo?.id?.toString();
           if (sellerId) {
             await MLApiService.getSellerItemIds(
-              account.accessToken,
+              acc.accessToken,
               sellerId,
               "active",
               1,
             );
             // re-activate account in DB
             const updatedStatus = await MarketplaceRepository.updateStatus(
-              account.id,
+              acc.id,
               AccountStatus.ACTIVE,
             );
             if (updatedStatus) {
               account = updatedStatus as any;
               console.info(
-                `[ListingUseCase] account ${account?.id || "<no-account>"} reactivated after capability re-check`,
+                `[ListingUseCase] account ${acc.id || "<no-account>"} reactivated after capability re-check`,
               );
             } else {
               console.warn(
-                `[ListingUseCase] updateStatus returned empty for account ${account?.id}`,
+                `[ListingUseCase] updateStatus returned empty for account ${acc.id}`,
               );
             }
           }
         } catch (recheckErr) {
           console.debug(
-            `[ListingUseCase] capability re-check for account ${account?.id || "<no-account>"} failed: ${recheckErr?.message || recheckErr}`,
+            `[ListingUseCase] capability re-check for account ${acc.id || "<no-account>"} failed: ${
+              recheckErr instanceof Error ? recheckErr.message : String(recheckErr)
+            }`,
           );
-          // continue — the later pre-check will still detect vacation/restriction
+          // continue â€” the later pre-check will still detect vacation/restriction
         }
       }
-      // Pre-check: validar que o seller pode criar anúncios (detectar restrições antes de montar payload)
+      // Pre-check: validar que o seller pode criar anÃºncios (detectar restriÃ§Ãµes antes de montar payload)
       let sellerId: string | undefined;
       try {
-        const mlUserInfo = await MLOAuthService.getUserInfo(
-          account.accessToken,
-        );
+            const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
         sellerId = mlUserInfo?.id?.toString();
         if (sellerId) {
           try {
             // chamada leve para confirmar capacidade de listar (pede 1 id apenas)
             await MLApiService.getSellerItemIds(
-              account.accessToken,
+              acc.accessToken,
               sellerId,
               "active",
               1,
@@ -272,7 +295,7 @@ export class ListingUseCase {
               preMsg.includes("User is unable to list")
             ) {
               // Seller restriction detected during pre-check. Try *more* retries
-              // before treating as permanent — ML can be eventually consistent when the
+              // before treating as permanent â€” ML can be eventually consistent when the
               // seller disables vacation / restriction in Seller Center.
               let recovered = false;
               try {
@@ -281,7 +304,7 @@ export class ListingUseCase {
                   await new Promise((r) => setTimeout(r, attempt * 700));
                   try {
                     await MLApiService.getSellerItemIds(
-                      account.accessToken,
+                      acc.accessToken,
                       sellerId!,
                       "active",
                       1,
@@ -300,7 +323,7 @@ export class ListingUseCase {
               }
 
               if (recovered) {
-                // treat as transient — continue flow so listing creation will be attempted
+                // treat as transient â€” continue flow so listing creation will be attempted
                 console.info(
                   `[ListingUseCase] pre-check seller restriction recovered for account ${account?.id || "<no-account>"}`,
                 );
@@ -312,7 +335,7 @@ export class ListingUseCase {
                   {
                     userId,
                     resource: "MarketplaceAccount",
-                    resourceId: account.id,
+                    resourceId: acc.id,
                     details: { mlError: preMsg },
                   },
                 );
@@ -321,7 +344,7 @@ export class ListingUseCase {
                   success: false,
                   skipped: true,
                   error:
-                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                    "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre. (restrictions_coliving)",
                   mlError: preMsg,
                 };
               }
@@ -332,13 +355,13 @@ export class ListingUseCase {
               preMsg.toLowerCase().includes("invalid access token")
             ) {
               await MarketplaceRepository.updateStatus(
-                account.id,
+                acc.id,
                 AccountStatus.ERROR,
               );
               return {
                 success: false,
                 error:
-                  "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+                  "Conta do Mercado Livre sem credenciais vÃ¡lidas â€” reconecte a conta.",
               };
             }
 
@@ -353,13 +376,13 @@ export class ListingUseCase {
           msg.toLowerCase().includes("invalid access token")
         ) {
           await MarketplaceRepository.updateStatus(
-            account.id,
+            acc.id,
             AccountStatus.ERROR,
           );
           return {
             success: false,
             error:
-              "Conta do Mercado Livre sem credenciais válidas — reconecte a conta.",
+              "Conta do Mercado Livre sem credenciais vÃ¡lidas â€” reconecte a conta.",
           };
         }
         console.warn(
@@ -374,16 +397,16 @@ export class ListingUseCase {
       if (!product) {
         return {
           success: false,
-          error: "Produto não encontrado",
+          error: "Produto nÃ£o encontrado",
         };
       }
 
-      // Validar pré-requisitos do produto antes de enviar ao ML (ex.: imagem obrigatória)
+      // Validar prÃ©-requisitos do produto antes de enviar ao ML (ex.: imagem obrigatÃ³ria)
       if (!product.imageUrl) {
         return {
           success: false,
           error:
-            "Produto precisa ter imagem para criar anúncio no Mercado Livre",
+            "Produto precisa ter imagem para criar anÃºncio no Mercado Livre",
         };
       }
 
@@ -394,7 +417,7 @@ export class ListingUseCase {
         const looksLikeExternalId = /^[A-Za-z0-9]+$/.test(categoryId);
 
         if (looksLikeExternalId) {
-          // Caller provided an *external-like* id — accept only if present in DB (prevents using synthetic/internal ids stored via fallback sync)
+          // Caller provided an *external-like* id â€” accept only if present in DB (prevents using synthetic/internal ids stored via fallback sync)
           let fromDb = null;
           try {
             fromDb = await CategoryRepository.findByExternalId(categoryId);
@@ -405,7 +428,7 @@ export class ListingUseCase {
           if (fromDb) {
             resolvedCategoryId = categoryId; // already an external id
           } else {
-            // Not found in DB — do not assume it's valid for ML; leave undefined to use fallback later
+            // Not found in DB â€” do not assume it's valid for ML; leave undefined to use fallback later
             resolvedCategoryId = undefined;
             console.warn(
               `[ListingUseCase] Provided external-like categoryId='${categoryId}' not found in DB; will attempt resolution/fallback`,
@@ -432,9 +455,11 @@ export class ListingUseCase {
                   found = null;
                 }
               } catch (syncErr) {
+                const msg =
+                  syncErr instanceof Error ? syncErr.message : String(syncErr);
                 console.warn(
                   "[ListingUseCase] on-demand ML category sync failed:",
-                  syncErr?.message || syncErr,
+                  msg,
                 );
               }
             }
@@ -450,7 +475,7 @@ export class ListingUseCase {
               );
             }
           } else {
-            // Last-resort: the caller may have provided a fullPath string — try lookup by fullPath
+            // Last-resort: the caller may have provided a fullPath string â€” try lookup by fullPath
             const found2 = await CategoryRepository.findByFullPath(
               categoryId,
             ).catch(() => null);
@@ -466,22 +491,22 @@ export class ListingUseCase {
         }
       }
 
-      // 3. Preparar payload para criação do anúncio
-      // Detectar moeda baseada no site da conta (temporário - TODO: implementar detecção dinâmica)
+      // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
+      // Detectar moeda baseada no site da conta (temporÃ¡rio - TODO: implementar detecÃ§Ã£o dinÃ¢mica)
       const currencyId =
-        account.accountName?.includes("MLA") ||
-        account.accountName?.includes("Argentina")
+        account?.accountName?.includes("MLA") ||
+        account?.accountName?.includes("Argentina")
           ? "ARS"
           : "BRL";
 
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
-        category_id: resolvedCategoryId || "MLB271107", // Usar categoria resolvida ou padrão
-        price: product.price, // Usar preço real do produto
+        category_id: resolvedCategoryId || "MLB271107", // Usar categoria resolvida ou padrÃ£o
+        price: product.price, // Usar preÃ§o real do produto
         currency_id: currencyId,
-        available_quantity: Math.min(product.stock, 999999), // ML limita quantidade máxima
+        available_quantity: Math.min(product.stock, 999999), // ML limita quantidade mÃ¡xima
         buying_mode: "buy_it_now",
-        listing_type_id: "bronze", // Usar bronze que pode não exigir pictures
+        listing_type_id: "bronze", // Usar bronze que pode nÃ£o exigir pictures
         condition: this.mapQualityToMLCondition(product.quality) || "new",
         pictures: [
           {
@@ -495,7 +520,7 @@ export class ListingUseCase {
         attributes: [
           {
             id: "BRAND",
-            value_name: product.brand || "Genérica",
+            value_name: product.brand || "GenÃ©rica",
           },
           {
             id: "MODEL",
@@ -526,7 +551,7 @@ export class ListingUseCase {
         };
       }
 
-      // Adicionar descrição se existir
+      // Adicionar descriÃ§Ã£o se existir
       // Removido temporariamente para debug
       // if (product.description) {
       //   payload.attributes = [
@@ -537,7 +562,7 @@ export class ListingUseCase {
       //   ];
       // }
 
-      // 4. Criar anúncio no ML
+      // 4. Criar anÃºncio no ML
       console.log(
         `[ListingUseCase] Creating ML listing for product ${productId} (${product.name})`,
       );
@@ -546,10 +571,10 @@ export class ListingUseCase {
         JSON.stringify(payload, null, 2),
       );
 
-      // Envolver createItem para tratar erros específicos do ML (ex: seller.unable_to_list)
+      // Envolver createItem para tratar erros especÃ­ficos do ML (ex: seller.unable_to_list)
       let mlItem: any;
       try {
-        mlItem = await MLApiService.createItem(account.accessToken, payload);
+        mlItem = await MLApiService.createItem(acc.accessToken, payload);
         console.log(
           `[ListingUseCase] ML response:`,
           JSON.stringify(mlItem, null, 2),
@@ -560,7 +585,7 @@ export class ListingUseCase {
           err && (err as any).mlError ? (err as any).mlError : null;
         const errMsg = err instanceof Error ? err.message : String(err);
 
-        // Caso conhecido: vendedor está impedido de anunciar (restrição do ML)
+        // Caso conhecido: vendedor estÃ¡ impedido de anunciar (restriÃ§Ã£o do ML)
         if (
           errMsg.includes("seller.unable_to_list") ||
           errMsg.includes("User is unable to list")
@@ -569,11 +594,11 @@ export class ListingUseCase {
           try {
             await SystemLogService.logError(
               "CREATE_LISTING",
-              `Falha ao criar anúncio no ML (seller.unable_to_list): ${errMsg}`,
+              `Falha ao criar anÃºncio no ML (seller.unable_to_list): ${errMsg}`,
               {
                 userId,
                 resource: "MarketplaceAccount",
-                resourceId: account.id,
+                resourceId: acc.id,
                 details: { mlError: parsedMl || errMsg },
               },
             );
@@ -584,13 +609,13 @@ export class ListingUseCase {
             );
           }
 
-          // Attempt quick re-checks before giving up — seller restrictions can be
+          // Attempt quick re-checks before giving up â€” seller restrictions can be
           // transient. Do NOT mark account as ERROR here; keep it connected.
           let recovered = false;
           try {
             // ensure we have sellerId (may not be populated if earlier pre-check was skipped)
             if (!sellerId) {
-              const _u = await MLOAuthService.getUserInfo(account.accessToken);
+              const _u = await MLOAuthService.getUserInfo(acc.accessToken);
               sellerId = _u?.id?.toString();
             }
 
@@ -600,7 +625,7 @@ export class ListingUseCase {
                 await new Promise((r) => setTimeout(r, attempt * 700));
                 try {
                   await MLApiService.getSellerItemIds(
-                    account.accessToken,
+                    acc.accessToken,
                     sellerId,
                     "active",
                     1,
@@ -626,7 +651,7 @@ export class ListingUseCase {
                   await new Promise((r) => setTimeout(r, attempt * 700));
                 }
                 mlItem = await MLApiService.createItem(
-                  account.accessToken,
+                  acc.accessToken,
                   payload,
                 );
                 console.log(
@@ -636,7 +661,9 @@ export class ListingUseCase {
               } catch (retryCreateErr) {
                 console.debug(
                   `[ListingUseCase] createItem retry ${attempt} failed:`,
-                  retryCreateErr?.message || retryCreateErr,
+                  retryCreateErr instanceof Error
+                    ? retryCreateErr.message
+                    : String(retryCreateErr),
                 );
                 // continue retrying
               }
@@ -648,11 +675,11 @@ export class ListingUseCase {
             try {
               await SystemLogService.logError(
                 "CREATE_LISTING",
-                `Falha ao criar anúncio no ML: ${errMsg}`,
+                `Falha ao criar anÃºncio no ML: ${errMsg}`,
                 {
                   userId,
                   resource: "MarketplaceAccount",
-                  resourceId: account.id,
+                  resourceId: acc.id,
                   details: { mlError: parsedMl || errMsg },
                 },
               );
@@ -667,14 +694,14 @@ export class ListingUseCase {
             try {
               const existing = await ListingRepository.findByProductAndAccount(
                 productId,
-                account.id,
+                acc.id,
               );
               if (!existing) {
                 const placeholderId = `PENDING_${Date.now()}`;
                 const initialRetryDelayMs = 30 * 1000; // try again after 30s
                 const placeholder = await ListingRepository.createListing({
                   productId,
-                  marketplaceAccountId: account.id,
+                  marketplaceAccountId: acc.id,
                   externalListingId: placeholderId,
                   externalSku: product?.sku || undefined,
                   permalink: undefined,
@@ -690,7 +717,7 @@ export class ListingUseCase {
                 try {
                   await SystemLogService.logError(
                     "CREATE_LISTING",
-                    `Placeholder criado localmente após falha ML: ${errMsg}`,
+                    `Placeholder criado localmente apÃ³s falha ML: ${errMsg}`,
                     {
                       userId,
                       resource: "ProductListing",
@@ -710,7 +737,7 @@ export class ListingUseCase {
                   skipped: true,
                   listingId: placeholder.id,
                   error:
-                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                    "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
                   mlError: errMsg,
                 };
               } else {
@@ -718,7 +745,7 @@ export class ListingUseCase {
                 try {
                   await SystemLogService.logError(
                     "CREATE_LISTING",
-                    `Anúncio existente marcado após falha ML: ${errMsg}`,
+                    `AnÃºncio existente marcado apÃ³s falha ML: ${errMsg}`,
                     {
                       userId,
                       resource: "ProductListing",
@@ -738,7 +765,7 @@ export class ListingUseCase {
                   skipped: true,
                   listingId: existing.id,
                   error:
-                    "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                    "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
                   mlError: errMsg,
                 };
               }
@@ -751,7 +778,7 @@ export class ListingUseCase {
                 success: false,
                 skipped: true,
                 error:
-                  "Conta do Mercado Livre com restrição — impossível criar anúncios. Verifique o Seller Center do Mercado Livre.",
+                  "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
               };
             }
           }
@@ -763,17 +790,17 @@ export class ListingUseCase {
         if (!mlItem) throw err;
       }
 
-      // 4.1. Após criar o item no ML, enviar a descrição completa (se existir)
-      // usando a API de update (ML separa criação e conteúdo/description em endpoints diferentes).
+      // 4.1. ApÃ³s criar o item no ML, enviar a descriÃ§Ã£o completa (se existir)
+      // usando a API de update (ML separa criaÃ§Ã£o e conteÃºdo/description em endpoints diferentes).
       if (product.description) {
         try {
           const mlDescription = this.buildMLDescription(product);
-          await MLApiService.updateItem(account.accessToken, mlItem.id, {
+          await MLApiService.updateItem(acc.accessToken, mlItem.id, {
             description: mlDescription,
           });
           console.log("[ListingUseCase] ML item description updated");
         } catch (err) {
-          // Log e continuar — não falhar a criação do anúncio apenas por falha na descrição
+          // Log e continuar â€” nÃ£o falhar a criaÃ§Ã£o do anÃºncio apenas por falha na descriÃ§Ã£o
           console.error(
             "[ListingUseCase] Failed to update ML item description:",
             err,
@@ -781,10 +808,10 @@ export class ListingUseCase {
         }
       }
 
-      // 5. Criar vínculo local (ProductListing)
+      // 5. Criar vÃ­nculo local (ProductListing)
       const listing = await ListingRepository.createListing({
         productId,
-        marketplaceAccountId: account.id,
+        marketplaceAccountId: acc.id,
         externalListingId: mlItem.id,
         externalSku: product.sku,
         permalink: mlItem.permalink,
@@ -809,7 +836,7 @@ export class ListingUseCase {
   }
 
   /**
-   * Constrói um título para o anúncio do Shopee
+   * ConstrÃ³i um tÃ­tulo para o anÃºncio do Shopee
    */
   private static buildShopeeTitle(product: any): string {
     const parts: string[] = [];
@@ -817,27 +844,27 @@ export class ListingUseCase {
     // Adicionar nome do produto
     parts.push(product.name);
 
-    // Adicionar marca se disponível
+    // Adicionar marca se disponÃ­vel
     if (product.brand) {
       parts.push(product.brand);
     }
 
-    // Adicionar modelo se disponível
+    // Adicionar modelo se disponÃ­vel
     if (product.model) {
       parts.push(product.model);
     }
 
-    // Adicionar ano se disponível
+    // Adicionar ano se disponÃ­vel
     if (product.year) {
       parts.push(product.year);
     }
 
-    // Adicionar versão se disponível
+    // Adicionar versÃ£o se disponÃ­vel
     if (product.version) {
       parts.push(product.version);
     }
 
-    // Adicionar partNumber se disponível
+    // Adicionar partNumber se disponÃ­vel
     if (product.partNumber) {
       parts.push(`PN: ${product.partNumber}`);
     }
@@ -848,59 +875,80 @@ export class ListingUseCase {
   }
 
   /**
-   * Constrói uma descrição para o anúncio do Shopee
+   * ConstrÃ³i uma descriÃ§Ã£o para o anÃºncio do Shopee
    */
   private static buildShopeeDescription(product: any): string {
     const parts: string[] = [];
 
-    // Descrição principal
+    // DescriÃ§Ã£o principal
     if (product.description) {
       parts.push(product.description);
     }
 
-    // Detalhes técnicos
+    // Detalhes tÃ©cnicos
     const details: string[] = [];
     if (product.brand) details.push(`Marca: ${product.brand}`);
     if (product.model) details.push(`Modelo: ${product.model}`);
     if (product.year) details.push(`Ano: ${product.year}`);
-    if (product.version) details.push(`Versão: ${product.version}`);
+    if (product.version) details.push(`VersÃ£o: ${product.version}`);
     if (product.partNumber)
-      details.push(`Número da Peça: ${product.partNumber}`);
+      details.push(`NÃºmero da PeÃ§a: ${product.partNumber}`);
     if (product.quality) details.push(`Qualidade: ${product.quality}`);
-    if (product.location) details.push(`Localização: ${product.location}`);
+    if (product.location) details.push(`LocalizaÃ§Ã£o: ${product.location}`);
 
     if (details.length > 0) {
-      parts.push("Detalhes Técnicos:");
+      parts.push("Detalhes TÃ©cnicos:");
       parts.push(details.join("\n"));
     }
 
-    // SKU para referência
+    // SKU para referÃªncia
     parts.push(`SKU: ${product.sku}`);
 
     return parts.join("\n\n");
   }
 
   /**
-   * Cria um anúncio no Shopee para um produto
-   * @param userId ID do usuário
+   * Cria um anÃºncio no Shopee para um produto
+   * @param userId ID do usuÃ¡rio
    * @param productId ID do produto
-   * @param categoryId ID da categoria do Shopee (opcional, será inferida se não fornecida)
+   * @param categoryId ID da categoria do Shopee (opcional, serÃ¡ inferida se nÃ£o fornecida)
    */
   static async createShopeeListing(
     userId: string,
     productId: string,
     categoryId?: string,
+    accountId?: string,
   ): Promise<CreateListingResult> {
     try {
-      const account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        Platform.SHOPEE,
-      );
+      let account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.SHOPEE,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.SHOPEE,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta Shopee para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
 
       if (!account || !account.accessToken || !account.shopId) {
         return {
           success: false,
-          error: "Conta do Shopee não conectada ou sem credenciais válidas",
+          error: "Conta do Shopee nÃ£o conectada ou sem credenciais vÃ¡lidas",
         };
       }
 
@@ -910,19 +958,19 @@ export class ListingUseCase {
       if (!product) {
         return {
           success: false,
-          error: "Produto não encontrado",
+          error: "Produto nÃ£o encontrado",
         };
       }
 
-      // 3. Preparar payload para criação do anúncio
+      // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
       const payload: ShopeeItemCreatePayload = {
-        category_id: categoryId ? parseInt(categoryId) : 100644, // Usar categoria fornecida ou padrão
+        category_id: categoryId ? parseInt(categoryId) : 100644, // Usar categoria fornecida ou padrÃ£o
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         price: product.price,
-        stock: Math.min(product.stock, 999999), // Shopee limita quantidade máxima
-        weight: 1.0, // Peso padrão em kg
+        stock: Math.min(product.stock, 999999), // Shopee limita quantidade mÃ¡xima
+        weight: 1.0, // Peso padrÃ£o em kg
         package_length: 10,
         package_width: 10,
         package_height: 10,
@@ -942,7 +990,7 @@ export class ListingUseCase {
             attribute_value_list: [
               {
                 value_id: 0,
-                value_name: product.brand || "Genérica",
+                value_name: product.brand || "GenÃ©rica",
                 value_unit: "",
               },
             ],
@@ -959,10 +1007,10 @@ export class ListingUseCase {
             ],
           },
         ],
-        logistic_info: [], // Logística será configurada separadamente
+        logistic_info: [], // LogÃ­stica serÃ¡ configurada separadamente
       };
 
-      // 4. Criar anúncio no Shopee
+      // 4. Criar anÃºncio no Shopee
       console.log(
         `[ListingUseCase] Creating Shopee listing for product ${productId} (${product.name})`,
       );
@@ -980,7 +1028,7 @@ export class ListingUseCase {
         JSON.stringify(shopeeItem, null, 2),
       );
 
-      // 5. Criar vínculo local (ProductListing)
+      // 5. Criar vÃ­nculo local (ProductListing)
       const listing = await ListingRepository.createListing({
         productId,
         marketplaceAccountId: account.id,
@@ -1009,8 +1057,8 @@ export class ListingUseCase {
   }
 
   /**
-   * Atualiza o estoque de um anúncio no ML
-   * @param listingId ID do vínculo local
+   * Atualiza o estoque de um anÃºncio no ML
+   * @param listingId ID do vÃ­nculo local
    * @param quantity Nova quantidade
    */
   static async updateMLListingStock(
@@ -1018,10 +1066,10 @@ export class ListingUseCase {
     quantity: number,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Buscar vínculo
+      // Buscar vÃ­nculo
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "Vínculo não encontrado" };
+        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
       }
 
       // Buscar conta para obter access token
@@ -1029,7 +1077,7 @@ export class ListingUseCase {
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken) {
-        return { success: false, error: "Conta sem credenciais válidas" };
+        return { success: false, error: "Conta sem credenciais vÃ¡lidas" };
       }
 
       // Atualizar estoque no ML
@@ -1051,17 +1099,17 @@ export class ListingUseCase {
   }
 
   /**
-   * Remove um anúncio do ML
-   * @param listingId ID do vínculo local
+   * Remove um anÃºncio do ML
+   * @param listingId ID do vÃ­nculo local
    */
   static async removeMLListing(
     listingId: string,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Buscar vínculo
+      // Buscar vÃ­nculo
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "Vínculo não encontrado" };
+        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
       }
 
       // Buscar conta para obter access token
@@ -1069,10 +1117,10 @@ export class ListingUseCase {
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken) {
-        return { success: false, error: "Conta sem credenciais válidas" };
+        return { success: false, error: "Conta sem credenciais vÃ¡lidas" };
       }
 
-      // Primeiro, verificar o status atual do anúncio
+      // Primeiro, verificar o status atual do anÃºncio
       try {
         const currentItem = await MLApiService.getItemDetails(
           account.accessToken,
@@ -1088,7 +1136,7 @@ export class ListingUseCase {
         );
       }
 
-      // Tentar fechar anúncio no ML (itens com infrações ou em processamento podem não poder ser fechados)
+      // Tentar fechar anÃºncio no ML (itens com infraÃ§Ãµes ou em processamento podem nÃ£o poder ser fechados)
       try {
         await MLApiService.updateItem(
           account.accessToken,
@@ -1105,12 +1153,12 @@ export class ListingUseCase {
           `[ListingUseCase] Could not close ML listing ${listing.externalListingId}:`,
           closeError,
         );
-        // Mesmo que não consiga fechar, continua removendo o vínculo local
-        // O anúncio ficará visível no ML mas não estará mais vinculado ao produto
-        // Isso pode acontecer com itens que têm infrações ou estão em processamento
+        // Mesmo que nÃ£o consiga fechar, continua removendo o vÃ­nculo local
+        // O anÃºncio ficarÃ¡ visÃ­vel no ML mas nÃ£o estarÃ¡ mais vinculado ao produto
+        // Isso pode acontecer com itens que tÃªm infraÃ§Ãµes ou estÃ£o em processamento
       }
 
-      // Remover vínculo local
+      // Remover vÃ­nculo local
       await ListingRepository.deleteListing(listingId);
 
       return { success: true };
@@ -1119,8 +1167,17 @@ export class ListingUseCase {
       return {
         success: false,
         error:
-          error instanceof Error ? error.message : "Erro ao remover anúncio",
+          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
       };
     }
   }
 }
+
+
+
+
+
+
+
+
+

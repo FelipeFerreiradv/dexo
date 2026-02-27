@@ -68,7 +68,6 @@ export interface ShopeeSignatureParams {
   timestamp: number;
   access_token?: string;
   shop_id?: number;
-  body?: string;
 }
 
 // Resposta de erro da API

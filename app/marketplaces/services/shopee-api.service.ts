@@ -1,5 +1,4 @@
 import axios from "axios";
-import crypto from "crypto";
 import { SHOPEE_CONSTANTS, validateShopeeConfig } from "../shopee/shopee-constants";
 import { ShopeeOAuthService } from "./shopee-oauth.service";
 import {
@@ -44,28 +43,32 @@ export class ShopeeApiService {
     const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
     const timestamp = Math.floor(Date.now() / 1000);
 
-    const bodyString = body ? JSON.stringify(body) : "";
+    // A assinatura usa apenas o path da API (sem query string)
+    const pathOnly = apiPath.split("?")[0];
 
-    const signature = ShopeeOAuthService["generateSignature"]({
+    const signature = ShopeeOAuthService.generateSignature({
       partner_id: partnerId,
-      api_path: apiPath,
+      api_path: pathOnly,
       timestamp,
       access_token: accessToken,
       shop_id: shopId,
-      body: bodyString,
     });
 
-    const url = `${SHOPEE_CONSTANTS.API_URL}${apiPath}`;
+    const url = new URL(apiPath, SHOPEE_CONSTANTS.API_URL);
+    url.searchParams.set("partner_id", partnerId.toString());
+    url.searchParams.set("timestamp", timestamp.toString());
+    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("shop_id", shopId.toString());
+    url.searchParams.set("sign", signature);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Authorization: `SHA256 Credential=${partnerId}, Timestamp=${timestamp}, Signature=${signature}`,
     };
 
     try {
       const response = await axios.request<T>({
         method,
-        url,
+        url: url.toString(),
         headers,
         data: body,
         timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,

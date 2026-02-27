@@ -54,6 +54,10 @@ export function ShopeeListingsTab() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string; shopId?: number }>
+  >([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
 
   // Buscar listings
   const fetchListings = useCallback(
@@ -68,14 +72,16 @@ export function ShopeeListingsTab() {
       setError(null);
 
       try {
-        const response = await fetch(
+        const url = new URL(
           "http://localhost:3333/marketplace/shopee/listings",
-          {
-            headers: {
-              email: session.user.email,
-            },
-          },
         );
+        if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+        const response = await fetch(url.toString(), {
+          headers: {
+            email: session.user.email,
+          },
+        });
 
         if (!response.ok) {
           const data = await response.json();
@@ -96,13 +102,33 @@ export function ShopeeListingsTab() {
         setIsRefreshing(false);
       }
     },
-    [session?.user?.email],
+    [session?.user?.email, selectedAccountId],
   );
 
   // Carregar listings iniciais
   useEffect(() => {
     fetchListings();
   }, [fetchListings]);
+
+  // Carregar contas para filtro
+  useEffect(() => {
+    const loadAccounts = async () => {
+      if (!session?.user?.email) return;
+      try {
+        const res = await fetch(
+          "http://localhost:3333/marketplace/shopee/accounts",
+          { headers: { email: session.user.email } },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+        }
+      } catch (err) {
+        /* ignore */
+      }
+    };
+    loadAccounts();
+  }, [session?.user?.email]);
 
   // Status badge
   const getStatusBadge = (status: string) => {
@@ -155,18 +181,32 @@ export function ShopeeListingsTab() {
                 Lista de produtos vinculados à sua conta do Shopee
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fetchListings(true)}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? (
-                <RefreshCw className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-            </Button>
+            <div className="flex items-center gap-2">
+              <select
+                className="rounded border px-2 py-1 text-sm"
+                value={selectedAccountId}
+                onChange={(e) => setSelectedAccountId(e.target.value)}
+              >
+                <option value="">Todas as contas</option>
+                {accounts.map((acc) => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.accountName || acc.id}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fetchListings(true)}
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

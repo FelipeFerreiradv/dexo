@@ -4,8 +4,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findByUserIdAndPlatform: vi.fn(),
+    findFirstActiveByUserAndPlatform: vi.fn(),
     updateTokens: vi.fn(),
     updateStatus: vi.fn(),
+  },
+}));
+
+vi.mock("../app/services/system-log.service", () => ({
+  SystemLogService: {
+    logError: vi.fn(),
+    logWarning: vi.fn(),
+    logInfo: vi.fn(),
+    log: vi.fn(),
   },
 }));
 

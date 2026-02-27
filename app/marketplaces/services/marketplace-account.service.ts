@@ -46,7 +46,7 @@ export class MarketplaceAccountService {
 
       try {
         await SystemLogService.logError(
-          options?.context || "MARKETPLACE_AUTH",
+          (options?.context as any) || "MARKETPLACE_AUTH",
           `Marked account ERROR due to auth failure: ${msg}`,
           {
             userId: options?.userId,
@@ -68,7 +68,7 @@ export class MarketplaceAccountService {
     // Not an auth failure: log as warning and keep account as-is
     try {
       await SystemLogService.logError(
-        options?.context || "MARKETPLACE_WARNING",
+        (options?.context as any) || "MARKETPLACE_WARNING",
         `Marketplace non-auth error encountered: ${msg}`,
         {
           userId: options?.userId,
@@ -105,7 +105,7 @@ export class MarketplaceAccountService {
 
     try {
       await SystemLogService.logError(
-        "MARKETPLACE_VACATION",
+        "MARKETPLACE_VACATION" as any,
         options?.message || "Account marked INACTIVE due to vacation detected",
         {
           userId: options?.userId,

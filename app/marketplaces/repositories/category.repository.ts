@@ -24,7 +24,8 @@ export class CategoryRepository {
           .filter(Boolean)
           .join(" > ");
       }
-      const normalizedFullPath = normalizeFullPath(e.fullPath);
+      const normalizedFullPath =
+        normalizeFullPath(e.fullPath) ?? e.fullPath ?? "";
       await prisma.marketplaceCategory.upsert({
         where: { externalId: e.externalId },
         create: {

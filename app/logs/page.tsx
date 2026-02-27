@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Card,
   CardContent,
@@ -95,7 +95,7 @@ export default function LogsPage() {
   });
 
   // Buscar logs
-  const fetchLogs = async (page = 1) => {
+  const fetchLogs = useCallback(async (page = 1) => {
     try {
       setLoading(true);
       const queryParams = new URLSearchParams({
@@ -120,10 +120,10 @@ export default function LogsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters]);
 
   // Buscar estatísticas
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const response = await fetch("/api/system-logs/stats");
       if (response.ok) {
@@ -133,18 +133,18 @@ export default function LogsPage() {
     } catch (error) {
       console.error("Erro ao buscar estatísticas:", error);
     }
-  };
+  }, []);
 
   // Efeito inicial
   useEffect(() => {
     fetchStats();
     fetchLogs();
-  }, []);
+  }, [fetchStats, fetchLogs]);
 
   // Efeito para filtros
   useEffect(() => {
     fetchLogs(1);
-  }, [filters]);
+  }, [fetchLogs]);
 
   // Manipular mudança de página
   const handlePageChange = (page: number) => {

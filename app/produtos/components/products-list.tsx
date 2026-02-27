@@ -110,7 +110,7 @@ export function ProductsList() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   const showToast = useCallback(
-    (message: string, type: "success" | "error") => {
+    (message: string, type: "success" | "error" | "warning") => {
       const id = crypto.randomUUID();
       setToasts((prev) => [...prev, { id, message, type }]);
       setTimeout(() => {
@@ -324,14 +324,17 @@ export function ProductsList() {
                           <TableRow key={product.id} className="cursor-pointer">
                             <TableCell>
                               {product.imageUrl ? (
-                                <img
-                                  src={product.imageUrl}
-                                  alt={product.name}
-                                  className="w-12 h-12 object-cover rounded border"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = "none";
-                                  }}
-                                />
+                                <>
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={product.imageUrl}
+                                    alt={product.name}
+                                    className="w-12 h-12 object-cover rounded border"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = "none";
+                                    }}
+                                  />
+                                </>
                               ) : (
                                 <div className="w-12 h-12 bg-muted rounded border flex items-center justify-center">
                                   <Package className="w-6 h-6 text-muted-foreground" />
@@ -391,9 +394,7 @@ export function ProductsList() {
                                         Excluir produto?
                                       </AlertDialogTitle>
                                       <AlertDialogDescription>
-                                        Tem certeza que deseja excluir o produto
-                                        "{product.name}"? Esta ação é
-                                        irreversível.
+                                        {`Tem certeza que deseja excluir o produto "${product.name}"? Esta ação é irreversível.`}
                                       </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
@@ -428,14 +429,17 @@ export function ProductsList() {
                       >
                         <div className="flex items-start gap-3">
                           {product.imageUrl ? (
-                            <img
-                              src={product.imageUrl}
-                              alt={product.name}
-                              className="w-16 h-16 object-cover rounded border flex-shrink-0"
-                              onError={(e) => {
-                                e.currentTarget.style.display = "none";
-                              }}
-                            />
+                            <>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={product.imageUrl}
+                                alt={product.name}
+                                className="w-16 h-16 object-cover rounded border flex-shrink-0"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            </>
                           ) : (
                             <div className="w-16 h-16 bg-muted rounded border flex items-center justify-center flex-shrink-0">
                               <Package className="w-8 h-8 text-muted-foreground" />
@@ -489,8 +493,7 @@ export function ProductsList() {
                                     Excluir produto?
                                   </AlertDialogTitle>
                                   <AlertDialogDescription>
-                                    Tem certeza que deseja excluir o produto "
-                                    {product.name}"? Esta ação é irreversível.
+                                    {`Tem certeza que deseja excluir o produto "${product.name}"? Esta ação é irreversível.`}
                                   </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>

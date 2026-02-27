@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import {
   Download,
@@ -71,6 +71,10 @@ export function MLSyncTab() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string }>
+  >([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
 
   // Importar itens do ML
   const handleImport = useCallback(async () => {
@@ -81,15 +85,15 @@ export function MLSyncTab() {
     setImportResult(null);
 
     try {
-      const response = await fetch(
-        "http://localhost:3333/marketplace/ml/import",
-        {
-          method: "POST",
-          headers: {
-            email: session.user.email,
-          },
+      const url = new URL("http://localhost:3333/marketplace/ml/import");
+      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -103,7 +107,7 @@ export function MLSyncTab() {
     } finally {
       setIsImporting(false);
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, selectedAccountId]);
 
   // Sincronizar estoque para o ML
   const handleSync = useCallback(async () => {
@@ -114,15 +118,15 @@ export function MLSyncTab() {
     setSyncResult(null);
 
     try {
-      const response = await fetch(
-        "http://localhost:3333/marketplace/ml/sync",
-        {
-          method: "POST",
-          headers: {
-            email: session.user.email,
-          },
+      const url = new URL("http://localhost:3333/marketplace/ml/sync");
+      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -136,6 +140,26 @@ export function MLSyncTab() {
     } finally {
       setIsSyncing(false);
     }
+  }, [session?.user?.email, selectedAccountId]);
+
+  // Carrega contas para permitir seleção de qual conta sincronizar/importar
+  useEffect(() => {
+    const loadAccounts = async () => {
+      if (!session?.user?.email) return;
+      try {
+        const res = await fetch(
+          "http://localhost:3333/marketplace/ml/accounts",
+          { headers: { email: session.user.email } },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+        }
+      } catch {
+        /* silenciosamente */
+      }
+    };
+    loadAccounts();
   }, [session?.user?.email]);
 
   // Forçar retry imediato de placeholders pendentes
@@ -183,17 +207,30 @@ export function MLSyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-2">
-            <Button onClick={handleSync} disabled={isSyncing}>
-              {isSyncing ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+
+            <Button onClick={handleImport} disabled={isImporting}>
+              {isImporting ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Sincronizando...
+                  Importando...
                 </>
               ) : (
                 <>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Sincronizar Estoque com ML
+                  <Download className="mr-2 h-4 w-4" />
+                  Importar anúncios
                 </>
               )}
             </Button>
@@ -319,6 +356,20 @@ export function MLSyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+          </div>
           <Button onClick={handleSync} disabled={isSyncing} variant="secondary">
             {isSyncing ? (
               <>

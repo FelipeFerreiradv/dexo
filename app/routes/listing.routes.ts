@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
+import { Platform } from "@prisma/client";
 
 export async function listingRoutes(app: FastifyInstance) {
   /**
@@ -22,7 +23,12 @@ export async function listingRoutes(app: FastifyInstance) {
         const body = request.body as {
           productId: string;
           categoryId?: string;
+          accountId?: string;
         };
+        const accountId =
+          body.accountId ||
+          ((request.query as any)?.accountId as string | undefined) ||
+          undefined;
 
         // Validações básicas
         if (!body.productId) {
@@ -36,6 +42,7 @@ export async function listingRoutes(app: FastifyInstance) {
           userId,
           body.productId,
           body.categoryId,
+          accountId,
         );
 
         if (!result.success) {
@@ -70,6 +77,83 @@ export async function listingRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         console.error("[Listing Routes] Error creating ML listing:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/shopee
+   * Cria um anÃºncio no Shopee para um produto
+   */
+  app.post<{
+    Body: {
+      productId: string;
+      categoryId?: string;
+    };
+  }>(
+    "/shopee",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const body = request.body as {
+          productId: string;
+          categoryId?: string;
+          accountId?: string;
+        };
+        const accountId =
+          body.accountId ||
+          ((request.query as any)?.accountId as string | undefined) ||
+          undefined;
+
+        if (!body.productId) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "productId Ã© obrigatÃ³rio",
+          });
+        }
+
+        const result = await ListingUseCase.createShopeeListing(
+          userId,
+          body.productId,
+          body.categoryId,
+          accountId,
+        );
+
+        if (!result.success) {
+          await SystemLogService.logSyncError(
+            userId,
+            "LISTING_CREATE",
+            "Shopee",
+            result.error || "Erro desconhecido",
+          );
+          return reply.status(400).send({
+            error: "Erro ao criar anÃºncio Shopee",
+            message: result.error,
+          });
+        }
+
+        if (result.listingId) {
+          await SystemLogService.logListingCreate(
+            userId,
+            result.listingId,
+            body.productId,
+            Platform.SHOPEE,
+          );
+        }
+
+        return reply.status(201).send({
+          success: true,
+          message: "AnÃºncio Shopee criado com sucesso",
+          listingId: result.listingId,
+          externalListingId: result.externalListingId,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error creating Shopee listing:", error);
         return reply.status(500).send({
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",

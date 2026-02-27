@@ -91,6 +91,11 @@ const productSchema = z.object({
   // Step 4: Anúncio Mercado Livre (opcional)
   createMLListing: z.boolean().optional(),
   mlCategory: z.string().optional(),
+  mlAccountIds: z.array(z.string()).optional(),
+
+  // Step 5: Anúncio Shopee (opcional)
+  createShopeeListing: z.boolean().optional(),
+  shopeeAccountIds: z.array(z.string()).optional(),
 
   // Step 2: Preços e Estoque
   price: z
@@ -157,7 +162,7 @@ type ProductFormData = z.infer<typeof productSchema>;
 
 interface CreateProductDialogProps {
   onProductCreated: () => void;
-  onToast: (message: string, type: "success" | "error") => void;
+  onToast: (message: string, type: "success" | "error" | "warning") => void;
 }
 
 const qualityOptions = [
@@ -216,6 +221,13 @@ const STEPS = [
   },
   {
     id: 6,
+    title: "Shopee",
+    description: "Criar anúncio (opcional)",
+    icon: ShoppingCart,
+    fields: ["createShopeeListing", "shopeeAccountIds"],
+  },
+  {
+    id: 7,
     title: "Revisão",
     description: "Confirme os dados",
     icon: ClipboardCheck,
@@ -244,6 +256,12 @@ export function CreateProductDialog({
   const [mlRestrictionMessage, setMlRestrictionMessage] = useState<
     string | null
   >(null);
+  const [mlAccounts, setMlAccounts] = useState<
+    Array<{ id: string; accountName: string; status?: string }>
+  >([]);
+  const [shopeeAccounts, setShopeeAccounts] = useState<
+    Array<{ id: string; accountName: string; status?: string; shopId?: number }>
+  >([]);
 
   const {
     register,
@@ -264,6 +282,9 @@ export function CreateProductDialog({
       imageUrl: "",
       createMLListing: false,
       mlCategory: "",
+      mlAccountIds: [],
+      createShopeeListing: false,
+      shopeeAccountIds: [],
       price: 0,
       stock: 0,
       costPrice: null,
@@ -301,6 +322,57 @@ export function CreateProductDialog({
   const watchWidth = watch("widthCm");
   const watchLength = watch("lengthCm");
   const watchWeight = watch("weightKg");
+  const watchMlAccountIds = watch("mlAccountIds") || [];
+  const watchShopeeAccountIds = watch("shopeeAccountIds") || [];
+  const watchCreateShopeeListing = watch("createShopeeListing");
+
+  const toggleAccountSelection = (
+    field: "mlAccountIds" | "shopeeAccountIds",
+    accountId: string,
+    checked: boolean,
+  ) => {
+    const current = (watch(field) as string[] | undefined) ?? [];
+    const next = checked
+      ? Array.from(new Set([...current, accountId]))
+      : current.filter((id) => id !== accountId);
+    setValue(field as any, next, {
+      shouldDirty: true,
+      shouldValidate: true,
+      shouldTouch: true,
+    });
+  };
+
+  const fetchAccounts = useCallback(async () => {
+    if (!session?.user?.email) return;
+    try {
+      const [mlRes, shopeeRes] = await Promise.all([
+        fetch("http://localhost:3333/marketplace/ml/accounts", {
+          headers: { email: session.user.email },
+        }),
+        fetch("http://localhost:3333/marketplace/shopee/accounts", {
+          headers: { email: session.user.email },
+        }),
+      ]);
+
+      if (mlRes.ok) {
+        const data = await mlRes.json();
+        setMlAccounts(Array.isArray(data?.accounts) ? data.accounts : []);
+      }
+
+      if (shopeeRes.ok) {
+        const data = await shopeeRes.json();
+        setShopeeAccounts(Array.isArray(data?.accounts) ? data.accounts : []);
+      }
+    } catch (err) {
+      console.error("Erro ao carregar contas de marketplace:", err);
+    }
+  }, [session?.user?.email]);
+
+  useEffect(() => {
+    if (open) {
+      fetchAccounts();
+    }
+  }, [open, fetchAccounts]);
 
   // Busca próximo SKU ao abrir o dialog
   const fetchNextSku = useCallback(async () => {
@@ -388,7 +460,7 @@ export function CreateProductDialog({
         }
       })();
     }
-  }, [open, fetchNextSku, fetchDefaultDescription]);
+  }, [open, fetchNextSku, fetchDefaultDescription, session?.user?.email]);
 
   // Define descrição padrão quando carregada
   useEffect(() => {
@@ -412,6 +484,7 @@ export function CreateProductDialog({
     model?: string;
     year?: string;
     category?: string;
+    mlCategory?: string;
     // medidas auto-detectadas
     heightCm?: number;
     widthCm?: number;
@@ -658,7 +731,8 @@ export function CreateProductDialog({
           prevBrand: prev.brand,
           detectedBrand: detected.brand,
           inputMounted: !!document.getElementById("brand"),
-          inputDom: document.getElementById("brand")?.value,
+          inputDom: (document.getElementById("brand") as HTMLInputElement | null)
+            ?.value,
         });
       }
       if (shouldUpdateBrand) {
@@ -672,7 +746,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-set brand", watch("brand"));
               console.debug(
                 "[auto-fill] dom brand after set",
-                document.getElementById("brand")?.value,
+                (document.getElementById("brand") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -686,7 +761,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-clear brand", watch("brand"));
               console.debug(
                 "[auto-fill] dom brand after clear",
-                document.getElementById("brand")?.value,
+                (document.getElementById("brand") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -707,7 +783,8 @@ export function CreateProductDialog({
           prevModel: prev.model,
           detectedModel: detected.model,
           inputMounted: !!document.getElementById("model"),
-          inputDom: document.getElementById("model")?.value,
+          inputDom: (document.getElementById("model") as HTMLInputElement | null)
+            ?.value,
         });
       }
       if (shouldUpdateModel) {
@@ -721,7 +798,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-set model", watch("model"));
               console.debug(
                 "[auto-fill] dom model after set",
-                document.getElementById("model")?.value,
+                (document.getElementById("model") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -735,7 +813,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-clear model", watch("model"));
               console.debug(
                 "[auto-fill] dom model after clear",
-                document.getElementById("model")?.value,
+                (document.getElementById("model") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -756,7 +835,8 @@ export function CreateProductDialog({
           prevYear: prev.year,
           detectedYear: detected.year,
           inputMounted: !!document.getElementById("year"),
-          inputDom: document.getElementById("year")?.value,
+          inputDom: (document.getElementById("year") as HTMLInputElement | null)
+            ?.value,
         });
       }
       if (shouldUpdateYear) {
@@ -770,7 +850,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-set year", watch("year"));
               console.debug(
                 "[auto-fill] dom year after set",
-                document.getElementById("year")?.value,
+                (document.getElementById("year") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -784,7 +865,8 @@ export function CreateProductDialog({
               console.debug("[auto-fill] post-clear year", watch("year"));
               console.debug(
                 "[auto-fill] dom year after clear",
-                document.getElementById("year")?.value,
+                (document.getElementById("year") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -1046,11 +1128,11 @@ export function CreateProductDialog({
     return () => {
       if (autoFillTimerRef.current) clearTimeout(autoFillTimerRef.current);
     };
-  }, [watchName, setValue, watch, mlOptions]);
+  }, [watchName, setValue, watch, mlOptions, trigger]);
 
   // When category (top-level or mlCategory) changes, update measurements accordingly.
   useEffect(() => {
-    const category = watchCategory;
+    const category = watchCategory || undefined;
     const detailedValue = mlOptions.find(
       (c) => c.id === watchMlCategory,
     )?.value;
@@ -1145,13 +1227,57 @@ export function CreateProductDialog({
     } catch (err) {
       /* ignore */
     }
-  }, [watchCategory, watchMlCategory, mlOptions, setValue]);
+  }, [watchCategory, watchMlCategory, mlOptions, setValue, trigger, watch]);
 
   const progressPercentage = (currentStep / TOTAL_STEPS) * 100;
 
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true);
     try {
+      const selectedMlAccounts =
+        (data.mlAccountIds?.filter(Boolean) as string[]) ?? [];
+      const selectedShopeeAccounts =
+        (data.shopeeAccountIds?.filter(Boolean) as string[]) ?? [];
+
+      if (data.createMLListing && selectedMlAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Mercado Livre para criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (data.createShopeeListing && selectedShopeeAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Shopee para criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      const listingsPayload: Array<{
+        platform: "MERCADO_LIVRE" | "SHOPEE";
+        accountIds: string[];
+        categoryId?: string;
+      }> = [];
+
+      if (data.createMLListing && selectedMlAccounts.length > 0) {
+        listingsPayload.push({
+          platform: "MERCADO_LIVRE",
+          accountIds: selectedMlAccounts,
+          categoryId: data.mlCategory || undefined,
+        });
+      }
+
+      if (data.createShopeeListing && selectedShopeeAccounts.length > 0) {
+        listingsPayload.push({
+          platform: "SHOPEE",
+          accountIds: selectedShopeeAccounts,
+        });
+      }
+
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
         ...data,
@@ -1173,8 +1299,11 @@ export function CreateProductDialog({
         lengthCm: data.lengthCm ?? undefined,
         weightKg: data.weightKg ?? undefined,
 
-        createListing: data.createMLListing || false,
+        // Mantém compatibilidade: somente usa createListing legado quando nenhuma multi-conta foi escolhida
+        createListing:
+          (data.createMLListing || false) && selectedMlAccounts.length === 0,
         createListingCategoryId: data.mlCategory || undefined,
+        listings: listingsPayload,
       };
 
       // Criar produto primeiro
@@ -1610,6 +1739,7 @@ export function CreateProductDialog({
                         id="brand"
                         placeholder="Ex: Bosch, Denso"
                         {...field}
+                        value={field.value ?? ""}
                       />
                     )}
                   />
@@ -1623,7 +1753,12 @@ export function CreateProductDialog({
                     name="model"
                     control={control}
                     render={({ field }) => (
-                      <Input id="model" placeholder="Ex: Civic" {...field} />
+                      <Input
+                        id="model"
+                        placeholder="Ex: Civic"
+                        {...field}
+                        value={field.value ?? ""}
+                      />
                     )}
                   />
                 </div>
@@ -1634,7 +1769,12 @@ export function CreateProductDialog({
                     name="year"
                     control={control}
                     render={({ field }) => (
-                      <Input id="year" placeholder="Ex: 2018-2022" {...field} />
+                      <Input
+                        id="year"
+                        placeholder="Ex: 2018-2022"
+                        {...field}
+                        value={field.value ?? ""}
+                      />
                     )}
                   />
                 </div>
@@ -2018,17 +2158,134 @@ export function CreateProductDialog({
                         );
                       }}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Categoria sugerida: {watch("category") || "Nenhuma"}
-                    </p>
+                <p className="text-xs text-muted-foreground">
+                  Categoria sugerida: {watch("category") || "Nenhuma"}
+                </p>
+              </div>
+            )}
+
+            {watch("createMLListing") && (
+              <div className="space-y-2">
+                <Label>Contas do Mercado Livre</Label>
+                {mlAccounts.length > 0 ? (
+                  <div className="space-y-2 rounded-md border p-3">
+                    {mlAccounts.map((acc) => {
+                      const checked = watchMlAccountIds.includes(acc.id);
+                      return (
+                        <label
+                          key={acc.id}
+                          className="flex items-center gap-2 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) =>
+                              toggleAccountSelection(
+                                "mlAccountIds",
+                                acc.id,
+                                e.target.checked,
+                              )
+                            }
+                          />
+                          <span className="font-medium">
+                            {acc.accountName || "Conta ML"}
+                          </span>
+                          {acc.status && (
+                            <span className="text-xs text-muted-foreground">
+                              ({acc.status})
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhuma conta Mercado Livre conectada. Conecte em
+                    Integrações.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+          {/* Step 6: Shopee */}
+          {currentStep === 6 && (
+            <div className="space-y-4">
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Controller
+                    name="createShopeeListing"
+                    control={control}
+                    render={({ field }) => (
+                      <Switch
+                        id="createShopeeListing"
+                        checked={field.value || false}
+                        onCheckedChange={field.onChange}
+                        disabled={shopeeAccounts.length === 0}
+                      />
+                    )}
+                  />
+                  <Label htmlFor="createShopeeListing" className="cursor-pointer">
+                    Criar anúncio no Shopee
+                  </Label>
+                </div>
+
+                <p className="text-sm text-muted-foreground">
+                  Selecione esta opção para publicar o produto nas contas conectadas
+                  do Shopee.
+                </p>
+
+                {watchCreateShopeeListing && (
+                  <div className="space-y-2">
+                    <Label>Contas do Shopee</Label>
+                    {shopeeAccounts.length > 0 ? (
+                      <div className="space-y-2 rounded-md border p-3">
+                        {shopeeAccounts.map((acc) => {
+                          const checked = watchShopeeAccountIds.includes(acc.id);
+                          return (
+                            <label
+                              key={acc.id}
+                              className="flex items-center gap-2 text-sm"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  toggleAccountSelection(
+                                    "shopeeAccountIds",
+                                    acc.id,
+                                    e.target.checked,
+                                  )
+                                }
+                              />
+                              <span className="font-medium">
+                                {acc.accountName || "Conta Shopee"}
+                              </span>
+                              {acc.shopId && (
+                                <span className="text-xs text-muted-foreground">
+                                  (Shop {acc.shopId})
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Nenhuma conta Shopee conectada. Conecte em Integrações.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* Step 6: Revisão */}
-          {currentStep === 6 && (
+          {/* Step 7: Revisão */}
+          {currentStep === 7 && (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/30 p-4">
                 <h4 className="mb-3 font-medium">Identificação</h4>
@@ -2065,6 +2322,7 @@ export function CreateProductDialog({
                 <div className="text-sm">
                   {formValues.imageUrl ? (
                     <div className="space-y-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={formValues.imageUrl}
                         alt="Produto"

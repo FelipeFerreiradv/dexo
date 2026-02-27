@@ -59,6 +59,46 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Busca a primeira conta ATIVA de um usuÃ¡rio para a plataforma
+   * (usada como fallback para compatibilidade legada)
+   */
+  static async findFirstActiveByUserAndPlatform(
+    userId: string,
+    platform: Platform,
+  ) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: {
+          userId,
+          platform,
+          status: AccountStatus.ACTIVE,
+        },
+        orderBy: { createdAt: "asc" },
+      });
+
+      return account;
+    } catch (error) {
+      throw new Error(`Erro ao buscar conta ativa: ${error}`);
+    }
+  }
+
+  /**
+   * Lista todas as contas de um usuÃ¡rio para uma plataforma
+   */
+  static async findAllByUserIdAndPlatform(userId: string, platform: Platform) {
+    try {
+      const accounts = await prisma.marketplaceAccount.findMany({
+        where: { userId, platform },
+        orderBy: { createdAt: "asc" },
+      });
+
+      return accounts;
+    } catch (error) {
+      throw new Error(`Erro ao buscar contas do usuÃ¡rio para ${platform}: ${error}`);
+    }
+  }
+
+  /**
    * Busca conta por ID
    */
   static async findById(id: string) {
@@ -70,6 +110,21 @@ export class MarketplaceRepository {
       return account;
     } catch (error) {
       throw new Error(`Erro ao buscar conta: ${error}`);
+    }
+  }
+
+  /**
+   * Busca conta por ID garantindo que pertence ao usuÃ¡rio informado
+   */
+  static async findByIdAndUser(id: string, userId: string) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: { id, userId },
+      });
+
+      return account;
+    } catch (error) {
+      throw new Error(`Erro ao buscar conta do usuÃ¡rio: ${error}`);
     }
   }
 
@@ -166,6 +221,48 @@ export class MarketplaceRepository {
       return account;
     } catch (error) {
       throw new Error(`Erro ao buscar conta por externalUserId: ${error}`);
+    }
+  }
+
+  /**
+   * Busca conta por externalUserId E userId (evita pegar conta de outro usuário)
+   */
+  static async findByUserAndExternalUserId(
+    userId: string,
+    externalUserId: string,
+    platform: Platform,
+  ) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: {
+          userId,
+          externalUserId,
+          platform,
+        },
+      });
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao buscar conta por externalUserId e usuário: ${error}`,
+      );
+    }
+  }
+
+  /**
+   * Busca conta Shopee por shopId + userId
+   */
+  static async findShopeeByUserAndShopId(userId: string, shopId: number) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: {
+          userId,
+          platform: Platform.SHOPEE,
+          shopId,
+        },
+      });
+      return account;
+    } catch (error) {
+      throw new Error(`Erro ao buscar conta Shopee por shopId: ${error}`);
     }
   }
 

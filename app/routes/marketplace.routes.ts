@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+﻿import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { MarketplaceUseCase } from "../marketplaces/usecases/marketplace.usercase";
 import { SyncUseCase } from "../marketplaces/usecases/sync.usercase";
 import { WebhookUseCase } from "../marketplaces/usecases/webhook.usercase";
@@ -12,14 +12,14 @@ import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 
 /**
- * Rotas para gerenciar conexões com marketplaces
+ * Rotas para gerenciar conexÃµes com marketplaces
  */
 export async function marketplaceRoutes(app: FastifyInstance) {
   /**
    * POST /marketplace/ml/auth
-   * Inicia fluxo de autenticação com Mercado Livre
-   * Retorna URL para redirecionamento do usuário
-   * Requer autenticação - userId vem da sessão
+   * Inicia fluxo de autenticaÃ§Ã£o com Mercado Livre
+   * Retorna URL para redirecionamento do usuÃ¡rio
+   * Requer autenticaÃ§Ã£o - userId vem da sessÃ£o
    */
   app.post<{
     Reply: { authUrl: string; state: string };
@@ -28,20 +28,22 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // userId vem da sessão (garantido pelo authMiddleware)
+        // userId vem da sessÃ£o (garantido pelo authMiddleware)
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
-        // Gerar URL de autorização (passa userId para associar no callback)
+        // Gerar URL de autorizaÃ§Ã£o (passa userId para associar no callback)
         const { authUrl, state } = MarketplaceUseCase.initiateOAuth(userId);
 
-        // Retornar URL + state (state será usado no callback)
+        // Retornar URL + state (state serÃ¡ usado no callback)
         return reply.send({
           authUrl,
           state,
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao iniciar autenticação",
+          error: "Erro ao iniciar autenticaÃ§Ã£o",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -50,9 +52,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * GET /marketplace/ml/callback?code=...&state=...
-   * Callback do OAuth após usuário autorizar no Mercado Livre
-   * Processa o authorization code e cria sessão
-   * Nota: NÃO requer autenticação prévia - userId vem do state
+   * Callback do OAuth apÃ³s usuÃ¡rio autorizar no Mercado Livre
+   * Processa o authorization code e cria sessÃ£o
+   * Nota: NÃƒO requer autenticaÃ§Ã£o prÃ©via - userId vem do state
    */
   app.get<{
     Querystring: { code?: string; state?: string };
@@ -62,19 +64,19 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       const code = (request.query as any).code as string | undefined;
       const state = (request.query as any).state as string | undefined;
 
-      // Validar parâmetros obrigatórios
+      // Validar parÃ¢metros obrigatÃ³rios
       if (!code || !state) {
         return reply.status(400).send({
-          error: "Parâmetros inválidos",
-          message: "code e state são obrigatórios",
+          error: "ParÃ¢metros invÃ¡lidos",
+          message: "code e state sÃ£o obrigatÃ³rios",
         });
       }
 
-      // userId pode vir da sessão atual OU do state armazenado
-      // O state já contém o userId de quando o OAuth foi iniciado
+      // userId pode vir da sessÃ£o atual OU do state armazenado
+      // O state jÃ¡ contÃ©m o userId de quando o OAuth foi iniciado
       const userId = request.user?.id;
 
-      // Processar callback OAuth (userId será recuperado do state se não existir aqui)
+      // Processar callback OAuth (userId serÃ¡ recuperado do state se nÃ£o existir aqui)
       const account = await MarketplaceUseCase.handleOAuthCallback({
         code,
         state,
@@ -101,8 +103,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * GET /marketplace/ml/status
-   * Verifica status de conexão com Mercado Livre
-   * Retorna se conta está conectada e ativa
+   * Verifica status de conexÃ£o com Mercado Livre
+   * Retorna se conta estÃ¡ conectada e ativa
    */
   app.get<{
     Reply: {
@@ -117,10 +119,12 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
-        // Obter status da conexão
+        // Obter status da conexÃ£o
         const statusData = await MarketplaceUseCase.getAccountStatus(
           userId,
           Platform.MERCADO_LIVRE,
@@ -143,112 +147,145 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   );
 
   /**
-   * GET /marketplace/ml/diagnostic
-   * Executa uma série de verificações internas e chamadas à API Mercado Livre
-   * para ajudar a diagnosticar problemas de conexão ou restrições.
+   * GET /marketplace/ml/listings
+   * Lista todos os anÃºncios vinculados (multi-contas)
    */
-  app.get<{ Reply: any }>(
-    "/ml/diagnostic",
+  app.get<{
+    Reply: {
+      success: boolean;
+      count: number;
+      listings: Array<{
+        id: string;
+        productId: string;
+        externalListingId: string;
+        externalSku: string | null;
+        permalink: string | null;
+        status: string;
+        createdAt: Date;
+        product?: {
+          name: string;
+          sku: string;
+          stock: number;
+        };
+      }>;
+    };
+  }>(
+    "/ml/listings",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const logs: any = {};
-      const userId = request.user!.id;
       try {
-        logs.user = await prisma.user.findUnique({ where: { id: userId } });
-        const account = await prisma.marketplaceAccount.findFirst({
-          where: { userId, platform: Platform.MERCADO_LIVRE },
-        });
-        logs.marketplaceAccount = account;
+        const userId = request.user!.id;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
-        if (account) {
-          try {
-            const { MLOAuthService } =
-              await import("../marketplaces/services/ml-oauth.service");
-            const sellerInfo = await MLOAuthService.getUserInfo(
-              account.accessToken,
-            );
-            logs.sellerInfo = sellerInfo;
-
-            const { MLApiService } =
-              await import("../marketplaces/services/ml-api.service");
-            try {
-              await MLApiService.getSellerItemIds(sellerInfo.id);
-              logs.preCheck = "ok";
-            } catch (err: any) {
-              logs.preCheckError = err?.message || String(err);
-            }
-
-            try {
-              const dummyPayload = {
-                title: "TESTE DIAGNOSTICO",
-                category_id: "MLB271107",
-                price: 1,
-                currency_id: "BRL",
-                available_quantity: 1,
-                buying_mode: "buy_it_now",
-                listing_type_id: "bronze",
-                condition: "new",
-                seller_custom_field: "DIAG",
-              };
-              const created = await MLApiService.createItem(
-                sellerInfo.id,
-                dummyPayload,
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: { id: { in: accountIds }, userId, platform: Platform.MERCADO_LIVRE },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.MERCADO_LIVRE,
               );
-              logs.create = "ok";
-              logs.createdItem = created;
 
-              // tentar encerrar imediatamente para não deixar anúncio visível
-              if (created && created.id) {
-                try {
-                  await MLApiService.updateItem(
-                    account.accessToken,
-                    created.id,
-                    {
-                      status: "closed",
-                    } as any,
-                  );
-                  logs.createdClosed = true;
-                } catch (err2) {
-                  logs.createdClosedError = err2?.message || String(err2);
-                }
-              }
-            } catch (err: any) {
-              logs.createError = err?.message || String(err);
-              logs.createResponse = err;
-            }
-          } catch (err: any) {
-            logs.sellerInfoError = err?.message || String(err);
-          }
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta nÃ£o encontrada",
+            message: "Conecte sua conta do Mercado Livre primeiro",
+          });
         }
 
-        return reply.send(logs);
-      } catch (err: any) {
-        return reply.status(500).send({ error: err.message, logs });
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                permalink: true,
+                status: true,
+                createdAt: true,
+                product: {
+                  select: { name: true, sku: true, stock: true },
+                },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+
+        return reply.send({
+          success: true,
+          count: listings.length,
+          listings,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anÃºncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/accounts
+   * Lista todas as contas ML do usuário (multi-contas)
+   */
+  app.get(
+    "/ml/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MERCADO_LIVRE,
+        );
+        return reply.send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
       }
     },
   );
 
   /**
    * DELETE /marketplace/ml
-   * Desconecta conta do Mercado Livre
+   * Desconecta conta do Mercado Livre (aceita accountId para multi-contas)
    */
   app.delete<{ Reply: { success: boolean; message: string } }>(
     "/ml",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
         const userId = request.user!.id;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        // Desconectar marketplace
         await MarketplaceUseCase.disconnectAccount(
           userId,
           Platform.MERCADO_LIVRE,
+          accountId,
         );
 
         return reply.send({
           success: true,
-          message: "Conta desconectada com sucesso",
+          message: "Conta Mercado Livre desconectada com sucesso",
         });
       } catch (error) {
         return reply.status(500).send({
@@ -259,14 +296,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     },
   );
 
-  // ====================================================================
-  // ROTAS DE SINCRONIZAÇÃO - Fase 2
-  // ====================================================================
-
   /**
    * POST /marketplace/ml/import
-   * Importa todos os itens do Mercado Livre e tenta vincular por SKU
-   * Retorna lista de itens importados com status de vinculação
+   * Importa itens do Mercado Livre (multi-contas) e tenta vincular por SKU
    */
   app.post<{
     Reply: {
@@ -288,23 +320,23 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
         const userId = request.user!.id;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        const result = await SyncUseCase.importMLItems(userId);
+        const result = await SyncUseCase.importMLItems(userId, accountId);
 
-        // Registrar log de importação
-        await SystemLogService.logSyncComplete(
-          userId,
-          "IMPORT",
-          "MercadoLivre",
-          {
-            totalItems: result.totalItems,
-            linkedItems: result.linkedItems,
-            unlinkedItems: result.unlinkedItems,
-            errors: result.errors.length,
-          },
-        );
+        await SystemLogService.logSyncComplete(userId, "IMPORT", "MercadoLivre", {
+          totalItems: result.totalItems,
+          linkedItems: result.linkedItems,
+          unlinkedItems: result.unlinkedItems,
+          errors: result.errors.length,
+        });
 
         return reply.send({
           success: true,
@@ -316,7 +348,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao importar itens",
+          error: "Erro ao importar itens do Mercado Livre",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -325,8 +357,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * POST /marketplace/ml/sync
-   * Sincroniza estoque de todos os produtos vinculados ao ML
-   * Envia estoque local para o Mercado Livre
+   * Sincroniza estoque de todos os produtos vinculados ao ML (multi-contas)
    */
   app.post<{
     Reply: {
@@ -335,9 +366,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       successful: number;
       failed: number;
       results: Array<{
+        success: boolean;
         productId: string;
         externalListingId: string;
-        success: boolean;
         previousStock?: number;
         newStock?: number;
         error?: string;
@@ -348,25 +379,24 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
         const userId = request.user!.id;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         const result = await SyncUseCase.syncAllStock(
           userId,
           Platform.MERCADO_LIVRE,
+          accountIds,
         );
 
-        // Registrar log de sincronização completa
-        await SystemLogService.logSyncComplete(
-          userId,
-          "FULL_SYNC",
-          "MercadoLivre",
-          {
-            total: result.total,
-            successful: result.successful,
-            failed: result.failed,
-          },
-        );
+        await SystemLogService.logSyncComplete(userId, "FULL_SYNC", "MercadoLivre", {
+          total: result.total,
+          successful: result.successful,
+          failed: result.failed,
+        });
 
         return reply.send({
           success: result.failed === 0,
@@ -377,92 +407,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao sincronizar estoque",
-          message: error instanceof Error ? error.message : "Erro desconhecido",
-        });
-      }
-    },
-  );
-
-  /**
-   * POST /marketplace/ml/retry-pending
-   * Força execução do worker que re-tenta publicar placeholders pendentes
-   */
-  app.post(
-    "/ml/retry-pending",
-    { preHandler: [authMiddleware] },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const userId = request.user!.id;
-        // run worker once immediately (non-blocking to client)
-        void ListingRetryService.runOnce();
-        await SystemLogService.log(
-          userId,
-          "RETRY_LISTINGS_TRIGGER",
-          "User triggered retry for pending ML placeholders",
-        );
-        return reply
-          .status(202)
-          .send({ success: true, message: "Retry iniciado" });
-      } catch (err) {
-        return reply.status(500).send({
-          error: "Erro ao iniciar retry",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-  );
-
-  /**
-   * POST /marketplace/ml/sync-categories
-   * Sincroniza categorias do Mercado Livre (busca via API e grava no DB)
-   */
-  app.post<{
-    Reply: { success: boolean; categoriesSynced?: number; message?: string };
-  }>(
-    "/ml/sync-categories",
-    { preHandler: [authMiddleware] },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const userId = request.user!.id;
-        const res = await SyncUseCase.syncMLCategories(userId, "MLB");
-        return reply.send({ success: true, categoriesSynced: res.categories });
-      } catch (error) {
-        return reply.status(500).send({
-          error: "Erro ao sincronizar categorias",
-          message: error instanceof Error ? error.message : "Erro desconhecido",
-        });
-      }
-    },
-  );
-
-  /**
-   * GET /marketplace/ml/categories
-   * Lista categorias ML já sincronizadas (id = externalId, value = fullPath)
-   */
-  app.get<{
-    Reply: { categories: Array<{ id: string; value: string }> };
-  }>(
-    "/ml/categories",
-    { preHandler: [authMiddleware] },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const data = await CategoryRepository.listFlattenedOptions("MLB");
-        // Only expose externalIds that look like real ML external IDs (alphanumeric);
-        // ignore synthetic/fallback ids (e.g. ids from static ML_CATALOG with hyphens).
-        // Expose both ML external IDs and synthetic/fallback ids that may
-        // contain hyphens (e.g. from the static `ML_CATALOG` children).
-        // We only exclude obviously malformed ids (empty/null).
-        const categories = data
-          .filter(
-            (c) =>
-              typeof c.externalId === "string" && c.externalId.trim() !== "",
-          )
-          .map((c) => ({ id: c.externalId, value: c.fullPath }));
-        return reply.send({ categories });
-      } catch (error) {
-        return reply.status(500).send({
-          error: "Erro ao listar categorias",
+          error: "Erro ao sincronizar estoque do Mercado Livre",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -471,7 +416,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * POST /marketplace/ml/sync/:productId
-   * Sincroniza estoque de um produto específico para o ML
+   * Sincroniza estoque de um produto especÃ­fico no ML
    */
   app.post<{
     Params: { productId: string };
@@ -490,40 +435,17 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
         const userId = request.user!.id;
-
         const { productId } = request.params as { productId: string };
 
         const result = await SyncUseCase.syncProductStock(productId);
-
         const successful = result.filter((r) => r.success);
         const failed = result.filter((r) => !r.success);
 
-        if (failed.length > 0 && successful.length === 0) {
-          // Todos falharam
-          const firstError = failed[0];
-          await SystemLogService.logSyncError(
-            userId,
-            "PRODUCT_SYNC",
-            "MultiPlatform",
-            firstError.error || "Erro desconhecido",
-          );
-          return reply.status(400).send({
-            success: false,
-            results: result.map((r) => ({
-              productId: r.productId,
-              externalListingId: r.externalListingId,
-              error: r.error,
-            })),
-          });
-        }
-
-        // Registrar log de sincronização bem-sucedida
         await SystemLogService.logSyncComplete(
           userId,
           "PRODUCT_SYNC",
-          "MultiPlatform",
+          "MercadoLivre",
           {
             productId,
             successful: successful.length,
@@ -533,17 +455,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
         return reply.send({
           success: failed.length === 0,
-          results: result.map((r) => ({
-            productId: r.productId,
-            externalListingId: r.externalListingId,
-            previousStock: r.previousStock,
-            newStock: r.newStock,
-            error: r.error,
-          })),
+          results: result,
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao sincronizar produto",
+          error: "Erro ao sincronizar estoque do produto no ML",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -551,125 +467,50 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   );
 
   /**
-   * GET /marketplace/ml/listings
-   * Lista todos os listings (vínculos produto-anúncio) do usuário
+   * POST /marketplace/ml/retry-pending
+   * ForÃ§a uma execuÃ§Ã£o imediata do worker de retry de anÃºncios pendentes (placeholders)
    */
-  app.get<{
-    Reply: {
-      success: boolean;
-      count: number;
-      listings: Array<{
-        id: string;
-        productId: string;
-        externalListingId: string;
-        externalSku: string | null;
-        status: string;
-        createdAt: Date;
-      }>;
-    };
-  }>(
-    "/ml/listings",
+  app.post(
+    "/ml/retry-pending",
     { preHandler: [authMiddleware] },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (_request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
-        const userId = request.user!.id;
-
-        // Buscar conta do ML
-        const account = await MarketplaceRepository.findByUserIdAndPlatform(
-          userId,
-          Platform.MERCADO_LIVRE,
-        );
-
-        if (!account) {
-          return reply.status(404).send({
-            error: "Conta não encontrada",
-            message: "Nenhuma conta do Mercado Livre conectada",
-          });
-        }
-
-        // Buscar listings
-        const listings = await ListingRepository.findAllByAccount(account.id);
-
-        return reply.send({
-          success: true,
-          count: listings.length,
-          listings,
-        });
+        await ListingRetryService.runOnce();
+        return reply.send({ success: true, message: "Retry disparado" });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao listar vínculos",
+          error: "Erro ao iniciar retry de anÃºncios pendentes",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
     },
   );
-
-  // ====================================================================
-  // ROTAS DE WEBHOOK - Fase 5.3
-  // ====================================================================
-
-  /**
-   * POST /marketplace/ml/webhook
-   * Endpoint para receber webhooks do Mercado Livre
-   * Processa notificações de pedidos automaticamente
-   * NÃO requer autenticação - validação é feita via application_id
-   */
-  app.post<{
-    Body: any;
-    Reply: { success: boolean; message: string; data?: any };
-  }>("/ml/webhook", async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const payload = request.body;
-
-      // Validar payload do webhook
-      if (!WebhookUseCase.validateWebhookPayload(payload)) {
-        return reply.status(400).send({
-          success: false,
-          message: "Payload de webhook inválido",
-        });
-      }
-
-      // Processar webhook de pedido
-      const result = await WebhookUseCase.processOrderWebhook(payload);
-
-      if (!result.success) {
-        // Log do erro mas retorna 200 para não fazer ML tentar novamente
-        console.error("[Webhook] Erro ao processar:", result.error);
-        return reply.status(200).send({
-          success: false,
-          message: result.error || "Erro ao processar webhook",
-        });
-      }
-
-      // Retornar sucesso
-      return reply.send({
-        success: true,
-        message: "Webhook processado com sucesso",
-        data: {
-          userId: result.userId,
-          orderId: result.orderId,
-          action: result.action,
-        },
-      });
-    } catch (error) {
-      console.error("[Webhook] Erro interno:", error);
-      return reply.status(500).send({
-        success: false,
-        message: "Erro interno do servidor",
-      });
-    }
-  });
-
-  // ====================================================================
-  // ROTAS PARA SHOPEE
-  // ====================================================================
 
   /**
    * POST /marketplace/shopee/import
    * Importa todos os itens do Shopee e tenta vincular por SKU
    * Retorna lista de itens importados com status de vinculação
    */
+  app.get(
+    "/shopee/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.SHOPEE,
+        );
+        return reply.send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas Shopee",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
   app.post<{
     Reply: {
       success: boolean;
@@ -690,12 +531,15 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        const result = await SyncUseCase.importShopeeItems(userId);
+        const result = await SyncUseCase.importShopeeItems(userId, accountId);
 
-        // Registrar log de importação
+        // Registrar log de importaÃ§Ã£o
         await SystemLogService.logSyncComplete(userId, "IMPORT", "Shopee", {
           totalItems: result.totalItems,
           linkedItems: result.linkedItems,
@@ -722,8 +566,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * GET /marketplace/shopee/listings
-   * Lista todos os anúncios vinculados do Shopee
-   * Requer autenticação
+   * Lista todos os anÃºncios vinculados do Shopee
+   * Requer autenticaÃ§Ã£o
    */
   app.get<{
     Reply: {
@@ -743,39 +587,47 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
-        // Buscar conta do marketplace
-        const account = await MarketplaceRepository.findByUserIdAndPlatform(
-          userId,
-          Platform.SHOPEE,
-        );
+        // Buscar contas do marketplace
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: { id: { in: accountIds }, userId, platform: Platform.SHOPEE },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.SHOPEE,
+              );
 
-        if (!account) {
+        if (!accounts || accounts.length === 0) {
           return reply.status(404).send({
-            error: "Conta não encontrada",
+            error: "Conta nÃ£o encontrada",
             message: "Conecte sua conta do Shopee primeiro",
           });
         }
 
-        // Buscar listings
-        const listings = await prisma.productListing.findMany({
-          where: {
-            marketplaceAccountId: account.id,
-          },
-          select: {
-            id: true,
-            productId: true,
-            externalListingId: true,
-            externalSku: true,
-            status: true,
-            createdAt: true,
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+        // Buscar listings de todas as contas selecionadas
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                status: true,
+                createdAt: true,
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+        const listings = listingsArrays.flat();
 
         return reply.send({
           success: true,
@@ -784,7 +636,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao buscar anúncios",
+          error: "Erro ao buscar anÃºncios",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -794,7 +646,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   /**
    * POST /marketplace/shopee/sync
    * Sincroniza estoque de todos os produtos vinculados ao Shopee
-   * Requer autenticação
+   * Requer autenticaÃ§Ã£o
    */
   app.post<{
     Reply: {
@@ -816,12 +668,18 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
-        const result = await SyncUseCase.syncAllStock(userId, Platform.SHOPEE);
+        const result = await SyncUseCase.syncAllStock(
+          userId,
+          Platform.SHOPEE,
+          accountIds,
+        );
 
-        // Registrar log de sincronização completa
+        // Registrar log de sincronizaÃ§Ã£o completa
         await SystemLogService.logSyncComplete(userId, "FULL_SYNC", "Shopee", {
           total: result.total,
           successful: result.successful,
@@ -846,8 +704,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * POST /marketplace/shopee/sync/:productId
-   * Sincroniza estoque de um produto específico para o Shopee
-   * Requer autenticação
+   * Sincroniza estoque de um produto especÃ­fico para o Shopee
+   * Requer autenticaÃ§Ã£o
    */
   app.post<{
     Params: { productId: string };
@@ -866,8 +724,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
         const { productId } = request.params as { productId: string };
 
@@ -876,7 +736,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         const successful = result.filter((r) => r.success);
         const failed = result.filter((r) => !r.success);
 
-        // Registrar log de sincronização bem-sucedida
+        // Registrar log de sincronizaÃ§Ã£o bem-sucedida
         await SystemLogService.logSyncComplete(
           userId,
           "PRODUCT_SYNC",
@@ -909,9 +769,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * POST /marketplace/shopee/auth
-   * Inicia fluxo de autenticação com Shopee
-   * Retorna URL para redirecionamento do usuário
-   * Requer autenticação - userId vem da sessão
+   * Inicia fluxo de autenticaÃ§Ã£o com Shopee
+   * Retorna URL para redirecionamento do usuÃ¡rio
+   * Requer autenticaÃ§Ã£o - userId vem da sessÃ£o
    */
   app.post<{
     Reply: { authUrl: string; state: string };
@@ -920,21 +780,23 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // userId vem da sessão (garantido pelo authMiddleware)
+        // userId vem da sessÃ£o (garantido pelo authMiddleware)
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
 
-        // Gerar URL de autorização
+        // Gerar URL de autorizaÃ§Ã£o
         const { authUrl, state } =
           MarketplaceUseCase.initiateShopeeOAuth(userId);
 
-        // Retornar URL + state (state será usado no callback)
+        // Retornar URL + state (state serÃ¡ usado no callback)
         return reply.send({
           authUrl,
           state,
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao iniciar autenticação Shopee",
+          error: "Erro ao iniciar autenticaÃ§Ã£o Shopee",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -943,12 +805,12 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * GET /marketplace/shopee/callback?code=...&shop_id=...
-   * Callback do OAuth após usuário autorizar no Shopee
-   * Processa o authorization code e cria sessão
-   * Nota: NÃO requer autenticação prévia - userId vem do state
+   * Callback do OAuth apÃ³s usuÃ¡rio autorizar no Shopee
+   * Processa o authorization code e cria sessÃ£o
+   * Nota: NÃƒO requer autenticaÃ§Ã£o prÃ©via - userId vem do state
    */
   app.get<{
-    Querystring: { code?: string; shop_id?: string };
+    Querystring: { code?: string; shop_id?: string; state?: string };
     Reply: { success: boolean; message: string };
   }>(
     "/shopee/callback",
@@ -956,29 +818,30 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         const code = (request.query as any).code as string | undefined;
         const shopIdStr = (request.query as any).shop_id as string | undefined;
+        const state = (request.query as any).state as string | undefined;
 
-        // Validar parâmetros obrigatórios
+        // Validar parÃ¢metros obrigatÃ³rios
         if (!code || !shopIdStr) {
           return reply.status(400).send({
-            error: "Parâmetros inválidos",
-            message: "code e shop_id são obrigatórios",
+            error: "ParÃ¢metros invÃ¡lidos",
+            message: "code e shop_id sÃ£o obrigatÃ³rios",
           });
         }
 
         const shopId = parseInt(shopIdStr);
         if (isNaN(shopId)) {
           return reply.status(400).send({
-            error: "Parâmetros inválidos",
-            message: "shop_id deve ser um número válido",
+            error: "ParÃ¢metros invÃ¡lidos",
+            message: "shop_id deve ser um nÃºmero vÃ¡lido",
           });
         }
 
-        // userId vem da sessão atual (usuário deve estar logado)
-        const userId = request.user?.id;
+        // userId pode vir da sessao atual ou do state persistido no redirect.
+        const userId = request.user?.id || state;
         if (!userId) {
-          return reply.status(401).send({
-            error: "Não autenticado",
-            message: "Usuário deve estar logado para conectar Shopee",
+          return reply.status(400).send({
+            error: "ParÃ¢metros invÃ¡lidos",
+            message: "state (userId) Ã© obrigatÃ³rio para processar callback Shopee",
           });
         }
 
@@ -1011,8 +874,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
   /**
    * GET /marketplace/shopee/status
-   * Verifica status de conexão com Shopee
-   * Retorna se conta está conectada e ativa
+   * Verifica status de conexÃ£o com Shopee
+   * Retorna se conta estÃ¡ conectada e ativa
    */
   app.get<{
     Reply: {
@@ -1027,12 +890,20 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        // Obter status da conexão
-        const statusData =
-          await MarketplaceUseCase.getShopeeAccountStatus(userId);
+        // Obter status da conexÃ£o
+        const statusData = await MarketplaceUseCase.getShopeeAccountStatus(
+          userId,
+          accountId,
+        );
 
         return reply.send({
           connected: statusData.connected,
@@ -1059,11 +930,14 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // Usuário já validado pelo middleware
+        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
+        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
         // Desconectar marketplace
-        await MarketplaceUseCase.disconnectShopeeAccount(userId);
+        await MarketplaceUseCase.disconnectShopeeAccount(userId, accountId);
 
         return reply.send({
           success: true,
@@ -1078,3 +952,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     },
   );
 }
+
+
+
+
+
+
+

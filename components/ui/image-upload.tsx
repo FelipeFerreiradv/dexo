@@ -142,6 +142,7 @@ export function ImageUpload({
         {preview ? (
           <div className="space-y-4">
             <div className="relative inline-block">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={preview}
                 alt="Preview da imagem"

@@ -16,14 +16,16 @@ function detectStable(title: string) {
   const detected = parseTitleToFields(title);
   let mapping: any = {};
   const tl = title.toLowerCase();
-  const byFull = mlOptions.find((c) => tl.includes(c.value.toLowerCase()));
+  const byFull = mlOptions.find((c: any) =>
+    tl.includes(c.value.toLowerCase()),
+  );
   if (byFull)
     mapping = {
       topLevel: byFull.value.split(" > ")[0].trim(),
       detailedId: byFull.id,
     };
   else {
-    const byLast = mlOptions.find((c) => {
+    const byLast = mlOptions.find((c: any) => {
       const last = c.value.split(" > ").slice(-1)[0].toLowerCase();
       return tl.includes(last);
     });

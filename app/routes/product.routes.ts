@@ -7,6 +7,9 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
 
+const toErrMsg = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
+
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
 
@@ -66,6 +69,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         // Opção para criar anúncio
         createListing,
         createListingCategoryId,
+        listings,
       } = request.body;
 
       const user = (request as any).user;
@@ -109,6 +113,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         imageUrl: imageUrl ?? undefined,
         createListing: Boolean(createListing),
         createListingCategoryId: createListingCategoryId ?? undefined,
+        listings: Array.isArray(listings) ? listings : undefined,
       } as const;
 
       // Server-side validation: reject clearly malformed requests before hitting usecase/DB
@@ -206,34 +211,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 /restrictions_\w+/i.test(mlError) ||
                 /restrictions_coliving/i.test(mlError)
               ) {
-                // ML returned a policy-like restriction. Do a quick real-time status
-                // check before deciding to skip completely: sometimes ML returns
-                // transient policy flags while the seller has already reactivated sales.
-                try {
-                  const quick = await MarketplaceUseCase.getAccountStatus(
-                    userCheck.id,
-                    Platform.MERCADO_LIVRE,
-                  );
-
-                  // If account is connected and not restricted anymore, attempt immediate retry
-                  if (quick?.connected && !quick?.restricted) {
-                    listingResult = await ListingUseCase.createMLListing(
-                      userCheck.id,
-                      data.id,
-                      createListingCategoryId,
-                    );
-                  } else {
-                    console.debug(
-                      "[product.routes] skipped due to ML policy restriction, not rechecking account:",
-                      mlError,
-                    );
-                  }
-                } catch (e) {
-                  console.debug(
-                    "[product.routes] quick status check failed for policy restriction:",
-                    e?.message || e,
-                  );
-                }
+                console.debug(
+                  "[product.routes] skipped due to ML policy restriction, not rechecking account:",
+                  mlError,
+                );
               } else {
                 try {
                   const maxRechecks = 5;
@@ -267,7 +248,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                     } catch (recheckErr) {
                       console.debug(
                         `[product.routes] listing recheck ${attempt} failed:`,
-                        recheckErr?.message || recheckErr,
+                        toErrMsg(recheckErr),
                       );
                     }
 
@@ -278,7 +259,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 } catch (err) {
                   console.debug(
                     "Listing retry loop failed:",
-                    err?.message || err,
+                    toErrMsg(err),
                   );
                 }
               }
@@ -296,9 +277,63 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           }
         }
 
+        // Criação multi-contas/plataformas (novo payload "listings")
+        const multiListingResults: Array<{
+          platform: Platform;
+          accountId: string;
+          result: any;
+        }> = [];
+
+        const listingsPayload = Array.isArray(listings) ? listings : [];
+        for (const l of listingsPayload) {
+          const platform = l?.platform as Platform | undefined;
+          const accountIds =
+            Array.isArray(l?.accountIds) && l.accountIds.length > 0
+              ? l.accountIds.filter(Boolean)
+              : [];
+          const categoryId =
+            typeof l?.categoryId === "string" ? l.categoryId : undefined;
+
+          if (!platform || accountIds.length === 0) {
+            multiListingResults.push({
+              platform: platform || ("" as Platform),
+              accountId: "",
+              result: {
+                success: false,
+                error: "Payload de listings incompleto (platform/accountIds)",
+              },
+            });
+            continue;
+          }
+
+          for (const accountId of accountIds) {
+            try {
+              const res = await ListingUseCase.createListing(
+                user?.id,
+                data.id,
+                platform,
+                categoryId,
+                accountId,
+              );
+              multiListingResults.push({ platform, accountId, result: res });
+            } catch (err) {
+              multiListingResults.push({
+                platform,
+                accountId,
+                result: {
+                  success: false,
+                  error:
+                    err instanceof Error ? err.message : "Erro ao criar anúncio",
+                },
+              });
+            }
+          }
+        }
+
         return reply.status(201).send({
           ...data,
           listing: listingResult,
+          listingsResults: multiListingResults,
         });
       } catch (error: any) {
         // Log sanitized payload for debugging (non-sensitive fields only)

@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, Role, User as PrismaUser } from "@prisma/client";
 import {
   User,
   UserCreate,
@@ -8,6 +8,19 @@ import {
 import prisma from "../lib/prisma";
 
 class UserRepositoryPrisma implements UserRepository {
+  private mapUser(u: PrismaUser): User {
+    return {
+      id: u.id,
+      email: u.email,
+      password: u.password,
+      role: u.role as Role,
+      name: u.name,
+      defaultProductDescription: u.defaultProductDescription ?? null,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+    };
+  }
+
   async create(data: UserCreate): Promise<User> {
     try {
       const result = await prisma.user.create({
@@ -18,7 +31,7 @@ class UserRepositoryPrisma implements UserRepository {
           defaultProductDescription: data.defaultProductDescription,
         },
       });
-      return result;
+      return this.mapUser(result);
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError) {
         console.error("PrismaCode:", err.code);
@@ -38,7 +51,7 @@ class UserRepositoryPrisma implements UserRepository {
           email,
         },
       });
-      return data || null;
+      return data ? this.mapUser(data) : null;
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -51,7 +64,7 @@ class UserRepositoryPrisma implements UserRepository {
           id,
         },
       });
-      return data || null;
+      return data ? this.mapUser(data) : null;
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -66,7 +79,7 @@ class UserRepositoryPrisma implements UserRepository {
           defaultProductDescription: data.defaultProductDescription,
         },
       });
-      return result;
+      return this.mapUser(result);
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError) {
         console.error("PrismaCode:", err.code);
@@ -81,3 +94,4 @@ class UserRepositoryPrisma implements UserRepository {
 }
 
 export { UserRepositoryPrisma };
+export type { UserRepository };

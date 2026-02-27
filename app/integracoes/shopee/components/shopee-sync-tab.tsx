@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import {
   Download,
@@ -71,6 +71,10 @@ export function ShopeeSyncTab() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string; shopId?: number }>
+  >([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
 
   // Importar itens do Shopee
   const handleImport = useCallback(async () => {
@@ -81,15 +85,15 @@ export function ShopeeSyncTab() {
     setImportResult(null);
 
     try {
-      const response = await fetch(
-        "http://localhost:3333/marketplace/shopee/import",
-        {
-          method: "POST",
-          headers: {
-            email: session.user.email,
-          },
+      const url = new URL("http://localhost:3333/marketplace/shopee/import");
+      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -103,7 +107,7 @@ export function ShopeeSyncTab() {
     } finally {
       setIsImporting(false);
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, selectedAccountId]);
 
   // Sincronizar estoque para o Shopee
   const handleSync = useCallback(async () => {
@@ -114,15 +118,15 @@ export function ShopeeSyncTab() {
     setSyncResult(null);
 
     try {
-      const response = await fetch(
-        "http://localhost:3333/marketplace/shopee/sync",
-        {
-          method: "POST",
-          headers: {
-            email: session.user.email,
-          },
+      const url = new URL("http://localhost:3333/marketplace/shopee/sync");
+      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -136,6 +140,26 @@ export function ShopeeSyncTab() {
     } finally {
       setIsSyncing(false);
     }
+  }, [session?.user?.email, selectedAccountId]);
+
+  // Carregar contas para seleção
+  useEffect(() => {
+    const loadAccounts = async () => {
+      if (!session?.user?.email) return;
+      try {
+        const res = await fetch(
+          "http://localhost:3333/marketplace/shopee/accounts",
+          { headers: { email: session.user.email } },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    loadAccounts();
   }, [session?.user?.email]);
 
   return (
@@ -159,6 +183,20 @@ export function ShopeeSyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+          </div>
           <Button onClick={handleImport} disabled={isImporting}>
             {isImporting ? (
               <>
@@ -285,6 +323,20 @@ export function ShopeeSyncTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+          </div>
           <Button onClick={handleSync} disabled={isSyncing}>
             {isSyncing ? (
               <>

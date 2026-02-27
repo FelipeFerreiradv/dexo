@@ -4,8 +4,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findByUserIdAndPlatform: vi.fn(),
+    findFirstActiveByUserAndPlatform: vi.fn(),
     updateTokens: vi.fn(),
     updateStatus: vi.fn(),
+  },
+}));
+
+// Mock SystemLogService to avoid prisma writes
+vi.mock("../app/services/system-log.service", () => ({
+  SystemLogService: {
+    logError: vi.fn(),
+    logWarning: vi.fn(),
+    logInfo: vi.fn(),
+    log: vi.fn(),
   },
 }));
 
@@ -37,6 +48,7 @@ describe("ListingUseCase → ML payload with measurements", () => {
     id: "acct-1",
     accessToken: "fake-token",
     accountName: "MLB",
+    status: "ACTIVE",
   } as any;
 
   const mockProduct = {
@@ -54,9 +66,13 @@ describe("ListingUseCase → ML payload with measurements", () => {
   } as any;
 
   beforeEach(() => {
-    (MarketplaceRepository.findByUserIdAndPlatform as unknown as jest.Mock) = vi
-      .spyOn(MarketplaceRepository, "findByUserIdAndPlatform")
-      .mockResolvedValue(mockAccount as any);
+    vi.spyOn(MarketplaceRepository, "findByUserIdAndPlatform").mockResolvedValue(
+      mockAccount as any,
+    );
+    vi.spyOn(
+      MarketplaceRepository,
+      "findFirstActiveByUserAndPlatform",
+    ).mockResolvedValue(mockAccount as any);
 
     // Default: pre-check should succeed unless overridden by a specific test
     vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
@@ -71,6 +87,13 @@ describe("ListingUseCase → ML payload with measurements", () => {
     vi.spyOn(ListingRepository, "createListing").mockResolvedValue({
       id: "listing-1",
     } as any);
+    vi.spyOn(ListingRepository, "findByProductAndAccount").mockResolvedValue(
+      null as any,
+    );
+    vi.spyOn(ListingRepository, "updateListing").mockResolvedValue({} as any);
+    vi.spyOn(ListingRepository, "incrementRetryAttempts").mockResolvedValue(
+      {} as any,
+    );
   });
 
   afterEach(() => {
@@ -434,11 +457,12 @@ describe("ListingUseCase → ML payload with measurements", () => {
       refreshToken: "rt-old",
       accountName: "MLB",
       expiresAt: new Date(Date.now() - 1000),
+      status: "ACTIVE",
     } as any;
 
     vi.spyOn(
       MarketplaceRepository,
-      "findByUserIdAndPlatform",
+      "findFirstActiveByUserAndPlatform",
     ).mockResolvedValueOnce(expiredAccount as any);
 
     // Mock refresh to return new tokens
@@ -492,7 +516,7 @@ describe("ListingUseCase → ML payload with measurements", () => {
 
     vi.spyOn(
       MarketplaceRepository,
-      "findByUserIdAndPlatform",
+      "findFirstActiveByUserAndPlatform",
     ).mockResolvedValueOnce(inactiveAccount as any);
 
     // capability check succeeds
@@ -558,11 +582,12 @@ describe("ListingUseCase → ML payload with measurements", () => {
       refreshToken: "rt-old",
       accountName: "MLB",
       expiresAt: new Date(Date.now() - 1000),
+      status: "ACTIVE",
     } as any;
 
     vi.spyOn(
       MarketplaceRepository,
-      "findByUserIdAndPlatform",
+      "findFirstActiveByUserAndPlatform",
     ).mockResolvedValueOnce(expiredAccount as any);
 
     // Fail refresh

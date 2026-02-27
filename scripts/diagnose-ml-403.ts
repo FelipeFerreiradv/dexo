@@ -28,7 +28,7 @@ async function tryRequest(name: string, opts: any = {}) {
   }
 }
 
-async function tryProxy(name: string, proxyUrl: string) {
+async function tryProxy(name: string, proxyUrl = "default-proxy") {
   try {
     console.log(`\n--- ${name} via proxy ${proxyUrl} ---`);
     const url = `https://api.allorigins.win/raw?url=${encodeURIComponent("https://api.mercadolibre.com/sites/MLB/categories")}`;

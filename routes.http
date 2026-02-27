@@ -1,8 +1,21 @@
-GET http://localhost:3333/users
+@base = http://localhost:3333
+@userEmail = fefelbf@gmail.com
+@productId = PRODUCT_ID
+@mlAccountId = ML_ACCOUNT_ID
+@shopeeAccountId = SHOPEE_ACCOUNT_ID
+@listingId = LISTING_ID
+@code = AUTH_CODE
+@state = STATE_FROM_AUTH
+@shopId = SHOP_ID
+
+# Todas as rotas protegidas exigem o header `email: {{userEmail}}`
+# Separei por fases para cobrir multi-contas em ML e Shopee.
+
+### USERS
+GET {{base}}/users
 
 ###
-
-POST http://localhost:3333/users
+POST {{base}}/users
 Content-Type: application/json
 
 {
@@ -11,76 +24,173 @@ Content-Type: application/json
   "password": "123456"
 }
 
+### PRODUCTS
+GET {{base}}/products
+email: {{userEmail}}
+
 ###
-
-GET http://localhost:3333/products
-
-###
-
-POST http://localhost:3333/products
+# Criar produto + anuncios multi-contas (payload `listings`)
+POST {{base}}/products
 Content-Type: application/json
+email: {{userEmail}}
 
 {
-  "sku": "12345",
-  "name": "Rodas de Carro",
-  "description": "Rodas de carro aro 15",
+  "sku": "SKU-123",
+  "name": "Produto Multi",
+  "description": "Exemplo de produto",
+  "price": 99.9,
   "stock": 10,
-  "price": 100
+  "imageUrl": "https://exemplo.com/img.png",
+  "listings": [
+    {
+      "platform": "MERCADO_LIVRE",
+      "accountIds": ["{{mlAccountId}}"],
+      "categoryId": "MLB271107"
+    },
+    {
+      "platform": "SHOPEE",
+      "accountIds": ["{{shopeeAccountId}}"]
+    }
+  ]
 }
 
 ###
-# ====================================================================
-# MARKETPLACE - MERCADO LIVRE
-# Configuração: ML_CLIENT_ID=6715080148832481
-# Redirect URI: https://36ee98ca2344.ngrok-free.app/marketplace/ml/callback
-# ====================================================================
-
-### Iniciar OAuth (retorna URL para autorização)
-# userId: cml7fm1v80000vsd8x0sbzf2o (Felipe Ferreira)
-POST http://localhost:3333/marketplace/ml/auth
+# Criar anuncio ML para um produto existente (rota dedicada)
+POST {{base}}/listings/ml?accountId={{mlAccountId}}
 Content-Type: application/json
+email: {{userEmail}}
 
 {
-  "userId": "cml7fm1v80000vsd8x0sbzf2o"
+  "productId": "{{productId}}",
+  "categoryId": "MLB271107"
 }
 
 ###
+# Criar anuncio Shopee para um produto existente (rota dedicada)
+POST {{base}}/listings/shopee?accountId={{shopeeAccountId}}
+Content-Type: application/json
+email: {{userEmail}}
 
-### Verificar status da conexão ML
-GET http://localhost:3333/marketplace/ml/status
-email: fefelbf@gmail.com
-
-###
-
-### Desconectar conta ML
-DELETE http://localhost:3333/marketplace/ml
-email: fefelbf@gmail.com
+{
+  "productId": "{{productId}}"
+}
 
 ###
-# ====================================================================
-# SINCRONIZAÇÃO - FASE 2
-# ====================================================================
+# Atualizar estoque de um anuncio ML
+PUT {{base}}/listings/{{listingId}}/stock
+Content-Type: application/json
+email: {{userEmail}}
 
-### Importar itens do Mercado Livre
-# Busca todos os anúncios e tenta vincular por SKU
-POST http://localhost:3333/marketplace/ml/import
-email: fefelbf@gmail.com
-
-###
-
-### Listar vínculos produto-anúncio
-GET http://localhost:3333/marketplace/ml/listings
-email: fefelbf@gmail.com
+{
+  "quantity": 5
+}
 
 ###
+# Remover anuncio ML
+DELETE {{base}}/listings/{{listingId}}
+email: {{userEmail}}
 
-### Sincronizar estoque de TODOS os produtos para ML
-POST http://localhost:3333/marketplace/ml/sync
-email: fefelbf@gmail.com
+# ============================================================
+# MERCADO LIVRE - FASE 1 (conexao e contas)
+# ============================================================
 
 ###
+# Iniciar OAuth (retorna authUrl + state)
+POST {{base}}/marketplace/ml/auth
+email: {{userEmail}}
 
-### Sincronizar estoque de UM produto específico
-# Substitua PRODUCT_ID pelo ID do produto
-POST http://localhost:3333/marketplace/ml/sync/
-email: fefelbf@gmail.com
+###
+# Callback OAuth ML (nao exige header)
+GET {{base}}/marketplace/ml/callback?code={{code}}&state={{state}}
+
+###
+# Status da conexao ML
+GET {{base}}/marketplace/ml/status
+email: {{userEmail}}
+
+###
+# Listar contas ML
+GET {{base}}/marketplace/ml/accounts
+email: {{userEmail}}
+
+###
+# Desconectar conta ML especifica (multi-contas)
+DELETE {{base}}/marketplace/ml?accountId={{mlAccountId}}
+email: {{userEmail}}
+
+###
+# Listar anuncios ML filtrando por conta
+GET {{base}}/marketplace/ml/listings?accountId={{mlAccountId}}
+email: {{userEmail}}
+
+###
+# Importar itens ML para uma conta (tenta vincular por SKU)
+POST {{base}}/marketplace/ml/import?accountId={{mlAccountId}}
+email: {{userEmail}}
+
+###
+# Sincronizar estoque de TODAS as listagens ML da conta
+POST {{base}}/marketplace/ml/sync?accountId={{mlAccountId}}
+email: {{userEmail}}
+
+###
+# Sincronizar estoque de UM produto no ML (todas as contas do produto)
+POST {{base}}/marketplace/ml/sync/{{productId}}
+email: {{userEmail}}
+
+###
+# Disparar imediatamente o worker de retry de anÃºncios pendentes (ML)
+POST {{base}}/marketplace/ml/retry-pending
+email: {{userEmail}}
+
+# ============================================================
+# SHOPEE - FASE 1 (conexao e contas)
+# ============================================================
+
+###
+# Iniciar OAuth Shopee (retorna authUrl + state)
+POST {{base}}/marketplace/shopee/auth
+email: {{userEmail}}
+
+###
+# Callback OAuth Shopee (nao exige header)
+GET {{base}}/marketplace/shopee/callback?code={{code}}&shop_id={{shopId}}&state={{state}}
+
+###
+# Status da conexao Shopee
+GET {{base}}/marketplace/shopee/status
+email: {{userEmail}}
+
+###
+# Listar contas Shopee
+GET {{base}}/marketplace/shopee/accounts
+email: {{userEmail}}
+
+###
+# Desconectar conta Shopee especifica
+DELETE {{base}}/marketplace/shopee?accountId={{shopeeAccountId}}
+email: {{userEmail}}
+
+# ============================================================
+# SHOPEE - FASE 2 (import, listings, sync com multi-contas)
+# ============================================================
+
+###
+# Importar itens Shopee de uma conta (tenta vincular por SKU)
+POST {{base}}/marketplace/shopee/import?accountId={{shopeeAccountId}}
+email: {{userEmail}}
+
+###
+# Listar anuncios Shopee filtrando por conta
+GET {{base}}/marketplace/shopee/listings?accountId={{shopeeAccountId}}
+email: {{userEmail}}
+
+###
+# Sincronizar estoque de TODAS as listagens Shopee da conta
+POST {{base}}/marketplace/shopee/sync?accountId={{shopeeAccountId}}
+email: {{userEmail}}
+
+###
+# Sincronizar estoque de UM produto no Shopee (todas as contas ou filtrar por conta)
+POST {{base}}/marketplace/shopee/sync/{{productId}}?accountId={{shopeeAccountId}}
+email: {{userEmail}}

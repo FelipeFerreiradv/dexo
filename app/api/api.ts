@@ -81,7 +81,7 @@ api.post("/debug/client-log", async (req, reply) => {
     api.log.info({ msg: "client-log", payload });
     return reply.status(200).send({ ok: true });
   } catch (err) {
-    api.log.error("Error handling client log", err);
+    api.log.error({ msg: "Error handling client log", err });
     return reply.status(500).send({ ok: false });
   }
 });

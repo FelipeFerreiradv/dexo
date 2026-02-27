@@ -1,4 +1,4 @@
-import { MLOAuthService } from "../services/ml-oauth.service";
+﻿import { MLOAuthService } from "../services/ml-oauth.service";
 import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -8,13 +8,13 @@ import { Platform, AccountStatus } from "@prisma/client";
 
 /**
  * Casos de uso para gerenciar contas de marketplace
- * Orquestra fluxo OAuth e persistência
+ * Orquestra fluxo OAuth e persistÃªncia
  */
 export class MarketplaceUseCase {
   /**
    * Inicia fluxo OAuth para Mercado Livre
-   * Retorna URL para qual o usuário deve ser redirecionado
-   * @param userId - ID do usuário (opcional, para associar conta após callback)
+   * Retorna URL para qual o usuÃ¡rio deve ser redirecionado
+   * @param userId - ID do usuÃ¡rio (opcional, para associar conta apÃ³s callback)
    */
   static initiateOAuth(userId?: string): { authUrl: string; state: string } {
     const oauthData = MLOAuthService.generateAuthUrl(userId);
@@ -26,8 +26,8 @@ export class MarketplaceUseCase {
   }
 
   /**
-   * Processa callback do OAuth após usuário autorizar no Mercado Livre
-   * userId pode vir do state (se foi iniciado com userId) ou do parâmetro
+   * Processa callback do OAuth apÃ³s usuÃ¡rio autorizar no Mercado Livre
+   * userId pode vir do state (se foi iniciado com userId) ou do parÃ¢metro
    */
   static async handleOAuthCallback(data: {
     code: string;
@@ -38,15 +38,15 @@ export class MarketplaceUseCase {
       // 1. Validar state (CSRF protection)
       const stateValidation = MLOAuthService.validateState(data.state);
       if (!stateValidation.valid) {
-        throw new Error("State inválido ou expirado. Reinicie a autenticação.");
+        throw new Error("State invÃ¡lido ou expirado. Reinicie a autenticaÃ§Ã£o.");
       }
 
       const codeVerifier = stateValidation.codeVerifier!;
-      // Usar userId do state se não foi passado explicitamente
+      // Usar userId do state se nÃ£o foi passado explicitamente
       const userId = data.userId || stateValidation.userId;
 
       if (!userId) {
-        throw new Error("userId não encontrado. Faça login e tente novamente.");
+        throw new Error("userId nÃ£o encontrado. FaÃ§a login e tente novamente.");
       }
 
       // 2. Trocar code por tokens
@@ -55,13 +55,14 @@ export class MarketplaceUseCase {
         codeVerifier,
       );
 
-      // 3. Obter informações do usuário (seller) do Mercado Livre
+      // 3. Obter informaÃ§Ãµes do usuÃ¡rio (seller) do Mercado Livre
       const userInfo = await MLOAuthService.getUserInfo(tokenData.accessToken);
 
-      // 4. Verificar se já existe conta conectada
+      // 4. Verificar se jÃ¡ existe conta conectada
       const existingAccount =
-        await MarketplaceRepository.findByUserIdAndPlatform(
+        await MarketplaceRepository.findByUserAndExternalUserId(
           userId,
+          tokenData.externalUserId,
           Platform.MERCADO_LIVRE,
         );
 
@@ -106,17 +107,17 @@ export class MarketplaceUseCase {
   }
 
   /**
-   * Obtém status de conexão com marketplace
+   * ObtÃ©m status de conexÃ£o com marketplace
    */
   static async getAccountStatus(
     userId: string,
     platform: Platform = Platform.MERCADO_LIVRE,
+    accountId?: string,
   ) {
     try {
-      let account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        platform,
-      );
+      let account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findByUserIdAndPlatform(userId, platform);
 
       if (!account) {
         return {
@@ -146,7 +147,7 @@ export class MarketplaceUseCase {
             message: "Conta conectada (token renovado)",
           };
         } catch (error) {
-          // Token expirou e não conseguiu renovar — delegate to central handler
+          // Token expirou e nÃ£o conseguiu renovar â€” delegate to central handler
           await MarketplaceAccountService.handleAuthFailure(account.id, error, {
             userId,
             context: "AUTH_REFRESH",
@@ -160,7 +161,7 @@ export class MarketplaceUseCase {
         }
       }
 
-      // Capability check: detectar restrições do seller (ex.: seller.unable_to_list)
+      // Capability check: detectar restriÃ§Ãµes do seller (ex.: seller.unable_to_list)
       try {
         const userInfo = await MLOAuthService.getUserInfo(account.accessToken);
         const sellerId = userInfo?.id?.toString();
@@ -197,14 +198,14 @@ export class MarketplaceUseCase {
                 account,
                 restricted: true,
                 message:
-                  "Conta conectada, mas com restrição de anúncios no Mercado Livre (ver Seller Center).",
+                  "Conta conectada, mas com restricao de anuncios no Mercado Livre (ver Seller Center).",
               };
             }
 
-            // Detectar modo férias / vacation e marcar como INACTIVE (não é erro permanente)
+            // Detectar modo fÃ©rias / vacation e marcar como INACTIVE (nÃ£o Ã© erro permanente)
             if (
               capMsg.toLowerCase().includes("vacation") ||
-              capMsg.toLowerCase().includes("férias") ||
+              capMsg.toLowerCase().includes("fÃ©rias") ||
               capMsg.toLowerCase().includes("ferias") ||
               capMsg.toLowerCase().includes("on vacation")
             ) {
@@ -227,7 +228,7 @@ export class MarketplaceUseCase {
                 connected: false,
                 account,
                 message:
-                  "Conta do Mercado Livre em modo férias — ative a venda no Seller Center.",
+                  "Conta do Mercado Livre em modo fÃ©rias â€” ative a venda no Seller Center.",
               };
             }
 
@@ -284,15 +285,15 @@ export class MarketplaceUseCase {
   static async disconnectAccount(
     userId: string,
     platform: Platform = Platform.MERCADO_LIVRE,
+    accountId?: string,
   ): Promise<void> {
     try {
-      const account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        platform,
-      );
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findByUserIdAndPlatform(userId, platform);
 
       if (!account) {
-        throw new Error(`Conta ${platform} não encontrada`);
+        throw new Error(`Conta ${platform} nÃ£o encontrada`);
       }
 
       await MarketplaceRepository.deleteAccount(account.id);
@@ -304,31 +305,31 @@ export class MarketplaceUseCase {
   }
 
   // ====================================================================
-  // MÉTODOS PARA SHOPEE
+  // MÃ‰TODOS PARA SHOPEE
   // ====================================================================
 
   /**
    * Inicia fluxo OAuth para Shopee
-   * Retorna URL para qual o usuário deve ser redirecionado
-   * @param userId - ID do usuário (opcional, para associar conta após callback)
+   * Retorna URL para qual o usuÃ¡rio deve ser redirecionado
+   * @param userId - ID do usuÃ¡rio (opcional, para associar conta apÃ³s callback)
    */
   static initiateShopeeOAuth(userId?: string): {
     authUrl: string;
     state: string;
   } {
-    // Para Shopee, o userId é armazenado no state da URL de callback
-    // O shop_id vem no callback, então não precisamos dele aqui
-    const oauthData = ShopeeOAuthService.initiateAuth();
+    // Para Shopee, o userId Ã© armazenado no state da URL de callback
+    // O shop_id vem no callback, entÃ£o nÃ£o precisamos dele aqui
+    const oauthData = ShopeeOAuthService.initiateAuth(undefined, userId);
 
     return {
       authUrl: oauthData.auth_url,
-      state: userId || "", // userId será usado no callback
+      state: userId || "", // userId serÃ¡ usado no callback
     };
   }
 
   /**
-   * Processa callback do OAuth após usuário autorizar no Shopee
-   * userId pode vir do state (se foi iniciado com userId) ou do parâmetro
+   * Processa callback do OAuth apÃ³s usuÃ¡rio autorizar no Shopee
+   * userId pode vir do state (se foi iniciado com userId) ou do parÃ¢metro
    */
   static async handleShopeeOAuthCallback(data: {
     code: string;
@@ -336,11 +337,11 @@ export class MarketplaceUseCase {
     userId?: string;
   }) {
     try {
-      // Usar userId passado diretamente (vem da sessão)
+      // Usar userId passado diretamente (vem da sessÃ£o)
       const userId = data.userId;
 
       if (!userId) {
-        throw new Error("userId não encontrado. Faça login e tente novamente.");
+        throw new Error("userId nÃ£o encontrado. FaÃ§a login e tente novamente.");
       }
 
       // 2. Trocar code por tokens
@@ -349,12 +350,9 @@ export class MarketplaceUseCase {
         data.shopId,
       );
 
-      // 3. Verificar se já existe conta conectada
+      // 3. Verificar se jÃ¡ existe conta conectada
       const existingAccount =
-        await MarketplaceRepository.findByUserIdAndPlatform(
-          userId,
-          Platform.SHOPEE,
-        );
+        await MarketplaceRepository.findShopeeByUserAndShopId(userId, data.shopId);
 
       // 4. Criar ou atualizar conta
       let account;
@@ -368,7 +366,7 @@ export class MarketplaceUseCase {
           expiresAt,
         });
 
-        // Atualizar shopId se necessário
+        // Atualizar shopId se necessÃ¡rio
         if (existingAccount.shopId !== data.shopId) {
           account = await MarketplaceRepository.updateShopId(
             existingAccount.id,
@@ -407,27 +405,29 @@ export class MarketplaceUseCase {
   }
 
   /**
-   * Obtém status da conta Shopee do usuário
+   * ObtÃ©m status da conta Shopee do usuÃ¡rio
    */
-  static async getShopeeAccountStatus(userId: string): Promise<{
+  static async getShopeeAccountStatus(userId: string, accountId?: string): Promise<{
     connected: boolean;
     account?: any;
     message: string;
   }> {
     try {
-      const account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        Platform.SHOPEE,
-      );
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.SHOPEE,
+          );
 
       if (!account) {
         return {
           connected: false,
-          message: "Conta Shopee não conectada",
+          message: "Conta Shopee nÃ£o conectada",
         };
       }
 
-      // Verificar se tokens são válidos (não expirados)
+      // Verificar se tokens sÃ£o vÃ¡lidos (nÃ£o expirados)
       const now = new Date();
       const isExpired = account.expiresAt < now;
 
@@ -461,7 +461,7 @@ export class MarketplaceUseCase {
           return {
             connected: false,
             account,
-            message: "Token expirado e não foi possível renovar",
+            message: "Token expirado e nÃ£o foi possÃ­vel renovar",
           };
         }
       }
@@ -480,14 +480,19 @@ export class MarketplaceUseCase {
   }
 
   /**
-   * Desconecta conta Shopee do usuário
+   * Desconecta conta Shopee do usuÃ¡rio
    */
-  static async disconnectShopeeAccount(userId: string): Promise<void> {
+  static async disconnectShopeeAccount(
+    userId: string,
+    accountId?: string,
+  ): Promise<void> {
     try {
-      const account = await MarketplaceRepository.findByUserIdAndPlatform(
-        userId,
-        Platform.SHOPEE,
-      );
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findByUserIdAndPlatform(
+            userId,
+            Platform.SHOPEE,
+          );
 
       if (!account) {
         throw new Error("Conta Shopee não encontrada");
@@ -511,3 +516,7 @@ export class MarketplaceUseCase {
     }
   }
 }
+
+
+
+

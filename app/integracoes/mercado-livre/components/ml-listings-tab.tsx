@@ -56,6 +56,10 @@ export function MLListingsTab() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string }>
+  >([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
 
   // Buscar listings
   const fetchListings = useCallback(
@@ -70,14 +74,14 @@ export function MLListingsTab() {
       setError(null);
 
       try {
-        const response = await fetch(
-          "http://localhost:3333/marketplace/ml/listings",
-          {
-            headers: {
-              email: session.user.email,
-            },
+        const url = new URL("http://localhost:3333/marketplace/ml/listings");
+        if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+
+        const response = await fetch(url.toString(), {
+          headers: {
+            email: session.user.email,
           },
-        );
+        });
 
         if (!response.ok) {
           const data = await response.json();
@@ -98,7 +102,7 @@ export function MLListingsTab() {
         setIsRefreshing(false);
       }
     },
-    [session?.user?.email],
+    [session?.user?.email, selectedAccountId],
   );
 
   useEffect(() => {
@@ -106,6 +110,26 @@ export function MLListingsTab() {
       fetchListings();
     }
   }, [session?.user?.email, fetchListings]);
+
+  // Carregar contas para filtro
+  useEffect(() => {
+    const loadAccounts = async () => {
+      if (!session?.user?.email) return;
+      try {
+        const res = await fetch(
+          "http://localhost:3333/marketplace/ml/accounts",
+          { headers: { email: session.user.email } },
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+        }
+      } catch (err) {
+        /* ignore errors silently */
+      }
+    };
+    loadAccounts();
+  }, [session?.user?.email]);
 
   const handleRefresh = () => {
     fetchListings(true);
@@ -142,17 +166,31 @@ export function MLListingsTab() {
               Produtos do seu estoque vinculados a anúncios do Mercado Livre
             </CardDescription>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-          >
-            <RefreshCw
-              className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-            />
-            Atualizar
-          </Button>
+          <div className="flex items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              Atualizar
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>

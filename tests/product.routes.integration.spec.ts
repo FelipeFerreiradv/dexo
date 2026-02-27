@@ -32,6 +32,41 @@ vi.mock("@/app/lib/prisma", () => ({
   },
 }));
 
+// Mock direct relative prisma import used by repositories
+vi.mock("../app/lib/prisma", () => ({
+  default: {
+    product: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
+      count: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
+    user: { findUnique: vi.fn(), update: vi.fn(), create: vi.fn() },
+    productListing: { findMany: vi.fn(), deleteMany: vi.fn() },
+    stockLog: { create: vi.fn() },
+    systemLog: {
+      create: vi.fn(),
+      findMany: vi.fn(),
+      count: vi.fn(),
+    },
+  },
+}));
+
+// Mock SystemLogService to avoid hitting prisma during tests
+vi.mock("../app/services/system-log.service", () => ({
+  SystemLogService: {
+    logError: vi.fn(),
+    logWarning: vi.fn(),
+    logInfo: vi.fn(),
+    log: vi.fn(),
+    logProductCreate: vi.fn(),
+    logProductDelete: vi.fn(),
+    logProductUpdate: vi.fn(),
+  },
+}));
+
 describe("POST /products (integration)", () => {
   let app: ReturnType<typeof fastify>;
 

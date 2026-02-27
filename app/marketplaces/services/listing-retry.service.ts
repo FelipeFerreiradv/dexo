@@ -6,6 +6,8 @@ import { SystemLogService } from "../../services/system-log.service";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
+const errMsg = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
 
 export class ListingRetryService {
   private static running = false;
@@ -61,21 +63,21 @@ export class ListingRetryService {
           );
         } catch (capErr) {
           console.log(
-            `[ListingRetryService] capability check failed for ${cand.id}: ${capErr?.message || capErr}`,
+            `[ListingRetryService] capability check failed for ${cand.id}: ${errMsg(capErr)}`,
           );
           // schedule next retry
           const attempts = (cand.retryAttempts || 0) + 1;
           const nextDelay =
             BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: String(capErr?.message || capErr),
+            lastError: errMsg(capErr),
             nextRetryAt: new Date(Date.now() + nextDelay * 1000),
             retryEnabled: attempts < MAX_ATTEMPTS,
           });
 
           await SystemLogService.logError(
-            "RETRY_LISTING",
-            `Capability check failed for placeholder ${cand.id} (scheduling retry): ${String(capErr?.message || capErr)}`,
+            "RETRY_LISTING" as any,
+            `Capability check failed for placeholder ${cand.id} (scheduling retry): ${errMsg(capErr)}`,
             { resource: "ProductListing", resourceId: cand.id },
           );
           continue;
@@ -117,7 +119,7 @@ export class ListingRetryService {
             `[ListingRetryService] createItem returned for ${cand.id}: ${mlItem?.id}`,
           );
         } catch (createErr) {
-          const rawMsg = String(createErr?.message || createErr);
+          const rawMsg = errMsg(createErr);
           const parsed =
             createErr && (createErr as any).mlError
               ? (createErr as any).mlError
@@ -138,7 +140,7 @@ export class ListingRetryService {
             });
 
             await SystemLogService.logError(
-              "RETRY_LISTING",
+              "RETRY_LISTING" as any,
               `createItem non-retryable policy error for placeholder ${cand.id}: ${rawMsg}`,
               {
                 resource: "ProductListing",
@@ -159,7 +161,7 @@ export class ListingRetryService {
           });
 
           await SystemLogService.logError(
-            "RETRY_LISTING",
+            "RETRY_LISTING" as any,
             `createItem failed for placeholder ${cand.id}, scheduling retry: ${rawMsg}`,
             { resource: "ProductListing", resourceId: cand.id },
           );
@@ -184,7 +186,7 @@ export class ListingRetryService {
           `[ListingRetryService] updated placeholder ${cand.id} in DB`,
         );
         await SystemLogService.logError(
-          "RETRY_LISTING",
+          "RETRY_LISTING" as any,
           `Placeholder ${cand.id} successfully posted to ML (${mlItem.id})`,
           { resource: "ProductListing", resourceId: cand.id },
         );
@@ -192,7 +194,7 @@ export class ListingRetryService {
         // unexpected error
         try {
           await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: String(err?.message || err),
+            lastError: errMsg(err),
             nextRetryAt: new Date(Date.now() + 60 * 1000),
             retryEnabled: true,
           });
@@ -200,8 +202,8 @@ export class ListingRetryService {
           /* ignore */
         }
         await SystemLogService.logError(
-          "RETRY_LISTING",
-          `Unexpected error while retrying placeholder ${cand.id}: ${String(err?.message || err)}`,
+          "RETRY_LISTING" as any,
+          `Unexpected error while retrying placeholder ${cand.id}: ${errMsg(err)}`,
           { resource: "ProductListing", resourceId: cand.id },
         );
       }

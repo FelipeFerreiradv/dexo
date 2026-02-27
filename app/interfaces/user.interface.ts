@@ -1,23 +1,28 @@
+import { Role } from "@prisma/client";
+
 export interface User {
   id: string;
   email: string;
   password: string;
+  role: Role;
   name?: string | null;
-  defaultProductDescription?: string;
+  defaultProductDescription?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export interface UserCreate {
   email: string;
-  name?: string;
+  name?: string | null;
   password: string;
-  defaultProductDescription?: string;
+  defaultProductDescription?: string | null;
+  role?: Role;
 }
 
 export interface UserUpdate {
-  name?: string;
-  defaultProductDescription?: string;
+  name?: string | null;
+  defaultProductDescription?: string | null;
+  role?: Role;
 }
 
 export interface UserRepository {

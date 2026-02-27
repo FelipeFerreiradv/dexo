@@ -156,6 +156,7 @@ export default function StockChanges({ data }: { data: Item[] }) {
           <StockChangeRow key={item.productId} item={item} mixExpr={mixExpr} />
         );
 
+        /* Unreachable fallback rendering kept for reference
         const lastChange = item.changes[0];
         const lastDate = lastChange ? new Date(lastChange.date) : null;
         return (
@@ -194,6 +195,7 @@ export default function StockChanges({ data }: { data: Item[] }) {
             <MiniSparkline points={points} />
           </div>
         );
+        */
       })}
     </div>
   );

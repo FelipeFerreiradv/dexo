@@ -36,6 +36,8 @@ export interface Product {
   imageUrl?: string;
 }
 
+import { Platform } from "@prisma/client";
+
 export interface ProductCreate {
   sku: string;
   name: string;
@@ -71,6 +73,13 @@ export interface ProductCreate {
   // Opção para criar anúncio no ML automaticamente
   createListing?: boolean;
   createListingCategoryId?: string;
+
+  // Novo: criação de anúncios multi-contas/plataformas
+  listings?: Array<{
+    platform: Platform;
+    accountIds: string[];
+    categoryId?: string;
+  }>;
 }
 
 export interface ProductUpdate {

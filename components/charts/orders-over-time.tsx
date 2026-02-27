@@ -14,9 +14,9 @@ import {
 
 type Item = { date: string; orders: number; totalAmount?: number };
 
-function formatDateLabel(date: string) {
+function formatDateLabel(date: any) {
   try {
-    const d = new Date(date);
+    const d = new Date(date as string);
     return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
   } catch {
     return date;

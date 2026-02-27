@@ -41,6 +41,9 @@ interface ConnectionStatus {
 export function MLConnectionTab() {
   const { data: session } = useSession();
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string; status?: string }>
+  >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
@@ -70,6 +73,17 @@ export function MLConnectionTab() {
 
       const data: ConnectionStatus = await response.json();
       setStatus(data);
+
+      const accRes = await fetch(
+        "http://localhost:3333/marketplace/ml/accounts",
+        { headers: { email: session.user.email } },
+      );
+      if (accRes.ok) {
+        const accData = await accRes.json();
+        setAccounts(Array.isArray(accData.accounts) ? accData.accounts : []);
+      } else {
+        setAccounts([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");
     } finally {
@@ -151,18 +165,19 @@ export function MLConnectionTab() {
   };
 
   // Desconecta conta
-  const handleDisconnect = async () => {
+  const handleDisconnect = async (accountId?: string) => {
     if (!session?.user?.email) return;
 
     setIsDisconnecting(true);
     setError(null);
 
     try {
-      const response = await fetch("http://localhost:3333/marketplace/ml", {
+      const url = new URL("http://localhost:3333/marketplace/ml");
+      if (accountId) url.searchParams.set("accountId", accountId);
+
+      const response = await fetch(url.toString(), {
         method: "DELETE",
-        headers: {
-          email: session.user.email,
-        },
+        headers: { email: session.user.email },
       });
 
       if (!response.ok) {
@@ -244,23 +259,43 @@ export function MLConnectionTab() {
 
         {status?.connected ? (
           <div className="space-y-4">
-            {/* Info da conta conectada */}
-            <div className="rounded-lg border p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">
-                  Plataforma
-                </span>
-                <span className="font-medium">Mercado Livre</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Status</span>
-                <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
-                  {status.status || "Ativo"}
-                </span>
-              </div>
+            {/* Contas conectadas */}
+            <div className="space-y-2">
+              {accounts.map((acc) => (
+                <div
+                  key={acc.id}
+                  className="flex items-center justify-between rounded-lg border p-3"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-green-600" />
+                      <span className="font-medium">
+                        {acc.accountName || "Conta Mercado Livre"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Status: {acc.status || status.status || "Ativo"}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDisconnect(acc.id)}
+                    disabled={isDisconnecting}
+                  >
+                    <Unplug className="mr-2 h-4 w-4" />
+                    Desconectar
+                  </Button>
+                </div>
+              ))}
+              {accounts.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma conta listada. Recarregue ou conecte uma nova conta.
+                </p>
+              )}
             </div>
 
-            {/* Ações */}
+            {/* Ações globais */}
             <div className="flex gap-2">
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -273,7 +308,7 @@ export function MLConnectionTab() {
                     ) : (
                       <>
                         <Unplug className="mr-2 h-4 w-4" />
-                        Desconectar
+                        Desconectar todas
                       </>
                     )}
                   </Button>
@@ -281,21 +316,21 @@ export function MLConnectionTab() {
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>
-                      Desconectar Mercado Livre?
+                      Desconectar todas as contas ML?
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      Esta ação irá remover a conexão com sua conta do Mercado
-                      Livre. Você não perderá seus anúncios, mas a sincronização
-                      de estoque será interrompida.
+                      Esta ação removerá as conexões das contas do Mercado Livre.
+                      Você não perderá seus anúncios, mas a sincronização será
+                      interrompida.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
                     <AlertDialogAction
-                      onClick={handleDisconnect}
+                      onClick={() => handleDisconnect()}
                       className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                     >
-                      Desconectar
+                      Desconectar tudo
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>

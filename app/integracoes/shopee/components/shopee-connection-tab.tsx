@@ -40,6 +40,9 @@ interface ConnectionStatus {
 export function ShopeeConnectionTab() {
   const { data: session } = useSession();
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; accountName: string; status?: string; shopId?: number }>
+  >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
@@ -69,6 +72,17 @@ export function ShopeeConnectionTab() {
 
       const data: ConnectionStatus = await response.json();
       setStatus(data);
+
+      const accRes = await fetch(
+        "http://localhost:3333/marketplace/shopee/accounts",
+        { headers: { email: session.user.email } },
+      );
+      if (accRes.ok) {
+        const accData = await accRes.json();
+        setAccounts(Array.isArray(accData.accounts) ? accData.accounts : []);
+      } else {
+        setAccounts([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");
     } finally {
@@ -149,33 +163,39 @@ export function ShopeeConnectionTab() {
   };
 
   // Desconectar conta
-  const handleDisconnect = useCallback(async () => {
-    if (!session?.user?.email) return;
+  const handleDisconnect = useCallback(
+    async (accountId?: string) => {
+      if (!session?.user?.email) return;
 
-    setIsDisconnecting(true);
-    setError(null);
+      setIsDisconnecting(true);
+      setError(null);
 
-    try {
-      const response = await fetch("http://localhost:3333/marketplace/shopee", {
-        method: "DELETE",
-        headers: {
-          email: session.user.email,
-        },
-      });
+      try {
+        const url = new URL("http://localhost:3333/marketplace/shopee");
+        if (accountId) url.searchParams.set("accountId", accountId);
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.message || "Erro ao desconectar");
-      }
+        const response = await fetch(url.toString(), {
+          method: "DELETE",
+          headers: {
+            email: session.user.email,
+          },
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.message || "Erro ao desconectar");
+        }
 
       // Recarregar status
       await fetchStatus();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao desconectar");
-    } finally {
-      setIsDisconnecting(false);
-    }
-  }, [session?.user?.email, fetchStatus]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Erro ao desconectar");
+      } finally {
+        setIsDisconnecting(false);
+      }
+    },
+    [session?.user?.email, fetchStatus],
+  );
 
   // Carregar status inicial
   useEffect(() => {
@@ -220,18 +240,50 @@ export function ShopeeConnectionTab() {
         <CardContent className="space-y-4">
           {status?.connected ? (
             <div className="space-y-4">
-              <div className="rounded-lg bg-green-50 p-4 dark:bg-green-900/20">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
-                  <div>
-                    <p className="font-medium text-green-800 dark:text-green-200">
-                      Conectado ao Shopee
-                    </p>
-                    <p className="text-sm text-green-600 dark:text-green-300">
-                      {status.message}
-                    </p>
+              <div className="space-y-2">
+                {accounts.map((acc) => (
+                  <div
+                    key={acc.id}
+                    className="flex items-center justify-between rounded-lg border p-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-green-600" />
+                        <span className="font-medium">
+                          {acc.accountName || "Conta Shopee"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Status: {acc.status || status.status || "Ativo"}{" "}
+                        {acc.shopId ? `• Shop ${acc.shopId}` : ""}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDisconnect(acc.id)}
+                      disabled={isDisconnecting}
+                    >
+                      <Unplug className="mr-2 h-4 w-4" />
+                      Desconectar
+                    </Button>
                   </div>
-                </div>
+                ))}
+                {accounts.length === 0 && (
+                  <div className="rounded-lg bg-green-50 p-4 dark:bg-green-900/20">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+                      <div>
+                        <p className="font-medium text-green-800 dark:text-green-200">
+                          Conectado ao Shopee
+                        </p>
+                        <p className="text-sm text-green-600 dark:text-green-300">
+                          {status.message}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <AlertDialog>
@@ -245,7 +297,7 @@ export function ShopeeConnectionTab() {
                     ) : (
                       <>
                         <Unplug className="mr-2 h-4 w-4" />
-                        Desconectar Conta
+                        Desconectar todas
                       </>
                     )}
                   </Button>
@@ -254,15 +306,15 @@ export function ShopeeConnectionTab() {
                   <AlertDialogHeader>
                     <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
                     <AlertDialogDescription>
-                      Tem certeza que deseja desconectar sua conta do Shopee?
-                      Isso removerá todas as vinculações de produtos e você
-                      precisará reconectar para continuar sincronizando.
+                      Tem certeza que deseja desconectar todas as contas do Shopee?
+                      Isso removerá as vinculações e você precisará reconectar para
+                      continuar sincronizando.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleDisconnect}>
-                      Desconectar
+                    <AlertDialogAction onClick={() => handleDisconnect()}>
+                      Desconectar tudo
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>

@@ -1,10 +1,10 @@
-/**
- * SyncUseCase - Orquestração de sincronização entre estoque local e Mercado Livre
+﻿/**
+ * SyncUseCase - OrquestraÃ§Ã£o de sincronizaÃ§Ã£o entre estoque local e Mercado Livre
  *
  * Responsabilidades:
  * - Importar itens do ML e vincular automaticamente por SKU
  * - Sincronizar estoque do sistema central para o ML
- * - Registrar logs de sincronização
+ * - Registrar logs de sincronizaÃ§Ã£o
  */
 
 import prisma from "@/app/lib/prisma";
@@ -19,7 +19,7 @@ import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
 
-// Tipos para resultados de sincronização
+// Tipos para resultados de sincronizaÃ§Ã£o
 export interface ImportResult {
   totalItems: number;
   linkedItems: number;
@@ -57,7 +57,7 @@ export class SyncUseCase {
    * Importa todos os itens do Mercado Livre e tenta vincular automaticamente por SKU
    * Nota: Apenas cria listings para itens que podem ser vinculados a produtos existentes
    */
-  static async importMLItems(userId: string): Promise<ImportResult> {
+  static async importMLItems(userId: string, accountId?: string): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
@@ -67,14 +67,16 @@ export class SyncUseCase {
     };
 
     // 1. Buscar conta do marketplace
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      Platform.MERCADO_LIVRE,
-    );
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.MERCADO_LIVRE,
+        );
 
     if (!account || !account.accessToken || !account.externalUserId) {
       throw new Error(
-        "Conta do Mercado Livre não conectada ou sem credenciais",
+        "Conta do Mercado Livre nÃ£o conectada ou sem credenciais",
       );
     }
 
@@ -141,7 +143,7 @@ export class SyncUseCase {
         let processedItem: ImportResult["items"][0];
 
         if (existingListing) {
-          // Já existe, atualizar status se necessário
+          // JÃ¡ existe, atualizar status se necessÃ¡rio
           if (existingListing.status !== item.status) {
             await ListingRepository.updateStatus(
               existingListing.id,
@@ -157,7 +159,7 @@ export class SyncUseCase {
             status: "linked",
           };
         } else {
-          // Tentar vincular por SKU se disponível
+          // Tentar vincular por SKU se disponÃ­vel
           const linkedProductId = product ? product.id : null;
 
           // Se encontrou produto, criar listing
@@ -213,7 +215,7 @@ export class SyncUseCase {
       `[IMPORT] Completed processing ${processedCount} items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
     );
 
-    // 5. Registrar log da importação
+    // 5. Registrar log da importaÃ§Ã£o
     await this.logSync(
       account.id,
       SyncType.PRODUCT_SYNC,
@@ -228,7 +230,7 @@ export class SyncUseCase {
   /**
    * Importa todos os itens do Shopee e tenta vincular automaticamente por SKU
    */
-  static async importShopeeItems(userId: string): Promise<ImportResult> {
+  static async importShopeeItems(userId: string, accountId?: string): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
@@ -238,13 +240,15 @@ export class SyncUseCase {
     };
 
     // 1. Buscar conta do marketplace
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      Platform.SHOPEE,
-    );
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.SHOPEE,
+        );
 
     if (!account || !account.accessToken || !account.shopId) {
-      throw new Error("Conta do Shopee não conectada ou sem credenciais");
+      throw new Error("Conta do Shopee nÃ£o conectada ou sem credenciais");
     }
 
     // 2. Buscar todos os itens da loja
@@ -325,7 +329,7 @@ export class SyncUseCase {
         let processedItem: ImportResult["items"][0];
 
         if (existingListing) {
-          // Já existe, atualizar status se necessário
+          // JÃ¡ existe, atualizar status se necessÃ¡rio
           const newStatus =
             item.status === "NORMAL" ? "active" : item.status.toLowerCase();
           if (existingListing.status !== newStatus) {
@@ -340,7 +344,7 @@ export class SyncUseCase {
             status: "linked",
           };
         } else {
-          // Tentar vincular por SKU se disponível
+          // Tentar vincular por SKU se disponÃ­vel
           const linkedProductId = product ? product.id : null;
 
           // Se encontrou produto, criar listing
@@ -397,7 +401,7 @@ export class SyncUseCase {
       `[IMPORT] Completed processing ${processedCount} Shopee items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
     );
 
-    // Registrar log da importação
+    // Registrar log da importaÃ§Ã£o
     await this.logSync(
       account.id,
       SyncType.PRODUCT_SYNC,
@@ -410,12 +414,17 @@ export class SyncUseCase {
   }
 
   // Sincroniza categorias do Mercado Livre para DB (siteId ex: "MLB")
-  static async syncMLCategories(userId: string, siteId: string = "MLB") {
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      Platform.MERCADO_LIVRE,
-    );
-    const accountId = account?.id;
+  static async syncMLCategories(
+    userId: string,
+    siteId: string = "MLB",
+    accountId?: string,
+  ) {
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.MERCADO_LIVRE,
+        );
 
     try {
       let cats: { id: string; name: string }[] | null = null;
@@ -425,9 +434,10 @@ export class SyncUseCase {
           `[SYNC] Fetched ${cats.length} site categories for ${siteId}`,
         );
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         console.warn(
           "[SYNC] Could not fetch site categories from ML API, falling back to static ML_CATALOG:",
-          err?.message || err,
+          msg,
         );
       }
 
@@ -456,10 +466,8 @@ export class SyncUseCase {
             if (processed % 20 === 0)
               await new Promise((r) => setTimeout(r, 100));
           } catch (err) {
-            console.warn(
-              `[SYNC] Failed to fetch category ${c.id}:`,
-              err?.message || err,
-            );
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[SYNC] Failed to fetch category ${c.id}:`, msg);
           }
         }
       } else {
@@ -499,7 +507,7 @@ export class SyncUseCase {
         await CategoryRepository.upsertMany(entries as any[]);
       }
 
-      // Registro de log: se tivermos conta ML, registrar via logSync (SyncLog), caso contrário usar SystemLogService
+      // Registro de log: se tivermos conta ML, registrar via logSync (SyncLog), caso contrÃ¡rio usar SystemLogService
       if (accountId) {
         await this.logSync(
           accountId,
@@ -568,7 +576,7 @@ export class SyncUseCase {
   }
 
   /**
-   * Sincroniza o estoque de um produto específico para todos os marketplaces conectados
+   * Sincroniza o estoque de um produto especÃ­fico para todos os marketplaces conectados
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
     // 1. Buscar produto com seus listings
@@ -589,7 +597,7 @@ export class SyncUseCase {
           success: false,
           productId,
           externalListingId: "",
-          error: "Produto não encontrado",
+          error: "Produto nÃ£o encontrado",
         },
       ];
     }
@@ -600,7 +608,7 @@ export class SyncUseCase {
           success: false,
           productId,
           externalListingId: "",
-          error: "Produto não vinculado a nenhum marketplace",
+          error: "Produto nÃ£o vinculado a nenhum marketplace",
         },
       ];
     }
@@ -626,7 +634,7 @@ export class SyncUseCase {
               success: false,
               productId,
               externalListingId: listing.externalListingId,
-              error: `Plataforma ${account.platform} não suportada`,
+              error: `Plataforma ${account.platform} nÃ£o suportada`,
             };
         }
 
@@ -674,7 +682,7 @@ export class SyncUseCase {
           account.id,
           SyncType.STOCK_UPDATE,
           SyncStatus.WARNING,
-          `Anúncio local (placeholder) — não existe no Mercado Livre: ${listing.externalListingId}`,
+          `AnÃºncio local (placeholder) â€” nÃ£o existe no Mercado Livre: ${listing.externalListingId}`,
           {
             productId: product.id,
             externalListingId: listing.externalListingId,
@@ -689,7 +697,7 @@ export class SyncUseCase {
         productId: product.id,
         externalListingId: listing.externalListingId,
         error:
-          "Anúncio local (placeholder) — não existe no Mercado Livre. Sincronização ignorada.",
+          "AnÃºncio local (placeholder) â€” nÃ£o existe no Mercado Livre. SincronizaÃ§Ã£o ignorada.",
       };
     }
 
@@ -714,7 +722,7 @@ export class SyncUseCase {
         account.id,
         SyncType.STOCK_UPDATE,
         SyncStatus.SUCCESS,
-        `Estoque do produto ${product.name} atualizado: ${previousStock} → ${product.stock}`,
+        `Estoque do produto ${product.name} atualizado: ${previousStock} â†’ ${product.stock}`,
         {
           productId: product.id,
           externalListingId: listing.externalListingId,
@@ -796,7 +804,7 @@ export class SyncUseCase {
         account.id,
         SyncType.STOCK_UPDATE,
         SyncStatus.SUCCESS,
-        `Estoque do produto ${product.name} atualizado: ${previousStock} → ${product.stock}`,
+        `Estoque do produto ${product.name} atualizado: ${previousStock} â†’ ${product.stock}`,
         {
           productId: product.id,
           externalListingId: listing.externalListingId,
@@ -838,11 +846,12 @@ export class SyncUseCase {
   }
 
   /**
-   * Sincroniza o estoque de todos os produtos vinculados a um marketplace específico
+   * Sincroniza o estoque de todos os produtos vinculados a um marketplace especÃ­fico
    */
   static async syncAllStock(
     userId: string,
     platform: Platform,
+    accountIds?: string[],
   ): Promise<SyncAllResult> {
     const result: SyncAllResult = {
       total: 0,
@@ -851,68 +860,71 @@ export class SyncUseCase {
       results: [],
     };
 
-    // 1. Buscar conta do marketplace
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      platform,
-    );
+    // 1. Buscar contas do marketplace (multi-contas)
+    const accounts =
+      accountIds && accountIds.length > 0
+        ? await prisma.marketplaceAccount.findMany({
+            where: { id: { in: accountIds }, userId, platform },
+            orderBy: { createdAt: "asc" },
+          })
+        : await MarketplaceRepository.findAllByUserIdAndPlatform(
+            userId,
+            platform,
+          );
 
-    if (!account) {
-      throw new Error(`Conta do ${platform} não encontrada`);
+    if (!accounts || accounts.length === 0) {
+      throw new Error(`Conta do ${platform} nÃ£o encontrada`);
     }
 
-    // 2. Buscar todos os listings vinculados a produtos
-    const listings = await prisma.productListing.findMany({
-      where: {
-        marketplaceAccountId: account.id,
-      },
-      include: {
-        product: true,
-      },
-    });
+    // 2. Para cada conta, buscar listings e sincronizar
+    for (const account of accounts) {
+      const listings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        include: { product: true },
+      });
 
-    result.total = listings.length;
+      result.total += listings.length;
 
-    // 3. Sincronizar cada produto
-    for (const listing of listings) {
-      if (!listing.product) continue;
+      for (const listing of listings) {
+        if (!listing.product) continue;
 
-      const syncResults = await this.syncProductStock(listing.product.id);
+        const syncResults = await this.syncProductStock(listing.product.id);
 
-      // Filtrar apenas os resultados para este listing
-      const relevantResult = syncResults.find(
-        (r) => r.externalListingId === listing.externalListingId,
-      );
+        const relevantResult = syncResults.find(
+          (r) => r.externalListingId === listing.externalListingId,
+        );
 
-      if (relevantResult) {
-        result.results.push(relevantResult);
-        if (relevantResult.success) {
-          result.successful++;
-        } else {
-          result.failed++;
+        if (relevantResult) {
+          result.results.push(relevantResult);
+          if (relevantResult.success) {
+            result.successful++;
+          } else {
+            result.failed++;
+          }
         }
       }
-    }
 
-    // 4. Log geral da sincronização
-    await this.logSync(
-      account.id,
-      SyncType.STOCK_UPDATE,
-      result.failed === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Sincronização em lote: ${result.successful}/${result.total} bem-sucedidos`,
-      {
-        total: result.total,
-        successful: result.successful,
-        failed: result.failed,
-      },
-    );
+      // Log individual por conta
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        result.failed === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+        `SincronizaÃ§Ã£o em lote: ${result.successful}/${result.total} bem-sucedidos`,
+        {
+          total: result.total,
+          successful: result.successful,
+          failed: result.failed,
+          accountId: account.id,
+        },
+      );
+    }
 
     return result;
   }
 
   /**
-   * Sincroniza dados completos de um produto para um anúncio específico
-   * Atualiza preço, estoque e outros campos suportados pelo marketplace
+   * Sincroniza dados completos de um produto para um anÃºncio especÃ­fico
+   * Atualiza preÃ§o, estoque e outros campos suportados pelo marketplace
    */
   static async syncProductData(
     productId: string,
@@ -932,7 +944,7 @@ export class SyncUseCase {
       });
 
       if (!product) {
-        throw new Error(`Produto ${productId} não encontrado`);
+        throw new Error(`Produto ${productId} nÃ£o encontrado`);
       }
 
       // 2. Buscar conta do marketplace
@@ -942,7 +954,7 @@ export class SyncUseCase {
 
       if (!account || !account.accessToken) {
         throw new Error(
-          "Conta do marketplace não encontrada ou sem token de acesso",
+          "Conta do marketplace nÃ£o encontrada ou sem token de acesso",
         );
       }
 
@@ -962,7 +974,7 @@ export class SyncUseCase {
           );
         default:
           throw new Error(
-            `Plataforma ${account.platform} não suportada para sincronização completa`,
+            `Plataforma ${account.platform} nÃ£o suportada para sincronizaÃ§Ã£o completa`,
           );
       }
     } catch (error) {
@@ -1008,7 +1020,7 @@ export class SyncUseCase {
             account.id,
             SyncType.PRODUCT_SYNC,
             SyncStatus.WARNING,
-            `Sincronização ignorada para placeholder local ${externalListingId}`,
+            `SincronizaÃ§Ã£o ignorada para placeholder local ${externalListingId}`,
             { productId: product.id, externalListingId },
           );
         } catch (e) {
@@ -1016,55 +1028,55 @@ export class SyncUseCase {
         }
 
         result.error =
-          "Anúncio local (placeholder) — não existe no Mercado Livre. Operação ignorada.";
+          "AnÃºncio local (placeholder) â€” nÃ£o existe no Mercado Livre. OperaÃ§Ã£o ignorada.";
         return result;
       }
-      // Verificar status do anúncio antes de atualizar
+      // Verificar status do anÃºncio antes de atualizar
       const currentItem = await MLApiService.getItemDetails(
         account.accessToken,
         externalListingId,
       );
 
-      console.log(`[SYNC] Status atual do anúncio: ${currentItem.status}`);
+      console.log(`[SYNC] Status atual do anÃºncio: ${currentItem.status}`);
 
-      // Preparar dados para atualização baseados no status
+      // Preparar dados para atualizaÃ§Ã£o baseados no status
       const updateData: MLItemUpdatePayload = {};
 
-      // Sempre sincronizar preço e estoque (campos suportados pela API)
+      // Sempre sincronizar preÃ§o e estoque (campos suportados pela API)
       updateData.price = Number(product.price);
       updateData.available_quantity = product.stock;
 
-      // Só sincronizar título e descrição se o anúncio estiver ativo
-      // Anúncios pausados não permitem atualização de título/descrição
+      // SÃ³ sincronizar tÃ­tulo e descriÃ§Ã£o se o anÃºncio estiver ativo
+      // AnÃºncios pausados nÃ£o permitem atualizaÃ§Ã£o de tÃ­tulo/descriÃ§Ã£o
       if (currentItem.status === "active") {
         // Sincronizar nome se foi alterado
         if (product.name && product.name !== currentItem.title) {
           updateData.title = product.name;
         }
 
-        // Sincronizar descrição se foi alterada
+        // Sincronizar descriÃ§Ã£o se foi alterada
         if (product.description) {
           updateData.description = product.description;
         }
       }
 
-      // Sincronizar categoria se foi alterada (geralmente não permitida em anúncios ativos)
+      // Sincronizar categoria se foi alterada (geralmente nÃ£o permitida em anÃºncios ativos)
       if (product.category) {
         console.log(
-          `[SYNC] Categoria detectada mas não sincronizada: ${product.category}`,
+          `[SYNC] Categoria detectada mas nÃ£o sincronizada: ${product.category}`,
         );
       }
 
-      // Sincronizar imagem se foi alterada (pode não ser permitido em anúncios ativos)
+      // Sincronizar imagem se foi alterada (pode nÃ£o ser permitido em anÃºncios ativos)
       if (product.imageUrl) {
         console.log(
-          `[SYNC] Imagem detectada mas pode não ser sincronizada em anúncio ativo`,
+          `[SYNC] Imagem detectada mas pode nÃ£o ser sincronizada em anÃºncio ativo`,
         );
       }
 
       console.log(`[SYNC] Dados a serem enviados para ML:`, updateData);
 
-      // Só fazer a atualização se houver dados para atualizar
+      // SÃ³ fazer a atualizaÃ§Ã£o se houver dados para atualizar
       if (Object.keys(updateData).length > 0) {
         const updatedItem = await MLApiService.updateItem(
           account.accessToken,
@@ -1084,7 +1096,7 @@ export class SyncUseCase {
           account.id,
           SyncType.PRODUCT_SYNC,
           SyncStatus.SUCCESS,
-          `Produto ${product.sku} sincronizado: preço R$ ${product.price}, estoque ${product.stock}, título "${product.name}"`,
+          `Produto ${product.sku} sincronizado: preÃ§o R$ ${product.price}, estoque ${product.stock}, tÃ­tulo "${product.name}"`,
           {
             productId: product.id,
             externalListingId,
@@ -1098,7 +1110,7 @@ export class SyncUseCase {
       } else {
         console.log(`[SYNC] Nenhum dado para atualizar`);
         throw new Error(
-          "Anúncio ativo - apenas preço e estoque podem ser sincronizados",
+          "AnÃºncio ativo - apenas preÃ§o e estoque podem ser sincronizados",
         );
       }
     } catch (error) {
@@ -1124,7 +1136,7 @@ export class SyncUseCase {
 
     try {
       if (!account.shopId) {
-        throw new Error("ShopId não encontrado para conta Shopee");
+        throw new Error("ShopId nÃ£o encontrado para conta Shopee");
       }
 
       // Buscar item atual no Shopee
@@ -1136,21 +1148,21 @@ export class SyncUseCase {
 
       console.log(`[SYNC] Status atual do item Shopee: ${currentItem.status}`);
 
-      // Preparar dados para atualização
+      // Preparar dados para atualizaÃ§Ã£o
       const updateData: any = {
         item_id: parseInt(externalListingId),
       };
 
-      // Sempre sincronizar preço e estoque
+      // Sempre sincronizar preÃ§o e estoque
       updateData.price = Number(product.price);
       updateData.stock = product.stock;
 
-      // Sincronizar título se foi alterado
+      // Sincronizar tÃ­tulo se foi alterado
       if (product.name && product.name !== currentItem.item_name) {
         updateData.item_name = product.name;
       }
 
-      // Sincronizar descrição se foi alterada
+      // Sincronizar descriÃ§Ã£o se foi alterada
       if (
         product.description &&
         product.description !== currentItem.description
@@ -1160,7 +1172,7 @@ export class SyncUseCase {
 
       console.log(`[SYNC] Dados a serem enviados para Shopee:`, updateData);
 
-      // Fazer a atualização
+      // Fazer a atualizaÃ§Ã£o
       const updatedItem = await ShopeeApiService.updateItem(
         account.accessToken,
         account.shopId,
@@ -1179,7 +1191,7 @@ export class SyncUseCase {
         account.id,
         SyncType.PRODUCT_SYNC,
         SyncStatus.SUCCESS,
-        `Produto ${product.sku} sincronizado: preço R$ ${product.price}, estoque ${product.stock}, título "${product.name}"`,
+        `Produto ${product.sku} sincronizado: preÃ§o R$ ${product.price}, estoque ${product.stock}, tÃ­tulo "${product.name}"`,
         {
           productId: product.id,
           externalListingId,
@@ -1198,7 +1210,7 @@ export class SyncUseCase {
   }
 
   /**
-   * Registra um log de sincronização
+   * Registra um log de sincronizaÃ§Ã£o
    */
   private static async logSync(
     marketplaceAccountId: string,
@@ -1218,3 +1230,6 @@ export class SyncUseCase {
     });
   }
 }
+
+
+

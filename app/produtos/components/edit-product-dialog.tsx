@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -83,6 +83,7 @@ const productEditSchema = z.object({
   year: z.string().max(20).optional().nullable(),
   version: z.string().max(100).optional().nullable(),
   category: z.string().max(100).optional().nullable(),
+  mlCategory: z.string().optional().nullable(),
   location: z.string().max(100).optional().nullable(),
   partNumber: z.string().max(100).optional().nullable(),
   quality: z
@@ -142,12 +143,17 @@ interface Product {
   year?: string | null;
   version?: string | null;
   category?: string | null;
+  mlCategory?: string | null;
   location?: string | null;
   partNumber?: string | null;
   quality?: Quality | null;
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string | null;
+  heightCm?: number | null;
+  widthCm?: number | null;
+  lengthCm?: number | null;
+  weightKg?: number | null;
   imageUrl?: string | null;
 }
 
@@ -180,6 +186,18 @@ export function EditProductDialog({
   const [mlOptions, setMlOptions] = useState<{ id: string; value: string }[]>(
     [],
   );
+  const [mlAccounts, setMlAccounts] = useState<
+    Array<{ id: string; accountName?: string }>
+  >([]);
+  const [shopeeAccounts, setShopeeAccounts] = useState<
+    Array<{ id: string; accountName?: string }>
+  >([]);
+  const [selectedMlAccounts, setSelectedMlAccounts] = useState<string[]>([]);
+  const [selectedShopeeAccounts, setSelectedShopeeAccounts] = useState<
+    string[]
+  >([]);
+  const [createMlListing, setCreateMlListing] = useState(false);
+  const [createShopeeListing, setCreateShopeeListing] = useState(false);
 
   // Referências para valores originais do produto (para detectar edições do usuário)
   const originalNameRef = useRef(product.name);
@@ -236,7 +254,7 @@ export function EditProductDialog({
       year: product.year || "",
       version: product.version || "",
       category: product.category || "",
-      mlCategory: "",
+      mlCategory: product.mlCategory || "",
       location: product.location || "",
       partNumber: product.partNumber || "",
       quality: product.quality || null,
@@ -263,7 +281,7 @@ export function EditProductDialog({
   const watchMlCategory = watch("mlCategory");
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
-  const fetchDefaultDescription = async () => {
+  const fetchDefaultDescription = useCallback(async () => {
     try {
       if (!product.description && session?.user?.email) {
         const resp = await fetch(`http://localhost:3333/users/me`, {
@@ -279,7 +297,7 @@ export function EditProductDialog({
     } catch (err) {
       console.error("Erro ao buscar descrição padrão (edit dialog):", err);
     }
-  };
+  }, [product.description, session?.user?.email, setValue]);
 
   useEffect(() => {
     if (open) {
@@ -306,6 +324,7 @@ export function EditProductDialog({
         year: product.year || "",
         version: product.version || "",
         category: product.category || "",
+        mlCategory: product.mlCategory || "",
         location: product.location || "",
         partNumber: product.partNumber || "",
         quality: product.quality || null,
@@ -322,6 +341,10 @@ export function EditProductDialog({
       });
       // Abrir seção de autopeças se houver dados
       setShowAutopartsSection(hasAutopartsData);
+      setCreateMlListing(false);
+      setCreateShopeeListing(false);
+      setSelectedMlAccounts([]);
+      setSelectedShopeeAccounts([]);
 
       // Buscar categorias ML quando abrir o diálogo
       (async () => {
@@ -343,6 +366,33 @@ export function EditProductDialog({
 
       // buscar descrição padrão do usuário (se necessário)
       void fetchDefaultDescription();
+
+      // Buscar contas ML / Shopee para seleção de multi-contas
+      (async () => {
+        if (!session?.user?.email) return;
+        try {
+          const headers = { email: session.user.email };
+          const base =
+            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
+            "http://localhost:3333";
+          const [mlResp, shResp] = await Promise.all([
+            fetch(`${base}/marketplace/ml/accounts`, { headers }),
+            fetch(`${base}/marketplace/shopee/accounts`, { headers }),
+          ]);
+          if (mlResp.ok) {
+            const json = await mlResp.json();
+            setMlAccounts(Array.isArray(json.accounts) ? json.accounts : []);
+          }
+          if (shResp.ok) {
+            const json = await shResp.json();
+            setShopeeAccounts(
+              Array.isArray(json.accounts) ? json.accounts : [],
+            );
+          }
+        } catch (err) {
+          console.error("Erro ao buscar contas de marketplace:", err);
+        }
+      })();
     }
   }, [
     open,
@@ -351,6 +401,7 @@ export function EditProductDialog({
     hasAutopartsData,
     session?.user?.email,
     session?.user?.id,
+    fetchDefaultDescription,
   ]);
 
   // Aplicar descrição padrão quando carregada (se produto não tiver descrição)
@@ -402,6 +453,7 @@ export function EditProductDialog({
     defaultDescription,
     dirtyFields.name,
     dirtyFields.partNumber,
+    watch,
   ]);
 
   // Cálculo automático da margem
@@ -479,7 +531,9 @@ export function EditProductDialog({
           prevBrand: prev.brand,
           detectedBrand: detected.brand,
           inputMounted: !!document.getElementById("edit-brand"),
-          inputDom: document.getElementById("edit-brand")?.value,
+          inputDom: (document.getElementById(
+            "edit-brand",
+          ) as HTMLInputElement | null)?.value,
         });
       }
       if (shouldUpdateBrand) {
@@ -497,7 +551,8 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set brand", watch("brand"));
               console.debug(
                 "[auto-fill][edit] dom brand after set",
-                document.getElementById("edit-brand")?.value,
+                (document.getElementById("edit-brand") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -518,7 +573,8 @@ export function EditProductDialog({
               );
               console.debug(
                 "[auto-fill][edit] dom brand after clear",
-                document.getElementById("edit-brand")?.value,
+                (document.getElementById("edit-brand") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -541,7 +597,9 @@ export function EditProductDialog({
           prevModel: prev.model,
           detectedModel: detected.model,
           inputMounted: !!document.getElementById("edit-model"),
-          inputDom: document.getElementById("edit-model")?.value,
+          inputDom: (document.getElementById(
+            "edit-model",
+          ) as HTMLInputElement | null)?.value,
         });
       }
       if (shouldUpdateModel) {
@@ -559,7 +617,8 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set model", watch("model"));
               console.debug(
                 "[auto-fill][edit] dom model after set",
-                document.getElementById("edit-model")?.value,
+                (document.getElementById("edit-model") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -580,7 +639,8 @@ export function EditProductDialog({
               );
               console.debug(
                 "[auto-fill][edit] dom model after clear",
-                document.getElementById("edit-model")?.value,
+                (document.getElementById("edit-model") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -603,7 +663,9 @@ export function EditProductDialog({
           prevYear: prev.year,
           detectedYear: detected.year,
           inputMounted: !!document.getElementById("edit-year"),
-          inputDom: document.getElementById("edit-year")?.value,
+          inputDom: (document.getElementById(
+            "edit-year",
+          ) as HTMLInputElement | null)?.value,
         });
       }
       if (shouldUpdateYear) {
@@ -621,7 +683,8 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set year", watch("year"));
               console.debug(
                 "[auto-fill][edit] dom year after set",
-                document.getElementById("edit-year")?.value,
+                (document.getElementById("edit-year") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -639,7 +702,8 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-clear year", watch("year"));
               console.debug(
                 "[auto-fill][edit] dom year after clear",
-                document.getElementById("edit-year")?.value,
+                (document.getElementById("edit-year") as HTMLInputElement | null)
+                  ?.value,
               );
             }, 50);
           }
@@ -870,11 +934,11 @@ export function EditProductDialog({
     return () => {
       if (editAutoFillTimer.current) clearTimeout(editAutoFillTimer.current);
     };
-  }, [watchName, setValue, mlOptions, trigger]);
+  }, [watchName, setValue, mlOptions, trigger, watch, open]);
 
   // When category (top-level or mlCategory) changes, update measurements accordingly (same logic as create dialog).
   useEffect(() => {
-    const category = watchCategory;
+    const category = watchCategory || undefined;
     const detailedValue = mlOptions.find(
       (c) => c.id === watchMlCategory,
     )?.value;
@@ -968,11 +1032,29 @@ export function EditProductDialog({
     } catch (err) {
       /* ignore */
     }
-  }, [watchCategory, watchMlCategory, mlOptions, setValue]);
+  }, [watchCategory, watchMlCategory, mlOptions, setValue, watch, trigger]);
 
   const onSubmit = async (data: ProductEditFormData) => {
     setIsSubmitting(true);
     try {
+      if (createMlListing && selectedMlAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Mercado Livre para criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (createShopeeListing && selectedShopeeAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Shopee para criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
         ...data,
@@ -1015,9 +1097,92 @@ export function EditProductDialog({
         throw new Error(result.error || "Erro ao atualizar produto");
       }
 
-      onToast("Produto atualizado com sucesso!", "success");
-      onOpenChange(false);
+      const base =
+        (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
+        "http://localhost:3333";
+      const listingResults: string[] = [];
+
+      if (createMlListing && selectedMlAccounts.length > 0) {
+        const mlResponses = await Promise.all(
+          selectedMlAccounts.map(async (accountId) => {
+            const url = new URL(`${base}/listings/ml`);
+            url.searchParams.set("accountId", accountId);
+            const resp = await fetch(url.toString(), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                email: session?.user?.email || "",
+              },
+              body: JSON.stringify({
+                productId: product.id,
+                categoryId: data.mlCategory || undefined,
+              }),
+            });
+            const body = await resp.json().catch(() => ({}));
+            return {
+              accountId,
+              ok: resp.ok,
+              message: body.message || body.error || "",
+            };
+          }),
+        );
+
+        const ok = mlResponses.filter((r) => r.ok).length;
+        const failed = mlResponses.length - ok;
+        listingResults.push(
+          `ML: ${ok} criado(s)${failed ? `, ${failed} falhou(falharam)` : ""}`,
+        );
+        if (failed > 0) {
+          onToast(
+            "Alguns anúncios ML não foram criados. Veja detalhes na aba Anúncios.",
+            "error",
+          );
+        }
+      }
+
+      if (createShopeeListing && selectedShopeeAccounts.length > 0) {
+        const shResponses = await Promise.all(
+          selectedShopeeAccounts.map(async (accountId) => {
+            const url = new URL(`${base}/listings/shopee`);
+            url.searchParams.set("accountId", accountId);
+            const resp = await fetch(url.toString(), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                email: session?.user?.email || "",
+              },
+              body: JSON.stringify({ productId: product.id }),
+            });
+            const body = await resp.json().catch(() => ({}));
+            return {
+              accountId,
+              ok: resp.ok,
+              message: body.message || body.error || "",
+            };
+          }),
+        );
+
+        const ok = shResponses.filter((r) => r.ok).length;
+        const failed = shResponses.length - ok;
+        listingResults.push(
+          `Shopee: ${ok} criado(s)${failed ? `, ${failed} falhou(falharam)` : ""}`,
+        );
+        if (failed > 0) {
+          onToast(
+            "Alguns anúncios Shopee não foram criados. Confira a aba Anúncios.",
+            "error",
+          );
+        }
+      }
+
+      onToast(
+        listingResults.length > 0
+          ? `Produto atualizado. ${listingResults.join(" | ")}`
+          : "Produto atualizado com sucesso!",
+        "success",
+      );
       onProductUpdated();
+      onOpenChange(false);
     } catch (error) {
       onToast(
         error instanceof Error ? error.message : "Erro ao atualizar produto",
@@ -1282,6 +1447,7 @@ export function EditProductDialog({
                         id="edit-brand"
                         placeholder="Ex: Bosch, Denso"
                         {...field}
+                        value={field.value ?? ""}
                       />
                     )}
                   />
@@ -1299,6 +1465,7 @@ export function EditProductDialog({
                         id="edit-model"
                         placeholder="Ex: Civic, Corolla"
                         {...field}
+                        value={field.value ?? ""}
                       />
                     )}
                   />
@@ -1314,6 +1481,7 @@ export function EditProductDialog({
                         id="edit-year"
                         placeholder="Ex: 2018-2022"
                         {...field}
+                        value={field.value ?? ""}
                       />
                     )}
                   />
@@ -1638,14 +1806,115 @@ export function EditProductDialog({
                   </Label>
                 </div>
               </div>
-            </CollapsibleContent>
-          </Collapsible>
+          </CollapsibleContent>
+        </Collapsible>
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
+        {/* PublicaÃ§Ã£o de anÃºncios multi-contas */}
+        <div className="space-y-4 rounded-lg border p-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Publicar anúncios</p>
+            <p className="text-xs text-muted-foreground">
+              Crie anúncios nas contas selecionadas (Mercado Livre e Shopee).
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Switch
+                id="edit-create-ml-listing"
+                checked={createMlListing}
+                onCheckedChange={setCreateMlListing}
+              />
+              <Label
+                htmlFor="edit-create-ml-listing"
+                className="cursor-pointer"
+              >
+                Criar anúncio no Mercado Livre
+              </Label>
+              <span className="text-xs text-muted-foreground">
+                Usa a categoria ML selecionada acima (se informada).
+              </span>
+            </div>
+            {createMlListing && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {mlAccounts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Conecte ao menos uma conta do Mercado Livre.
+                  </p>
+                ) : (
+                  mlAccounts.map((acc) => (
+                    <label
+                      key={acc.id}
+                      className="flex items-center justify-between rounded-md border p-2 text-sm"
+                    >
+                      <span>{acc.accountName || acc.id}</span>
+                      <Switch
+                        checked={selectedMlAccounts.includes(acc.id)}
+                        onCheckedChange={(checked) =>
+                          setSelectedMlAccounts((prev) =>
+                            checked
+                              ? [...prev, acc.id]
+                              : prev.filter((id) => id !== acc.id),
+                          )
+                        }
+                      />
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Switch
+                id="edit-create-shopee-listing"
+                checked={createShopeeListing}
+                onCheckedChange={setCreateShopeeListing}
+              />
+              <Label
+                htmlFor="edit-create-shopee-listing"
+                className="cursor-pointer"
+              >
+                Criar anúncio no Shopee
+              </Label>
+            </div>
+            {createShopeeListing && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {shopeeAccounts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Conecte ao menos uma conta do Shopee.
+                  </p>
+                ) : (
+                  shopeeAccounts.map((acc) => (
+                    <label
+                      key={acc.id}
+                      className="flex items-center justify-between rounded-md border p-2 text-sm"
+                    >
+                      <span>{acc.accountName || acc.id}</span>
+                      <Switch
+                        checked={selectedShopeeAccounts.includes(acc.id)}
+                        onCheckedChange={(checked) =>
+                          setSelectedShopeeAccounts((prev) =>
+                            checked
+                              ? [...prev, acc.id]
+                              : prev.filter((id) => id !== acc.id),
+                          )
+                        }
+                      />
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
               disabled={isSubmitting}
             >
               Cancelar
