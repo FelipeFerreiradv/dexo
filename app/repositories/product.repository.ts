@@ -12,6 +12,7 @@ import { Product as PrismaProduct } from "@prisma/client";
 function mapPrismaToProduct(item: PrismaProduct): Product {
   return {
     id: item.id,
+    userId: item.userId ?? undefined,
     sku: item.sku,
     name: item.name,
     description: item.description ?? undefined,
@@ -33,6 +34,7 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     isSecurityItem: item.isSecurityItem ?? undefined,
     isTraceable: item.isTraceable ?? undefined,
     sourceVehicle: item.sourceVehicle ?? undefined,
+    mlCategoryId: item.mlCategoryId ?? undefined,
 
     // Medidas / peso
     heightCm: item.heightCm ?? undefined,
@@ -50,6 +52,7 @@ class ProductRepositoryPrisma implements ProductRepository {
     try {
       const result = await prisma.product.create({
         data: {
+          userId: data.userId ?? null,
           name: data.name,
           sku: data.sku,
           description: data.description ?? null,
@@ -69,6 +72,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           isSecurityItem: data.isSecurityItem ?? false,
           isTraceable: data.isTraceable ?? false,
           sourceVehicle: data.sourceVehicle ?? null,
+          mlCategoryId: data.mlCategoryId ?? null,
 
           // Medidas / peso
           heightCm: data.heightCm ?? null,
@@ -96,10 +100,10 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async findBySku(sku: string): Promise<Product | null> {
+  async findBySku(sku: string, userId?: string): Promise<Product | null> {
     try {
       const data = await prisma.product.findMany({
-        where: { sku },
+        where: { sku, ...(userId ? { userId } : {}) },
       });
       const item = data[0];
       if (!item) return null;
@@ -110,24 +114,26 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async findAll(options?: {
-    search?: string;
-    page?: number;
-    limit?: number;
-  }): Promise<{ products: Product[]; total: number }> {
+  async findAll(
+    options?: {
+      search?: string;
+      page?: number;
+      limit?: number;
+    },
+    userId?: string,
+  ): Promise<{ products: Product[]; total: number }> {
     const page = options?.page ?? 1;
     const limit = options?.limit ?? 10;
     const skip = (page - 1) * limit;
     const search = options?.search ?? "";
 
-    const where = search
-      ? {
-          OR: [
-            { name: { contains: search, mode: "insensitive" as const } },
-            { sku: { contains: search, mode: "insensitive" as const } },
-          ],
-        }
-      : {};
+    const where: any = userId ? { userId } : {};
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: "insensitive" as const } },
+        { sku: { contains: search, mode: "insensitive" as const } },
+      ];
+    }
     try {
       const [items, total] = await Promise.all([
         prisma.product.findMany({
@@ -146,8 +152,15 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, userId?: string): Promise<void> {
     try {
+      if (userId) {
+        const owner = await prisma.product.findFirst({
+          where: { id, userId },
+          select: { id: true },
+        });
+        if (!owner) throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
+      }
       // Verificar se o produto tem pedidos associados
       const orderItemsCount = await prisma.orderItem.count({
         where: { productId: id },
@@ -178,10 +191,10 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async findById(id: string): Promise<Product | null> {
+  async findById(id: string, userId?: string): Promise<Product | null> {
     try {
-      const item = await prisma.product.findUnique({
-        where: { id },
+      const item = await prisma.product.findFirst({
+        where: { id, ...(userId ? { userId } : {}) },
       });
 
       if (!item) return null;
@@ -192,8 +205,19 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async update(id: string, data: ProductUpdate): Promise<Product> {
+  async update(
+    id: string,
+    data: ProductUpdate,
+    userId?: string,
+  ): Promise<Product> {
     try {
+      if (userId) {
+        const owner = await prisma.product.findFirst({
+          where: { id, userId },
+          select: { id: true },
+        });
+        if (!owner) throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
+      }
       const result = await prisma.product.update({
         where: { id },
         data: {
@@ -223,6 +247,9 @@ class ProductRepositoryPrisma implements ProductRepository {
           ...(data.sourceVehicle !== undefined && {
             sourceVehicle: data.sourceVehicle,
           }),
+          ...(data.mlCategoryId !== undefined && {
+            mlCategoryId: data.mlCategoryId,
+          }),
 
           // Medidas / peso
           ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
@@ -244,9 +271,9 @@ class ProductRepositoryPrisma implements ProductRepository {
   /**
    * Conta total de produtos para gerar próximo SKU
    */
-  async count(): Promise<number> {
+  async count(userId?: string): Promise<number> {
     try {
-      return await prisma.product.count();
+      return await prisma.product.count({ where: userId ? { userId } : {} });
     } catch {
       throw new Error("Erro ao contar produtos");
     }
@@ -256,13 +283,14 @@ class ProductRepositoryPrisma implements ProductRepository {
    * Busca o maior SKU numérico existente (para evitar duplicação)
    * Exemplo: PROD-005 → retorna 5
    */
-  async getMaxSkuNumber(): Promise<number> {
+  async getMaxSkuNumber(userId?: string): Promise<number> {
     try {
       const products = await prisma.product.findMany({
         where: {
           sku: {
             startsWith: "PROD-",
           },
+          ...(userId ? { userId } : {}),
         },
         select: { sku: true },
       });

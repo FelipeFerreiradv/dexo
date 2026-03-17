@@ -24,28 +24,48 @@ export class ShopeeOAuthService {
   }
 
   /**
-   * Gera assinatura HMAC-SHA256 para requests do Shopee
+   * Assinatura HMAC-SHA256 usada nos endpoints v2 (token, API de negócio).
    */
   static generateSignature(params: ShopeeSignatureParams): string {
     this.validateConfig();
 
     const { partner_id, api_path, timestamp, access_token, shop_id } = params;
 
-    // Ordem exigida pela Shopee para assinatura v2
     let baseString = `${partner_id}${api_path}${timestamp}`;
+    if (access_token) baseString += access_token;
+    if (shop_id) baseString += shop_id.toString();
 
-    if (access_token) {
-      baseString += access_token;
+    const rawKey = SHOPEE_CONSTANTS.PARTNER_KEY!;
+    // Shopee docs não dizem para decodificar a chave; assine com a string exata fornecida.
+    const signature = crypto.createHmac("sha256", rawKey).update(baseString).digest("hex");
+
+    if (process.env.SHOPEE_DEBUG === "1") {
+      console.log("[ShopeeSign:HMAC] baseString", baseString);
+      console.log("[ShopeeSign:HMAC] sign", signature.slice(0, 6), "...", signature.slice(-6));
     }
 
-    if (shop_id) {
-      baseString += shop_id.toString();
+    return signature;
+  }
+
+  // Assinatura da URL de autorização v2 (shop/auth_partner) — segue a mesma
+  // regra HMAC-SHA256 do restante da API (partner_id + api_path + timestamp).
+  private static generateAuthUrlSignature(
+    partnerId: number,
+    apiPath: string,
+    timestamp: number,
+  ): string {
+    // Conforme doc oficial: baseString = partner_id + api_path + timestamp
+    // A chave é usada somente como segredo do HMAC, o redirect NÃO entra na assinatura.
+    const baseString = `${partnerId}${apiPath}${timestamp}`;
+    const rawKey = SHOPEE_CONSTANTS.PARTNER_KEY!;
+    const sig = crypto.createHmac("sha256", rawKey).update(baseString).digest("hex");
+
+    if (process.env.SHOPEE_DEBUG === "1") {
+      console.log("[ShopeeSign:AUTH] baseString", baseString);
+      console.log("[ShopeeSign:AUTH] sign", sig.slice(0, 6), "...", sig.slice(-6));
     }
 
-    return crypto
-      .createHmac("sha256", SHOPEE_CONSTANTS.PARTNER_KEY!)
-      .update(baseString)
-      .digest("hex");
+    return sig;
   }
 
   private static buildSignedUrl(params: {
@@ -77,18 +97,14 @@ export class ShopeeOAuthService {
   static initiateAuth(redirectUri?: string, state?: string): ShopeeAuthUrl {
     const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
     const timestamp = Math.floor(Date.now() / 1000);
+    // Shopee recomenda que o redirect seja exatamente o cadastrado; não incluímos state para evitar mismatch de assinatura
     const redirect = new URL(redirectUri || SHOPEE_CONSTANTS.REDIRECT_URI);
 
-    // Preserva o userId no callback sem depender de cabecalho customizado
-    if (state) {
-      redirect.searchParams.set("state", state);
-    }
-
-    const signature = this.generateSignature({
-      partner_id: partnerId,
-      api_path: "/api/v2/shop/auth_partner",
+    const signature = this.generateAuthUrlSignature(
+      partnerId,
+      "/api/v2/shop/auth_partner",
       timestamp,
-    });
+    );
 
     const authUrl = this.buildSignedUrl({
       apiPath: "/api/v2/shop/auth_partner",
@@ -97,6 +113,7 @@ export class ShopeeOAuthService {
       signature,
       extraQuery: {
         redirect: redirect.toString(),
+        sign_method: "sha256",
       },
     });
 

@@ -97,6 +97,7 @@ try {
   api
     .listen({
       port: 3333,
+      host: "0.0.0.0", // precisa aceitar conexões externas (ngrok/ML) para servir imagens
     })
     .then(() => {
       // start background retry loop for placeholder listings

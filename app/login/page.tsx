@@ -1,88 +1,66 @@
-import { LoginForm } from "@/components/login/login-form";
-import { LoginHero } from "@/components/login/login-hero";
-import { Package } from "lucide-react";
+import Link from "next/link";
+import { ChevronLeft } from "lucide-react";
+
+import { DexoHero } from "@/components/login/dexo-hero";
+import { DexoLoginForm } from "@/components/login/dexo-login-form";
 
 export const metadata = {
-  title: "Login | Nexos Platform",
-  description: "Acesse o sistema de gestao de estoque Nexos Platform",
+  title: "Dexo | Entrar",
+  description: "Tela de login premium da Dexo com visual imersivo.",
 };
 
 export default function LoginPage() {
   return (
-    <main className="h-screen w-screen flex overflow-hidden">
-      {/* Left Side - Hero Section (Hidden on mobile) */}
-      <section className="hidden lg:flex lg:w-1/2 xl:w-3/5" aria-hidden="true">
-        <LoginHero />
-      </section>
+    <main className="dark relative isolate flex min-h-screen w-full flex-col items-center overflow-hidden bg-background text-foreground">
+      <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+        <div
+          className="absolute inset-0 opacity-70"
+          style={{
+            background:
+              "radial-gradient(circle at 50% 18%, color-mix(in oklab, var(--primary) 16%, transparent), transparent 38%), radial-gradient(circle at 18% 65%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 42%), radial-gradient(circle at 82% 68%, color-mix(in oklab, var(--ring) 15%, transparent), transparent 40%)",
+          }}
+        />
+        <div
+          className="absolute inset-0 opacity-[0.22] blur-3xl"
+          style={{
+            background:
+              "conic-gradient(from 140deg at 50% 45%, color-mix(in oklab, var(--primary) 35%, transparent) 0deg, color-mix(in oklab, var(--accent) 32%, transparent) 120deg, color-mix(in oklab, var(--ring) 30%, transparent) 250deg, transparent 320deg, color-mix(in oklab, var(--primary) 28%, transparent) 360deg)",
+          }}
+        />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(0,0,0,0.55),transparent_65%)]" />
+      </div>
 
-      {/* Right Side - Login Form */}
-      <section className="w-full lg:w-1/2 xl:w-2/5 flex flex-col bg-[#F2F2F0]">
-        {/* Mobile Header */}
-        <header className="lg:hidden p-0 bg-gradient-to-r from-[#F2E205] to-[#F2CB05]">
-          <div className="flex items-center gap-3 p-6">
-            <div className="w-10 h-10 rounded-xl bg-[#0D0D0D] flex items-center justify-center">
-              <Package className="w-5 h-5 text-[#F2E205]" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold text-[#0D0D0D]">
-                Nexos Platform
-              </h1>
-              <p className="text-xs text-[#0D0D0D]/70">Gestao de Estoque</p>
-            </div>
-          </div>
+      <div className="relative z-10 flex min-h-screen w-full max-w-[480px] flex-col items-center px-5 pb-10 pt-6 sm:px-7">
+        <header className="flex w-full items-center justify-start">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            aria-label="Voltar"
+          >
+            <ChevronLeft className="h-5 w-5" />
+            <span>Voltar</span>
+          </Link>
         </header>
 
-        {/* Form Container */}
-        <div className="flex-1 flex items-center justify-center p-6 sm:p-8 lg:p-0">
-          <div className="w-full max-w-md px-6 sm:px-8 lg:px-12">
-            {/* Header */}
-            <div className="mb-8 text-center lg:text-left">
-              <h2 className="text-2xl sm:text-3xl font-bold text-[#0D0D0D]">
-                Bem-vindo de volta
-              </h2>
-              <p className="mt-2 text-[#0D0D0D]/60">
-                Digite suas credenciais para acessar o sistema
-              </p>
-            </div>
+        <div className="flex w-full flex-1 flex-wrap items-center justify-center gap-8 py-6 sm:gap-10 sm:flec-co">
+          <div className="flex w-full justify-center">
+            <DexoHero />
+          </div>
 
-            {/* Login Form Component */}
-            <LoginForm />
+          <div className="space-y-2 text-center">
+            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+              Dexo
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Acesse com seguranca para continuar.
+            </p>
+          </div>
 
-            {/* Divider */}
-            <div className="relative my-8">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-[#0D0D0D]/10" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-4 bg-[#F2F2F0] text-[#0D0D0D]/50">
-                  Precisa de ajuda?
-                </span>
-              </div>
-            </div>
-
-            {/* Help Section */}
-            <div className="text-center">
-              <p className="text-sm text-[#0D0D0D]/60">
-                Entre em contato com o suporte para recuperar seu acesso ou
-                criar uma nova conta.
-              </p>
-              <button
-                type="button"
-                className="mt-4 inline-flex items-center text-sm font-semibold text-[#0D0D0D] hover:text-[#F2CB05] transition-colors"
-              >
-                Falar com Suporte
-              </button>
-            </div>
-
-            {/* Footer */}
-            <footer className="mt-12 text-center lg:hidden">
-              <p className="text-xs text-[#0D0D0D]/40">
-                2025 Nexos Platform. Todos os direitos reservados.
-              </p>
-            </footer>
+          <div className="w-full">
+            <DexoLoginForm />
           </div>
         </div>
-      </section>
+      </div>
     </main>
   );
 }

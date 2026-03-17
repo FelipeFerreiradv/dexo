@@ -1,4 +1,4 @@
-generator client {
+  generator client {
   provider = "prisma-client-js"
 }
 
@@ -18,6 +18,7 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   accounts      MarketplaceAccount[]
+  products      Product[]
   systemLogs    SystemLog[]
 }
 
@@ -29,6 +30,8 @@ enum Role {
 // --- Gestão de Produtos e Estoque Central ---
 model Product {
   id          String    @id @default(cuid())
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
   sku         String    @unique // SKU único como identificador central
   name        String
   description String?

@@ -9,20 +9,23 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stats",
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const userId = (request as any).user?.id as string;
         // Buscar estatísticas de produtos
         const [totalProducts, totalStock, lowStockProducts] = await Promise.all(
           [
             // Total de produtos
-            prisma.product.count(),
+            prisma.product.count({ where: { userId } }),
             // Total de itens em estoque
             prisma.product.aggregate({
               _sum: { stock: true },
+              where: { userId },
             }),
             // Produtos com estoque baixo (menos de 10 unidades)
             prisma.product.findMany({
-              where: { stock: { lte: 10 } },
+              where: { stock: { lte: 10 }, userId },
               orderBy: { stock: "asc" },
               take: 5,
               select: {
@@ -56,7 +59,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/integrations",
-    { preHandler: authMiddleware },
+    { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user?.id;
@@ -94,11 +97,14 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/products-by-category",
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const userId = (request as any).user?.id as string;
         const rows = await prisma.product.groupBy({
           by: ["category"],
           _count: { _all: true },
+          where: { userId },
         });
 
         const result = rows
@@ -124,15 +130,23 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-distribution",
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const userId = (request as any).user?.id as string;
         const [zero, oneToThree, fourToTen, elevenToFifty, aboveFifty] =
           await Promise.all([
-            prisma.product.count({ where: { stock: 0 } }),
-            prisma.product.count({ where: { stock: { gte: 1, lte: 3 } } }),
-            prisma.product.count({ where: { stock: { gte: 4, lte: 10 } } }),
-            prisma.product.count({ where: { stock: { gte: 11, lte: 50 } } }),
-            prisma.product.count({ where: { stock: { gt: 50 } } }),
+            prisma.product.count({ where: { stock: 0, userId } }),
+            prisma.product.count({
+              where: { stock: { gte: 1, lte: 3 }, userId },
+            }),
+            prisma.product.count({
+              where: { stock: { gte: 4, lte: 10 }, userId },
+            }),
+            prisma.product.count({
+              where: { stock: { gte: 11, lte: 50 }, userId },
+            }),
+            prisma.product.count({ where: { stock: { gt: 50 }, userId } }),
           ]);
 
         const distribution = [
@@ -159,8 +173,10 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/orders-over-time",
+    { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const userId = (request as any).user?.id as string;
         const daysParam = (request.query as any)?.days;
         const days = daysParam ? parseInt(daysParam, 10) : 30;
         const now = new Date();
@@ -168,7 +184,10 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         startDate.setDate(now.getDate() - (isNaN(days) ? 30 : days));
 
         const orders = await prisma.order.findMany({
-          where: { createdAt: { gte: startDate } },
+          where: {
+            createdAt: { gte: startDate },
+            marketplaceAccount: { userId },
+          },
           select: { createdAt: true, totalAmount: true },
           orderBy: { createdAt: "asc" },
         });
@@ -221,15 +240,20 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-changes",
+    { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const userId = (request as any).user?.id as string;
         const daysParam = (request.query as any)?.days;
         const days = daysParam ? parseInt(daysParam, 10) : 7;
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - (isNaN(days) ? 7 : days));
 
         const logs = await prisma.stockLog.findMany({
-          where: { createdAt: { gte: startDate } },
+          where: {
+            createdAt: { gte: startDate },
+            product: { userId },
+          },
           include: {
             product: {
               select: { id: true, name: true, sku: true, imageUrl: true },

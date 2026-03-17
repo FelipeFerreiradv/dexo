@@ -1,13 +1,144 @@
-import { ListingRepository } from "../repositories/listing.repository";
+﻿import { ListingRepository } from "../repositories/listing.repository";
 import { MLApiService } from "./ml-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import { SystemLogService } from "../../services/system-log.service";
+import { MLItemCreatePayload } from "../types/ml-api.types";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
+
+const ML_MIN_DIM_CM = 1;
+const ML_MAX_DIM_CM = Number(process.env.ML_MAX_DIM_CM || 200);
+const ML_MIN_WEIGHT_KG = 0.05;
+const ML_MAX_WEIGHT_KG = Number(process.env.ML_MAX_WEIGHT_KG || 70);
+
+// Reaplica lógica de título/descrição do ListingUseCase, evitando sujar o item
+const sanitizeTitle = (raw: string, product: any, maxLen = 60) => {
+  const base = raw || product?.name || "";
+  let fullTitle = base
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (fullTitle.length > maxLen) fullTitle = fullTitle.substring(0, maxLen).trim();
+  if (!fullTitle) fullTitle = product?.sku || "Produto";
+  return fullTitle;
+};
+
+const buildSafeTitle = (product: any) => {
+  const primary = sanitizeTitle(product?.name || "", product, 60);
+  if (primary && primary !== "Produto") return primary;
+  const parts: string[] = [];
+  if (product.brand) parts.push(product.brand);
+  if (product.model) parts.push(product.model);
+  if (product.year) parts.push(product.year);
+  if (parts.length === 0 && product.sku) parts.push(product.sku);
+  return sanitizeTitle(parts.join(" "), product, 60);
+};
+
+const buildDescription = (product: any) => {
+  if (product.description) {
+    return product.description;
+  }
+
+  const blocks: string[] = [];
+  const headline = [product.name, product.brand, product.model]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (headline) blocks.push(headline);
+
+  const details: string[] = [];
+  if (product.brand) details.push(`Marca: ${product.brand}`);
+  if (product.model) details.push(`Modelo: ${product.model}`);
+  if (product.year) details.push(`Ano: ${product.year}`);
+  if (product.version) details.push(`Versão: ${product.version}`);
+  if (product.partNumber) details.push(`Número da Peça: ${product.partNumber}`);
+  if (product.quality) details.push(`Qualidade: ${product.quality}`);
+  if (product.location) details.push(`Localização: ${product.location}`);
+  if (product.heightCm && product.widthCm && product.lengthCm) {
+    details.push(
+      `Dimensões (cm): ${product.heightCm} x ${product.widthCm} x ${product.lengthCm}`,
+    );
+  }
+  if (product.weightKg) details.push(`Peso: ${product.weightKg} kg`);
+
+  if (details.length > 0) {
+    blocks.push("Detalhes Técnicos:");
+    blocks.push(details.join("\n"));
+  }
+
+  if (product.sku) blocks.push(`SKU: ${product.sku}`);
+  return blocks.join("\n\n");
+};
+
+const sanitizePackageDimensions = (input?: {
+  heightCm?: number;
+  widthCm?: number;
+  lengthCm?: number;
+  weightKg?: number;
+}) => {
+  if (
+    !input ||
+    input.heightCm == null ||
+    input.widthCm == null ||
+    input.lengthCm == null ||
+    input.weightKg == null
+  ) {
+    return null;
+  }
+
+  const clamp = (v: number, min: number, max: number) =>
+    Math.min(Math.max(Math.round(v), min), max);
+
+  const height = clamp(input.heightCm, ML_MIN_DIM_CM, ML_MAX_DIM_CM);
+  const width = clamp(input.widthCm, ML_MIN_DIM_CM, ML_MAX_DIM_CM);
+  const length = clamp(input.lengthCm, ML_MIN_DIM_CM, ML_MAX_DIM_CM);
+
+  const weightKgRaw = Number(input.weightKg);
+  if (!Number.isFinite(weightKgRaw)) return null;
+  const weightKg = clamp(weightKgRaw, ML_MIN_WEIGHT_KG, ML_MAX_WEIGHT_KG);
+
+  return { height, width, length, weightKg };
+};
+
+const shouldIncludeFamilyName = (categoryId?: string) => {
+  const forceEnv =
+    process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
+  const extra = (process.env.ML_FAMILY_NAME_ALLOWLIST || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const allow = new Set<string>(["MLB193419", "MLB101763", "MLB458642", ...extra]);
+  return forceEnv || (categoryId ? allow.has(categoryId) : false);
+};
+const fallbackNonUPCategory = process.env.ML_FALLBACK_NON_UP_CATEGORY || "";
+
+const noTitleWithFamily = (categoryId?: string) => {
+  const envList = (process.env.ML_NO_TITLE_WITH_FAMILY || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const hard = new Set<string>(["MLB193419", "MLB101763", "MLB458642", ...envList]);
+  return categoryId ? hard.has(categoryId) : false;
+};
+
+const categoryOverride = (categoryId?: string) => {
+  const env = process.env.ML_CATEGORY_OVERRIDE || "";
+  const map = new Map<string, string>();
+  env
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .forEach((pair) => {
+      const [from, to] = pair.split(":").map((s) => s.trim());
+      if (from && to) map.set(from, to);
+    });
+  return categoryId && map.has(categoryId) ? map.get(categoryId) : undefined;
+};
 
 export class ListingRetryService {
   private static running = false;
@@ -91,23 +222,111 @@ export class ListingRetryService {
         // (we only need ml item creation; existing placeholder will be updated)
         // NOTE: reuse product data from cand.product
         const product = cand.product as any;
+        const retryTitle = sanitizeTitle(product.name || "", product, 60);
+        const backendBase =
+          process.env.APP_BACKEND_URL || "http://localhost:3333";
+
+        const baseCategory =
+          cand.requestedCategoryId || cand.product?.mlCategoryId || "MLB271107";
+        const overriddenCat = categoryOverride(baseCategory) || baseCategory;
+
+        const pkg = sanitizePackageDimensions({
+          heightCm: product.heightCm,
+          widthCm: product.widthCm,
+          lengthCm: product.lengthCm,
+          weightKg: product.weightKg,
+        });
+
         const payload: any = {
-          title: product.name,
-          // prefer the originally requested category (stored on placeholder); fallback to product.mlCategoryId; final fallback to the same default used elsewhere
-          category_id:
-            cand.requestedCategoryId ||
-            cand.product?.mlCategoryId ||
-            "MLB271107",
+          title: retryTitle,
+          category_id: overriddenCat,
           price: Number(product.price || 0),
           currency_id: "BRL",
           available_quantity: product.stock || 1,
           buying_mode: "buy_it_now",
           listing_type_id: "bronze",
-          condition: product.quality === "NOVO" ? "new" : "not_specified",
-          pictures: product.imageUrl ? [{ source: product.imageUrl }] : [],
-          attributes: [{ id: "SELLER_SKU", value_name: product.sku }],
+          condition: product.quality === "NOVO" ? "new" : "used",
+          pictures: product.imageUrl
+            ? [
+                {
+                  source: product.imageUrl.startsWith("http")
+                    ? product.imageUrl.replace(
+                        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                        backendBase,
+                      )
+                    : `${backendBase}${product.imageUrl}`,
+                },
+              ]
+            : [],
+          attributes: (() => {
+            const yearNum = Number(product.year);
+            const validYear =
+              Number.isFinite(yearNum) &&
+              yearNum >= 1950 &&
+              yearNum <= new Date().getFullYear() + 2
+                ? yearNum
+                : undefined;
+            const attrs: any[] = [];
+            if (product.brand) attrs.push({ id: "BRAND", value_name: product.brand });
+            if (product.model && !/^\d{4}$/.test(String(product.model))) {
+              attrs.push({ id: "MODEL", value_name: product.model });
+            }
+            if (validYear) attrs.push({ id: "YEAR", value_name: String(validYear) });
+            const posCats = new Set(["MLB101763", "MLB458642"]);
+            if (posCats.has((product as any).mlCategoryId || payload.category_id)) {
+              const name = (product.name || "").toLowerCase();
+              const pos =
+                /dianteir|frente/.test(name)
+                  ? "Dianteira"
+                  : /traseir|tras|trás/.test(name)
+                    ? "Traseira"
+                    : null;
+              if (pos) attrs.push({ id: "POSITION", value_name: pos });
+            }
+            attrs.push({ id: "SELLER_SKU", value_name: product.sku });
+            return attrs;
+          })(),
           seller_custom_field: product.sku,
+          description: {
+            plain_text: buildDescription(product),
+          },
         };
+
+        if (shouldIncludeFamilyName(payload.category_id)) {
+          payload.family_name = product.brand || product.name;
+        }
+
+        // Shipping dimensions string se todos os campos existirem
+        if (pkg) {
+          payload.shipping = {
+            dimensions: `${pkg.height}x${pkg.width}x${pkg.length},${Number(
+              pkg.weightKg,
+            )}`,
+          };
+          const addPkgAttr = (id: string, val: number | string) => {
+            const exists = payload.attributes.some((a: any) => a.id === id);
+            if (!exists) {
+              payload.attributes.push({ id, value_name: String(val) });
+            }
+          };
+          addPkgAttr("SELLER_PACKAGE_HEIGHT", `${pkg.height} cm`);
+          addPkgAttr("SELLER_PACKAGE_WIDTH", `${pkg.width} cm`);
+          addPkgAttr("SELLER_PACKAGE_LENGTH", `${pkg.length} cm`);
+          addPkgAttr("SELLER_PACKAGE_WEIGHT", `${Math.round(pkg.weightKg * 1000)} g`);
+          if (
+            product.heightCm !== pkg.height ||
+            product.widthCm !== pkg.width ||
+            product.lengthCm !== pkg.length ||
+            (product.weightKg != null &&
+              Math.round(product.weightKg * 100) !== Math.round(pkg.weightKg * 100))
+          ) {
+            console.warn(
+              `[ListingRetryService] Package dimensions clamped: ` +
+                `H:${pkg.height} W:${pkg.width} L:${pkg.length}cm Wt:${pkg.weightKg}kg (was ` +
+                `${product.heightCm}x${product.widthCm}x${product.lengthCm},${product.weightKg}kg)`,
+            );
+          }
+        }
 
         let mlItem: any = null;
         try {
@@ -128,57 +347,224 @@ export class ListingRetryService {
             `[ListingRetryService] createItem error for ${cand.id}: ${rawMsg}`,
           );
 
-          // If ML returned a policy restriction (e.g. restrictions_coliving) treat as non-retryable
-          if (
-            /restrictions_\w+/i.test(rawMsg) ||
-            /restrictions_coliving/i.test(rawMsg)
-          ) {
-            await ListingRepository.updateListing(cand.id, {
+          const isTitleInvalid =
+            rawMsg.toLowerCase().includes("invalid_fields") &&
+            rawMsg.toLowerCase().includes("title");
+          const missingFamilyName = rawMsg.toLowerCase().includes("family_name");
+
+          // Se a categoria exigir family_name e ele não foi enviado, tente novamente com family_name
+          if (!mlItem && missingFamilyName && !payload.family_name) {
+            try {
+              const withFamily: MLItemCreatePayload = {
+                ...(payload as any),
+                family_name: product.brand || product.name,
+              } as any;
+              console.warn(
+                `[ListingRetryService] retrying createItem WITH family_name for ${cand.id}`,
+              );
+              mlItem = await MLApiService.createItem(account.accessToken, withFamily as any);
+              // propagate family_name into payload for subsequent retries below
+              (payload as any).family_name = withFamily.family_name;
+            } catch (famErr) {
+              console.warn(
+                `[ListingRetryService] family_name retry failed for ${cand.id}: ${errMsg(famErr)}`,
+              );
+            }
+          }
+
+          // Se o erro for invalid_fields/title, tentar uma vez com título extra-sanitizado
+          if (isTitleInvalid) {
+            try {
+              const safeTitle = buildSafeTitle(product);
+              console.warn(
+                `[ListingRetryService] retrying createItem with safe title for ${cand.id}: "${safeTitle}"`,
+              );
+              mlItem = await MLApiService.createItem(account.accessToken, {
+                ...payload,
+                title: safeTitle,
+              });
+              console.log(
+                `[ListingRetryService] createItem with safe title returned for ${cand.id}: ${mlItem?.id}`,
+              );
+            } catch (noTitleErr) {
+              console.warn(
+                `[ListingRetryService] safe-title retry failed for ${cand.id}: ${errMsg(noTitleErr)}`,
+              );
+            }
+
+            // Em domínios que reclamam do title, tente primeiro sem family_name (mantendo título).
+            if (!mlItem && (payload.family_name || missingFamilyName)) {
+              try {
+                const payloadNoFamily: MLItemCreatePayload = { ...(payload as any) };
+                delete (payloadNoFamily as any).family_name;
+                console.warn(
+                  `[ListingRetryService] retrying createItem WITHOUT family_name for ${cand.id} (keep title)`,
+                );
+                mlItem = await MLApiService.createItem(
+                  account.accessToken,
+                  payloadNoFamily as any,
+                );
+                console.log(
+                  `[ListingRetryService] createItem without family_name returned for ${cand.id}: ${mlItem?.id}`,
+                );
+              } catch (noFamilyErr2) {
+                console.warn(
+                  `[ListingRetryService] no-family retry failed for ${cand.id}: ${errMsg(noFamilyErr2)}`,
+                );
+              }
+            }
+
+            // Para categorias que realmente não aceitam title com family_name, tentar sem title.
+            if (!mlItem && (payload.family_name || missingFamilyName) && noTitleWithFamily(payload.category_id)) {
+              try {
+                const payloadNoTitle: MLItemCreatePayload = { ...(payload as any) };
+                payloadNoTitle.family_name =
+                  payloadNoTitle.family_name || product.brand || product.name;
+                delete (payloadNoTitle as any).title;
+                console.warn(
+                  `[ListingRetryService] retrying createItem WITHOUT title for ${cand.id} (UP domain)`,
+                );
+                mlItem = await MLApiService.createItem(
+                  account.accessToken,
+                  payloadNoTitle as any,
+                );
+                console.log(
+                  `[ListingRetryService] createItem without title returned for ${cand.id}: ${mlItem?.id}`,
+                );
+              } catch (noTitleErr2) {
+                console.warn(
+                  `[ListingRetryService] no-title retry failed for ${cand.id}: ${errMsg(noTitleErr2)}`,
+                );
+              }
+            }
+
+            // fallback para categoria não-UP sem family_name para preservar título
+            if (!mlItem && fallbackNonUPCategory && payload.category_id !== fallbackNonUPCategory) {
+              try {
+                const altPayload: MLItemCreatePayload = {
+                  ...(payload as any),
+                  category_id: fallbackNonUPCategory,
+                  title: payload.title,
+                };
+                if (payload.family_name || missingFamilyName) {
+                  altPayload.family_name =
+                    payload.family_name || product.brand || product.name;
+                } else {
+                  delete (altPayload as any).family_name;
+                }
+                console.warn(
+                  `[ListingRetryService] retrying createItem in non-UP category ${fallbackNonUPCategory} to keep title`,
+                );
+                mlItem = await MLApiService.createItem(account.accessToken, altPayload as any);
+                console.log(
+                  `[ListingRetryService] createItem in non-UP category returned for ${cand.id}: ${mlItem?.id}`,
+                );
+              } catch (altErr) {
+                console.warn(
+                  `[ListingRetryService] non-UP retry failed for ${cand.id}: ${errMsg(altErr)}`,
+                );
+              }
+            }
+          }
+
+          // If retry succeeded, skip remaining error handling
+          if (mlItem) {
+            /* fall through to success section below */
+          } else {
+            // If ML returned a policy restriction (e.g. restrictions_coliving) treat as non-retryable
+            if (
+              /restrictions_\w+/i.test(rawMsg) ||
+              /restrictions_coliving/i.test(rawMsg)
+            ) {
+              await ListingRepository.updateListing(cand.id, {
+                lastError: rawMsg,
+                retryEnabled: false,
+                nextRetryAt: null,
+              });
+
+              await SystemLogService.logError(
+                "RETRY_LISTING" as any,
+                `createItem non-retryable policy error for placeholder ${cand.id}: ${rawMsg}`,
+                {
+                  resource: "ProductListing",
+                  resourceId: cand.id,
+                  details: { mlError: parsed || rawMsg },
+                },
+              );
+              continue;
+            }
+
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const nextDelay =
+              BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+            await ListingRepository.incrementRetryAttempts(cand.id, {
               lastError: rawMsg,
-              retryEnabled: false,
-              nextRetryAt: null,
+              nextRetryAt: new Date(Date.now() + nextDelay * 1000),
+              retryEnabled: attempts < MAX_ATTEMPTS,
             });
 
             await SystemLogService.logError(
               "RETRY_LISTING" as any,
-              `createItem non-retryable policy error for placeholder ${cand.id}: ${rawMsg}`,
-              {
-                resource: "ProductListing",
-                resourceId: cand.id,
-                details: { mlError: parsed || rawMsg },
-              },
+              `createItem failed for placeholder ${cand.id}, scheduling retry: ${rawMsg}`,
+              { resource: "ProductListing", resourceId: cand.id },
             );
             continue;
           }
-
-          const attempts = (cand.retryAttempts || 0) + 1;
-          const nextDelay =
-            BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
-          await ListingRepository.incrementRetryAttempts(cand.id, {
-            lastError: rawMsg,
-            nextRetryAt: new Date(Date.now() + nextDelay * 1000),
-            retryEnabled: attempts < MAX_ATTEMPTS,
-          });
-
-          await SystemLogService.logError(
-            "RETRY_LISTING" as any,
-            `createItem failed for placeholder ${cand.id}, scheduling retry: ${rawMsg}`,
-            { resource: "ProductListing", resourceId: cand.id },
-          );
-          continue;
         }
 
         // Success: update existing placeholder with ML id and mark active
         console.debug(
           `[ListingRetryService] ML created for placeholder ${cand.id} -> ${mlItem.id}`,
         );
+
+        let remoteStatus: "active" | "paused" | "closed" | "under_review" = "active";
+        let remoteSubStatus: string[] | undefined;
+        try {
+          const details = await MLApiService.getItemDetails(account.accessToken, mlItem.id);
+          remoteStatus = details.status;
+          remoteSubStatus = (details as any).sub_status;
+          if (remoteStatus === "paused") {
+            const canAutoActivate =
+              !remoteSubStatus ||
+              remoteSubStatus.length === 0 ||
+              remoteSubStatus.every((s) =>
+                ["waiting_for_activation", "waiting_for_payment"].includes(s),
+              );
+            if (canAutoActivate) {
+              try {
+                const reactivated = await MLApiService.updateItem(
+                  account.accessToken,
+                  mlItem.id,
+                  { status: "active" } as any,
+                );
+                remoteStatus = reactivated.status;
+                remoteSubStatus = (reactivated as any).sub_status;
+                console.warn(
+                  `[ListingRetryService] paused item ${mlItem.id} auto-activate -> ${remoteStatus}`,
+                );
+              } catch (reactivateErr) {
+                console.warn(
+                  `[ListingRetryService] auto-activate failed for ${mlItem.id}: ${errMsg(reactivateErr)}`,
+                );
+              }
+            }
+          }
+        } catch (statusErr) {
+          console.warn(
+            `[ListingRetryService] could not fetch status for ${mlItem.id}: ${errMsg(statusErr)}`,
+          );
+        }
+
         await ListingRepository.updateListing(cand.id, {
           externalListingId: mlItem.id,
           permalink: mlItem.permalink || null,
-          status: "active",
+          status: remoteStatus,
           retryEnabled: false,
           nextRetryAt: null,
-          lastError: null,
+          lastError:
+            remoteStatus === "paused" && remoteSubStatus?.length
+              ? `ML retornou status=paused (${remoteSubStatus.join(",")})`
+              : null,
           retryAttempts: 0,
         });
 
@@ -224,3 +610,5 @@ export class ListingRetryService {
     this.running = false;
   }
 }
+
+

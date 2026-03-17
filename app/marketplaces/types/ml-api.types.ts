@@ -27,6 +27,7 @@ export interface MLItemDetails {
   available_quantity: number;
   sold_quantity: number;
   status: "active" | "paused" | "closed" | "under_review";
+  sub_status?: string[];
   permalink: string;
   thumbnail: string;
   pictures: MLItemPicture[];
@@ -70,7 +71,10 @@ export interface MLItemUpdatePayload {
 
 // Payload para criar item
 export interface MLItemCreatePayload {
-  title: string;
+  // Em domínios "User Product" (ex.: autopeças com family_name) o ML
+  // gera o título automaticamente; nesses casos enviar `title` causa
+  // body.invalid_fields. Portanto mantemos como opcional.
+  title?: string;
   category_id: string;
   price: number;
   currency_id: string;
@@ -78,6 +82,7 @@ export interface MLItemCreatePayload {
   buying_mode: string;
   listing_type_id: string;
   condition: string;
+  family_name?: string; // exigido por algumas categorias (autopeÃ§as)
   pictures: Array<{
     source: string;
   }>;
@@ -87,15 +92,21 @@ export interface MLItemCreatePayload {
     value_id?: string;
     value_name?: string;
   }>;
+  description?: {
+    plain_text: string;
+  };
 
   // Optional shipping/package dimensions (cms / kg) — forwarded to ML when set
   shipping?: {
     mode?: string;
-    dimensions?: {
-      height?: number; // cm
-      width?: number; // cm
-      length?: number; // cm
-      weight?: number; // kg
-    };
+    // A API aceita string no formato "HxWxL,weight" ou objeto; usamos string.
+    dimensions?:
+      | string
+      | {
+          height?: number; // cm
+          width?: number; // cm
+          length?: number; // cm
+          weight?: number; // kg
+        };
   };
 }

@@ -376,9 +376,13 @@ export function CreateProductDialog({
 
   // Busca próximo SKU ao abrir o dialog
   const fetchNextSku = useCallback(async () => {
+    const email = session?.user?.email;
+    if (!email) return;
     setIsLoadingSku(true);
     try {
-      const response = await fetch("http://localhost:3333/products/next-sku");
+      const response = await fetch("http://localhost:3333/products/next-sku", {
+        headers: { email },
+      });
       if (response.ok) {
         const data = await response.json();
         setValue("sku", data.sku);

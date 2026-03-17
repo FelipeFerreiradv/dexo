@@ -68,10 +68,13 @@ interface StockChangeItem {
   }[];
 }
 
-async function getDashboardStats(): Promise<DashboardStats | null> {
+async function getDashboardStats(
+  userEmail: string,
+): Promise<DashboardStats | null> {
   try {
     const response = await fetch("http://localhost:3333/dashboard/stats", {
       cache: "no-store",
+      headers: { email: userEmail },
     });
     if (!response.ok) return null;
     return response.json();
@@ -161,7 +164,7 @@ export default async function Home() {
   }
 
   const [stats, integrations] = await Promise.all([
-    getDashboardStats(),
+    getDashboardStats(userSession.user?.email || ""),
     getMarketplaceIntegrations(userSession.user?.email || ""),
   ]);
 
@@ -172,7 +175,7 @@ export default async function Home() {
         try {
           const res = await fetch(
             "http://localhost:3333/dashboard/products-by-category",
-            { cache: "no-store" },
+            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
           );
           if (!res.ok) return [] as CategoryItem[];
           return (await res.json()) as CategoryItem[];
@@ -184,7 +187,7 @@ export default async function Home() {
         try {
           const res = await fetch(
             "http://localhost:3333/dashboard/stock-distribution",
-            { cache: "no-store" },
+            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
           );
           if (!res.ok) return [] as StockDistributionItem[];
           return (await res.json()) as StockDistributionItem[];
@@ -196,7 +199,7 @@ export default async function Home() {
         try {
           const res = await fetch(
             "http://localhost:3333/dashboard/orders-over-time?days=30",
-            { cache: "no-store" },
+            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
           );
           if (!res.ok) return [] as OrderOverTimeItem[];
           return (await res.json()) as OrderOverTimeItem[];
@@ -208,7 +211,7 @@ export default async function Home() {
         try {
           const res = await fetch(
             "http://localhost:3333/dashboard/stock-changes?days=7",
-            { cache: "no-store" },
+            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
           );
           if (!res.ok) return [] as StockChangeItem[];
           return (await res.json()) as StockChangeItem[];

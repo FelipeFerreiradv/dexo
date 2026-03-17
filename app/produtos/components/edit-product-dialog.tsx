@@ -45,7 +45,6 @@ import {
   ML_CATEGORY_OPTIONS,
 } from "../../lib/product-parser"; // ML_CATALOG + ML_CATEGORIES (top-level) + ML_CATEGORY_OPTIONS (detailed)
 import { getMeasurementsForCategory } from "../../lib/ml-measurements";
-import { shouldApplyAutoDescription } from "./auto-description.util";
 
 // Category suggestion centralized in `suggestCategoryFromTitle` in app/lib/product-parser.ts
 // Schema de validação com campos de autopeças
@@ -201,7 +200,6 @@ export function EditProductDialog({
 
   // Referências para valores originais do produto (para detectar edições do usuário)
   const originalNameRef = useRef(product.name);
-  const originalPartNumberRef = useRef(product.partNumber || "");
   const originalBrandRef = useRef(product.brand || "");
   const originalModelRef = useRef(product.model || "");
   const originalYearRef = useRef(product.year || "");
@@ -234,7 +232,7 @@ export function EditProductDialog({
   const {
     register,
     handleSubmit,
-    formState: { errors, dirtyFields },
+    formState: { errors },
     setValue,
     reset,
     control,
@@ -274,7 +272,6 @@ export function EditProductDialog({
 
   // Watch para campos automáticos
   const watchName = watch("name");
-  const watchPartNumber = watch("partNumber");
   const watchCostPrice = watch("costPrice");
   const watchPrice = watch("price");
   const watchCategory = watch("category");
@@ -306,7 +303,6 @@ export function EditProductDialog({
 
       // Atualizar refs com valores originais do produto
       originalNameRef.current = product.name;
-      originalPartNumberRef.current = product.partNumber || "";
       originalBrandRef.current = product.brand || "";
       originalModelRef.current = product.model || "";
       originalYearRef.current = product.year || "";
@@ -410,51 +406,6 @@ export function EditProductDialog({
       setValue("description", defaultDescription);
     }
   }, [defaultDescription, product.description, setValue]);
-
-  // Auto descrição - só atualiza se o usuário editou o nome ou partNumber.
-  // Proteção adicional: não sobrescrever a `defaultDescription` automaticamente ao
-  // abrir o diálogo (caso ela tenha sido aplicada) — somente sobrescreve quando o
-  // usuário realmente editar o `name` / `partNumber`.
-  useEffect(() => {
-    if (!open) return;
-
-    const currentDescription = watch("description");
-
-    const apply = shouldApplyAutoDescription({
-      open,
-      watchName,
-      originalName: originalNameRef.current,
-      watchPartNumber,
-      originalPartNumber: originalPartNumberRef.current,
-      currentDescription,
-      defaultDescription,
-      dirtyName: !!dirtyFields.name,
-      dirtyPartNumber: !!dirtyFields.partNumber,
-    });
-
-    if (!apply) return;
-
-    // build auto-description (user edited name/partNumber)
-    let autoDescription = watchName;
-    if (watchPartNumber) {
-      autoDescription += `\nPart Number: ${watchPartNumber}`;
-    }
-
-    setValue("description", autoDescription, {
-      shouldDirty: true,
-      shouldTouch: true,
-      shouldValidate: true,
-    });
-  }, [
-    open,
-    watchName,
-    watchPartNumber,
-    setValue,
-    defaultDescription,
-    dirtyFields.name,
-    dirtyFields.partNumber,
-    watch,
-  ]);
 
   // Cálculo automático da margem
   useEffect(() => {

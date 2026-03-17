@@ -122,6 +122,11 @@ export function ProductsList() {
 
   const fetchProducts = useCallback(
     async (page: number = 1, searchTerm: string = "") => {
+      const email = session?.user?.email;
+      if (!email) {
+        showToast("Sessão expirada. Faça login novamente.", "error");
+        return;
+      }
       setIsLoading(true);
       try {
         const params = new URLSearchParams({
@@ -134,6 +139,7 @@ export function ProductsList() {
 
         const response = await fetch(
           `http://localhost:3333/products?${params}`,
+          { headers: { email } },
         );
         const data = await response.json();
 
@@ -205,6 +211,7 @@ export function ProductsList() {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
+          email: session?.user?.email || "",
         },
         body: JSON.stringify(productData),
       });

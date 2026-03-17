@@ -297,6 +297,23 @@ export function MLConnectionTab() {
 
             {/* Ações globais */}
             <div className="flex gap-2">
+              <Button
+                onClick={handleConnect}
+                disabled={isConnecting || isDisconnecting}
+              >
+                {isConnecting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Conectando...
+                  </>
+                ) : (
+                  <>
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Adicionar nova conta
+                  </>
+                )}
+              </Button>
+
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button variant="destructive" disabled={isDisconnecting}>

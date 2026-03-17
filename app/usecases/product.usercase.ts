@@ -25,6 +25,9 @@ export class ProductUseCase {
   }
 
   async create(productData: ProductCreate): Promise<Product> {
+    if (!productData.userId) {
+      throw new Error("Usuário não encontrado");
+    }
     // Buscar usuário para obter descrição padrão se necessário
     const user = await this.userRepository.findById(productData.userId);
     if (!user) {
@@ -53,6 +56,7 @@ export class ProductUseCase {
 
     const existsProduct = await this.productRepository.findBySku(
       productData.sku,
+      productData.userId,
     );
     if (existsProduct) {
       throw new Error("Produto com esse sku já existe");
@@ -61,19 +65,24 @@ export class ProductUseCase {
     return data;
   }
 
-  async listProducts(options?: {
+  async listProducts(options: {
     search?: string;
     page?: number;
     limit?: number;
+    userId: string;
   }): Promise<{ products: Product[]; total: number; totalPages: number }> {
-    const data = await this.productRepository.findAll(options);
+    const { userId, ...rest } = options;
+    const data = await this.productRepository.findAll(rest, userId);
     return {
       ...data,
       totalPages: Math.ceil(data.total / (options?.limit || 10)),
     };
   }
 
-  async delete(id: string): Promise<{
+  async delete(
+    id: string,
+    userId?: string,
+  ): Promise<{
     success: boolean;
     message: string;
     listingResults?: Array<{
@@ -100,7 +109,7 @@ export class ProductUseCase {
         });
       }
 
-      await this.productRepository.delete(id);
+      await this.productRepository.delete(id, userId);
 
       const failedClosures = listingResults.filter((r) => !r.closed);
       if (failedClosures.length > 0) {
@@ -125,13 +134,17 @@ export class ProductUseCase {
     }
   }
 
-  async update(id: string, data: ProductUpdate): Promise<ProductUpdateResult> {
-    const product = await this.productRepository.findById(id);
+  async update(
+    id: string,
+    data: ProductUpdate,
+    userId?: string,
+  ): Promise<ProductUpdateResult> {
+    const product = await this.productRepository.findById(id, userId);
     if (!product) {
       throw new Error("Produto não encontrado");
     }
 
-    const updated = await this.productRepository.update(id, data);
+    const updated = await this.productRepository.update(id, data, userId);
 
     // Registrar log de estoque se o estoque foi alterado manualmente
     try {
@@ -189,8 +202,8 @@ export class ProductUseCase {
    * Gera o próximo SKU disponível
    * Formato: PROD-001, PROD-002, etc.
    */
-  async getNextSku(): Promise<string> {
-    const maxNumber = await this.productRepository.getMaxSkuNumber();
+  async getNextSku(userId: string): Promise<string> {
+    const maxNumber = await this.productRepository.getMaxSkuNumber(userId);
     const nextNumber = maxNumber + 1;
     return `PROD-${nextNumber.toString().padStart(3, "0")}`;
   }

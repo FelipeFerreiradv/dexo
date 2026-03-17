@@ -9,8 +9,13 @@ import CategoryRepository from "../repositories/category.repository";
 import { MLItemCreatePayload } from "../types/ml-api.types";
 import { ShopeeItemCreatePayload } from "../types/shopee-api.types";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
-import { ML_CATEGORY_OPTIONS } from "../../lib/product-parser";
+import {
+  ML_CATEGORY_OPTIONS,
+  mapSuggestedCategory,
+  suggestCategoryFromTitle,
+} from "../../lib/product-parser";
 import { AccountStatus } from "@prisma/client";
+import { UserRepositoryPrisma } from "../../repositories/user.repository";
 
 export interface CreateListingResult {
   success: boolean;
@@ -25,6 +30,17 @@ export interface CreateListingResult {
 
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
+  private static userRepository = new UserRepositoryPrisma();
+
+  // Limites aceitos pelo ML para dimensões de pacote (padrões razoáveis; podem ser ajustados via env)
+  private static readonly ML_MIN_DIM_CM = 1;
+  private static readonly ML_MAX_DIM_CM = Number(
+    process.env.ML_MAX_DIM_CM || 200,
+  );
+  private static readonly ML_MIN_WEIGHT_KG = 0.05; // 50 g
+  private static readonly ML_MAX_WEIGHT_KG = Number(
+    process.env.ML_MAX_WEIGHT_KG || 70,
+  ); // 70 kg (70000 g)
 
   /**
    * Cria um anÃºncio em qualquer marketplace suportado
@@ -50,7 +66,7 @@ export class ListingUseCase {
   }
   private static mapQualityToMLCondition(
     quality?: string,
-  ): "new" | "used" | "not_specified" {
+  ): "new" | "used" {
     switch (quality) {
       case "NOVO":
         return "new";
@@ -59,88 +75,292 @@ export class ListingUseCase {
       case "SUCATA":
         return "used";
       default:
-        return "not_specified";
+        return "used"; // ML não aceita not_specified em MLB
     }
   }
 
-  /**
-   * ConstrÃ³i um tÃ­tulo completo para o anÃºncio do ML
+    /**
+   * Título principal: exatamente o nome do produto, apenas higienizado.
    */
   private static buildMLTitle(product: any): string {
-    const parts: string[] = [];
-
-    // Adicionar nome do produto
-    parts.push(product.name);
-
-    // Adicionar marca se disponÃ­vel
-    if (product.brand) {
-      parts.push(product.brand);
-    }
-
-    // Adicionar modelo se disponÃ­vel
-    if (product.model) {
-      parts.push(product.model);
-    }
-
-    // Adicionar ano se disponÃ­vel
-    if (product.year) {
-      parts.push(product.year);
-    }
-
-    // Adicionar versÃ£o se disponÃ­vel
-    if (product.version) {
-      parts.push(product.version);
-    }
-
-    // Adicionar partNumber se disponÃ­vel
-    if (product.partNumber) {
-      parts.push(`PN: ${product.partNumber}`);
-    }
-
-    // Juntar tudo e limitar a 60 caracteres
-    const fullTitle = parts.join(" - ");
-    return fullTitle.length > 60 ? fullTitle.substring(0, 60) : fullTitle;
+    return this.sanitizeTitle(product?.name || "", product, 60);
   }
 
   /**
-   * ConstrÃ³i uma descriÃ§Ã£o completa para o anÃºncio do ML
+   * Fallback seguro que não degrada para marca isolada.
    */
-  private static buildMLDescription(product: any): string {
-    const parts: string[] = [];
+  private static buildSafeFallbackTitle(product: any): string {
+    const primary = this.sanitizeTitle(product?.name || "", product, 60);
+    if (primary && primary !== "Produto") return primary;
 
-    // DescriÃ§Ã£o principal
-    if (product.description) {
-      parts.push(product.description);
+    const parts: string[] = [];
+    if (product.brand) parts.push(product.brand);
+    if (product.model) parts.push(product.model);
+    if (product.year) parts.push(product.year);
+    if (parts.length === 0 && product.sku) parts.push(product.sku);
+
+    return this.sanitizeTitle(parts.join(" "), product, 60);
+  }
+
+/**
+   * Sanitiza e normaliza título para ML, preservando o nome original.
+   */
+  private static sanitizeTitle(
+    raw: string,
+    product: any,
+    maxLen: number = 60,
+  ): string {
+    const base = raw || product?.name || "";
+    let fullTitle = base
+      .toString()
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!fullTitle && product?.sku) {
+      fullTitle = String(product.sku);
     }
 
-    // Detalhes tÃ©cnicos
+    if (fullTitle.length > maxLen) {
+      fullTitle = fullTitle.substring(0, maxLen).trim();
+    }
+
+    return fullTitle || "Produto";
+  }
+
+  /**
+   * Heurística leve para corrigir textos com mojibake (Ã©/Ã§) mantendo UTF-8.
+   */
+  private static normalizeUtf8(text?: string): string {
+    if (!text) return "";
+    const str = text.toString();
+    if (str.includes("Ã")) {
+      try {
+        return Buffer.from(str, "latin1").toString("utf8").trim();
+      } catch {
+        /* ignore */
+      }
+    }
+    return Buffer.from(str, "utf8").toString("utf8").trim();
+  }
+
+  private static cleanBrand(brand?: string): string | undefined {
+    const b = this.normalizeUtf8(brand);
+    return b ? b : undefined;
+  }
+
+  private static cleanYear(year?: any): number | undefined {
+    const n = Number(year);
+    const current = new Date().getFullYear();
+    if (!Number.isFinite(n)) return undefined;
+    if (n < 1950 || n > current + 2) return undefined;
+    return n;
+  }
+
+  private static cleanModel(model?: string, year?: any): string | undefined {
+    if (!model) return undefined;
+    const m = this.normalizeUtf8(model);
+    if (!m) return undefined;
+    if (/^\d{4}$/.test(m)) {
+      const yr = this.cleanYear(year);
+      if (yr && String(yr) === m) return undefined;
+    }
+    return m;
+  }
+
+  /**
+   * Sanitiza dimensões/peso para atender limites do ML, fazendo clamp quando necessário.
+   * Retorna null se faltar alguma dimensão obrigatória.
+   */
+  private static sanitizePackageDimensions(input?: {
+    heightCm?: number;
+    widthCm?: number;
+    lengthCm?: number;
+    weightKg?: number;
+  }) {
+    if (
+      !input ||
+      input.heightCm == null ||
+      input.widthCm == null ||
+      input.lengthCm == null ||
+      input.weightKg == null
+    ) {
+      return null;
+    }
+
+    const clamp = (v: number, min: number, max: number) =>
+      Math.min(Math.max(Math.round(v), min), max);
+
+    const height = clamp(
+      input.heightCm,
+      this.ML_MIN_DIM_CM,
+      this.ML_MAX_DIM_CM,
+    );
+    const width = clamp(
+      input.widthCm,
+      this.ML_MIN_DIM_CM,
+      this.ML_MAX_DIM_CM,
+    );
+    const length = clamp(
+      input.lengthCm,
+      this.ML_MIN_DIM_CM,
+      this.ML_MAX_DIM_CM,
+    );
+
+    const weightKgRaw = Number(input.weightKg);
+    if (!Number.isFinite(weightKgRaw)) return null;
+    const weightKg = clamp(
+      weightKgRaw,
+      this.ML_MIN_WEIGHT_KG,
+      this.ML_MAX_WEIGHT_KG,
+    );
+
+    return { height, width, length, weightKg };
+  }
+
+  /**
+   * Constrói atributos estruturados sem sobrescrever com inferências fracas.
+   */
+  private static buildMLAttributes(product: any, resolvedCategoryId?: string) {
+    const attrs: Array<{ id: string; value_name: string }> = [];
+    const brand = this.cleanBrand(product.brand);
+    const model = this.cleanModel(product.model, product.year);
+    const year = this.cleanYear(product.year);
+
+    if (brand) attrs.push({ id: "BRAND", value_name: brand });
+    if (model) attrs.push({ id: "MODEL", value_name: model });
+    if (year) attrs.push({ id: "YEAR", value_name: String(year) });
+
+    // inferir posição para portas (ajuda a atender requisitos do domínio)
+    const positionCategories = new Set(["MLB101763", "MLB458642"]);
+    if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
+      const name = (product.name || "").toLowerCase();
+      const pos =
+        /dianteir|frente/.test(name)
+          ? "Dianteira"
+          : /traseir|tras|trás/.test(name)
+            ? "Traseira"
+            : null;
+      if (pos) attrs.push({ id: "POSITION", value_name: pos });
+    }
+
+    attrs.push({ id: "SELLER_SKU", value_name: product.sku });
+    if (product.partNumber) {
+      attrs.push({ id: "PART_NUMBER", value_name: product.partNumber });
+    }
+
+    return attrs;
+  }
+
+  /**
+   * Constrói a descrição do ML priorizando a descrição oficial do produto/usuário.
+   */
+  private static buildMLDescription(
+    product: any,
+    hintedSource?: "product" | "user_default",
+  ): { text: string; source: "product" | "user_default" | "fallback" } {
+    if (product.description) {
+      return {
+        text: this.normalizeUtf8(product.description),
+        source: hintedSource || "product",
+      };
+    }
+
+    const parts: string[] = [];
+    const headline = [product.name, product.brand, product.model]
+      .filter(Boolean)
+      .join(" ");
+    if (headline.trim()) parts.push(this.normalizeUtf8(headline));
+
     const details: string[] = [];
-    if (product.brand) details.push(`Marca: ${product.brand}`);
-    if (product.model) details.push(`Modelo: ${product.model}`);
-    if (product.year) details.push(`Ano: ${product.year}`);
-    if (product.version) details.push(`VersÃ£o: ${product.version}`);
+    const brand = this.cleanBrand(product.brand);
+    const model = this.cleanModel(product.model, product.year);
+    const year = this.cleanYear(product.year);
+    if (brand) details.push(`Marca: ${brand}`);
+    if (model) details.push(`Modelo: ${model}`);
+    if (year) details.push(`Ano: ${year}`);
+    if (product.version) details.push(`Versão: ${this.normalizeUtf8(product.version)}`);
     if (product.partNumber)
-      details.push(`NÃºmero da PeÃ§a: ${product.partNumber}`);
-    if (product.quality) details.push(`Qualidade: ${product.quality}`);
-    if (product.location) details.push(`LocalizaÃ§Ã£o: ${product.location}`);
+      details.push(`Número da Peça: ${this.normalizeUtf8(product.partNumber)}`);
+    if (product.quality) details.push(`Qualidade: ${this.normalizeUtf8(product.quality)}`);
+    if (product.location)
+      details.push(`Localização: ${this.normalizeUtf8(product.location)}`);
+    if (product.heightCm && product.widthCm && product.lengthCm) {
+      details.push(
+        `Dimensões (cm): ${product.heightCm} x ${product.widthCm} x ${product.lengthCm}`,
+      );
+    }
+    if (product.weightKg) {
+      details.push(`Peso: ${product.weightKg} kg`);
+    }
 
     if (details.length > 0) {
-      parts.push("Detalhes TÃ©cnicos:");
+      parts.push("Detalhes Técnicos:");
       parts.push(details.join("\n"));
     }
 
-    // SKU para referÃªncia
-    parts.push(`SKU: ${product.sku}`);
+    if (product.sku) parts.push(`SKU: ${product.sku}`);
 
-    return parts.join("\n\n");
+    return { text: parts.join("\n\n").trim(), source: "fallback" };
   }
 
   /**
-   * Cria um anÃºncio no Mercado Livre para um produto
-   * @param userId ID do usuÃ¡rio
-   * @param productId ID do produto
-   * @param categoryId ID da categoria do ML (opcional, serÃ¡ inferida se nÃ£o fornecida)
+   * family_name só deve ser enviado se for explicitamente necessário.
    */
+  private static shouldIncludeFamilyName(categoryId?: string): boolean {
+    const forceEnv =
+      process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
+
+    // Permite sobrescrever/estender via env (lista separada por vírgula)
+    const extra = (process.env.ML_FAMILY_NAME_ALLOWLIST || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const allowList = new Set<string>([
+      // Domínios com fluxo User Product (catálogo) que exigem family_name
+      "MLB193419", // Cubo de roda
+      "MLB101763", // Portas (carroceria e lataria)
+      "MLB458642", // Portas (categoria alternativa usada via override)
+      ...extra,
+    ]);
+
+    return forceEnv || (categoryId ? allowList.has(categoryId) : false);
+  }
+
+  /**
+   * Algumas categorias do catálogo (User Product) não permitem enviar title junto com family_name.
+   * Mantemos a lista explícita e configurável.
+   */
+  private static noTitleWithFamilyName(categoryId?: string): boolean {
+    const envList = (process.env.ML_NO_TITLE_WITH_FAMILY || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const hard = new Set<string>([
+      "MLB193419", // Cubo de roda — comprovado que title é rejeitado quando family_name está presente
+      "MLB101763", // Portas — fluxo UP exige family_name sem title
+      "MLB458642", // Portas (categoria alternativa) segue mesma regra de catálogo
+      ...envList,
+    ]);
+    return categoryId ? hard.has(categoryId) : false;
+  }
+
+  private static categoryOverride(categoryId?: string): string | undefined {
+    // formato: MLBA:MLBB,MLC:MLD
+    const env = process.env.ML_CATEGORY_OVERRIDE || "";
+    const map = new Map<string, string>();
+    env
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((pair) => {
+        const [from, to] = pair.split(":").map((s) => s.trim());
+        if (from && to) map.set(from, to);
+      });
+    return categoryId && map.has(categoryId) ? map.get(categoryId) : undefined;
+  }
+
   static async createMLListing(
     userId: string,
     productId: string,
@@ -410,85 +630,190 @@ export class ListingUseCase {
         };
       }
 
-      // Resolve categoryId: accept a validated external ML id OR map an internal ML_CATALOG id -> externalId
+      let descriptionSource: "product" | "user_default" | "fallback" =
+        product.description ? "product" : "fallback";
+
+      // Garantir descrição: se o produto não tiver, usar a descrição padrão do usuário (quando disponível)
+      if (!product.description && product.userId) {
+        try {
+          const owner =
+            await ListingUseCase.userRepository.findById(product.userId);
+          if (owner?.defaultProductDescription) {
+            product.description = owner.defaultProductDescription;
+            descriptionSource = "user_default";
+          }
+        } catch (descErr) {
+          console.warn(
+            "[ListingUseCase] Falha ao carregar descrição padrão do usuário:",
+            descErr instanceof Error ? descErr.message : String(descErr),
+          );
+        }
+      }
+
+      // Resolve categoryId: explicit param -> override map -> DB mapping -> product link -> heuristics -> ML discovery
       let resolvedCategoryId: string | undefined;
       if (categoryId) {
         // Distinguish between a likely external ML id (alphanumeric only) and internal ML_CATALOG ids (contain hyphen or other chars).
         const looksLikeExternalId = /^[A-Za-z0-9]+$/.test(categoryId);
 
         if (looksLikeExternalId) {
-          // Caller provided an *external-like* id â€” accept only if present in DB (prevents using synthetic/internal ids stored via fallback sync)
           let fromDb = null;
           try {
             fromDb = await CategoryRepository.findByExternalId(categoryId);
           } catch (e) {
             fromDb = null;
           }
-
           if (fromDb) {
-            resolvedCategoryId = categoryId; // already an external id
+            resolvedCategoryId = categoryId;
           } else {
-            // Not found in DB â€” do not assume it's valid for ML; leave undefined to use fallback later
-            resolvedCategoryId = undefined;
             console.warn(
               `[ListingUseCase] Provided external-like categoryId='${categoryId}' not found in DB; will attempt resolution/fallback`,
             );
+            // Accept explicit external ids even when not yet synced locally to avoid blocking publication
+            resolvedCategoryId = categoryId;
           }
         } else {
           // Treat categoryId as internal ML_CATALOG id and resolve it via ML_CATEGORY_OPTIONS -> DB fullPath lookup / on-demand sync
           const child = ML_CATEGORY_OPTIONS.find((c) => c.id === categoryId);
-          if (child) {
-            let found = null;
+          const fullPathCandidate = child?.value || categoryId;
+          let found = null;
+          try {
+            found = await CategoryRepository.findByFullPath(fullPathCandidate);
+          } catch (e) {
+            found = null;
+          }
+
+          if (!found) {
             try {
-              found = await CategoryRepository.findByFullPath(child.value);
-            } catch (e) {
-              found = null;
-            }
-
-            if (!found) {
-              try {
-                const { SyncUseCase } = await import("./sync.usercase");
-                await SyncUseCase.syncMLCategories(userId, "MLB");
-                try {
-                  found = await CategoryRepository.findByFullPath(child.value);
-                } catch (e2) {
-                  found = null;
-                }
-              } catch (syncErr) {
-                const msg =
-                  syncErr instanceof Error ? syncErr.message : String(syncErr);
-                console.warn(
-                  "[ListingUseCase] on-demand ML category sync failed:",
-                  msg,
-                );
-              }
-            }
-
-            if (found && /^[A-Za-z0-9]+$/.test(found.externalId || "")) {
-              // Only accept DB externalId values that look like real ML external ids (alphanumeric)
-              resolvedCategoryId = found.externalId;
-            } else {
-              // If DB contains a synthetic/hyphenated 'externalId' (e.g. from static ML_CATALOG fallback), treat as unresolved
-              resolvedCategoryId = undefined;
+              const { SyncUseCase } = await import("./sync.usercase");
+              await SyncUseCase.syncMLCategories(userId, "MLB");
+              found = await CategoryRepository.findByFullPath(fullPathCandidate);
+            } catch (syncErr) {
+              const msg =
+                syncErr instanceof Error ? syncErr.message : String(syncErr);
               console.warn(
-                `[ListingUseCase] DB mapping for '${child.value}' contains invalid externalId='${found?.externalId}'; ignoring and using fallback category for ML payload`,
-              );
-            }
-          } else {
-            // Last-resort: the caller may have provided a fullPath string â€” try lookup by fullPath
-            const found2 = await CategoryRepository.findByFullPath(
-              categoryId,
-            ).catch(() => null);
-            if (found2 && /^[A-Za-z0-9]+$/.test(found2.externalId || "")) {
-              resolvedCategoryId = found2.externalId;
-            } else {
-              resolvedCategoryId = undefined;
-              console.warn(
-                `[ListingUseCase] DB mapping for fullPath='${categoryId}' contains invalid externalId='${found2?.externalId}'; using fallback category for ML payload`,
+                "[ListingUseCase] on-demand ML category sync failed:",
+                msg,
               );
             }
           }
+
+          if (found && /^[A-Za-z0-9]+$/.test(found.externalId || "")) {
+            resolvedCategoryId = found.externalId;
+          } else {
+            console.warn(
+              `[ListingUseCase] DB mapping for '${fullPathCandidate}' invalid or missing externalId; will keep resolving`,
+            );
+          }
         }
+      }
+
+      // 2.1 Se o produto já estiver vinculado a uma categoria do ML no banco, reutilizar
+        if (!resolvedCategoryId && (product as any).mlCategoryId) {
+        try {
+          const linked = await CategoryRepository.findById(
+            (product as any).mlCategoryId,
+          );
+          if (
+            linked?.externalId &&
+            /^[A-Za-z0-9]+$/.test(linked.externalId || "")
+          ) {
+            resolvedCategoryId = linked.externalId;
+          }
+        } catch (e) {
+          console.warn(
+            "[ListingUseCase] Falha ao resolver mlCategoryId salvo no produto:",
+            e instanceof Error ? e.message : String(e),
+          );
+        }
+      }
+
+      // 2.2 Tentar deduzir categoria pelo título/categoria textual do produto
+      if (!resolvedCategoryId) {
+        const candidateFromProduct =
+          product.category && product.category.includes(">")
+            ? product.category
+            : undefined;
+        const titleForGuess = [
+          product.name,
+          product.brand,
+          product.model,
+          product.partNumber,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        const suggested = suggestCategoryFromTitle(titleForGuess);
+        const mapped = suggested
+          ? mapSuggestedCategory(suggested)
+          : undefined;
+        const fullPathGuess =
+          mapped?.detailedValue ||
+          candidateFromProduct ||
+          mapped?.topLevel ||
+          undefined;
+
+        if (fullPathGuess) {
+          let foundByGuess = null;
+          try {
+            foundByGuess = await CategoryRepository.findByFullPath(fullPathGuess);
+          } catch {
+            foundByGuess = null;
+          }
+          if (
+            foundByGuess?.externalId &&
+            /^[A-Za-z0-9]+$/.test(foundByGuess.externalId || "")
+          ) {
+            resolvedCategoryId = foundByGuess.externalId;
+          }
+        }
+      }
+
+      // 2.3 Último recurso controlado: pedir ao ML para sugerir categoria pelo título
+      if (!resolvedCategoryId) {
+        const query = [
+          product.name,
+          product.brand,
+          product.model,
+          product.partNumber,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const suggestedByML = await MLApiService.suggestCategoryId(
+          "MLB",
+          query,
+        );
+        if (suggestedByML) {
+          resolvedCategoryId = suggestedByML;
+        }
+      }
+
+      // Não insista em publicar com categoria indefinida ou não suportada
+      if (!resolvedCategoryId) {
+        return {
+          success: false,
+          error:
+            "Não foi possível inferir uma categoria válida do Mercado Livre para este produto. Selecione uma categoria antes de publicar.",
+        };
+      }
+
+      // Aplicar override de categoria (permite sair de domínio UP para domínio alternativo).
+      const originalCategoryId = resolvedCategoryId;
+      const overridden = this.categoryOverride(resolvedCategoryId);
+      if (overridden) {
+        console.warn(
+          `[ListingUseCase] category ${resolvedCategoryId} override configured -> ${overridden}`,
+        );
+        resolvedCategoryId = overridden;
+      }
+
+      // Categoria MLB193419 (sugerida pelo domain_discovery para cubo de roda) exige PART_NUMBER
+      if (resolvedCategoryId === "MLB193419" && !product.partNumber) {
+        return {
+          success: false,
+          error:
+            "A categoria selecionada exige o atributo PART_NUMBER. Preencha o Part Number da peça antes de publicar.",
+        };
       }
 
       // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
@@ -499,56 +824,150 @@ export class ListingUseCase {
           ? "ARS"
           : "BRL";
 
+      const { text: descriptionText, source: derivedDescriptionSource } =
+        this.buildMLDescription(
+          product,
+          descriptionSource === "user_default" ? "user_default" : descriptionSource,
+        );
+      descriptionSource = derivedDescriptionSource;
+
+      const attributes = this.buildMLAttributes(product, resolvedCategoryId);
+      const includeFamilyFromResolved =
+        this.shouldIncludeFamilyName(resolvedCategoryId);
+      const includeFamilyFromOriginal =
+        this.shouldIncludeFamilyName(originalCategoryId);
+      let includeFamilyName = includeFamilyFromResolved || includeFamilyFromOriginal;
+      const noTitleWithFamily =
+        this.noTitleWithFamilyName(resolvedCategoryId) ||
+        this.noTitleWithFamilyName(originalCategoryId);
+
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
-        category_id: resolvedCategoryId || "MLB271107", // Usar categoria resolvida ou padrÃ£o
-        price: product.price, // Usar preÃ§o real do produto
+        category_id: resolvedCategoryId, // Categoria obrigatória e validada
+        price: product.price, // Usar preço real do produto
         currency_id: currencyId,
-        available_quantity: Math.min(product.stock, 999999), // ML limita quantidade mÃ¡xima
+        available_quantity: Math.min(product.stock, 999999), // ML limita quantidade máxima
         buying_mode: "buy_it_now",
-        listing_type_id: "bronze", // Usar bronze que pode nÃ£o exigir pictures
+        listing_type_id: "bronze", // Usar bronze que pode não exigir pictures
         condition: this.mapQualityToMLCondition(product.quality) || "new",
         pictures: [
           {
-            source: product.imageUrl
-              ? product.imageUrl.startsWith("http")
-                ? product.imageUrl
-                : `${process.env.APP_BACKEND_URL || "http://localhost:3333"}${product.imageUrl}`
-              : "https://via.placeholder.com/500x500.png?text=Produto",
+            // ML precisa conseguir baixar a imagem; se vier com host localhost, substituímos pelo ngrok/back-end público
+            source: (() => {
+              const backendBase =
+                process.env.APP_BACKEND_URL || "http://localhost:3333";
+              if (!product.imageUrl) {
+                return "https://via.placeholder.com/500x500.png?text=Produto";
+              }
+              if (product.imageUrl.startsWith("http")) {
+                return product.imageUrl.replace(
+                  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                  backendBase,
+                );
+              }
+              return `${backendBase}${product.imageUrl}`;
+            })(),
           },
         ],
-        attributes: [
-          {
-            id: "BRAND",
-            value_name: product.brand || "GenÃ©rica",
-          },
-          {
-            id: "MODEL",
-            value_name: product.model || product.name,
-          },
-          {
-            id: "SELLER_SKU",
-            value_name: product.sku,
-          },
-        ],
+        attributes,
         seller_custom_field: product.sku,
+        description: {
+          plain_text: descriptionText,
+        },
       };
 
-      // Include shipping dimensions when available (cm / kg)
-      if (
-        product.heightCm ||
-        product.widthCm ||
-        product.lengthCm ||
-        product.weightKg
-      ) {
-        payload.shipping = {
-          dimensions: {
-            height: product.heightCm ?? undefined,
-            width: product.widthCm ?? undefined,
-            length: product.lengthCm ?? undefined,
-            weight: product.weightKg ?? undefined,
-          },
+      if (includeFamilyName) {
+        payload.family_name = product.brand || product.name;
+      }
+
+      const attrSnapshot = {
+        brand: attributes.find((a) => a.id === "BRAND")?.value_name,
+        model: attributes.find((a) => a.id === "MODEL")?.value_name,
+        year: attributes.find((a) => a.id === "YEAR")?.value_name,
+      };
+      const fallbackNonUPCategory =
+        process.env.ML_FALLBACK_NON_UP_CATEGORY || "";
+      console.log("[ListingUseCase] ML payload summary", {
+        productId: product.id,
+        productName: product.name,
+        finalTitle: payload.title,
+        descriptionSource,
+        family_name_sent: includeFamilyName,
+        attrs: attrSnapshot,
+      });
+
+      // 3.1 Criar (ou reutilizar) placeholder local antes de chamar o ML
+      // Isso garante que o usuÃ¡rio veja o anÃºncio pendente mesmo que a API do ML falhe.
+      let listing = await ListingRepository.findByProductAndAccount(
+        productId,
+        acc.id,
+      );
+
+      if (!listing) {
+        listing = await ListingRepository.createListing({
+          productId,
+          marketplaceAccountId: acc.id,
+          externalListingId: `PENDING_${Date.now()}`,
+          externalSku: product.sku,
+          permalink: null,
+          status: "pending",
+          retryAttempts: 0,
+          nextRetryAt: null,
+          lastError: null,
+          retryEnabled: true,
+          requestedCategoryId: payload.category_id || null,
+        });
+      }
+
+      // Include shipping dimensions quando completo (ML exige string "HxWxL,weight") — clamp para limites aceitos
+      const pkg = this.sanitizePackageDimensions({
+        heightCm: product.heightCm,
+        widthCm: product.widthCm,
+        lengthCm: product.lengthCm,
+        weightKg: product.weightKg,
+      });
+
+      if (pkg) {
+        const dims = `${pkg.height}x${pkg.width}x${pkg.length},${Number(
+          pkg.weightKg,
+        )}`;
+        payload.shipping = { dimensions: dims };
+
+        // Algumas contas/políticas do ML exigem os atributos seller_package_* mesmo quando enviamos shipping.dimensions.
+        const ensureAttr = (id: string, value: string | number) => {
+          const exists = payload.attributes?.some((a) => a.id === id);
+          if (!exists) {
+            payload.attributes?.push({
+              id,
+              value_name: String(value),
+            });
+          }
         };
+
+        // ML exige unidades nos atributos de pacote: cm para dimensões, g para peso
+        ensureAttr("SELLER_PACKAGE_HEIGHT", `${pkg.height} cm`);
+        ensureAttr("SELLER_PACKAGE_WIDTH", `${pkg.width} cm`);
+        ensureAttr("SELLER_PACKAGE_LENGTH", `${pkg.length} cm`);
+        ensureAttr(
+          "SELLER_PACKAGE_WEIGHT",
+          `${Math.round(Number(pkg.weightKg) * 1000)} g`,
+        );
+
+        // Avisar se houve clamp para facilitar troubleshooting
+        if (
+          product.heightCm !== pkg.height ||
+          product.widthCm !== pkg.width ||
+          product.lengthCm !== pkg.length ||
+          (product.weightKg != null &&
+            Math.round(product.weightKg * 100) !==
+              Math.round(pkg.weightKg * 100))
+        ) {
+          console.warn(
+            `[ListingUseCase] Package dimensions clamped to ML limits: ` +
+              `H:${pkg.height} W:${pkg.width} L:${pkg.length}cm Wt:${pkg.weightKg}kg (was ` +
+              `${product.heightCm}x${product.widthCm}x${product.lengthCm},${product.weightKg}kg)`,
+          );
+        }
       }
 
       // Adicionar descriÃ§Ã£o se existir
@@ -584,6 +1003,215 @@ export class ListingUseCase {
         const parsedMl =
           err && (err as any).mlError ? (err as any).mlError : null;
         const errMsg = err instanceof Error ? err.message : String(err);
+
+        // Fallback imediato: se o erro citar title/invalid_fields, tentar variante segura
+        let isTitleInvalid =
+          errMsg.toLowerCase().includes("invalid_fields") &&
+          errMsg.toLowerCase().includes("title");
+
+        const missingFamilyName =
+          errMsg.toLowerCase().includes("family_name") ||
+          JSON.stringify(parsedMl || "")
+            .toLowerCase()
+            .includes("family_name");
+
+        if (!mlItem && missingFamilyName && !includeFamilyName) {
+          try {
+            console.warn(
+              `[ListingUseCase] ML solicitou family_name; retentando mantendo título informado`,
+            );
+            const withFamily: MLItemCreatePayload = {
+              ...payload,
+              family_name: product.brand || product.name,
+            };
+            mlItem = await MLApiService.createItem(acc.accessToken, withFamily);
+
+            // Passe a considerar a categoria como exigindo family_name para os próximos tratamentos
+            includeFamilyName = includeFamilyName || !!withFamily.family_name;
+          } catch (famErr) {
+            const famMsg = famErr instanceof Error ? famErr.message : String(famErr);
+            console.warn("[ListingUseCase] Retentativa com family_name falhou:", famMsg);
+            if (
+              !isTitleInvalid &&
+              famMsg.toLowerCase().includes("invalid_fields") &&
+              famMsg.toLowerCase().includes("title")
+            ) {
+              isTitleInvalid = true;
+            }
+          }
+        }
+
+        // Se o ML rejeitar title, primeiro tente remover family_name (mantendo o título).
+        if (!mlItem && isTitleInvalid && includeFamilyName && !noTitleWithFamily) {
+          try {
+            console.warn(
+              "[ListingUseCase] Retentando createItem mantendo título e removendo family_name",
+            );
+            const noFamilyPayload: MLItemCreatePayload = { ...payload };
+            delete (noFamilyPayload as any).family_name;
+            mlItem = await MLApiService.createItem(acc.accessToken, noFamilyPayload);
+          } catch (noFamilyErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa sem family_name falhou:",
+              noFamilyErr instanceof Error ? noFamilyErr.message : String(noFamilyErr),
+            );
+          }
+        }
+
+        // Para categorias que realmente não aceitam title com family_name, tentar sem title.
+        if (
+          !mlItem &&
+          isTitleInvalid &&
+          (includeFamilyName || missingFamilyName) &&
+          noTitleWithFamily
+        ) {
+          try {
+            console.warn(
+              "[ListingUseCase] Retentando createItem sem title (UP domain requer family_name)",
+            );
+            const noTitlePayload: MLItemCreatePayload = {
+              ...payload,
+              family_name: (payload as any).family_name || product.brand || product.name,
+            } as any;
+            delete (noTitlePayload as any).title;
+            mlItem = await MLApiService.createItem(acc.accessToken, noTitlePayload);
+          } catch (noTitleErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa sem title falhou:",
+              noTitleErr instanceof Error ? noTitleErr.message : String(noTitleErr),
+            );
+          }
+        }
+
+        if (!mlItem && isTitleInvalid && !includeFamilyName) {
+          // Tentar um título ultra-sanitizado
+          try {
+            const safeTitle = this.buildSafeFallbackTitle(product);
+            console.warn(
+              `[ListingUseCase] Retentando createItem com tÃ­tulo seguro: \"${safeTitle}\"`,
+            );
+            const retryPayload: MLItemCreatePayload = {
+              ...payload,
+              title: safeTitle,
+            };
+            // Evitar acionar o fluxo de User Product quando não for obrigatório
+            if (!this.shouldIncludeFamilyName(resolvedCategoryId)) {
+              delete (retryPayload as any).family_name;
+            }
+            mlItem = await MLApiService.createItem(acc.accessToken, retryPayload);
+          } catch (retryTitleErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa com tÃ­tulo seguro falhou:",
+              retryTitleErr instanceof Error
+                ? retryTitleErr.message
+                : String(retryTitleErr),
+            );
+          }
+        }
+
+        // Se ainda não conseguiu e o erro envolver family_name/title, recuar para categoria não-UP e título original
+        const isFamilyOrTitleBlock =
+          !mlItem &&
+          fallbackNonUPCategory &&
+          (missingFamilyName || isTitleInvalid) &&
+          resolvedCategoryId !== fallbackNonUPCategory;
+        if (isFamilyOrTitleBlock) {
+          try {
+            const altPayload: MLItemCreatePayload = {
+              ...payload,
+              category_id: fallbackNonUPCategory,
+              title: payload.title,
+            };
+            // manter family_name se já exigido para não cair em required_fields
+            if (includeFamilyName || missingFamilyName) {
+              altPayload.family_name =
+                (payload as any).family_name || product.brand || product.name;
+            } else {
+              delete (altPayload as any).family_name;
+            }
+            console.warn(
+              `[ListingUseCase] Retentando em categoria não-UP ${fallbackNonUPCategory} sem family_name para preservar título`,
+            );
+            mlItem = await MLApiService.createItem(acc.accessToken, altPayload);
+            resolvedCategoryId = fallbackNonUPCategory;
+          } catch (altErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa em categoria não-UP falhou:",
+              altErr instanceof Error ? altErr.message : String(altErr),
+            );
+          }
+        }
+
+        if (!mlItem && isTitleInvalid) {
+          const nextRetryMs = 60 * 1000;
+          await ListingRepository.updateListing(listing.id, {
+            status: "error",
+            lastError: errMsg,
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + nextRetryMs),
+            requestedCategoryId: payload.category_id || null,
+          });
+          return {
+            success: false,
+            error:
+              "Mercado Livre rejeitou o título informado. Ajuste o título e tente novamente.",
+            mlError: errMsg,
+          };
+        }
+
+        // Bloqueio por PolicyAgent (permissÃ£o funcional faltando ou polÃ­tica da conta)
+        const policyBlocked =
+          parsedMl?.code === "PA_UNAUTHORIZED_RESULT_FROM_POLICIES" ||
+          parsedMl?.blocked_by === "PolicyAgent" ||
+          errMsg.includes("PolicyAgent");
+
+        if (!mlItem && policyBlocked) {
+          const humanMsg =
+            "Conta do Mercado Livre sem permissÃ£o para publicar (PolicyAgent). RefaÃ§a a autorizaÃ§Ã£o habilitando permissÃµes de anÃºncio no app do ML e reconecte a conta.";
+
+          try {
+            await SystemLogService.logError(
+              "CREATE_LISTING",
+              humanMsg,
+              {
+                userId,
+                resource: "MarketplaceAccount",
+                resourceId: acc.id,
+                details: { mlError: parsedMl || errMsg },
+              },
+            );
+          } catch (logErr) {
+            console.error("[ListingUseCase] failed to log PolicyAgent block:", logErr);
+          }
+
+          // Marcar conta como ERROR para forÃ§ar reconexÃ£o e desabilitar retries automÃ¡ticos
+          try {
+            await MarketplaceRepository.updateStatus(acc.id, AccountStatus.ERROR);
+          } catch (stErr) {
+            console.warn("[ListingUseCase] failed to mark account as ERROR:", stErr);
+          }
+
+          try {
+            await ListingRepository.updateListing(listing.id, {
+              status: "error",
+              lastError: humanMsg,
+              retryEnabled: false,
+              nextRetryAt: null,
+              requestedCategoryId: payload.category_id || null,
+            });
+          } catch (phErr) {
+            console.error(
+              "[ListingUseCase] Failed to flag placeholder after PolicyAgent block:",
+              phErr,
+            );
+          }
+
+          return {
+            success: false,
+            error: humanMsg,
+            mlError: errMsg,
+          };
+        }
 
         // Caso conhecido: vendedor estÃ¡ impedido de anunciar (restriÃ§Ã£o do ML)
         if (
@@ -670,7 +1298,7 @@ export class ListingUseCase {
             }
           }
 
-          // If we still don't have an mlItem, record a system log and create a local placeholder
+          // If we still don't have an mlItem, record a system log and update placeholder
           if (!mlItem) {
             try {
               await SystemLogService.logError(
@@ -690,139 +1318,158 @@ export class ListingUseCase {
               );
             }
 
-            // create a local placeholder listing if not existent
+            // atualizar placeholder existente com erro e agendar retry
+            const nextRetryMs = 60 * 1000; // 1 min de backoff inicial
             try {
-              const existing = await ListingRepository.findByProductAndAccount(
-                productId,
-                acc.id,
-              );
-              if (!existing) {
-                const placeholderId = `PENDING_${Date.now()}`;
-                const initialRetryDelayMs = 30 * 1000; // try again after 30s
-                const placeholder = await ListingRepository.createListing({
-                  productId,
-                  marketplaceAccountId: acc.id,
-                  externalListingId: placeholderId,
-                  externalSku: product?.sku || undefined,
-                  permalink: undefined,
-                  status: "paused",
-                  retryAttempts: 0,
-                  nextRetryAt: new Date(Date.now() + initialRetryDelayMs),
-                  lastError: errMsg,
-                  retryEnabled: true,
-                  requestedCategoryId: payload.category_id || null,
-                });
-
-                // Record a system log referencing the newly created placeholder listing
-                try {
-                  await SystemLogService.logError(
-                    "CREATE_LISTING",
-                    `Placeholder criado localmente apÃ³s falha ML: ${errMsg}`,
-                    {
-                      userId,
-                      resource: "ProductListing",
-                      resourceId: placeholder.id,
-                      details: { mlError: parsedMl || errMsg },
-                    },
-                  );
-                } catch (logErr) {
-                  console.warn(
-                    "Failed to write SystemLog for placeholder listing:",
-                    logErr,
-                  );
-                }
-
-                return {
-                  success: false,
-                  skipped: true,
-                  listingId: placeholder.id,
-                  error:
-                    "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
-                  mlError: errMsg,
-                };
-              } else {
-                // If existing placeholder found, attach ML error log to it as well
-                try {
-                  await SystemLogService.logError(
-                    "CREATE_LISTING",
-                    `AnÃºncio existente marcado apÃ³s falha ML: ${errMsg}`,
-                    {
-                      userId,
-                      resource: "ProductListing",
-                      resourceId: existing.id,
-                      details: { mlError: parsedMl || errMsg },
-                    },
-                  );
-                } catch (logErr) {
-                  console.warn(
-                    "Failed to write SystemLog for existing placeholder listing:",
-                    logErr,
-                  );
-                }
-
-                return {
-                  success: false,
-                  skipped: true,
-                  listingId: existing.id,
-                  error:
-                    "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
-                  mlError: errMsg,
-                };
-              }
+              await ListingRepository.updateListing(listing.id, {
+                status: "error",
+                lastError: errMsg,
+                retryEnabled: true,
+                nextRetryAt: new Date(Date.now() + nextRetryMs),
+                requestedCategoryId: payload.category_id || null,
+              });
             } catch (phErr) {
               console.error(
-                "[ListingUseCase] Failed to create placeholder after ML failure:",
+                "[ListingUseCase] Failed to update placeholder after ML failure:",
                 phErr,
               );
-              return {
-                success: false,
-                skipped: true,
-                error:
-                  "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
-              };
             }
+
+            return {
+              success: false,
+              skipped: true,
+              listingId: listing.id,
+              error:
+                "Conta do Mercado Livre com restriÃ§Ã£o â€” impossÃ­vel criar anÃºncios. Verifique o Seller Center do Mercado Livre.",
+              mlError: errMsg,
+            };
           }
 
           // If we recovered and mlItem was created by the retry above, continue the normal flow
         }
 
         // If we recovered and have mlItem, continue normal flow; otherwise rethrow
-        if (!mlItem) throw err;
-      }
+        if (!mlItem) {
+          // marcar placeholder com erro genÃ©rico para retry e exibir ao usuÃ¡rio
+          const nextRetryMs = 60 * 1000;
+          try {
+            await ListingRepository.updateListing(listing.id, {
+              status: "error",
+              lastError: errMsg,
+              retryEnabled: true,
+              nextRetryAt: new Date(Date.now() + nextRetryMs),
+              requestedCategoryId: payload.category_id || null,
+            });
+          } catch (updateErr) {
+            console.error(
+              "[ListingUseCase] Failed to flag placeholder after generic ML error:",
+              updateErr,
+            );
+          }
 
-      // 4.1. ApÃ³s criar o item no ML, enviar a descriÃ§Ã£o completa (se existir)
-      // usando a API de update (ML separa criaÃ§Ã£o e conteÃºdo/description em endpoints diferentes).
-      if (product.description) {
-        try {
-          const mlDescription = this.buildMLDescription(product);
-          await MLApiService.updateItem(acc.accessToken, mlItem.id, {
-            description: mlDescription,
-          });
-          console.log("[ListingUseCase] ML item description updated");
-        } catch (err) {
-          // Log e continuar â€” nÃ£o falhar a criaÃ§Ã£o do anÃºncio apenas por falha na descriÃ§Ã£o
-          console.error(
-            "[ListingUseCase] Failed to update ML item description:",
-            err,
-          );
+          throw err;
         }
       }
+      // 4.1. Reforçar descrição após criação usando endpoint dedicado
+      try {
+        await MLApiService.upsertDescription(
+          acc.accessToken,
+          mlItem.id,
+          descriptionText,
+        );
+        console.log("[ListingUseCase] ML item description updated via /description");
+      } catch (err) {
+        console.error(
+          "[ListingUseCase] Failed to update ML item description:",
+          err,
+        );
+      }
 
-      // 5. Criar vÃ­nculo local (ProductListing)
-      const listing = await ListingRepository.createListing({
-        productId,
-        marketplaceAccountId: acc.id,
-        externalListingId: mlItem.id,
-        externalSku: product.sku,
-        permalink: mlItem.permalink,
-        status: "active",
-      });
+      // 4.2 Verificar status real no ML e tentar reativar se possível
+      let remoteStatus: "active" | "paused" | "closed" | "under_review" = "active";
+      let remoteSubStatus: string[] | undefined;
+      try {
+        const details = await MLApiService.getItemDetails(acc.accessToken, mlItem.id);
+        remoteStatus = details.status;
+        remoteSubStatus = (details as any).sub_status;
+
+        if (remoteStatus === "paused") {
+          const canAutoActivate =
+            !remoteSubStatus ||
+            remoteSubStatus.length === 0 ||
+            remoteSubStatus.every((s) =>
+              ["waiting_for_activation", "waiting_for_payment"].includes(s),
+            );
+          if (canAutoActivate) {
+            try {
+              const reactivated = await MLApiService.updateItem(acc.accessToken, mlItem.id, {
+                status: "active",
+              });
+              remoteStatus = reactivated.status;
+              remoteSubStatus = (reactivated as any).sub_status;
+              console.warn(
+                `[ListingUseCase] ML item ${mlItem.id} was paused; auto-activation attempted -> ${remoteStatus}`,
+              );
+            } catch (reactivateErr) {
+              console.warn(
+                `[ListingUseCase] Failed to auto-activate paused item ${mlItem.id}:`,
+                reactivateErr instanceof Error
+                  ? reactivateErr.message
+                  : String(reactivateErr),
+              );
+            }
+          }
+        }
+      } catch (statusErr) {
+        console.warn(
+          `[ListingUseCase] Could not fetch status for ${mlItem.id} after creation:`,
+          statusErr instanceof Error ? statusErr.message : String(statusErr),
+        );
+      }
+
+      // 5. Atualizar placeholder local (ou criar, se por algum motivo não existir)
+      let finalListingId: string;
+      try {
+        const updated = await ListingRepository.updateListing(listing.id, {
+          externalListingId: mlItem.id,
+          externalSku: product.sku,
+          permalink: mlItem.permalink || null,
+          status: remoteStatus,
+          retryEnabled: false,
+          nextRetryAt: null,
+          lastError:
+            remoteStatus === "paused" && remoteSubStatus?.length
+              ? `ML retornou status=paused (${remoteSubStatus.join(",")})`
+              : null,
+          retryAttempts: 0,
+          requestedCategoryId: payload.category_id || null,
+        });
+        finalListingId = updated.id;
+      } catch (updateErr) {
+        // fallback: cria novo registro se update falhar por algum motivo inesperado
+        const created = await ListingRepository.createListing({
+          productId,
+          marketplaceAccountId: acc.id,
+          externalListingId: mlItem.id,
+          externalSku: product.sku,
+          permalink: mlItem.permalink,
+          status: remoteStatus,
+          retryEnabled: false,
+          nextRetryAt: null,
+          lastError:
+            remoteStatus === "paused" && remoteSubStatus?.length
+              ? `ML retornou status=paused (${remoteSubStatus.join(",")})`
+              : null,
+          requestedCategoryId: payload.category_id || null,
+        });
+        finalListingId = created.id;
+      }
 
       console.log(`[ListingUseCase] ML listing created: ${mlItem.id}`);
 
       return {
         success: true,
-        listingId: listing.id,
+        listingId: finalListingId,
         externalListingId: mlItem.id,
         permalink: mlItem.permalink,
       };
@@ -1172,6 +1819,30 @@ export class ListingUseCase {
     }
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

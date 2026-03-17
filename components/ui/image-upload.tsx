@@ -60,9 +60,9 @@ export function ImageUpload({
         }
 
         const result = await response.json();
-        const imageUrl = result.imageUrl;
+        const imageUrl: string = result.imageUrl;
 
-        console.log("Setting preview to:", imageUrl);
+        // Preview e valor usam localhost (mantendo compatibilidade com ambiente local)
         setPreview(imageUrl);
         onChange(imageUrl);
       } catch (error) {

@@ -117,7 +117,15 @@ export class MarketplaceUseCase {
     try {
       let account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
-        : await MarketplaceRepository.findByUserIdAndPlatform(userId, platform);
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            platform,
+          ) ||
+          // fallback: pega qualquer conta (ex.: todas estÃ£o com erro/expiradas)
+          await MarketplaceRepository.findByUserIdAndPlatform(
+            userId,
+            platform,
+          );
 
       if (!account) {
         return {

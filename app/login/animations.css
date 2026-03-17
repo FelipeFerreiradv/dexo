@@ -1,0 +1,52 @@
+@layer utilities {
+  .animate-slow-float {
+    animation: slow-float 10s ease-in-out infinite;
+    transform-origin: center;
+  }
+
+  .animate-orbit-slow {
+    animation: orbit-slow 18s linear infinite;
+    transform-origin: center;
+  }
+
+  .animate-orbit-medium {
+    animation: orbit-medium 22s linear infinite;
+    transform-origin: center;
+  }
+
+  .animate-soft-pulse {
+    animation: soft-pulse 9s ease-in-out infinite;
+  }
+}
+
+@keyframes slow-float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes orbit-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orbit-medium {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 0.88;
+  }
+  50% {
+    opacity: 1;
+  }
+}

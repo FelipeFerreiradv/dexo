@@ -5,6 +5,7 @@ vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findByUserIdAndPlatform: vi.fn(),
     findFirstActiveByUserAndPlatform: vi.fn(),
+    findByIdAndUser: vi.fn(),
     updateTokens: vi.fn(),
     updateStatus: vi.fn(),
   },
@@ -25,11 +26,13 @@ vi.mock("../app/marketplaces/repositories/category.repository", () => ({
   CategoryRepository: {
     findByFullPath: vi.fn().mockResolvedValue(null),
     findByExternalId: vi.fn().mockResolvedValue(null),
+    findById: vi.fn().mockResolvedValue(null),
     listFlattenedOptions: vi.fn().mockResolvedValue([]),
   },
   default: {
     findByFullPath: vi.fn().mockResolvedValue(null),
     findByExternalId: vi.fn().mockResolvedValue(null),
+    findById: vi.fn().mockResolvedValue(null),
     listFlattenedOptions: vi.fn().mockResolvedValue([]),
   },
 }));
@@ -37,6 +40,7 @@ vi.mock("../app/marketplaces/repositories/category.repository", () => ({
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
+import { UserRepositoryPrisma } from "../app/repositories/user.repository";
 
 // Import the usecase after the mock is set up
 import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
@@ -73,6 +77,9 @@ describe("ListingUseCase → ML payload with measurements", () => {
       MarketplaceRepository,
       "findFirstActiveByUserAndPlatform",
     ).mockResolvedValue(mockAccount as any);
+    vi.spyOn(MarketplaceRepository, "findByIdAndUser").mockResolvedValue(
+      mockAccount as any,
+    );
 
     // Default: pre-check should succeed unless overridden by a specific test
     vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
@@ -83,6 +90,9 @@ describe("ListingUseCase → ML payload with measurements", () => {
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue(
       mockProduct as any,
+    );
+    vi.spyOn(MLApiService, "upsertDescription").mockResolvedValue(
+      undefined as any,
     );
     vi.spyOn(ListingRepository, "createListing").mockResolvedValue({
       id: "listing-1",
@@ -106,9 +116,9 @@ describe("ListingUseCase → ML payload with measurements", () => {
       permalink: "https://ml.ai/item/MLB123",
     } as any);
 
-    const updateSpy = vi
-      .spyOn(MLApiService, "updateItem")
-      .mockResolvedValue({} as any);
+    const descSpy = vi
+      .spyOn(MLApiService, "upsertDescription")
+      .mockResolvedValue(undefined as any);
 
     const res = await ListingUseCase.createMLListing(
       "user-1",
@@ -121,19 +131,140 @@ describe("ListingUseCase → ML payload with measurements", () => {
     const payload = (createSpy.mock as any).calls[0][1];
     expect(payload).toBeDefined();
     expect(payload.shipping).toBeDefined();
-    expect(payload.shipping.dimensions).toEqual({
-      height: mockProduct.heightCm,
-      width: mockProduct.widthCm,
-      length: mockProduct.lengthCm,
-      weight: mockProduct.weightKg,
+    expect(payload.shipping.dimensions).toBe(
+      `${mockProduct.heightCm}x${mockProduct.widthCm}x${mockProduct.lengthCm},${mockProduct.weightKg}`,
+    );
+
+    // seller_package_* attributes should be injected for accounts that require them
+    const attrIds = (payload.attributes || []).map((a: any) => a.id);
+    expect(attrIds).toContain("SELLER_PACKAGE_HEIGHT");
+    expect(attrIds).toContain("SELLER_PACKAGE_WIDTH");
+    expect(attrIds).toContain("SELLER_PACKAGE_LENGTH");
+    expect(attrIds).toContain("SELLER_PACKAGE_WEIGHT");
+    const hAttr = payload.attributes.find((a: any) => a.id === "SELLER_PACKAGE_HEIGHT");
+    const wAttr = payload.attributes.find((a: any) => a.id === "SELLER_PACKAGE_WIDTH");
+    const lAttr = payload.attributes.find((a: any) => a.id === "SELLER_PACKAGE_LENGTH");
+    const wgAttr = payload.attributes.find((a: any) => a.id === "SELLER_PACKAGE_WEIGHT");
+    expect(hAttr.value_name).toBe(`${mockProduct.heightCm} cm`);
+    expect(wAttr.value_name).toBe(`${mockProduct.widthCm} cm`);
+    expect(lAttr.value_name).toBe(`${mockProduct.lengthCm} cm`);
+    expect(wgAttr.value_name).toBe(`${mockProduct.weightKg * 1000} g`);
+
+    // description must be pushed after creation using dedicated endpoint
+    expect(descSpy).toHaveBeenCalled();
+    const descArgs = (descSpy.mock as any).calls[0];
+    expect(descArgs[1]).toBe("MLB123");
+    expect(descArgs[2]).toBe(mockProduct.description);
+  });
+
+  it("uses user's default description when product description is empty", async () => {
+    vi.spyOn(
+      ProductRepositoryPrisma.prototype,
+      "findById",
+    ).mockResolvedValueOnce({
+      ...mockProduct,
+      description: undefined,
+      userId: "owner-1",
+    } as any);
+
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+      id: "owner-1",
+      defaultProductDescription: "Descricao padrao do usuario",
+    } as any);
+
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB888",
+      permalink: "https://ml.ai/item/MLB888",
+    } as any);
+    const descSpy = vi.spyOn(MLApiService, "upsertDescription");
+
+    const res = await ListingUseCase.createMLListing(
+      "owner-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(res.success).toBe(true);
+    const payload = (createSpy.mock as any).calls[0][1];
+    expect(payload.description.plain_text).toContain(
+      "Descricao padrao do usuario",
+    );
+    expect(descSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      "MLB888",
+      expect.stringContaining("Descricao padrao do usuario"),
+    );
+  });
+
+  it("infers category from product.category fullPath when not provided", async () => {
+    vi.spyOn(
+      ProductRepositoryPrisma.prototype,
+      "findById",
+    ).mockResolvedValueOnce({
+      ...mockProduct,
+      category:
+        "AcessÃ³rios para VeÃ­culos > PeÃ§as de Carros e Caminhonetes > SuspensÃ£o e DireÃ§Ã£o > Cubo de Roda",
+    } as any);
+
+    const categoryRepo =
+      await import("../app/marketplaces/repositories/category.repository");
+    (categoryRepo.CategoryRepository.findByFullPath as any).mockResolvedValueOnce(
+      {
+        externalId: "MLB-CUBO",
+        fullPath:
+          "AcessÃ³rios para VeÃ­culos > PeÃ§as de Carros e Caminhonetes > SuspensÃ£o e DireÃ§Ã£o > Cubo de Roda",
+      },
+    );
+    (categoryRepo.default as any).findByFullPath.mockResolvedValueOnce({
+      externalId: "MLB-CUBO",
+      fullPath:
+        "AcessÃ³rios para VeÃ­culos > PeÃ§as de Carros e Caminhonetes > SuspensÃ£o e DireÃ§Ã£o > Cubo de Roda",
     });
 
-    // description must be pushed after creation
-    expect(updateSpy).toHaveBeenCalled();
-    const updateArgs = (updateSpy.mock as any).calls[0];
-    expect(updateArgs[1]).toBe("MLB123");
-    expect(updateArgs[2]).toHaveProperty("description");
-    expect((updateArgs[2] as any).description).toContain("SKU: SKU-1");
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB777",
+      permalink: "https://ml.ai/item/MLB777",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing("user-1", "prod-1");
+
+    expect(res.success).toBe(true);
+    const payload = (createSpy.mock as any).calls[0][1];
+    expect(payload.category_id).toBe("MLB-CUBO");
+  });
+
+  it("honors explicit accountId and uses its access token", async () => {
+    const altAccount = {
+      ...mockAccount,
+      id: "acct-2",
+      accessToken: "token-B",
+    };
+
+    vi.spyOn(MarketplaceRepository, "findByIdAndUser").mockResolvedValueOnce(
+      altAccount as any,
+    );
+    const fallbackSpy = vi.spyOn(
+      MarketplaceRepository,
+      "findFirstActiveByUserAndPlatform",
+    );
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB900",
+      permalink: "https://ml.ai/item/MLB900",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+      "acct-2",
+    );
+
+    expect(res.success).toBe(true);
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(createSpy).toHaveBeenCalledWith(
+      "token-B",
+      expect.objectContaining({ category_id: "MLB271107" }),
+    );
   });
 
   it("resolves internal ML child id (MLB1765-01) to external category id before sending to ML API (on-demand sync when DB missing)", async () => {
@@ -610,5 +741,117 @@ describe("ListingUseCase → ML payload with measurements", () => {
     expect(createSpy).not.toHaveBeenCalled();
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/reconecte/i);
+  });
+
+  it("handles family_name domains by retrying without title when ML rejects the field", async () => {
+    const errors: any[] = [
+      new Error(
+        "Erro ao criar item: {\"message\":\"body.invalid_fields\",\"error\":\"The fields [title] are invalid for requested call.\",\"status\":400,\"cause\":[]}",
+      ),
+      null,
+    ];
+
+    // attach mlError to the first error to mimic MLApiService behavior
+    (errors[0] as any).mlError = {
+      message: "body.invalid_fields",
+      error: "The fields [title] are invalid for requested call.",
+      status: 400,
+      cause: [],
+    };
+
+    const createSpy = vi
+      .spyOn(MLApiService, "createItem")
+      .mockImplementation(() => {
+        const next = errors.shift();
+        if (next) throw next;
+        return Promise.resolve({ id: "MLB2222", permalink: "p" } as any);
+      });
+
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+      ...mockProduct,
+      name: "Porta diantera fiat uno 2004",
+      brand: "Fiat",
+      model: "UNO",
+      year: 2004,
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB101763",
+    );
+
+    expect(res.success).toBe(true);
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    const firstPayload = (createSpy.mock as any).calls[0][1];
+    expect(firstPayload.family_name).toBe("Fiat");
+    expect(firstPayload.title).toBe("Porta diantera fiat uno 2004");
+
+    const secondPayload = (createSpy.mock as any).calls[1][1];
+    expect((secondPayload as any).family_name).toBe("Fiat");
+    expect((secondPayload as any).title).toBeUndefined(); // title removido para domínios UP
+  });
+
+  it("preserves product name verbatim as title and omits family_name", async () => {
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB5555",
+      permalink: "https://ml.ai/item/MLB5555",
+    } as any);
+
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+      ...mockProduct,
+      name: "Cubo de roda fiat uno 2004",
+      brand: "Fiat",
+      model: "UNO",
+      year: 2004,
+      description: "Descricao oficial do produto",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(res.success).toBe(true);
+    const payload = (createSpy.mock as any).calls[0][1];
+    expect(payload.title).toBe("Cubo de roda fiat uno 2004");
+    expect(payload.family_name).toBeUndefined();
+    expect(payload.description.plain_text).toBe("Descricao oficial do produto");
+    const attrIds = (payload.attributes || []).map((a: any) => a.id);
+    expect(attrIds).toContain("BRAND");
+    expect(payload.attributes.find((a: any) => a.id === "BRAND").value_name).toBe("Fiat");
+    expect(payload.attributes.find((a: any) => a.id === "MODEL").value_name).toBe("UNO");
+    // YEAR attribute should be present for valid years
+    expect(payload.attributes.find((a: any) => a.id === "YEAR")?.value_name).toBe("2004");
+  });
+
+  it("does not send MODEL when it is just the year (keeps YEAR separate)", async () => {
+    const createSpy = vi.spyOn(MLApiService, "createItem").mockResolvedValue({
+      id: "MLB5666",
+      permalink: "https://ml.ai/item/MLB5666",
+    } as any);
+
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValueOnce({
+      ...mockProduct,
+      name: "Cubo de roda hb20 hyundai 2016",
+      brand: "Hyundai",
+      model: "2016",
+      year: 2016,
+      description: "Descricao limpa",
+    } as any);
+
+    const res = await ListingUseCase.createMLListing(
+      "user-1",
+      "prod-1",
+      "MLB271107",
+    );
+
+    expect(res.success).toBe(true);
+    const payload = (createSpy.mock as any).calls[0][1];
+    const modelAttr = (payload.attributes || []).find((a: any) => a.id === "MODEL");
+    expect(modelAttr).toBeUndefined();
+    const yearAttr = (payload.attributes || []).find((a: any) => a.id === "YEAR");
+    expect(yearAttr?.value_name).toBe("2016");
   });
 });

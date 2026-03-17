@@ -6,13 +6,14 @@ export const SHOPEE_CONSTANTS = {
 
   // Usar produção por padrão (mudar para SANDBOX_URL se necessário)
   API_URL:
-    process.env.SHOPEE_SANDBOX === "true"
+    process.env.SHOPEE_API_URL ||
+    (process.env.SHOPEE_SANDBOX === "true"
       ? "https://partner.test-stable.shopeemobile.com"
-      : "https://partner.shopeemobile.com",
+      : "https://partner.shopeemobile.com"),
 
-  // Credenciais
-  PARTNER_ID: process.env.SHOPEE_PARTNER_ID,
-  PARTNER_KEY: process.env.SHOPEE_PARTNER_KEY,
+  // Credenciais (trim para remover espaços/quebras indesejadas)
+  PARTNER_ID: process.env.SHOPEE_PARTNER_ID?.trim(),
+  PARTNER_KEY: process.env.SHOPEE_PARTNER_KEY?.trim(),
 
   // Callback
   REDIRECT_URI: `${process.env.APP_BACKEND_URL || "http://localhost:3333"}/marketplace/shopee/callback`,
@@ -42,10 +43,14 @@ export function validateShopeeConfig(): void {
     }
   }
 
+  const key = process.env.SHOPEE_PARTNER_KEY || "";
+  if (key.length !== 64) {
+    throw new Error(
+      `SHOPEE_PARTNER_KEY deve ter 64 caracteres (atual: ${key.length}). Copie novamente do console da Shopee.`,
+    );
+  }
+
   // debug info
   console.log("[ShopeeConfig] partnerId", process.env.SHOPEE_PARTNER_ID);
-  console.log(
-    "[ShopeeConfig] key length",
-    process.env.SHOPEE_PARTNER_KEY?.length,
-  );
+  console.log("[ShopeeConfig] key length", key.length);
 }

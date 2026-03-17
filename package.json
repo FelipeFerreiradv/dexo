@@ -14,7 +14,8 @@
     "lint:prettier:check": "prettier --check .",
     "lint:prettier:fix": "prettier --write .",
     "test": "vitest",
-    "test:watch": "vitest --watch"
+    "test:watch": "vitest --watch",
+    "scan:ml:family": "tsx scripts/scan-ml-family-name.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
@@ -53,11 +54,12 @@
     "react-hook-form": "^7.71.1",
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.4.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.0.0",
     "@tailwindcss/postcss": "^4.1.18",
+    "@testing-library/jest-dom": "^6.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -101,6 +101,52 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     }
   });
 
+  // Alguns cenÃ¡rios do Mercado Livre enviam POST no callback. Tratamos e delegamos para a mesma lÃ³gica.
+  app.post<{
+    Body: { code?: string; state?: string };
+    Reply: { success: boolean; message: string };
+  }>("/ml/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const code =
+        ((request.body as any)?.code as string | undefined) ||
+        ((request.query as any)?.code as string | undefined);
+      const state =
+        ((request.body as any)?.state as string | undefined) ||
+        ((request.query as any)?.state as string | undefined);
+
+      if (!code || !state) {
+        return reply.status(400).send({
+          error: "ParÃ¢metros invÃ¡lidos",
+          message: "code e state sÃ£o obrigatÃ³rios",
+        });
+      }
+
+      const userId = request.user?.id;
+
+      const account = await MarketplaceUseCase.handleOAuthCallback({
+        code,
+        state,
+        userId,
+      });
+
+      return reply.send({
+        success: true,
+        message: "Conta conectada com sucesso",
+        account: {
+          id: account.id,
+          platform: account.platform,
+          status: account.status,
+          createdAt: account.createdAt,
+        },
+      });
+    } catch (error) {
+      return reply.status(500).send({
+        error: "Erro ao processar callback",
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
   /**
    * GET /marketplace/ml/status
    * Verifica status de conexÃ£o com Mercado Livre
@@ -147,6 +193,31 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   );
 
   /**
+   * GET /marketplace/ml/categories
+   * Lista categorias do Mercado Livre já sincronizadas (flatten)
+   */
+  app.get(
+    "/ml/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const raw = await CategoryRepository.listFlattenedOptions("MLB");
+        // Normalizar para o formato esperado pelo front: { id, value }
+        const categories = (raw || []).map((c: any) => ({
+          id: c.externalId || c.id,
+          value: c.fullPath || c.name || c.externalId || c.id,
+        }));
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
    * GET /marketplace/ml/listings
    * Lista todos os anÃºncios vinculados (multi-contas)
    */
@@ -184,7 +255,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         const accounts =
           accountIds && accountIds.length > 0
             ? await prisma.marketplaceAccount.findMany({
-                where: { id: { in: accountIds }, userId, platform: Platform.MERCADO_LIVRE },
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.MERCADO_LIVRE,
+                },
               })
             : await MarketplaceRepository.findAllByUserIdAndPlatform(
                 userId,
@@ -209,6 +284,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
                 externalSku: true,
                 permalink: true,
                 status: true,
+                lastError: true,
                 createdAt: true,
                 product: {
                   select: { name: true, sku: true, stock: true },

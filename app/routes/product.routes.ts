@@ -19,9 +19,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/next-sku",
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const nextSku = await productUseCase.getNextSku();
+        const userId = (request as any).user?.id as string;
+        const nextSku = await productUseCase.getNextSku(userId);
         return reply.status(200).send({ sku: nextSku });
       } catch (error) {
         return reply.status(500).send({
@@ -385,19 +387,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     };
   }>(
     "/",
+    { preHandler: [authMiddleware] },
     async (
       request: FastifyRequest<{
         Querystring: { search?: string; page?: string; limit?: string };
       }>,
       reply: FastifyReply,
-    ) => {
-      try {
-        const { search, page, limit } = request.query;
+      ) => {
+        try {
+          const { search, page, limit } = request.query;
+          const userId = (request as any).user?.id as string;
 
         const data = await productUseCase.listProducts({
           search: search || "",
           page: page ? parseInt(page) : 1,
           limit: limit ? parseInt(limit) : 10,
+          userId,
         });
 
         return reply.status(200).send({
@@ -432,7 +437,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             .send({ error: "ID do produto é obrigatório" });
         }
 
-        const result = await productUseCase.delete(id);
+        const userId = (request as any).user?.id as string | undefined;
+        const result = await productUseCase.delete(id, userId);
 
         if (!result.success) {
           return reply.status(500).send({
@@ -522,6 +528,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
+        const userId = (request as any).user?.id as string | undefined;
         const result = await productUseCase.update(id, {
           name,
           description,
@@ -549,7 +556,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           weightKg,
 
           imageUrl,
-        });
+        }, userId);
 
         // Registrar log de atualização do produto
         const user = (request as any).user;

@@ -241,6 +241,42 @@ export class MLApiService {
   }
 
   /**
+   * Usa o endpoint de domain discovery do ML para sugerir uma categoria
+   * com base em um texto (título + palavras-chave).
+   * Retorna o category_id ou null se não encontrar.
+   */
+  static async suggestCategoryId(
+    siteId: string,
+    query: string,
+  ): Promise<string | null> {
+    if (!query || !query.trim()) return null;
+    try {
+      const url = new URL(
+        `/sites/${siteId}/domain_discovery/search`,
+        ML_CONSTANTS.API_URL,
+      );
+      url.searchParams.set("limit", "1");
+      url.searchParams.set("q", query);
+
+      const resp = await axios.get(url.toString(), {
+        timeout: 5000,
+      });
+
+      const first = Array.isArray(resp.data) ? resp.data[0] : null;
+      if (first?.category_id && typeof first.category_id === "string") {
+        return first.category_id;
+      }
+      return null;
+    } catch (err) {
+      console.warn(
+        "[ML API] domain_discovery failed, will fall back to defaults:",
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    }
+  }
+
+  /**
    * Busca item por SKU (seller_custom_field ou atributo SELLER_SKU)
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor
@@ -348,6 +384,37 @@ export class MLApiService {
     price: number,
   ): Promise<MLItemDetails> {
     return this.updateItem(accessToken, itemId, { price });
+  }
+
+  /**
+   * Cria ou atualiza a descrição de um item (endpoint dedicado do ML).
+   * Usa POST para criar/replace a descrição plain_text.
+   */
+  static async upsertDescription(
+    accessToken: string,
+    itemId: string,
+    plainText: string,
+  ): Promise<void> {
+    if (!plainText || !plainText.trim()) return;
+    try {
+      await axios.post(
+        `${ML_CONSTANTS.API_URL}/items/${itemId}/description`,
+        { plain_text: plainText },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao atualizar descrição: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
   }
 
   // ====================================================================

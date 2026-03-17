@@ -53,6 +53,10 @@ export class CategoryRepository {
     return prisma.marketplaceCategory.findUnique({ where: { externalId } });
   }
 
+  static async findById(id: string) {
+    return prisma.marketplaceCategory.findUnique({ where: { id } });
+  }
+
   static async listFlattenedOptions(siteId?: string) {
     const where = siteId ? { siteId } : {};
     return prisma.marketplaceCategory.findMany({

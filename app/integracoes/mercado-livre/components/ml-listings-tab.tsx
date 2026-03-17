@@ -36,6 +36,7 @@ interface Listing {
   externalSku: string | null;
   permalink: string | null;
   status: string;
+  lastError?: string | null;
   createdAt: string;
   product?: {
     name: string;
@@ -142,6 +143,10 @@ export function MLListingsTab() {
         return <Badge variant="default">Ativo</Badge>;
       case "paused":
         return <Badge variant="secondary">Pausado</Badge>;
+      case "pending":
+        return <Badge variant="outline">Pendente</Badge>;
+      case "error":
+        return <Badge variant="destructive">Erro</Badge>;
       case "closed":
         return <Badge variant="outline">Fechado</Badge>;
       default:
@@ -247,14 +252,24 @@ export function MLListingsTab() {
                         {listing.externalListingId}
                       </code>
                     </TableCell>
-                    <TableCell>{getStatusBadge(listing.status)}</TableCell>
+                    <TableCell>
+                      {getStatusBadge(listing.status)}
+                      {listing.lastError ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {listing.lastError.slice(0, 120)}
+                          {listing.lastError.length > 120 ? "…" : ""}
+                        </div>
+                      ) : null}
+                    </TableCell>
                     <TableCell className="text-right">
                       {(() => {
+                        // Consider placeholder only when we truly don't have an ID (or it's an explicit PENDING_ placeholder).
+                        const hasExternalId = Boolean(listing.externalListingId);
+                        const hasPermalink = Boolean(listing.permalink);
                         const isPlaceholder =
-                          !listing.permalink ||
                           (listing.externalListingId || "").startsWith(
                             "PENDING_",
-                          );
+                          ) || (!hasPermalink && !hasExternalId);
 
                         if (isPlaceholder) {
                           return (
@@ -270,7 +285,9 @@ export function MLListingsTab() {
                             <a
                               href={
                                 listing.permalink ||
-                                `https://produto.mercadolivre.com.br/${listing.externalListingId}`
+                                (hasExternalId
+                                  ? `https://produto.mercadolivre.com.br/${listing.externalListingId}`
+                                  : "#")
                               }
                               target="_blank"
                               rel="noopener noreferrer"

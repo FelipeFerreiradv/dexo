@@ -143,12 +143,16 @@ export class SyncUseCase {
         let processedItem: ImportResult["items"][0];
 
         if (existingListing) {
-          // JÃ¡ existe, atualizar status se necessÃ¡rio
-          if (existingListing.status !== item.status) {
-            await ListingRepository.updateStatus(
-              existingListing.id,
-              item.status,
-            );
+          // JÃ¡ existe, atualizar status/permalink se necessÃ¡rio
+          const needsStatusUpdate = existingListing.status !== item.status;
+          const needsPermalinkUpdate =
+            !existingListing.permalink && !!item.permalink;
+
+          if (needsStatusUpdate || needsPermalinkUpdate) {
+            await ListingRepository.updateListing(existingListing.id, {
+              status: needsStatusUpdate ? item.status : undefined,
+              permalink: needsPermalinkUpdate ? item.permalink || null : undefined,
+            });
           }
 
           processedItem = {
@@ -169,6 +173,7 @@ export class SyncUseCase {
               marketplaceAccountId: account.id,
               externalListingId: item.id,
               externalSku: sku || undefined,
+              permalink: item.permalink || null,
               status: item.status,
             });
           }

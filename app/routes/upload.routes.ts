@@ -73,7 +73,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         // Salvar arquivo
         await writeFile(filePath, buffer);
 
-        // Retornar URL da imagem
+        // Retornar URL local (localhost) para uso interno
         const baseUrl = "http://localhost:3333";
         const imageUrl = `${baseUrl}/uploads/${fileName}`;
 
