@@ -323,7 +323,10 @@ export class MLApiService {
           if (appToken) {
             const retry = await axios.get(
               `${ML_CONSTANTS.API_URL}/categories/${categoryId}`,
-              { headers: { Authorization: `Bearer ${appToken}` }, timeout: 1000 },
+              {
+                headers: { Authorization: `Bearer ${appToken}` },
+                timeout: 1000,
+              },
             );
             return retry.data;
           }
@@ -365,8 +368,7 @@ export class MLApiService {
         });
         const data = res.data as any[];
         const entry = Array.isArray(data) ? data[0] : data;
-        const total =
-          entry?.total_visits ?? entry?.total ?? entry?.visits ?? 0;
+        const total = entry?.total_visits ?? entry?.total ?? entry?.visits ?? 0;
         result[id] = Number(total) || 0;
       } catch (error) {
         console.error(`[ML API] Error fetching visits for ${id}:`, error);
@@ -404,7 +406,9 @@ export class MLApiService {
         // Se o item nÃ£o tem reviews, a API pode retornar 404; tratamos como ausÃªncia de dado
         if (error.response?.status === 404) return {};
         throw new Error(
-          error.response?.data?.message || error.message || "Erro ao buscar reviews",
+          error.response?.data?.message ||
+            error.message ||
+            "Erro ao buscar reviews",
         );
       }
       throw error;
@@ -869,5 +873,3 @@ export class MLApiService {
     }
   }
 }
-
-

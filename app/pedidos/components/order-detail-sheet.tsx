@@ -42,14 +42,11 @@ interface OrderDetailSheetProps {
 const statusStyles: Record<OrderStatus, string> = {
   PENDING:
     "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/60 dark:bg-amber-950/40 dark:text-amber-200",
-  PAID:
-    "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/60 dark:bg-emerald-950/40 dark:text-emerald-200",
+  PAID: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/60 dark:bg-emerald-950/40 dark:text-emerald-200",
   SHIPPED:
     "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/60 dark:bg-sky-950/40 dark:text-sky-200",
-  DELIVERED:
-    "border-primary/60 bg-primary/10 text-primary",
-  CANCELLED:
-    "border-destructive/60 bg-destructive/10 text-destructive",
+  DELIVERED: "border-primary/60 bg-primary/10 text-primary",
+  CANCELLED: "border-destructive/60 bg-destructive/10 text-destructive",
 };
 
 const formatCurrency = (value: number) =>
@@ -102,7 +99,10 @@ export function OrderDetailSheet({
   };
 
   const renderStatusBadge = (status: OrderStatus) => (
-    <Badge variant="outline" className={statusStyles[status] || "border-border/70"}>
+    <Badge
+      variant="outline"
+      className={statusStyles[status] || "border-border/70"}
+    >
       {status}
     </Badge>
   );
@@ -305,7 +305,9 @@ export function OrderDetailSheet({
                             {item.product?.sku || "N/A"}
                           </TableCell>
                           <TableCell>{item.quantity}</TableCell>
-                          <TableCell>{formatCurrency(item.unitPrice)}</TableCell>
+                          <TableCell>
+                            {formatCurrency(item.unitPrice)}
+                          </TableCell>
                           <TableCell>
                             {formatCurrency(item.quantity * item.unitPrice)}
                           </TableCell>

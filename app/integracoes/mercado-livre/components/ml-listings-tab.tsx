@@ -77,7 +77,8 @@ export function MLListingsTab() {
 
       try {
         const url = new URL(`${getApiBaseUrl()}/marketplace/ml/listings`);
-        if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+        if (selectedAccountId)
+          url.searchParams.set("accountId", selectedAccountId);
 
         const response = await fetch(url.toString(), {
           headers: {
@@ -118,10 +119,9 @@ export function MLListingsTab() {
     const loadAccounts = async () => {
       if (!session?.user?.email) return;
       try {
-        const res = await fetch(
-          `${getApiBaseUrl()}/marketplace/ml/accounts`,
-          { headers: { email: session.user.email } },
-        );
+        const res = await fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
+          headers: { email: session.user.email },
+        });
         if (res.ok) {
           const data = await res.json();
           setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
@@ -265,12 +265,15 @@ export function MLListingsTab() {
                     <TableCell className="text-right">
                       {(() => {
                         // Consider placeholder only when we truly don't have an ID (or it's an explicit PENDING_ placeholder).
-                        const hasExternalId = Boolean(listing.externalListingId);
+                        const hasExternalId = Boolean(
+                          listing.externalListingId,
+                        );
                         const hasPermalink = Boolean(listing.permalink);
                         const isPlaceholder =
                           (listing.externalListingId || "").startsWith(
                             "PENDING_",
-                          ) || (!hasPermalink && !hasExternalId);
+                          ) ||
+                          (!hasPermalink && !hasExternalId);
 
                         if (isPlaceholder) {
                           return (
