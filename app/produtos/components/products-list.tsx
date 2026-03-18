@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -153,10 +154,7 @@ export function ProductsList() {
           params.set("search", term);
         }
 
-        const apiBase =
-          process.env.NEXT_PUBLIC_API_URL ??
-          process.env.NEXT_PUBLIC_BACKEND_URL ??
-          "http://localhost:3333";
+        const apiBase = getApiBaseUrl();
         const response = await fetch(`${apiBase}/products?${params}`, {
           headers: { email },
         });
@@ -197,7 +195,7 @@ export function ProductsList() {
   // veja feedback visual consistente.
   const handleDelete = async (id: string, name?: string) => {
     try {
-      const response = await fetch(`http://localhost:3333/products/${id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
         method: "DELETE",
         headers: {
           email: session?.user?.email || "",
@@ -226,7 +224,7 @@ export function ProductsList() {
 
   const handleEdit = async (id: string, productData: ProductFormData) => {
     try {
-      const response = await fetch(`http://localhost:3333/products/${id}`, {
+      const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { Loader2, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -282,7 +283,7 @@ export function EditProductDialog({
   const fetchDefaultDescription = useCallback(async () => {
     try {
       if (!product.description && session?.user?.email) {
-        const resp = await fetch(`http://localhost:3333/users/me`, {
+        const resp = await fetch(`${getApiBaseUrl()}/users/me`, {
           headers: { email: session.user.email },
         });
         if (resp.ok) {
@@ -346,9 +347,7 @@ export function EditProductDialog({
       // Buscar categorias ML quando abrir o diálogo
       (async () => {
         try {
-          const base =
-            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-            "http://localhost:3333";
+          const base = getApiBaseUrl();
           const resp = await fetch(`${base}/marketplace/ml/categories`, {
             headers: { email: session?.user?.email || "" },
           });
@@ -369,9 +368,7 @@ export function EditProductDialog({
         if (!session?.user?.email) return;
         try {
           const headers = { email: session.user.email };
-          const base =
-            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-            "http://localhost:3333";
+          const base = getApiBaseUrl();
           const [mlResp, shResp] = await Promise.all([
             fetch(`${base}/marketplace/ml/accounts`, { headers }),
             fetch(`${base}/marketplace/shopee/accounts`, { headers }),
@@ -1069,7 +1066,7 @@ export function EditProductDialog({
       };
 
       const response = await fetch(
-        `http://localhost:3333/products/${product.id}`,
+        `${getApiBaseUrl()}/products/${product.id}`,
         {
           method: "PUT",
           headers: {
@@ -1086,9 +1083,7 @@ export function EditProductDialog({
         throw new Error(result.error || "Erro ao atualizar produto");
       }
 
-      const base =
-        (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-        "http://localhost:3333";
+      const base = getApiBaseUrl();
       const listingResults: string[] = [];
 
       if (createMlListing && selectedMlAccounts.length > 0) {

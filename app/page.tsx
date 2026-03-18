@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "./lib/auth";
+import { getApiBaseUrl } from "@/lib/api";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
 import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
@@ -59,7 +60,7 @@ async function getDashboardStats(
   userEmail: string,
 ): Promise<DashboardStats | null> {
   try {
-    const response = await fetch("http://localhost:3333/dashboard/stats", {
+    const response = await fetch(`${getApiBaseUrl()}/dashboard/stats`, {
       cache: "no-store",
       headers: { email: userEmail },
     });
@@ -75,7 +76,7 @@ async function getMarketplaceIntegrations(
 ): Promise<MarketplaceIntegration[]> {
   try {
     const response = await fetch(
-      "http://localhost:3333/dashboard/integrations",
+      `${getApiBaseUrl()}/dashboard/integrations`,
       {
         cache: "no-store",
         headers: {
@@ -96,7 +97,7 @@ async function getOrdersOverTime(
 ): Promise<OrderOverTimeItem[]> {
   try {
     const res = await fetch(
-      "http://localhost:3333/dashboard/orders-over-time?days=180",
+      `${getApiBaseUrl()}/dashboard/orders-over-time?days=180`,
       { cache: "no-store", headers: { email: userEmail } },
     );
     if (!res.ok) return [];
@@ -109,7 +110,7 @@ async function getOrdersOverTime(
 async function getStockChanges(userEmail: string): Promise<StockChangeItem[]> {
   try {
     const res = await fetch(
-      "http://localhost:3333/dashboard/stock-changes?days=30",
+      `${getApiBaseUrl()}/dashboard/stock-changes?days=30`,
       { cache: "no-store", headers: { email: userEmail } },
     );
     if (!res.ok) return [];
@@ -140,7 +141,7 @@ async function getProductMetrics(
 > {
   try {
     const res = await fetch(
-      "http://localhost:3333/dashboard/product-metrics?days=30&limit=8",
+      `${getApiBaseUrl()}/dashboard/product-metrics?days=30&limit=8`,
       { cache: "no-store", headers: { email: userEmail } },
     );
     if (!res.ok) return [];

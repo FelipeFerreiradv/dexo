@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -85,7 +86,7 @@ export function MLSyncTab() {
     setImportResult(null);
 
     try {
-      const url = new URL("http://localhost:3333/marketplace/ml/import");
+      const url = new URL(`${getApiBaseUrl()}/marketplace/ml/import`);
       if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
@@ -118,7 +119,7 @@ export function MLSyncTab() {
     setSyncResult(null);
 
     try {
-      const url = new URL("http://localhost:3333/marketplace/ml/sync");
+      const url = new URL(`${getApiBaseUrl()}/marketplace/ml/sync`);
       if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
@@ -148,7 +149,7 @@ export function MLSyncTab() {
       if (!session?.user?.email) return;
       try {
         const res = await fetch(
-          "http://localhost:3333/marketplace/ml/accounts",
+          `${getApiBaseUrl()}/marketplace/ml/accounts`,
           { headers: { email: session.user.email } },
         );
         if (res.ok) {
@@ -169,7 +170,7 @@ export function MLSyncTab() {
 
     try {
       const res = await fetch(
-        "http://localhost:3333/marketplace/ml/retry-pending",
+        `${getApiBaseUrl()}/marketplace/ml/retry-pending`,
         {
           method: "POST",
           headers: { email: session.user.email },

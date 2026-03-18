@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getApiBaseUrl } from "@/lib/api";
 
 type ProfileData = {
   id?: string;
@@ -39,13 +40,7 @@ export function ProfileModal({
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const apiBase = useMemo(
-    () =>
-      process.env.NEXT_PUBLIC_API_URL ??
-      process.env.NEXT_PUBLIC_BACKEND_URL ??
-      "http://localhost:3333",
-    [],
-  );
+  const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   const fallbackProfile: ProfileData = useMemo(
     () => ({

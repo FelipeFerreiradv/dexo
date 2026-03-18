@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -73,7 +74,7 @@ export function ShopeeListingsTab() {
 
       try {
         const url = new URL(
-          "http://localhost:3333/marketplace/shopee/listings",
+          `${getApiBaseUrl()}/marketplace/shopee/listings`,
         );
         if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
@@ -116,7 +117,7 @@ export function ShopeeListingsTab() {
       if (!session?.user?.email) return;
       try {
         const res = await fetch(
-          "http://localhost:3333/marketplace/shopee/accounts",
+          `${getApiBaseUrl()}/marketplace/shopee/accounts`,
           { headers: { email: session.user.email } },
         );
         if (res.ok) {

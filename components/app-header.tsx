@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 
+import { getApiBaseUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -62,13 +63,7 @@ export function AppHeader({ session }: AppHeaderProps) {
   } | null>(null);
   const [loadingUser, setLoadingUser] = useState(false);
 
-  const apiBase = useMemo(
-    () =>
-      process.env.NEXT_PUBLIC_API_URL ??
-      process.env.NEXT_PUBLIC_BACKEND_URL ??
-      "http://localhost:3333",
-    [],
-  );
+  const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   const handleLogout = async () => {
     await signOut({ redirect: true, callbackUrl: "/login" });

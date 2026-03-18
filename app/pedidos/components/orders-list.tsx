@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Search, Download, ChevronLeft, ChevronRight, Eye } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -121,10 +122,7 @@ export function OrdersList() {
         params.set("search", term);
       }
 
-      const apiBase =
-        process.env.NEXT_PUBLIC_API_URL ??
-        process.env.NEXT_PUBLIC_BACKEND_URL ??
-        "http://localhost:3333";
+      const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/orders?${params}`, {
         headers: {
           "Content-Type": "application/json",
@@ -154,7 +152,7 @@ export function OrdersList() {
       return;
     }
     try {
-      const response = await fetch("http://localhost:3333/orders/stats", {
+      const response = await fetch(`${getApiBaseUrl()}/orders/stats`, {
         headers: {
           "Content-Type": "application/json",
           email: session.user.email,
@@ -191,7 +189,7 @@ export function OrdersList() {
     }
     try {
       setIsImporting(true);
-      const response = await fetch("http://localhost:3333/orders/import", {
+      const response = await fetch(`${getApiBaseUrl()}/orders/import`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

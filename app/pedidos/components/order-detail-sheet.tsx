@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/table";
 
 import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
+import { getApiBaseUrl } from "@/lib/api";
 
 interface OrderDetailSheetProps {
   order: Order | null;
@@ -78,7 +79,7 @@ export function OrderDetailSheet({
     try {
       setIsUpdating(true);
       const response = await fetch(
-        `http://localhost:3333/orders/${order.id}/status`,
+        `${getApiBaseUrl()}/orders/${order.id}/status`,
         {
           method: "PATCH",
           headers: {

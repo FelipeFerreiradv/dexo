@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -75,7 +76,7 @@ export function MLListingsTab() {
       setError(null);
 
       try {
-        const url = new URL("http://localhost:3333/marketplace/ml/listings");
+        const url = new URL(`${getApiBaseUrl()}/marketplace/ml/listings`);
         if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
         const response = await fetch(url.toString(), {
@@ -118,7 +119,7 @@ export function MLListingsTab() {
       if (!session?.user?.email) return;
       try {
         const res = await fetch(
-          "http://localhost:3333/marketplace/ml/accounts",
+          `${getApiBaseUrl()}/marketplace/ml/accounts`,
           { headers: { email: session.user.email } },
         );
         if (res.ok) {

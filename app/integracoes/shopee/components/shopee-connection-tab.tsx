@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -57,7 +58,7 @@ export function ShopeeConnectionTab() {
 
     try {
       const response = await fetch(
-        "http://localhost:3333/marketplace/shopee/status",
+        `${getApiBaseUrl()}/marketplace/shopee/status`,
         {
           headers: {
             email: session.user.email,
@@ -74,7 +75,7 @@ export function ShopeeConnectionTab() {
       setStatus(data);
 
       const accRes = await fetch(
-        "http://localhost:3333/marketplace/shopee/accounts",
+        `${getApiBaseUrl()}/marketplace/shopee/accounts`,
         { headers: { email: session.user.email } },
       );
       if (accRes.ok) {
@@ -105,7 +106,7 @@ export function ShopeeConnectionTab() {
     try {
       // 1. Obter URL de autenticação do backend
       const response = await fetch(
-        "http://localhost:3333/marketplace/shopee/auth",
+        `${getApiBaseUrl()}/marketplace/shopee/auth`,
         {
           method: "POST",
           headers: {
@@ -171,7 +172,7 @@ export function ShopeeConnectionTab() {
       setError(null);
 
       try {
-        const url = new URL("http://localhost:3333/marketplace/shopee");
+        const url = new URL(`${getApiBaseUrl()}/marketplace/shopee`);
         if (accountId) url.searchParams.set("accountId", accountId);
 
         const response = await fetch(url.toString(), {

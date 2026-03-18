@@ -19,6 +19,8 @@ import {
   ChevronDown,
 } from "lucide-react";
 
+import { getApiBaseUrl } from "@/lib/api";
+
 import {
   Sidebar,
   SidebarContent,
@@ -137,10 +139,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
 
     const loadOrdersCount = async () => {
       try {
-        const apiBase =
-          process.env.NEXT_PUBLIC_API_URL ??
-          process.env.NEXT_PUBLIC_BACKEND_URL ??
-          "http://localhost:3333";
+        const apiBase = getApiBaseUrl();
         const res = await fetch(`${apiBase}/orders/stats`, {
           headers: { email },
         });
@@ -171,8 +170,6 @@ export function AppSidebar({ session }: AppSidebarProps) {
     return () => window.removeEventListener("keydown", handler);
   }, [setOpen]);
 
-  if (!session) return null;
-
   const filteredSections = React.useMemo(() => {
     const term = query.trim().toLowerCase();
     const withDynamicBadges = NAV_SECTIONS.map((section) => ({
@@ -194,8 +191,6 @@ export function AppSidebar({ session }: AppSidebarProps) {
       .filter((section) => section.items.length > 0);
   }, [ordersCount, query]);
 
-  const handleCollapse = () => setOpen(!open);
-
   // Busca unificada
   React.useEffect(() => {
     const term = query.trim();
@@ -207,10 +202,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
     const load = async () => {
       try {
         setSearchLoading(true);
-        const apiBase =
-          process.env.NEXT_PUBLIC_API_URL ??
-          process.env.NEXT_PUBLIC_BACKEND_URL ??
-          "http://localhost:3333";
+        const apiBase = getApiBaseUrl();
         const res = await fetch(
           `${apiBase}/dashboard/search?q=${encodeURIComponent(term)}&limit=5`,
           {
@@ -236,6 +228,10 @@ export function AppSidebar({ session }: AppSidebarProps) {
       clearTimeout(id);
     };
   }, [query, session?.user?.email]);
+
+  if (!session) return null;
+
+  const handleCollapse = () => setOpen(!open);
 
   return (
     <Sidebar

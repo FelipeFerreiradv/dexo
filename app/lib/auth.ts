@@ -43,7 +43,7 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
-        // @ts-ignore - carry custom avatar url
+        // @ts-expect-error - carry custom avatar url
         token.image = (user as any).image;
       }
       return token;
@@ -51,7 +51,7 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id as string;
-        // @ts-ignore - expose avatar url on session
+        // @ts-expect-error - expose avatar url on session
         session.user.image = (token as any).image as string | undefined;
       }
       return session;

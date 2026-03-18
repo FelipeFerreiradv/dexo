@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -266,9 +267,7 @@ export function CreateProductDialog({
   onToast,
 }: CreateProductDialogProps) {
   const { data: session } = useSession();
-  const backendBase =
-    (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-    "http://localhost:3333";
+  const backendBase = getApiBaseUrl();
   const [open, setOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -381,10 +380,10 @@ export function CreateProductDialog({
     if (!session?.user?.email) return;
     try {
       const [mlRes, shopeeRes] = await Promise.all([
-        fetch("http://localhost:3333/marketplace/ml/accounts", {
+        fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
           headers: { email: session.user.email },
         }),
-        fetch("http://localhost:3333/marketplace/shopee/accounts", {
+        fetch(`${getApiBaseUrl()}/marketplace/shopee/accounts`, {
           headers: { email: session.user.email },
         }),
       ]);
@@ -415,7 +414,7 @@ export function CreateProductDialog({
     if (!email) return;
     setIsLoadingSku(true);
     try {
-      const response = await fetch("http://localhost:3333/products/next-sku", {
+      const response = await fetch(`${getApiBaseUrl()}/products/next-sku`, {
         headers: { email },
       });
       if (response.ok) {
@@ -434,7 +433,7 @@ export function CreateProductDialog({
     // Sempre usamos o endpoint /users/me com header email para evitar 404s
     try {
       if (session?.user?.email) {
-        const resp = await fetch(`http://localhost:3333/users/me`, {
+        const resp = await fetch(`${getApiBaseUrl()}/users/me`, {
           headers: { email: session.user.email },
         });
         if (resp.ok) {
@@ -491,9 +490,7 @@ export function CreateProductDialog({
       // Buscar status da conta ML + categorias sincronizadas
       (async () => {
         try {
-          const base =
-            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-            "http://localhost:3333";
+          const base = getApiBaseUrl();
           const respStatus = await fetch(`${base}/marketplace/ml/status`, {
             headers: { email: session?.user?.email || "" },
           });
@@ -541,9 +538,7 @@ export function CreateProductDialog({
       mlCategoriesLoadedRef.current = true;
       (async () => {
         try {
-          const base =
-            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-            "http://localhost:3333";
+          const base = getApiBaseUrl();
           const respCat = await fetch(`${base}/marketplace/ml/categories`, {
             headers: { email: session?.user?.email || "" },
           });
@@ -668,9 +663,7 @@ export function CreateProductDialog({
           typeof window !== "undefined" &&
           window.location.hostname === "localhost"
         ) {
-          const base =
-            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
-            "http://localhost:3333";
+          const base = getApiBaseUrl();
           void fetch(`${base}/debug/client-log`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1563,7 +1556,7 @@ export function CreateProductDialog({
       };
 
       // Criar produto primeiro
-      const response = await fetch("http://localhost:3333/products", {
+      const response = await fetch(`${getApiBaseUrl()}/products`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

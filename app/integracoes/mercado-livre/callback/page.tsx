@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { getApiBaseUrl } from "@/lib/api";
 
 type CallbackStatus = "loading" | "success" | "error";
 
@@ -40,7 +41,7 @@ export default function MLCallbackPage() {
       try {
         // Chamar backend para processar o callback
         const response = await fetch(
-          `http://localhost:3333/marketplace/ml/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+          `${getApiBaseUrl()}/marketplace/ml/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
         );
 
         const data = await response.json();

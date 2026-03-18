@@ -9,6 +9,15 @@ const nextConfig: NextConfig = {
         port: "3333",
         pathname: "/uploads/**",
       },
+      {
+        protocol: "https",
+        hostname: "**",
+        pathname: "/uploads/**",
+      },
+      {
+        protocol: "http",
+        hostname: "http2.mlstatic.com",
+      },
     ],
   },
 };

@@ -243,7 +243,7 @@ export class MLApiService {
         ? { Authorization: `Bearer ${accessToken}` }
         : undefined;
 
-      let response = await axios.get(
+      const response = await axios.get(
         `${ML_CONSTANTS.API_URL}/sites/${siteId}/categories`,
         {
           headers,

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -85,7 +86,7 @@ export function ShopeeSyncTab() {
     setImportResult(null);
 
     try {
-      const url = new URL("http://localhost:3333/marketplace/shopee/import");
+      const url = new URL(`${getApiBaseUrl()}/marketplace/shopee/import`);
       if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
@@ -118,7 +119,7 @@ export function ShopeeSyncTab() {
     setSyncResult(null);
 
     try {
-      const url = new URL("http://localhost:3333/marketplace/shopee/sync");
+      const url = new URL(`${getApiBaseUrl()}/marketplace/shopee/sync`);
       if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
@@ -148,7 +149,7 @@ export function ShopeeSyncTab() {
       if (!session?.user?.email) return;
       try {
         const res = await fetch(
-          "http://localhost:3333/marketplace/shopee/accounts",
+          `${getApiBaseUrl()}/marketplace/shopee/accounts`,
           { headers: { email: session.user.email } },
         );
         if (res.ok) {

@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { getApiBaseUrl } from "@/lib/api";
 import { ImageUpload } from "@/components/ui/image-upload";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,13 +56,7 @@ export default function ConfigModal({
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  const apiBase = useMemo(
-    () =>
-      process.env.NEXT_PUBLIC_API_URL ??
-      process.env.NEXT_PUBLIC_BACKEND_URL ??
-      "http://localhost:3333",
-    [],
-  );
+  const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   // sync controlled open
   useEffect(() => {

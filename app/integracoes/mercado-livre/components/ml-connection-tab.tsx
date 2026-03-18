@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -58,7 +59,7 @@ export function MLConnectionTab() {
 
     try {
       const response = await fetch(
-        "http://localhost:3333/marketplace/ml/status",
+        `${getApiBaseUrl()}/marketplace/ml/status`,
         {
           headers: {
             email: session.user.email,
@@ -75,7 +76,7 @@ export function MLConnectionTab() {
       setStatus(data);
 
       const accRes = await fetch(
-        "http://localhost:3333/marketplace/ml/accounts",
+        `${getApiBaseUrl()}/marketplace/ml/accounts`,
         { headers: { email: session.user.email } },
       );
       if (accRes.ok) {
@@ -106,7 +107,7 @@ export function MLConnectionTab() {
     try {
       // 1. Obter URL de autenticação do backend
       const response = await fetch(
-        "http://localhost:3333/marketplace/ml/auth",
+        `${getApiBaseUrl()}/marketplace/ml/auth`,
         {
           method: "POST",
           headers: {
@@ -172,7 +173,7 @@ export function MLConnectionTab() {
     setError(null);
 
     try {
-      const url = new URL("http://localhost:3333/marketplace/ml");
+      const url = new URL(`${getApiBaseUrl()}/marketplace/ml`);
       if (accountId) url.searchParams.set("accountId", accountId);
 
       const response = await fetch(url.toString(), {

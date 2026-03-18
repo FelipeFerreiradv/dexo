@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, X, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getApiBaseUrl } from "@/lib/api";
 
 interface ImageUploadProps {
   value?: string;
@@ -49,7 +50,7 @@ export function ImageUpload({
         const formData = new FormData();
         formData.append("file", file);
 
-        const response = await fetch("http://localhost:3333/upload/image", {
+        const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
           method: "POST",
           body: formData,
         });
