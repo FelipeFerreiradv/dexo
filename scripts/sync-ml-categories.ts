@@ -3,7 +3,11 @@ import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 
 async function run() {
   try {
-    const user = await prisma.user.findFirst();
+    const targetEmail = process.env.USER_EMAIL;
+    const user = targetEmail
+      ? await prisma.user.findFirst({ where: { email: targetEmail } })
+      : await prisma.user.findFirst();
+
     if (!user) {
       console.error(
         "Nenhum usuário encontrado no banco para executar a sincronização.",

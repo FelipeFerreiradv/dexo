@@ -29,12 +29,25 @@ export async function listingRoutes(app: FastifyInstance) {
           body.accountId ||
           ((request.query as any)?.accountId as string | undefined) ||
           undefined;
+        const startedAt = Date.now();
 
         // Validações básicas
         if (!body.productId) {
           return reply.status(400).send({
             error: "Dados incompletos",
             message: "productId é obrigatório",
+          });
+        }
+        if (!accountId) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "accountId é obrigatório para criar anúncio ML",
+          });
+        }
+        if (!body.categoryId) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "categoryId é obrigatório para criar anúncio ML",
           });
         }
 
@@ -81,6 +94,13 @@ export async function listingRoutes(app: FastifyInstance) {
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
+      } finally {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed > 5000) {
+          console.warn(
+            `[Listing Routes] /listings/ml lento: ${elapsed}ms (product=${(request.body as any)?.productId})`,
+          );
+        }
       }
     },
   );

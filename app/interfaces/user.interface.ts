@@ -6,6 +6,7 @@ export interface User {
   password: string;
   role: Role;
   name?: string | null;
+  avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -15,12 +16,15 @@ export interface UserCreate {
   email: string;
   name?: string | null;
   password: string;
+  avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   role?: Role;
 }
 
 export interface UserUpdate {
   name?: string | null;
+  password?: string;
+  avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   role?: Role;
 }

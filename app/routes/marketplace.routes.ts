@@ -10,6 +10,7 @@ import { Platform } from "@prisma/client";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 
 /**
  * Rotas para gerenciar conexÃµes com marketplaces
@@ -101,23 +102,26 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     }
   });
 
-  // Alguns cenÃ¡rios do Mercado Livre enviam POST no callback. Tratamos e delegamos para a mesma lÃ³gica.
-  app.post<{
-    Body: { code?: string; state?: string };
-    Reply: { success: boolean; message: string };
-  }>("/ml/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+  // POST /ml/callback — pode ser OAuth callback (code+state) OU webhook notification (resource+topic+user_id)
+  app.post("/ml/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = (request.body || {}) as Record<string, any>;
+    const query = (request.query || {}) as Record<string, any>;
+
+    // --- Webhook notification do Mercado Livre (resource + topic + user_id) ---
+    if (body.resource || body.topic || body.user_id) {
+      // Aceitar webhook silenciosamente (ML espera 200 para parar de reenviar)
+      return reply.status(200).send({ received: true });
+    }
+
+    // --- OAuth callback (code + state) ---
     try {
-      const code =
-        ((request.body as any)?.code as string | undefined) ||
-        ((request.query as any)?.code as string | undefined);
-      const state =
-        ((request.body as any)?.state as string | undefined) ||
-        ((request.query as any)?.state as string | undefined);
+      const code = (body.code as string | undefined) || (query.code as string | undefined);
+      const state = (body.state as string | undefined) || (query.state as string | undefined);
 
       if (!code || !state) {
         return reply.status(400).send({
-          error: "ParÃ¢metros invÃ¡lidos",
-          message: "code e state sÃ£o obrigatÃ³rios",
+          error: "Parâmetros inválidos",
+          message: "code e state são obrigatórios",
         });
       }
 
@@ -211,6 +215,34 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar categorias",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/category-suggest?title=...
+   * Sugere categorias do ML com base no título normalizado usando catálogo sincronizado.
+   */
+  app.get(
+    "/ml/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const title = (request.query as any)?.title as string | undefined;
+      if (!title || !title.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'title' é obrigatório" });
+      }
+
+      try {
+        const suggestions =
+          await CategorySuggestionService.suggestFromTitle(title);
+        return reply.send(suggestions);
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categorias",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

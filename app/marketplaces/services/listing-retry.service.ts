@@ -4,6 +4,7 @@ import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MLItemCreatePayload } from "../types/ml-api.types";
+import { CategoryResolutionService } from "./category-resolution.service";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -23,7 +24,8 @@ const sanitizeTitle = (raw: string, product: any, maxLen = 60) => {
     .replace(/\s+/g, " ")
     .trim();
 
-  if (fullTitle.length > maxLen) fullTitle = fullTitle.substring(0, maxLen).trim();
+  if (fullTitle.length > maxLen)
+    fullTitle = fullTitle.substring(0, maxLen).trim();
   if (!fullTitle) fullTitle = product?.sku || "Produto";
   return fullTitle;
 };
@@ -106,23 +108,43 @@ const sanitizePackageDimensions = (input?: {
 };
 
 const shouldIncludeFamilyName = (categoryId?: string) => {
-  const forceEnv =
-    process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
+  const forceEnv = process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
   const extra = (process.env.ML_FAMILY_NAME_ALLOWLIST || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const allow = new Set<string>(["MLB193419", "MLB101763", "MLB458642", ...extra]);
+  const allow = new Set<string>([
+    "MLB193419",
+    "MLB101763",
+    "MLB458642",
+    "MLB1754",
+    "MLB22693",
+    "MLB191833",
+    "MLB193531",
+    "MLB116479",
+    "MLB193613",
+    ...extra,
+  ]);
   return forceEnv || (categoryId ? allow.has(categoryId) : false);
 };
-const fallbackNonUPCategory = process.env.ML_FALLBACK_NON_UP_CATEGORY || "";
 
 const noTitleWithFamily = (categoryId?: string) => {
   const envList = (process.env.ML_NO_TITLE_WITH_FAMILY || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const hard = new Set<string>(["MLB193419", "MLB101763", "MLB458642", ...envList]);
+  const hard = new Set<string>([
+    "MLB193419",
+    "MLB101763",
+    "MLB458642",
+    "MLB1754",
+    "MLB22693",
+    "MLB191833",
+    "MLB193531",
+    "MLB116479",
+    "MLB193613",
+    ...envList,
+  ]);
   return categoryId ? hard.has(categoryId) : false;
 };
 
@@ -226,9 +248,14 @@ export class ListingRetryService {
         const backendBase =
           process.env.APP_BACKEND_URL || "http://localhost:3333";
 
-        const baseCategory =
-          cand.requestedCategoryId || cand.product?.mlCategoryId || "MLB271107";
-        const overriddenCat = categoryOverride(baseCategory) || baseCategory;
+        // Resolve categoria de forma determinística: explicit -> produto -> erro
+        const resolvedCategory =
+          await CategoryResolutionService.resolveMLCategory({
+            explicitCategoryId: cand.requestedCategoryId || undefined,
+            product,
+            validateWithMLAPI: true,
+          });
+        const resolvedCategoryId = resolvedCategory.externalId;
 
         const pkg = sanitizePackageDimensions({
           heightCm: product.heightCm,
@@ -239,7 +266,7 @@ export class ListingRetryService {
 
         const payload: any = {
           title: retryTitle,
-          category_id: overriddenCat,
+          category_id: resolvedCategoryId,
           price: Number(product.price || 0),
           currency_id: "BRL",
           available_quantity: product.stock || 1,
@@ -267,20 +294,23 @@ export class ListingRetryService {
                 ? yearNum
                 : undefined;
             const attrs: any[] = [];
-            if (product.brand) attrs.push({ id: "BRAND", value_name: product.brand });
+            if (product.brand)
+              attrs.push({ id: "BRAND", value_name: product.brand });
             if (product.model && !/^\d{4}$/.test(String(product.model))) {
               attrs.push({ id: "MODEL", value_name: product.model });
             }
-            if (validYear) attrs.push({ id: "YEAR", value_name: String(validYear) });
+            if (validYear)
+              attrs.push({ id: "YEAR", value_name: String(validYear) });
             const posCats = new Set(["MLB101763", "MLB458642"]);
-            if (posCats.has((product as any).mlCategoryId || payload.category_id)) {
+            if (
+              posCats.has((product as any).mlCategoryId || resolvedCategoryId)
+            ) {
               const name = (product.name || "").toLowerCase();
-              const pos =
-                /dianteir|frente/.test(name)
-                  ? "Dianteira"
-                  : /traseir|tras|trás/.test(name)
-                    ? "Traseira"
-                    : null;
+              const pos = /dianteir|frente/.test(name)
+                ? "Dianteira"
+                : /traseir|tras|trás/.test(name)
+                  ? "Traseira"
+                  : null;
               if (pos) attrs.push({ id: "POSITION", value_name: pos });
             }
             attrs.push({ id: "SELLER_SKU", value_name: product.sku });
@@ -293,7 +323,16 @@ export class ListingRetryService {
         };
 
         if (shouldIncludeFamilyName(payload.category_id)) {
-          payload.family_name = product.brand || product.name;
+          payload.family_name = sanitizeTitle(product.name || "", product, 60);
+        }
+        // Heurística pró-autopeças: se produto tem marca + ano, envie family_name
+        if (
+          !payload.family_name &&
+          product.brand &&
+          product.year &&
+          String(product.year).length === 4
+        ) {
+          payload.family_name = sanitizeTitle(product.name || "", product, 60);
         }
 
         // Shipping dimensions string se todos os campos existirem
@@ -312,13 +351,17 @@ export class ListingRetryService {
           addPkgAttr("SELLER_PACKAGE_HEIGHT", `${pkg.height} cm`);
           addPkgAttr("SELLER_PACKAGE_WIDTH", `${pkg.width} cm`);
           addPkgAttr("SELLER_PACKAGE_LENGTH", `${pkg.length} cm`);
-          addPkgAttr("SELLER_PACKAGE_WEIGHT", `${Math.round(pkg.weightKg * 1000)} g`);
+          addPkgAttr(
+            "SELLER_PACKAGE_WEIGHT",
+            `${Math.round(pkg.weightKg * 1000)} g`,
+          );
           if (
             product.heightCm !== pkg.height ||
             product.widthCm !== pkg.width ||
             product.lengthCm !== pkg.length ||
             (product.weightKg != null &&
-              Math.round(product.weightKg * 100) !== Math.round(pkg.weightKg * 100))
+              Math.round(product.weightKg * 100) !==
+                Math.round(pkg.weightKg * 100))
           ) {
             console.warn(
               `[ListingRetryService] Package dimensions clamped: ` +
@@ -350,21 +393,26 @@ export class ListingRetryService {
           const isTitleInvalid =
             rawMsg.toLowerCase().includes("invalid_fields") &&
             rawMsg.toLowerCase().includes("title");
-          const missingFamilyName = rawMsg.toLowerCase().includes("family_name");
+          const missingFamilyName = rawMsg
+            .toLowerCase()
+            .includes("family_name");
 
           // Se a categoria exigir family_name e ele não foi enviado, tente novamente com family_name
           if (!mlItem && missingFamilyName && !payload.family_name) {
             try {
               const withFamily: MLItemCreatePayload = {
                 ...(payload as any),
-                family_name: product.brand || product.name,
+                family_name: sanitizeTitle(product.name || "", product, 60),
               } as any;
+              // propagate family_name into payload BEFORE call for subsequent retries
+              (payload as any).family_name = withFamily.family_name;
               console.warn(
                 `[ListingRetryService] retrying createItem WITH family_name for ${cand.id}`,
               );
-              mlItem = await MLApiService.createItem(account.accessToken, withFamily as any);
-              // propagate family_name into payload for subsequent retries below
-              (payload as any).family_name = withFamily.family_name;
+              mlItem = await MLApiService.createItem(
+                account.accessToken,
+                withFamily as any,
+              );
             } catch (famErr) {
               console.warn(
                 `[ListingRetryService] family_name retry failed for ${cand.id}: ${errMsg(famErr)}`,
@@ -395,7 +443,9 @@ export class ListingRetryService {
             // Em domínios que reclamam do title, tente primeiro sem family_name (mantendo título).
             if (!mlItem && (payload.family_name || missingFamilyName)) {
               try {
-                const payloadNoFamily: MLItemCreatePayload = { ...(payload as any) };
+                const payloadNoFamily: MLItemCreatePayload = {
+                  ...(payload as any),
+                };
                 delete (payloadNoFamily as any).family_name;
                 console.warn(
                   `[ListingRetryService] retrying createItem WITHOUT family_name for ${cand.id} (keep title)`,
@@ -414,12 +464,19 @@ export class ListingRetryService {
               }
             }
 
-            // Para categorias que realmente não aceitam title com family_name, tentar sem title.
-            if (!mlItem && (payload.family_name || missingFamilyName) && noTitleWithFamily(payload.category_id)) {
+            // Para categorias com family_name (ou que reclamam dele/title), tentar sem title (UP flow).
+            const shouldTryNoTitle =
+              payload.family_name ||
+              missingFamilyName ||
+              noTitleWithFamily(payload.category_id);
+            if (!mlItem && shouldTryNoTitle) {
               try {
-                const payloadNoTitle: MLItemCreatePayload = { ...(payload as any) };
+                const payloadNoTitle: MLItemCreatePayload = {
+                  ...(payload as any),
+                };
                 payloadNoTitle.family_name =
-                  payloadNoTitle.family_name || product.brand || product.name;
+                  payloadNoTitle.family_name ||
+                  sanitizeTitle(product.name || "", product, 60);
                 delete (payloadNoTitle as any).title;
                 console.warn(
                   `[ListingRetryService] retrying createItem WITHOUT title for ${cand.id} (UP domain)`,
@@ -434,34 +491,6 @@ export class ListingRetryService {
               } catch (noTitleErr2) {
                 console.warn(
                   `[ListingRetryService] no-title retry failed for ${cand.id}: ${errMsg(noTitleErr2)}`,
-                );
-              }
-            }
-
-            // fallback para categoria não-UP sem family_name para preservar título
-            if (!mlItem && fallbackNonUPCategory && payload.category_id !== fallbackNonUPCategory) {
-              try {
-                const altPayload: MLItemCreatePayload = {
-                  ...(payload as any),
-                  category_id: fallbackNonUPCategory,
-                  title: payload.title,
-                };
-                if (payload.family_name || missingFamilyName) {
-                  altPayload.family_name =
-                    payload.family_name || product.brand || product.name;
-                } else {
-                  delete (altPayload as any).family_name;
-                }
-                console.warn(
-                  `[ListingRetryService] retrying createItem in non-UP category ${fallbackNonUPCategory} to keep title`,
-                );
-                mlItem = await MLApiService.createItem(account.accessToken, altPayload as any);
-                console.log(
-                  `[ListingRetryService] createItem in non-UP category returned for ${cand.id}: ${mlItem?.id}`,
-                );
-              } catch (altErr) {
-                console.warn(
-                  `[ListingRetryService] non-UP retry failed for ${cand.id}: ${errMsg(altErr)}`,
                 );
               }
             }
@@ -496,7 +525,9 @@ export class ListingRetryService {
 
             const attempts = (cand.retryAttempts || 0) + 1;
             const nextDelay =
-              BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
             await ListingRepository.incrementRetryAttempts(cand.id, {
               lastError: rawMsg,
               nextRetryAt: new Date(Date.now() + nextDelay * 1000),
@@ -517,10 +548,43 @@ export class ListingRetryService {
           `[ListingRetryService] ML created for placeholder ${cand.id} -> ${mlItem.id}`,
         );
 
-        let remoteStatus: "active" | "paused" | "closed" | "under_review" = "active";
+        // Atualizar family_name via PUT para que o título gerado pelo ML reflita o nome completo
+        const desiredFamilyName = sanitizeTitle(
+          product.name || "",
+          product,
+          60,
+        );
+        if (mlItem?.id && desiredFamilyName) {
+          const mlReturnedTitle = (mlItem.title || "").trim();
+          const titleMismatch =
+            mlReturnedTitle.toLowerCase() !== desiredFamilyName.toLowerCase() &&
+            !mlReturnedTitle
+              .toLowerCase()
+              .includes(desiredFamilyName.toLowerCase());
+          if (titleMismatch || payload.family_name) {
+            try {
+              await MLApiService.updateItem(account.accessToken, mlItem.id, {
+                family_name: desiredFamilyName,
+              } as any);
+              console.log(
+                `[ListingRetryService] family_name updated to "${desiredFamilyName}" for ${mlItem.id}`,
+              );
+            } catch (fnErr) {
+              console.warn(
+                `[ListingRetryService] Failed to update family_name for ${mlItem.id}: ${errMsg(fnErr)}`,
+              );
+            }
+          }
+        }
+
+        let remoteStatus: "active" | "paused" | "closed" | "under_review" =
+          "active";
         let remoteSubStatus: string[] | undefined;
         try {
-          const details = await MLApiService.getItemDetails(account.accessToken, mlItem.id);
+          const details = await MLApiService.getItemDetails(
+            account.accessToken,
+            mlItem.id,
+          );
           remoteStatus = details.status;
           remoteSubStatus = (details as any).sub_status;
           if (remoteStatus === "paused") {
@@ -610,5 +674,3 @@ export class ListingRetryService {
     this.running = false;
   }
 }
-
-

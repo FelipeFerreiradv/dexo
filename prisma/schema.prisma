@@ -1,25 +1,217 @@
-  generator client {
+generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
-// --- Sistema de Autenticação e Usuários ---
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String    @unique
-  password      String
-  role          Role      @default(USER)
+  id                        String               @id @default(cuid())
+  name                      String?
+  email                     String               @unique
+  password                  String
+  avatarUrl                 String?
+  role                      Role                 @default(USER)
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
   defaultProductDescription String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  accounts      MarketplaceAccount[]
-  products      Product[]
-  systemLogs    SystemLog[]
+  accounts                  MarketplaceAccount[]
+  products                  Product[]
+  systemLogs                SystemLog[]
+}
+
+model Product {
+  id                     String               @id @default(cuid())
+  sku                    String               @unique
+  name                   String
+  description            String?
+  price                  Decimal              @db.Decimal(10, 2)
+  stock                  Int                  @default(0)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  costPrice              Decimal?             @db.Decimal(10, 2)
+  markup                 Decimal?             @db.Decimal(10, 2)
+  brand                  String?
+  model                  String?
+  year                   String?
+  version                String?
+  category               String?
+  location               String?
+  partNumber             String?
+  quality                Quality?
+  isSecurityItem         Boolean              @default(false)
+  isTraceable            Boolean              @default(false)
+  sourceVehicle          String?
+  imageUrl               String?
+  mlCategoryId           String?
+  heightCm               Int?
+  lengthCm               Int?
+  weightKg               Decimal?             @db.Decimal(6, 2)
+  widthCm                Int?
+  userId                 String?
+  mlCategorySource       String?
+  mlCategoryChosenAt     DateTime?
+  shopeeCategoryId       String?
+  shopeeCategorySource   String?
+  shopeeCategoryChosenAt DateTime?
+  orderItems             OrderItem[]
+  mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
+  user                   User?                @relation(fields: [userId], references: [id])
+  listings               ProductListing[]
+  stockLogs              StockLog[]
+
+  @@index([userId, createdAt])
+  @@index([userId, updatedAt])
+}
+
+model MarketplaceAccount {
+  id             String           @id @default(cuid())
+  userId         String
+  platform       Platform
+  accountName    String
+  accessToken    String
+  refreshToken   String
+  expiresAt      DateTime
+  externalUserId String?
+  status         AccountStatus    @default(ACTIVE)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  shopId         Int?
+  user           User             @relation(fields: [userId], references: [id])
+  orders         Order[]
+  listings       ProductListing[]
+  syncLogs       SyncLog[]
+
+  @@index([userId])
+}
+
+model ProductListing {
+  id                   String             @id @default(cuid())
+  productId            String
+  marketplaceAccountId String
+  externalListingId    String
+  externalSku          String?
+  status               String
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  permalink            String?
+  lastError            String?
+  nextRetryAt          DateTime?
+  retryAttempts        Int                @default(0)
+  retryEnabled         Boolean            @default(false)
+  requestedCategoryId  String?
+  metricsUpdatedAt     DateTime?
+  ratingAverage        Decimal?           @db.Decimal(3, 2)
+  reviewsCount         Int                @default(0)
+  viewsCount           Int                @default(0)
+  orderItems           OrderItem[]
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  product              Product            @relation(fields: [productId], references: [id])
+
+  @@unique([marketplaceAccountId, externalListingId])
+  @@index([marketplaceAccountId, metricsUpdatedAt])
+}
+
+model MarketplaceCategory {
+  id               String          @id @default(cuid())
+  externalId       String          @unique
+  siteId           String
+  name             String
+  fullPath         String
+  pathFromRoot     Json
+  parentExternalId String?
+  keywords         String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  aliases          CategoryAlias[]
+  products         Product[]       @relation("ProductMlCategory")
+
+  @@index([siteId])
+  @@index([parentExternalId])
+}
+
+model CategoryAlias {
+  id                    String              @id @default(cuid())
+  marketplaceCategoryId String
+  tokens                String?
+  synonyms              String?
+  brandModelPatterns    String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  marketplaceCategory   MarketplaceCategory @relation(fields: [marketplaceCategoryId], references: [id])
+
+  @@index([marketplaceCategoryId])
+}
+
+model Order {
+  id                   String             @id @default(cuid())
+  marketplaceAccountId String
+  externalOrderId      String             @unique
+  status               OrderStatus        @default(PENDING)
+  totalAmount          Decimal            @db.Decimal(10, 2)
+  customerName         String?
+  customerEmail        String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  items                OrderItem[]
+
+  @@index([marketplaceAccountId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model OrderItem {
+  id        String          @id @default(cuid())
+  orderId   String
+  productId String
+  quantity  Int
+  unitPrice Decimal         @db.Decimal(10, 2)
+  listingId String?
+  listing   ProductListing? @relation(fields: [listingId], references: [id])
+  order     Order           @relation(fields: [orderId], references: [id])
+  product   Product         @relation(fields: [productId], references: [id])
+
+  @@index([listingId])
+}
+
+model StockLog {
+  id            String   @id @default(cuid())
+  productId     String
+  change        Int
+  reason        String
+  previousStock Int
+  newStock      Int
+  createdAt     DateTime @default(now())
+  product       Product  @relation(fields: [productId], references: [id])
+}
+
+model SyncLog {
+  id                   String             @id @default(cuid())
+  marketplaceAccountId String
+  type                 SyncType
+  status               SyncStatus
+  message              String?
+  payload              Json?
+  createdAt            DateTime           @default(now())
+  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
+}
+
+model SystemLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resource   String?
+  resourceId String?
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  level      LogLevel
+  message    String
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id])
 }
 
 enum Role {
@@ -27,76 +219,11 @@ enum Role {
   USER
 }
 
-// --- Gestão de Produtos e Estoque Central ---
-model Product {
-  id          String    @id @default(cuid())
-  userId      String?
-  user        User?     @relation(fields: [userId], references: [id])
-  sku         String    @unique // SKU único como identificador central
-  name        String
-  description String?
-  price       Decimal   @db.Decimal(10, 2)
-  stock       Int       @default(0) // Estoque central (Fonte da Verdade)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  // --- Campos de Autopeças (todos opcionais) ---
-  costPrice       Decimal?       @db.Decimal(10, 2) // Preço de custo
-  markup          Decimal?       @db.Decimal(10, 2)  // Margem de lucro (%)
-  brand           String?        // Marca da peça
-  model           String?        // Modelo do veículo
-  year            String?        // Ano compatível (ex: "2018-2022")
-  version         String?        // Versão do veículo
-  category        String?        // Categoria da peça
-  mlCategoryId    String?        // FK para categoria do Mercado Livre (MarketplaceCategory.id)
-  mlCategory      MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
-  location        String?        // Localização no estoque
-  partNumber      String?        // Part Number (OEM)
-  quality         Quality?       // Qualidade da peça
-  isSecurityItem  Boolean        @default(false) // Item de segurança
-  isTraceable     Boolean        @default(false) // Item rastreável
-  sourceVehicle   String?        // Veículo de origem (para sucata)
-
-  // --- Medidas / Peso (nova funcionalidade) ---
-  heightCm        Int?           // Altura em centímetros
-  widthCm         Int?           // Largura em centímetros
-  lengthCm        Int?           // Comprimento em centímetros
-  weightKg        Decimal?       @db.Decimal(6, 2) // Peso em quilogramas (2 casas decimais)
-
-  // --- Imagem do Produto ---
-  imageUrl        String?        // URL da imagem principal
-
-  // Relações
-  listings    ProductListing[]
-  stockLogs   StockLog[]
-  orderItems  OrderItem[]
-}
-
 enum Quality {
-  SUCATA      // Peça de desmanche
-  SEMINOVO    // Usado em bom estado
-  NOVO        // Peça nova/original
-  RECONDICIONADO // Recondicionado/refurbished
-}
-
-// --- Integração com Marketplaces ---
-model MarketplaceAccount {
-  id              String          @id @default(cuid())
-  userId          String
-  user            User            @relation(fields: [userId], references: [id])
-  platform        Platform
-  accountName     String
-  accessToken     String
-  refreshToken    String
-  expiresAt       DateTime
-  externalUserId  String?
-  shopId          Int?            // ID da loja no Shopee (obrigatório para Shopee)
-  status          AccountStatus   @default(ACTIVE)
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  listings        ProductListing[]
-  orders          Order[]
-  syncLogs        SyncLog[]
+  SUCATA
+  SEMINOVO
+  NOVO
+  RECONDICIONADO
 }
 
 enum Platform {
@@ -110,102 +237,12 @@ enum AccountStatus {
   ERROR
 }
 
-model ProductListing {
-  id                   String             @id @default(cuid())
-  productId            String
-  product              Product            @relation(fields: [productId], references: [id])
-  marketplaceAccountId String
-  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
-  externalListingId    String
-  externalSku          String?
-  permalink            String?
-  status               String
-
-  // Retry metadata for placeholder listings (persistent retry state)
-  retryAttempts        Int                @default(0)
-  nextRetryAt          DateTime?
-  lastError            String?
-  retryEnabled         Boolean            @default(false)
-
-  // Category requested when the listing was attempted (useful for retrying placeholders)
-  requestedCategoryId  String?
-
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
-  @@unique([marketplaceAccountId, externalListingId])
-}
-
-// Tabela com categorias do Marketplace (ex: Mercado Livre)
-model MarketplaceCategory {
-  id               String   @id @default(cuid())
-  externalId       String   @unique
-  siteId           String
-  name             String
-  fullPath         String
-  pathFromRoot     Json
-  parentExternalId String?
-  keywords         String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  products Product[] @relation("ProductMlCategory")
-}
-
-
-// --- Gestão de Pedidos ---
-model Order {
-  id                   String             @id @default(cuid())
-  marketplaceAccountId String
-  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
-  externalOrderId      String             @unique
-  status               OrderStatus        @default(PENDING)
-  totalAmount          Decimal            @db.Decimal(10, 2)
-  customerName         String?
-  customerEmail        String?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
-  items                OrderItem[]
-}
-
 enum OrderStatus {
   PENDING
   PAID
   SHIPPED
   DELIVERED
   CANCELLED
-}
-
-model OrderItem {
-  id        String   @id @default(cuid())
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id])
-  productId String
-  product   Product  @relation(fields: [productId], references: [id])
-  quantity  Int
-  unitPrice Decimal  @db.Decimal(10, 2)
-}
-
-// --- Monitoramento e Logs ---
-model StockLog {
-  id          String   @id @default(cuid())
-  productId   String
-  product     Product  @relation(fields: [productId], references: [id])
-  change      Int
-  reason      String
-  previousStock Int
-  newStock    Int
-  createdAt   DateTime @default(now())
-}
-
-model SyncLog {
-  id                   String             @id @default(cuid())
-  marketplaceAccountId String
-  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
-  type                 SyncType
-  status               SyncStatus
-  message              String?
-  payload              Json?
-  createdAt            DateTime           @default(now())
 }
 
 enum SyncType {
@@ -221,26 +258,8 @@ enum SyncStatus {
   WARNING
 }
 
-// --- Sistema de Logs do Sistema ---
-model SystemLog {
-  id          String      @id @default(cuid())
-  userId      String?     // Usuário que realizou a ação (null para ações automáticas)
-  user        User?       @relation(fields: [userId], references: [id])
-  action      String      // "LOGIN", "CREATE_PRODUCT", "CREATE_ORDER", etc.
-  resource    String?     // "Product", "Order", "User", etc.
-  resourceId  String?     // ID do recurso afetado
-  details     Json?       // Dados adicionais (antes/depois, erros, etc.)
-  ipAddress   String?     // IP do usuário
-  userAgent   String?     // User agent do navegador
-  level       LogLevel    // "INFO", "WARNING", "ERROR"
-  message     String      // Mensagem descritiva
-  createdAt   DateTime    @default(now())
-}
-
 enum LogLevel {
   INFO
   WARNING
   ERROR
 }
-
-// Adicione os outros models que você tinha...

@@ -185,12 +185,8 @@ export function MLConnectionTab() {
         throw new Error(data.message || "Erro ao desconectar");
       }
 
-      // Atualizar status
-      setStatus({
-        connected: false,
-        platform: "MERCADO_LIVRE",
-        message: "Conta desconectada",
-      });
+      // Atualizar listagem/status
+      fetchStatus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao desconectar");
     } finally {

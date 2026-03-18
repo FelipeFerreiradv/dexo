@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
 import { Search, Download, ChevronLeft, ChevronRight, Eye } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,7 @@ interface Toast {
 
 export function OrdersList() {
   const { data: session, status } = useSession();
+  const searchParams = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
@@ -62,12 +64,35 @@ export function OrdersList() {
     deliveredOrders: 0,
     totalRevenue: 0,
   });
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedSearch(searchInput.trim()),
+      250,
+    );
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPagination((prev) =>
+      prev.page === 1 ? prev : { ...prev, page: 1 },
+    );
+  }, [debouncedSearch]);
+
+  useEffect(() => {
+    const param = searchParams?.get("search") ?? "";
+    if (param && param !== searchInput) {
+      setSearchInput(param);
+      setDebouncedSearch(param.trim());
+    }
+  }, [searchInput, searchParams]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -90,10 +115,17 @@ export function OrdersList() {
       const params = new URLSearchParams({
         page: pagination.page.toString(),
         limit: pagination.limit.toString(),
-        ...(search && { search }),
       });
+      const term = debouncedSearch.trim();
+      if (term.length >= 2) {
+        params.set("search", term);
+      }
 
-      const response = await fetch(`http://localhost:3333/orders?${params}`, {
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL ??
+        process.env.NEXT_PUBLIC_BACKEND_URL ??
+        "http://localhost:3333";
+      const response = await fetch(`${apiBase}/orders?${params}`, {
         headers: {
           "Content-Type": "application/json",
           email: session.user.email,
@@ -115,7 +147,7 @@ export function OrdersList() {
     } finally {
       setIsLoading(false);
     }
-  }, [pagination.page, pagination.limit, search, session, showToast]);
+  }, [debouncedSearch, pagination.limit, pagination.page, session, showToast]);
 
   const fetchStats = useCallback(async () => {
     if (!session?.user?.email) {
@@ -131,11 +163,21 @@ export function OrdersList() {
       if (!response.ok) throw new Error("Erro ao buscar estatísticas");
 
       const data = await response.json();
+      const deliveredCount =
+        (data.stats?.delivered ?? 0) +
+        (data.stats?.shipped ?? 0) +
+        (data.stats?.paid ?? 0); // consideramos pagos/expedidos como concluídos
+
+      const totalRevenue =
+        typeof data.stats?.totalRevenue === "number"
+          ? data.stats.totalRevenue
+          : Number(data.stats?.totalRevenue ?? 0);
+
       setStats({
         totalOrders: data.stats.total,
         pendingOrders: data.stats.pending,
-        deliveredOrders: data.stats.delivered,
-        totalRevenue: 0, // TODO: calcular receita total
+        deliveredOrders: deliveredCount,
+        totalRevenue,
       });
     } catch (error) {
       console.error("Erro ao buscar estatísticas:", error);
@@ -223,7 +265,7 @@ export function OrdersList() {
     <div className="space-y-6">
       {/* Statistics Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Total de Pedidos
@@ -236,7 +278,7 @@ export function OrdersList() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Pedidos Pendentes
@@ -251,7 +293,7 @@ export function OrdersList() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Pedidos Entregues
@@ -266,7 +308,7 @@ export function OrdersList() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Receita Total</CardTitle>
             <Download className="size-4 text-muted-foreground" />
@@ -292,9 +334,9 @@ export function OrdersList() {
             <Search className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
             <Input
               placeholder="Buscar pedidos..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-8 w-[300px]"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="h-10 w-[300px] rounded-full border border-border/70 bg-muted/20 pl-8"
             />
           </div>
         </div>
@@ -304,7 +346,7 @@ export function OrdersList() {
       </div>
 
       {/* Orders Table */}
-      <Card>
+      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <CardTitle>Pedidos</CardTitle>
           <CardDescription>

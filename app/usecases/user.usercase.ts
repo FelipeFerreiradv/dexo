@@ -17,6 +17,7 @@ export class UserUseCase {
     email,
     password,
     defaultProductDescription,
+    avatarUrl,
   }: UserCreate): Promise<User> {
     const verifyUserExists = await this.userRepository.findByEmail(email);
     if (verifyUserExists) {
@@ -27,6 +28,7 @@ export class UserUseCase {
       email,
       password,
       defaultProductDescription,
+      avatarUrl,
     });
     return user;
   }

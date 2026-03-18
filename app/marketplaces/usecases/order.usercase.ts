@@ -11,13 +11,16 @@
 import prisma from "@/app/lib/prisma";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
+import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { orderRepository } from "@/app/repositories/order.repository";
 import type { MLOrderDetails, MLOrderItem } from "../types/ml-order.types";
+import type { ShopeeOrderDetail, ShopeeOrderItem } from "../types/shopee-api.types";
 import type {
   OrderCreate,
   OrderItemCreate,
   Order,
+  OrderStatus,
 } from "@/app/interfaces/order.interface";
 
 // ====================================================================
@@ -150,6 +153,236 @@ export class OrderUseCase {
   }
 
   /**
+   * Importa pedidos recentes do Mercado Livre para uma conta específica
+   */
+  static async importRecentOrdersForAccount(
+    marketplaceAccountId: string,
+    days: number = 7,
+    deductStock: boolean = true,
+  ): Promise<ImportOrdersResult> {
+    const account = await MarketplaceRepository.findById(marketplaceAccountId);
+    if (!account || !account.accessToken || !account.externalUserId) {
+      throw new Error("Conta do Mercado Livre não conectada ou sem credenciais");
+    }
+
+    const result: ImportOrdersResult = {
+      totalOrders: 0,
+      imported: 0,
+      alreadyExists: 0,
+      noProducts: 0,
+      errors: 0,
+      stockDeductions: 0,
+      results: [],
+    };
+
+    const mlOrders = await MLApiService.getRecentOrders(
+      account.accessToken,
+      account.externalUserId,
+      days,
+      "paid",
+    );
+
+    result.totalOrders = mlOrders.length;
+
+    for (const mlOrder of mlOrders) {
+      const importResult = await this.processOrder(
+        mlOrder,
+        account.id,
+        deductStock,
+      );
+      result.results.push(importResult);
+
+      switch (importResult.status) {
+        case "imported":
+          result.imported++;
+          if (importResult.stockDeducted) {
+            result.stockDeductions++;
+          }
+          break;
+        case "already_exists":
+          result.alreadyExists++;
+          break;
+        case "no_products":
+          result.noProducts++;
+          break;
+        case "error":
+          result.errors++;
+          break;
+      }
+    }
+
+    await this.logSync(
+      account.id,
+      SyncType.ORDER_IMPORT,
+      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.imported} de ${result.totalOrders} pedidos do ML (account import)`,
+      {
+        totalOrders: result.totalOrders,
+        imported: result.imported,
+        alreadyExists: result.alreadyExists,
+        errors: result.errors,
+      },
+    );
+
+    return result;
+  }
+
+  /**
+   * Importa pedidos recentes do Shopee (por usuário -> primeira conta ativa)
+   */
+  static async importRecentShopeeOrders(
+    userId: string,
+    days: number = 3,
+    deductStock: boolean = true,
+  ): Promise<ImportOrdersResult> {
+    const account = await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+      userId,
+      Platform.SHOPEE,
+    );
+    if (!account || !account.accessToken || !account.shopId) {
+      throw new Error("Conta do Shopee não conectada ou sem credenciais");
+    }
+    return this.importRecentShopeeOrdersForAccount(account.id, days, deductStock);
+  }
+
+  /**
+   * Importa pedidos recentes do Shopee para uma conta específica
+   */
+  static async importRecentShopeeOrdersForAccount(
+    marketplaceAccountId: string,
+    days: number = 3,
+    deductStock: boolean = true,
+  ): Promise<ImportOrdersResult> {
+    const account = await MarketplaceRepository.findById(marketplaceAccountId);
+    if (!account || !account.accessToken || !account.shopId) {
+      throw new Error("Conta Shopee não encontrada ou sem credenciais");
+    }
+
+    const result: ImportOrdersResult = {
+      totalOrders: 0,
+      imported: 0,
+      alreadyExists: 0,
+      noProducts: 0,
+      errors: 0,
+      stockDeductions: 0,
+      results: [],
+    };
+
+    const shopeeOrders = await ShopeeApiService.getRecentOrders(
+      account.accessToken,
+      account.shopId,
+      days,
+    );
+
+    result.totalOrders = shopeeOrders.length;
+
+    for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
+      const externalOrderId = shopeeOrder.order_sn;
+      try {
+        const exists = await orderRepository.exists(externalOrderId);
+        if (exists) {
+          result.results.push({
+            success: true,
+            orderId: null,
+            externalOrderId,
+            status: "already_exists",
+            message: "Pedido já importado anteriormente",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: shopeeOrder.item_list.length,
+          });
+          result.alreadyExists++;
+          continue;
+        }
+
+        const { items, linkedCount } = await this.mapShopeeOrderItems(
+          shopeeOrder.item_list,
+          marketplaceAccountId,
+        );
+
+        if (items.length === 0) {
+          result.results.push({
+            success: false,
+            orderId: null,
+            externalOrderId,
+            status: "no_products",
+            message: "Nenhum item do pedido Shopee pôde ser vinculado",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: shopeeOrder.item_list.length,
+          });
+          result.noProducts++;
+          continue;
+        }
+
+        const totalAmount =
+          typeof shopeeOrder.total_amount === "number"
+            ? Number(shopeeOrder.total_amount)
+            : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+
+        const orderData: OrderCreate = {
+          marketplaceAccountId,
+          externalOrderId,
+          status: this.mapShopeeStatus(shopeeOrder.order_status),
+          totalAmount,
+          customerName: shopeeOrder.buyer_username ?? undefined,
+          items,
+        };
+
+        const created = await orderRepository.create(orderData);
+
+        let stockDeducted = false;
+        if (deductStock) {
+          await this.deductStockForOrder(created, "Importação Shopee");
+          stockDeducted = true;
+        }
+
+        result.imported++;
+        result.stockDeductions += stockDeducted ? 1 : 0;
+        result.results.push({
+          success: true,
+          orderId: created.id,
+          externalOrderId,
+          status: "imported",
+          message: "Pedido Shopee importado com sucesso",
+          stockDeducted,
+          itemsLinked: linkedCount,
+          itemsTotal: shopeeOrder.item_list.length,
+        });
+      } catch (error) {
+        console.error("[OrderUseCase] Erro ao importar pedido Shopee:", error);
+        result.errors++;
+        result.results.push({
+          success: false,
+          orderId: null,
+          externalOrderId,
+          status: "error",
+          message:
+            error instanceof Error ? error.message : "Erro desconhecido ao importar pedido Shopee",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: shopeeOrder.item_list.length,
+        });
+      }
+    }
+
+    await this.logSync(
+      marketplaceAccountId,
+      SyncType.ORDER_IMPORT,
+      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.imported} de ${result.totalOrders} pedidos do Shopee`,
+      {
+        totalOrders: result.totalOrders,
+        imported: result.imported,
+        alreadyExists: result.alreadyExists,
+        errors: result.errors,
+      },
+    );
+
+    return result;
+  }
+
+  /**
    * Processa um único pedido do ML
    */
   private static async processOrder(
@@ -178,6 +411,7 @@ export class OrderUseCase {
       // Mapear itens do pedido para produtos locais
       const { items, linkedCount } = await this.mapOrderItems(
         mlOrder.order_items,
+        marketplaceAccountId,
       );
 
       // Se nenhum item foi vinculado, não importar
@@ -243,20 +477,46 @@ export class OrderUseCase {
   }
 
   /**
-   * Mapeia itens do pedido ML para produtos locais (por SKU)
+   * Mapeia itens do pedido ML priorizando o anúncio vinculado e faz fallback por SKU.
    */
   private static async mapOrderItems(
     mlItems: MLOrderItem[],
+    marketplaceAccountId: string,
   ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
     const items: OrderItemCreate[] = [];
     let linkedCount = 0;
 
     for (const mlItem of mlItems) {
-      // Extrair SKU do item
+      // 1) Tentar vincular pelo ID do anúncio no marketplace
+      const externalListingId = mlItem.item.id;
+      const listing = await prisma.productListing.findUnique({
+        where: {
+          marketplaceAccountId_externalListingId: {
+            marketplaceAccountId,
+            externalListingId,
+          },
+        },
+        include: { product: true },
+      });
+
+      if (listing && listing.product) {
+        items.push({
+          productId: listing.productId,
+          listingId: listing.id,
+          quantity: mlItem.quantity,
+          unitPrice: mlItem.unit_price,
+        });
+        linkedCount++;
+        continue;
+      }
+
+      // 2) Fallback: vincular por SKU
       const sku = this.extractSku(mlItem);
 
       if (!sku) {
-        console.log(`[OrderUseCase] Item ${mlItem.item.id} sem SKU, pulando`);
+        console.log(
+          `[OrderUseCase] Item ${mlItem.item.id} sem SKU e sem listing vinculado, pulando`,
+        );
         continue;
       }
 
@@ -272,6 +532,7 @@ export class OrderUseCase {
 
       items.push({
         productId: product.id,
+        listingId: null,
         quantity: mlItem.quantity,
         unitPrice: mlItem.unit_price,
       });
@@ -296,6 +557,91 @@ export class OrderUseCase {
     }
 
     return null;
+  }
+
+  /**
+   * Mapeia itens do pedido Shopee priorizando o anúncio vinculado e faz fallback por SKU.
+   */
+  private static async mapShopeeOrderItems(
+    items: ShopeeOrderItem[],
+    marketplaceAccountId: string,
+  ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
+    const result: OrderItemCreate[] = [];
+    let linkedCount = 0;
+
+    for (const item of items) {
+      const externalListingId = item.item_id.toString();
+      const listing = await prisma.productListing.findUnique({
+        where: {
+          marketplaceAccountId_externalListingId: {
+            marketplaceAccountId,
+            externalListingId,
+          },
+        },
+        include: { product: true },
+      });
+
+      if (listing && listing.product) {
+        result.push({
+          productId: listing.productId,
+          listingId: listing.id,
+          quantity: item.model_quantity_purchased,
+          unitPrice: Number(item.model_original_price ?? 0),
+        });
+        linkedCount++;
+        continue;
+      }
+
+      const sku = this.extractSkuFromShopee(item);
+      if (!sku) {
+        console.log(
+          `[OrderUseCase] Item Shopee ${externalListingId} sem SKU e sem listing vinculado, pulando`,
+        );
+        continue;
+      }
+
+      const product = await prisma.product.findUnique({
+        where: { sku },
+      });
+
+      if (!product) {
+        console.log(`[OrderUseCase] Produto com SKU "${sku}" (Shopee) não encontrado`);
+        continue;
+      }
+
+      result.push({
+        productId: product.id,
+        listingId: null,
+        quantity: item.model_quantity_purchased,
+        unitPrice: Number(item.model_original_price ?? 0),
+      });
+      linkedCount++;
+    }
+
+    return { items: result, linkedCount };
+  }
+
+  private static extractSkuFromShopee(item: ShopeeOrderItem): string | null {
+    if (item.model_sku) return item.model_sku;
+    if (item.item_sku) return item.item_sku;
+    return null;
+  }
+
+  private static mapShopeeStatus(status: string): OrderStatus {
+    switch (status) {
+      case "COMPLETED":
+        return "DELIVERED";
+      case "READY_TO_SHIP":
+      case "PROCESSED":
+      case "SHIPPED":
+        return "PAID";
+      case "CANCELLED":
+      case "IN_CANCEL":
+        return "CANCELLED";
+      case "UNPAID":
+      default:
+        return "PENDING";
+    }
   }
 
   /**
@@ -428,18 +774,8 @@ export class OrderUseCase {
       limit?: number;
     },
   ) {
-    // Buscar conta do marketplace
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      Platform.MERCADO_LIVRE,
-    );
-
-    if (!account) {
-      throw new Error("Conta do Mercado Livre não encontrada");
-    }
-
     return orderRepository.findAll({
-      marketplaceAccountId: account.id,
+      userId,
       status: options?.status as any,
       page: options?.page,
       limit: options?.limit,

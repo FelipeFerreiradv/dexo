@@ -281,6 +281,119 @@ export class ShopeeApiService {
   }
 
   /**
+   * Lista pedidos (order_sn) com paginação
+   */
+  static async getOrderList(
+    accessToken: string,
+    shopId: number,
+    params: {
+      time_from: number;
+      time_to: number;
+      page_size?: number;
+      cursor?: string;
+      order_status?: string[];
+      time_range_field?: "create_time" | "update_time";
+    },
+  ) {
+    const apiPath = "/api/v2/order/get_order_list";
+
+    const query = new URLSearchParams({
+      time_range_field: params.time_range_field ?? "create_time",
+      time_from: params.time_from.toString(),
+      time_to: params.time_to.toString(),
+      page_size: (params.page_size ?? 50).toString(),
+    });
+    if (params.cursor) query.set("cursor", params.cursor);
+    if (params.order_status?.length) {
+      for (const status of params.order_status) {
+        query.append("order_status", status);
+      }
+    }
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        more: boolean;
+        next_cursor?: string;
+        order_list: { order_sn: string; order_status: string; create_time: number; update_time: number }[];
+      }>
+    >("GET", `${apiPath}?${query.toString()}`, accessToken, shopId);
+
+    if (response.error) {
+      throw new Error(`Erro ao listar pedidos Shopee: ${response.message}`);
+    }
+
+    return response.response!;
+  }
+
+  /**
+   * Busca detalhes de uma lista de pedidos
+   */
+  static async getOrderDetails(
+    accessToken: string,
+    shopId: number,
+    orderSnList: string[],
+  ) {
+    if (!orderSnList.length) return [];
+    const apiPath = "/api/v2/order/get_order_detail";
+    const query = `order_sn_list=${orderSnList.join(",")}`;
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{ order_list: any[] }>
+    >("GET", `${apiPath}?${query}`, accessToken, shopId);
+
+    if (response.error) {
+      throw new Error(`Erro ao buscar detalhes de pedidos: ${response.message}`);
+    }
+
+    return response.response?.order_list ?? [];
+  }
+
+  /**
+   * Busca pedidos recentes (em dias) já com detalhes
+   */
+  static async getRecentOrders(
+    accessToken: string,
+    shopId: number,
+    days: number = 3,
+  ) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const fromSec = nowSec - days * 24 * 60 * 60;
+
+    let cursor: string | undefined;
+    const orderSns: string[] = [];
+
+    do {
+      const listResp = await this.getOrderList(accessToken, shopId, {
+        time_from: fromSec,
+        time_to: nowSec,
+        cursor,
+        page_size: 50,
+        order_status: ["COMPLETED", "READY_TO_SHIP", "SHIPPED", "PROCESSED"],
+      });
+
+      orderSns.push(...(listResp.order_list?.map((o) => o.order_sn) ?? []));
+      cursor = listResp.more ? listResp.next_cursor : undefined;
+
+      if (listResp.more && cursor) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    } while (cursor);
+
+    // Buscar detalhes em lotes de até 50 order_sn
+    const details: any[] = [];
+    for (let i = 0; i < orderSns.length; i += 50) {
+      const batch = orderSns.slice(i, i + 50);
+      const det = await this.getOrderDetails(accessToken, shopId, batch);
+      details.push(...det);
+      if (i + 50 < orderSns.length) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    }
+
+    return details;
+  }
+
+  /**
    * Busca atributos de uma categoria
    */
   static async getCategoryAttributes(

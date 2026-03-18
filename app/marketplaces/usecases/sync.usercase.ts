@@ -10,14 +10,16 @@
 import prisma from "@/app/lib/prisma";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
+import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import CategoryRepository from "../repositories/category.repository";
-import { ML_CATALOG } from "../../lib/product-parser";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
+import fs from "node:fs";
+import path from "node:path";
 
 // Tipos para resultados de sincronizaÃ§Ã£o
 export interface ImportResult {
@@ -432,83 +434,135 @@ export class SyncUseCase {
         );
 
     try {
-      let cats: { id: string; name: string }[] | null = null;
+      let roots: any[] | null = null;
+
       try {
-        cats = await MLApiService.getSiteCategories(siteId);
-        console.log(
-          `[SYNC] Fetched ${cats.length} site categories for ${siteId}`,
+        roots = await MLApiService.getSiteCategories(
+          siteId,
+          account?.accessToken,
         );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(
-          "[SYNC] Could not fetch site categories from ML API, falling back to static ML_CATALOG:",
-          msg,
-        );
+      } catch (apiErr) {
+        const status = (apiErr as any)?.response?.status;
+        const isAuthErr = status === 401 || status === 403;
+        // tenta refresh do token do seller antes do fallback local
+        if (isAuthErr && account?.refreshToken) {
+          try {
+            const refreshed = await MLOAuthService.refreshAccessToken(
+              account.refreshToken,
+            );
+            await MarketplaceRepository.updateTokens(account.id, {
+              accessToken: refreshed.accessToken,
+              refreshToken: refreshed.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+            });
+            roots = await MLApiService.getSiteCategories(
+              siteId,
+              refreshed.accessToken,
+            );
+          } catch (refreshErr) {
+            console.warn(
+              "[SYNC] Refresh do token ML falhou, usando fallback:",
+              refreshErr instanceof Error ? refreshErr.message : refreshErr,
+            );
+          }
+        }
+
+        // fallback: tentar carregar de um JSON local
+        const fallbackPath =
+          process.env.ML_CATEGORIES_JSON ||
+          path.resolve(process.cwd(), "scripts/tmp-ml-categories.json");
+        if (!roots && fs.existsSync(fallbackPath)) {
+          console.warn(
+            `[SYNC] Usando fallback local de categorias: ${fallbackPath}`,
+          );
+          const raw = fs.readFileSync(fallbackPath, "utf8");
+          const data = JSON.parse(raw);
+          if (Array.isArray(data)) {
+            roots = data;
+          }
+        }
+
+        if (!roots) {
+          throw apiErr;
+        }
+      }
+      console.log(`[SYNC] Fetched ${roots.length} root categories for ${siteId}`);
+
+      if (!roots || roots.length === 0) {
+        throw new Error("ML API não retornou categorias; abortando sync.");
       }
 
       const entries: any[] = [];
+      const visited = new Set<string>();
+      const queue = [...roots.map((c) => c.id)];
       let processed = 0;
+      const MAX_CATEGORIES = 15000; // trava de segurança para não rodar indefinidamente
+      const CONCURRENCY = 10;
 
-      if (cats && cats.length > 0) {
-        for (const c of cats) {
-          try {
-            const data = await MLApiService.getCategory(c.id);
-            const path = data.path_from_root || [];
-            const fullPath = path.map((p: any) => p.name).join(" > ");
-            const parent = path.length > 1 ? path[path.length - 2].id : null;
-
-            entries.push({
-              externalId: c.id,
-              siteId,
-              name: c.name,
-              fullPath,
-              pathFromRoot: path,
-              parentExternalId: parent,
-              keywords: null,
-            });
-
-            processed++;
-            if (processed % 20 === 0)
-              await new Promise((r) => setTimeout(r, 100));
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(`[SYNC] Failed to fetch category ${c.id}:`, msg);
-          }
+      const pushEntry = (data: any) => {
+        // Rejeitar IDs sintéticos (contêm hífen, ex.: MLB1747-01)
+        if (typeof data.id === "string" && data.id.includes("-")) {
+          return;
         }
-      } else {
-        // Fallback: use static ML_CATALOG defined in product-parser
-        for (const parent of ML_CATALOG) {
-          // Insert parent entry
-          entries.push({
-            externalId: parent.id,
-            siteId,
-            name: parent.value,
-            fullPath: parent.value,
-            pathFromRoot: [{ id: parent.id, name: parent.value }],
-            parentExternalId: null,
-            keywords: parent.keywords?.join(",") || null,
-          });
+        const path = data.path_from_root || [];
+        const fullPath = path.map((p: any) => p.name).join(" > ");
+        const parent = path.length > 1 ? path[path.length - 2].id : null;
+        entries.push({
+          externalId: data.id,
+          siteId,
+          name: data.name,
+          fullPath,
+          pathFromRoot: path,
+          parentExternalId: parent,
+          keywords: null,
+        });
+      };
 
-          if (parent.children && parent.children.length > 0) {
-            for (const child of parent.children) {
-              entries.push({
-                externalId: child.id,
-                siteId,
-                name: child.value.split(" > ").slice(-1)[0],
-                fullPath: child.value,
-                pathFromRoot: [
-                  { id: parent.id, name: parent.value },
-                  { id: child.id, name: child.value.split(" > ").slice(-1)[0] },
-                ],
-                parentExternalId: parent.id,
-                keywords: child.keywords?.join(",") || null,
-              });
+      while (queue.length > 0) {
+        if (processed > MAX_CATEGORIES) {
+          console.warn(
+            `[SYNC] Abortado preventivamente após ${processed} categorias (limite de segurança).`,
+          );
+          break;
+        }
+
+        const batch = queue.splice(0, CONCURRENCY);
+        const batchResults = await Promise.all(
+          batch.map(async (id) => {
+            if (visited.has(id)) return [] as string[];
+            visited.add(id);
+            try {
+              const data = await MLApiService.getCategory(id);
+              pushEntry(data);
+              processed++;
+              if (processed % 500 === 0) {
+                console.log(
+                  `[SYNC] Processadas ${processed} categorias (fila: ${queue.length})`,
+                );
+              }
+              const children = Array.isArray((data as any).children_categories)
+                ? (data as any).children_categories
+                : [];
+              return children
+                .map((c: any) => c?.id)
+                .filter((cid: any) => typeof cid === "string");
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(`[SYNC] Failed to fetch category ${id}:`, msg);
+              return [] as string[];
             }
+          }),
+        );
+
+        for (const childList of batchResults) {
+          for (const childId of childList) {
+            if (!visited.has(childId)) queue.push(childId);
           }
         }
       }
 
       if (entries.length > 0) {
+        console.log(`[SYNC] Gravando ${entries.length} categorias no banco...`);
         await CategoryRepository.upsertMany(entries as any[]);
       }
 

@@ -2,13 +2,11 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ProductUseCase } from "../usecases/product.usercase";
 import { ProductCreate, ProductUpdate } from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
-import { MarketplaceUseCase } from "../marketplaces/usecases/marketplace.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
-
-const toErrMsg = (err: unknown) =>
-  err instanceof Error ? err.message : String(err);
+import CategoryRepository from "../marketplaces/repositories/category.repository";
+import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
 
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
@@ -60,6 +58,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         isSecurityItem,
         isTraceable,
         sourceVehicle,
+        mlCategory,
+        mlCategorySource,
 
         // Medidas / peso
         heightCm,
@@ -113,6 +113,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             ? Number(weightKg)
             : undefined,
         imageUrl: imageUrl ?? undefined,
+        mlCategoryExternal: mlCategory ?? createListingCategoryId ?? undefined,
+        mlCategorySource: mlCategorySource ?? undefined,
         createListing: Boolean(createListing),
         createListingCategoryId: createListingCategoryId ?? undefined,
         listings: Array.isArray(listings) ? listings : undefined,
@@ -138,6 +140,65 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           .status(400)
           .send({ error: "Imagem do produto é obrigatória" });
 
+      // Resolver categoria do ML (externalId -> FK) de forma determinística
+      let resolvedMlCategoryId: string | undefined;
+      let resolvedMlCategoryPath: string | undefined;
+      let resolvedMlCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedMlCategoryChosenAt: Date | undefined;
+      // Se vier categoria ML, resolver imediatamente; caso contrário, tentar extrair do payload de listings
+      let mlCategoryExternalToResolve = sanitized.mlCategoryExternal;
+      if (!mlCategoryExternalToResolve && sanitized.listings?.length) {
+        const firstMlListing = sanitized.listings.find(
+          (l) => l.platform === "MERCADO_LIVRE" && !!l.categoryId,
+        );
+        if (firstMlListing?.categoryId) {
+          mlCategoryExternalToResolve = firstMlListing.categoryId;
+        }
+      }
+
+      if (mlCategoryExternalToResolve) {
+        // Garante leaf e caminho completo usando ML API
+        const resolved =
+          await CategoryResolutionService.resolveMLCategory({
+            explicitCategoryId: mlCategoryExternalToResolve,
+            validateWithMLAPI: false,
+          });
+
+        const cat = await CategoryRepository.findByExternalId(
+          resolved.externalId,
+        );
+        if (!cat) {
+          return reply.status(400).send({
+            error:
+              "Categoria do Mercado Livre não está sincronizada. Escolha outra ou sincronize as categorias.",
+          });
+        }
+        resolvedMlCategoryId = cat.id;
+        resolvedMlCategoryPath =
+          resolved.fullPath || cat.fullPath || cat.name || sanitized.category;
+        const manualSelection = !!mlCategory;
+        resolvedMlCategorySource =
+          (sanitized.mlCategorySource as any) ||
+          (manualSelection ? "manual" : "auto");
+        resolvedMlCategoryChosenAt = new Date();
+      }
+
+      const requiresMlCategory =
+        sanitized.createListing ||
+        Boolean(
+          sanitized.listings?.some((l) => l.platform === "MERCADO_LIVRE"),
+        );
+      if (requiresMlCategory && !resolvedMlCategoryId) {
+        return reply.status(400).send({
+          error:
+            "Produto não possui categoria do Mercado Livre. Selecione uma categoria antes de criar o anúncio.",
+        });
+      }
+
       try {
         const data = await productUseCase.create({
           sku: sanitized.sku,
@@ -153,13 +214,16 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           model: sanitized.model,
           year: sanitized.year,
           version: sanitized.version,
-          category: sanitized.category,
+          category: resolvedMlCategoryPath || sanitized.category,
           location: sanitized.location,
           partNumber: sanitized.partNumber,
           quality: sanitized.quality,
           isSecurityItem: sanitized.isSecurityItem,
           isTraceable: sanitized.isTraceable,
           sourceVehicle: sanitized.sourceVehicle,
+          mlCategoryId: resolvedMlCategoryId,
+          mlCategorySource: resolvedMlCategorySource,
+          mlCategoryChosenAt: resolvedMlCategoryChosenAt,
 
           // Medidas / peso
           heightCm: sanitized.heightCm,
@@ -179,163 +243,71 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           price: data.price,
         });
 
-        // Se solicitado, criar anúncio no ML
-        let listingResult = null;
-        if (createListing) {
-          // Verificar se usuário está autenticado (necessário para criar anúncio)
-          const userCheck = (request as any).user;
-          if (!userCheck) {
-            return reply.status(401).send({
-              error: "Autenticação necessária",
-              message: "Para criar anúncio, o usuário deve estar autenticado",
-            });
-          }
+        // Responder imediatamente com o produto criado.
+        // A criação de anúncios no ML é feita em background (fire-and-forget)
+        // para não bloquear a UI do modal por 10-30 segundos.
+        const wantsListing =
+          (Array.isArray(listings) && listings.length > 0) ||
+          (createListing && (!listings || listings.length === 0));
 
-          try {
-            // First attempt
-            listingResult = await ListingUseCase.createMLListing(
-              userCheck.id,
-              data.id,
-              createListingCategoryId,
-            );
+        // Dispara criação de listings em background (sem await)
+        if (wantsListing && user) {
+          const bgListings = Array.isArray(listings) ? listings : [];
+          const bgCategoryId = createListingCategoryId;
+          const bgUserId = user.id as string;
+          const bgProductId = data.id as string;
+          const bgCreateListing = createListing;
 
-            // If attempt was skipped (e.g. account detected as vacation/restricted),
-            // perform a capability re-check loop and retry a few times. This covers
-            // short propagation delays when the user disables "modo férias" in Seller Center.
-            if (listingResult?.skipped) {
-              // If ML returned a policy-like restriction (e.g. restrictions_coliving)
-              // treat as a policy issue and DO NOT perform the vacation recheck loop —
-              // these require Seller Center / Mercado Livre intervention.
-              const mlError =
-                (listingResult as any).mlError ||
-                String(listingResult.error || "");
-              if (
-                /restrictions_\w+/i.test(mlError) ||
-                /restrictions_coliving/i.test(mlError)
-              ) {
-                console.debug(
-                  "[product.routes] skipped due to ML policy restriction, not rechecking account:",
-                  mlError,
-                );
-              } else {
-                try {
-                  const maxRechecks = 5;
-                  for (
-                    let attempt = 1;
-                    attempt <= maxRechecks && listingResult?.skipped;
-                    attempt++
-                  ) {
-                    try {
-                      const status = await MarketplaceUseCase.getAccountStatus(
-                        userCheck.id,
-                        Platform.MERCADO_LIVRE,
-                      );
-
-                      console.debug(
-                        `[product.routes] listing skipped — recheck ${attempt} status:`,
-                        status,
-                      );
-
-                      // Retry when the account is connected and NOT restricted
-                      if (status?.connected && !status?.restricted) {
-                        listingResult = await ListingUseCase.createMLListing(
-                          userCheck.id,
-                          data.id,
-                          createListingCategoryId,
+          // fire-and-forget — erros são logados mas não bloqueiam a resposta
+          void (async () => {
+            try {
+              // Fluxo multi-contas
+              if (bgListings.length > 0) {
+                for (const lst of bgListings) {
+                  if (lst.platform === "MERCADO_LIVRE") {
+                    const accounts = (lst.accountIds || []).length
+                      ? lst.accountIds
+                      : [undefined];
+                    for (const accId of accounts) {
+                      try {
+                        await ListingUseCase.createMLListing(
+                          bgUserId,
+                          bgProductId,
+                          lst.categoryId || bgCategoryId,
+                          accId,
                         );
-
-                        // if create succeeded, break the loop
-                        if (listingResult && listingResult.success) break;
+                      } catch (e) {
+                        console.error("[product:bg-listing] ML error:", e instanceof Error ? e.message : e);
                       }
-                    } catch (recheckErr) {
-                      console.debug(
-                        `[product.routes] listing recheck ${attempt} failed:`,
-                        toErrMsg(recheckErr),
-                      );
                     }
-
-                    // small backoff between rechecks
-                    if (attempt < maxRechecks)
-                      await new Promise((r) => setTimeout(r, attempt * 1000));
                   }
-                } catch (err) {
-                  console.debug(
-                    "Listing retry loop failed:",
-                    toErrMsg(err),
-                  );
                 }
               }
+
+              // Fluxo legado
+              if (bgCreateListing && bgListings.length === 0) {
+                try {
+                  await ListingUseCase.createMLListing(
+                    bgUserId,
+                    bgProductId,
+                    bgCategoryId,
+                  );
+                } catch (e) {
+                  console.error("[product:bg-listing] legacy ML error:", e instanceof Error ? e.message : e);
+                }
+              }
+            } catch (bgErr) {
+              console.error("[product:bg-listing] unexpected error:", bgErr);
             }
-          } catch (listingError) {
-            console.error("Erro ao criar anúncio:", listingError);
-            // Não falhar a criação do produto se o anúncio falhar
-            listingResult = {
-              success: false,
-              error:
-                listingError instanceof Error
-                  ? listingError.message
-                  : "Erro desconhecido",
-            };
-          }
-        }
-
-        // Criação multi-contas/plataformas (novo payload "listings")
-        const multiListingResults: Array<{
-          platform: Platform;
-          accountId: string;
-          result: any;
-        }> = [];
-
-        const listingsPayload = Array.isArray(listings) ? listings : [];
-        for (const l of listingsPayload) {
-          const platform = l?.platform as Platform | undefined;
-          const accountIds =
-            Array.isArray(l?.accountIds) && l.accountIds.length > 0
-              ? l.accountIds.filter(Boolean)
-              : [];
-          const categoryId =
-            typeof l?.categoryId === "string" ? l.categoryId : undefined;
-
-          if (!platform || accountIds.length === 0) {
-            multiListingResults.push({
-              platform: platform || ("" as Platform),
-              accountId: "",
-              result: {
-                success: false,
-                error: "Payload de listings incompleto (platform/accountIds)",
-              },
-            });
-            continue;
-          }
-
-          for (const accountId of accountIds) {
-            try {
-              const res = await ListingUseCase.createListing(
-                user?.id,
-                data.id,
-                platform,
-                categoryId,
-                accountId,
-              );
-              multiListingResults.push({ platform, accountId, result: res });
-            } catch (err) {
-              multiListingResults.push({
-                platform,
-                accountId,
-                result: {
-                  success: false,
-                  error:
-                    err instanceof Error ? err.message : "Erro ao criar anúncio",
-                },
-              });
-            }
-          }
+          })();
         }
 
         return reply.status(201).send({
           ...data,
-          listing: listingResult,
-          listingsResults: multiListingResults,
+          listing: wantsListing
+            ? { success: true, pending: true, message: "Anúncio sendo criado em segundo plano" }
+            : null,
+          listingsResults: [],
         });
       } catch (error: any) {
         // Log sanitized payload for debugging (non-sensitive fields only)
@@ -500,6 +472,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           isSecurityItem,
           isTraceable,
           sourceVehicle,
+          mlCategory,
+          mlCategorySource,
 
           // Medidas / peso
           heightCm,
@@ -529,34 +503,64 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         }
 
         const userId = (request as any).user?.id as string | undefined;
-        const result = await productUseCase.update(id, {
-          name,
-          description,
-          price,
-          stock,
-          // Campos de autopeças
-          costPrice,
-          markup,
-          brand,
-          model,
-          year,
-          version,
-          category,
-          location,
-          partNumber,
-          quality,
-          isSecurityItem,
-          isTraceable,
-          sourceVehicle,
+        // Resolver mlCategory se fornecida
+        let resolvedMlCategoryId: string | undefined;
+        let resolvedMlCategoryPath: string | undefined;
+        let resolvedMlCategorySource:
+          | "auto"
+          | "manual"
+          | "imported"
+          | undefined;
+        let resolvedMlCategoryChosenAt: Date | undefined;
+        if (mlCategory) {
+          const cat = await CategoryRepository.findByExternalId(mlCategory);
+          if (!cat) {
+            return reply.status(400).send({
+              error:
+                "Categoria do Mercado Livre não está sincronizada. Escolha outra ou sincronize as categorias.",
+            });
+          }
+          resolvedMlCategoryId = cat.id;
+          resolvedMlCategoryPath = cat.fullPath || cat.name || category;
+          resolvedMlCategorySource = (mlCategorySource as any) || "manual";
+          resolvedMlCategoryChosenAt = new Date();
+        }
 
-          // Medidas / peso
-          heightCm,
-          widthCm,
-          lengthCm,
-          weightKg,
+        const result = await productUseCase.update(
+          id,
+          {
+            name,
+            description,
+            price,
+            stock,
+            // Campos de autopeças
+            costPrice,
+            markup,
+            brand,
+            model,
+            year,
+            version,
+            category: resolvedMlCategoryPath || category,
+            location,
+            partNumber,
+            quality,
+            isSecurityItem,
+            isTraceable,
+            sourceVehicle,
+            mlCategoryId: resolvedMlCategoryId,
+            mlCategorySource: resolvedMlCategorySource,
+            mlCategoryChosenAt: resolvedMlCategoryChosenAt,
 
-          imageUrl,
-        }, userId);
+            // Medidas / peso
+            heightCm,
+            widthCm,
+            lengthCm,
+            weightKg,
+
+            imageUrl,
+          },
+          userId,
+        );
 
         // Registrar log de atualização do produto
         const user = (request as any).user;

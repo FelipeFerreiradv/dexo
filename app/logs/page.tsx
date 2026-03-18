@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { PageHeader } from "@/components/page-header";
 
 interface SystemLog {
   id: string;
@@ -190,8 +191,8 @@ export default function LogsPage() {
 
   // Obter texto amigável para ações
   const getActionLabel = (action: string) => {
-    const actionLabels: Record<string, string> = {
-      LOGIN: "Login",
+  const actionLabels: Record<string, string> = {
+    LOGIN: "Login",
       LOGOUT: "Logout",
       CREATE_PRODUCT: "Criar Produto",
       UPDATE_PRODUCT: "Atualizar Produto",
@@ -208,24 +209,23 @@ export default function LogsPage() {
   };
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Logs do Sistema</h1>
-          <p className="text-muted-foreground">
-            Monitore todas as atividades e eventos da plataforma
-          </p>
-        </div>
-        <Button variant="outline" size="sm">
-          <DownloadIcon className="h-4 w-4 mr-2" />
-          Exportar
-        </Button>
-      </div>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Observabilidade"
+        title="Logs do Sistema"
+        subtitle="Monitore atividades e eventos da plataforma com filtros rápidos e leitura confortável."
+        actions={
+          <Button variant="outline" size="sm" className="gap-2 rounded-full">
+            <DownloadIcon className="h-4 w-4" />
+            Exportar
+          </Button>
+        }
+      />
 
       {/* Estatísticas */}
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">
                 Total de Logs
@@ -238,18 +238,18 @@ export default function LogsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Erros</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-600">
+              <div className="text-2xl font-bold text-destructive">
                 {stats.logsByLevel.ERROR || 0}
               </div>
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Avisos</CardTitle>
             </CardHeader>
@@ -260,7 +260,7 @@ export default function LogsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">
                 Atividades Hoje
@@ -278,7 +278,7 @@ export default function LogsPage() {
       )}
 
       {/* Filtros */}
-      <Card>
+      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <FilterIcon className="h-5 w-5" />
@@ -286,7 +286,7 @@ export default function LogsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Buscar</label>
               <div className="relative">
@@ -295,7 +295,7 @@ export default function LogsPage() {
                   placeholder="Mensagem, usuário..."
                   value={filters.search}
                   onChange={(e) => handleFilterChange("search", e.target.value)}
-                  className="pl-9"
+                  className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
                 />
               </div>
             </div>
@@ -374,7 +374,7 @@ export default function LogsPage() {
       </Card>
 
       {/* Timeline de Logs */}
-      <Card>
+      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <CardTitle>Logs Recentes</CardTitle>
           <CardDescription>

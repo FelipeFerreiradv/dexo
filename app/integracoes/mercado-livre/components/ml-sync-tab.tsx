@@ -107,7 +107,7 @@ export function MLSyncTab() {
     } finally {
       setIsImporting(false);
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, selectedAccountId]);
 
   // Sincronizar estoque para o ML
   const handleSync = useCallback(async () => {

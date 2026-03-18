@@ -29,6 +29,11 @@ type PrismaOrderWithRelations = PrismaOrder & {
       sku: string;
       stock: number;
     };
+    listing?: {
+      id: string;
+      externalListingId: string;
+      permalink: string | null;
+    };
   })[];
   marketplaceAccount?: {
     id: string;
@@ -46,12 +51,18 @@ function mapPrismaToOrderItem(
       sku: string;
       stock: number;
     };
+    listing?: {
+      id: string;
+      externalListingId: string;
+      permalink: string | null;
+    };
   },
 ): OrderItem {
   return {
     id: item.id,
     orderId: item.orderId,
     productId: item.productId,
+    listingId: item.listingId ?? undefined,
     quantity: item.quantity,
     unitPrice: item.unitPrice.toNumber(),
     product: item.product
@@ -60,6 +71,13 @@ function mapPrismaToOrderItem(
           name: item.product.name,
           sku: item.product.sku,
           stock: item.product.stock,
+        }
+      : undefined,
+    listing: item.listing
+      ? {
+          id: item.listing.id,
+          externalListingId: item.listing.externalListingId,
+          permalink: item.listing.permalink ?? undefined,
         }
       : undefined,
   };
@@ -105,6 +123,7 @@ class OrderRepositoryPrisma implements OrderRepository {
           items: {
             create: data.items.map((item) => ({
               productId: item.productId,
+              listingId: item.listingId ?? null,
               quantity: item.quantity,
               unitPrice: item.unitPrice,
             })),
@@ -119,6 +138,13 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                },
+              },
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  permalink: true,
                 },
               },
             },
@@ -160,6 +186,13 @@ class OrderRepositoryPrisma implements OrderRepository {
                   stock: true,
                 },
               },
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  permalink: true,
+                },
+              },
             },
           },
           marketplaceAccount: {
@@ -199,6 +232,13 @@ class OrderRepositoryPrisma implements OrderRepository {
                   stock: true,
                 },
               },
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  permalink: true,
+                },
+              },
             },
           },
           marketplaceAccount: {
@@ -231,6 +271,7 @@ class OrderRepositoryPrisma implements OrderRepository {
     // Construir filtros
     const where: {
       marketplaceAccountId?: string;
+      marketplaceAccount?: { userId?: string };
       status?: PrismaOrderStatus;
       createdAt?: {
         gte?: Date;
@@ -244,6 +285,8 @@ class OrderRepositoryPrisma implements OrderRepository {
 
     if (options?.marketplaceAccountId) {
       where.marketplaceAccountId = options.marketplaceAccountId;
+    } else if (options?.userId) {
+      where.marketplaceAccount = { userId: options.userId };
     }
 
     if (options?.status) {
@@ -283,6 +326,13 @@ class OrderRepositoryPrisma implements OrderRepository {
                     name: true,
                     sku: true,
                     stock: true,
+                  },
+                },
+                listing: {
+                  select: {
+                    id: true,
+                    externalListingId: true,
+                    permalink: true,
                   },
                 },
               },
@@ -334,6 +384,13 @@ class OrderRepositoryPrisma implements OrderRepository {
                   stock: true,
                 },
               },
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  permalink: true,
+                },
+              },
             },
           },
           marketplaceAccount: {
@@ -366,22 +423,29 @@ class OrderRepositoryPrisma implements OrderRepository {
           customerName: data.customerName,
           customerEmail: data.customerEmail,
         },
-        include: {
-          items: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  name: true,
-                  sku: true,
-                  stock: true,
+          include: {
+            items: {
+              include: {
+                product: {
+                  select: {
+                    id: true,
+                    name: true,
+                    sku: true,
+                    stock: true,
+                  },
+                },
+                listing: {
+                  select: {
+                    id: true,
+                    externalListingId: true,
+                    permalink: true,
+                  },
                 },
               },
             },
-          },
-          marketplaceAccount: {
-            select: {
-              id: true,
+            marketplaceAccount: {
+              select: {
+                id: true,
               platform: true,
               accountName: true,
             },

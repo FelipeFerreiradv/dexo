@@ -16,6 +16,7 @@ export interface OrderItem {
   id: string;
   orderId: string;
   productId: string;
+  listingId?: string | null;
   quantity: number;
   unitPrice: number;
   // Dados do produto (para exibição)
@@ -24,6 +25,11 @@ export interface OrderItem {
     name: string;
     sku: string;
     stock: number;
+  };
+  listing?: {
+    id: string;
+    externalListingId: string;
+    permalink?: string | null;
   };
 }
 
@@ -61,6 +67,7 @@ export interface OrderCreate {
 // Interface para criar item de pedido
 export interface OrderItemCreate {
   productId: string;
+  listingId?: string | null;
   quantity: number;
   unitPrice: number;
 }
@@ -75,6 +82,7 @@ export interface OrderUpdate {
 // Opções para buscar pedidos
 export interface OrderFindOptions {
   marketplaceAccountId?: string;
+  userId?: string;
   status?: OrderStatus;
   search?: string;
   page?: number;

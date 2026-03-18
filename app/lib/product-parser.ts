@@ -131,10 +131,24 @@ export const ML_CATALOG = [
     ],
   },
   {
-    id: "MLB1758",
-    value: "Filtros",
-    keywords: ["filtro", "oleo", "ar", "combustível"],
-    children: [],
+    id: "MLB191834",
+    value:
+      "Acessórios para Veículos > Peças de Carros e Caminhonetes > Filtros",
+    keywords: ["filtro", "oleo", "óleo", "ar", "combustível", "combustivel"],
+    children: [
+      {
+        id: "MLB194016",
+        value:
+          "Acessórios para Veículos > Peças de Carros e Caminhonetes > Filtros > Outros",
+        keywords: [
+          "reservatorio",
+          "reservatório",
+          "partida frio",
+          "tampa reservatorio",
+          "tampa reservatório",
+        ],
+      },
+    ],
   },
   { id: "MLB1764", value: "Outros", keywords: [], children: [] },
 ];

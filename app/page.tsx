@@ -1,24 +1,19 @@
-import {
-  Package,
-  Warehouse,
-  AlertTriangle,
-  Link2,
-  Link2Off,
-} from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Activity, ChartLine, Link2, Package } from "lucide-react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
+
 import { authOptions } from "./lib/auth";
-import ProductsByCategory from "@/components/charts/products-by-category";
-import OrdersOverTime from "@/components/charts/orders-over-time";
-import StockDistribution from "@/components/charts/stock-distribution";
-import StockChanges from "@/components/charts/stock-changes";
+import { MetricCard } from "@/components/dashboard/metric-card";
+import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
+import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
+import {
+  CountryGrid,
+  type AccountStat,
+} from "@/components/dashboard/country-grid";
+import {
+  ProductRow,
+  TopProductsTable,
+} from "@/components/dashboard/top-products-table";
 
 interface DashboardStats {
   totalProducts: number;
@@ -39,16 +34,6 @@ interface MarketplaceIntegration {
   updatedAt: string;
 }
 
-interface CategoryItem {
-  category: string;
-  count: number;
-}
-
-interface StockDistributionItem {
-  range: string;
-  count: number;
-}
-
 interface OrderOverTimeItem {
   date: string;
   orders: number;
@@ -67,6 +52,8 @@ interface StockChangeItem {
     newStock: number;
   }[];
 }
+
+type HeatmapCell = { day: string; slot: "morning" | "afternoon" | "evening"; value: number };
 
 async function getDashboardStats(
   userEmail: string,
@@ -104,6 +91,66 @@ async function getMarketplaceIntegrations(
   }
 }
 
+async function getOrdersOverTime(
+  userEmail: string,
+): Promise<OrderOverTimeItem[]> {
+  try {
+    const res = await fetch(
+      "http://localhost:3333/dashboard/orders-over-time?days=180",
+      { cache: "no-store", headers: { email: userEmail } },
+    );
+    if (!res.ok) return [];
+    return (await res.json()) as OrderOverTimeItem[];
+  } catch {
+    return [];
+  }
+}
+
+async function getStockChanges(userEmail: string): Promise<StockChangeItem[]> {
+  try {
+    const res = await fetch(
+      "http://localhost:3333/dashboard/stock-changes?days=30",
+      { cache: "no-store", headers: { email: userEmail } },
+    );
+    if (!res.ok) return [];
+    return (await res.json()) as StockChangeItem[];
+  } catch {
+    return [];
+  }
+}
+
+async function getProductMetrics(
+  userEmail: string,
+): Promise<
+  {
+    productId: string;
+    listingId?: string | null;
+    name: string;
+    sku: string;
+    stock: number;
+    sales: number;
+    revenue: number;
+    growth: number | null;
+    reviews: number;
+    views: number;
+    platform?: string | null;
+    accountName?: string | null;
+    lastDate: string | null;
+  }[]
+> {
+  try {
+    const res = await fetch(
+      "http://localhost:3333/dashboard/product-metrics?days=30&limit=8",
+      { cache: "no-store", headers: { email: userEmail } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.items || [];
+  } catch {
+    return [];
+  }
+}
+
 function formatTimeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -118,42 +165,37 @@ function formatTimeAgo(dateString: string): string {
   return `há ${diffDays}d`;
 }
 
-function getPlatformDisplay(platform: string): {
-  name: string;
-  abbrev: string;
-  bgClass: string;
-  textClass: string;
-} {
-  switch (platform) {
-    case "MERCADO_LIVRE":
-      return {
-        name: "Mercado Livre",
-        abbrev: "ML",
-        bgClass: "bg-primary/10",
-        textClass: "text-primary",
-      };
-    case "SHOPEE":
-      return {
-        name: "Shopee",
-        abbrev: "SP",
-        bgClass: "bg-orange-500/10",
-        textClass: "text-orange-500",
-      };
-    default:
-      return {
-        name: platform,
-        abbrev: platform.slice(0, 2).toUpperCase(),
-        bgClass: "bg-gray-500/10",
-        textClass: "text-gray-500",
-      };
-  }
+function formatCurrencyBRL(value: number) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 0,
+  }).format(value);
 }
 
-function getStockBadgeClass(stock: number): string {
-  if (stock <= 3) {
-    return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
-  }
-  return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400";
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("pt-BR").format(Math.round(value));
+}
+
+function computeDelta(
+  series: OrderOverTimeItem[],
+  key: "orders" | "totalAmount",
+  window = 7,
+): number | null {
+  const sorted = [...series].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+  const current = sorted.slice(-window);
+  const previous = sorted.slice(-(window * 2), -window);
+
+  if (!current.length || !previous.length) return null;
+
+  const currentSum = current.reduce((sum, item) => sum + (item[key] ?? 0), 0);
+  const previousSum = previous.reduce((sum, item) => sum + (item[key] ?? 0), 0);
+
+  if (previousSum === 0) return null;
+
+  return ((currentSum - previousSum) / previousSum) * 100;
 }
 
 export default async function Home() {
@@ -163,295 +205,270 @@ export default async function Home() {
     redirect("/login");
   }
 
-  const [stats, integrations] = await Promise.all([
-    getDashboardStats(userSession.user?.email || ""),
-    getMarketplaceIntegrations(userSession.user?.email || ""),
-  ]);
-
-  // Buscar dados de gráficos
-  const [productsByCategory, stockDistribution, ordersOverTime, stockChanges] =
-    await Promise.all([
-      (async () => {
-        try {
-          const res = await fetch(
-            "http://localhost:3333/dashboard/products-by-category",
-            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
-          );
-          if (!res.ok) return [] as CategoryItem[];
-          return (await res.json()) as CategoryItem[];
-        } catch {
-          return [] as CategoryItem[];
-        }
-      })(),
-      (async () => {
-        try {
-          const res = await fetch(
-            "http://localhost:3333/dashboard/stock-distribution",
-            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
-          );
-          if (!res.ok) return [] as StockDistributionItem[];
-          return (await res.json()) as StockDistributionItem[];
-        } catch {
-          return [] as StockDistributionItem[];
-        }
-      })(),
-      (async () => {
-        try {
-          const res = await fetch(
-            "http://localhost:3333/dashboard/orders-over-time?days=30",
-            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
-          );
-          if (!res.ok) return [] as OrderOverTimeItem[];
-          return (await res.json()) as OrderOverTimeItem[];
-        } catch {
-          return [] as OrderOverTimeItem[];
-        }
-      })(),
-      (async () => {
-        try {
-          const res = await fetch(
-            "http://localhost:3333/dashboard/stock-changes?days=7",
-            { cache: "no-store", headers: { email: userSession.user?.email || "" } },
-          );
-          if (!res.ok) return [] as StockChangeItem[];
-          return (await res.json()) as StockChangeItem[];
-        } catch {
-          return [] as StockChangeItem[];
-        }
-      })(),
-    ]);
+  const [stats, integrations, ordersOverTime, stockChanges] = await Promise.all(
+    [
+      getDashboardStats(userSession.user?.email || ""),
+      getMarketplaceIntegrations(userSession.user?.email || ""),
+      getOrdersOverTime(userSession.user?.email || ""),
+      getStockChanges(userSession.user?.email || ""),
+      // product metrics fetch separately below to avoid breaking existing Promise.all shape
+    ],
+  );
+  const productMetrics = await getProductMetrics(userSession.user?.email || "");
 
   const activeIntegrations = integrations.filter((i) => i.status === "ACTIVE");
+  const sortedOrders = [...ordersOverTime].sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+
+  const totalRevenue = sortedOrders.reduce(
+    (sum, item) => sum + (item.totalAmount ?? 0),
+    0,
+  );
+  const totalOrders = sortedOrders.reduce(
+    (sum, item) => sum + (item.orders ?? 0),
+    0,
+  );
+  const averageOrders =
+    sortedOrders.length > 0 ? totalOrders / sortedOrders.length : 0;
+
+  const revenueDelta = computeDelta(sortedOrders, "totalAmount");
+  const ordersDelta = computeDelta(sortedOrders, "orders");
+
+  const netStockChange = stockChanges.reduce((sum, item) => {
+    const last = item.changes?.[0];
+    return sum + (last?.change ?? 0);
+  }, 0);
+
+  const stockDelta =
+    stats?.totalStock && stats.totalStock !== 0
+      ? (netStockChange / Math.max(stats.totalStock - netStockChange, 1)) * 100
+      : null;
+
+  const criticalProducts = stats?.lowStockProducts ?? [];
+
+  const metricCards = [
+    {
+      title: "Receita total",
+      value: formatCurrencyBRL(totalRevenue),
+      caption: "Período corrente • abrangência global",
+      delta: revenueDelta,
+      deltaLabel: "",
+      tone:
+        revenueDelta !== null && revenueDelta < 0
+          ? ("negative" as const)
+          : ("positive" as const),
+    },
+    {
+      title: "Total de pedidos",
+      value: formatNumber(totalOrders),
+      caption: `Média diária ${formatNumber(averageOrders)} • ${sortedOrders.length} dias de dados`,
+      delta: ordersDelta,
+      deltaLabel: "",
+      tone: "neutral" as const,
+    },
+    {
+      title: "Estoque disponível",
+      value: formatNumber(stats?.totalStock ?? 0),
+      caption: `${criticalProducts.length} produtos em nível crítico`,
+      delta: stockDelta,
+      deltaLabel: "",
+      tone:
+        stockDelta !== null && stockDelta < 0
+          ? ("negative" as const)
+          : ("positive" as const),
+    },
+    {
+      title: "Integrações ativas",
+      value: formatNumber(activeIntegrations.length),
+      caption:
+        activeIntegrations.length > 0
+          ? `Última sync ${formatTimeAgo(activeIntegrations[0].updatedAt)}`
+          : "Conecte um marketplace para sincronizar",
+      delta: null,
+      deltaLabel: "",
+      tone: "neutral" as const,
+    },
+  ];
+
+  const heatmapData = buildHeatmapData(sortedOrders);
+  const accountStats = buildAccountSales(
+    integrations,
+    totalRevenue,
+    totalOrders,
+  );
+  const topProducts = buildTopProducts(productMetrics);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-foreground">
-          Dashboard
-        </h2>
-        <p className="text-muted-foreground">
-          Visão geral do seu estoque e integrações
-        </p>
-      </div>
+    <div className="mx-auto flex w-full max-w-full flex-col gap-6 pb-10">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+            Painel executivo
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Visão de desempenho
+          </h1>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="rounded-full border border-border/60 bg-muted/30 px-3 py-1 font-medium text-foreground">
+            Dados em tempo real
+          </span>
+          <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 sm:inline">
+            {activeIntegrations.length} integrações
+          </span>
+        </div>
+      </header>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Total de Produtos
-            </CardTitle>
-            <Package className="size-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {stats?.totalProducts.toLocaleString("pt-BR") ?? "—"}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Produtos cadastrados
-            </p>
-          </CardContent>
-        </Card>
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {metricCards.map((metric) => (
+          <MetricCard key={metric.title} {...metric} />
+        ))}
+      </section>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Itens em Estoque
-            </CardTitle>
-            <Warehouse className="size-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {stats?.totalStock.toLocaleString("pt-BR") ?? "—"}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Unidades disponíveis
-            </p>
-          </CardContent>
-        </Card>
+      <section className="grid gap-4 xl:grid-cols-3">
+        <div className="xl:col-span-1">
+          <OrdersHeatmap data={heatmapData} />
+        </div>
+        <div className="xl:col-span-2">
+          <HeroAreaChart data={sortedOrders} title="Performance mensal" />
+        </div>
+      </section>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Estoque Baixo</CardTitle>
-            <AlertTriangle className="size-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {stats?.lowStockProducts.length ?? "—"}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Produtos com ≤10 unidades
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Integrações Ativas
-            </CardTitle>
-            <Link2 className="size-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {activeIntegrations.length}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Marketplaces conectados
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Integrações Ativas</CardTitle>
-            <CardDescription>
-              Status das conexões com marketplaces
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {integrations.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-6 text-center">
-                <Link2Off className="size-10 text-muted-foreground/50 mb-2" />
-                <p className="text-sm text-muted-foreground">
-                  Nenhuma integração configurada
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Configure suas integrações em Configurações → Integrações
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {integrations.map((integration) => {
-                  const platform = getPlatformDisplay(integration.platform);
-                  const isActive = integration.status === "ACTIVE";
-                  return (
-                    <div
-                      key={integration.id}
-                      className="flex items-center justify-between"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={`flex size-10 items-center justify-center rounded-lg ${platform.bgClass}`}
-                        >
-                          <span
-                            className={`text-sm font-semibold ${platform.textClass}`}
-                          >
-                            {platform.abbrev}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium">{platform.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {integration.accountName ||
-                              `Última sync: ${formatTimeAgo(integration.updatedAt)}`}
-                          </p>
-                        </div>
-                      </div>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                          isActive
-                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                            : "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
-                        }`}
-                      >
-                        {isActive ? "Conectado" : "Desconectado"}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Alertas de Estoque</CardTitle>
-            <CardDescription>Produtos com estoque baixo (≤10)</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!stats || stats.lowStockProducts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-6 text-center">
-                <Package className="size-10 text-muted-foreground/50 mb-2" />
-                <p className="text-sm text-muted-foreground">
-                  Nenhum produto com estoque baixo
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Todos os produtos têm estoque adequado
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {stats.lowStockProducts.map((product) => (
-                  <div
-                    key={product.id}
-                    className="flex items-center justify-between"
-                  >
-                    <div>
-                      <p className="text-sm font-medium">{product.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        SKU: {product.sku || "—"}
-                      </p>
-                    </div>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${getStockBadgeClass(product.stock)}`}
-                    >
-                      {product.stock}{" "}
-                      {product.stock === 1 ? "unidade" : "unidades"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Produtos por Categoria</CardTitle>
-            <CardDescription>Composição do catálogo</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ProductsByCategory data={productsByCategory} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Pedidos (30 dias)</CardTitle>
-            <CardDescription>Tendência de pedidos</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <OrdersOverTime data={ordersOverTime} />
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Distribuição de Estoque</CardTitle>
-            <CardDescription>Contagem por faixa</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <StockDistribution data={stockDistribution} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Alterações de Estoque (7 dias)</CardTitle>
-            <CardDescription>Produtos com mais alterações</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <StockChanges data={stockChanges} />
-          </CardContent>
-        </Card>
-      </div>
+      <section className="grid gap-4 xl:grid-cols-3">
+        <div className="xl:col-span-1">
+          <CountryGrid
+            items={accountStats}
+            viewAllHref="/integracoes/mercado-livre"
+          />
+        </div>
+        <div className="xl:col-span-2">
+          <TopProductsTable rows={topProducts} />
+        </div>
+      </section>
     </div>
   );
+}
+
+function buildHeatmapData(points: OrderOverTimeItem[]): HeatmapCell[] {
+  const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const slots: Array<HeatmapCell["slot"]> = ["morning", "afternoon", "evening"];
+
+  // Agrupa pedidos reais por dia da semana
+  const weekdayTotals = points.reduce<Record<string, number>>((acc, p) => {
+    const jsDay = new Date(p.date).getDay(); // 0 domingo
+    const day = dayOrder[(jsDay + 6) % 7]; // alinhar segunda
+    acc[day] = (acc[day] ?? 0) + (p.orders ?? 0);
+    return acc;
+  }, {});
+
+  // Distribui igualmente pelos períodos do dia (sem forçar dados fictícios de horário)
+  const rows: HeatmapCell[] = [];
+  dayOrder.forEach((day) => {
+    const total = weekdayTotals[day] ?? 0;
+    const perSlot = total / slots.length;
+    slots.forEach((slot) => {
+      rows.push({ day, slot, value: perSlot });
+    });
+  });
+
+  return rows;
+}
+
+function getPlatformDisplay(platform: string): {
+  name: string;
+  abbrev: string;
+} {
+  switch (platform) {
+    case "MERCADO_LIVRE":
+      return { name: "Mercado Livre", abbrev: "ML" };
+    case "SHOPEE":
+      return { name: "Shopee", abbrev: "SP" };
+    default:
+      return { name: platform, abbrev: platform.slice(0, 2).toUpperCase() };
+  }
+}
+
+function buildAccountSales(
+  integrations: MarketplaceIntegration[],
+  totalRevenue: number,
+  totalOrders: number,
+): AccountStat[] {
+  if (!integrations?.length) {
+    return [
+      {
+        id: "placeholder",
+        code: "-",
+        account: "Nenhuma conta conectada",
+        platform: "Conecte um marketplace para ver vendas por conta",
+        revenue: "-",
+        orders: "-",
+        status: "pending",
+        accent: "muted",
+      },
+    ];
+  }
+
+  return integrations.slice(0, 6).map((integration) => {
+    const display = getPlatformDisplay(integration.platform);
+    const isActive = integration.status === "ACTIVE";
+    return {
+      id: integration.id,
+      code: display.abbrev,
+      account: integration.accountName ?? display.name,
+      platform: display.name,
+      revenue: "-", // ainda sem dado financeiro por conta
+      orders: "-", // sem agregado por conta no endpoint atual
+      status: isActive ? "active" : "pending",
+      accent: isActive ? "primary" : "muted",
+      lastSync: integration.updatedAt
+        ? formatTimeAgo(integration.updatedAt)
+        : undefined,
+    };
+  });
+}
+
+function buildTopProducts(
+  metrics: {
+    productId: string;
+    listingId?: string | null;
+    name: string;
+    sku: string;
+    stock: number;
+    sales: number;
+    revenue: number;
+    growth: number | null;
+    reviews: number;
+    views: number;
+    platform?: string | null;
+    accountName?: string | null;
+  }[],
+): ProductRow[] {
+  return (metrics ?? []).map((item) => {
+    const direction =
+      item.growth === null
+        ? "flat"
+        : item.growth > 0
+          ? "up"
+          : item.growth < 0
+            ? "down"
+            : "flat";
+
+    const growthLabel =
+      item.growth === null
+        ? "—"
+        : `${item.growth > 0 ? "+" : ""}${item.growth.toFixed(1)}%`;
+
+    return {
+      id: item.listingId ?? item.productId,
+      name: item.name,
+      sku: item.sku === "—" ? undefined : item.sku,
+      stock: formatNumber(item.stock ?? 0),
+      sales: formatNumber(item.sales ?? 0),
+      growth: growthLabel,
+      reviews: formatNumber(item.reviews ?? 0),
+      views: formatNumber(item.views ?? 0),
+      direction,
+    };
+  });
 }

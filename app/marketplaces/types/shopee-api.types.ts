@@ -43,6 +43,14 @@ export interface ShopeeItem {
   condition: ShopeeItemCondition;
   video_info: ShopeeItemVideoInfo[];
   brand: ShopeeItemBrand;
+  item_rating?: {
+    rating_star?: number;
+    rating_count?: number[];
+    rating_total?: number;
+  };
+  view_count?: number;
+  liked_count?: number;
+
   item_dangerous: number;
 }
 
@@ -220,4 +228,38 @@ export interface ShopeeCategoryAttributeValue {
 // Resposta dos atributos de categoria
 export interface ShopeeCategoryAttributeResponse {
   attribute_list: ShopeeCategoryAttribute[];
+}
+
+// Pedidos
+export interface ShopeeOrderListResponse {
+  more: boolean;
+  next_cursor?: string;
+  order_list: {
+    order_sn: string;
+    order_status: string;
+    create_time: number;
+    update_time: number;
+  }[];
+}
+
+export interface ShopeeOrderItem {
+  item_id: number;
+  item_name: string;
+  item_sku?: string;
+  model_id?: number;
+  model_name?: string;
+  model_sku?: string;
+  model_original_price?: number;
+  model_quantity_purchased: number;
+}
+
+export interface ShopeeOrderDetail {
+  order_sn: string;
+  order_status: string;
+  buyer_username?: string;
+  buyer_email?: string;
+  create_time: number;
+  update_time: number;
+  total_amount?: number;
+  item_list: ShopeeOrderItem[];
 }

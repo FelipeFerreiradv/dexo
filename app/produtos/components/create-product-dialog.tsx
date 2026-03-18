@@ -75,7 +75,7 @@ const productSchema = z.object({
     .max(100, "Nome deve ter no máximo 100 caracteres"),
   description: z
     .string()
-    .max(500, "Descrição deve ter no máximo 500 caracteres")
+    .max(4000, "Descrição deve ter no máximo 4000 caracteres")
     .optional(),
   partNumber: z.string().max(100).optional().nullable(),
 
@@ -160,6 +160,30 @@ const productSchema = z.object({
 
 type ProductFormData = z.infer<typeof productSchema>;
 
+type SuggestionResponse = {
+  normalizedTitle: string;
+  tokens: string[];
+  suggestions: Array<{
+    categoryId: string;
+    fullPath: string;
+    score: number;
+    source: string;
+    attributes?: {
+      brand?: string;
+      model?: string;
+      year?: string;
+      partNumber?: string;
+    };
+    measurements?: {
+      heightCm?: number;
+      widthCm?: number;
+      lengthCm?: number;
+      weightKg?: number;
+    };
+    title?: string;
+  }>;
+};
+
 interface CreateProductDialogProps {
   onProductCreated: () => void;
   onToast: (message: string, type: "success" | "error" | "warning") => void;
@@ -242,6 +266,9 @@ export function CreateProductDialog({
   onToast,
 }: CreateProductDialogProps) {
   const { data: session } = useSession();
+  const backendBase =
+    (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
+    "http://localhost:3333";
   const [open, setOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -256,6 +283,9 @@ export function CreateProductDialog({
   const [mlRestrictionMessage, setMlRestrictionMessage] = useState<
     string | null
   >(null);
+  const [titleSuggestion, setTitleSuggestion] = useState("");
+  const [mlCategorySearch, setMlCategorySearch] = useState("");
+  const [mlCategoryDropdownOpen, setMlCategoryDropdownOpen] = useState(false);
   const [mlAccounts, setMlAccounts] = useState<
     Array<{ id: string; accountName: string; status?: string }>
   >([]);
@@ -308,12 +338,12 @@ export function CreateProductDialog({
     },
   });
 
-  // Watch all form values for review step
-  const formValues = watch();
+  // Watch all form values only on review step to avoid re-renders on other steps
+  const formValues =
+    currentStep === TOTAL_STEPS ? watch() : ({} as ProductFormData);
 
   // Watch específicos para cálculos automáticos
   const watchName = watch("name");
-  const watchPartNumber = watch("partNumber");
   const watchCostPrice = watch("costPrice");
   const watchPrice = watch("price");
   const watchCategory = watch("category");
@@ -325,6 +355,11 @@ export function CreateProductDialog({
   const watchMlAccountIds = watch("mlAccountIds") || [];
   const watchShopeeAccountIds = watch("shopeeAccountIds") || [];
   const watchCreateShopeeListing = watch("createShopeeListing");
+  const watchDescription = watch("description") || "";
+
+  useEffect(() => {
+    if (!open) setTitleSuggestion("");
+  }, [open]);
 
   const toggleAccountSelection = (
     field: "mlAccountIds" | "shopeeAccountIds",
@@ -392,7 +427,7 @@ export function CreateProductDialog({
     } finally {
       setIsLoadingSku(false);
     }
-  }, [setValue]);
+  }, [session?.user?.email, setValue]);
 
   // Busca descrição padrão do usuário
   const fetchDefaultDescription = useCallback(async () => {
@@ -414,6 +449,29 @@ export function CreateProductDialog({
     }
   }, [session?.user?.email, setValue]);
 
+  const fetchCategorySuggestion = useCallback(
+    async (
+      title: string,
+      signal?: AbortSignal,
+    ): Promise<SuggestionResponse | null> => {
+      try {
+        const resp = await fetch(
+          `${backendBase}/marketplace/ml/category-suggest?title=${encodeURIComponent(
+            title,
+          )}`,
+          { headers: { email: session?.user?.email || "" }, signal },
+        );
+        if (!resp.ok) return null;
+        return (await resp.json()) as SuggestionResponse;
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return null;
+        console.error("Erro ao sugerir categoria:", err);
+        return null;
+      }
+    },
+    [backendBase, session?.user?.email],
+  );
+
   // Import shared parser
   // NOTE: keep logic same, just using central util to avoid duplication
   useEffect(() => {
@@ -430,38 +488,28 @@ export function CreateProductDialog({
       fetchNextSku();
       fetchDefaultDescription();
 
-      // Buscar categorias ML do backend (apenas quando modal aberto)
+      // Buscar status da conta ML + categorias sincronizadas
       (async () => {
         try {
           const base =
             (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
             "http://localhost:3333";
-          const resp = await fetch(`${base}/marketplace/ml/categories`, {
+          const respStatus = await fetch(`${base}/marketplace/ml/status`, {
             headers: { email: session?.user?.email || "" },
           });
-          if (resp.ok) {
-            const json = await resp.json();
-            setMlOptions(json.categories || []);
+          if (respStatus.ok) {
+            const statusJson = await respStatus.json();
+            setMlConnected(Boolean(statusJson.connected));
+            setMlAccountStatus(statusJson.status || null);
+            setMlRestricted(Boolean(statusJson.restricted));
+            setMlRestrictionMessage(statusJson.message || null);
           }
-
-          // Também buscar status da conta ML para proteger a UI (ex: impedir criar anúncio se conta RESTRICTED/ERROR)
-          try {
-            const respStatus = await fetch(`${base}/marketplace/ml/status`, {
-              headers: { email: session?.user?.email || "" },
-            });
-            if (respStatus.ok) {
-              const statusJson = await respStatus.json();
-              setMlConnected(Boolean(statusJson.connected));
-              setMlAccountStatus(statusJson.status || null);
-              setMlRestricted(Boolean(statusJson.restricted));
-              setMlRestrictionMessage(statusJson.message || null);
-            }
-          } catch (sErr) {
-            console.error("Erro ao buscar status ML:", sErr);
-          }
-        } catch (err) {
-          console.error("Erro ao buscar categorias ML:", err);
+        } catch (sErr) {
+          console.error("Erro ao buscar status ML:", sErr);
         }
+
+        // Categorias ML são carregadas sob demanda quando o usuário ativa a criação de anúncio
+        // para evitar carregar 12k+ categorias desnecessariamente na abertura do modal
       })();
     }
   }, [open, fetchNextSku, fetchDefaultDescription, session?.user?.email]);
@@ -481,6 +529,47 @@ export function CreateProductDialog({
     }
   }, [watchCostPrice, watchPrice, setValue]);
 
+  // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
+  const watchCreateMLListing = watch("createMLListing");
+  const mlCategoriesLoadedRef = useRef(false);
+  useEffect(() => {
+    if (
+      currentStep === 5 &&
+      mlOptions.length === 0 &&
+      !mlCategoriesLoadedRef.current
+    ) {
+      mlCategoriesLoadedRef.current = true;
+      (async () => {
+        try {
+          const base =
+            (process.env.NEXT_PUBLIC_APP_BACKEND_URL as string) ||
+            "http://localhost:3333";
+          const respCat = await fetch(`${base}/marketplace/ml/categories`, {
+            headers: { email: session?.user?.email || "" },
+          });
+          if (respCat.ok) {
+            const catJson = await respCat.json();
+            const cats = Array.isArray(catJson?.categories)
+              ? catJson.categories
+              : [];
+            if (cats.length > 0) {
+              setMlOptions(cats);
+            }
+          }
+        } catch (catErr) {
+          console.error("Erro ao buscar categorias ML:", catErr);
+        }
+      })();
+    }
+  }, [currentStep, mlOptions.length, session?.user?.email]);
+
+  // Reset lazy-load flag when dialog closes
+  useEffect(() => {
+    if (!open) {
+      mlCategoriesLoadedRef.current = false;
+    }
+  }, [open]);
+
   // Sugere categoria e extrai marca/modelo/ano baseada no nome do produto (sempre atualiza quando nome muda).
   // Só sobrescreve campos se estiverem vazios ou se o valor atual for o mesmo que foi preenchido automaticamente antes.
   const autoDetectedRef = useRef<{
@@ -489,11 +578,13 @@ export function CreateProductDialog({
     year?: string;
     category?: string;
     mlCategory?: string;
+    partNumber?: string;
     // medidas auto-detectadas
     heightCm?: number;
     widthCm?: number;
     lengthCm?: number;
     weightKg?: number;
+    titleSuggestion?: string;
   } | null>(null);
 
   // Debounced auto-fill: wait a short time after typing stops to apply detection (avoids transient partial parses blocking updates)
@@ -603,8 +694,9 @@ export function CreateProductDialog({
         !currentCategory || norm(prev.category) === norm(currentCategory);
 
       if (shouldUpdateCategory) {
-        if (mapping.topLevel) {
-          setValue("category", mapping.topLevel, { shouldDirty: true });
+        if (mapping.topLevel || mapping.detailedValue) {
+          const fullLabel = mapping.detailedValue || mapping.topLevel;
+          setValue("category", fullLabel, { shouldDirty: true });
           if (
             typeof window !== "undefined" &&
             window.location.hostname === "localhost"
@@ -642,51 +734,39 @@ export function CreateProductDialog({
         prevMl && norm(prevMl) === norm(currentMlCategory || "");
 
       if (mapping.detailedId) {
-        // Só atribuir mlCategory se for um ID válido presente em mlOptions
+        // Usar mlOptions quando disponível; caso contrário, usar o detailedId do mapeamento estático diretamente
         const externalFromMlOptions = mlOptions.find(
           (c) => c.value === mapping.detailedValue,
         )?.id;
+        const resolvedMlCategoryId =
+          externalFromMlOptions || mapping.detailedId;
 
         if (!currentMlCategory || isPrevAutoMl) {
-          if (externalFromMlOptions) {
-            setValue("mlCategory", externalFromMlOptions, {
-              shouldDirty: true,
-            });
-            if (
-              typeof window !== "undefined" &&
-              window.location.hostname === "localhost"
-            ) {
-              setTimeout(
-                () =>
-                  console.debug(
-                    "[auto-fill] post-set mlCategory",
-                    watch("mlCategory"),
-                  ),
-                0,
-              );
-            }
-          } else {
-            // Não encontrou categoria válida, limpar mlCategory
-            setValue("mlCategory", "", { shouldDirty: true });
-            if (
-              typeof window !== "undefined" &&
-              window.location.hostname === "localhost"
-            ) {
-              setTimeout(
-                () =>
-                  console.debug(
-                    "[auto-fill] post-clear mlCategory",
-                    watch("mlCategory"),
-                  ),
-                0,
-              );
-            }
+          setValue("mlCategory", resolvedMlCategoryId, {
+            shouldDirty: true,
+          });
+          if (
+            typeof window !== "undefined" &&
+            window.location.hostname === "localhost"
+          ) {
+            setTimeout(
+              () =>
+                console.debug(
+                  "[auto-fill] post-set mlCategory",
+                  watch("mlCategory"),
+                ),
+              0,
+            );
           }
         }
 
         // Ensure top-level is set too
-        if (mapping.topLevel && shouldUpdateCategory) {
-          setValue("category", mapping.topLevel, { shouldDirty: true });
+        if (
+          (mapping.topLevel || mapping.detailedValue) &&
+          shouldUpdateCategory
+        ) {
+          const fullLabel = mapping.detailedValue || mapping.topLevel;
+          setValue("category", fullLabel, { shouldDirty: true });
           if (
             typeof window !== "undefined" &&
             window.location.hostname === "localhost"
@@ -735,8 +815,9 @@ export function CreateProductDialog({
           prevBrand: prev.brand,
           detectedBrand: detected.brand,
           inputMounted: !!document.getElementById("brand"),
-          inputDom: (document.getElementById("brand") as HTMLInputElement | null)
-            ?.value,
+          inputDom: (
+            document.getElementById("brand") as HTMLInputElement | null
+          )?.value,
         });
       }
       if (shouldUpdateBrand) {
@@ -787,8 +868,9 @@ export function CreateProductDialog({
           prevModel: prev.model,
           detectedModel: detected.model,
           inputMounted: !!document.getElementById("model"),
-          inputDom: (document.getElementById("model") as HTMLInputElement | null)
-            ?.value,
+          inputDom: (
+            document.getElementById("model") as HTMLInputElement | null
+          )?.value,
         });
       }
       if (shouldUpdateModel) {
@@ -1051,8 +1133,8 @@ export function CreateProductDialog({
             }
 
             if (childMatch) {
-              // set both mlCategory (detailed) and the top-level category label
-              const topLevelLabel = childMatch.value.split(" > ")[0].trim();
+              // set both mlCategory (detailed) and the category label (full path)
+              const fullPathLabel = childMatch.value.trim();
 
               // Prefer the external category id synced from the backend (`mlOptions`) when available.
               // `mlOptions` contains { id: externalId, value: fullPath }.
@@ -1064,21 +1146,18 @@ export function CreateProductDialog({
               );
 
               // Always set a STRING into the form field (never an object)
-              // Only set internal ML_CATALOG id when there are NO synced `mlOptions`.
-              // If `mlOptions` exists but there's no external match, leave blank to avoid auto-sending internal ids.
-              const mlValueToSet =
-                externalMatch?.id ??
-                (mlOptions && mlOptions.length === 0 ? childMatch.id : "");
+              // Usar mlOptions quando disponível; caso contrário, usar o ID estático do childMatch
+              const mlValueToSet = externalMatch?.id || childMatch.id;
 
               setValue("mlCategory", mlValueToSet, { shouldDirty: true });
-              setValue("category", topLevelLabel, { shouldDirty: true });
+              setValue("category", fullPathLabel, { shouldDirty: true });
               if (
                 typeof window !== "undefined" &&
                 window.location.hostname === "localhost"
               )
                 console.debug(
                   "[auto-fill] post-set category from measurements/keywords",
-                  topLevelLabel,
+                  fullPathLabel,
                   mlValueToSet,
                 );
             }
@@ -1105,6 +1184,7 @@ export function CreateProductDialog({
           autoDetectedRef.current?.category,
         mlCategory:
           mlOptions.find((c) => c.value === mapping.detailedValue)?.id ??
+          mapping.detailedId ??
           autoDetectedRef.current?.mlCategory,
         heightCm:
           getMeasurementsForCategory(
@@ -1132,60 +1212,238 @@ export function CreateProductDialog({
     return () => {
       if (autoFillTimerRef.current) clearTimeout(autoFillTimerRef.current);
     };
-  }, [watchName, setValue, watch, mlOptions, trigger]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchName, mlOptions]);
 
-  // When category (top-level or mlCategory) changes, update measurements accordingly.
+  // Enriched suggestion using backend aliases (title, attributes, full path leaf)
+  const categorySuggestTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!watchName || watchName.length < 5) return;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    // Debounce backend call — aguarda 600ms após parar de digitar
+    if (categorySuggestTimerRef.current) {
+      clearTimeout(categorySuggestTimerRef.current);
+    }
+
+    categorySuggestTimerRef.current = window.setTimeout(async () => {
+      if (cancelled) return;
+      const suggestion = await fetchCategorySuggestion(
+        watchName,
+        controller.signal,
+      );
+      if (!suggestion || cancelled) return;
+      const best = suggestion.suggestions?.[0];
+      if (!best) return;
+
+      const norm = (s?: string) => (s || "").toString().trim().toLowerCase();
+      const prev = autoDetectedRef.current || {};
+      const currentCategory = watch("category");
+      const currentMlCategory = watch("mlCategory");
+      const currentBrand = watch("brand");
+      const currentModel = watch("model");
+      const currentYear = watch("year");
+      const currentPartNumber = watch("partNumber");
+
+      const shouldUpdateCategory =
+        !currentCategory || norm(prev.category) === norm(currentCategory);
+      if (shouldUpdateCategory && best.fullPath) {
+        setValue("category", best.fullPath, { shouldDirty: true });
+      }
+
+      const mlValue =
+        mlOptions.find(
+          (c) => c.id === best.categoryId || c.value === best.fullPath,
+        )?.id || best.categoryId;
+
+      const isPrevAutoMl =
+        prev.mlCategory &&
+        norm(prev.mlCategory) === norm(currentMlCategory || "");
+      if ((!currentMlCategory || isPrevAutoMl) && mlValue) {
+        setValue("mlCategory", mlValue, { shouldDirty: true });
+      }
+
+      const attributes = best.attributes || {};
+      if (
+        (!currentBrand || norm(prev.brand) === norm(currentBrand)) &&
+        attributes.brand
+      ) {
+        setValue("brand", attributes.brand, { shouldDirty: true });
+      }
+      if (
+        (!currentModel || norm(prev.model) === norm(currentModel)) &&
+        attributes.model
+      ) {
+        setValue("model", attributes.model, { shouldDirty: true });
+      }
+      if (
+        (!currentYear || norm(prev.year) === norm(currentYear)) &&
+        attributes.year
+      ) {
+        setValue("year", attributes.year, { shouldDirty: true });
+      }
+      if (
+        (!currentPartNumber ||
+          norm(prev.partNumber) === norm(currentPartNumber)) &&
+        attributes.partNumber
+      ) {
+        setValue("partNumber", attributes.partNumber, { shouldDirty: true });
+      }
+
+      const measurements = best.measurements;
+      try {
+        const currentHeight = watch("heightCm");
+        const currentWidth = watch("widthCm");
+        const currentLength = watch("lengthCm");
+        const currentWeight = watch("weightKg");
+
+        const shouldUpdateHeight =
+          currentHeight === null ||
+          currentHeight === undefined ||
+          prev.heightCm === currentHeight;
+        const shouldUpdateWidth =
+          currentWidth === null ||
+          currentWidth === undefined ||
+          prev.widthCm === currentWidth;
+        const shouldUpdateLength =
+          currentLength === null ||
+          currentLength === undefined ||
+          prev.lengthCm === currentLength;
+        const shouldUpdateWeight =
+          currentWeight === null ||
+          currentWeight === undefined ||
+          prev.weightKg === currentWeight;
+
+        if (shouldUpdateHeight && measurements?.heightCm !== undefined) {
+          setValue("heightCm", measurements.heightCm, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        }
+        if (shouldUpdateWidth && measurements?.widthCm !== undefined) {
+          setValue("widthCm", measurements.widthCm, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        }
+        if (shouldUpdateLength && measurements?.lengthCm !== undefined) {
+          setValue("lengthCm", measurements.lengthCm, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        }
+        if (shouldUpdateWeight && measurements?.weightKg !== undefined) {
+          setValue("weightKg", measurements.weightKg, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+        }
+      } catch {
+        /* ignore measurement fill errors */
+      }
+
+      if (best.title) {
+        setTitleSuggestion(best.title);
+      }
+
+      autoDetectedRef.current = {
+        ...prev,
+        category: best.fullPath || prev.category,
+        mlCategory: mlValue || prev.mlCategory,
+        brand: attributes.brand || prev.brand,
+        model: attributes.model || prev.model,
+        year: attributes.year || prev.year,
+        partNumber: attributes.partNumber || prev.partNumber,
+        heightCm: measurements?.heightCm ?? prev.heightCm,
+        widthCm: measurements?.widthCm ?? prev.widthCm,
+        lengthCm: measurements?.lengthCm ?? prev.lengthCm,
+        weightKg: measurements?.weightKg ?? prev.weightKg,
+        titleSuggestion: best.title || prev.titleSuggestion,
+      };
+    }, 600);
+
+    return () => {
+      cancelled = true;
+      if (categorySuggestTimerRef.current)
+        clearTimeout(categorySuggestTimerRef.current);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchName, fetchCategorySuggestion, mlOptions]);
+
+  // When category (top-level or mlCategory) changes via MANUAL user selection, update measurements.
+  // This effect is debounced to avoid cascade: auto-fill effects already set measurements,
+  // so this only runs for manual dropdown changes.
+  const lastMeasurementKeyRef = useRef<string>("");
   useEffect(() => {
     const category = watchCategory || undefined;
     const detailedValue = mlOptions.find(
       (c) => c.id === watchMlCategory,
     )?.value;
 
+    // Build a stable key to avoid redundant runs
+    const key = `${category || ""}|${detailedValue || ""}`;
+    if (key === lastMeasurementKeyRef.current) return;
+    lastMeasurementKeyRef.current = key;
+
     const prev = autoDetectedRef.current || ({} as any);
 
     try {
       const measurements = getMeasurementsForCategory(category, detailedValue);
-
-      // read current field values directly to avoid re-running effect on measurement updates
-      const currentHeight = watch("heightCm");
-      const currentWidth = watch("widthCm");
-      const currentLength = watch("lengthCm");
-      const currentWeight = watch("weightKg");
 
       // helper to decide update
       const shouldReplace = (current: any, prevAuto: any) =>
         current === null || current === undefined || prevAuto === current;
 
       if (measurements) {
-        if (shouldReplace(currentHeight, prev.heightCm))
-          setValue("heightCm", measurements.heightCm ?? undefined, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
-        if (shouldReplace(currentWidth, prev.widthCm))
-          setValue("widthCm", measurements.widthCm ?? undefined, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
-        if (shouldReplace(currentLength, prev.lengthCm))
-          setValue("lengthCm", measurements.lengthCm ?? undefined, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
-        if (shouldReplace(currentWeight, prev.weightKg))
-          setValue("weightKg", measurements.weightKg ?? undefined, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
+        const h = watch("heightCm");
+        const w = watch("widthCm");
+        const l = watch("lengthCm");
+        const wt = watch("weightKg");
 
-        // force validation/update so Controllers reflect the new values immediately
-        void trigger(["heightCm", "widthCm", "lengthCm", "weightKg"]);
+        let changed = false;
+        if (
+          shouldReplace(h, prev.heightCm) &&
+          measurements.heightCm !== undefined &&
+          h !== measurements.heightCm
+        ) {
+          setValue("heightCm", measurements.heightCm, { shouldDirty: true });
+          changed = true;
+        }
+        if (
+          shouldReplace(w, prev.widthCm) &&
+          measurements.widthCm !== undefined &&
+          w !== measurements.widthCm
+        ) {
+          setValue("widthCm", measurements.widthCm, { shouldDirty: true });
+          changed = true;
+        }
+        if (
+          shouldReplace(l, prev.lengthCm) &&
+          measurements.lengthCm !== undefined &&
+          l !== measurements.lengthCm
+        ) {
+          setValue("lengthCm", measurements.lengthCm, { shouldDirty: true });
+          changed = true;
+        }
+        if (
+          shouldReplace(wt, prev.weightKg) &&
+          measurements.weightKg !== undefined &&
+          wt !== measurements.weightKg
+        ) {
+          setValue("weightKg", measurements.weightKg, { shouldDirty: true });
+          changed = true;
+        }
 
-        // update prev auto-detected measurements
+        if (changed) {
+          void trigger(["heightCm", "widthCm", "lengthCm", "weightKg"]);
+        }
+
         autoDetectedRef.current = {
           ...autoDetectedRef.current,
           heightCm: measurements.heightCm ?? autoDetectedRef.current?.heightCm,
@@ -1195,43 +1453,12 @@ export function CreateProductDialog({
           category: category || autoDetectedRef.current?.category,
           mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
         };
-      } else {
-        // no measurements for this category: clear fields only if they were previously auto-filled
-        if (
-          prev.heightCm !== undefined &&
-          (currentHeight === prev.heightCm || currentHeight === null)
-        )
-          setValue("heightCm", undefined, { shouldDirty: true });
-        if (
-          prev.widthCm !== undefined &&
-          (currentWidth === prev.widthCm || currentWidth === null)
-        )
-          setValue("widthCm", undefined, { shouldDirty: true });
-        if (
-          prev.lengthCm !== undefined &&
-          (currentLength === prev.lengthCm || currentLength === null)
-        )
-          setValue("lengthCm", undefined, { shouldDirty: true });
-        if (
-          prev.weightKg !== undefined &&
-          (currentWeight === prev.weightKg || currentWeight === null)
-        )
-          setValue("weightKg", undefined, { shouldDirty: true });
-
-        autoDetectedRef.current = {
-          ...autoDetectedRef.current,
-          heightCm: undefined,
-          widthCm: undefined,
-          lengthCm: undefined,
-          weightKg: undefined,
-          category: category || autoDetectedRef.current?.category,
-          mlCategory: watchMlCategory || autoDetectedRef.current?.mlCategory,
-        };
       }
     } catch (err) {
       /* ignore */
     }
-  }, [watchCategory, watchMlCategory, mlOptions, setValue, trigger, watch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchCategory, watchMlCategory]);
 
   const progressPercentage = (currentStep / TOTAL_STEPS) * 100;
 
@@ -1251,6 +1478,19 @@ export function CreateProductDialog({
         setIsSubmitting(false);
         return;
       }
+      if (
+        data.createMLListing &&
+        !(data.mlCategory || autoDetectedRef.current?.mlCategory)
+      ) {
+        onToast(
+          "Selecione uma categoria do Mercado Livre antes de criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Não bloqueie se a categoria não foi selecionada manualmente; o backend resolve pela árvore local/sugestão.
 
       if (data.createShopeeListing && selectedShopeeAccounts.length === 0) {
         onToast(
@@ -1271,7 +1511,8 @@ export function CreateProductDialog({
         listingsPayload.push({
           platform: "MERCADO_LIVRE",
           accountIds: selectedMlAccounts,
-          categoryId: data.mlCategory || undefined,
+          categoryId:
+            data.mlCategory || autoDetectedRef.current?.mlCategory || undefined,
         });
       }
 
@@ -1281,6 +1522,14 @@ export function CreateProductDialog({
           accountIds: selectedShopeeAccounts,
         });
       }
+
+      const mlCategorySourceToSend = data.mlCategory
+        ? autoDetectedRef.current?.mlCategory === data.mlCategory
+          ? "auto"
+          : "manual"
+        : autoDetectedRef.current?.mlCategory
+          ? "auto"
+          : undefined;
 
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
@@ -1306,8 +1555,11 @@ export function CreateProductDialog({
         // Mantém compatibilidade: somente usa createListing legado quando nenhuma multi-conta foi escolhida
         createListing:
           (data.createMLListing || false) && selectedMlAccounts.length === 0,
-        createListingCategoryId: data.mlCategory || undefined,
+        createListingCategoryId:
+          data.mlCategory || autoDetectedRef.current?.mlCategory || undefined,
         listings: listingsPayload,
+        mlCategorySource: mlCategorySourceToSend,
+        mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
       };
 
       // Criar produto primeiro
@@ -1331,7 +1583,12 @@ export function CreateProductDialog({
 
       // Se um anúncio foi solicitado, informar o usuário do resultado
       if (result.listing) {
-        if (result.listing.success) {
+        if (result.listing.pending) {
+          onToast(
+            "Anúncio sendo criado em segundo plano — acompanhe na aba Anúncios",
+            "success",
+          );
+        } else if (result.listing.success) {
           const permalink = result.listing.permalink;
           if (permalink) {
             onToast(
@@ -1370,6 +1627,8 @@ export function CreateProductDialog({
   const handleClose = () => {
     reset();
     setCurrentStep(1);
+    setMlCategorySearch("");
+    setMlCategoryDropdownOpen(false);
     setOpen(false);
   };
 
@@ -1538,6 +1797,28 @@ export function CreateProductDialog({
                   {...register("name")}
                   aria-invalid={!!errors.name}
                 />
+                {titleSuggestion &&
+                  titleSuggestion.toLowerCase() !==
+                    watchName?.toLowerCase() && (
+                    <div className="flex items-center justify-between rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-xs text-muted-foreground">
+                      <span className="truncate">
+                        Sugestão:{" "}
+                        <span className="font-medium">{titleSuggestion}</span>
+                      </span>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="secondary"
+                        onClick={() =>
+                          setValue("name", titleSuggestion, {
+                            shouldDirty: true,
+                          })
+                        }
+                      >
+                        Usar
+                      </Button>
+                    </div>
+                  )}
                 {errors.name && (
                   <p className="text-sm text-destructive">
                     {errors.name.message}
@@ -1552,12 +1833,16 @@ export function CreateProductDialog({
                   placeholder="A descrição padrão configurada nas suas Preferências será aplicada automaticamente. Você pode editar."
                   {...register("description")}
                   className="min-h-24 resize-none"
+                  maxLength={4000}
                 />
-                <p className="text-xs text-muted-foreground">
-                  A descrição padrão definida em suas Configurações será
-                  aplicada automaticamente ao criar novos produtos. Você pode
-                  editar manualmente se desejar.
-                </p>
+                <div className="flex items-start justify-between text-xs text-muted-foreground">
+                  <span className="pr-4">
+                    A descrição padrão definida em suas Configurações será
+                    aplicada automaticamente ao criar novos produtos. Você pode
+                    editar manualmente se desejar.
+                  </span>
+                  <span>{watchDescription.length}/4000</span>
+                </div>
                 {errors.description && (
                   <p className="text-sm text-destructive">
                     {errors.description.message}
@@ -1716,7 +2001,7 @@ export function CreateProductDialog({
                     render={({ field }) => (
                       <Select
                         onValueChange={field.onChange}
-                        value={field.value || undefined}
+                        value={field.value ?? ""}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Selecione..." />
@@ -1925,31 +2210,31 @@ export function CreateProductDialog({
                       // Prefer backend synced detailed value by id
                       mlOptions.find((c) => c.id === watch("mlCategory"))
                         ?.value ||
-                      // Fallback: if backend doesn't have mlCategory, try to find
-                      // a backend option that matches current top-level category
-                      mlOptions.find(
-                        (c) => c.value.split(" > ")[0] === watch("category"),
-                      )?.value ||
-                      // Then fallback to static parser by id or by top-level match
+                      // Match by fullPath currently in category field
+                      mlOptions.find((c) => c.value === watch("category"))
+                        ?.value ||
+                      // Static fallback
                       ML_CATEGORY_OPTIONS.find(
                         (c) => c.id === watch("mlCategory"),
                       )?.value ||
                       ML_CATEGORY_OPTIONS.find(
-                        (c) => c.value.split(" > ")[0] === watch("category"),
+                        (c) => c.value === watch("category"),
                       )?.value;
 
                     return (
                       <Select
                         onValueChange={(val) => {
                           field.onChange(val);
-                          // If user manually picks a top-level category, clear detailed mlCategory
-                          setValue("mlCategory", "");
+                          const match =
+                            mlOptions.find((c) => c.value === val) ||
+                            ML_CATEGORY_OPTIONS.find((c) => c.value === val);
+                          setValue("mlCategory", match?.id || "");
                         }}
-                        value={field.value || undefined}
+                        value={field.value ?? ""}
                       >
                         <SelectTrigger>
                           <SelectValue>
-                            {detailed || field.value || undefined}
+                            {detailed || field.value || "Selecione..."}
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
@@ -2102,118 +2387,155 @@ export function CreateProductDialog({
                                 value: c.value,
                               }));
 
-                        // Decide selected id: explicit field value or best match by top-level category
-                        const selectedId =
-                          field.value ||
-                          optionsSource.find(
-                            (o) =>
-                              o.value.split(" > ")[0] === watch("category"),
-                          )?.id ||
-                          "";
-
                         const selectedLabel =
-                          // prefer explicit selection label
                           optionsSource.find((o) => o.id === field.value)
                             ?.value ||
-                          // prefer option matched via top-level from backend
-                          optionsSource.find((o) => o.id === selectedId)
-                            ?.value ||
-                          // fallback to static detailed option matching top-level
-                          ML_CATEGORY_OPTIONS.find(
-                            (c) =>
-                              c.value.split(" > ")[0] === watch("category"),
-                          )?.value ||
                           watch("category") ||
                           undefined;
 
+                        // Filter options by search term, limit to 50 results
+                        const searchNorm = mlCategorySearch
+                          .normalize("NFD")
+                          .replace(/[\u0300-\u036f]/g, "")
+                          .toLowerCase()
+                          .trim();
+                        const filteredOptions = searchNorm
+                          ? optionsSource
+                              .filter((c) =>
+                                c.value
+                                  .normalize("NFD")
+                                  .replace(/[\u0300-\u036f]/g, "")
+                                  .toLowerCase()
+                                  .includes(searchNorm),
+                              )
+                              .slice(0, 50)
+                          : [];
+
                         return (
-                          <Select
-                            onValueChange={(val) => {
-                              field.onChange(val);
-                              // Resolve parent label from optionsSource and set top-level category accordingly
-                              const sel = optionsSource.find(
-                                (o) => o.id === val,
-                              );
-                              if (sel && sel.value) {
-                                const parentLabel = sel.value
-                                  .split(" > ")[0]
-                                  .trim();
-                                setValue("category", parentLabel);
-                              }
-                            }}
-                            value={selectedId}
-                          >
-                            <SelectTrigger>
-                              <SelectValue>
-                                {selectedLabel || "Selecione uma categoria..."}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {optionsSource.map((cat) => (
-                                <SelectItem
-                                  key={`${cat.id}-${cat.value}`}
-                                  value={cat.id}
-                                >
-                                  {cat.value}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <div className="relative">
+                            {/* Display selected category */}
+                            {selectedLabel && !mlCategoryDropdownOpen && (
+                              <div
+                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                onClick={() => {
+                                  setMlCategoryDropdownOpen(true);
+                                  setMlCategorySearch("");
+                                }}
+                              >
+                                <span className="truncate">
+                                  {selectedLabel}
+                                </span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  Alterar
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Search input */}
+                            {(mlCategoryDropdownOpen || !selectedLabel) && (
+                              <>
+                                <Input
+                                  placeholder="Buscar categoria do Mercado Livre..."
+                                  value={mlCategorySearch}
+                                  onChange={(e) =>
+                                    setMlCategorySearch(e.target.value)
+                                  }
+                                  onBlur={() => {
+                                    // Delay to allow click on items
+                                    setTimeout(
+                                      () => setMlCategoryDropdownOpen(false),
+                                      200,
+                                    );
+                                  }}
+                                  autoFocus={mlCategoryDropdownOpen}
+                                />
+                                {searchNorm && filteredOptions.length > 0 && (
+                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                    {filteredOptions.map((cat) => (
+                                      <button
+                                        type="button"
+                                        key={cat.id}
+                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                          cat.id === field.value
+                                            ? "bg-accent font-medium"
+                                            : ""
+                                        }`}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          field.onChange(cat.id);
+                                          setValue("category", cat.value);
+                                          setMlCategorySearch("");
+                                          setMlCategoryDropdownOpen(false);
+                                        }}
+                                      >
+                                        {cat.value}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {searchNorm && filteredOptions.length === 0 && (
+                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                    Nenhuma categoria encontrada
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         );
                       }}
                     />
-                <p className="text-xs text-muted-foreground">
-                  Categoria sugerida: {watch("category") || "Nenhuma"}
-                </p>
-              </div>
-            )}
-
-            {watch("createMLListing") && (
-              <div className="space-y-2">
-                <Label>Contas do Mercado Livre</Label>
-                {mlAccounts.length > 0 ? (
-                  <div className="space-y-2 rounded-md border p-3">
-                    {mlAccounts.map((acc) => {
-                      const checked = watchMlAccountIds.includes(acc.id);
-                      return (
-                        <label
-                          key={acc.id}
-                          className="flex items-center gap-2 text-sm"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) =>
-                              toggleAccountSelection(
-                                "mlAccountIds",
-                                acc.id,
-                                e.target.checked,
-                              )
-                            }
-                          />
-                          <span className="font-medium">
-                            {acc.accountName || "Conta ML"}
-                          </span>
-                          {acc.status && (
-                            <span className="text-xs text-muted-foreground">
-                              ({acc.status})
-                            </span>
-                          )}
-                        </label>
-                      );
-                    })}
+                    <p className="text-xs text-muted-foreground">
+                      Categoria sugerida: {watch("category") || "Nenhuma"}
+                    </p>
                   </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    Nenhuma conta Mercado Livre conectada. Conecte em
-                    Integrações.
-                  </p>
+                )}
+
+                {watch("createMLListing") && (
+                  <div className="space-y-2">
+                    <Label>Contas do Mercado Livre</Label>
+                    {mlAccounts.length > 0 ? (
+                      <div className="space-y-2 rounded-md border p-3">
+                        {mlAccounts.map((acc) => {
+                          const checked = watchMlAccountIds.includes(acc.id);
+                          return (
+                            <label
+                              key={acc.id}
+                              className="flex items-center gap-2 text-sm"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  toggleAccountSelection(
+                                    "mlAccountIds",
+                                    acc.id,
+                                    e.target.checked,
+                                  )
+                                }
+                              />
+                              <span className="font-medium">
+                                {acc.accountName || "Conta ML"}
+                              </span>
+                              {acc.status && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({acc.status})
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Nenhuma conta Mercado Livre conectada. Conecte em
+                        Integrações.
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
           {/* Step 6: Shopee */}
           {currentStep === 6 && (
@@ -2232,14 +2554,17 @@ export function CreateProductDialog({
                       />
                     )}
                   />
-                  <Label htmlFor="createShopeeListing" className="cursor-pointer">
+                  <Label
+                    htmlFor="createShopeeListing"
+                    className="cursor-pointer"
+                  >
                     Criar anúncio no Shopee
                   </Label>
                 </div>
 
                 <p className="text-sm text-muted-foreground">
-                  Selecione esta opção para publicar o produto nas contas conectadas
-                  do Shopee.
+                  Selecione esta opção para publicar o produto nas contas
+                  conectadas do Shopee.
                 </p>
 
                 {watchCreateShopeeListing && (
@@ -2248,7 +2573,9 @@ export function CreateProductDialog({
                     {shopeeAccounts.length > 0 ? (
                       <div className="space-y-2 rounded-md border p-3">
                         {shopeeAccounts.map((acc) => {
-                          const checked = watchShopeeAccountIds.includes(acc.id);
+                          const checked = watchShopeeAccountIds.includes(
+                            acc.id,
+                          );
                           return (
                             <label
                               key={acc.id}

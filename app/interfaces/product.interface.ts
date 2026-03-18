@@ -26,7 +26,15 @@ export interface Product {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+  mlCategory?: string; // external id enviado pelo front
   mlCategoryId?: string; // FK to MarketplaceCategory (Mercado Livre)
+  mlCategorySource?: "auto" | "manual" | "imported";
+  mlCategoryChosenAt?: Date;
+
+  // Shopee (preparação futura)
+  shopeeCategoryId?: string;
+  shopeeCategorySource?: "auto" | "manual" | "imported";
+  shopeeCategoryChosenAt?: Date;
 
   // Medidas / peso (nova funcionalidade) — unidades: cm / kg
   heightCm?: number; // altura em centímetros
@@ -41,13 +49,12 @@ export interface Product {
 import { Platform } from "@prisma/client";
 
 export interface ProductCreate {
-  userId?: string;
+  userId: string; // Adicionado para buscar descrição padrão do usuário
   sku: string;
   name: string;
   description?: string;
   stock: number;
   price: number;
-  userId: string; // Adicionado para buscar descrição padrão do usuário
 
   // Campos de autopeças (opcionais)
   costPrice?: number;
@@ -63,7 +70,14 @@ export interface ProductCreate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+  mlCategory?: string;
   mlCategoryId?: string;
+  mlCategorySource?: "auto" | "manual" | "imported";
+  mlCategoryChosenAt?: Date;
+
+  shopeeCategoryId?: string;
+  shopeeCategorySource?: "auto" | "manual" | "imported";
+  shopeeCategoryChosenAt?: Date;
 
   // Medidas / peso (nova funcionalidade) — unidades: cm / kg
   heightCm?: number;
@@ -106,7 +120,14 @@ export interface ProductUpdate {
   isSecurityItem?: boolean;
   isTraceable?: boolean;
   sourceVehicle?: string;
+  mlCategory?: string;
   mlCategoryId?: string;
+  mlCategorySource?: "auto" | "manual" | "imported";
+  mlCategoryChosenAt?: Date;
+
+  shopeeCategoryId?: string;
+  shopeeCategorySource?: "auto" | "manual" | "imported";
+  shopeeCategoryChosenAt?: Date;
 
   // Medidas / peso (nova funcionalidade) — unidades: cm / kg
   heightCm?: number;

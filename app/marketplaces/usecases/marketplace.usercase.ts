@@ -305,6 +305,16 @@ export class MarketplaceUseCase {
       }
 
       await MarketplaceRepository.deleteAccount(account.id);
+
+      // Se restarem outras contas ativas do mesmo usuário/plataforma, manter estado conectado
+      const remaining =
+        await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          platform,
+        );
+      if (remaining.length === 0) {
+        // nada extra; caller pode marcar desconectado
+      }
     } catch (error) {
       throw new Error(
         `Erro ao desconectar conta: ${error instanceof Error ? error.message : error}`,

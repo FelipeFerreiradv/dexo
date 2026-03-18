@@ -35,6 +35,11 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     isTraceable: item.isTraceable ?? undefined,
     sourceVehicle: item.sourceVehicle ?? undefined,
     mlCategoryId: item.mlCategoryId ?? undefined,
+    mlCategorySource: (item as any).mlCategorySource ?? undefined,
+    mlCategoryChosenAt: item.mlCategoryChosenAt ?? undefined,
+    shopeeCategoryId: (item as any).shopeeCategoryId ?? undefined,
+    shopeeCategorySource: (item as any).shopeeCategorySource ?? undefined,
+    shopeeCategoryChosenAt: (item as any).shopeeCategoryChosenAt ?? undefined,
 
     // Medidas / peso
     heightCm: item.heightCm ?? undefined,
@@ -73,6 +78,11 @@ class ProductRepositoryPrisma implements ProductRepository {
           isTraceable: data.isTraceable ?? false,
           sourceVehicle: data.sourceVehicle ?? null,
           mlCategoryId: data.mlCategoryId ?? null,
+          mlCategorySource: data.mlCategorySource ?? null,
+          mlCategoryChosenAt: data.mlCategoryChosenAt ?? null,
+          shopeeCategoryId: data.shopeeCategoryId ?? null,
+          shopeeCategorySource: data.shopeeCategorySource ?? null,
+          shopeeCategoryChosenAt: data.shopeeCategoryChosenAt ?? null,
 
           // Medidas / peso
           heightCm: data.heightCm ?? null,
@@ -249,6 +259,21 @@ class ProductRepositoryPrisma implements ProductRepository {
           }),
           ...(data.mlCategoryId !== undefined && {
             mlCategoryId: data.mlCategoryId,
+          }),
+          ...(data.mlCategorySource !== undefined && {
+            mlCategorySource: data.mlCategorySource,
+          }),
+          ...(data.mlCategoryChosenAt !== undefined && {
+            mlCategoryChosenAt: data.mlCategoryChosenAt as any,
+          }),
+          ...(data.shopeeCategoryId !== undefined && {
+            shopeeCategoryId: data.shopeeCategoryId,
+          }),
+          ...(data.shopeeCategorySource !== undefined && {
+            shopeeCategorySource: data.shopeeCategorySource,
+          }),
+          ...(data.shopeeCategoryChosenAt !== undefined && {
+            shopeeCategoryChosenAt: data.shopeeCategoryChosenAt as any,
           }),
 
           // Medidas / peso

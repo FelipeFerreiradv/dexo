@@ -12,8 +12,8 @@ export class ListingRepository {
     productId: string;
     marketplaceAccountId: string;
     externalListingId: string;
-    externalSku?: string;
-    permalink?: string;
+    externalSku?: string | null;
+    permalink?: string | null;
     status: string;
     // optional retry metadata
     retryAttempts?: number;

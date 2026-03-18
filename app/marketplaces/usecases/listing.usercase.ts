@@ -5,15 +5,10 @@ import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
-import CategoryRepository from "../repositories/category.repository";
 import { MLItemCreatePayload } from "../types/ml-api.types";
 import { ShopeeItemCreatePayload } from "../types/shopee-api.types";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
-import {
-  ML_CATEGORY_OPTIONS,
-  mapSuggestedCategory,
-  suggestCategoryFromTitle,
-} from "../../lib/product-parser";
+import { CategoryResolutionService } from "../services/category-resolution.service";
 import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 
@@ -56,7 +51,12 @@ export class ListingUseCase {
       case Platform.MERCADO_LIVRE:
         return this.createMLListing(userId, productId, categoryId, accountId);
       case Platform.SHOPEE:
-        return this.createShopeeListing(userId, productId, categoryId, accountId);
+        return this.createShopeeListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+        );
       default:
         return {
           success: false,
@@ -64,9 +64,7 @@ export class ListingUseCase {
         };
     }
   }
-  private static mapQualityToMLCondition(
-    quality?: string,
-  ): "new" | "used" {
+  private static mapQualityToMLCondition(quality?: string): "new" | "used" {
     switch (quality) {
       case "NOVO":
         return "new";
@@ -79,7 +77,13 @@ export class ListingUseCase {
     }
   }
 
-    /**
+  // Normaliza category_id para o formato aceito pelo ML: remove sufixos "-NN".
+  private static normalizeMLCategoryId(externalId?: string) {
+    if (!externalId) return externalId;
+    return externalId.split("-")[0];
+  }
+
+  /**
    * Título principal: exatamente o nome do produto, apenas higienizado.
    */
   private static buildMLTitle(product: any): string {
@@ -102,7 +106,7 @@ export class ListingUseCase {
     return this.sanitizeTitle(parts.join(" "), product, 60);
   }
 
-/**
+  /**
    * Sanitiza e normaliza título para ML, preservando o nome original.
    */
   private static sanitizeTitle(
@@ -129,19 +133,33 @@ export class ListingUseCase {
   }
 
   /**
-   * Heurística leve para corrigir textos com mojibake (Ã©/Ã§) mantendo UTF-8.
+   * Heurística para corrigir textos com mojibake (Ã©/Ã§) e bytes corrompidos (\uFFFD).
+   * A conversão latin1→utf8 é feita ANTES de remover \uFFFD, pois senão o texto
+   * parcialmente limpo pode gerar novos \uFFFD ao ser reinterpretado.
    */
   private static normalizeUtf8(text?: string): string {
     if (!text) return "";
-    const str = text.toString();
+    let str = text.toString();
+
+    // 1. Tentar mojibake fix (double-encoded: latin1 → utf8) ANTES de remover \uFFFD
     if (str.includes("Ã")) {
       try {
-        return Buffer.from(str, "latin1").toString("utf8").trim();
+        const decoded = Buffer.from(str, "latin1").toString("utf8");
+        // Aceitar somente se a conversão gerou menos \uFFFD que o original
+        const origCount = (str.match(/\uFFFD/g) || []).length;
+        const decodedCount = (decoded.match(/\uFFFD/g) || []).length;
+        if (decodedCount <= origCount) {
+          str = decoded;
+        }
       } catch {
         /* ignore */
       }
     }
-    return Buffer.from(str, "utf8").toString("utf8").trim();
+
+    // 2. Remover U+FFFD restantes (bytes irrecuperáveis)
+    str = str.replace(/\uFFFD/g, "");
+
+    return str.trim();
   }
 
   private static cleanBrand(brand?: string): string | undefined {
@@ -166,6 +184,30 @@ export class ListingUseCase {
       if (yr && String(yr) === m) return undefined;
     }
     return m;
+  }
+
+  /**
+   * Timeout helper to avoid hanging on ML API calls.
+   */
+  private static async withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    label: string,
+  ): Promise<T> {
+    return await new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Timeout (${label}) after ${ms}ms`));
+      }, ms);
+      promise
+        .then((val) => {
+          clearTimeout(timer);
+          resolve(val);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
   }
 
   /**
@@ -196,11 +238,7 @@ export class ListingUseCase {
       this.ML_MIN_DIM_CM,
       this.ML_MAX_DIM_CM,
     );
-    const width = clamp(
-      input.widthCm,
-      this.ML_MIN_DIM_CM,
-      this.ML_MAX_DIM_CM,
-    );
+    const width = clamp(input.widthCm, this.ML_MIN_DIM_CM, this.ML_MAX_DIM_CM);
     const length = clamp(
       input.lengthCm,
       this.ML_MIN_DIM_CM,
@@ -235,12 +273,11 @@ export class ListingUseCase {
     const positionCategories = new Set(["MLB101763", "MLB458642"]);
     if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
       const name = (product.name || "").toLowerCase();
-      const pos =
-        /dianteir|frente/.test(name)
-          ? "Dianteira"
-          : /traseir|tras|trás/.test(name)
-            ? "Traseira"
-            : null;
+      const pos = /dianteir|frente/.test(name)
+        ? "Dianteira"
+        : /traseir|tras|trás/.test(name)
+          ? "Traseira"
+          : null;
       if (pos) attrs.push({ id: "POSITION", value_name: pos });
     }
 
@@ -257,11 +294,16 @@ export class ListingUseCase {
    */
   private static buildMLDescription(
     product: any,
-    hintedSource?: "product" | "user_default",
+    hintedSource?: "product" | "user_default" | "fallback",
   ): { text: string; source: "product" | "user_default" | "fallback" } {
+    const clamp = (text: string) => {
+      const max = Number(process.env.ML_DESCRIPTION_LIMIT || 4000);
+      return text && text.length > max ? text.slice(0, max) : text;
+    };
+
     if (product.description) {
       return {
-        text: this.normalizeUtf8(product.description),
+        text: clamp(this.normalizeUtf8(product.description)),
         source: hintedSource || "product",
       };
     }
@@ -279,10 +321,12 @@ export class ListingUseCase {
     if (brand) details.push(`Marca: ${brand}`);
     if (model) details.push(`Modelo: ${model}`);
     if (year) details.push(`Ano: ${year}`);
-    if (product.version) details.push(`Versão: ${this.normalizeUtf8(product.version)}`);
+    if (product.version)
+      details.push(`Versão: ${this.normalizeUtf8(product.version)}`);
     if (product.partNumber)
       details.push(`Número da Peça: ${this.normalizeUtf8(product.partNumber)}`);
-    if (product.quality) details.push(`Qualidade: ${this.normalizeUtf8(product.quality)}`);
+    if (product.quality)
+      details.push(`Qualidade: ${this.normalizeUtf8(product.quality)}`);
     if (product.location)
       details.push(`Localização: ${this.normalizeUtf8(product.location)}`);
     if (product.heightCm && product.widthCm && product.lengthCm) {
@@ -301,15 +345,20 @@ export class ListingUseCase {
 
     if (product.sku) parts.push(`SKU: ${product.sku}`);
 
-    return { text: parts.join("\n\n").trim(), source: "fallback" };
+    let text = clamp(parts.join("\n\n").trim());
+    if (!text) {
+      text = clamp(
+        "Descrição não informada pelo vendedor. Tire suas dúvidas no campo de perguntas.",
+      );
+    }
+    return { text, source: "fallback" };
   }
 
   /**
    * family_name só deve ser enviado se for explicitamente necessário.
    */
   private static shouldIncludeFamilyName(categoryId?: string): boolean {
-    const forceEnv =
-      process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
+    const forceEnv = process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
 
     // Permite sobrescrever/estender via env (lista separada por vírgula)
     const extra = (process.env.ML_FAMILY_NAME_ALLOWLIST || "")
@@ -319,13 +368,21 @@ export class ListingUseCase {
 
     const allowList = new Set<string>([
       // Domínios com fluxo User Product (catálogo) que exigem family_name
+      // IMPORTANTE: usar apenas IDs reais de leaf do ML, nunca IDs sintéticos do catálogo estático
       "MLB193419", // Cubo de roda
       "MLB101763", // Portas (carroceria e lataria)
       "MLB458642", // Portas (categoria alternativa usada via override)
+      "MLB191833", // Acessórios > Peças > Outros (observado pedindo family_name e recusando title)
+      "MLB193531", // Acessórios > Radiadores > Reservatório — observado exigindo family_name e recusando title
+      "MLB116479", // Janelas e Vedações > Sistemas de Elevação > Outros — exige family_name e rejeita title
+      "MLB193613", // Suspensão e Direção > Outros — exige family_name e rejeita title
       ...extra,
     ]);
 
-    return forceEnv || (categoryId ? allowList.has(categoryId) : false);
+    if (!categoryId) return forceEnv;
+    // Normalizar para remover sufixos internos antes do lookup
+    const normalized = this.normalizeMLCategoryId(categoryId) || categoryId;
+    return forceEnv || allowList.has(categoryId) || allowList.has(normalized);
   }
 
   /**
@@ -341,24 +398,16 @@ export class ListingUseCase {
       "MLB193419", // Cubo de roda — comprovado que title é rejeitado quando family_name está presente
       "MLB101763", // Portas — fluxo UP exige family_name sem title
       "MLB458642", // Portas (categoria alternativa) segue mesma regra de catálogo
+      "MLB22693", // Peças de Carros e Caminhonetes (válida)
+      "MLB191833", // Outros acessórios (observado rejeitando title quando family_name é exigido)
+      "MLB193531", // Radiadores > Reservatório — exige family_name e bloqueia title
+      "MLB116479", // Janelas e Vedações > Sistemas de Elevação > Outros — exige family_name e bloqueia title
+      "MLB193613", // Suspensão e Direção > Outros — exige family_name e bloqueia title
       ...envList,
     ]);
-    return categoryId ? hard.has(categoryId) : false;
-  }
-
-  private static categoryOverride(categoryId?: string): string | undefined {
-    // formato: MLBA:MLBB,MLC:MLD
-    const env = process.env.ML_CATEGORY_OVERRIDE || "";
-    const map = new Map<string, string>();
-    env
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach((pair) => {
-        const [from, to] = pair.split(":").map((s) => s.trim());
-        if (from && to) map.set(from, to);
-      });
-    return categoryId && map.has(categoryId) ? map.get(categoryId) : undefined;
+    if (!categoryId) return false;
+    const normalized = this.normalizeMLCategoryId(categoryId) || categoryId;
+    return hard.has(categoryId) || hard.has(normalized);
   }
 
   static async createMLListing(
@@ -375,23 +424,24 @@ export class ListingUseCase {
             Platform.MERCADO_LIVRE,
           );
 
-      // Se múltiplas contas ativas e accountId não foi informado, exigir escolha explícita
+      // Se múltiplas contas ativas e accountId não foi informado, escolher a primeira ativa (mais recente) para não bloquear o fluxo.
       if (!account && !accountId) {
-        const allActive = await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          Platform.MERCADO_LIVRE,
-        );
+        const allActive =
+          await MarketplaceRepository.findAllByUserIdAndPlatform(
+            userId,
+            Platform.MERCADO_LIVRE,
+          );
         const active = (allActive || []).filter(
           (acc) => acc.status === AccountStatus.ACTIVE,
         );
-        if (active.length > 1) {
-          return {
-            success: false,
-            error:
-              "Selecione a conta do Mercado Livre para criar o anúncio (multi-contas ativas detectadas).",
-          };
+        if (active.length > 0) {
+          // Opcional: ordenar por updatedAt/createdAt se disponível
+          account = active.sort(
+            (a, b) =>
+              new Date(b.updatedAt || b.createdAt || 0).getTime() -
+              new Date(a.updatedAt || a.createdAt || 0).getTime(),
+          )[0];
         }
-        account = active[0];
       }
 
       if (!account || !account.accessToken) {
@@ -436,10 +486,7 @@ export class ListingUseCase {
           }
         } catch (refreshErr) {
           // marcar conta como erro e informar usuÃ¡rio para reconectar
-          await MarketplaceRepository.updateStatus(
-            acc.id,
-            AccountStatus.ERROR,
-          );
+          await MarketplaceRepository.updateStatus(acc.id, AccountStatus.ERROR);
           console.warn(
             `[ListingUseCase] Failed to refresh token for account ${acc.id || "<no-account>"}:`,
             (refreshErr as any)?.message || refreshErr,
@@ -487,7 +534,9 @@ export class ListingUseCase {
         } catch (recheckErr) {
           console.debug(
             `[ListingUseCase] capability re-check for account ${acc.id || "<no-account>"} failed: ${
-              recheckErr instanceof Error ? recheckErr.message : String(recheckErr)
+              recheckErr instanceof Error
+                ? recheckErr.message
+                : String(recheckErr)
             }`,
           );
           // continue â€” the later pre-check will still detect vacation/restriction
@@ -496,7 +545,7 @@ export class ListingUseCase {
       // Pre-check: validar que o seller pode criar anÃºncios (detectar restriÃ§Ãµes antes de montar payload)
       let sellerId: string | undefined;
       try {
-            const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
+        const mlUserInfo = await MLOAuthService.getUserInfo(acc.accessToken);
         sellerId = mlUserInfo?.id?.toString();
         if (sellerId) {
           try {
@@ -595,10 +644,7 @@ export class ListingUseCase {
           msg.toLowerCase().includes("unauthorized") ||
           msg.toLowerCase().includes("invalid access token")
         ) {
-          await MarketplaceRepository.updateStatus(
-            acc.id,
-            AccountStatus.ERROR,
-          );
+          await MarketplaceRepository.updateStatus(acc.id, AccountStatus.ERROR);
           return {
             success: false,
             error:
@@ -636,8 +682,9 @@ export class ListingUseCase {
       // Garantir descrição: se o produto não tiver, usar a descrição padrão do usuário (quando disponível)
       if (!product.description && product.userId) {
         try {
-          const owner =
-            await ListingUseCase.userRepository.findById(product.userId);
+          const owner = await ListingUseCase.userRepository.findById(
+            product.userId,
+          );
           if (owner?.defaultProductDescription) {
             product.description = owner.defaultProductDescription;
             descriptionSource = "user_default";
@@ -650,162 +697,37 @@ export class ListingUseCase {
         }
       }
 
-      // Resolve categoryId: explicit param -> override map -> DB mapping -> product link -> heuristics -> ML discovery
-      let resolvedCategoryId: string | undefined;
-      if (categoryId) {
-        // Distinguish between a likely external ML id (alphanumeric only) and internal ML_CATALOG ids (contain hyphen or other chars).
-        const looksLikeExternalId = /^[A-Za-z0-9]+$/.test(categoryId);
-
-        if (looksLikeExternalId) {
-          let fromDb = null;
-          try {
-            fromDb = await CategoryRepository.findByExternalId(categoryId);
-          } catch (e) {
-            fromDb = null;
-          }
-          if (fromDb) {
-            resolvedCategoryId = categoryId;
-          } else {
-            console.warn(
-              `[ListingUseCase] Provided external-like categoryId='${categoryId}' not found in DB; will attempt resolution/fallback`,
-            );
-            // Accept explicit external ids even when not yet synced locally to avoid blocking publication
-            resolvedCategoryId = categoryId;
-          }
-        } else {
-          // Treat categoryId as internal ML_CATALOG id and resolve it via ML_CATEGORY_OPTIONS -> DB fullPath lookup / on-demand sync
-          const child = ML_CATEGORY_OPTIONS.find((c) => c.id === categoryId);
-          const fullPathCandidate = child?.value || categoryId;
-          let found = null;
-          try {
-            found = await CategoryRepository.findByFullPath(fullPathCandidate);
-          } catch (e) {
-            found = null;
-          }
-
-          if (!found) {
-            try {
-              const { SyncUseCase } = await import("./sync.usercase");
-              await SyncUseCase.syncMLCategories(userId, "MLB");
-              found = await CategoryRepository.findByFullPath(fullPathCandidate);
-            } catch (syncErr) {
-              const msg =
-                syncErr instanceof Error ? syncErr.message : String(syncErr);
-              console.warn(
-                "[ListingUseCase] on-demand ML category sync failed:",
-                msg,
-              );
-            }
-          }
-
-          if (found && /^[A-Za-z0-9]+$/.test(found.externalId || "")) {
-            resolvedCategoryId = found.externalId;
-          } else {
-            console.warn(
-              `[ListingUseCase] DB mapping for '${fullPathCandidate}' invalid or missing externalId; will keep resolving`,
-            );
-          }
-        }
-      }
-
-      // 2.1 Se o produto já estiver vinculado a uma categoria do ML no banco, reutilizar
-        if (!resolvedCategoryId && (product as any).mlCategoryId) {
-        try {
-          const linked = await CategoryRepository.findById(
-            (product as any).mlCategoryId,
-          );
-          if (
-            linked?.externalId &&
-            /^[A-Za-z0-9]+$/.test(linked.externalId || "")
-          ) {
-            resolvedCategoryId = linked.externalId;
-          }
-        } catch (e) {
-          console.warn(
-            "[ListingUseCase] Falha ao resolver mlCategoryId salvo no produto:",
-            e instanceof Error ? e.message : String(e),
-          );
-        }
-      }
-
-      // 2.2 Tentar deduzir categoria pelo título/categoria textual do produto
-      if (!resolvedCategoryId) {
-        const candidateFromProduct =
-          product.category && product.category.includes(">")
-            ? product.category
-            : undefined;
-        const titleForGuess = [
-          product.name,
-          product.brand,
-          product.model,
-          product.partNumber,
-        ]
-          .filter(Boolean)
-          .join(" ");
-
-        const suggested = suggestCategoryFromTitle(titleForGuess);
-        const mapped = suggested
-          ? mapSuggestedCategory(suggested)
-          : undefined;
-        const fullPathGuess =
-          mapped?.detailedValue ||
-          candidateFromProduct ||
-          mapped?.topLevel ||
-          undefined;
-
-        if (fullPathGuess) {
-          let foundByGuess = null;
-          try {
-            foundByGuess = await CategoryRepository.findByFullPath(fullPathGuess);
-          } catch {
-            foundByGuess = null;
-          }
-          if (
-            foundByGuess?.externalId &&
-            /^[A-Za-z0-9]+$/.test(foundByGuess.externalId || "")
-          ) {
-            resolvedCategoryId = foundByGuess.externalId;
-          }
-        }
-      }
-
-      // 2.3 Último recurso controlado: pedir ao ML para sugerir categoria pelo título
-      if (!resolvedCategoryId) {
-        const query = [
-          product.name,
-          product.brand,
-          product.model,
-          product.partNumber,
-        ]
-          .filter(Boolean)
-          .join(" ");
-        const suggestedByML = await MLApiService.suggestCategoryId(
-          "MLB",
-          query,
-        );
-        if (suggestedByML) {
-          resolvedCategoryId = suggestedByML;
-        }
-      }
-
-      // Não insista em publicar com categoria indefinida ou não suportada
-      if (!resolvedCategoryId) {
-        return {
-          success: false,
-          error:
-            "Não foi possível inferir uma categoria válida do Mercado Livre para este produto. Selecione uma categoria antes de publicar.",
-        };
-      }
-
-      // Aplicar override de categoria (permite sair de domínio UP para domínio alternativo).
-      const originalCategoryId = resolvedCategoryId;
-      const overridden = this.categoryOverride(resolvedCategoryId);
-      if (overridden) {
+      // Detectar descrição corrompida (contém \uFFFD = encoding perdido) e logar aviso
+      if (product.description && /\uFFFD/.test(product.description)) {
         console.warn(
-          `[ListingUseCase] category ${resolvedCategoryId} override configured -> ${overridden}`,
+          "[ListingUseCase] ⚠ Descrição contém caracteres corrompidos (\\uFFFD). " +
+            "Atualize o campo defaultProductDescription do usuário e a descrição deste produto no banco de dados. " +
+            `productId=${product.id}, source=${descriptionSource}`,
         );
-        resolvedCategoryId = overridden;
       }
+
+      // Resolve categoryId determinístico: explícito -> categoria persistida -> erro
+      const resolvedCategory =
+        await CategoryResolutionService.resolveMLCategory({
+          explicitCategoryId: categoryId,
+          product,
+          validateWithMLAPI: false,
+        });
+      let resolvedCategoryId = resolvedCategory.externalId;
+      const originalCategoryId = resolvedCategoryId;
+
+      // Forçar leaf local antes de montar payload (evita postar em pai como MLB1747)
+      const leafLocal =
+        await CategoryResolutionService.ensureLeafLocalOnly(resolvedCategoryId);
+      if (leafLocal) {
+        resolvedCategoryId = leafLocal.externalId;
+        resolvedCategory.fullPath =
+          leafLocal.fullPath || resolvedCategory.fullPath;
+      }
+      // Normalizar category_id removendo sufixos internos "-NN" que não são aceitos pelo ML API
+      // (ex: "MLB1747-01" → "MLB1747"). IDs reais do ML são puramente alfanuméricos.
+      let categoryIdForML =
+        this.normalizeMLCategoryId(resolvedCategoryId) || resolvedCategoryId;
 
       // Categoria MLB193419 (sugerida pelo domain_discovery para cubo de roda) exige PART_NUMBER
       if (resolvedCategoryId === "MLB193419" && !product.partNumber) {
@@ -827,23 +749,25 @@ export class ListingUseCase {
       const { text: descriptionText, source: derivedDescriptionSource } =
         this.buildMLDescription(
           product,
-          descriptionSource === "user_default" ? "user_default" : descriptionSource,
+          descriptionSource === "user_default"
+            ? "user_default"
+            : descriptionSource,
         );
       descriptionSource = derivedDescriptionSource;
 
       const attributes = this.buildMLAttributes(product, resolvedCategoryId);
-      const includeFamilyFromResolved =
-        this.shouldIncludeFamilyName(resolvedCategoryId);
-      const includeFamilyFromOriginal =
-        this.shouldIncludeFamilyName(originalCategoryId);
-      let includeFamilyName = includeFamilyFromResolved || includeFamilyFromOriginal;
-      const noTitleWithFamily =
-        this.noTitleWithFamilyName(resolvedCategoryId) ||
-        this.noTitleWithFamilyName(originalCategoryId);
+      // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
+      // Nunca usar originalCategoryId pois pode ser ID sintético do catálogo estático.
+      let includeFamilyName = this.shouldIncludeFamilyName(resolvedCategoryId);
+      // family_name deve ser o nome completo do produto (título desejado pelo usuário),
+      // pois o ML usa family_name para calcular o título visível em categorias User Product.
+      const familyNameValue = this.buildMLTitle(product);
+      const noTitleWithFamily = this.noTitleWithFamilyName(resolvedCategoryId);
+      const forceNoTitleFlow = includeFamilyName && noTitleWithFamily;
 
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
-        category_id: resolvedCategoryId, // Categoria obrigatória e validada
+        category_id: categoryIdForML, // Categoria obrigatória e validada (leaf)
         price: product.price, // Usar preço real do produto
         currency_id: currencyId,
         available_quantity: Math.min(product.stock, 999999), // ML limita quantidade máxima
@@ -877,7 +801,12 @@ export class ListingUseCase {
       };
 
       if (includeFamilyName) {
-        payload.family_name = product.brand || product.name;
+        if (familyNameValue) {
+          payload.family_name = familyNameValue;
+        }
+      }
+      if (forceNoTitleFlow) {
+        delete (payload as any).title;
       }
 
       const attrSnapshot = {
@@ -885,14 +814,18 @@ export class ListingUseCase {
         model: attributes.find((a) => a.id === "MODEL")?.value_name,
         year: attributes.find((a) => a.id === "YEAR")?.value_name,
       };
-      const fallbackNonUPCategory =
-        process.env.ML_FALLBACK_NON_UP_CATEGORY || "";
+      const finalTitleForLog = (payload as any).title || "(omitted)";
       console.log("[ListingUseCase] ML payload summary", {
         productId: product.id,
         productName: product.name,
-        finalTitle: payload.title,
+        finalTitle: finalTitleForLog,
         descriptionSource,
         family_name_sent: includeFamilyName,
+        category: {
+          id: resolvedCategoryId,
+          fullPath: resolvedCategory.fullPath,
+          source: resolvedCategory.source,
+        },
         attrs: attrSnapshot,
       });
 
@@ -919,13 +852,24 @@ export class ListingUseCase {
         });
       }
 
-      // Include shipping dimensions quando completo (ML exige string "HxWxL,weight") — clamp para limites aceitos
-      const pkg = this.sanitizePackageDimensions({
+      // Include shipping dimensions (ML exige string "HxWxL,weight") — clamp para limites aceitos
+      // Se o produto não tiver dimensões, usar valores padrão mínimos aceitos pelo ML
+      const rawDims = {
         heightCm: product.heightCm,
         widthCm: product.widthCm,
         lengthCm: product.lengthCm,
         weightKg: product.weightKg,
-      });
+      };
+      const hasDims =
+        rawDims.heightCm != null &&
+        rawDims.widthCm != null &&
+        rawDims.lengthCm != null &&
+        rawDims.weightKg != null;
+      const pkg = this.sanitizePackageDimensions(
+        hasDims
+          ? rawDims
+          : { heightCm: 10, widthCm: 10, lengthCm: 10, weightKg: 1 },
+      );
 
       if (pkg) {
         const dims = `${pkg.height}x${pkg.width}x${pkg.length},${Number(
@@ -992,8 +936,13 @@ export class ListingUseCase {
 
       // Envolver createItem para tratar erros especÃ­ficos do ML (ex: seller.unable_to_list)
       let mlItem: any;
+      const timeoutMs = Number(process.env.ML_API_TIMEOUT_MS || 15000);
       try {
-        mlItem = await MLApiService.createItem(acc.accessToken, payload);
+        mlItem = await this.withTimeout(
+          MLApiService.createItem(acc.accessToken, payload),
+          timeoutMs,
+          "ML createItem",
+        );
         console.log(
           `[ListingUseCase] ML response:`,
           JSON.stringify(mlItem, null, 2),
@@ -1003,6 +952,47 @@ export class ListingUseCase {
         const parsedMl =
           err && (err as any).mlError ? (err as any).mlError : null;
         const errMsg = err instanceof Error ? err.message : String(err);
+
+        const isCategoryInvalid = !!parsedMl?.cause?.some(
+          (c: any) => c?.code === "item.category_id.invalid",
+        );
+
+        // Se categoria for inválida, tentar resolver novamente para um leaf local e reenviar
+        if (!mlItem && isCategoryInvalid) {
+          try {
+            const catRetry = await CategoryResolutionService.resolveMLCategory({
+              explicitCategoryId: categoryIdForML,
+              product,
+              validateWithMLAPI: true, // usa fallback local se ML falhar
+            });
+            const leafRetry =
+              await CategoryResolutionService.ensureLeafLocalOnly(
+                catRetry.externalId,
+              );
+            resolvedCategoryId = leafRetry?.externalId || catRetry.externalId;
+            categoryIdForML =
+              this.normalizeMLCategoryId(resolvedCategoryId) ||
+              resolvedCategoryId;
+
+            const retryPayload: MLItemCreatePayload = {
+              ...payload,
+              category_id: categoryIdForML,
+            };
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, retryPayload),
+              timeoutMs,
+              "ML createItem retry category",
+            );
+            console.warn(
+              `[ListingUseCase] Retentativa com categoria leaf ${categoryIdForML} bem-sucedida`,
+            );
+          } catch (catErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa com categoria leaf falhou:",
+              catErr instanceof Error ? catErr.message : String(catErr),
+            );
+          }
+        }
 
         // Fallback imediato: se o erro citar title/invalid_fields, tentar variante segura
         let isTitleInvalid =
@@ -1014,6 +1004,7 @@ export class ListingUseCase {
           JSON.stringify(parsedMl || "")
             .toLowerCase()
             .includes("family_name");
+        const noTitleFlow = noTitleWithFamily || forceNoTitleFlow;
 
         if (!mlItem && missingFamilyName && !includeFamilyName) {
           try {
@@ -1022,15 +1013,28 @@ export class ListingUseCase {
             );
             const withFamily: MLItemCreatePayload = {
               ...payload,
-              family_name: product.brand || product.name,
+              family_name: familyNameValue || this.buildMLTitle(product),
             };
-            mlItem = await MLApiService.createItem(acc.accessToken, withFamily);
+            if (noTitleFlow) delete (withFamily as any).title;
 
-            // Passe a considerar a categoria como exigindo family_name para os próximos tratamentos
+            // Atualizar estado ANTES da chamada para que retries subsequentes tenham family_name
             includeFamilyName = includeFamilyName || !!withFamily.family_name;
+            if (!payload.family_name && withFamily.family_name) {
+              (payload as any).family_name = withFamily.family_name;
+            }
+
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, withFamily),
+              timeoutMs,
+              "ML createItem family_name",
+            );
           } catch (famErr) {
-            const famMsg = famErr instanceof Error ? famErr.message : String(famErr);
-            console.warn("[ListingUseCase] Retentativa com family_name falhou:", famMsg);
+            const famMsg =
+              famErr instanceof Error ? famErr.message : String(famErr);
+            console.warn(
+              "[ListingUseCase] Retentativa com family_name falhou:",
+              famMsg,
+            );
             if (
               !isTitleInvalid &&
               famMsg.toLowerCase().includes("invalid_fields") &&
@@ -1041,67 +1045,62 @@ export class ListingUseCase {
           }
         }
 
-        // Se o ML rejeitar title, primeiro tente remover family_name (mantendo o título).
-        if (!mlItem && isTitleInvalid && includeFamilyName && !noTitleWithFamily) {
-          try {
-            console.warn(
-              "[ListingUseCase] Retentando createItem mantendo título e removendo family_name",
-            );
-            const noFamilyPayload: MLItemCreatePayload = { ...payload };
-            delete (noFamilyPayload as any).family_name;
-            mlItem = await MLApiService.createItem(acc.accessToken, noFamilyPayload);
-          } catch (noFamilyErr) {
-            console.warn(
-              "[ListingUseCase] Retentativa sem family_name falhou:",
-              noFamilyErr instanceof Error ? noFamilyErr.message : String(noFamilyErr),
-            );
-          }
-        }
-
-        // Para categorias que realmente não aceitam title com family_name, tentar sem title.
-        if (
-          !mlItem &&
-          isTitleInvalid &&
-          (includeFamilyName || missingFamilyName) &&
-          noTitleWithFamily
-        ) {
+        // Para categorias que proíbem title quando family_name está presente, priorizar tentativa sem title
+        const shouldTryNoTitle = noTitleFlow;
+        if (!mlItem && (isTitleInvalid || noTitleFlow) && shouldTryNoTitle) {
           try {
             console.warn(
               "[ListingUseCase] Retentando createItem sem title (UP domain requer family_name)",
             );
             const noTitlePayload: MLItemCreatePayload = {
               ...payload,
-              family_name: (payload as any).family_name || product.brand || product.name,
+              family_name:
+                (payload as any).family_name ||
+                familyNameValue ||
+                this.buildMLTitle(product),
             } as any;
             delete (noTitlePayload as any).title;
-            mlItem = await MLApiService.createItem(acc.accessToken, noTitlePayload);
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, noTitlePayload),
+              timeoutMs,
+              "ML createItem noTitle",
+            );
           } catch (noTitleErr) {
             console.warn(
               "[ListingUseCase] Retentativa sem title falhou:",
-              noTitleErr instanceof Error ? noTitleErr.message : String(noTitleErr),
+              noTitleErr instanceof Error
+                ? noTitleErr.message
+                : String(noTitleErr),
             );
           }
         }
 
-        if (!mlItem && isTitleInvalid && !includeFamilyName) {
-          // Tentar um título ultra-sanitizado
+        // Se o ML rejeitar title e a categoria permitir title, tente um título seguro
+        if (!mlItem && isTitleInvalid && !noTitleFlow) {
           try {
             const safeTitle = this.buildSafeFallbackTitle(product);
             console.warn(
-              `[ListingUseCase] Retentando createItem com tÃ­tulo seguro: \"${safeTitle}\"`,
+              `[ListingUseCase] Retentando createItem com título seguro: "${safeTitle}"`,
             );
             const retryPayload: MLItemCreatePayload = {
               ...payload,
               title: safeTitle,
             };
-            // Evitar acionar o fluxo de User Product quando não for obrigatório
-            if (!this.shouldIncludeFamilyName(resolvedCategoryId)) {
-              delete (retryPayload as any).family_name;
+            if (
+              includeFamilyName &&
+              familyNameValue &&
+              !retryPayload.family_name
+            ) {
+              retryPayload.family_name = familyNameValue;
             }
-            mlItem = await MLApiService.createItem(acc.accessToken, retryPayload);
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, retryPayload),
+              timeoutMs,
+              "ML createItem safeTitle",
+            );
           } catch (retryTitleErr) {
             console.warn(
-              "[ListingUseCase] Retentativa com tÃ­tulo seguro falhou:",
+              "[ListingUseCase] Retentativa com título seguro falhou:",
               retryTitleErr instanceof Error
                 ? retryTitleErr.message
                 : String(retryTitleErr),
@@ -1109,35 +1108,29 @@ export class ListingUseCase {
           }
         }
 
-        // Se ainda não conseguiu e o erro envolver family_name/title, recuar para categoria não-UP e título original
-        const isFamilyOrTitleBlock =
-          !mlItem &&
-          fallbackNonUPCategory &&
-          (missingFamilyName || isTitleInvalid) &&
-          resolvedCategoryId !== fallbackNonUPCategory;
-        if (isFamilyOrTitleBlock) {
+        // Fallback dinâmico: se ainda falhar com título e family_name foi enviado, tente sem title mesmo fora da allowlist
+        if (!mlItem && isTitleInvalid && includeFamilyName && !noTitleFlow) {
           try {
-            const altPayload: MLItemCreatePayload = {
-              ...payload,
-              category_id: fallbackNonUPCategory,
-              title: payload.title,
-            };
-            // manter family_name se já exigido para não cair em required_fields
-            if (includeFamilyName || missingFamilyName) {
-              altPayload.family_name =
-                (payload as any).family_name || product.brand || product.name;
-            } else {
-              delete (altPayload as any).family_name;
-            }
             console.warn(
-              `[ListingUseCase] Retentando em categoria não-UP ${fallbackNonUPCategory} sem family_name para preservar título`,
+              "[ListingUseCase] Retentando createItem sem title (fallback dinâmico após título rejeitado)",
             );
-            mlItem = await MLApiService.createItem(acc.accessToken, altPayload);
-            resolvedCategoryId = fallbackNonUPCategory;
-          } catch (altErr) {
+            const noTitlePayload: MLItemCreatePayload = {
+              ...payload,
+              family_name:
+                (payload as any).family_name ||
+                familyNameValue ||
+                this.buildMLTitle(product),
+            } as any;
+            delete (noTitlePayload as any).title;
+            mlItem = await this.withTimeout(
+              MLApiService.createItem(acc.accessToken, noTitlePayload),
+              timeoutMs,
+              "ML createItem fallback noTitle",
+            );
+          } catch (dynErr) {
             console.warn(
-              "[ListingUseCase] Retentativa em categoria não-UP falhou:",
-              altErr instanceof Error ? altErr.message : String(altErr),
+              "[ListingUseCase] Fallback dinâmico sem title falhou:",
+              dynErr instanceof Error ? dynErr.message : String(dynErr),
             );
           }
         }
@@ -1170,25 +1163,30 @@ export class ListingUseCase {
             "Conta do Mercado Livre sem permissÃ£o para publicar (PolicyAgent). RefaÃ§a a autorizaÃ§Ã£o habilitando permissÃµes de anÃºncio no app do ML e reconecte a conta.";
 
           try {
-            await SystemLogService.logError(
-              "CREATE_LISTING",
-              humanMsg,
-              {
-                userId,
-                resource: "MarketplaceAccount",
-                resourceId: acc.id,
-                details: { mlError: parsedMl || errMsg },
-              },
-            );
+            await SystemLogService.logError("CREATE_LISTING", humanMsg, {
+              userId,
+              resource: "MarketplaceAccount",
+              resourceId: acc.id,
+              details: { mlError: parsedMl || errMsg },
+            });
           } catch (logErr) {
-            console.error("[ListingUseCase] failed to log PolicyAgent block:", logErr);
+            console.error(
+              "[ListingUseCase] failed to log PolicyAgent block:",
+              logErr,
+            );
           }
 
           // Marcar conta como ERROR para forÃ§ar reconexÃ£o e desabilitar retries automÃ¡ticos
           try {
-            await MarketplaceRepository.updateStatus(acc.id, AccountStatus.ERROR);
+            await MarketplaceRepository.updateStatus(
+              acc.id,
+              AccountStatus.ERROR,
+            );
           } catch (stErr) {
-            console.warn("[ListingUseCase] failed to mark account as ERROR:", stErr);
+            console.warn(
+              "[ListingUseCase] failed to mark account as ERROR:",
+              stErr,
+            );
           }
 
           try {
@@ -1278,9 +1276,10 @@ export class ListingUseCase {
                 if (attempt > 1) {
                   await new Promise((r) => setTimeout(r, attempt * 700));
                 }
-                mlItem = await MLApiService.createItem(
-                  acc.accessToken,
-                  payload,
+                mlItem = await this.withTimeout(
+                  MLApiService.createItem(acc.accessToken, payload),
+                  timeoutMs,
+                  "ML createItem retry restricted",
                 );
                 console.log(
                   `[ListingUseCase] ML create succeeded on retry (attempt ${attempt})`,
@@ -1372,12 +1371,18 @@ export class ListingUseCase {
       }
       // 4.1. Reforçar descrição após criação usando endpoint dedicado
       try {
-        await MLApiService.upsertDescription(
-          acc.accessToken,
-          mlItem.id,
-          descriptionText,
+        await this.withTimeout(
+          MLApiService.upsertDescription(
+            acc.accessToken,
+            mlItem.id,
+            descriptionText,
+          ),
+          timeoutMs,
+          "ML upsertDescription",
         );
-        console.log("[ListingUseCase] ML item description updated via /description");
+        console.log(
+          "[ListingUseCase] ML item description updated via /description",
+        );
       } catch (err) {
         console.error(
           "[ListingUseCase] Failed to update ML item description:",
@@ -1385,11 +1390,54 @@ export class ListingUseCase {
         );
       }
 
+      // 4.1.1 Atualizar family_name via PUT para que o título gerado pelo ML
+      // reflita o nome completo do produto (em categorias User Product o título
+      // visível é calculado a partir de family_name + atributos).
+      const desiredFamilyName = this.buildMLTitle(product);
+      if (mlItem?.id && desiredFamilyName) {
+        const mlReturnedTitle = (mlItem.title || "").trim();
+        // Tentar atualizar family_name se o título retornado não contém o nome desejado
+        // ou se a categoria usa o fluxo User Product (family_name)
+        const titleMismatch =
+          mlReturnedTitle.toLowerCase() !== desiredFamilyName.toLowerCase() &&
+          !mlReturnedTitle
+            .toLowerCase()
+            .includes(desiredFamilyName.toLowerCase());
+        if (
+          titleMismatch ||
+          includeFamilyName ||
+          (payload as any).family_name
+        ) {
+          try {
+            await this.withTimeout(
+              MLApiService.updateItem(acc.accessToken, mlItem.id, {
+                family_name: desiredFamilyName,
+              }),
+              timeoutMs,
+              "ML updateItem family_name",
+            );
+            console.log(
+              `[ListingUseCase] family_name updated to "${desiredFamilyName}" for ${mlItem.id}`,
+            );
+          } catch (fnErr) {
+            // Não é crítico — o anúncio já foi criado. Logar e seguir.
+            console.warn(
+              `[ListingUseCase] Failed to update family_name for ${mlItem.id}:`,
+              fnErr instanceof Error ? fnErr.message : String(fnErr),
+            );
+          }
+        }
+      }
+
       // 4.2 Verificar status real no ML e tentar reativar se possível
-      let remoteStatus: "active" | "paused" | "closed" | "under_review" = "active";
+      let remoteStatus: "active" | "paused" | "closed" | "under_review" =
+        "active";
       let remoteSubStatus: string[] | undefined;
       try {
-        const details = await MLApiService.getItemDetails(acc.accessToken, mlItem.id);
+        const details = await MLApiService.getItemDetails(
+          acc.accessToken,
+          mlItem.id,
+        );
         remoteStatus = details.status;
         remoteSubStatus = (details as any).sub_status;
 
@@ -1402,9 +1450,13 @@ export class ListingUseCase {
             );
           if (canAutoActivate) {
             try {
-              const reactivated = await MLApiService.updateItem(acc.accessToken, mlItem.id, {
-                status: "active",
-              });
+              const reactivated = await MLApiService.updateItem(
+                acc.accessToken,
+                mlItem.id,
+                {
+                  status: "active",
+                },
+              );
               remoteStatus = reactivated.status;
               remoteSubStatus = (reactivated as any).sub_status;
               console.warn(
@@ -1609,9 +1661,19 @@ export class ListingUseCase {
         };
       }
 
+      const resolvedShopeeCategoryId =
+        categoryId || (product as any).shopeeCategoryId;
+      if (!resolvedShopeeCategoryId) {
+        return {
+          success: false,
+          error:
+            "Selecione uma categoria do Shopee no produto antes de publicar.",
+        };
+      }
+
       // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
       const payload: ShopeeItemCreatePayload = {
-        category_id: categoryId ? parseInt(categoryId) : 100644, // Usar categoria fornecida ou padrÃ£o
+        category_id: parseInt(resolvedShopeeCategoryId),
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
@@ -1759,12 +1821,23 @@ export class ListingUseCase {
         return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
       }
 
+      // Se ainda estÃ¡ com placeholder PENDING ou sem externalListingId, apenas remove localmente
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true };
+      }
+
       // Buscar conta para obter access token
       const account = await MarketplaceRepository.findById(
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken) {
-        return { success: false, error: "Conta sem credenciais vÃ¡lidas" };
+        // Sem credenciais, remova localmente para evitar lixo
+        await ListingRepository.deleteListing(listingId);
+        return { success: true };
       }
 
       // Primeiro, verificar o status atual do anÃºncio
@@ -1781,6 +1854,7 @@ export class ListingUseCase {
           `[ListingUseCase] Could not get current status of ${listing.externalListingId}:`,
           statusError,
         );
+        // se o item nÃ£o existir mais no ML, apenas prossegue com remoÃ§Ã£o local
       }
 
       // Tentar fechar anÃºncio no ML (itens com infraÃ§Ãµes ou em processamento podem nÃ£o poder ser fechados)
@@ -1800,9 +1874,8 @@ export class ListingUseCase {
           `[ListingUseCase] Could not close ML listing ${listing.externalListingId}:`,
           closeError,
         );
-        // Mesmo que nÃ£o consiga fechar, continua removendo o vÃ­nculo local
-        // O anÃºncio ficarÃ¡ visÃ­vel no ML mas nÃ£o estarÃ¡ mais vinculado ao produto
-        // Isso pode acontecer com itens que tÃªm infraÃ§Ãµes ou estÃ£o em processamento
+        // Mesmo que nÃ£o consiga fechar, continua removendo o vÃ­nculo local.
+        // O item pode jÃ¡ ter sido apagado ou estar em processamento; nÃ£o devemos travar a remoÃ§Ã£o local.
       }
 
       // Remover vÃ­nculo local
@@ -1819,36 +1892,3 @@ export class ListingUseCase {
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

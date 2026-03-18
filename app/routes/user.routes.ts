@@ -13,13 +13,15 @@ export const userRoutes = async (fastify: FastifyInstance) => {
       request: FastifyRequest<{ Body: UserCreate }>,
       reply: FastifyReply,
     ) => {
-      const { name, email, password, defaultProductDescription } = request.body;
+      const { name, email, password, defaultProductDescription, avatarUrl } =
+        request.body;
       try {
         const data = await userUserCase.create({
           name,
           email,
           password,
           defaultProductDescription,
+          avatarUrl,
         });
 
         // Registrar log de criação de usuário

@@ -1,4 +1,4 @@
-import axios from "axios";
+﻿import axios from "axios";
 import { ML_CONSTANTS } from "../mercado-livre/ml-constants";
 import {
   MLItemsSearchResponse,
@@ -16,28 +16,64 @@ import {
 
 /**
  * Cliente para API do Mercado Livre
- * Responsável por:
+ * ResponsÃ¡vel por:
  * 1. Listar items do vendedor
  * 2. Obter detalhes de items
- * 3. Atualizar estoque e preço
+ * 3. Atualizar estoque e preÃ§o
  */
 export class MLApiService {
+  // cache simples para app access token obtido via client_credentials
+  private static appToken: { token: string; exp: number } | null = null;
+
+  private static async getAppAccessToken(): Promise<string | null> {
+    const now = Date.now();
+    if (this.appToken && this.appToken.exp > now + 10_000) {
+      return this.appToken.token;
+    }
+
+    const clientId = process.env.ML_CLIENT_ID;
+    const clientSecret = process.env.ML_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return null;
+
+    try {
+      const resp = await axios.post(
+        `${ML_CONSTANTS.API_URL}/oauth/token`,
+        new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+      );
+
+      const token = resp.data?.access_token as string | undefined;
+      const expiresIn = Number(resp.data?.expires_in || 1800) * 1000;
+      if (token) {
+        this.appToken = { token, exp: now + expiresIn };
+        return token;
+      }
+    } catch (err) {
+      console.warn("[ML API] Não foi possível obter app access token:", err);
+    }
+
+    return null;
+  }
   /**
    * Lista todos os IDs de items de um vendedor
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor no ML
-   * @param status Filtro por status (opcional, padrão: "active")
-   * @param maxItems Limite máximo de IDs a buscar (opcional, sem limite por padrão)
+   * @param status Filtro por status (opcional, padrÃ£o: "active")
+   * @param maxItems Limite mÃ¡ximo de IDs a buscar (opcional, sem limite por padrÃ£o)
    */
   static async getSellerItemIds(
     accessToken: string,
     sellerId: string,
-    status: "active" | "paused" | "closed" = "active", // Padrão: apenas itens ativos
-    maxItems?: number, // Sem limite por padrão
+    status: "active" | "paused" | "closed" = "active", // PadrÃ£o: apenas itens ativos
+    maxItems?: number, // Sem limite por padrÃ£o
   ): Promise<string[]> {
     const allItemIds: string[] = [];
     let offset = 0;
-    const limit = 50; // ML aceita no máximo 50 por página
+    const limit = 50; // ML aceita no mÃ¡ximo 50 por pÃ¡gina
 
     try {
       while (true) {
@@ -55,13 +91,13 @@ export class MLApiService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
             },
-            timeout: 10000, // 10 segundos de timeout por requisição
+            timeout: 10000, // 10 segundos de timeout por requisiÃ§Ã£o
           },
         );
 
         allItemIds.push(...response.data.results);
 
-        // Verificar se há mais páginas
+        // Verificar se hÃ¡ mais pÃ¡ginas
         if (response.data.results.length < limit) {
           break;
         }
@@ -99,7 +135,7 @@ export class MLApiService {
   }
 
   /**
-   * Obtém detalhes de múltiplos items (máximo 20 por chamada)
+   * ObtÃ©m detalhes de mÃºltiplos items (mÃ¡ximo 20 por chamada)
    * @param accessToken Token de acesso OAuth
    * @param itemIds Array de IDs de items
    * @param maxItems Limite opcional de itens a processar
@@ -111,11 +147,11 @@ export class MLApiService {
   ): Promise<MLItemDetails[]> {
     if (itemIds.length === 0) return [];
 
-    // Limitar número de itens se especificado
+    // Limitar nÃºmero de itens se especificado
     const idsToProcess = maxItems ? itemIds.slice(0, maxItems) : itemIds;
     console.log(`[ML API] Processing ${idsToProcess.length} items`);
 
-    // API permite máximo 20 items por chamada
+    // API permite mÃ¡ximo 20 items por chamada
     const chunks: string[][] = [];
     for (let i = 0; i < idsToProcess.length; i += 20) {
       chunks.push(idsToProcess.slice(i, i + 20));
@@ -166,7 +202,7 @@ export class MLApiService {
   }
 
   /**
-   * Obtém detalhes de um único item
+   * ObtÃ©m detalhes de um Ãºnico item
    * @param accessToken Token de acesso OAuth
    * @param itemId ID do item
    */
@@ -196,17 +232,63 @@ export class MLApiService {
   }
 
   /**
-   * Lista categorias de um site (ex: 'MLB') - endpoint público
+   * Lista categorias de um site (ex: 'MLB') - endpoint pÃºblico
    */
   static async getSiteCategories(
     siteId: string,
+    accessToken?: string,
   ): Promise<{ id: string; name: string }[]> {
     try {
-      const response = await axios.get(
+      const headers = accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : undefined;
+
+      let response = await axios.get(
         `${ML_CONSTANTS.API_URL}/sites/${siteId}/categories`,
+        {
+          headers,
+          timeout: 10000,
+        },
       );
       return response.data as { id: string; name: string }[];
     } catch (error) {
+      // Se o token for inválido, tentar novamente com app token ou sem Authorization
+      if (
+        axios.isAxiosError(error) &&
+        (error.response?.status === 401 || error.response?.status === 403)
+      ) {
+        console.warn(
+          `[ML API] Token inválido para listar categorias; tentando com app token / sem Authorization...`,
+        );
+
+        // 1) app token via client_credentials (se disponível)
+        const appToken = await this.getAppAccessToken();
+        if (appToken) {
+          try {
+            const withApp = await axios.get(
+              `${ML_CONSTANTS.API_URL}/sites/${siteId}/categories`,
+              {
+                headers: { Authorization: `Bearer ${appToken}` },
+                timeout: 10000,
+              },
+            );
+            return withApp.data as { id: string; name: string }[];
+          } catch (appErr) {
+            console.warn(
+              "[ML API] App token também falhou, tentando sem Authorization...",
+              appErr instanceof Error ? appErr.message : appErr,
+            );
+          }
+        }
+
+        // 2) último fallback: sem Authorization
+        const retry = await axios.get(
+          `${ML_CONSTANTS.API_URL}/sites/${siteId}/categories`,
+          { timeout: 10000 },
+        );
+        return retry.data as { id: string; name: string }[];
+      }
+
       console.error(
         `[ML API] Error fetching site categories for ${siteId}:`,
         error,
@@ -221,15 +303,38 @@ export class MLApiService {
   }
 
   /**
-   * Obtém detalhes de uma categoria (inclui path_from_root)
+   * ObtÃ©m detalhes de uma categoria (inclui path_from_root)
    */
   static async getCategory(categoryId: string): Promise<any> {
     try {
       const response = await axios.get(
         `${ML_CONSTANTS.API_URL}/categories/${categoryId}`,
+        { timeout: 1000 },
       );
       return response.data;
     } catch (error) {
+      // Tentar com app token se 401/403
+      if (
+        axios.isAxiosError(error) &&
+        (error.response?.status === 401 || error.response?.status === 403)
+      ) {
+        try {
+          const appToken = await this.getAppAccessToken();
+          if (appToken) {
+            const retry = await axios.get(
+              `${ML_CONSTANTS.API_URL}/categories/${categoryId}`,
+              { headers: { Authorization: `Bearer ${appToken}` }, timeout: 1000 },
+            );
+            return retry.data;
+          }
+        } catch (appErr) {
+          console.warn(
+            `[ML API] getCategory fallback with app token failed for ${categoryId}:`,
+            appErr instanceof Error ? appErr.message : appErr,
+          );
+        }
+      }
+
       console.error(`[ML API] Error fetching category ${categoryId}:`, error);
       if (axios.isAxiosError(error)) {
         throw new Error(
@@ -241,9 +346,75 @@ export class MLApiService {
   }
 
   /**
+   * ObtÃ©m visitas totais de uma lista de itens
+   * Endpoint: /visits/items?ids={ids}
+   */
+  static async getItemsVisits(
+    accessToken: string,
+    itemIds: string[],
+  ): Promise<Record<string, number>> {
+    if (!itemIds.length) return {};
+    const result: Record<string, number> = {};
+
+    for (const id of itemIds) {
+      const url = `${ML_CONSTANTS.API_URL}/visits/items?ids=${id}`;
+      try {
+        const res = await axios.get(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 5000,
+        });
+        const data = res.data as any[];
+        const entry = Array.isArray(data) ? data[0] : data;
+        const total =
+          entry?.total_visits ?? entry?.total ?? entry?.visits ?? 0;
+        result[id] = Number(total) || 0;
+      } catch (error) {
+        console.error(`[ML API] Error fetching visits for ${id}:`, error);
+        // segue para o prÃ³ximo ID
+      }
+      // Pausa leve para evitar rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+
+    return result;
+  }
+
+  /**
+   * ObtÃ©m resumo de reviews de um item
+   * Endpoint: /reviews/item/{itemId}
+   */
+  static async getItemReviewSummary(
+    accessToken: string,
+    itemId: string,
+  ): Promise<{ ratingAverage?: number; totalReviews?: number }> {
+    const url = `${ML_CONSTANTS.API_URL}/reviews/item/${itemId}`;
+    try {
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = res.data as any;
+      const ratingAverage = data.rating_average ?? data.rating ?? undefined;
+      const totalReviews =
+        data.paging?.total ??
+        data.reviews_count ??
+        (Array.isArray(data.reviews) ? data.reviews.length : undefined);
+      return { ratingAverage, totalReviews };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        // Se o item nÃ£o tem reviews, a API pode retornar 404; tratamos como ausÃªncia de dado
+        if (error.response?.status === 404) return {};
+        throw new Error(
+          error.response?.data?.message || error.message || "Erro ao buscar reviews",
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Usa o endpoint de domain discovery do ML para sugerir uma categoria
-   * com base em um texto (título + palavras-chave).
-   * Retorna o category_id ou null se não encontrar.
+   * com base em um texto (tÃ­tulo + palavras-chave).
+   * Retorna o category_id ou null se nÃ£o encontrar.
    */
   static async suggestCategoryId(
     siteId: string,
@@ -373,10 +544,10 @@ export class MLApiService {
   }
 
   /**
-   * Atualiza apenas o preço de um item
+   * Atualiza apenas o preÃ§o de um item
    * @param accessToken Token de acesso OAuth
    * @param itemId ID do item
-   * @param price Novo preço
+   * @param price Novo preÃ§o
    */
   static async updateItemPrice(
     accessToken: string,
@@ -387,8 +558,8 @@ export class MLApiService {
   }
 
   /**
-   * Cria ou atualiza a descrição de um item (endpoint dedicado do ML).
-   * Usa POST para criar/replace a descrição plain_text.
+   * Cria ou atualiza a descriÃ§Ã£o de um item (endpoint dedicado do ML).
+   * Usa POST para criar/replace a descriÃ§Ã£o plain_text.
    */
   static async upsertDescription(
     accessToken: string,
@@ -396,35 +567,103 @@ export class MLApiService {
     plainText: string,
   ): Promise<void> {
     if (!plainText || !plainText.trim()) return;
+
+    const url = `${ML_CONSTANTS.API_URL}/items/${itemId}/description`;
+    const body = { plain_text: plainText };
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    };
+
+    // POST cria; PUT substitui. Alguns domínios retornam validation_error no POST se já houver descrição,
+    // então aplicamos fallback para PUT para garantir que a descrição seja gravada.
     try {
-      await axios.post(
-        `${ML_CONSTANTS.API_URL}/items/${itemId}/description`,
-        { plain_text: plainText },
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
+      await axios.post(url, body, { headers });
+      return;
+    } catch (postErr) {
+      const isAxios = axios.isAxiosError(postErr);
+      const postData = isAxios ? postErr.response?.data : null;
+      const status = isAxios ? postErr.response?.status : undefined;
+
+      // Fallback HTML no POST: se plain_text não é permitido, tenta formato HTML
+      const postPlainTextNotAllowed =
+        postData?.error === "DESCRIPTION_PLAIN_TEXT_NOT_ALLOWED" ||
+        postData?.cause === "item.description.type.invalid";
+      if (postPlainTextNotAllowed) {
+        try {
+          await axios.post(url, { text: plainText }, { headers });
+          return;
+        } catch {
+          // Se POST com HTML falhar, cai pro PUT abaixo
+        }
+      }
+
+      const shouldTryPut =
+        isAxios &&
+        (status === 400 || status === 403 || status === 404 || status === 409);
+
+      if (!shouldTryPut) {
         throw new Error(
-          `Erro ao atualizar descrição: ${error.response?.data?.message || error.message}`,
+          `Erro ao atualizar descrição (POST): ${
+            isAxios && postData
+              ? JSON.stringify(postData)
+              : postErr instanceof Error
+                ? postErr.message
+                : String(postErr)
+          }`,
         );
       }
-      throw error;
+
+      try {
+        await axios.put(url, body, { headers });
+      } catch (putErr) {
+        const putAxios = axios.isAxiosError(putErr);
+        const putData = putAxios ? putErr.response?.data : null;
+        const isPlainTextNotAllowed =
+          putData?.error === "DESCRIPTION_PLAIN_TEXT_NOT_ALLOWED" ||
+          putData?.cause === "item.description.type.invalid";
+
+        // Fallback: algumas categorias exigem formato HTML em vez de plain_text
+        if (isPlainTextNotAllowed) {
+          try {
+            const htmlBody = { text: plainText };
+            await axios.put(url, htmlBody, { headers });
+            return;
+          } catch (htmlErr) {
+            const htmlAxios = axios.isAxiosError(htmlErr);
+            throw new Error(
+              `Erro ao atualizar descrição (HTML fallback): ${
+                htmlAxios && htmlErr.response?.data
+                  ? JSON.stringify(htmlErr.response.data)
+                  : htmlErr instanceof Error
+                    ? htmlErr.message
+                    : String(htmlErr)
+              }`,
+            );
+          }
+        }
+
+        throw new Error(
+          `Erro ao atualizar descrição (PUT): ${
+            putAxios && putErr.response?.data
+              ? JSON.stringify(putErr.response.data)
+              : putErr instanceof Error
+                ? putErr.message
+                : String(putErr)
+          }`,
+        );
+      }
     }
   }
 
   // ====================================================================
-  // MÉTODOS DE ORDERS (PEDIDOS)
+  // MÃ‰TODOS DE ORDERS (PEDIDOS)
   // ====================================================================
 
   /**
    * Busca pedidos de um vendedor com filtros
    * @param accessToken Token de acesso OAuth
-   * @param params Parâmetros de busca
+   * @param params ParÃ¢metros de busca
    */
   static async getSellerOrders(
     accessToken: string,
@@ -433,10 +672,10 @@ export class MLApiService {
     try {
       const url = new URL("/orders/search", ML_CONSTANTS.API_URL);
 
-      // Parâmetro obrigatório: seller
+      // ParÃ¢metro obrigatÃ³rio: seller
       url.searchParams.set("seller", params.seller);
 
-      // Parâmetros opcionais
+      // ParÃ¢metros opcionais
       if (params.status) {
         url.searchParams.set("order.status", params.status);
       }
@@ -485,11 +724,11 @@ export class MLApiService {
   }
 
   /**
-   * Busca todos os pedidos paginados (com limite de segurança)
+   * Busca todos os pedidos paginados (com limite de seguranÃ§a)
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor
    * @param status Status dos pedidos (opcional)
-   * @param maxOrders Limite máximo de pedidos a buscar (padrão: 100)
+   * @param maxOrders Limite mÃ¡ximo de pedidos a buscar (padrÃ£o: 100)
    */
   static async getAllSellerOrders(
     accessToken: string,
@@ -499,7 +738,7 @@ export class MLApiService {
   ): Promise<MLOrderDetails[]> {
     const allOrders: MLOrderDetails[] = [];
     let offset = 0;
-    const limit = 50; // ML aceita no máximo 50 por página
+    const limit = 50; // ML aceita no mÃ¡ximo 50 por pÃ¡gina
 
     try {
       while (allOrders.length < maxOrders) {
@@ -513,7 +752,7 @@ export class MLApiService {
 
         allOrders.push(...response.results);
 
-        // Verificar se há mais páginas
+        // Verificar se hÃ¡ mais pÃ¡ginas
         if (
           response.results.length < limit ||
           allOrders.length >= response.paging.total
@@ -527,7 +766,7 @@ export class MLApiService {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
-      // Limitar ao máximo especificado
+      // Limitar ao mÃ¡ximo especificado
       return allOrders.slice(0, maxOrders);
     } catch (error) {
       console.error("[ML API] Error fetching all orders:", error);
@@ -536,7 +775,7 @@ export class MLApiService {
   }
 
   /**
-   * Obtém detalhes de um pedido específico
+   * ObtÃ©m detalhes de um pedido especÃ­fico
    * @param accessToken Token de acesso OAuth
    * @param orderId ID do pedido no ML
    */
@@ -567,11 +806,11 @@ export class MLApiService {
   }
 
   /**
-   * Busca pedidos recentes (últimos N dias)
+   * Busca pedidos recentes (Ãºltimos N dias)
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor
-   * @param days Número de dias para trás (padrão: 7)
-   * @param status Status dos pedidos (opcional, padrão: "paid")
+   * @param days NÃºmero de dias para trÃ¡s (padrÃ£o: 7)
+   * @param status Status dos pedidos (opcional, padrÃ£o: "paid")
    */
   static async getRecentOrders(
     accessToken: string,
@@ -630,3 +869,5 @@ export class MLApiService {
     }
   }
 }
+
+

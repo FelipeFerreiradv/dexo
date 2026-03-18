@@ -72,7 +72,7 @@ const toYearString = (value: unknown) => {
   return str;
 };
 
-const buildDescription = (get: (key: string) => unknown) => {
+const buildDescription = (get: (...keys: string[]) => unknown) => {
   const parts: string[] = [];
 
   const info = toStringValue(
@@ -114,10 +114,9 @@ async function main() {
 
   for (const rawRow of rawRows) {
     // Normalizar chaves removendo espaços extras e acentos
-    const normalizedEntries = Object.entries(rawRow).map(([k, v]) => [
-      k.trim(),
-      v,
-    ]);
+    const normalizedEntries: Array<[string, unknown]> = Object.entries(
+      rawRow,
+    ).map(([k, v]) => [k.trim(), v]);
     const row: RawRow = Object.fromEntries(normalizedEntries);
     const normMap = new Map<string, unknown>();
     for (const [k, v] of normalizedEntries) {
@@ -127,7 +126,7 @@ async function main() {
         .toLowerCase();
       normMap.set(normKey, v);
     }
-    const get = (...keys: string[]) => {
+    const get = (...keys: string[]): unknown => {
       for (const key of keys) {
         const normKey = key
           .normalize("NFD")

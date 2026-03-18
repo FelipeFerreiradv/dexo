@@ -784,11 +784,11 @@ describe("ListingUseCase → ML payload with measurements", () => {
     expect(res.success).toBe(true);
     expect(createSpy).toHaveBeenCalledTimes(2);
     const firstPayload = (createSpy.mock as any).calls[0][1];
-    expect(firstPayload.family_name).toBe("Fiat");
-    expect(firstPayload.title).toBe("Porta diantera fiat uno 2004");
+    expect(firstPayload.family_name).toBe("Porta diantera fiat uno 2004");
+    expect(firstPayload.title).toBeUndefined(); // title omitido para domínios UP (noTitleWithFamilyName)
 
     const secondPayload = (createSpy.mock as any).calls[1][1];
-    expect((secondPayload as any).family_name).toBe("Fiat");
+    expect((secondPayload as any).family_name).toBe("Porta diantera fiat uno 2004");
     expect((secondPayload as any).title).toBeUndefined(); // title removido para domínios UP
   });
 

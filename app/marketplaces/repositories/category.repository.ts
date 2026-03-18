@@ -12,40 +12,52 @@ export interface CategoryUpsertEntry {
 
 export class CategoryRepository {
   static async upsertMany(entries: CategoryUpsertEntry[]) {
-    // Upsert sequentially to avoid DB write contention; number of categories is manageable
-    for (const e of entries) {
-      // Normalize fullPath: ensure a consistent ' > ' separator and trimmed segments
-      function normalizeFullPath(fp?: string) {
-        if (!fp) return fp;
-        // Accept both '>' and '>' with spaces; collapse multiple whitespace
-        return fp
-          .split(">")
-          .map((p) => p.trim())
-          .filter(Boolean)
-          .join(" > ");
+    const chunkSize = 200;
+    let processed = 0;
+
+    const normalizeFullPath = (fp?: string) => {
+      if (!fp) return fp;
+      return fp
+        .split(">")
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .join(" > ");
+    };
+
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const slice = entries.slice(i, i + chunkSize);
+      await Promise.all(
+        slice.map((e) => {
+          const normalizedFullPath =
+            normalizeFullPath(e.fullPath) ?? e.fullPath ?? "";
+          return prisma.marketplaceCategory.upsert({
+            where: { externalId: e.externalId },
+            create: {
+              externalId: e.externalId,
+              siteId: e.siteId,
+              name: e.name,
+              fullPath: normalizedFullPath,
+              pathFromRoot: e.pathFromRoot,
+              parentExternalId: e.parentExternalId || null,
+              keywords: e.keywords || null,
+            },
+            update: {
+              name: e.name,
+              fullPath: normalizedFullPath,
+              pathFromRoot: e.pathFromRoot,
+              parentExternalId: e.parentExternalId || null,
+              keywords: e.keywords || null,
+              updatedAt: new Date(),
+            },
+          });
+        }),
+      );
+      processed += slice.length;
+      if (processed % 1000 === 0 || processed === entries.length) {
+        console.log(
+          `[SYNC] Upsert de categorias: ${processed}/${entries.length}`,
+        );
       }
-      const normalizedFullPath =
-        normalizeFullPath(e.fullPath) ?? e.fullPath ?? "";
-      await prisma.marketplaceCategory.upsert({
-        where: { externalId: e.externalId },
-        create: {
-          externalId: e.externalId,
-          siteId: e.siteId,
-          name: e.name,
-          fullPath: normalizedFullPath,
-          pathFromRoot: e.pathFromRoot,
-          parentExternalId: e.parentExternalId || null,
-          keywords: e.keywords || null,
-        },
-        update: {
-          name: e.name,
-          fullPath: normalizedFullPath,
-          pathFromRoot: e.pathFromRoot,
-          parentExternalId: e.parentExternalId || null,
-          keywords: e.keywords || null,
-          updatedAt: new Date(),
-        },
-      });
     }
   }
 
@@ -61,6 +73,29 @@ export class CategoryRepository {
     const where = siteId ? { siteId } : {};
     return prisma.marketplaceCategory.findMany({
       where,
+      select: { id: true, externalId: true, fullPath: true, name: true },
+      orderBy: { fullPath: "asc" },
+    });
+  }
+
+  static async listWithParents(siteId?: string) {
+    const where = siteId ? { siteId } : {};
+    return prisma.marketplaceCategory.findMany({
+      where,
+      select: {
+        id: true,
+        externalId: true,
+        fullPath: true,
+        name: true,
+        parentExternalId: true,
+      },
+      orderBy: { fullPath: "asc" },
+    });
+  }
+
+  static async findChildren(parentExternalId: string) {
+    return prisma.marketplaceCategory.findMany({
+      where: { parentExternalId },
       select: { id: true, externalId: true, fullPath: true, name: true },
       orderBy: { fullPath: "asc" },
     });

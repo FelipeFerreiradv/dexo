@@ -103,11 +103,26 @@ export function ProductsList() {
     total: 0,
     totalPages: 0,
   });
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedSearch(searchInput.trim()),
+      250,
+    );
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPagination((prev) =>
+      prev.page === 1 ? prev : { ...prev, page: 1 },
+    );
+  }, [debouncedSearch]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "warning") => {
@@ -121,7 +136,7 @@ export function ProductsList() {
   );
 
   const fetchProducts = useCallback(
-    async (page: number = 1, searchTerm: string = "") => {
+    async (page: number = 1, searchTerm: string = debouncedSearch) => {
       const email = session?.user?.email;
       if (!email) {
         showToast("Sessão expirada. Faça login novamente.", "error");
@@ -133,14 +148,18 @@ export function ProductsList() {
           page: page.toString(),
           limit: "10",
         });
-        if (searchTerm) {
-          params.set("search", searchTerm);
+        const term = searchTerm.trim();
+        if (term.length >= 2) {
+          params.set("search", term);
         }
 
-        const response = await fetch(
-          `http://localhost:3333/products?${params}`,
-          { headers: { email } },
-        );
+        const apiBase =
+          process.env.NEXT_PUBLIC_API_URL ??
+          process.env.NEXT_PUBLIC_BACKEND_URL ??
+          "http://localhost:3333";
+        const response = await fetch(`${apiBase}/products?${params}`, {
+          headers: { email },
+        });
         const data = await response.json();
 
         if (!response.ok) {
@@ -158,19 +177,19 @@ export function ProductsList() {
         setIsLoading(false);
       }
     },
-    [showToast],
+    [debouncedSearch, session?.user?.email, showToast],
   );
 
   useEffect(() => {
-    fetchProducts(1, search);
-  }, [fetchProducts, search]);
+    fetchProducts(1);
+  }, [debouncedSearch, fetchProducts]);
 
   const handleSearch = (value: string) => {
-    setSearch(value);
+    setSearchInput(value);
   };
 
   const handlePageChange = (newPage: number) => {
-    fetchProducts(newPage, search);
+    fetchProducts(newPage);
   };
 
   // faz a chamada DELETE ao backend — NÃO usa `confirm()` nativo, o diálogo
@@ -191,7 +210,7 @@ export function ProductsList() {
       }
 
       showToast("Produto excluído com sucesso!", "success");
-      fetchProducts(pagination.page, search);
+      fetchProducts(pagination.page);
     } catch (error) {
       showToast(
         error instanceof Error ? error.message : "Erro ao excluir produto",
@@ -222,7 +241,7 @@ export function ProductsList() {
       }
 
       showToast("Produto atualizado com sucesso!", "success");
-      fetchProducts(pagination.page, search);
+      fetchProducts(pagination.page);
     } catch (error) {
       showToast(
         error instanceof Error ? error.message : "Erro ao atualizar produto",
@@ -270,7 +289,7 @@ export function ProductsList() {
         ))}
       </div>
 
-      <Card>
+      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -280,7 +299,7 @@ export function ProductsList() {
               </CardDescription>
             </div>
             <CreateProductDialog
-              onProductCreated={() => fetchProducts(1, search)}
+              onProductCreated={() => fetchProducts(1)}
               onToast={showToast}
             />
           </div>
@@ -296,9 +315,9 @@ export function ProductsList() {
                   <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="Buscar por nome ou SKU..."
-                    value={search}
+                    value={searchInput}
                     onChange={(e) => handleSearch(e.target.value)}
-                    className="pl-9"
+                    className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
                   />
                 </div>
                 <span className="text-sm text-muted-foreground">
@@ -563,8 +582,8 @@ export function ProductsList() {
                     Nenhum produto cadastrado
                   </h3>
                   <p className="mt-2 text-sm text-muted-foreground max-w-sm">
-                    {search
-                      ? `Nenhum produto encontrado para "${search}". Tente outro termo de busca.`
+                    {searchInput
+                      ? `Nenhum produto encontrado para "${searchInput}". Tente outro termo de busca.`
                       : "Comece adicionando seu primeiro produto ao catálogo."}
                   </p>
                 </div>
@@ -586,7 +605,7 @@ export function ProductsList() {
               setEditingProduct(null);
             }
           }}
-          onProductUpdated={() => fetchProducts(pagination.page, search)}
+          onProductUpdated={() => fetchProducts(pagination.page)}
           onToast={showToast}
         />
       )}

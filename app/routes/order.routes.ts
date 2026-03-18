@@ -221,55 +221,34 @@ export async function orderRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.id;
-
-        // Buscar conta do marketplace para filtrar pedidos
-        const { MarketplaceRepository } =
-          await import("../marketplaces/repositories/marketplace.repository");
-        const { Platform } = await import("@prisma/client");
-
-        const account = await MarketplaceRepository.findByUserIdAndPlatform(
-          userId,
-          Platform.MERCADO_LIVRE,
-        );
-
-        if (!account) {
-          return reply.status(200).send({
-            success: true,
-            stats: {
-              total: 0,
-              pending: 0,
-              paid: 0,
-              shipped: 0,
-              delivered: 0,
-              cancelled: 0,
-            },
-          });
-        }
-
-        // Buscar contagens por status
         const prisma = (await import("../lib/prisma")).default;
 
-        const [total, pending, paid, shipped, delivered, cancelled] =
+        const baseWhere = { marketplaceAccount: { userId } };
+
+        const [total, pending, paid, shipped, delivered, cancelled, revenue] =
           await Promise.all([
+            prisma.order.count({ where: baseWhere }),
+            prisma.order.count({ where: { ...baseWhere, status: "PENDING" } }),
+            prisma.order.count({ where: { ...baseWhere, status: "PAID" } }),
+            prisma.order.count({ where: { ...baseWhere, status: "SHIPPED" } }),
             prisma.order.count({
-              where: { marketplaceAccountId: account.id },
+              where: { ...baseWhere, status: "DELIVERED" },
             }),
             prisma.order.count({
-              where: { marketplaceAccountId: account.id, status: "PENDING" },
+              where: { ...baseWhere, status: "CANCELLED" },
             }),
-            prisma.order.count({
-              where: { marketplaceAccountId: account.id, status: "PAID" },
-            }),
-            prisma.order.count({
-              where: { marketplaceAccountId: account.id, status: "SHIPPED" },
-            }),
-            prisma.order.count({
-              where: { marketplaceAccountId: account.id, status: "DELIVERED" },
-            }),
-            prisma.order.count({
-              where: { marketplaceAccountId: account.id, status: "CANCELLED" },
+            prisma.order.aggregate({
+              where: baseWhere,
+              _sum: { totalAmount: true },
             }),
           ]);
+
+        // Prisma returns Decimal for money fields; coerce to number safely
+        const totalRevenue =
+          (revenue._sum.totalAmount &&
+            typeof (revenue._sum.totalAmount as any).toNumber === "function"
+            ? (revenue._sum.totalAmount as any).toNumber()
+            : Number(revenue._sum.totalAmount || 0)) || 0;
 
         return reply.status(200).send({
           success: true,
@@ -280,6 +259,7 @@ export async function orderRoutes(app: FastifyInstance) {
             shipped,
             delivered,
             cancelled,
+            totalRevenue,
           },
         });
       } catch (error) {

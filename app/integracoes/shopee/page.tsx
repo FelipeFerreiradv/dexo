@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
+
 import { authOptions } from "@/app/lib/auth";
+import { PageHeader } from "@/components/page-header";
 import { ShopeeDashboard } from "./components/shopee-dashboard";
 
 export default async function ShopeePage() {
@@ -11,15 +13,17 @@ export default async function ShopeePage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-foreground">
-          Shopee
-        </h2>
-        <p className="text-muted-foreground">
-          Gerencie sua integração com o Shopee
-        </p>
-      </div>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Integrações"
+        title="Shopee"
+        subtitle="Controle credenciais, anúncios e sincronização de estoque com a Shopee."
+        pills={
+          <span className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-xs font-medium text-muted-foreground">
+            Em tempo real
+          </span>
+        }
+      />
 
       <ShopeeDashboard />
     </div>

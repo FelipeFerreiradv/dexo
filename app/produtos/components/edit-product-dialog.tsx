@@ -55,7 +55,7 @@ const productEditSchema = z.object({
     .max(100, "Nome deve ter no máximo 100 caracteres"),
   description: z
     .string()
-    .max(500, "Descrição deve ter no máximo 500 caracteres")
+    .max(4000, "Descrição deve ter no máximo 4000 caracteres")
     .optional(),
   price: z
     .number({ invalid_type_error: "Preço deve ser um número" })
@@ -276,6 +276,7 @@ export function EditProductDialog({
   const watchPrice = watch("price");
   const watchCategory = watch("category");
   const watchMlCategory = watch("mlCategory");
+  const watchDescription = watch("description") || "";
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   const fetchDefaultDescription = useCallback(async () => {
@@ -991,20 +992,41 @@ export function EditProductDialog({
       if (createMlListing && selectedMlAccounts.length === 0) {
         onToast(
           "Selecione ao menos uma conta do Mercado Livre para criar o anúncio.",
-          "warning",
+          "error",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+      if (
+        createMlListing &&
+        !(data.mlCategory || autoDetectedRef.current?.mlCategory)
+      ) {
+        onToast(
+          "Selecione uma categoria do Mercado Livre antes de criar o anúncio.",
+          "error",
         );
         setIsSubmitting(false);
         return;
       }
 
+      // Categoria não obrigatória no frontend; o backend resolve/normaliza.
+
       if (createShopeeListing && selectedShopeeAccounts.length === 0) {
         onToast(
           "Selecione ao menos uma conta do Shopee para criar o anúncio.",
-          "warning",
+          "error",
         );
         setIsSubmitting(false);
         return;
       }
+
+      const mlCategorySourceToSend = data.mlCategory
+        ? autoDetectedRef.current?.mlCategory === data.mlCategory
+          ? "auto"
+          : "manual"
+        : autoDetectedRef.current?.mlCategory
+          ? "auto"
+          : undefined;
 
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
@@ -1028,6 +1050,22 @@ export function EditProductDialog({
         weightKg: data.weightKg ?? undefined,
 
         imageUrl: data.imageUrl || undefined,
+        mlCategorySource: mlCategorySourceToSend,
+        mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
+      };
+
+      const fetchWithTimeout = async (
+        input: RequestInfo | URL,
+        init: RequestInit = {},
+        timeoutMs = 15000,
+      ) => {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          return await fetch(input, { ...init, signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
       };
 
       const response = await fetch(
@@ -1058,21 +1096,38 @@ export function EditProductDialog({
           selectedMlAccounts.map(async (accountId) => {
             const url = new URL(`${base}/listings/ml`);
             url.searchParams.set("accountId", accountId);
-            const resp = await fetch(url.toString(), {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                email: session?.user?.email || "",
-              },
-              body: JSON.stringify({
-                productId: product.id,
-                categoryId: data.mlCategory || undefined,
-              }),
-            });
-            const body = await resp.json().catch(() => ({}));
+            let resp: Response | null = null;
+            let body: any = {};
+            try {
+              resp = await fetchWithTimeout(
+                url.toString(),
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    email: session?.user?.email || "",
+                  },
+                  body: JSON.stringify({
+                    productId: product.id,
+                    categoryId: data.mlCategory || undefined,
+                  }),
+                },
+                15000,
+              );
+              body = await resp.json().catch(() => ({}));
+            } catch (err) {
+              return {
+                accountId,
+                ok: false,
+                message:
+                  (err as any)?.name === "AbortError"
+                    ? "Requisição expirou (timeout)"
+                    : (err as Error).message || "Erro ao criar anúncio",
+              };
+            }
             return {
               accountId,
-              ok: resp.ok,
+              ok: resp?.ok ?? false,
               message: body.message || body.error || "",
             };
           }),
@@ -1206,10 +1261,12 @@ export function EditProductDialog({
                 placeholder="Descrição do produto"
                 {...register("description")}
                 className="min-h-20 resize-none"
+                maxLength={4000}
               />
-              <p className="text-xs text-muted-foreground">
-                Atualizada ao editar nome ou part number
-              </p>
+              <div className="flex items-start justify-between text-xs text-muted-foreground">
+                <span className="pr-3">Atualizada ao editar nome ou part number</span>
+                <span>{watchDescription.length}/4000</span>
+              </div>
               {errors.description && (
                 <p className="text-sm text-destructive">
                   {errors.description.message}
@@ -1463,29 +1520,30 @@ export function EditProductDialog({
                         (c) => c.id === watch("mlCategory"),
                       )?.value;
 
-                      const candidates = mlOptions.filter(
-                        (c) => c.value.split(" > ")[0] === watch("category"),
-                      );
-                      const mlByTopLevel = candidates.sort(
-                        (a, b) => b.value.length - a.value.length,
-                      )[0]?.value;
+                      const mlByFull = mlOptions.find(
+                        (c) => c.value === watch("category"),
+                      )?.value;
 
                       const staticById = ML_CATEGORY_OPTIONS.find(
                         (c) => c.id === watch("mlCategory"),
                       )?.value;
-                      const staticByTop = ML_CATEGORY_OPTIONS.find(
-                        (c) => c.value.split(" > ")[0] === watch("category"),
+                      const staticByFull = ML_CATEGORY_OPTIONS.find(
+                        (c) => c.value === watch("category"),
                       )?.value;
 
                       const detailed =
-                        mlById || mlByTopLevel || staticById || staticByTop;
+                        mlById || mlByFull || staticById || staticByFull;
 
                       return (
                         <Select
                           onValueChange={(val) => {
                             field.onChange(val);
-                            // Se usuário alterar categoria top-level manualmente, limpar mlCategory
-                            setValue("mlCategory", "");
+                            const match =
+                              mlOptions.find((c) => c.value === val) ||
+                              ML_CATEGORY_OPTIONS.find(
+                                (c) => c.value === val,
+                              );
+                            setValue("mlCategory", match?.id || "");
                           }}
                           value={field.value || undefined}
                         >
@@ -1523,24 +1581,19 @@ export function EditProductDialog({
                                 value: c.value,
                               }));
 
-                        // Pick selectedId: prefer explicit field value, otherwise choose
-                        // a candidate whose top-level matches current category (prefer most specific)
-                        const candidateMatches = optionsSource.filter(
-                          (o) => o.value.split(" > ")[0] === watch("category"),
+                        // Pick selectedId: prefer explicit field value, otherwise match fullPath in category
+                        const candidateByFull = optionsSource.find(
+                          (o) => o.value === watch("category"),
                         );
-                        const candidateByTop = candidateMatches.sort(
-                          (a, b) => b.value.length - a.value.length,
-                        )[0];
                         const selectedId =
-                          field.value || candidateByTop?.id || "";
+                          field.value || candidateByFull?.id || "";
 
                         const selectedLabel =
                           optionsSource.find((o) => o.id === field.value)
                             ?.value ||
-                          (candidateByTop && candidateByTop.value) ||
+                          candidateByFull?.value ||
                           ML_CATEGORY_OPTIONS.find(
-                            (c) =>
-                              c.value.split(" > ")[0] === watch("category"),
+                            (c) => c.value === watch("category"),
                           )?.value ||
                           watch("category") ||
                           undefined;
@@ -1552,9 +1605,8 @@ export function EditProductDialog({
                               const sel = optionsSource.find(
                                 (o) => o.id === val,
                               );
-                              if (sel && sel.value) {
-                                const parent = sel.value.split(" > ")[0].trim();
-                                setValue("category", parent);
+                              if (sel?.value) {
+                                setValue("category", sel.value);
                               }
                             }}
                             value={selectedId}

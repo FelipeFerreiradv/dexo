@@ -15,6 +15,7 @@ class UserRepositoryPrisma implements UserRepository {
       password: u.password,
       role: u.role as Role,
       name: u.name,
+      avatarUrl: u.avatarUrl ?? null,
       defaultProductDescription: u.defaultProductDescription ?? null,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
@@ -28,6 +29,7 @@ class UserRepositoryPrisma implements UserRepository {
           name: data.name,
           email: data.email,
           password: data.password,
+          avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
         },
       });
@@ -76,6 +78,8 @@ class UserRepositoryPrisma implements UserRepository {
         where: { id },
         data: {
           name: data.name,
+          password: data.password,
+          avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
         },
       });
