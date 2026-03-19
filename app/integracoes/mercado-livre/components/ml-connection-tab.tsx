@@ -206,11 +206,13 @@ export function MLConnectionTab() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       // Verificar origem (aceitar localhost para dev)
-      if (
-        event.origin !== window.location.origin &&
-        !event.origin.includes("localhost")
-      ) {
-        return;
+      if (typeof window !== 'undefined') {
+        if (
+          event.origin !== window.location.origin &&
+          !event.origin.includes("localhost")
+        ) {
+          return;
+        }
       }
 
       if (event.data?.type === "ML_OAUTH_SUCCESS") {

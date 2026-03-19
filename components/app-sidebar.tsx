@@ -166,8 +166,11 @@ export function AppSidebar({ session }: AppSidebarProps) {
         requestAnimationFrame(() => searchRef.current?.focus());
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    
+    if (typeof window !== 'undefined') {
+      window.addEventListener("keydown", handler);
+      return () => window.removeEventListener("keydown", handler);
+    }
   }, [setOpen]);
 
   const filteredSections = React.useMemo(() => {
@@ -480,7 +483,7 @@ function SidebarSearch({
                       subtitle={l.permalink || l.externalListingId}
                       badge={l.marketplaceAccount?.platform}
                       onClick={() => {
-                        if (l.permalink) {
+                        if (l.permalink && typeof window !== 'undefined') {
                           window.open(l.permalink, "_blank");
                         } else {
                           onNavigate(

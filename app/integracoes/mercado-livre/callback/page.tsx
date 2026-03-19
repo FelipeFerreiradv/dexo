@@ -75,7 +75,7 @@ export default function MLCallbackPage() {
 
   // Notifica janela pai (opener) sobre resultado
   const notifyParent = (type: string, message?: string) => {
-    if (window.opener && !window.opener.closed) {
+    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
       window.opener.postMessage({ type, message }, window.location.origin);
     }
   };
