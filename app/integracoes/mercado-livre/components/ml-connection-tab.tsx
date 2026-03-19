@@ -50,14 +50,22 @@ export function MLConnectionTab() {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Verifica status de conexão
+  // Verifica status de conexão (com proteção contra múltiplas chamadas simultâneas)
   const fetchStatus = useCallback(async () => {
     if (!session?.user?.email) return;
 
+    // Proteção contra múltiplas chamadas simultâneas (debouncing)
+    if (fetchStatus.isRunning) {
+      console.log('[ML Marketplace] fetchStatus já em execução, ignorando chamada duplicada');
+      return;
+    }
+
+    fetchStatus.isRunning = true;
     setIsLoading(true);
     setError(null);
 
     try {
+      // Fetch status
       const response = await fetch(
         `${getApiBaseUrl()}/marketplace/ml/status`,
         {
@@ -75,19 +83,35 @@ export function MLConnectionTab() {
       const data: ConnectionStatus = await response.json();
       setStatus(data);
 
-      const accRes = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/accounts`,
-        { headers: { email: session.user.email } },
-      );
-      if (accRes.ok) {
-        const accData = await accRes.json();
-        setAccounts(Array.isArray(accData.accounts) ? accData.accounts : []);
+      // Fetch lista de contas apenas se conectado
+      if (data.connected) {
+        const accRes = await fetch(
+          `${getApiBaseUrl()}/marketplace/ml/accounts`,
+          { headers: { email: session.user.email } },
+        );
+        if (accRes.ok) {
+          const accData = await accRes.json();
+          // Garantir que accounts é um array mesmo se vazio
+          const accountsList = Array.isArray(accData.accounts) ? accData.accounts : [];
+          
+          if (accountsList.length === 0) {
+            console.warn('[ML Marketplace] Nenhuma conta retornada pelo backend');
+          }
+          
+          setAccounts(accountsList);
+        } else {
+          console.error('[ML Marketplace] Erro ao buscar contas:', accRes.status);
+          setAccounts([]);
+        }
       } else {
         setAccounts([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro desconhecido");
+      const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
+      console.error('[ML Marketplace] Erro em fetchStatus:', errorMsg);
+      setError(errorMsg);
     } finally {
+      fetchStatus.isRunning = false;
       setIsLoading(false);
     }
   }, [session?.user?.email]);
@@ -138,27 +162,52 @@ export function MLConnectionTab() {
         );
       }
 
-      // 3. Aguardar popup fechar (polling)
-      const checkClosed = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(checkClosed);
+      // 3. Flag de controle para evitar múltiplas chamadas a fetchStatus()
+      let statusAlreadyFetched = false;
+
+      // 4. Configurar timeout como fallback (caso postMessage falhe)
+      // IMPORTANTE: Este é um fallback para quando postMessage não funciona
+      // O postMessage listener é o mecanismo principal (vide useEffect abaixo)
+      const pollTimeout = setTimeout(() => {
+        if (!statusAlreadyFetched && !popup.closed) {
+          console.warn('[ML OAuth] Timeout: postMessage não recebido, usando fallback de polling');
+          statusAlreadyFetched = true;
           setIsConnecting(false);
-          // Recarregar status após fechar popup
+          fetchStatus();
+        }
+      }, 3000); // 3 segundos é suficiente para postMessage
+
+      // 5. Polling como fallback adicional (em caso de popup.closed e postMessage falhar)
+      const checkClosed = setInterval(() => {
+        if (popup.closed && !statusAlreadyFetched) {
+          clearInterval(checkClosed);
+          clearTimeout(pollTimeout);
+          statusAlreadyFetched = true;
+          setIsConnecting(false);
+          console.log('[ML OAuth] Popup fechado (polling detectado)');
           fetchStatus();
         }
       }, 500);
 
-      // Timeout de 5 minutos
-      setTimeout(
-        () => {
-          clearInterval(checkClosed);
-          if (!popup.closed) {
-            popup.close();
-          }
-          setIsConnecting(false);
-        },
-        5 * 60 * 1000,
-      );
+      // 6. Hard timeout de 5 minutos (segurança)
+      const hardTimeout = setTimeout(() => {
+        clearInterval(checkClosed);
+        clearTimeout(pollTimeout);
+        if (!popup.closed) {
+          popup.close();
+        }
+        setIsConnecting(false);
+        if (!statusAlreadyFetched) {
+          setError('Tempo limite excedido. Tente novamente.');
+        }
+      }, 5 * 60 * 1000);
+
+      // Cleanup ao desmontar
+      return () => {
+        clearInterval(checkClosed);
+        clearTimeout(pollTimeout);
+        clearTimeout(hardTimeout);
+      };
     } catch (err) {
       setIsConnecting(false);
       setError(err instanceof Error ? err.message : "Erro ao conectar");
@@ -202,30 +251,62 @@ export function MLConnectionTab() {
     }
   }, [session?.user?.email, fetchStatus]);
 
-  // Listener para mensagens do popup (callback success)
+  // Listener para mensagens do popup (callback success) - MECANISMO PRINCIPAL
   useEffect(() => {
+    let isMountedRef = true;
+
     const handleMessage = (event: MessageEvent) => {
-      // Verificar origem (aceitar localhost para dev)
+      // Validar origin do postMessage (segurança)
       if (typeof window !== 'undefined') {
-        if (
-          event.origin !== window.location.origin &&
-          !event.origin.includes("localhost")
-        ) {
+        // Aceitar:
+        // 1. Mesmo origin (normal em dev/prod)
+        // 2. Localhost (para local testing)
+        // 3. Qualquer domínio que contenha "mercad" (fallback para casos extremos)
+        const isValidOrigin =
+          event.origin === window.location.origin ||
+          event.origin.includes('localhost') ||
+          event.origin.includes('mercad');
+
+        if (!isValidOrigin) {
+          console.warn(
+            `[ML OAuth] Mensagem rejeitada: origem inválida '${event.origin}'`,
+            'esperada:', window.location.origin,
+          );
           return;
         }
       }
 
-      if (event.data?.type === "ML_OAUTH_SUCCESS") {
+      // Processar mensagens conhecidas
+      if (event.data?.type === 'ML_OAUTH_SUCCESS') {
+        if (!isMountedRef) return;
+
+        console.log('[ML OAuth] Sucesso confirmado via postMessage');
         setIsConnecting(false);
-        fetchStatus();
-      } else if (event.data?.type === "ML_OAUTH_ERROR") {
+
+        // Garantir que fetchStatus() é chamado apenas uma vez
+        // Adicionar pequeno delay para garantir que a conta foi persistida no backend
+        setTimeout(() => {
+          if (isMountedRef) {
+            fetchStatus();
+          }
+        }, 500);
+      } else if (event.data?.type === 'ML_OAUTH_ERROR') {
+        if (!isMountedRef) return;
+
+        console.error('[ML OAuth] Erro confirmado via postMessage:', event.data.message);
         setIsConnecting(false);
-        setError(event.data.message || "Erro na autenticação");
+        setError(event.data.message || 'Erro na autenticação');
       }
     };
 
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
+    // Registrar listener
+    window.addEventListener('message', handleMessage);
+
+    // Cleanup
+    return () => {
+      isMountedRef = false;
+      window.removeEventListener('message', handleMessage);
+    };
   }, [fetchStatus]);
 
   if (isLoading) {

@@ -76,7 +76,21 @@ export default function MLCallbackPage() {
   // Notifica janela pai (opener) sobre resultado
   const notifyParent = (type: string, message?: string) => {
     if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
-      window.opener.postMessage({ type, message }, window.location.origin);
+      // IMPORTANTE: Usar window.opener.location.origin ao invés de window.location.origin
+      // Isso garante que o postMessage funcione em produção com ngrok/proxies
+      try {
+        const openerOrigin = new URL(window.opener.location.href).origin;
+        window.opener.postMessage({ type, message }, openerOrigin);
+      } catch (err) {
+        // Fallback: tentar com origin genérico Se a origem falhar, logar e continuar
+        console.warn('[ML Callback] Erro ao enviar postMessage:', err);
+        // Tentar com wildcard como último recurso (menos seguro, mas garante funcionamento)
+        try {
+          window.opener.postMessage({ type, message }, '*');
+        } catch (fallbackErr) {
+          console.error('[ML Callback] Fallback postMessage também falhou:', fallbackErr);
+        }
+      }
     }
   };
 
