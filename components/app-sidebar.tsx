@@ -317,7 +317,7 @@ function BrandHeader({
         </div>
         {!collapsed && (
           <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold">Nexos</span>
+            <span className="text-sm font-semibold">Dexo</span>
             <span className="text-[11px] text-muted-foreground">
               Operações unificadas
             </span>

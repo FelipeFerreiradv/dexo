@@ -65,6 +65,7 @@ model Product {
 
   @@index([userId, createdAt])
   @@index([userId, updatedAt])
+  @@index([sku])
 }
 
 model MarketplaceAccount {
@@ -113,6 +114,7 @@ model ProductListing {
 
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
+  @@index([productId])
 }
 
 model MarketplaceCategory {
@@ -175,6 +177,8 @@ model OrderItem {
   product   Product         @relation(fields: [productId], references: [id])
 
   @@index([listingId])
+  @@index([orderId])
+  @@index([productId])
 }
 
 model StockLog {
@@ -186,6 +190,9 @@ model StockLog {
   newStock      Int
   createdAt     DateTime @default(now())
   product       Product  @relation(fields: [productId], references: [id])
+
+  @@index([productId])
+  @@index([productId, createdAt])
 }
 
 model SyncLog {
@@ -197,6 +204,8 @@ model SyncLog {
   payload              Json?
   createdAt            DateTime           @default(now())
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
+
+  @@index([marketplaceAccountId])
 }
 
 model SystemLog {
@@ -212,6 +221,9 @@ model SystemLog {
   message    String
   createdAt  DateTime @default(now())
   user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
 }
 
 enum Role {

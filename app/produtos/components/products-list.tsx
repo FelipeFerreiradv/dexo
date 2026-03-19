@@ -112,17 +112,12 @@ export function ProductsList() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   useEffect(() => {
-    const timer = setTimeout(
-      () => setDebouncedSearch(searchInput.trim()),
-      250,
-    );
+    const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
   useEffect(() => {
-    setPagination((prev) =>
-      prev.page === 1 ? prev : { ...prev, page: 1 },
-    );
+    setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   }, [debouncedSearch]);
 
   const showToast = useCallback(
@@ -193,7 +188,14 @@ export function ProductsList() {
   // faz a chamada DELETE ao backend — NÃO usa `confirm()` nativo, o diálogo
   // de confirmação é controlado pela UI (AlertDialog) para garantir que o usuário
   // veja feedback visual consistente.
+  // Uses optimistic update: removes product from UI immediately.
   const handleDelete = async (id: string, name?: string) => {
+    // Optimistic: remove from list immediately
+    const previousProducts = products;
+    const previousPagination = pagination;
+    setProducts((prev) => prev.filter((p) => p.id !== id));
+    setPagination((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
+
     try {
       const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
         method: "DELETE",
@@ -204,11 +206,17 @@ export function ProductsList() {
 
       if (!response.ok) {
         const data = await response.json();
+        // Revert optimistic update on failure
+        setProducts(previousProducts);
+        setPagination(previousPagination);
         throw new Error(data.error || "Erro ao excluir produto");
       }
 
       showToast("Produto excluído com sucesso!", "success");
-      fetchProducts(pagination.page);
+      // Refresh list only if we emptied the current page
+      if (previousProducts.length === 1 && pagination.page > 1) {
+        fetchProducts(pagination.page - 1);
+      }
     } catch (error) {
       showToast(
         error instanceof Error ? error.message : "Erro ao excluir produto",
@@ -372,8 +380,13 @@ export function ProductsList() {
                               <div>
                                 <p>{product.name}</p>
                                 {product.description && (
-                                  <p className="text-xs text-muted-foreground line-clamp-1">
-                                    {product.description}
+                                  <p
+                                    className="text-xs text-muted-foreground"
+                                    title={product.description}
+                                  >
+                                    {product.description.length > 80
+                                      ? product.description.slice(0, 80) + "..."
+                                      : product.description}
                                   </p>
                                 )}
                               </div>
@@ -486,8 +499,13 @@ export function ProductsList() {
                               </Badge>
                             </div>
                             {product.description && (
-                              <p className="text-sm text-muted-foreground line-clamp-2 mt-2">
-                                {product.description}
+                              <p
+                                className="text-sm text-muted-foreground mt-2"
+                                title={product.description}
+                              >
+                                {product.description.length > 120
+                                  ? product.description.slice(0, 120) + "..."
+                                  : product.description}
                               </p>
                             )}
                           </div>

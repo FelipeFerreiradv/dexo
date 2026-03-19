@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Enable React compiler optimizations (auto-memoization)
+  reactStrictMode: true,
+  // Compress responses
+  compress: true,
   images: {
     remotePatterns: [
       {
@@ -19,6 +23,10 @@ const nextConfig: NextConfig = {
         hostname: "http2.mlstatic.com",
       },
     ],
+  },
+  // Enable build-time optimizations
+  experimental: {
+    optimizePackageImports: ["lucide-react", "@radix-ui/react-icons"],
   },
 };
 

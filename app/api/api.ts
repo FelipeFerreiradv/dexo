@@ -5,6 +5,7 @@ import { fastify } from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
+import fastifyCompress from "@fastify/compress";
 import { join } from "path";
 import { userRoutes } from "../routes/user.routes";
 import { productRoutes } from "../routes/product.routes";
@@ -17,6 +18,9 @@ import { systemLogRoutes } from "../routes/system-log.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
+
+// Response compression (gzip/brotli) for faster API transfers
+api.register(fastifyCompress, { global: true });
 
 api.register(fastifyCors, {
   origin: process.env.CORS_ORIGIN || "http://localhost:3000",
@@ -69,8 +73,6 @@ api.register(listingRoutes, {
 api.register(systemLogRoutes, {
   prefix: "/system-logs",
 });
-
-
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 

@@ -29,10 +29,65 @@ const _sourceSerif_4 = V0_Font_Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Nexos Platform - Sistema de Gestão de Estoque",
+  title: {
+    default: "Dexo | Gestão de Estoque Centralizada",
+    template: "%s | Dexo",
+  },
   description:
-    "Sistema de Gestão de Estoque Centralizado com integrações Mercado Livre e Shopee",
-  generator: "v0.app",
+    "Gerencie seu estoque de forma centralizada com integrações diretas ao Mercado Livre e Shopee. Simplifique operações e tome decisões baseadas em dados.",
+  keywords: [
+    "gestão de estoque",
+    "controle de estoque",
+    "marketplace",
+    "Mercado Livre",
+    "Shopee",
+    "e-commerce",
+    "ERP",
+    "gestão de pedidos",
+    "integração marketplace",
+    "Dexo",
+  ],
+  authors: [{ name: "Dexo" }],
+  creator: "Dexo",
+  publisher: "Dexo",
+  applicationName: "Dexo",
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL ?? "https://dexo.com.br",
+  ),
+  openGraph: {
+    type: "website",
+    locale: "pt_BR",
+    siteName: "Dexo",
+    title: "Dexo | Gestão de Estoque Centralizada",
+    description:
+      "Gerencie seu estoque de forma centralizada com integrações diretas ao Mercado Livre e Shopee.",
+    images: [
+      {
+        url: "/logo.jpg",
+        width: 1200,
+        height: 630,
+        alt: "Dexo - Gestão de Estoque Centralizada",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Dexo | Gestão de Estoque Centralizada",
+    description:
+      "Gerencie seu estoque de forma centralizada com integrações diretas ao Mercado Livre e Shopee.",
+    images: ["/logo.jpg"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
   icons: {
     icon: [
       {

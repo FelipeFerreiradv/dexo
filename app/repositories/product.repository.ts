@@ -112,10 +112,9 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async findBySku(sku: string, userId?: string): Promise<Product | null> {
     try {
-      const data = await prisma.product.findMany({
+      const item = await prisma.product.findFirst({
         where: { sku, ...(userId ? { userId } : {}) },
       });
-      const item = data[0];
       if (!item) return null;
 
       return mapPrismaToProduct(item);
@@ -151,6 +150,41 @@ class ProductRepositoryPrisma implements ProductRepository {
           skip,
           take: limit,
           orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            userId: true,
+            sku: true,
+            name: true,
+            description: true,
+            price: true,
+            stock: true,
+            createdAt: true,
+            updatedAt: true,
+            costPrice: true,
+            markup: true,
+            brand: true,
+            model: true,
+            year: true,
+            version: true,
+            category: true,
+            location: true,
+            partNumber: true,
+            quality: true,
+            isSecurityItem: true,
+            isTraceable: true,
+            sourceVehicle: true,
+            imageUrl: true,
+            mlCategoryId: true,
+            mlCategorySource: true,
+            mlCategoryChosenAt: true,
+            shopeeCategoryId: true,
+            shopeeCategorySource: true,
+            shopeeCategoryChosenAt: true,
+            heightCm: true,
+            widthCm: true,
+            lengthCm: true,
+            weightKg: true,
+          },
         }),
         prisma.product.count({ where }),
       ]);
@@ -164,17 +198,21 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async delete(id: string, userId?: string): Promise<void> {
     try {
-      if (userId) {
-        const owner = await prisma.product.findFirst({
-          where: { id, userId },
-          select: { id: true },
-        });
-        if (!owner) throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
-      }
-      // Verificar se o produto tem pedidos associados
-      const orderItemsCount = await prisma.orderItem.count({
-        where: { productId: id },
-      });
+      // Parallel pre-checks: ownership + order items count
+      const [owner, orderItemsCount] = await Promise.all([
+        userId
+          ? prisma.product.findFirst({
+              where: { id, userId },
+              select: { id: true },
+            })
+          : Promise.resolve({ id }), // skip check if no userId
+        prisma.orderItem.count({
+          where: { productId: id },
+        }),
+      ]);
+
+      if (userId && !owner)
+        throw new Error("Produto não encontrado para este usuário");
 
       if (orderItemsCount > 0) {
         throw new Error(
@@ -182,20 +220,12 @@ class ProductRepositoryPrisma implements ProductRepository {
         );
       }
 
-      // Deletar logs de estoque relacionados
-      await prisma.stockLog.deleteMany({
-        where: { productId: id },
-      });
-
-      // Deletar listings relacionados ao produto
-      await prisma.productListing.deleteMany({
-        where: { productId: id },
-      });
-
-      // Agora pode deletar o produto
-      await prisma.product.delete({
-        where: { id },
-      });
+      // Use transaction for atomic cascade delete
+      await prisma.$transaction([
+        prisma.stockLog.deleteMany({ where: { productId: id } }),
+        prisma.productListing.deleteMany({ where: { productId: id } }),
+        prisma.product.delete({ where: { id } }),
+      ]);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -226,7 +256,8 @@ class ProductRepositoryPrisma implements ProductRepository {
           where: { id, userId },
           select: { id: true },
         });
-        if (!owner) throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
+        if (!owner)
+          throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
       }
       const result = await prisma.product.update({
         where: { id },
@@ -307,29 +338,23 @@ class ProductRepositoryPrisma implements ProductRepository {
   /**
    * Busca o maior SKU numérico existente (para evitar duplicação)
    * Exemplo: PROD-005 → retorna 5
+   * Uses DB-side ordering to avoid fetching all products
    */
   async getMaxSkuNumber(userId?: string): Promise<number> {
     try {
-      const products = await prisma.product.findMany({
+      const result = await prisma.product.findFirst({
         where: {
-          sku: {
-            startsWith: "PROD-",
-          },
+          sku: { startsWith: "PROD-" },
           ...(userId ? { userId } : {}),
         },
         select: { sku: true },
+        orderBy: { sku: "desc" },
       });
 
-      if (products.length === 0) return 0;
+      if (!result) return 0;
 
-      const numbers = products
-        .map((p) => {
-          const match = p.sku.match(/PROD-(\d+)/);
-          return match ? parseInt(match[1], 10) : 0;
-        })
-        .filter((n) => !isNaN(n));
-
-      return numbers.length > 0 ? Math.max(...numbers) : 0;
+      const match = result.sku.match(/PROD-(\d+)/);
+      return match ? parseInt(match[1], 10) : 0;
     } catch {
       throw new Error("Erro ao buscar maior SKU");
     }

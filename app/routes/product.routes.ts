@@ -143,11 +143,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       // Resolver categoria do ML (externalId -> FK) de forma determinística
       let resolvedMlCategoryId: string | undefined;
       let resolvedMlCategoryPath: string | undefined;
-      let resolvedMlCategorySource:
-        | "auto"
-        | "manual"
-        | "imported"
-        | undefined;
+      let resolvedMlCategorySource: "auto" | "manual" | "imported" | undefined;
       let resolvedMlCategoryChosenAt: Date | undefined;
       // Se vier categoria ML, resolver imediatamente; caso contrário, tentar extrair do payload de listings
       let mlCategoryExternalToResolve = sanitized.mlCategoryExternal;
@@ -162,11 +158,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
       if (mlCategoryExternalToResolve) {
         // Garante leaf e caminho completo usando ML API
-        const resolved =
-          await CategoryResolutionService.resolveMLCategory({
-            explicitCategoryId: mlCategoryExternalToResolve,
-            validateWithMLAPI: false,
-          });
+        const resolved = await CategoryResolutionService.resolveMLCategory({
+          explicitCategoryId: mlCategoryExternalToResolve,
+          validateWithMLAPI: false,
+        });
 
         const cat = await CategoryRepository.findByExternalId(
           resolved.externalId,
@@ -234,9 +229,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           imageUrl: sanitized.imageUrl,
         });
 
-        // Registrar log de criação do produto
+        // Registrar log de criação do produto (fire-and-forget, non-blocking)
         const userForLog = (request as any).user;
-        await SystemLogService.logProductCreate(userForLog?.id, data.id, {
+        void SystemLogService.logProductCreate(userForLog?.id, data.id, {
           sku: data.sku,
           name: data.name,
           stock: data.stock,
@@ -277,7 +272,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                           accId,
                         );
                       } catch (e) {
-                        console.error("[product:bg-listing] ML error:", e instanceof Error ? e.message : e);
+                        console.error(
+                          "[product:bg-listing] ML error:",
+                          e instanceof Error ? e.message : e,
+                        );
                       }
                     }
                   }
@@ -293,7 +291,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                     bgCategoryId,
                   );
                 } catch (e) {
-                  console.error("[product:bg-listing] legacy ML error:", e instanceof Error ? e.message : e);
+                  console.error(
+                    "[product:bg-listing] legacy ML error:",
+                    e instanceof Error ? e.message : e,
+                  );
                 }
               }
             } catch (bgErr) {
@@ -305,7 +306,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         return reply.status(201).send({
           ...data,
           listing: wantsListing
-            ? { success: true, pending: true, message: "Anúncio sendo criado em segundo plano" }
+            ? {
+                success: true,
+                pending: true,
+                message: "Anúncio sendo criado em segundo plano",
+              }
             : null,
           listingsResults: [],
         });
@@ -365,10 +370,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         Querystring: { search?: string; page?: string; limit?: string };
       }>,
       reply: FastifyReply,
-      ) => {
-        try {
-          const { search, page, limit } = request.query;
-          const userId = (request as any).user?.id as string;
+    ) => {
+      try {
+        const { search, page, limit } = request.query;
+        const userId = (request as any).user?.id as string;
 
         const data = await productUseCase.listProducts({
           search: search || "",
@@ -419,9 +424,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
-        // Registrar log de exclusão do produto
+        // Registrar log de exclusão do produto (fire-and-forget, non-blocking)
         const user = (request as any).user;
-        await SystemLogService.logProductDelete(user?.id, id, "Produto");
+        void SystemLogService.logProductDelete(user?.id, id, "Produto");
 
         return reply.status(200).send({
           message: result.message,
@@ -562,9 +567,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           userId,
         );
 
-        // Registrar log de atualização do produto
+        // Registrar log de atualização do produto (fire-and-forget, non-blocking)
         const user = (request as any).user;
-        await SystemLogService.logProductUpdate(user?.id, id, {
+        void SystemLogService.logProductUpdate(user?.id, id, {
           name: result.product.name,
           stock: result.product.stock,
           price: result.product.price,

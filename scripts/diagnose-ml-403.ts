@@ -52,14 +52,14 @@ async function tryProxy(name: string, proxyUrl = "default-proxy") {
 async function main() {
   await tryRequest("default");
   await tryRequest("with UA", {
-    headers: { "User-Agent": "ghd-platform-test/1.0" },
+    headers: { "User-Agent": "dexo-platform/1.0" },
   });
   await tryRequest("with Accept header", {
     headers: { Accept: "application/json" },
   });
   await tryRequest("with UA+Accept", {
     headers: {
-      "User-Agent": "ghd-platform-test/1.0",
+      "User-Agent": "dexo-platform/1.0",
       Accept: "application/json",
     },
   });

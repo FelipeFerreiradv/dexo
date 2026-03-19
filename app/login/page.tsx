@@ -5,8 +5,9 @@ import { DexoHero } from "@/components/login/dexo-hero";
 import { DexoLoginForm } from "@/components/login/dexo-login-form";
 
 export const metadata = {
-  title: "Dexo | Entrar",
-  description: "Tela de login premium da Dexo com visual imersivo.",
+  title: "Entrar",
+  description:
+    "Acesse sua conta Dexo e gerencie seu estoque centralizado com integrações ao Mercado Livre e Shopee.",
 };
 
 export default function LoginPage() {

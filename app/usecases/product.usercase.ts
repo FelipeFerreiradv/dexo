@@ -28,10 +28,19 @@ export class ProductUseCase {
     if (!productData.userId) {
       throw new Error("Usuário não encontrado");
     }
-    // Buscar usuário para obter descrição padrão se necessário
-    const user = await this.userRepository.findById(productData.userId);
+
+    // Parallel: fetch user + check SKU uniqueness
+    const [user, existsProduct] = await Promise.all([
+      this.userRepository.findById(productData.userId),
+      this.productRepository.findBySku(productData.sku, productData.userId),
+    ]);
+
     if (!user) {
       throw new Error("Usuário não encontrado");
+    }
+
+    if (existsProduct) {
+      throw new Error("Produto com esse sku já existe");
     }
 
     // Se descrição não foi fornecida, usar a padrão do usuário
@@ -54,13 +63,6 @@ export class ProductUseCase {
       console.error("Erro ao extrair campos do título:", err);
     }
 
-    const existsProduct = await this.productRepository.findBySku(
-      productData.sku,
-      productData.userId,
-    );
-    if (existsProduct) {
-      throw new Error("Produto com esse sku já existe");
-    }
     const data = await this.productRepository.create(productData);
     return data;
   }
@@ -94,20 +96,18 @@ export class ProductUseCase {
     try {
       // Before deleting the product, remove all associated ML listings
       const listings = await this.getProductListings(id);
-      const listingResults: Array<{
-        externalListingId: string;
-        closed: boolean;
-        error?: string;
-      }> = [];
 
-      for (const listing of listings) {
-        const result = await ListingUseCase.removeMLListing(listing.id);
-        listingResults.push({
-          externalListingId: listing.externalListingId,
-          closed: result.success,
-          error: result.error,
-        });
-      }
+      // Close all listings in parallel for speed
+      const listingResults = await Promise.all(
+        listings.map(async (listing) => {
+          const result = await ListingUseCase.removeMLListing(listing.id);
+          return {
+            externalListingId: listing.externalListingId,
+            closed: result.success,
+            error: result.error,
+          };
+        }),
+      );
 
       await this.productRepository.delete(id, userId);
 
@@ -146,51 +146,56 @@ export class ProductUseCase {
 
     const updated = await this.productRepository.update(id, data, userId);
 
-    // Registrar log de estoque se o estoque foi alterado manualmente
-    try {
-      if (data.stock !== undefined && data.stock !== product.stock) {
-        await prisma.stockLog.create({
-          data: {
-            productId: id,
-            change: data.stock - product.stock,
-            reason: "Manual update",
-            previousStock: product.stock,
-            newStock: data.stock,
-          },
-        });
+    // Run stock log + marketplace sync in parallel (both are independent)
+    const stockLogPromise = (async () => {
+      try {
+        if (data.stock !== undefined && data.stock !== product.stock) {
+          await prisma.stockLog.create({
+            data: {
+              productId: id,
+              change: data.stock - product.stock,
+              reason: "Manual update",
+              previousStock: product.stock,
+              newStock: data.stock,
+            },
+          });
+        }
+      } catch (error) {
+        console.error("Erro ao registrar stock log no update manual:", error);
       }
-    } catch (error) {
-      console.error("Erro ao registrar stock log no update manual:", error);
-    }
+    })();
 
-    // Sincronizar anúncios relacionados após atualização do produto
-    let syncResults = undefined;
-    try {
-      const results = await this.syncProductListings(updated);
-      if (results && results.length > 0) {
-        syncResults = {
-          totalListings: results.length,
-          successful: results.filter((r) => r.success).length,
-          failed: results.filter((r) => !r.success).length,
-          results,
-        };
-      }
-    } catch (error) {
-      // Log do erro mas não falha a atualização do produto
-      console.error("Erro ao sincronizar anúncios do produto:", error);
-      await SystemLogService.logError(
-        "SYNC_STOCK",
-        `Erro na sincronização: PRODUCT_UPDATE_SYNC - MercadoLivre`,
-        {
-          resource: "Sync",
-          details: {
-            syncType: "PRODUCT_UPDATE_SYNC",
-            marketplace: "MercadoLivre",
-            error: error instanceof Error ? error.message : error,
+    const syncPromise = (async () => {
+      try {
+        const results = await this.syncProductListings(updated);
+        if (results && results.length > 0) {
+          return {
+            totalListings: results.length,
+            successful: results.filter((r) => r.success).length,
+            failed: results.filter((r) => !r.success).length,
+            results,
+          };
+        }
+        return undefined;
+      } catch (error) {
+        console.error("Erro ao sincronizar anúncios do produto:", error);
+        await SystemLogService.logError(
+          "SYNC_STOCK",
+          `Erro na sincronização: PRODUCT_UPDATE_SYNC - MercadoLivre`,
+          {
+            resource: "Sync",
+            details: {
+              syncType: "PRODUCT_UPDATE_SYNC",
+              marketplace: "MercadoLivre",
+              error: error instanceof Error ? error.message : error,
+            },
           },
-        },
-      );
-    }
+        );
+        return undefined;
+      }
+    })();
+
+    const [, syncResults] = await Promise.all([stockLogPromise, syncPromise]);
 
     return {
       product: updated,
@@ -239,32 +244,32 @@ export class ProductUseCase {
         return []; // Nenhum anúncio para sincronizar
       }
 
-      // Sincronizar cada anúncio
-      const results = [];
-      for (const listing of listings) {
-        try {
-          console.log(
-            `[SYNC] Sincronizando anúncio ${listing.externalListingId} da conta ${listing.marketplaceAccountId}`,
-          );
-          const result = await SyncUseCase.syncProductData(
-            product.id,
-            listing.externalListingId,
-            listing.marketplaceAccountId,
-          );
-          results.push(result);
-        } catch (error) {
-          console.error(
-            `Erro ao sincronizar anúncio ${listing.externalListingId}:`,
-            error,
-          );
-          results.push({
-            success: false,
-            productId: product.id,
-            externalListingId: listing.externalListingId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // Sincronizar cada anúncio em paralelo
+      const results = await Promise.all(
+        listings.map(async (listing) => {
+          try {
+            console.log(
+              `[SYNC] Sincronizando anúncio ${listing.externalListingId} da conta ${listing.marketplaceAccountId}`,
+            );
+            return await SyncUseCase.syncProductData(
+              product.id,
+              listing.externalListingId,
+              listing.marketplaceAccountId,
+            );
+          } catch (error) {
+            console.error(
+              `Erro ao sincronizar anúncio ${listing.externalListingId}:`,
+              error,
+            );
+            return {
+              success: false,
+              productId: product.id,
+              externalListingId: listing.externalListingId,
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }),
+      );
 
       return results;
     } catch (error) {
@@ -275,13 +280,27 @@ export class ProductUseCase {
 
   /**
    * Busca todos os anúncios vinculados a um produto
+   * Only selects fields needed for sync operations
    */
   private async getProductListings(productId: string) {
     try {
       return await prisma.productListing.findMany({
         where: { productId },
-        include: {
-          marketplaceAccount: true,
+        select: {
+          id: true,
+          externalListingId: true,
+          marketplaceAccountId: true,
+          marketplaceAccount: {
+            select: {
+              id: true,
+              platform: true,
+              accessToken: true,
+              refreshToken: true,
+              expiresAt: true,
+              externalUserId: true,
+              userId: true,
+            },
+          },
         },
       });
     } catch (error) {

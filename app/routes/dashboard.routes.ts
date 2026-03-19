@@ -135,20 +135,26 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.id as string;
-        const [zero, oneToThree, fourToTen, elevenToFifty, aboveFifty] =
-          await Promise.all([
-            prisma.product.count({ where: { stock: 0, userId } }),
-            prisma.product.count({
-              where: { stock: { gte: 1, lte: 3 }, userId },
-            }),
-            prisma.product.count({
-              where: { stock: { gte: 4, lte: 10 }, userId },
-            }),
-            prisma.product.count({
-              where: { stock: { gte: 11, lte: 50 }, userId },
-            }),
-            prisma.product.count({ where: { stock: { gt: 50 }, userId } }),
-          ]);
+
+        // Single query: fetch stock values and bucket in JS (avoids 5 separate COUNT queries)
+        const products = await prisma.product.findMany({
+          where: { userId },
+          select: { stock: true },
+        });
+
+        let zero = 0,
+          oneToThree = 0,
+          fourToTen = 0,
+          elevenToFifty = 0,
+          aboveFifty = 0;
+        for (const p of products) {
+          const s = p.stock;
+          if (s === 0) zero++;
+          else if (s <= 3) oneToThree++;
+          else if (s <= 10) fourToTen++;
+          else if (s <= 50) elevenToFifty++;
+          else aboveFifty++;
+        }
 
         const distribution = [
           { range: "0", count: zero },
@@ -184,6 +190,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const startDate = new Date(now);
         startDate.setDate(now.getDate() - (isNaN(days) ? 30 : days));
 
+        // Only fetch the minimal fields needed for aggregation
         const orders = await prisma.order.findMany({
           where: {
             createdAt: { gte: startDate },
@@ -421,52 +428,53 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           currentStart.getDate() - (isNaN(days) ? 30 : days),
         );
 
-        const currentItems = await prisma.orderItem.findMany({
-          where: {
-            listingId: { not: null },
-            order: {
-              marketplaceAccount: { userId },
-              createdAt: { gte: currentStart },
-            },
-          },
-          select: {
-            listingId: true,
-            quantity: true,
-            unitPrice: true,
-            listing: {
-              select: {
-                id: true,
-                externalListingId: true,
-                viewsCount: true,
-                reviewsCount: true,
-                productId: true,
-                product: {
-                  select: { id: true, name: true, sku: true, stock: true },
-                },
-                marketplaceAccount: {
-                  select: { platform: true, accountName: true },
-                },
+        const [currentItems, previousItems] = await Promise.all([
+          prisma.orderItem.findMany({
+            where: {
+              listingId: { not: null },
+              order: {
+                marketplaceAccount: { userId },
+                createdAt: { gte: currentStart },
               },
             },
-            order: { select: { createdAt: true } },
-          },
-        });
-
-        const previousItems = await prisma.orderItem.findMany({
-          where: {
-            listingId: { not: null },
-            order: {
-              marketplaceAccount: { userId },
-              createdAt: { gte: previousStart, lt: currentStart },
+            select: {
+              listingId: true,
+              quantity: true,
+              unitPrice: true,
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  viewsCount: true,
+                  reviewsCount: true,
+                  productId: true,
+                  product: {
+                    select: { id: true, name: true, sku: true, stock: true },
+                  },
+                  marketplaceAccount: {
+                    select: { platform: true, accountName: true },
+                  },
+                },
+              },
+              order: { select: { createdAt: true } },
             },
-          },
-          select: {
-            listingId: true,
-            quantity: true,
-            unitPrice: true,
-            order: { select: { createdAt: true } },
-          },
-        });
+          }),
+          prisma.orderItem.findMany({
+            where: {
+              listingId: { not: null },
+              order: {
+                marketplaceAccount: { userId },
+                createdAt: { gte: previousStart, lt: currentStart },
+              },
+            },
+            select: {
+              listingId: true,
+              quantity: true,
+              unitPrice: true,
+              order: { select: { createdAt: true } },
+            },
+          }),
+        ]);
 
         const toNumber = (value: any) =>
           typeof value === "object" &&

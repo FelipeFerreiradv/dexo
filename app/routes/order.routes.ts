@@ -44,8 +44,8 @@ export async function orderRoutes(app: FastifyInstance) {
           deductStock,
         );
 
-        // Registrar log de importação de pedidos
-        await SystemLogService.logSyncComplete(
+        // Registrar log de importação de pedidos (fire-and-forget, non-blocking)
+        void SystemLogService.logSyncComplete(
           userId,
           "ORDER_IMPORT",
           "MercadoLivre",
@@ -225,40 +225,41 @@ export async function orderRoutes(app: FastifyInstance) {
 
         const baseWhere = { marketplaceAccount: { userId } };
 
-        const [total, pending, paid, shipped, delivered, cancelled, revenue] =
-          await Promise.all([
-            prisma.order.count({ where: baseWhere }),
-            prisma.order.count({ where: { ...baseWhere, status: "PENDING" } }),
-            prisma.order.count({ where: { ...baseWhere, status: "PAID" } }),
-            prisma.order.count({ where: { ...baseWhere, status: "SHIPPED" } }),
-            prisma.order.count({
-              where: { ...baseWhere, status: "DELIVERED" },
-            }),
-            prisma.order.count({
-              where: { ...baseWhere, status: "CANCELLED" },
-            }),
-            prisma.order.aggregate({
-              where: baseWhere,
-              _sum: { totalAmount: true },
-            }),
-          ]);
+        // Single groupBy + aggregate instead of 7 separate COUNT queries
+        const [statusCounts, revenue] = await Promise.all([
+          prisma.order.groupBy({
+            by: ["status"],
+            _count: { _all: true },
+            where: baseWhere,
+          }),
+          prisma.order.aggregate({
+            where: baseWhere,
+            _sum: { totalAmount: true },
+            _count: { _all: true },
+          }),
+        ]);
+
+        const countMap: Record<string, number> = {};
+        for (const row of statusCounts) {
+          countMap[row.status] = row._count._all;
+        }
 
         // Prisma returns Decimal for money fields; coerce to number safely
         const totalRevenue =
           (revenue._sum.totalAmount &&
-            typeof (revenue._sum.totalAmount as any).toNumber === "function"
+          typeof (revenue._sum.totalAmount as any).toNumber === "function"
             ? (revenue._sum.totalAmount as any).toNumber()
             : Number(revenue._sum.totalAmount || 0)) || 0;
 
         return reply.status(200).send({
           success: true,
           stats: {
-            total,
-            pending,
-            paid,
-            shipped,
-            delivered,
-            cancelled,
+            total: revenue._count._all,
+            pending: countMap["PENDING"] || 0,
+            paid: countMap["PAID"] || 0,
+            shipped: countMap["SHIPPED"] || 0,
+            delivered: countMap["DELIVERED"] || 0,
+            cancelled: countMap["CANCELLED"] || 0,
             totalRevenue,
           },
         });

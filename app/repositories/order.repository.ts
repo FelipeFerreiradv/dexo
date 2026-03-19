@@ -423,29 +423,29 @@ class OrderRepositoryPrisma implements OrderRepository {
           customerName: data.customerName,
           customerEmail: data.customerEmail,
         },
-          include: {
-            items: {
-              include: {
-                product: {
-                  select: {
-                    id: true,
-                    name: true,
-                    sku: true,
-                    stock: true,
-                  },
+        include: {
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  sku: true,
+                  stock: true,
                 },
-                listing: {
-                  select: {
-                    id: true,
-                    externalListingId: true,
-                    permalink: true,
-                  },
+              },
+              listing: {
+                select: {
+                  id: true,
+                  externalListingId: true,
+                  permalink: true,
                 },
               },
             },
-            marketplaceAccount: {
-              select: {
-                id: true,
+          },
+          marketplaceAccount: {
+            select: {
+              id: true,
               platform: true,
               accountName: true,
             },
@@ -478,13 +478,15 @@ class OrderRepositoryPrisma implements OrderRepository {
 
   /**
    * Verificar se pedido já existe por ID externo
+   * Uses findFirst + select for speed (stops at first match, no full count)
    */
   async exists(externalOrderId: string): Promise<boolean> {
     try {
-      const count = await prisma.order.count({
+      const found = await prisma.order.findUnique({
         where: { externalOrderId },
+        select: { id: true },
       });
-      return count > 0;
+      return !!found;
     } catch (error) {
       throw new Error(
         error instanceof Error ? error.message : "Erro ao verificar pedido",

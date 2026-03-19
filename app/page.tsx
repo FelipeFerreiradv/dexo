@@ -1,6 +1,7 @@
 import { Activity, ChartLine, Link2, Package } from "lucide-react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
+import type { Metadata } from "next";
 
 import { authOptions } from "./lib/auth";
 import { getApiBaseUrl } from "@/lib/api";
@@ -54,7 +55,17 @@ interface StockChangeItem {
   }[];
 }
 
-type HeatmapCell = { day: string; slot: "morning" | "afternoon" | "evening"; value: number };
+type HeatmapCell = {
+  day: string;
+  slot: "morning" | "afternoon" | "evening";
+  value: number;
+};
+
+export const metadata: Metadata = {
+  title: "Dashboard",
+  description:
+    "Painel de controle com métricas de estoque, vendas e integrações dos seus marketplaces.",
+};
 
 async function getDashboardStats(
   userEmail: string,
@@ -75,15 +86,12 @@ async function getMarketplaceIntegrations(
   userEmail: string,
 ): Promise<MarketplaceIntegration[]> {
   try {
-    const response = await fetch(
-      `${getApiBaseUrl()}/dashboard/integrations`,
-      {
-        cache: "no-store",
-        headers: {
-          email: userEmail,
-        },
+    const response = await fetch(`${getApiBaseUrl()}/dashboard/integrations`, {
+      cache: "no-store",
+      headers: {
+        email: userEmail,
       },
-    );
+    });
     if (!response.ok) return [];
     const data = await response.json();
     return data.integrations || [];
@@ -120,9 +128,7 @@ async function getStockChanges(userEmail: string): Promise<StockChangeItem[]> {
   }
 }
 
-async function getProductMetrics(
-  userEmail: string,
-): Promise<
+async function getProductMetrics(userEmail: string): Promise<
   {
     productId: string;
     listingId?: string | null;
@@ -206,16 +212,14 @@ export default async function Home() {
     redirect("/login");
   }
 
-  const [stats, integrations, ordersOverTime, stockChanges] = await Promise.all(
-    [
+  const [stats, integrations, ordersOverTime, stockChanges, productMetrics] =
+    await Promise.all([
       getDashboardStats(userSession.user?.email || ""),
       getMarketplaceIntegrations(userSession.user?.email || ""),
       getOrdersOverTime(userSession.user?.email || ""),
       getStockChanges(userSession.user?.email || ""),
-      // product metrics fetch separately below to avoid breaking existing Promise.all shape
-    ],
-  );
-  const productMetrics = await getProductMetrics(userSession.user?.email || "");
+      getProductMetrics(userSession.user?.email || ""),
+    ]);
 
   const activeIntegrations = integrations.filter((i) => i.status === "ACTIVE");
   const sortedOrders = [...ordersOverTime].sort(

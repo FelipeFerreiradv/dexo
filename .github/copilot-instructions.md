@@ -1,4 +1,4 @@
-# GHD Platform - AI Coding Instructions
+# Dexo Platform - AI Coding Instructions
 
 ## Project Overview
 
