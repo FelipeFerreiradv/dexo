@@ -125,11 +125,15 @@ export class MarketplaceUseCase {
             userId,
             platform,
           )) ||
-          // fallback: pega qualquer conta (ex.: todas estÃ£o com erro/expiradas)
+          // fallback: pega qualquer conta (ex.: todas estão com erro/expiradas)
           (await MarketplaceRepository.findByUserIdAndPlatform(
             userId,
             platform,
           ));
+
+      console.log(
+        `[getAccountStatus] userId=${userId} platform=${platform} found=${!!account} id=${account?.id} status=${account?.status} expiresAt=${account?.expiresAt}`,
+      );
 
       if (!account) {
         return {
@@ -137,6 +141,9 @@ export class MarketplaceUseCase {
           message: `Nenhuma conta ${platform} conectada`,
         };
       }
+
+      // Se a conta é ACTIVE, consideramos conectada desde o início.
+      const isActive = account.status === AccountStatus.ACTIVE;
 
       const isExpired = new Date() > account.expiresAt;
 
@@ -173,10 +180,14 @@ export class MarketplaceUseCase {
         }
       }
 
-      // Capability check: detectar restriÃ§Ãµes do seller (ex.: seller.unable_to_list)
+      // Capability check (non-destructive) - nunca muda connected para false em conta ACTIVE
+      let restricted = false;
       try {
         const userInfo = await MLOAuthService.getUserInfo(account.accessToken);
         const sellerId = userInfo?.id?.toString();
+        console.log(
+          `[getAccountStatus] getUserInfo sellerId=${sellerId} accountId=${account.id}`,
+        );
         if (sellerId) {
           try {
             await MLApiService.getSellerItemIds(
@@ -185,88 +196,45 @@ export class MarketplaceUseCase {
               "active",
               1,
             );
+            console.log(
+              `[getAccountStatus] capability check OK for account=${account.id}`,
+            );
           } catch (capErr: any) {
             const capMsg =
               capErr instanceof Error ? capErr.message : String(capErr);
+            console.log(
+              `[getAccountStatus] capability error: ${capMsg} account=${account.id}`,
+            );
+
             if (
               capMsg.includes("seller.unable_to_list") ||
               capMsg.includes("User is unable to list")
             ) {
-              // Seller restriction detected (e.g. account cannot create listings).
-              // Keep the account connected (do not mark ERROR) so user doesn't need to reconnect.
-              await SystemLogService.logError(
-                "CREATE_LISTING",
-                `Capability check detected seller restriction: ${capMsg}`,
-                {
-                  userId,
-                  resource: "MarketplaceAccount",
-                  resourceId: account.id,
-                  details: { mlError: capMsg },
-                },
-              );
-
-              return {
-                connected: true,
-                account,
-                restricted: true,
-                message:
-                  "Conta conectada, mas com restricao de anuncios no Mercado Livre (ver Seller Center).",
-              };
-            }
-
-            // Detectar modo fÃ©rias / vacation e marcar como INACTIVE (nÃ£o Ã© erro permanente)
-            if (
+              restricted = true;
+            } else if (
               capMsg.toLowerCase().includes("vacation") ||
-              capMsg.toLowerCase().includes("fÃ©rias") ||
               capMsg.toLowerCase().includes("ferias") ||
               capMsg.toLowerCase().includes("on vacation")
             ) {
-              await MarketplaceRepository.updateStatus(
-                account.id,
-                AccountStatus.INACTIVE,
+              restricted = true;
+              console.warn(
+                `[getAccountStatus] Seller vacation mode, account=${account.id}`,
               );
-              await SystemLogService.logError(
-                "CREATE_LISTING",
-                `Capability check detected vacation mode: ${capMsg}`,
-                {
-                  userId,
-                  resource: "MarketplaceAccount",
-                  resourceId: account.id,
-                  details: { mlError: capMsg },
-                },
-              );
-
-              return {
-                connected: false,
-                account,
-                message:
-                  "Conta do Mercado Livre em modo fÃ©rias â€” ative a venda no Seller Center.",
-              };
-            }
-
-            if (
+            } else if (
               capMsg.toLowerCase().includes("unauthorized") ||
-              capMsg.toLowerCase().includes("invalid access token")
+              capMsg.toLowerCase().includes("invalid access token") ||
+              capMsg.toLowerCase().includes("invalid_token")
             ) {
-              // Se o token é recente (mais de 5h até expirar = criado há menos de 1h),
-              // tratar como erro transitório e NÃO marcar como ERROR
               const msUntilExpiry = account.expiresAt.getTime() - Date.now();
               const isFreshToken = msUntilExpiry > 5 * 60 * 60 * 1000;
-
-              if (isFreshToken) {
-                console.warn(
-                  "[MarketplaceUseCase] Erro transitório de auth em token recente, ignorando:",
-                  capMsg,
-                );
-                // Não marca como ERROR, continua como conectado
-              } else {
+              if (!isFreshToken) {
                 await MarketplaceAccountService.handleAuthFailure(
                   account.id,
                   capMsg,
-                  {
-                    userId,
-                    context: "CAPABILITY_CHECK_AUTH",
-                  },
+                  { userId, context: "CAPABILITY_CHECK_AUTH" },
+                );
+                console.log(
+                  `[getAccountStatus] Token antigo invalido, marcando ERROR account=${account.id}`,
                 );
                 return {
                   connected: false,
@@ -274,10 +242,13 @@ export class MarketplaceUseCase {
                   message: "Token expirado. Reconecte sua conta.",
                 };
               }
+              console.warn(
+                `[getAccountStatus] Erro transitorio em token recente, ignorando`,
+              );
             }
           }
 
-          // Capability check succeeded: ensure DB status is ACTIVE so callers see fresh state
+          // Garantir status ACTIVE no DB
           if (account.status !== AccountStatus.ACTIVE) {
             account = await MarketplaceRepository.updateStatus(
               account.id,
@@ -287,15 +258,24 @@ export class MarketplaceUseCase {
         }
       } catch (capCheckErr) {
         console.warn(
-          "[MarketplaceUseCase] capability check failed:",
-          capCheckErr,
+          "[getAccountStatus] capability check failed (non-blocking):",
+          capCheckErr instanceof Error ? capCheckErr.message : capCheckErr,
         );
       }
 
+      const finalConnected =
+        isActive || account.status === AccountStatus.ACTIVE;
+      console.log(
+        `[getAccountStatus] RESULT: connected=${finalConnected} restricted=${restricted} accountStatus=${account.status} isActive=${isActive}`,
+      );
+
       return {
-        connected: account.status === AccountStatus.ACTIVE,
+        connected: finalConnected,
         account,
-        message: `Conta ${platform} conectada`,
+        restricted,
+        message: restricted
+          ? "Conta conectada, mas com restricoes no Mercado Livre."
+          : `Conta ${platform} conectada`,
       };
     } catch (error) {
       throw new Error(

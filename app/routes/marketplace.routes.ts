@@ -221,6 +221,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           Platform.MERCADO_LIVRE,
         );
 
+        console.log(
+          `[/ml/status] userId=${userId} connected=${statusData.connected} status=${statusData.account?.status} restricted=${(statusData as any).restricted}`,
+        );
+
         return reply.send({
           connected: statusData.connected,
           platform: Platform.MERCADO_LIVRE,

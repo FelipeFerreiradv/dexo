@@ -176,6 +176,7 @@ export function MLConnectionTab() {
           console.log("[ML OAuth] Popup fechado, atualizando status...");
           // Delay para garantir que o backend persistiu a conta
           setTimeout(() => {
+            fetchStatus.isRunning = false;
             fetchStatus();
           }, 1000);
         }
@@ -262,12 +263,31 @@ export function MLConnectionTab() {
         console.log("[ML OAuth] Sucesso confirmado via postMessage");
         setIsConnecting(false);
 
-        // Pequeno delay para garantir consistência do banco
-        setTimeout(() => {
-          if (isMountedRef) {
-            fetchStatus();
-          }
-        }, 500);
+        // Retry fetchStatus com delays crescentes caso o status ainda não reflita a conexão
+        const retryFetch = async (attempt: number) => {
+          if (!isMountedRef) return;
+          // Reset isRunning para destravar chamadas bloqueadas
+          fetchStatus.isRunning = false;
+          await fetchStatus();
+          // Se após fetchStatus o status ainda não mostra conectado, retentar
+          // Usamos o setStatus callback para verificar o estado atual
+          setTimeout(() => {
+            if (!isMountedRef) return;
+            // Verificar se ainda não está conectado e podemos retentar
+            setStatus((currentStatus) => {
+              if (!currentStatus?.connected && attempt < 3) {
+                console.log(
+                  `[ML OAuth] Retentativa ${attempt + 1} de fetchStatus...`,
+                );
+                retryFetch(attempt + 1);
+              }
+              return currentStatus;
+            });
+          }, 1500);
+        };
+
+        // Espera inicial para o backend persistir a conta
+        setTimeout(() => retryFetch(0), 800);
       } else if (event.data?.type === "ML_OAUTH_ERROR") {
         if (!isMountedRef) return;
 
