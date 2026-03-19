@@ -108,26 +108,22 @@ export class MarketplaceUseCase {
         });
       }
 
-      // 6. Desativar contas duplicadas/antigas do mesmo user+platform (exceto a atual)
+      // 6. Multi-contas: manter todas as contas ativas do mesmo user+platform
+      // Apenas logar quantas contas ativas existem para diagnóstico
       try {
         const allAccounts =
           await MarketplaceRepository.findAllByUserIdAndPlatform(
             userId,
             Platform.MERCADO_LIVRE,
           );
-        for (const acc of allAccounts) {
-          if (acc.id !== account.id) {
-            console.log(
-              `[handleOAuthCallback] Deactivating stale account=${acc.id} (keeping ${account.id})`,
-            );
-            await MarketplaceRepository.updateStatus(
-              acc.id,
-              AccountStatus.INACTIVE,
-            );
-          }
-        }
+        console.log(
+          `[handleOAuthCallback] Total active ML accounts for userId=${userId}: ${allAccounts.length}`,
+        );
       } catch (cleanupErr) {
-        console.warn("[handleOAuthCallback] cleanup failed:", cleanupErr);
+        console.warn(
+          "[handleOAuthCallback] account count check failed:",
+          cleanupErr,
+        );
       }
 
       console.log(
