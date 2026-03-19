@@ -56,7 +56,9 @@ export function MLConnectionTab() {
 
     // Proteção contra múltiplas chamadas simultâneas (debouncing)
     if (fetchStatus.isRunning) {
-      console.log('[ML Marketplace] fetchStatus já em execução, ignorando chamada duplicada');
+      console.log(
+        "[ML Marketplace] fetchStatus já em execução, ignorando chamada duplicada",
+      );
       return;
     }
 
@@ -66,14 +68,11 @@ export function MLConnectionTab() {
 
     try {
       // Fetch status
-      const response = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/status`,
-        {
-          headers: {
-            email: session.user.email,
-          },
+      const response = await fetch(`${getApiBaseUrl()}/marketplace/ml/status`, {
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -92,15 +91,22 @@ export function MLConnectionTab() {
         if (accRes.ok) {
           const accData = await accRes.json();
           // Garantir que accounts é um array mesmo se vazio
-          const accountsList = Array.isArray(accData.accounts) ? accData.accounts : [];
-          
+          const accountsList = Array.isArray(accData.accounts)
+            ? accData.accounts
+            : [];
+
           if (accountsList.length === 0) {
-            console.warn('[ML Marketplace] Nenhuma conta retornada pelo backend');
+            console.warn(
+              "[ML Marketplace] Nenhuma conta retornada pelo backend",
+            );
           }
-          
+
           setAccounts(accountsList);
         } else {
-          console.error('[ML Marketplace] Erro ao buscar contas:', accRes.status);
+          console.error(
+            "[ML Marketplace] Erro ao buscar contas:",
+            accRes.status,
+          );
           setAccounts([]);
         }
       } else {
@@ -108,7 +114,7 @@ export function MLConnectionTab() {
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
-      console.error('[ML Marketplace] Erro em fetchStatus:', errorMsg);
+      console.error("[ML Marketplace] Erro em fetchStatus:", errorMsg);
       setError(errorMsg);
     } finally {
       fetchStatus.isRunning = false;
@@ -130,17 +136,14 @@ export function MLConnectionTab() {
 
     try {
       // 1. Obter URL de autenticação do backend
-      const response = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/auth`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            email: userEmail,
-          },
-          body: JSON.stringify({}),
+      const response = await fetch(`${getApiBaseUrl()}/marketplace/ml/auth`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          email: userEmail,
         },
-      );
+        body: JSON.stringify({}),
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -162,52 +165,34 @@ export function MLConnectionTab() {
         );
       }
 
-      // 3. Flag de controle para evitar múltiplas chamadas a fetchStatus()
-      let statusAlreadyFetched = false;
-
-      // 4. Configurar timeout como fallback (caso postMessage falhe)
-      // IMPORTANTE: Este é um fallback para quando postMessage não funciona
-      // O postMessage listener é o mecanismo principal (vide useEffect abaixo)
-      const pollTimeout = setTimeout(() => {
-        if (!statusAlreadyFetched && !popup.closed) {
-          console.warn('[ML OAuth] Timeout: postMessage não recebido, usando fallback de polling');
-          statusAlreadyFetched = true;
-          setIsConnecting(false);
-          fetchStatus();
-        }
-      }, 3000); // 3 segundos é suficiente para postMessage
-
-      // 5. Polling como fallback adicional (em caso de popup.closed e postMessage falhar)
+      // 3. Polling para detectar quando o popup fecha
+      // O postMessage do callback page é o mecanismo principal (vide useEffect abaixo)
+      // Este polling é o fallback seguro
       const checkClosed = setInterval(() => {
-        if (popup.closed && !statusAlreadyFetched) {
+        if (popup.closed) {
           clearInterval(checkClosed);
-          clearTimeout(pollTimeout);
-          statusAlreadyFetched = true;
+          clearTimeout(hardTimeout);
           setIsConnecting(false);
-          console.log('[ML OAuth] Popup fechado (polling detectado)');
-          fetchStatus();
+          console.log("[ML OAuth] Popup fechado, atualizando status...");
+          // Delay para garantir que o backend persistiu a conta
+          setTimeout(() => {
+            fetchStatus();
+          }, 1000);
         }
       }, 500);
 
-      // 6. Hard timeout de 5 minutos (segurança)
-      const hardTimeout = setTimeout(() => {
-        clearInterval(checkClosed);
-        clearTimeout(pollTimeout);
-        if (!popup.closed) {
-          popup.close();
-        }
-        setIsConnecting(false);
-        if (!statusAlreadyFetched) {
-          setError('Tempo limite excedido. Tente novamente.');
-        }
-      }, 5 * 60 * 1000);
-
-      // Cleanup ao desmontar
-      return () => {
-        clearInterval(checkClosed);
-        clearTimeout(pollTimeout);
-        clearTimeout(hardTimeout);
-      };
+      // 4. Hard timeout de 5 minutos (segurança)
+      const hardTimeout = setTimeout(
+        () => {
+          clearInterval(checkClosed);
+          if (!popup.closed) {
+            popup.close();
+          }
+          setIsConnecting(false);
+          setError("Tempo limite excedido. Tente novamente.");
+        },
+        5 * 60 * 1000,
+      );
     } catch (err) {
       setIsConnecting(false);
       setError(err instanceof Error ? err.message : "Erro ao conectar");
@@ -257,55 +242,51 @@ export function MLConnectionTab() {
 
     const handleMessage = (event: MessageEvent) => {
       // Validar origin do postMessage (segurança)
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         // Aceitar:
-        // 1. Mesmo origin (normal em dev/prod)
+        // 1. Mesmo origin (normal em dev/prod - popup redirecionado para frontend)
         // 2. Localhost (para local testing)
-        // 3. Qualquer domínio que contenha "mercad" (fallback para casos extremos)
         const isValidOrigin =
           event.origin === window.location.origin ||
-          event.origin.includes('localhost') ||
-          event.origin.includes('mercad');
+          event.origin.includes("localhost");
 
         if (!isValidOrigin) {
-          console.warn(
-            `[ML OAuth] Mensagem rejeitada: origem inválida '${event.origin}'`,
-            'esperada:', window.location.origin,
-          );
           return;
         }
       }
 
       // Processar mensagens conhecidas
-      if (event.data?.type === 'ML_OAUTH_SUCCESS') {
+      if (event.data?.type === "ML_OAUTH_SUCCESS") {
         if (!isMountedRef) return;
 
-        console.log('[ML OAuth] Sucesso confirmado via postMessage');
+        console.log("[ML OAuth] Sucesso confirmado via postMessage");
         setIsConnecting(false);
 
-        // Garantir que fetchStatus() é chamado apenas uma vez
-        // Adicionar pequeno delay para garantir que a conta foi persistida no backend
+        // Pequeno delay para garantir consistência do banco
         setTimeout(() => {
           if (isMountedRef) {
             fetchStatus();
           }
         }, 500);
-      } else if (event.data?.type === 'ML_OAUTH_ERROR') {
+      } else if (event.data?.type === "ML_OAUTH_ERROR") {
         if (!isMountedRef) return;
 
-        console.error('[ML OAuth] Erro confirmado via postMessage:', event.data.message);
+        console.error(
+          "[ML OAuth] Erro confirmado via postMessage:",
+          event.data.message,
+        );
         setIsConnecting(false);
-        setError(event.data.message || 'Erro na autenticação');
+        setError(event.data.message || "Erro na autenticação");
       }
     };
 
     // Registrar listener
-    window.addEventListener('message', handleMessage);
+    window.addEventListener("message", handleMessage);
 
     // Cleanup
     return () => {
       isMountedRef = false;
-      window.removeEventListener('message', handleMessage);
+      window.removeEventListener("message", handleMessage);
     };
   }, [fetchStatus]);
 
@@ -416,9 +397,9 @@ export function MLConnectionTab() {
                       Desconectar todas as contas ML?
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      Esta ação removerá as conexões das contas do Mercado Livre.
-                      Você não perderá seus anúncios, mas a sincronização será
-                      interrompida.
+                      Esta ação removerá as conexões das contas do Mercado
+                      Livre. Você não perderá seus anúncios, mas a sincronização
+                      será interrompida.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>

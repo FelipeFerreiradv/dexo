@@ -14,6 +14,29 @@ export default function MLCallbackPage() {
 
   useEffect(() => {
     const processCallback = async () => {
+      // 1. Verificar se veio de redirect do backend (result=success/error)
+      //    O Fastify callback redireciona para cá após processar o OAuth
+      const result = searchParams.get("result");
+      const resultMessage = searchParams.get("message");
+
+      if (result === "success") {
+        setStatus("success");
+        setMessage("Conta conectada com sucesso!");
+        notifyParent("ML_OAUTH_SUCCESS");
+        setTimeout(() => {
+          window.close();
+        }, 2000);
+        return;
+      }
+
+      if (result === "error") {
+        setStatus("error");
+        setMessage(resultMessage || "Erro ao conectar conta");
+        notifyParent("ML_OAUTH_ERROR", resultMessage || "Erro desconhecido");
+        return;
+      }
+
+      // 2. Fluxo legado / fallback: code+state direto na URL
       const code = searchParams.get("code");
       const state = searchParams.get("state");
       const error = searchParams.get("error");
@@ -75,7 +98,11 @@ export default function MLCallbackPage() {
 
   // Notifica janela pai (opener) sobre resultado
   const notifyParent = (type: string, message?: string) => {
-    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+    if (
+      typeof window !== "undefined" &&
+      window.opener &&
+      !window.opener.closed
+    ) {
       // IMPORTANTE: Usar window.opener.location.origin ao invés de window.location.origin
       // Isso garante que o postMessage funcione em produção com ngrok/proxies
       try {
@@ -83,12 +110,15 @@ export default function MLCallbackPage() {
         window.opener.postMessage({ type, message }, openerOrigin);
       } catch (err) {
         // Fallback: tentar com origin genérico Se a origem falhar, logar e continuar
-        console.warn('[ML Callback] Erro ao enviar postMessage:', err);
+        console.warn("[ML Callback] Erro ao enviar postMessage:", err);
         // Tentar com wildcard como último recurso (menos seguro, mas garante funcionamento)
         try {
-          window.opener.postMessage({ type, message }, '*');
+          window.opener.postMessage({ type, message }, "*");
         } catch (fallbackErr) {
-          console.error('[ML Callback] Fallback postMessage também falhou:', fallbackErr);
+          console.error(
+            "[ML Callback] Fallback postMessage também falhou:",
+            fallbackErr,
+          );
         }
       }
     }

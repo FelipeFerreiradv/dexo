@@ -1,11 +1,13 @@
 # Correção SSR: "ReferenceError: location is not defined"
 
 ## Data
+
 19 de Março de 2026
 
 ## Problema Identificado
 
 **Erro em Produção:**
+
 ```
 ReferenceError: location is not defined
 at ax (.next/server/chunks/661.js:1:35096)
@@ -14,6 +16,7 @@ uncaughtException: ReferenceError: location is not defined
 
 **Causa Raiz:**
 Múltiplos arquivos estavam acessando APIs do browser (`window`, `document`, `location`) sem:
+
 1. Marcação adequada com `"use client"` directive (hooks)
 2. Proteção com `typeof window !== 'undefined'` ou `typeof document !== 'undefined'`
 3. Isolamento dentro de `useEffect` para garantir execução apenas no cliente
@@ -25,7 +28,9 @@ Em Next.js 15 com Server Components, código que acessa APIs do browser pode ser
 ## Arquivos Alterados
 
 ### 1. **hooks/use-mobile.ts** - CRÍTICO
+
 **Problema:** Hook que acessa `window` sem `"use client"` directive.
+
 ```diff
 + 'use client'
 +
@@ -43,6 +48,7 @@ export function useIsMobile() {
 ```
 
 **Motivo da Correção:**
+
 - Adicionado `"use client"` directive para marcar explicitamente como Client Component
 - Adicionada proteção `typeof window === 'undefined'` para evitar SSR errors
 - Hook agora é seguro para ser usado em qualquer contexto
@@ -50,7 +56,9 @@ export function useIsMobile() {
 ---
 
 ### 2. **components/ui/sidebar.tsx** - CRÍTICO
+
 **Problema:** `document.cookie` acessado em callback sem proteção.
+
 ```diff
 const setOpen = React.useCallback(
   (value: boolean | ((value: boolean) => boolean)) => {
@@ -69,6 +77,7 @@ const setOpen = React.useCallback(
 ```
 
 **Motivo da Correção:**
+
 - `setOpen` é um callback que pode ser executado no servidor durante SSR
 - Proteção garante que `document.cookie` só é acessado no cliente
 - Preserva estado do sidebar sem quebrar SSR
@@ -76,7 +85,9 @@ const setOpen = React.useCallback(
 ---
 
 ### 3. **app/integracoes/mercado-livre/callback/page.tsx** - ALTO
+
 **Problema:** `window.location.origin` acessado sem proteção em function scope.
+
 ```diff
 // Notifica janela pai (opener) sobre resultado
 const notifyParent = (type: string, message?: string) => {
@@ -88,6 +99,7 @@ const notifyParent = (type: string, message?: string) => {
 ```
 
 **Motivo da Correção:**
+
 - Função é definida no escopo do componente (não apenas em handlers)
 - Proteção garante acesso seguro a `window.location`
 - Necessária principalmente para segurança durante pre-rendering
@@ -95,7 +107,9 @@ const notifyParent = (type: string, message?: string) => {
 ---
 
 ### 4. **app/integracoes/mercado-livre/components/ml-connection-tab.tsx** - ALTO
+
 **Problema:** `window.location.origin` em event listener sem proteção.
+
 ```diff
 useEffect(() => {
   const handleMessage = (event: MessageEvent) => {
@@ -113,6 +127,7 @@ useEffect(() => {
 ```
 
 **Motivo da Correção:**
+
 - Proteção extra em listener que valida origem de mensagens
 - Garante segurança SSR mesmo em event listeners
 - Evita acesso a `window.location` antes de hydration completa
@@ -120,9 +135,11 @@ useEffect(() => {
 ---
 
 ### 5. **components/app-sidebar.tsx** - Médio
+
 **Problema:** `window.addEventListener` em useEffect e `window.open` em handler.
 
 **Correção 1 - useEffect:**
+
 ```diff
 React.useEffect(() => {
   const handler = (event: KeyboardEvent) => {
@@ -132,7 +149,7 @@ React.useEffect(() => {
       requestAnimationFrame(() => searchRef.current?.focus());
     }
   };
-  
+
 + if (typeof window !== 'undefined') {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -141,6 +158,7 @@ React.useEffect(() => {
 ```
 
 **Correção 2 - window.open:**
+
 ```diff
 onClick={() => {
 + if (l.permalink && typeof window !== 'undefined') {
@@ -154,6 +172,7 @@ onClick={() => {
 ```
 
 **Motivo das Correções:**
+
 - Proteção em listeners mesmo já estando em useEffect
 - Handlers precisam verificar existência de window antes de execução
 - Extra defensivo para garantir zero SSR errors
@@ -161,7 +180,9 @@ onClick={() => {
 ---
 
 ### 6. **components/ui/image-upload.tsx** - BAIX0
+
 **Problema:** `document.createElement` em error handler.
+
 ```diff
 onError={(e) => {
   console.error("Erro ao carregar imagem:", preview);
@@ -173,36 +194,40 @@ onError={(e) => {
 ```
 
 **Motivo da Correção:**
+
 - Error handler é client-only logic, mas melhor ter proteção
 - Garante robustez mesmo em edge cases
 
 ---
 
 ### 7. **lib/env.ts** - NOVO ARQUIVO
+
 **Arquivo criado:** Utilitário de detecção de ambiente seguro para SSR.
+
 ```typescript
-'use client'
+"use client";
 
 /**
  * Check if running on localhost (browser-side only)
  * Returns false on server-side during SSR
  */
 export function isLocalhost(): boolean {
-  if (typeof window === 'undefined') {
-    return false
+  if (typeof window === "undefined") {
+    return false;
   }
-  return window.location.hostname === 'localhost'
+  return window.location.hostname === "localhost";
 }
 
 /**
  * Hook version for use in React components
  */
 export function useIsLocalhost(): boolean {
-  return useMemo(() => isLocalhost(), [])
+  return useMemo(() => isLocalhost(), []);
 }
 ```
 
 **Motivo:**
+
 - Centraliza verificações de ambiente
 - Garante padrão consistente para toda a aplicação
 - Pronto para ser usado em lugar de `window.location.hostname === 'localhost'`
@@ -212,29 +237,32 @@ export function useIsLocalhost(): boolean {
 ## Padrão de Proteção Implementado
 
 ### ✅ CORRETO - Proteção completa:
+
 ```typescript
-'use client'
+"use client";
 
 export function useMyHook() {
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
+    if (typeof window === "undefined") return;
+
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
   }, []);
 }
 ```
 
 ### ✅ CORRETO - Proteção em callback:
+
 ```typescript
 const handleClick = () => {
-  if (typeof window !== 'undefined') {
-    window.open(url, '_blank');
+  if (typeof window !== "undefined") {
+    window.open(url, "_blank");
   }
 };
 ```
 
 ### ❌ INCORRETO - Sem proteção:
+
 ```typescript
 // Sem "use client" - pode rodar no servidor
 export function useMyHook() {
@@ -247,12 +275,14 @@ export function useMyHook() {
 ## Validação
 
 ### Build Status
+
 - ✅ `npm run build` - **Compiled successfully in 7.6s**
 - ✅ Sem erros de SSR/ReferenceError
 - ✅ Todas as rotas geradas corretamente
 - ✅ Arquivo estático criado com sucesso
 
 ### Testes Recomendados
+
 ```bash
 # 1. Build local (validado)
 npm run build
@@ -283,14 +313,14 @@ pm2 logs dexo-frontend  # Verificar se há novos erros
 
 ## Resumo Técnico
 
-| Arquivo | Tipo de Erro | Proteção Adicionada | Severidade |
-|---------|-------------|-------------------|-----------|
-| hooks/use-mobile.ts | SSR sem 'use client' + window access | "use client" + typeof check | 🔴 CRÍTICO |
-| components/ui/sidebar.tsx | document.cookie sem proteção | typeof document check | 🔴 CRÍTICO |
-| mercado-livre/callback/page.tsx | window.location sem proteção | typeof window check | 🟠 ALTO |
-| ml-connection-tab.tsx | window.location em listener | typeof window check | 🟠 ALTO |
-| app-sidebar.tsx | window APIs em handlers | typeof window check | 🟡 MÉDIO |
-| image-upload.tsx | document.createElement sem proteção | typeof document check | 🟢 BAIXO |
+| Arquivo                         | Tipo de Erro                         | Proteção Adicionada         | Severidade |
+| ------------------------------- | ------------------------------------ | --------------------------- | ---------- |
+| hooks/use-mobile.ts             | SSR sem 'use client' + window access | "use client" + typeof check | 🔴 CRÍTICO |
+| components/ui/sidebar.tsx       | document.cookie sem proteção         | typeof document check       | 🔴 CRÍTICO |
+| mercado-livre/callback/page.tsx | window.location sem proteção         | typeof window check         | 🟠 ALTO    |
+| ml-connection-tab.tsx           | window.location em listener          | typeof window check         | 🟠 ALTO    |
+| app-sidebar.tsx                 | window APIs em handlers              | typeof window check         | 🟡 MÉDIO   |
+| image-upload.tsx                | document.createElement sem proteção  | typeof document check       | 🟢 BAIXO   |
 
 ---
 
@@ -316,6 +346,7 @@ pm2 logs dexo-frontend  # Verificar se há novos erros
 ## Contexto do Erro Original
 
 O erro ocorria repetidamente em produção:
+
 ```
 ReferenceError: location is not defined
 at ax (.next/server/chunks/661.js:1:35096)
@@ -325,8 +356,8 @@ at ax (.next/server/chunks/661.js:1:35096)
 Chunk 661 é gerado na compilação do Next.js e pode conter múltiplos componentes. O erro indica que **em algum momento do SSR/build, o código tentou acessar `location` (ou `window.location`) em um contexto onde `window` não existe** (servidor Node.js).
 
 Com as correções aplicadas:
+
 - Todos os acessos a `window`, `document`, `location` agora têm proteção explícita
 - Hooks têm `"use client"` directive
 - O Next.js compiler pode renderizar tudo com segurança no servidor
 - No cliente, todo o código funciona normalmente
-

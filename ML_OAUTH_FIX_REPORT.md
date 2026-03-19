@@ -1,11 +1,13 @@
 # Correção de Integração Mercado Livre - Problema de Contas não Aparecendo
 
 ## Data
+
 19 de Março de 2026
 
 ## Problema Relatado
 
 Quando usuário clica em "Conectar com Mercado Livre":
+
 1. ✅ Modal abre e mostra "Conta conectada com sucesso"
 2. ✅ Backend salva a conta no banco
 3. ❌ Ao fechar o modal, a conta **NÃO aparece** na listagem
@@ -14,6 +16,7 @@ Quando usuário clica em "Conectar com Mercado Livre":
 ## Causa Raiz Identificada
 
 ### 🔴 **Problema Principal: targetOrigin Mismatch**
+
 Em **produção com ngrok**, o postMessage que comunica sucesso falhava silenciosamente:
 
 ```
@@ -27,7 +30,9 @@ targetOrigin mismatch → postMessage FALHA ❌
 ```
 
 ### 🔴 **Problema 2: Múltiplas Chamadas a fetchStatus()**
+
 Três diferentes paths chamavam `fetchStatus()`:
+
 1. Listener de postMessage
 2. Polling do popup (detectar quando fecha)
 3. Montar componente
@@ -35,6 +40,7 @@ Três diferentes paths chamavam `fetchStatus()`:
 Causava race conditions e UI oscilante.
 
 ### 🔴 **Problema 3: Sem Mecanismo de Debouncing**
+
 `fetchStatus()` podia ser chamada 3-5 vezes num intervalo de 1 segundo.
 
 ---
@@ -55,11 +61,12 @@ try {
   window.opener.postMessage({ type, message }, openerOrigin);
 } catch (err) {
   // Fallback se der erro ao parsear URL
-  window.opener.postMessage({ type, message }, '*');
+  window.opener.postMessage({ type, message }, "*");
 }
 ```
 
 **Por quê funciona:**
+
 - `window.opener.location.href` = domínio original da janela pai
 - Garante que postMessage usa EXATAMENTE o origin correto
 - Funciona em localhost, produção, ngrok, proxies, etc.
@@ -72,11 +79,13 @@ try {
 **Arquivo:** `app/integracoes/mercado-livre/components/ml-connection-tab.tsx`
 
 **Problema anterior:**
+
 - Polling checava a cada 500ms se popup fechou
 - Chamava `fetchStatus()` imediatamente
 - Esperava 5 minutos de hard timeout
 
 **Solução:**
+
 ```typescript
 // Flag para evitar múltiplas chamadas
 let statusAlreadyFetched = false;
@@ -84,7 +93,7 @@ let statusAlreadyFetched = false;
 // 1. Timeout curto (3s) - espera pelo postMessage
 const pollTimeout = setTimeout(() => {
   if (!statusAlreadyFetched && !popup.closed) {
-    console.warn('postMessage não recebido, usando fallback');
+    console.warn("postMessage não recebido, usando fallback");
     statusAlreadyFetched = true;
     fetchStatus();
   }
@@ -99,12 +108,16 @@ const checkClosed = setInterval(() => {
 }, 500);
 
 // 3. Hard timeout após 5 minutos (segurança)
-const hardTimeout = setTimeout(() => {
-  // Cleanup...
-}, 5 * 60 * 1000);
+const hardTimeout = setTimeout(
+  () => {
+    // Cleanup...
+  },
+  5 * 60 * 1000,
+);
 ```
 
 **Benefício:**
+
 - postMessage funciona em 500-800ms
 - Fallback aguarda apenas 3 segundos (não 5 minutos)
 - Apenas UMA chamada a `fetchStatus()` acontece
@@ -116,6 +129,7 @@ const hardTimeout = setTimeout(() => {
 **Arquivo:** `app/integracoes/mercado-livre/components/ml-connection-tab.tsx`
 
 **Adicionado:**
+
 - Validação de origem melhorada (aceita localhost, próprio origin, e fallback)
 - Flag `isMountedRef` para evitar memory leaks
 - Logging para debug
@@ -126,8 +140,8 @@ const handleMessage = (event: MessageEvent) => {
   // Validar origin
   const isValidOrigin =
     event.origin === window.location.origin ||
-    event.origin.includes('localhost') ||
-    event.origin.includes('mercad');
+    event.origin.includes("localhost") ||
+    event.origin.includes("mercad");
 
   if (!isValidOrigin) {
     console.warn(`Origem inválida: ${event.origin}`);
@@ -135,9 +149,9 @@ const handleMessage = (event: MessageEvent) => {
   }
 
   // Processar com delay seguro
-  if (event.data?.type === 'ML_OAUTH_SUCCESS') {
+  if (event.data?.type === "ML_OAUTH_SUCCESS") {
     setIsConnecting(false);
-    
+
     setTimeout(() => {
       if (isMountedRef) {
         fetchStatus(); // Garante que contas foram persistidas
@@ -159,7 +173,7 @@ const fetchStatus = useCallback(async () => {
 
   // 🔒 PROTEÇÃO: Previne múltiplas execuções simultâneas
   if (fetchStatus.isRunning) {
-    console.log('fetchStatus já em execução, ignorando');
+    console.log("fetchStatus já em execução, ignorando");
     return;
   }
 
@@ -178,17 +192,17 @@ const fetchStatus = useCallback(async () => {
       const accRes = await fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
         headers: { email: session.user.email },
       });
-      
+
       if (accRes.ok) {
         const accData = await accRes.json();
-        const accountsList = Array.isArray(accData.accounts) 
-          ? accData.accounts 
+        const accountsList = Array.isArray(accData.accounts)
+          ? accData.accounts
           : [];
-        
+
         if (accountsList.length === 0) {
-          console.warn('Nenhuma conta retornada pelo backend');
+          console.warn("Nenhuma conta retornada pelo backend");
         }
-        
+
         setAccounts(accountsList);
       }
     } else {
@@ -201,6 +215,7 @@ const fetchStatus = useCallback(async () => {
 ```
 
 **Por quê funciona:**
+
 - `fetchStatus.isRunning` atua como mutex
 - Evita race conditions
 - Garante ordem de execução
@@ -255,6 +270,7 @@ const fetchStatus = useCallback(async () => {
 ## 🧪 Como Testar
 
 ### 1. **Local (localhost:3000)**
+
 ```bash
 # Terminal 1: Frontend
 npm run dev
@@ -268,6 +284,7 @@ npx prisma studio
 ```
 
 **Teste:**
+
 1. Login em http://localhost:3000
 2. Ir para /integracoes/mercado-livre
 3. Clicar em "Conectar com Mercado Livre"
@@ -276,6 +293,7 @@ npx prisma studio
 6. **VERIFICAR:** Contas aparecem na listagem (2-3 segundos)
 
 ### 2. **Com ngrok (produção simulada)**
+
 ```bash
 # Terminal 1: Expor frontend
 npx ngrok http 3000
@@ -295,6 +313,7 @@ npm run api
 ```
 
 **Teste:**
+
 1. Ir para https://seu-ngrok-url-frontend
 2. Login
 3. /integracoes/mercado-livre
@@ -302,6 +321,7 @@ npm run api
 5. **ESPERADO:** Funciona em 500-800ms (antes levava 5 minutos!)
 
 ### 3. **DevTools Debugging**
+
 ```javascript
 // No console, você verá logs como:
 // [ML OAuth] Sucesso confirmado via postMessage
@@ -352,14 +372,14 @@ pm2 logs dexo-frontend
 
 ## 📊 Resumo Técnico
 
-| Aspecto | Antes | Depois |
-|---------|-------|--------|
-| **Fluxo de Conexão** | 5 minutos (timeout) | 500-800ms |
-| **postMessage targetOrigin** | ❌ Falha em produção | ✅ Funciona sempre |
-| **Múltiplas chamadas** | 3-5x simultâneas | 1x com mutex |
-| **Race conditions** | Comum | Eliminada |
-| **Contas na listagem** | ❌ Não apareciam | ✅ Aparecem imediatamente |
-| **UX** | "Parece que nada aconteceu" | "Conectado com sucesso" |
+| Aspecto                      | Antes                       | Depois                    |
+| ---------------------------- | --------------------------- | ------------------------- |
+| **Fluxo de Conexão**         | 5 minutos (timeout)         | 500-800ms                 |
+| **postMessage targetOrigin** | ❌ Falha em produção        | ✅ Funciona sempre        |
+| **Múltiplas chamadas**       | 3-5x simultâneas            | 1x com mutex              |
+| **Race conditions**          | Comum                       | Eliminada                 |
+| **Contas na listagem**       | ❌ Não apareciam            | ✅ Aparecem imediatamente |
+| **UX**                       | "Parece que nada aconteceu" | "Conectado com sucesso"   |
 
 ---
 
@@ -381,4 +401,3 @@ Se o problema persistir após o deploy:
 3. Verificar status 200 e payload com contas
 4. Se 401: verificar que email header está sendo enviado corretamente
 5. Se 400: verificar parâmetros da URL
-

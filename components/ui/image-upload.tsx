@@ -155,7 +155,11 @@ export function ImageUpload({
                   const target = e.currentTarget as HTMLImageElement;
                   target.style.display = "none";
                   const parent = target.parentElement;
-                  if (parent && typeof document !== 'undefined' && !parent.querySelector(".error-placeholder")) {
+                  if (
+                    parent &&
+                    typeof document !== "undefined" &&
+                    !parent.querySelector(".error-placeholder")
+                  ) {
                     const errorDiv = document.createElement("div");
                     errorDiv.className =
                       "error-placeholder w-[200px] h-[200px] rounded-lg bg-red-50 border border-red-200 flex items-center justify-center text-red-600 text-sm";

@@ -60,7 +60,7 @@
      └─────────┼──────────────────────────────┼─────────┼──────┼────────┘
                │  Popup Navega                │         │      │
                ▼  (PROBLEMA: URL diferente!)   │         │      │
-     
+
      ┌─────────────────────────────────────────────────────────────────┐
      │ POPUP: callback/page.tsx                                         │
      │ https://seu-backend/integracoes/mercado-livre/callback?...      │

@@ -166,8 +166,8 @@ export function AppSidebar({ session }: AppSidebarProps) {
         requestAnimationFrame(() => searchRef.current?.focus());
       }
     };
-    
-    if (typeof window !== 'undefined') {
+
+    if (typeof window !== "undefined") {
       window.addEventListener("keydown", handler);
       return () => window.removeEventListener("keydown", handler);
     }
@@ -483,7 +483,7 @@ function SidebarSearch({
                       subtitle={l.permalink || l.externalListingId}
                       badge={l.marketplaceAccount?.platform}
                       onClick={() => {
-                        if (l.permalink && typeof window !== 'undefined') {
+                        if (l.permalink && typeof window !== "undefined") {
                           window.open(l.permalink, "_blank");
                         } else {
                           onNavigate(

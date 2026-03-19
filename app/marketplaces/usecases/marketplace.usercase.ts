@@ -38,7 +38,9 @@ export class MarketplaceUseCase {
       // 1. Validar state (CSRF protection)
       const stateValidation = MLOAuthService.validateState(data.state);
       if (!stateValidation.valid) {
-        throw new Error("State invÃ¡lido ou expirado. Reinicie a autenticaÃ§Ã£o.");
+        throw new Error(
+          "State invÃ¡lido ou expirado. Reinicie a autenticaÃ§Ã£o.",
+        );
       }
 
       const codeVerifier = stateValidation.codeVerifier!;
@@ -46,7 +48,9 @@ export class MarketplaceUseCase {
       const userId = data.userId || stateValidation.userId;
 
       if (!userId) {
-        throw new Error("userId nÃ£o encontrado. FaÃ§a login e tente novamente.");
+        throw new Error(
+          "userId nÃ£o encontrado. FaÃ§a login e tente novamente.",
+        );
       }
 
       // 2. Trocar code por tokens
@@ -117,15 +121,15 @@ export class MarketplaceUseCase {
     try {
       let account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
-        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+        : (await MarketplaceRepository.findFirstActiveByUserAndPlatform(
             userId,
             platform,
-          ) ||
+          )) ||
           // fallback: pega qualquer conta (ex.: todas estÃ£o com erro/expiradas)
-          await MarketplaceRepository.findByUserIdAndPlatform(
+          (await MarketplaceRepository.findByUserIdAndPlatform(
             userId,
             platform,
-          );
+          ));
 
       if (!account) {
         return {
@@ -244,19 +248,32 @@ export class MarketplaceUseCase {
               capMsg.toLowerCase().includes("unauthorized") ||
               capMsg.toLowerCase().includes("invalid access token")
             ) {
-              await MarketplaceAccountService.handleAuthFailure(
-                account.id,
-                capMsg,
-                {
-                  userId,
-                  context: "CAPABILITY_CHECK_AUTH",
-                },
-              );
-              return {
-                connected: false,
-                account,
-                message: "Token expirado. Reconecte sua conta.",
-              };
+              // Se o token é recente (mais de 5h até expirar = criado há menos de 1h),
+              // tratar como erro transitório e NÃO marcar como ERROR
+              const msUntilExpiry = account.expiresAt.getTime() - Date.now();
+              const isFreshToken = msUntilExpiry > 5 * 60 * 60 * 1000;
+
+              if (isFreshToken) {
+                console.warn(
+                  "[MarketplaceUseCase] Erro transitório de auth em token recente, ignorando:",
+                  capMsg,
+                );
+                // Não marca como ERROR, continua como conectado
+              } else {
+                await MarketplaceAccountService.handleAuthFailure(
+                  account.id,
+                  capMsg,
+                  {
+                    userId,
+                    context: "CAPABILITY_CHECK_AUTH",
+                  },
+                );
+                return {
+                  connected: false,
+                  account,
+                  message: "Token expirado. Reconecte sua conta.",
+                };
+              }
             }
           }
 
@@ -307,11 +324,10 @@ export class MarketplaceUseCase {
       await MarketplaceRepository.deleteAccount(account.id);
 
       // Se restarem outras contas ativas do mesmo usuário/plataforma, manter estado conectado
-      const remaining =
-        await MarketplaceRepository.findAllByUserIdAndPlatform(
-          userId,
-          platform,
-        );
+      const remaining = await MarketplaceRepository.findAllByUserIdAndPlatform(
+        userId,
+        platform,
+      );
       if (remaining.length === 0) {
         // nada extra; caller pode marcar desconectado
       }
@@ -359,7 +375,9 @@ export class MarketplaceUseCase {
       const userId = data.userId;
 
       if (!userId) {
-        throw new Error("userId nÃ£o encontrado. FaÃ§a login e tente novamente.");
+        throw new Error(
+          "userId nÃ£o encontrado. FaÃ§a login e tente novamente.",
+        );
       }
 
       // 2. Trocar code por tokens
@@ -370,7 +388,10 @@ export class MarketplaceUseCase {
 
       // 3. Verificar se jÃ¡ existe conta conectada
       const existingAccount =
-        await MarketplaceRepository.findShopeeByUserAndShopId(userId, data.shopId);
+        await MarketplaceRepository.findShopeeByUserAndShopId(
+          userId,
+          data.shopId,
+        );
 
       // 4. Criar ou atualizar conta
       let account;
@@ -425,7 +446,10 @@ export class MarketplaceUseCase {
   /**
    * ObtÃ©m status da conta Shopee do usuÃ¡rio
    */
-  static async getShopeeAccountStatus(userId: string, accountId?: string): Promise<{
+  static async getShopeeAccountStatus(
+    userId: string,
+    accountId?: string,
+  ): Promise<{
     connected: boolean;
     account?: any;
     message: string;
@@ -534,7 +558,3 @@ export class MarketplaceUseCase {
     }
   }
 }
-
-
-
-

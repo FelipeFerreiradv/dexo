@@ -28,22 +28,24 @@ Foram identificados **7 problemas críticos** que podem impedir o fluxo OAuth de
 ```typescript
 app.post<{ Reply: { authUrl: string; state: string } }>(
   "/ml/auth",
-  { preHandler: [authMiddleware] },  // ✅ USA MIDDLEWARE DE AUTH
+  { preHandler: [authMiddleware] }, // ✅ USA MIDDLEWARE DE AUTH
   async (request: FastifyRequest, reply: FastifyReply) => {
-    const userId = request.user!.id;  // ✅ EXTRAI userId DA SESSÃO
+    const userId = request.user!.id; // ✅ EXTRAI userId DA SESSÃO
     const { authUrl, state } = MarketplaceUseCase.initiateOAuth(userId);
     return reply.send({ authUrl, state });
-  }
+  },
 );
 ```
 
 **O que funciona:**
+
 - ✅ Requer `email` header (via authMiddleware)
 - ✅ Recupera `userId` do request.user (definido pelo middleware)
 - ✅ Retorna `authUrl` + `state`
 - ✅ O `state` armazena `codeVerifier` + `userId` in-memory por 10 min
 
 **Como o middleware funciona:**
+
 ```typescript
 // app/middlewares/auth.middleware.ts
 const apiEmail = request.headers["email"];
@@ -51,10 +53,11 @@ if (!apiEmail) {
   return reply.status(401).send({ message: "Email is required" });
 }
 const user = await userRepository.findByEmail(apiEmail as string);
-request.user = user;  // ✅ Anexa user ao request
+request.user = user; // ✅ Anexa user ao request
 ```
 
 **Resposta esperada (200):**
+
 ```json
 {
   "authUrl": "https://auth.mercadolibre.com.br/authorization?client_id=...&state=abc123...",
@@ -75,26 +78,28 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
   // Motivo: o usuario ainda não está autenticado no backend
   // O userId vem armazenado no state durante a geração da URL
   async (request: FastifyRequest, reply: FastifyReply) => {
-    const code = request.query.code;     // ✅ Via querystring
-    const state = request.query.state;   // ✅ Via querystring
-    
+    const code = request.query.code; // ✅ Via querystring
+    const state = request.query.state; // ✅ Via querystring
+
     const account = await MarketplaceUseCase.handleOAuthCallback({
       code,
       state,
-      userId: request.user?.id  // userId vem do state ou da sessão
+      userId: request.user?.id, // userId vem do state ou da sessão
     });
     return reply.send({ success: true, message: "Conta conectada..." });
-  }
+  },
 );
 ```
 
 **O que funciona:**
+
 - ✅ Não requer autenticação prévia (correto, pois vem do redirect do ML)
 - ✅ Aceita `code` e `state` via query parameters
 - ✅ Recupera `userId` do `state` armazenado in-memory
 - ✅ Processa validação CSRF via `validateState()`
 
 **Fluxo interno:**
+
 1. Frontend chama: `GET /marketplace/ml/callback?code=...&state=...`
 2. Backend valida state (CSRF): `MLOAuthService.validateState(state)` retorna:
    ```typescript
@@ -105,6 +110,7 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 5. Salva conta no banco: `MarketplaceRepository.createAccount({...})`
 
 **Resposta esperada (200):**
+
 ```json
 {
   "success": true,
@@ -119,6 +125,7 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 ```
 
 **Possíveis erros (500):**
+
 ```json
 {
   "error": "Erro ao processar callback",
@@ -152,12 +159,14 @@ app.get<{ Reply: { connected: boolean; platform: string; ... } }>(
 ```
 
 **O que funciona:**
+
 - ✅ Requer header `email`
 - ✅ Retorna `connected: boolean`
 - ✅ Auto-renova token se expirado
 - ✅ Detecta restrições do seller (e.g., unable_to_list)
 
 **Resposta esperada (200) - conectado:**
+
 ```json
 {
   "connected": true,
@@ -168,6 +177,7 @@ app.get<{ Reply: { connected: boolean; platform: string; ... } }>(
 ```
 
 **Resposta esperada (200) - não conectado:**
+
 ```json
 {
   "connected": false,
@@ -185,24 +195,26 @@ app.get<{ Reply: { connected: boolean; platform: string; ... } }>(
 ```typescript
 app.get(
   "/ml/accounts",
-  { preHandler: [authMiddleware] },  // ✅ REQUER email header
+  { preHandler: [authMiddleware] }, // ✅ REQUER email header
   async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user!.id;
     const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
       userId,
-      Platform.MERCADO_LIVRE
+      Platform.MERCADO_LIVRE,
     );
-    return reply.send({ accounts });  // ✅ Retorna array de contas
-  }
+    return reply.send({ accounts }); // ✅ Retorna array de contas
+  },
 );
 ```
 
 **O que funciona:**
+
 - ✅ Requer `email` header
 - ✅ Retorna todas as contas Multi-Conta do usuário
 - ✅ Sem parâmetros query obrigatórios
 
 **Resposta esperada (200):**
+
 ```json
 {
   "accounts": [
@@ -228,30 +240,32 @@ app.get(
 ```typescript
 app.delete<{ Reply: { success: boolean; message: string } }>(
   "/ml",
-  { preHandler: [authMiddleware] },  // ✅ REQUER email header
+  { preHandler: [authMiddleware] }, // ✅ REQUER email header
   async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = request.user!.id;
     const accountId = request.query.accountId as string | undefined;
-    
+
     await MarketplaceUseCase.disconnectAccount(
       userId,
       Platform.MERCADO_LIVRE,
-      accountId  // Opcional - se não enviado, desconecta TODAS
+      accountId, // Opcional - se não enviado, desconecta TODAS
     );
     return reply.send({
       success: true,
-      message: "Conta Mercado Livre desconectada com sucesso"
+      message: "Conta Mercado Livre desconectada com sucesso",
     });
-  }
+  },
 );
 ```
 
 **O que funciona:**
+
 - ✅ Requer header `email`
 - ✅ Aceita `accountId` via query (opcional)
 - ✅ Se sem `accountId`, desconecta TODAS as contas
 
 **Resposta esperada (200):**
+
 ```json
 {
   "success": true,
@@ -271,18 +285,18 @@ app.delete<{ Reply: { success: boolean; message: string } }>(
 export default function MLCallbackPage() {
   useEffect(() => {
     const processCallback = async () => {
-      const code = searchParams.get("code");      // ✅ Via URL
-      const state = searchParams.get("state");    // ✅ Via URL
+      const code = searchParams.get("code"); // ✅ Via URL
+      const state = searchParams.get("state"); // ✅ Via URL
 
       // Chamar backend
       const response = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`
-      );  // ✅ GET com querystring
+        `${getApiBaseUrl()}/marketplace/ml/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+      ); // ✅ GET com querystring
 
       // Notificar janela pai (opener)
       window.opener.postMessage(
         { type, message },
-        window.location.origin  // ⚠️ PROBLEMA: pode não bater com opener
+        window.location.origin, // ⚠️ PROBLEMA: pode não bater com opener
       );
     };
     processCallback();
@@ -291,12 +305,14 @@ export default function MLCallbackPage() {
 ```
 
 **O que funciona:**
+
 - ✅ Extrai `code` e `state` da URL
 - ✅ Chama backend com GET (não precisa de headers de auth)
 - ✅ Trata erros e sucesso corretamente
 - ✅ Fecha popup após 2 segundos
 
 **Problemas encontrados:**
+
 - ⚠️ **CORS/targetOrigin:** `window.opener.postMessage(..., window.location.origin)`
   - Se callback é em `https://ngrok-url/integracoes/mercado-livre/callback`
   - E opener está em `http://localhost:3000/integracoes/mercado-livre`
@@ -313,7 +329,10 @@ window.opener.postMessage({ type: "ML_OAUTH_SUCCESS" }, window.location.origin);
 // OU registrar ambos os origins esperados
 const validOrigins = ["http://localhost:3000", "https://seu-app.com"];
 if (validOrigins.includes(window.opener.location.origin)) {
-  window.opener.postMessage({ type: "ML_OAUTH_SUCCESS" }, window.opener.location.origin);
+  window.opener.postMessage(
+    { type: "ML_OAUTH_SUCCESS" },
+    window.opener.location.origin,
+  );
 }
 ```
 
@@ -358,12 +377,14 @@ const handleConnect = async () => {
 ```
 
 **O que funciona:**
+
 - ✅ Envia header `email` (requerido por authMiddleware)
 - ✅ Abre popup com ML redirect
 - ✅ Polling detecta quando popup fecha
 - ✅ Timeout de 5 min (segurança)
 
 **Problemas encontrados:**
+
 - 🔴 **Sem sincronização:** Há 2 mecanismos concorrentes:
   1. Polling de popup close (cada 500ms)
   2. Listener de postMessage
@@ -384,21 +405,18 @@ const fetchStatus = useCallback(async () => {
   setError(null);
 
   // 1️⃣ GET /marketplace/ml/status
-  const response = await fetch(
-    `${getApiBaseUrl()}/marketplace/ml/status`,
-    {
-      headers: {
-        email: session.user.email,  // ✅ CORRETO: envia email
-      },
+  const response = await fetch(`${getApiBaseUrl()}/marketplace/ml/status`, {
+    headers: {
+      email: session.user.email, // ✅ CORRETO: envia email
     },
-  );
+  });
   const data = await response.json();
   setStatus(data);
 
   // 2️⃣ GET /marketplace/ml/accounts
   const accRes = await fetch(
     `${getApiBaseUrl()}/marketplace/ml/accounts`,
-    { headers: { email: session.user.email } },  // ✅ CORRETO
+    { headers: { email: session.user.email } }, // ✅ CORRETO
   );
   if (accRes.ok) {
     const accData = await accRes.json();
@@ -410,11 +428,13 @@ const fetchStatus = useCallback(async () => {
 ```
 
 **O que funciona:**
+
 - ✅ Envia header `email` (requerido)
 - ✅ Busca status e contas em paralelo (2 fetches)
 - ✅ Trata erros
 
 **Problemas encontrados:**
+
 - 🔴 **Condição de corrida:** `fetchStatus()` é chamada de 3 lugares:
   1. useEffect ao montar componente (linha ~203)
   2. handleMessage listener ao receber postMessage (linha ~220)
@@ -424,7 +444,7 @@ const fetchStatus = useCallback(async () => {
 // CHAMADA 1: ao montar
 useEffect(() => {
   if (session?.user?.email) {
-    fetchStatus();  // 🔴 PRIMEIRA
+    fetchStatus(); // 🔴 PRIMEIRA
   }
 }, [session?.user?.email, fetchStatus]);
 
@@ -433,7 +453,7 @@ useEffect(() => {
   const handleMessage = (event: MessageEvent) => {
     if (event.data?.type === "ML_OAUTH_SUCCESS") {
       setIsConnecting(false);
-      fetchStatus();  // 🔴 SEGUNDA
+      fetchStatus(); // 🔴 SEGUNDA
     }
   };
   window.addEventListener("message", handleMessage);
@@ -444,7 +464,7 @@ const checkClosed = setInterval(() => {
   if (popup.closed) {
     clearInterval(checkClosed);
     setIsConnecting(false);
-    fetchStatus();  // 🔴 TERCEIRA
+    fetchStatus(); // 🔴 TERCEIRA
   }
 }, 500);
 ```
@@ -488,6 +508,7 @@ TOTAL: 4 requests quase simultaneamente!
 ```
 
 **Impacto:**
+
 - Race condition no estado React (setStatus chamados 2x)
 - Possível inconsistência de dados
 - Carga desnecessária no backend
@@ -502,12 +523,12 @@ TOTAL: 4 requests quase simultaneamente!
 useEffect(() => {
   const handleMessage = (event: MessageEvent) => {
     // Verificar origem (aceitar localhost para dev)
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       if (
         event.origin !== window.location.origin &&
         !event.origin.includes("localhost")
       ) {
-        return;  // ✅ Rejeita origins desconhecidas
+        return; // ✅ Rejeita origins desconhecidas
       }
     }
 
@@ -526,13 +547,15 @@ useEffect(() => {
 ```
 
 **O que funciona:**
+
 - ✅ Valida origem (rejeita postMessage de origins desconhecidas)
 - ✅ Permite localhost (dev)
 - ✅ Cleanup correto (removeEventListener)
 
 **Problemas encontrados:**
+
 - ⚠️ **Condição de corrida:** Como visto acima, postMessage + polling colidem
-- ⚠️ **targetOrigin mismatch:** Se callback está em ngrok e opener em localhost, 
+- ⚠️ **targetOrigin mismatch:** Se callback está em ngrok e opener em localhost,
   o postMessage da página de callback **não chega aqui** (falha silenciosamente)
 
 ```typescript
@@ -543,8 +566,11 @@ window.opener.postMessage({ type, message }, window.location.origin);
 // Estas NÃO são iguais → postMessage falha!
 
 // No ml-connection-tab.tsx (linha ~213-216):
-if (event.origin !== window.location.origin && !event.origin.includes("localhost")) {
-  return;  // Rejeita mesmo que viesse corretamente
+if (
+  event.origin !== window.location.origin &&
+  !event.origin.includes("localhost")
+) {
+  return; // Rejeita mesmo que viesse corretamente
 }
 ```
 
@@ -558,6 +584,7 @@ if (event.origin !== window.location.origin && !event.origin.includes("localhost
 
 **Descrição:**
 `fetchStatus()` é chamada de 3 paths concorrentes:
+
 1. useEffect ao montar
 2. postMessage listener
 3. Polling de popup close
@@ -565,18 +592,20 @@ if (event.origin !== window.location.origin && !event.origin.includes("localhost
 Em rápida sucessão (50ms), causando race conditions no estado React.
 
 **Impacto:**
+
 - 🔴 **CRÍTICO:** Comportamento não-determinístico
 - 🔴 Interface oscila entre "conectado" e "conectando"
 - 🔴 Possível inconsistência de dados
 - 🔴 4 requests paralelos desm necessários
 
 **Solução:**
+
 ```typescript
 const [isFetching, setIsFetching] = useState(false);
 
 const fetchStatus = useCallback(async () => {
-  if (isFetching) return;  // ✅ Evita concurrent calls
-  
+  if (isFetching) return; // ✅ Evita concurrent calls
+
   setIsFetching(true);
   try {
     // ... fazer chamadas
@@ -599,14 +628,15 @@ useEffect(() => {
 ```
 
 Ou usar debouncing:
+
 ```typescript
 import { debounce } from "lodash";
 
 const fetchStatus = useCallback(
   debounce(async () => {
     // ... chamadas
-  }, 1000),  // ✅ Aguarda 1s antes de executar
-  []
+  }, 1000), // ✅ Aguarda 1s antes de executar
+  [],
 );
 ```
 
@@ -614,18 +644,21 @@ const fetchStatus = useCallback(
 
 ### Problema 2: 🔴 CRÍTICO - CORS/targetOrigin do postMessage
 
-**Localização:** 
+**Localização:**
+
 - [callback/page.tsx](app/integracoes/mercado-livre/callback/page.tsx#L74)
 - [ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx#L220)
 
 **Descrição:**
 
 A página de callback usa `window.location.origin` como targetOrigin:
+
 ```javascript
 window.opener.postMessage({ type, message }, window.location.origin);
 ```
 
 Mas se:
+
 - Callback está em: `https://abc123.ngrok-free.app/integracoes/mercado-livre/callback`
 - Opener está em: `http://localhost:3000/integracoes/mercado-livre`
 
@@ -645,10 +678,10 @@ Estes origins **NÃO COMBINAM** → postMessage falha silenciosamente
      "https://abc123.ngrok-free.app"  // ← targetOrigin
    )
    ↓
-5. Opener está em "http://localhost:3000" 
+5. Opener está em "http://localhost:3000"
    ↓
 6. Origins NÃO COMBINAM → postMessage FALHA SILENCIOSAMENTE ❌
-   
+
 7. ml-connection-tab.tsx nunca recebeEvent do postMessage
    ↓
 8. Listener de postMessage não dispara
@@ -659,6 +692,7 @@ Estes origins **NÃO COMBINAM** → postMessage falha silenciosamente
 ```
 
 **Impacto:**
+
 - 🔴 **CRÍTICO:** postMessage não funciona em produção (com ngrok)
 - 🔴 Interface fica "congelada" por 5 minutos até timeout
 - 🔴 User experience horrível
@@ -670,11 +704,11 @@ Estes origins **NÃO COMBINAM** → postMessage falha silenciosamente
 // callback/page.tsx - Na função notifyParent():
 
 const notifyParent = (type: string, message?: string) => {
-  if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+  if (typeof window !== "undefined" && window.opener && !window.opener.closed) {
     // ✅ Usar "*" para aceitar qualquer origem (ou registrar todas as esperadas)
     window.opener.postMessage(
       { type, message },
-      "*"  // ✅ CORRETO: aceita qualquer origem
+      "*", // ✅ CORRETO: aceita qualquer origem
       // Ou: window.opener.location.origin  // ✅ Usa origem do opener, não do callback
     );
   }
@@ -682,6 +716,7 @@ const notifyParent = (type: string, message?: string) => {
 ```
 
 Ou melhor ainda:
+
 ```typescript
 // Use a origem do opener, não a do callback
 const openerOrigin = new URL(window.opener.location.href).origin;
@@ -699,22 +734,24 @@ window.opener.postMessage({ type, message }, openerOrigin);
 Há 2 mecanismos independentes checkando se o popup fechou:
 
 1. **Polling** (cada 500ms):
+
 ```typescript
 const checkClosed = setInterval(() => {
   if (popup.closed) {
     clearInterval(checkClosed);
     setIsConnecting(false);
-    fetchStatus();  // 🔴 Chamada duplicada
+    fetchStatus(); // 🔴 Chamada duplicada
   }
 }, 500);
 ```
 
 2. **postMessage listener** (dispara quando callback page envia OK):
+
 ```typescript
 const handleMessage = (event: MessageEvent) => {
   if (event.data?.type === "ML_OAUTH_SUCCESS") {
     setIsConnecting(false);
-    fetchStatus();  // 🔴 Chamada duplicada
+    fetchStatus(); // 🔴 Chamada duplicada
   }
 };
 ```
@@ -722,11 +759,13 @@ const handleMessage = (event: MessageEvent) => {
 Ambos chamam `fetchStatus()` quase no mesmo tempo, causando race condition.
 
 **Impacto:**
+
 - 🔴 Comportamento impreditível
 - 🔴 Possível "flicker" na interface
 - 🔴 Carga desnecessária
 
 **Solução:**
+
 ```typescript
 const [popupClosed, setPopupClosed] = useState(false);
 
@@ -734,7 +773,7 @@ const [popupClosed, setPopupClosed] = useState(false);
 const checkClosed = setInterval(() => {
   if (popup.closed) {
     clearInterval(checkClosed);
-    setPopupClosed(true);  // ✅ Marcar como fechado
+    setPopupClosed(true); // ✅ Marcar como fechado
   }
 }, 500);
 
@@ -742,7 +781,7 @@ const checkClosed = setInterval(() => {
 useEffect(() => {
   if (popupClosed) {
     setIsConnecting(false);
-    fetchStatus();  // ✅ Chamada única e controlada
+    fetchStatus(); // ✅ Chamada única e controlada
   }
 }, [popupClosed]);
 
@@ -750,9 +789,9 @@ useEffect(() => {
 const handleMessage = (event: MessageEvent) => {
   if (event.data?.type === "ML_OAUTH_SUCCESS") {
     setIsConnecting(false);
-    fetchStatus();  // ✅ Chamada rápida via postMessage
-    popup.close();  // ✅ Fechar explicitamente
-    clearInterval(checkClosed);  // ✅ Parar polling
+    fetchStatus(); // ✅ Chamada rápida via postMessage
+    popup.close(); // ✅ Fechar explicitamente
+    clearInterval(checkClosed); // ✅ Parar polling
   }
 };
 ```
@@ -768,17 +807,20 @@ const handleMessage = (event: MessageEvent) => {
 `fetchStatus()` pode ser chamada múltiplas vezes em rápida sucessão, sem debouncing ou throttling.
 
 Cada chamada faz 2 requests:
+
 - GET `/marketplace/ml/status`
 - GET `/marketplace/ml/accounts`
 
 Se chamada 3x em 100ms → 6 requests ao backend em paralelo.
 
 **Impacto:**
+
 - 🔴 Carga desnecessária no backend
 - 🔴 Possível timeout se banco de dados lento
 - 🔴 Race condition no estado React
 
 **Solução:**
+
 ```typescript
 import { useRef, useEffect } from "react";
 
@@ -788,24 +830,25 @@ const debounceDelay = 1000; // 1 segundo
 const fetchStatus = useCallback(async () => {
   const now = Date.now();
   const timeSinceLastFetch = now - lastFetchRef.current;
-  
+
   if (timeSinceLastFetch < debounceDelay) {
-    return;  // ✅ Aguardar mínimo 1s entre chamadas
+    return; // ✅ Aguardar mínimo 1s entre chamadas
   }
-  
+
   lastFetchRef.current = now;
-  
+
   // ... fazer chamadas
 }, []);
 ```
 
 Ou usar biblioteca:
+
 ```typescript
 import { useDebouncedCallback } from "use-debounce";
 
 const fetchStatus = useDebouncedCallback(async () => {
   // ... chamadas
-}, 1000);  // ✅ Máximo uma chamada a cada 1000ms
+}, 1000); // ✅ Máximo uma chamada a cada 1000ms
 ```
 
 ---
@@ -813,6 +856,7 @@ const fetchStatus = useDebouncedCallback(async () => {
 ### Problema 5: ⚠️ MÉDIO - Header Customizado `email` é Menos Seguro
 
 **Localização:**
+
 - [auth.middleware.ts](app/middlewares/auth.middleware.ts)
 - [ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx#L97)
 
@@ -825,29 +869,36 @@ O backend usa um header `email` customizado:
 const apiEmail = request.headers["email"];
 
 // Frontend envia:
-headers: { email: session.user.email }
+headers: {
+  email: session.user.email;
+}
 ```
 
 Isso é funcional, mas **menos seguro** que o padrão `Authorization: Bearer <token>`.
 
 **Problemas:**
+
 - ⚠️ `email` é exposição de informação (PII)
 - ⚠️ Não é validado como token (apenas string)
 - ⚠️ HTTP sniffing expõe email do usuário (sem HTTPS)
 - ⚠️ CORS pode expor header em alguns casos
 
 **Impacto:**
+
 - 🟡 Risco de segurança baixo-médio
 - 🟡 Não é padrão OAuth 2.0
 
 **Solução:**
+
 ```typescript
 // Usar NextAuth session token:
 const session = await getServerSession(authOptions);
 const token = session?.accessToken;
 
 // Enviar como Bearer token:
-headers: { Authorization: `Bearer ${token}` }
+headers: {
+  Authorization: `Bearer ${token}`;
+}
 
 // Backend valida com JWT:
 const token = request.headers.authorization?.replace("Bearer ", "");
@@ -864,16 +915,20 @@ Mas isso requer refactoring maior. **Para produção imediata**, proteção com 
 **Status:** NÃO é problema (foi confirmado)
 
 O middleware está bem parametrizado:
+
 ```typescript
-const apiEmail = request.headers["email"];  // ✅ Funciona
+const apiEmail = request.headers["email"]; // ✅ Funciona
 if (!apiEmail) {
   return reply.status(401).send({ message: "Email is required" });
 }
 ```
 
 E o frontend envia:
+
 ```typescript
-headers: { email: session.user.email }  // ✅ Enviado
+headers: {
+  email: session.user.email;
+} // ✅ Enviado
 ```
 
 Isso está sincronizado corretamente ✅
@@ -890,7 +945,7 @@ Se postMessage falhar (origem mismatch), não há retry ou notificação:
 
 ```typescript
 const notifyParent = (type: string, message?: string) => {
-  if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+  if (typeof window !== "undefined" && window.opener && !window.opener.closed) {
     // Isto pode falhar silenciosamente:
     window.opener.postMessage({ type, message }, window.location.origin);
     // ❌ Nenhum try/catch, nenhum erro se origin não bater
@@ -901,18 +956,24 @@ const notifyParent = (type: string, message?: string) => {
 Se postMessage falha, o parent nunca é notificado → interface congelada.
 
 **Impacto:**
+
 - 🟡 MÉDIO: Usuário fica esperando indefinidamente
 
 **Solução:**
+
 ```typescript
 const notifyParent = (type: string, message?: string) => {
   try {
-    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+    if (
+      typeof window !== "undefined" &&
+      window.opener &&
+      !window.opener.closed
+    ) {
       // Usar openerOrigin ao invés de location.origin
       const openerOrigin = window.opener.location.origin;
       window.opener.postMessage(
         { type, message, timestamp: Date.now() },
-        openerOrigin  // ✅ Usar origem do opener
+        openerOrigin, // ✅ Usar origem do opener
       );
       console.log(`[Callback] postMessage enviado para ${openerOrigin}`);
     } else {
@@ -928,15 +989,15 @@ const notifyParent = (type: string, message?: string) => {
 
 ## 📊 MATRIZ DE PROBLEMAS
 
-| # | Problema | Localização | Severidade | Status | Impacto |
-|---|----------|-------------|-----------|--------|---------|
-| 1 | fetchStatus 3x | ml-connection-tab.tsx:203-220 | 🔴 CRÍTICO | ❌ NÃO FUNCIONA | Race condition, interface oscila |
-| 2 | targetOrigin mismatch | callback/page.tsx:74 | 🔴 CRÍTICO | ❌ NÃO FUNCIONA | postMessage falha silenciosamente em prod |
-| 3 | Sem sincronização | ml-connection-tab.tsx:170 | 🔴 CRÍTICO | ❌ FALHA 50% | Behavior impreditível |
-| 4 | Sem debouncing | ml-connection-tab.tsx:48 | ⚠️ ALTO | ⚠️ FUNCIONA | Carga backend, race condition |
-| 5 | Header `email` | auth.middleware.ts | ⚠️ MÉDIO | ✅ FUNCIONA | Exposição PII |
-| 6 | Sem retry postMessage | callback/page.tsx:74 | ⚠️ MÉDIO | ⚠️ FALHA | UI congelada se erro |
-| 7 | Headers vs Query | marketplace.routes.ts | ✅ CORRETO | ✅ FUNCIONA | Nenhum |
+| #   | Problema              | Localização                   | Severidade | Status          | Impacto                                   |
+| --- | --------------------- | ----------------------------- | ---------- | --------------- | ----------------------------------------- |
+| 1   | fetchStatus 3x        | ml-connection-tab.tsx:203-220 | 🔴 CRÍTICO | ❌ NÃO FUNCIONA | Race condition, interface oscila          |
+| 2   | targetOrigin mismatch | callback/page.tsx:74          | 🔴 CRÍTICO | ❌ NÃO FUNCIONA | postMessage falha silenciosamente em prod |
+| 3   | Sem sincronização     | ml-connection-tab.tsx:170     | 🔴 CRÍTICO | ❌ FALHA 50%    | Behavior impreditível                     |
+| 4   | Sem debouncing        | ml-connection-tab.tsx:48      | ⚠️ ALTO    | ⚠️ FUNCIONA     | Carga backend, race condition             |
+| 5   | Header `email`        | auth.middleware.ts            | ⚠️ MÉDIO   | ✅ FUNCIONA     | Exposição PII                             |
+| 6   | Sem retry postMessage | callback/page.tsx:74          | ⚠️ MÉDIO   | ⚠️ FALHA        | UI congelada se erro                      |
+| 7   | Headers vs Query      | marketplace.routes.ts         | ✅ CORRETO | ✅ FUNCIONA     | Nenhum                                    |
 
 ---
 
@@ -986,6 +1047,7 @@ const notifyParent = (type: string, message?: string) => {
 ### Priority 1 (🔴 Crítico - FIX IMEDIATAMENTE)
 
 1. **Corrigir targetOrigin do postMessage**
+
    ```typescript
    // callback/page.tsx, linha 74:
    const openerOrigin = new URL(window.opener.location.href).origin;
@@ -993,6 +1055,7 @@ const notifyParent = (type: string, message?: string) => {
    ```
 
 2. **Remover polling + manter apenas postMessage**
+
    ```typescript
    // ml-connection-tab.tsx, remover checkClosed interval
    // Após receber postMessage, não aguardar polling
@@ -1008,6 +1071,7 @@ const notifyParent = (type: string, message?: string) => {
 ### Priority 2 (⚠️ Alto - FIX Logo)
 
 4. **Adicionar try/catch em postMessage**
+
    ```typescript
    try {
      window.opener.postMessage({ type, message }, openerOrigin);
@@ -1019,7 +1083,9 @@ const notifyParent = (type: string, message?: string) => {
 5. **Registrar console.log para debug**
    ```typescript
    console.log(`[Callback] Origin do callback: ${window.location.origin}`);
-   console.log(`[Callback] Origin do opener: ${window.opener?.location.origin}`);
+   console.log(
+     `[Callback] Origin do opener: ${window.opener?.location.origin}`,
+   );
    console.log(`[PostMessage] Enviando para origin: ${openerOrigin}`);
    ```
 
@@ -1046,18 +1112,21 @@ const notifyParent = (type: string, message?: string) => {
 ## 📝 RESUMO FINAL
 
 ### ✅ O que FUNCIONARÁ:
+
 - ✅ OAuth básico em dev (localhost)
 - ✅ Headers `email` são recebidos corretamente
 - ✅ Backend processa code/state corretamente
 - ✅ Tokens são salvos no banco de dados
 
 ### ❌ O que NÃO FUNCIONARÁ:
+
 - ❌ OAuth em produção (com ngrok) - postMessage falha
 - ❌ Timing de fetchStatus() - race condition
 - ❌ Multi-chamadas simultâneas - sem debouncing
 - ❌ Recuperação de erros - sem retry
 
 ### 🔧 Ações Recomendadas Imediatas:
+
 1. Corrigir targetOrigin → usar `window.opener.location.origin`
 2. Remover polling → manter apenas postMessage
 3. Adicionar debouncing → máx 1 chamada/segundo

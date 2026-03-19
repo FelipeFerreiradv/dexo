@@ -9,6 +9,7 @@
 **Arquivo:** [app/integracoes/mercado-livre/callback/page.tsx](app/integracoes/mercado-livre/callback/page.tsx#L74)
 
 **Problema:**
+
 ```typescript
 // ❌ ERRADO: Usa origin do callback, não do opener
 window.opener.postMessage({ type, message }, window.location.origin);
@@ -17,6 +18,7 @@ window.opener.postMessage({ type, message }, window.location.origin);
 Se callback está em `https://abc123.ngrok-free.app` e opener em `http://localhost:3000`, postMessage falha.
 
 **Solução:**
+
 ```typescript
 // ✅ CORRETO: Usar origin do opener
 const openerOrigin = new URL(window.opener.location.href).origin;
@@ -29,19 +31,24 @@ window.opener.postMessage({ type, message }, "*");
 **Implementação Completa:**
 
 Substituir função `notifyParent`:
+
 ```typescript
 // Notifica janela pai (opener) sobre resultado
 const notifyParent = (type: string, message?: string) => {
   try {
-    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+    if (
+      typeof window !== "undefined" &&
+      window.opener &&
+      !window.opener.closed
+    ) {
       // ✅ NOVO: Usar origin do opener ao invés de location.origin
       const openerOrigin = new URL(window.opener.location.href).origin;
-      
+
       window.opener.postMessage(
         { type, message, timestamp: Date.now() },
-        openerOrigin  // ✅ Será "http://localhost:3000" quando opener está lá
+        openerOrigin, // ✅ Será "http://localhost:3000" quando opener está lá
       );
-      
+
       console.log(`[Callback] ✅ postMessage enviado para ${openerOrigin}`);
     } else {
       console.warn("[Callback] ⚠️ Popup opener não disponível ou fechado");
@@ -59,13 +66,14 @@ const notifyParent = (type: string, message?: string) => {
 **Arquivo:** [app/integracoes/mercado-livre/components/ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx#L155-L185)
 
 **Problema:**
+
 ```typescript
 // ❌ ERRADO: Polling que causa race condition
 const checkClosed = setInterval(() => {
   if (popup.closed) {
     clearInterval(checkClosed);
     setIsConnecting(false);
-    fetchStatus();  // 🔴 Chamada duplicada
+    fetchStatus(); // 🔴 Chamada duplicada
   }
 }, 500);
 ```
@@ -78,6 +86,7 @@ postMessage é mais rápido (50-100ms) que polling (500ms). Remover polling, man
 **Implementação Completa:**
 
 Substituir `handleConnect`:
+
 ```typescript
 const handleConnect = async () => {
   const userEmail = session?.user?.email;
@@ -92,17 +101,14 @@ const handleConnect = async () => {
 
   try {
     // 1. Obter URL de autenticação do backend
-    const response = await fetch(
-      `${getApiBaseUrl()}/marketplace/ml/auth`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          email: userEmail,
-        },
-        body: JSON.stringify({}),
+    const response = await fetch(`${getApiBaseUrl()}/marketplace/ml/auth`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        email: userEmail,
       },
-    );
+      body: JSON.stringify({}),
+    });
 
     if (!response.ok) {
       const data = await response.json();
@@ -127,21 +133,23 @@ const handleConnect = async () => {
     // ✅ NOVO: RemoveR polling, deixar apenas listener de postMessage
     // ❌ REMOVIDO: const checkClosed = setInterval(...)
     // ❌ REMOVIDO: setTimeout de timeout
-    
+
     // Fallback timeout (apenas para segurança, se postMessage falhar)
-    const timeoutId = setTimeout(() => {
-      if (!popup.closed) {
-        popup.close();
-      }
-      setIsConnecting(false);
-    }, 5 * 60 * 1000);  // 5 minutos
+    const timeoutId = setTimeout(
+      () => {
+        if (!popup.closed) {
+          popup.close();
+        }
+        setIsConnecting(false);
+      },
+      5 * 60 * 1000,
+    ); // 5 minutos
 
     // Aguardar postMessage listener notificar sucesso
     // O listener é definido no useEffect abaixo e irá:
     // 1. clearTimeout(timeoutId)
     // 2. setIsConnecting(false)
     // 3. fetchStatus()
-    
   } catch (err) {
     setIsConnecting(false);
     setError(err instanceof Error ? err.message : "Erro ao conectar");
@@ -156,6 +164,7 @@ const handleConnect = async () => {
 **Arquivo:** [app/integracoes/mercado-livre/components/ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx#L48-L80)
 
 **Problema:**
+
 ```typescript
 // ❌ ERRADO: Sem debouncing, chamado 2-3x em rápida sucessão
 const fetchStatus = useCallback(async () => {
@@ -172,6 +181,7 @@ Usar debouncing (máximo 1 chamada a cada 1000ms) com `useDebouncedCallback`.
 **Implementação Completa:**
 
 Opção 1 (com biblioteca useDebounce):
+
 ```typescript
 import { useDebouncedCallback } from "use-debounce";
 
@@ -184,14 +194,11 @@ const fetchStatus = useDebouncedCallback(
     setError(null);
 
     try {
-      const response = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/status`,
-        {
-          headers: {
-            email: session.user.email,
-          },
+      const response = await fetch(`${getApiBaseUrl()}/marketplace/ml/status`, {
+        headers: {
+          email: session.user.email,
         },
-      );
+      });
 
       if (!response.ok) {
         const data = await response.json();
@@ -201,11 +208,10 @@ const fetchStatus = useDebouncedCallback(
       const data: ConnectionStatus = await response.json();
       setStatus(data);
 
-      const accRes = await fetch(
-        `${getApiBaseUrl()}/marketplace/ml/accounts`,
-        { headers: { email: session.user.email } },
-      );
-      
+      const accRes = await fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
+        headers: { email: session.user.email },
+      });
+
       if (accRes.ok) {
         const accData = await accRes.json();
         setAccounts(Array.isArray(accData.accounts) ? accData.accounts : []);
@@ -218,11 +224,12 @@ const fetchStatus = useDebouncedCallback(
       setIsLoading(false);
     }
   },
-  1000  // 1000ms debounce
+  1000, // 1000ms debounce
 );
 ```
 
 Opção 2 (sem biblioteca, usando useRef):
+
 ```typescript
 const lastFetchRef = useRef<number>(0);
 const debounceDelayMs = 1000;
@@ -230,15 +237,15 @@ const debounceDelayMs = 1000;
 const fetchStatus = useCallback(async () => {
   const now = Date.now();
   const timeSinceLastFetch = now - lastFetchRef.current;
-  
+
   // ✅ Evita chamadas muito próximas
   if (timeSinceLastFetch < debounceDelayMs) {
     console.log(
-      `[fetchStatus] Debounced (${debounceDelayMs - timeSinceLastFetch}ms mais)`
+      `[fetchStatus] Debounced (${debounceDelayMs - timeSinceLastFetch}ms mais)`,
     );
     return;
   }
-  
+
   lastFetchRef.current = now;
 
   if (!session?.user?.email) return;
@@ -254,6 +261,7 @@ const fetchStatus = useCallback(async () => {
 ```
 
 **Instalação (se usar opção 1):**
+
 ```bash
 npm install use-debounce
 ```
@@ -269,20 +277,25 @@ npm install use-debounce
 **Arquivo:** [app/integracoes/mercado-livre/callback/page.tsx](app/integracoes/mercado-livre/callback/page.tsx)
 
 **Melhoramento:**
+
 ```typescript
 const notifyParent = (type: string, message?: string) => {
   try {
-    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+    if (
+      typeof window !== "undefined" &&
+      window.opener &&
+      !window.opener.closed
+    ) {
       const openerOrigin = new URL(window.opener.location.href).origin;
-      
+
       // ✅ Adicionar logging
       console.log(
-        `[Callback] Enviando ${type} para ${openerOrigin} (callback origin: ${window.location.origin})`
+        `[Callback] Enviando ${type} para ${openerOrigin} (callback origin: ${window.location.origin})`,
       );
-      
+
       window.opener.postMessage(
         { type, message, timestamp: Date.now() },
-        openerOrigin
+        openerOrigin,
       );
     } else {
       console.warn("[Callback] Opener não está disponível");
@@ -302,19 +315,20 @@ const notifyParent = (type: string, message?: string) => {
 **Arquivo:** [app/integracoes/mercado-livre/components/ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx)
 
 **Adicionar:**
+
 ```typescript
 const handleConnect = async () => {
   // ... código existente
-  
+
   console.log(
     `[MLConnectionTab] Iniciando OAuth\n` +
-    `  Frontend Origin: ${window.location.origin}\n` +
-    `  Popup será redirecionado para ML\n` +
-    `  ML redirecionará para: ${process.env.NEXT_PUBLIC_API_URL}/marketplace/ml/callback`
+      `  Frontend Origin: ${window.location.origin}\n` +
+      `  Popup será redirecionado para ML\n` +
+      `  ML redirecionará para: ${process.env.NEXT_PUBLIC_API_URL}/marketplace/ml/callback`,
   );
-  
+
   const popup = window.open(authUrl, "ml-oauth", "...");
-  
+
   // ... resto do código
 };
 
@@ -323,15 +337,15 @@ useEffect(() => {
   const handleMessage = (event: MessageEvent) => {
     console.log(
       `[MLConnectionTab] postMessage recebido\n` +
-      `  Origin: ${event.origin}\n` +
-      `  Current Origin: ${window.location.origin}\n` +
-      `  Type: ${event.data?.type}\n` +
-      `  Message: ${event.data?.message}`
+        `  Origin: ${event.origin}\n` +
+        `  Current Origin: ${window.location.origin}\n` +
+        `  Type: ${event.data?.type}\n` +
+        `  Message: ${event.data?.message}`,
     );
-    
+
     // ... resto do código
   };
-  
+
   window.addEventListener("message", handleMessage);
   return () => window.removeEventListener("message", handleMessage);
 }, [fetchStatus]);
@@ -344,34 +358,34 @@ useEffect(() => {
 **Arquivo:** [app/integracoes/mercado-livre/components/ml-connection-tab.tsx](app/integracoes/mercado-livre/components/ml-connection-tab.tsx#L211-L230)
 
 **Melhoramento:**
+
 ```typescript
 useEffect(() => {
   const handleMessage = (event: MessageEvent) => {
     // ✅ Validar origem com mais detalhes
-    const isLocalhost = event.origin.includes("localhost") || 
-                        event.origin.includes("127.0.0.1");
+    const isLocalhost =
+      event.origin.includes("localhost") || event.origin.includes("127.0.0.1");
     const isSameOrigin = event.origin === window.location.origin;
-    
+
     if (!isLocalhost && !isSameOrigin) {
       console.warn(
-        `[MLConnectionTab] postMessage rejeitado de origem desconhecida: ${event.origin}`
+        `[MLConnectionTab] postMessage rejeitado de origem desconhecida: ${event.origin}`,
       );
       return;
     }
 
     console.log(
-      `[MLConnectionTab] postMessage válido recebido: ${event.data?.type}`
+      `[MLConnectionTab] postMessage válido recebido: ${event.data?.type}`,
     );
 
     if (event.data?.type === "ML_OAUTH_SUCCESS") {
       setIsConnecting(false);
-      setError(null);  // ✅ Limpar erro anterior
-      
+      setError(null); // ✅ Limpar erro anterior
+
       // ✅ Pequeno delay para garantir dados salvos no backend
       setTimeout(() => {
         fetchStatus();
       }, 500);
-      
     } else if (event.data?.type === "ML_OAUTH_ERROR") {
       setIsConnecting(false);
       setError(event.data.message || "Erro na autenticação");
@@ -395,12 +409,14 @@ useEffect(() => {
 **Arquivo:** [app/middlewares/auth.middleware.ts](app/middlewares/auth.middleware.ts)
 
 **Problema:**
+
 ```typescript
 // ❌ MENOS SEGURO: email é PII (Personally Identifiable Information)
 const apiEmail = request.headers["email"];
 ```
 
 **Solução (futuro):**
+
 ```typescript
 // ✅ MAIS SEGURO: Usar JWT Bearer token
 const authHeader = request.headers.authorization;
@@ -419,6 +435,7 @@ try {
 ```
 
 **Frontend (futuro):**
+
 ```typescript
 // Obter token de NextAuth
 const session = await getServerSession(authOptions);
@@ -525,16 +542,17 @@ APÓS CORREÇÃO:
 
 ## RESUMO DAS ALTERAÇÕES
 
-| Arquivo | Linhas | Tipo | Severidade |
-|---------|--------|------|-----------|
-| `callback/page.tsx` | 74 | Lógica | 🔴 CRÍTICO |
-| `ml-connection-tab.tsx` | 155-185 | Lógica | 🔴 CRÍTICO |
-| `ml-connection-tab.tsx` | 48-80 | Feature | 🔴 CRÍTICO |
-| `callback/page.tsx` | 70-80 | Logs | ⚠️ ALTO |
-| `ml-connection-tab.tsx` | 211-230 | Feature | ⚠️ ALTO |
-| Various | - | JWT Migration | 🟡 MÉDIO |
+| Arquivo                 | Linhas  | Tipo          | Severidade |
+| ----------------------- | ------- | ------------- | ---------- |
+| `callback/page.tsx`     | 74      | Lógica        | 🔴 CRÍTICO |
+| `ml-connection-tab.tsx` | 155-185 | Lógica        | 🔴 CRÍTICO |
+| `ml-connection-tab.tsx` | 48-80   | Feature       | 🔴 CRÍTICO |
+| `callback/page.tsx`     | 70-80   | Logs          | ⚠️ ALTO    |
+| `ml-connection-tab.tsx` | 211-230 | Feature       | ⚠️ ALTO    |
+| Various                 | -       | JWT Migration | 🟡 MÉDIO   |
 
 **Tempo estimado:**
+
 - Implementação Priority 1: 30-45 minutos
 - Testing: 20-30 minutos
 - Priority 2: 15-20 minutos

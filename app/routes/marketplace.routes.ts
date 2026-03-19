@@ -31,8 +31,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // userId vem da sessÃ£o (garantido pelo authMiddleware)
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         // Gerar URL de autorizaÃ§Ã£o (passa userId para associar no callback)
         const { authUrl, state } = MarketplaceUseCase.initiateOAuth(userId);
@@ -61,12 +64,25 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     Querystring: { code?: string; state?: string };
     Reply: { success: boolean; message: string };
   }>("/ml/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    // Detectar se é um redirect do browser (vindo do Mercado Livre) ou chamada da API (fetch)
+    const acceptHeader = ((request.headers.accept as string) || "").toString();
+    const isBrowserRedirect = acceptHeader.includes("text/html");
+    const frontendUrl =
+      process.env.NEXTAUTH_URL ||
+      process.env.CORS_ORIGIN ||
+      "http://localhost:3000";
+
     try {
       const code = (request.query as any).code as string | undefined;
       const state = (request.query as any).state as string | undefined;
 
       // Validar parÃ¢metros obrigatÃ³rios
       if (!code || !state) {
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/mercado-livre/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+          );
+        }
         return reply.status(400).send({
           error: "ParÃ¢metros invÃ¡lidos",
           message: "code e state sÃ£o obrigatÃ³rios",
@@ -84,6 +100,14 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         userId,
       });
 
+      // Se veio do browser (redirect do ML), redirecionar para a página de callback do frontend
+      // para que o postMessage funcione e o popup feche corretamente
+      if (isBrowserRedirect) {
+        return reply.redirect(
+          `${frontendUrl}/integracoes/mercado-livre/callback?result=success`,
+        );
+      }
+
       return reply.send({
         success: true,
         message: "Conta conectada com sucesso",
@@ -95,6 +119,13 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         },
       });
     } catch (error) {
+      if (isBrowserRedirect) {
+        const errorMsg =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        return reply.redirect(
+          `${frontendUrl}/integracoes/mercado-livre/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+        );
+      }
       return reply.status(500).send({
         error: "Erro ao processar callback",
         message: error instanceof Error ? error.message : "Erro desconhecido",
@@ -103,53 +134,60 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   });
 
   // POST /ml/callback — pode ser OAuth callback (code+state) OU webhook notification (resource+topic+user_id)
-  app.post("/ml/callback", async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body || {}) as Record<string, any>;
-    const query = (request.query || {}) as Record<string, any>;
+  app.post(
+    "/ml/callback",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body || {}) as Record<string, any>;
+      const query = (request.query || {}) as Record<string, any>;
 
-    // --- Webhook notification do Mercado Livre (resource + topic + user_id) ---
-    if (body.resource || body.topic || body.user_id) {
-      // Aceitar webhook silenciosamente (ML espera 200 para parar de reenviar)
-      return reply.status(200).send({ received: true });
-    }
-
-    // --- OAuth callback (code + state) ---
-    try {
-      const code = (body.code as string | undefined) || (query.code as string | undefined);
-      const state = (body.state as string | undefined) || (query.state as string | undefined);
-
-      if (!code || !state) {
-        return reply.status(400).send({
-          error: "Parâmetros inválidos",
-          message: "code e state são obrigatórios",
-        });
+      // --- Webhook notification do Mercado Livre (resource + topic + user_id) ---
+      if (body.resource || body.topic || body.user_id) {
+        // Aceitar webhook silenciosamente (ML espera 200 para parar de reenviar)
+        return reply.status(200).send({ received: true });
       }
 
-      const userId = request.user?.id;
+      // --- OAuth callback (code + state) ---
+      try {
+        const code =
+          (body.code as string | undefined) ||
+          (query.code as string | undefined);
+        const state =
+          (body.state as string | undefined) ||
+          (query.state as string | undefined);
 
-      const account = await MarketplaceUseCase.handleOAuthCallback({
-        code,
-        state,
-        userId,
-      });
+        if (!code || !state) {
+          return reply.status(400).send({
+            error: "Parâmetros inválidos",
+            message: "code e state são obrigatórios",
+          });
+        }
 
-      return reply.send({
-        success: true,
-        message: "Conta conectada com sucesso",
-        account: {
-          id: account.id,
-          platform: account.platform,
-          status: account.status,
-          createdAt: account.createdAt,
-        },
-      });
-    } catch (error) {
-      return reply.status(500).send({
-        error: "Erro ao processar callback",
-        message: error instanceof Error ? error.message : "Erro desconhecido",
-      });
-    }
-  });
+        const userId = request.user?.id;
+
+        const account = await MarketplaceUseCase.handleOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+
+        return reply.send({
+          success: true,
+          message: "Conta conectada com sucesso",
+          account: {
+            id: account.id,
+            platform: account.platform,
+            status: account.status,
+            createdAt: account.createdAt,
+          },
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao processar callback",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
 
   /**
    * GET /marketplace/ml/status
@@ -171,8 +209,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         // Obter status da conexÃ£o
         const statusData = await MarketplaceUseCase.getAccountStatus(
@@ -439,12 +480,17 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
         const result = await SyncUseCase.importMLItems(userId, accountId);
 
-        await SystemLogService.logSyncComplete(userId, "IMPORT", "MercadoLivre", {
-          totalItems: result.totalItems,
-          linkedItems: result.linkedItems,
-          unlinkedItems: result.unlinkedItems,
-          errors: result.errors.length,
-        });
+        await SystemLogService.logSyncComplete(
+          userId,
+          "IMPORT",
+          "MercadoLivre",
+          {
+            totalItems: result.totalItems,
+            linkedItems: result.linkedItems,
+            unlinkedItems: result.unlinkedItems,
+            errors: result.errors.length,
+          },
+        );
 
         return reply.send({
           success: true,
@@ -500,11 +546,16 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           accountIds,
         );
 
-        await SystemLogService.logSyncComplete(userId, "FULL_SYNC", "MercadoLivre", {
-          total: result.total,
-          successful: result.successful,
-          failed: result.failed,
-        });
+        await SystemLogService.logSyncComplete(
+          userId,
+          "FULL_SYNC",
+          "MercadoLivre",
+          {
+            total: result.total,
+            successful: result.successful,
+            failed: result.failed,
+          },
+        );
 
         return reply.send({
           success: result.failed === 0,
@@ -641,9 +692,13 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
-        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
         const result = await SyncUseCase.importShopeeItems(userId, accountId);
 
@@ -697,14 +752,21 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         // Buscar contas do marketplace
         const accounts =
           accountIds && accountIds.length > 0
             ? await prisma.marketplaceAccount.findMany({
-                where: { id: { in: accountIds }, userId, platform: Platform.SHOPEE },
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.SHOPEE,
+                },
               })
             : await MarketplaceRepository.findAllByUserIdAndPlatform(
                 userId,
@@ -778,8 +840,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         const result = await SyncUseCase.syncAllStock(
           userId,
@@ -834,8 +899,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         const { productId } = request.params as { productId: string };
 
@@ -890,8 +958,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // userId vem da sessÃ£o (garantido pelo authMiddleware)
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
 
         // Gerar URL de autorizaÃ§Ã£o
         const { authUrl, state } =
@@ -949,7 +1020,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         if (!userId) {
           return reply.status(400).send({
             error: "ParÃ¢metros invÃ¡lidos",
-            message: "state (userId) Ã© obrigatÃ³rio para processar callback Shopee",
+            message:
+              "state (userId) Ã© obrigatÃ³rio para processar callback Shopee",
           });
         }
 
@@ -1005,7 +1077,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           ((request.query as any)?.accountId
             ? [(request.query as any).accountId as string]
             : undefined);
-        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
         // Obter status da conexÃ£o
         const statusData = await MarketplaceUseCase.getShopeeAccountStatus(
@@ -1040,9 +1113,13 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
-        const accountIds = ((request.body as any)?.accountIds as string[] | undefined) ??
-          ((request.query as any)?.accountId ? [(request.query as any).accountId as string] : undefined);
-        const accountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
         // Desconectar marketplace
         await MarketplaceUseCase.disconnectShopeeAccount(userId, accountId);
@@ -1060,10 +1137,3 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     },
   );
 }
-
-
-
-
-
-
-
