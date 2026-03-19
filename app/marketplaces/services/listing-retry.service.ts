@@ -275,20 +275,33 @@ export class ListingRetryService {
           condition: product.quality === "NOVO" ? "new" : "used",
           pictures: await (async () => {
             if (!product.imageUrl) return [];
-            try {
-              const { join } = await import("path");
-              const { readFile } = await import("fs/promises");
-              let imageBuffer: Buffer | null = null;
+            // Coletar todas as URLs de imagens
+            const allImageUrls: string[] = [];
+            if (
+              (product as any).imageUrls &&
+              (product as any).imageUrls.length > 0
+            ) {
+              allImageUrls.push(...(product as any).imageUrls);
+            } else {
+              allImageUrls.push(product.imageUrl);
+            }
 
-              const imgUrl = product.imageUrl.startsWith("http")
-                ? product.imageUrl.replace(
+            const { join } = await import("path");
+            const { readFile } = await import("fs/promises");
+            const pics: Array<{ id: string } | { source: string }> = [];
+
+            for (const rawUrl of allImageUrls) {
+              const imgUrl = rawUrl.startsWith("http")
+                ? rawUrl.replace(
                     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
                     backendBase,
                   )
-                : `${backendBase}${product.imageUrl}`;
+                : `${backendBase}${rawUrl}`;
 
               const urlPath = new URL(imgUrl).pathname;
               const fileName = urlPath.split("/").pop() || "image.jpg";
+
+              let imageBuffer: Buffer | null = null;
 
               if (urlPath.startsWith("/uploads/")) {
                 const localPath = join(process.cwd(), "public", urlPath);
@@ -300,39 +313,65 @@ export class ListingRetryService {
               }
 
               if (!imageBuffer) {
-                const axiosLib = (await import("axios")).default;
-                const resp = await axiosLib.get(imgUrl, {
-                  responseType: "arraybuffer",
-                  timeout: 10000,
-                });
-                imageBuffer = Buffer.from(resp.data);
+                try {
+                  const axiosLib = (await import("axios")).default;
+                  const resp = await axiosLib.get(imgUrl, {
+                    responseType: "arraybuffer",
+                    timeout: 10000,
+                  });
+                  imageBuffer = Buffer.from(resp.data);
+                } catch {
+                  // buffer fetch failed
+                }
               }
 
-              const picResult = await MLApiService.uploadPicture(
-                account.accessToken,
-                imageBuffer,
-                fileName,
-              );
-              console.log(
-                `[ListingRetryService] Imagem enviada ao ML: pictureId=${picResult.id}`,
-              );
-              return [{ id: picResult.id }];
-            } catch (picErr) {
+              // Estratégia 1: Upload binário
+              if (imageBuffer) {
+                try {
+                  const picResult = await MLApiService.uploadPicture(
+                    account.accessToken,
+                    imageBuffer,
+                    fileName,
+                  );
+                  console.log(
+                    `[ListingRetryService] Imagem enviada ao ML: pictureId=${picResult.id}`,
+                  );
+                  pics.push({ id: picResult.id });
+                  continue;
+                } catch (picErr) {
+                  console.warn(
+                    `[ListingRetryService] Upload binário falhou:`,
+                    picErr instanceof Error ? picErr.message : String(picErr),
+                  );
+                }
+              }
+
+              // Estratégia 2: Upload via source URL síncrono
+              try {
+                const picResult = await MLApiService.uploadPictureFromUrl(
+                  account.accessToken,
+                  imgUrl,
+                );
+                console.log(
+                  `[ListingRetryService] Imagem enviada via URL ao ML: pictureId=${picResult.id}`,
+                );
+                pics.push({ id: picResult.id });
+                continue;
+              } catch (urlErr) {
+                console.warn(
+                  `[ListingRetryService] Upload via URL falhou:`,
+                  urlErr instanceof Error ? urlErr.message : String(urlErr),
+                );
+              }
+
+              // Estratégia 3: source URL no payload (fallback)
               console.warn(
-                `[ListingRetryService] Falha upload imagem, usando source URL:`,
-                picErr instanceof Error ? picErr.message : String(picErr),
+                `[ListingRetryService] Usando source URL como fallback: ${imgUrl}`,
               );
-              return [
-                {
-                  source: product.imageUrl.startsWith("http")
-                    ? product.imageUrl.replace(
-                        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                        backendBase,
-                      )
-                    : `${backendBase}${product.imageUrl}`,
-                },
-              ];
+              pics.push({ source: imgUrl });
             }
+
+            return pics.length > 0 ? pics : [];
           })(),
           attributes: (() => {
             const yearNum = Number(product.year);

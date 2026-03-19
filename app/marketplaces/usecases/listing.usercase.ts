@@ -824,7 +824,15 @@ export class ListingUseCase {
                 );
               }
 
-              return { imageBuffer, fileName, rawUrl };
+              // Construir URL pública para fallback via uploadPictureFromUrl
+              const publicUrl = rawUrl.startsWith("http")
+                ? rawUrl.replace(
+                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                    backendBase,
+                  )
+                : `${backendBase}${rawUrl}`;
+
+              return { imageBuffer, fileName, rawUrl, publicUrl };
             }),
           );
 
@@ -835,11 +843,18 @@ export class ListingUseCase {
             const rawUrl = allImageUrls[i];
 
             if (result.status === "fulfilled") {
+              const {
+                imageBuffer: imgBuf,
+                fileName: imgName,
+                publicUrl,
+              } = result.value;
+
+              // Estratégia 1: Upload binário direto (form-data com getBuffer)
               try {
                 const picResult = await MLApiService.uploadPicture(
                   acc.accessToken,
-                  result.value.imageBuffer,
-                  result.value.fileName,
+                  imgBuf,
+                  imgName,
                 );
                 console.log(
                   `[ListingUseCase] Imagem enviada diretamente ao ML: pictureId=${picResult.id}`,
@@ -848,36 +863,38 @@ export class ListingUseCase {
                 continue;
               } catch (uploadErr) {
                 console.warn(
-                  `[ListingUseCase] Falha no upload da imagem ${rawUrl} ao ML (tentativa 1):`,
+                  `[ListingUseCase] Upload binário falhou para ${rawUrl}:`,
                   uploadErr instanceof Error
                     ? uploadErr.message
                     : String(uploadErr),
                 );
-                // Retry: tentar novamente com .jpg forçado (ML aceita JPEG mais consistentemente)
-                try {
-                  const retryFileName = result.value.fileName.replace(
-                    /\.[^.]+$/,
-                    ".jpg",
-                  );
-                  const picRetry = await MLApiService.uploadPicture(
-                    acc.accessToken,
-                    result.value.imageBuffer,
-                    retryFileName,
-                  );
-                  console.log(
-                    `[ListingUseCase] Imagem enviada ao ML no retry (como .jpg): pictureId=${picRetry.id}`,
-                  );
-                  picturesArray.push({ id: picRetry.id });
-                  continue;
-                } catch (retryErr) {
-                  console.warn(
-                    `[ListingUseCase] Retry da imagem ${rawUrl} também falhou:`,
-                    retryErr instanceof Error
-                      ? retryErr.message
-                      : String(retryErr),
-                  );
-                }
               }
+
+              // Estratégia 2: Upload via source URL síncrono (ML baixa e retorna picture ID)
+              try {
+                const picResult = await MLApiService.uploadPictureFromUrl(
+                  acc.accessToken,
+                  publicUrl,
+                );
+                console.log(
+                  `[ListingUseCase] Imagem enviada via URL ao ML: pictureId=${picResult.id}`,
+                );
+                picturesArray.push({ id: picResult.id });
+                continue;
+              } catch (urlUploadErr) {
+                console.warn(
+                  `[ListingUseCase] Upload via URL também falhou para ${rawUrl}:`,
+                  urlUploadErr instanceof Error
+                    ? urlUploadErr.message
+                    : String(urlUploadErr),
+                );
+              }
+
+              // Estratégia 3: source URL no payload (assíncrono - menos confiável)
+              console.warn(
+                `[ListingUseCase] Usando source URL como fallback final: ${publicUrl}`,
+              );
+              picturesArray.push({ source: publicUrl });
             } else {
               console.warn(
                 `[ListingUseCase] Falha ao preparar imagem ${rawUrl}:`,
@@ -885,19 +902,27 @@ export class ListingUseCase {
                   ? result.reason.message
                   : String(result.reason),
               );
-            }
 
-            // Fallback final: source URL (menos confiável, pode causar image_download_pending)
-            const fallbackUrl = rawUrl.startsWith("http")
-              ? rawUrl.replace(
-                  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                  backendBase,
-                )
-              : `${backendBase}${rawUrl}`;
-            console.warn(
-              `[ListingUseCase] Usando source URL como fallback final: ${fallbackUrl}`,
-            );
-            picturesArray.push({ source: fallbackUrl });
+              // Mesmo sem buffer, tentar upload via URL
+              const fallbackUrl = rawUrl.startsWith("http")
+                ? rawUrl.replace(
+                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                    backendBase,
+                  )
+                : `${backendBase}${rawUrl}`;
+              try {
+                const picResult = await MLApiService.uploadPictureFromUrl(
+                  acc.accessToken,
+                  fallbackUrl,
+                );
+                console.log(
+                  `[ListingUseCase] Imagem enviada via URL (após falha buffer) ao ML: pictureId=${picResult.id}`,
+                );
+                picturesArray.push({ id: picResult.id });
+              } catch {
+                picturesArray.push({ source: fallbackUrl });
+              }
+            }
           }
 
           if (picturesArray.length === 0) {

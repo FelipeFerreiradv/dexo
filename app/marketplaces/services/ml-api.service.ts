@@ -874,19 +874,48 @@ export class MLApiService {
   }
 
   /**
-   * Faz upload de uma imagem diretamente para o ML e retorna o picture ID.
-   * Isso é mais confiável do que enviar source URL, pois elimina dependência
-   * de o ML conseguir baixar a imagem do nosso servidor.
+   * Detecta o content type real de uma imagem a partir dos magic bytes do buffer.
+   * Fallback para extensão do arquivo se os bytes não forem reconhecidos.
    */
-  static async uploadPicture(
-    accessToken: string,
-    imageBuffer: Buffer,
+  private static detectImageContentType(
+    buffer: Buffer,
     fileName: string,
-  ): Promise<{ id: string }> {
-    const FormData = (await import("form-data")).default;
-    const form = new FormData();
+  ): string {
+    if (
+      buffer.length >= 3 &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff
+    )
+      return "image/jpeg";
+    if (
+      buffer.length >= 4 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47
+    )
+      return "image/png";
+    if (
+      buffer.length >= 3 &&
+      buffer[0] === 0x47 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46
+    )
+      return "image/gif";
+    if (
+      buffer.length >= 12 &&
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50
+    )
+      return "image/webp";
 
-    // Detectar content type a partir da extensão do arquivo
     const ext = fileName.split(".").pop()?.toLowerCase() || "jpg";
     const mimeMap: Record<string, string> = {
       jpg: "image/jpeg",
@@ -896,26 +925,98 @@ export class MLApiService {
       gif: "image/gif",
       bmp: "image/bmp",
     };
-    const contentType = mimeMap[ext] || "image/jpeg";
+    return mimeMap[ext] || "image/jpeg";
+  }
+
+  /**
+   * Faz upload de uma imagem diretamente para o ML e retorna o picture ID.
+   * Usa form.getBuffer() para evitar problemas de serialização do axios 1.x
+   * com o pacote form-data (stream vs buffer).
+   */
+  static async uploadPicture(
+    accessToken: string,
+    imageBuffer: Buffer,
+    fileName: string,
+  ): Promise<{ id: string }> {
+    const FormData = (await import("form-data")).default;
+    const form = new FormData();
+
+    const contentType = this.detectImageContentType(imageBuffer, fileName);
 
     form.append("file", imageBuffer, {
       filename: fileName,
       contentType,
     });
 
-    const response = await axios.post(
-      `${ML_CONSTANTS.API_URL}/pictures/items/upload`,
-      form,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          ...form.getHeaders(),
-        },
-        maxContentLength: 10 * 1024 * 1024,
-        maxBodyLength: 10 * 1024 * 1024,
-      },
-    );
+    // Usar getBuffer() + getHeaders() para enviar bytes raw e evitar que o
+    // axios 1.x tente re-serializar o stream do form-data (causa 400 no ML).
+    const formBuffer = form.getBuffer();
+    const formHeaders = form.getHeaders();
 
-    return { id: response.data.id };
+    try {
+      const response = await axios.post(
+        `${ML_CONSTANTS.API_URL}/pictures/items/upload`,
+        formBuffer,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            ...formHeaders,
+            "Content-Length": String(formBuffer.length),
+          },
+          maxContentLength: 10 * 1024 * 1024,
+          maxBodyLength: 10 * 1024 * 1024,
+        },
+      );
+
+      return { id: response.data.id };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const detail = error.response?.data
+          ? JSON.stringify(error.response.data)
+          : error.message;
+        console.error(
+          `[ML API] uploadPicture failed (${error.response?.status}): ${detail}`,
+        );
+        throw new Error(`Erro ao enviar imagem ao ML: ${detail}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Faz upload de uma imagem ao ML via source URL (ML baixa a imagem).
+   * Retorna o picture ID de forma síncrona (diferente do source no payload do item,
+   * que é assíncrono e pode causar image_download_pending).
+   */
+  static async uploadPictureFromUrl(
+    accessToken: string,
+    sourceUrl: string,
+  ): Promise<{ id: string }> {
+    try {
+      const response = await axios.post(
+        `${ML_CONSTANTS.API_URL}/pictures`,
+        { source: sourceUrl },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15000,
+        },
+      );
+
+      return { id: response.data.id };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const detail = error.response?.data
+          ? JSON.stringify(error.response.data)
+          : error.message;
+        console.error(
+          `[ML API] uploadPictureFromUrl failed (${error.response?.status}): ${detail}`,
+        );
+        throw new Error(`Erro ao enviar imagem (URL) ao ML: ${detail}`);
+      }
+      throw error;
+    }
   }
 }
