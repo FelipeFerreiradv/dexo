@@ -85,7 +85,8 @@ export interface MLItemCreatePayload {
   condition: string;
   family_name?: string; // exigido por algumas categorias (autopeÃ§as)
   pictures: Array<{
-    source: string;
+    source?: string;
+    id?: string;
   }>;
   seller_custom_field?: string;
   attributes?: Array<{

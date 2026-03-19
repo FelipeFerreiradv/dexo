@@ -872,4 +872,37 @@ export class MLApiService {
       throw error;
     }
   }
+
+  /**
+   * Faz upload de uma imagem diretamente para o ML e retorna o picture ID.
+   * Isso é mais confiável do que enviar source URL, pois elimina dependência
+   * de o ML conseguir baixar a imagem do nosso servidor.
+   */
+  static async uploadPicture(
+    accessToken: string,
+    imageBuffer: Buffer,
+    fileName: string,
+  ): Promise<{ id: string }> {
+    const FormData = (await import("form-data")).default;
+    const form = new FormData();
+    form.append("file", imageBuffer, {
+      filename: fileName,
+      contentType: "image/jpeg",
+    });
+
+    const response = await axios.post(
+      `${ML_CONSTANTS.API_URL}/pictures/items/upload`,
+      form,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...form.getHeaders(),
+        },
+        maxContentLength: 10 * 1024 * 1024,
+        maxBodyLength: 10 * 1024 * 1024,
+      },
+    );
+
+    return { id: response.data.id };
+  }
 }

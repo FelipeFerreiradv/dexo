@@ -273,8 +273,56 @@ export class ListingRetryService {
           buying_mode: "buy_it_now",
           listing_type_id: "bronze",
           condition: product.quality === "NOVO" ? "new" : "used",
-          pictures: product.imageUrl
-            ? [
+          pictures: await (async () => {
+            if (!product.imageUrl) return [];
+            try {
+              const { join } = await import("path");
+              const { readFile } = await import("fs/promises");
+              let imageBuffer: Buffer | null = null;
+
+              const imgUrl = product.imageUrl.startsWith("http")
+                ? product.imageUrl.replace(
+                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                    backendBase,
+                  )
+                : `${backendBase}${product.imageUrl}`;
+
+              const urlPath = new URL(imgUrl).pathname;
+              const fileName = urlPath.split("/").pop() || "image.jpg";
+
+              if (urlPath.startsWith("/uploads/")) {
+                const localPath = join(process.cwd(), "public", urlPath);
+                try {
+                  imageBuffer = await readFile(localPath);
+                } catch {
+                  // fallback to HTTP below
+                }
+              }
+
+              if (!imageBuffer) {
+                const axiosLib = (await import("axios")).default;
+                const resp = await axiosLib.get(imgUrl, {
+                  responseType: "arraybuffer",
+                  timeout: 10000,
+                });
+                imageBuffer = Buffer.from(resp.data);
+              }
+
+              const picResult = await MLApiService.uploadPicture(
+                account.accessToken,
+                imageBuffer,
+                fileName,
+              );
+              console.log(
+                `[ListingRetryService] Imagem enviada ao ML: pictureId=${picResult.id}`,
+              );
+              return [{ id: picResult.id }];
+            } catch (picErr) {
+              console.warn(
+                `[ListingRetryService] Falha upload imagem, usando source URL:`,
+                picErr instanceof Error ? picErr.message : String(picErr),
+              );
+              return [
                 {
                   source: product.imageUrl.startsWith("http")
                     ? product.imageUrl.replace(
@@ -283,8 +331,9 @@ export class ListingRetryService {
                       )
                     : `${backendBase}${product.imageUrl}`,
                 },
-              ]
-            : [],
+              ];
+            }
+          })(),
           attributes: (() => {
             const yearNum = Number(product.year);
             const validYear =

@@ -765,34 +765,100 @@ export class ListingUseCase {
       const noTitleWithFamily = this.noTitleWithFamilyName(resolvedCategoryId);
       const forceNoTitleFlow = includeFamilyName && noTitleWithFamily;
 
+      // Upload da imagem diretamente para o ML (mais confiável do que source URL)
+      let picturesArray: MLItemCreatePayload["pictures"];
+      if (product.imageUrl) {
+        try {
+          const imageUrl = (() => {
+            const backendBase =
+              process.env.APP_BACKEND_URL || "http://localhost:3333";
+            if (product.imageUrl!.startsWith("http")) {
+              return product.imageUrl!.replace(
+                /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                backendBase,
+              );
+            }
+            return `${backendBase}${product.imageUrl}`;
+          })();
+
+          // Tentar ler a imagem do disco local primeiro (mais rápido e confiável)
+          const { join } = await import("path");
+          const { readFile } = await import("fs/promises");
+          let imageBuffer: Buffer | null = null;
+
+          // Extrair nome do arquivo da URL (ex: "51a5473a-df85-4963-8908-4cb1f1a1a45c.jpg")
+          const urlPath = new URL(imageUrl).pathname;
+          const fileName = urlPath.split("/").pop() || "image.jpg";
+
+          if (urlPath.startsWith("/uploads/")) {
+            const localPath = join(process.cwd(), "public", urlPath);
+            try {
+              imageBuffer = await readFile(localPath);
+              console.log(
+                `[ListingUseCase] Imagem lida do disco local: ${localPath} (${imageBuffer.length} bytes)`,
+              );
+            } catch {
+              console.warn(
+                `[ListingUseCase] Imagem não encontrada no disco local: ${localPath}, baixando via HTTP`,
+              );
+            }
+          }
+
+          // Fallback: baixar via HTTP se não estiver no disco local
+          if (!imageBuffer) {
+            const axios = (await import("axios")).default;
+            const resp = await axios.get(imageUrl, {
+              responseType: "arraybuffer",
+              timeout: 10000,
+            });
+            imageBuffer = Buffer.from(resp.data);
+            console.log(
+              `[ListingUseCase] Imagem baixada via HTTP: ${imageUrl} (${imageBuffer.length} bytes)`,
+            );
+          }
+
+          // Upload direto para o ML
+          const picResult = await MLApiService.uploadPicture(
+            acc.accessToken,
+            imageBuffer,
+            fileName,
+          );
+          console.log(
+            `[ListingUseCase] Imagem enviada diretamente ao ML: pictureId=${picResult.id}`,
+          );
+          picturesArray = [{ id: picResult.id }];
+        } catch (picErr) {
+          // Fallback: enviar source URL (comportamento anterior)
+          console.warn(
+            `[ListingUseCase] Falha no upload direto da imagem ao ML, usando source URL como fallback:`,
+            picErr instanceof Error ? picErr.message : String(picErr),
+          );
+          const backendBase =
+            process.env.APP_BACKEND_URL || "http://localhost:3333";
+          const fallbackUrl = product.imageUrl!.startsWith("http")
+            ? product.imageUrl!.replace(
+                /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                backendBase,
+              )
+            : `${backendBase}${product.imageUrl}`;
+          picturesArray = [{ source: fallbackUrl }];
+        }
+      } else {
+        picturesArray = [
+          { source: "https://via.placeholder.com/500x500.png?text=Produto" },
+        ];
+      }
+
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
-        category_id: categoryIdForML, // Categoria obrigatória e validada (leaf)
-        price: product.price, // Usar preço real do produto
+        category_id: categoryIdForML,
+        price: product.price,
         currency_id: currencyId,
-        available_quantity: Math.min(product.stock, 999999), // ML limita quantidade máxima
+        available_quantity: Math.min(product.stock, 999999),
         buying_mode: "buy_it_now",
-        listing_type_id: "bronze", // Usar bronze que pode não exigir pictures
+        listing_type_id: "bronze",
         condition: this.mapQualityToMLCondition(product.quality) || "new",
-        pictures: [
-          {
-            // ML precisa conseguir baixar a imagem; se vier com host localhost, substituímos pelo ngrok/back-end público
-            source: (() => {
-              const backendBase =
-                process.env.APP_BACKEND_URL || "http://localhost:3333";
-              if (!product.imageUrl) {
-                return "https://via.placeholder.com/500x500.png?text=Produto";
-              }
-              if (product.imageUrl.startsWith("http")) {
-                return product.imageUrl.replace(
-                  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                  backendBase,
-                );
-              }
-              return `${backendBase}${product.imageUrl}`;
-            })(),
-          },
-        ],
+        pictures: picturesArray,
         attributes,
         seller_custom_field: product.sku,
         description: {
