@@ -75,6 +75,9 @@ export class MarketplaceUseCase {
       const expiresAt = new Date(Date.now() + tokenData.expiresIn * 1000);
 
       if (existingAccount) {
+        console.log(
+          `[handleOAuthCallback] Updating existing account=${existingAccount.id} externalUserId=${tokenData.externalUserId}`,
+        );
         // Atualizar tokens
         account = await MarketplaceRepository.updateTokens(existingAccount.id, {
           accessToken: tokenData.accessToken,
@@ -90,6 +93,9 @@ export class MarketplaceUseCase {
           );
         }
       } else {
+        console.log(
+          `[handleOAuthCallback] Creating NEW account for userId=${userId} externalUserId=${tokenData.externalUserId}`,
+        );
         // Criar nova conta
         account = await MarketplaceRepository.createAccount({
           userId: userId,
@@ -101,6 +107,32 @@ export class MarketplaceUseCase {
           expiresAt,
         });
       }
+
+      // 6. Desativar contas duplicadas/antigas do mesmo user+platform (exceto a atual)
+      try {
+        const allAccounts =
+          await MarketplaceRepository.findAllByUserIdAndPlatform(
+            userId,
+            Platform.MERCADO_LIVRE,
+          );
+        for (const acc of allAccounts) {
+          if (acc.id !== account.id) {
+            console.log(
+              `[handleOAuthCallback] Deactivating stale account=${acc.id} (keeping ${account.id})`,
+            );
+            await MarketplaceRepository.updateStatus(
+              acc.id,
+              AccountStatus.INACTIVE,
+            );
+          }
+        }
+      } catch (cleanupErr) {
+        console.warn("[handleOAuthCallback] cleanup failed:", cleanupErr);
+      }
+
+      console.log(
+        `[handleOAuthCallback] Done. account=${account.id} expiresAt=${expiresAt}`,
+      );
 
       return account;
     } catch (error) {
@@ -148,6 +180,9 @@ export class MarketplaceUseCase {
       const isExpired = new Date() > account.expiresAt;
 
       if (isExpired) {
+        console.log(
+          `[getAccountStatus] Token EXPIRED for account=${account.id}, trying refresh...`,
+        );
         // Tentar renovar token automaticamente
         try {
           const refreshed = await MLOAuthService.refreshAccessToken(
@@ -166,7 +201,9 @@ export class MarketplaceUseCase {
             message: "Conta conectada (token renovado)",
           };
         } catch (error) {
-          // Token expirou e nÃ£o conseguiu renovar â€” delegate to central handler
+          console.log(
+            `[getAccountStatus] Refresh FAILED for account=${account.id}: ${error instanceof Error ? error.message : error}`,
+          ); // Token expirou e nÃ£o conseguiu renovar â€” delegate to central handler
           await MarketplaceAccountService.handleAuthFailure(account.id, error, {
             userId,
             context: "AUTH_REFRESH",

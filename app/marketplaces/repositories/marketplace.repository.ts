@@ -50,6 +50,7 @@ export class MarketplaceRepository {
           userId,
           platform,
         },
+        orderBy: { updatedAt: "desc" },
       });
 
       return account;
@@ -73,7 +74,7 @@ export class MarketplaceRepository {
           platform,
           status: AccountStatus.ACTIVE,
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: { updatedAt: "desc" },
       });
 
       return account;
@@ -94,7 +95,9 @@ export class MarketplaceRepository {
 
       return accounts;
     } catch (error) {
-      throw new Error(`Erro ao buscar contas do usuÃ¡rio para ${platform}: ${error}`);
+      throw new Error(
+        `Erro ao buscar contas do usuÃ¡rio para ${platform}: ${error}`,
+      );
     }
   }
 
