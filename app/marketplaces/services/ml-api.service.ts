@@ -885,9 +885,22 @@ export class MLApiService {
   ): Promise<{ id: string }> {
     const FormData = (await import("form-data")).default;
     const form = new FormData();
+
+    // Detectar content type a partir da extensão do arquivo
+    const ext = fileName.split(".").pop()?.toLowerCase() || "jpg";
+    const mimeMap: Record<string, string> = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      webp: "image/webp",
+      gif: "image/gif",
+      bmp: "image/bmp",
+    };
+    const contentType = mimeMap[ext] || "image/jpeg";
+
     form.append("file", imageBuffer, {
       filename: fileName,
-      contentType: "image/jpeg",
+      contentType,
     });
 
     const response = await axios.post(

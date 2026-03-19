@@ -848,11 +848,35 @@ export class ListingUseCase {
                 continue;
               } catch (uploadErr) {
                 console.warn(
-                  `[ListingUseCase] Falha no upload da imagem ${rawUrl} ao ML:`,
+                  `[ListingUseCase] Falha no upload da imagem ${rawUrl} ao ML (tentativa 1):`,
                   uploadErr instanceof Error
                     ? uploadErr.message
                     : String(uploadErr),
                 );
+                // Retry: tentar novamente com .jpg forçado (ML aceita JPEG mais consistentemente)
+                try {
+                  const retryFileName = result.value.fileName.replace(
+                    /\.[^.]+$/,
+                    ".jpg",
+                  );
+                  const picRetry = await MLApiService.uploadPicture(
+                    acc.accessToken,
+                    result.value.imageBuffer,
+                    retryFileName,
+                  );
+                  console.log(
+                    `[ListingUseCase] Imagem enviada ao ML no retry (como .jpg): pictureId=${picRetry.id}`,
+                  );
+                  picturesArray.push({ id: picRetry.id });
+                  continue;
+                } catch (retryErr) {
+                  console.warn(
+                    `[ListingUseCase] Retry da imagem ${rawUrl} também falhou:`,
+                    retryErr instanceof Error
+                      ? retryErr.message
+                      : String(retryErr),
+                  );
+                }
               }
             } else {
               console.warn(
@@ -863,13 +887,16 @@ export class ListingUseCase {
               );
             }
 
-            // Fallback individual: source URL
+            // Fallback final: source URL (menos confiável, pode causar image_download_pending)
             const fallbackUrl = rawUrl.startsWith("http")
               ? rawUrl.replace(
                   /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
                   backendBase,
                 )
               : `${backendBase}${rawUrl}`;
+            console.warn(
+              `[ListingUseCase] Usando source URL como fallback final: ${fallbackUrl}`,
+            );
             picturesArray.push({ source: fallbackUrl });
           }
 
