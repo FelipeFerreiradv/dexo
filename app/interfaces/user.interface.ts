@@ -8,6 +8,7 @@ export interface User {
   name?: string | null;
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
+  defaultCostPrice?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -18,6 +19,7 @@ export interface UserCreate {
   password: string;
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
+  defaultCostPrice?: number | null;
   role?: Role;
 }
 
@@ -26,6 +28,7 @@ export interface UserUpdate {
   password?: string;
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
+  defaultCostPrice?: number | null;
   role?: Role;
 }
 

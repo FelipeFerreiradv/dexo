@@ -44,6 +44,7 @@ export interface Product {
 
   // Imagem do produto
   imageUrl?: string;
+  imageUrls?: string[];
 }
 
 import { Platform } from "@prisma/client";
@@ -87,6 +88,7 @@ export interface ProductCreate {
 
   // Imagem do produto (obrigatória)
   imageUrl: string;
+  imageUrls?: string[];
 
   // Opção para criar anúncio no ML automaticamente
   createListing?: boolean;
@@ -137,6 +139,7 @@ export interface ProductUpdate {
 
   // Imagem do produto
   imageUrl?: string;
+  imageUrls?: string[];
 }
 
 export interface ProductUpdateResult {

@@ -767,81 +767,135 @@ export class ListingUseCase {
 
       // Upload da imagem diretamente para o ML (mais confiável do que source URL)
       let picturesArray: MLItemCreatePayload["pictures"];
-      if (product.imageUrl) {
-        try {
-          const imageUrl = (() => {
-            const backendBase =
-              process.env.APP_BACKEND_URL || "http://localhost:3333";
-            if (product.imageUrl!.startsWith("http")) {
-              return product.imageUrl!.replace(
-                /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                backendBase,
-              );
-            }
-            return `${backendBase}${product.imageUrl}`;
-          })();
+      // Coletar todas as URLs de imagens (imageUrls se disponível, ou apenas imageUrl)
+      const allImageUrls: string[] = [];
+      if (product.imageUrls && product.imageUrls.length > 0) {
+        allImageUrls.push(...product.imageUrls);
+      } else if (product.imageUrl) {
+        allImageUrls.push(product.imageUrl);
+      }
 
-          // Tentar ler a imagem do disco local primeiro (mais rápido e confiável)
+      if (allImageUrls.length > 0) {
+        try {
+          const backendBase =
+            process.env.APP_BACKEND_URL || "http://localhost:3333";
+          // Hoisted imports — executados uma única vez antes do loop
           const { join } = await import("path");
           const { readFile } = await import("fs/promises");
-          let imageBuffer: Buffer | null = null;
+          const axios = (await import("axios")).default;
 
-          // Extrair nome do arquivo da URL (ex: "51a5473a-df85-4963-8908-4cb1f1a1a45c.jpg")
-          const urlPath = new URL(imageUrl).pathname;
-          const fileName = urlPath.split("/").pop() || "image.jpg";
+          // Preparar buffers de todas as imagens em paralelo
+          const bufferResults = await Promise.allSettled(
+            allImageUrls.map(async (rawUrl) => {
+              const imageUrl = rawUrl.startsWith("http")
+                ? rawUrl.replace(
+                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                    backendBase,
+                  )
+                : `${backendBase}${rawUrl}`;
 
-          if (urlPath.startsWith("/uploads/")) {
-            const localPath = join(process.cwd(), "public", urlPath);
-            try {
-              imageBuffer = await readFile(localPath);
-              console.log(
-                `[ListingUseCase] Imagem lida do disco local: ${localPath} (${imageBuffer.length} bytes)`,
-              );
-            } catch {
+              const urlPath = new URL(imageUrl).pathname;
+              const fileName = urlPath.split("/").pop() || "image.jpg";
+
+              let imageBuffer: Buffer | null = null;
+
+              if (urlPath.startsWith("/uploads/")) {
+                const localPath = join(process.cwd(), "public", urlPath);
+                try {
+                  imageBuffer = await readFile(localPath);
+                  console.log(
+                    `[ListingUseCase] Imagem lida do disco local: ${localPath} (${imageBuffer.length} bytes)`,
+                  );
+                } catch {
+                  console.warn(
+                    `[ListingUseCase] Imagem não encontrada no disco local: ${localPath}, baixando via HTTP`,
+                  );
+                }
+              }
+
+              if (!imageBuffer) {
+                const resp = await axios.get(imageUrl, {
+                  responseType: "arraybuffer",
+                  timeout: 10000,
+                });
+                imageBuffer = Buffer.from(resp.data);
+                console.log(
+                  `[ListingUseCase] Imagem baixada via HTTP: ${imageUrl} (${imageBuffer.length} bytes)`,
+                );
+              }
+
+              return { imageBuffer, fileName, rawUrl };
+            }),
+          );
+
+          // Upload sequencial ao ML (a API do ML pode ter rate-limit)
+          picturesArray = [];
+          for (let i = 0; i < bufferResults.length; i++) {
+            const result = bufferResults[i];
+            const rawUrl = allImageUrls[i];
+
+            if (result.status === "fulfilled") {
+              try {
+                const picResult = await MLApiService.uploadPicture(
+                  acc.accessToken,
+                  result.value.imageBuffer,
+                  result.value.fileName,
+                );
+                console.log(
+                  `[ListingUseCase] Imagem enviada diretamente ao ML: pictureId=${picResult.id}`,
+                );
+                picturesArray.push({ id: picResult.id });
+                continue;
+              } catch (uploadErr) {
+                console.warn(
+                  `[ListingUseCase] Falha no upload da imagem ${rawUrl} ao ML:`,
+                  uploadErr instanceof Error
+                    ? uploadErr.message
+                    : String(uploadErr),
+                );
+              }
+            } else {
               console.warn(
-                `[ListingUseCase] Imagem não encontrada no disco local: ${localPath}, baixando via HTTP`,
+                `[ListingUseCase] Falha ao preparar imagem ${rawUrl}:`,
+                result.reason instanceof Error
+                  ? result.reason.message
+                  : String(result.reason),
               );
             }
+
+            // Fallback individual: source URL
+            const fallbackUrl = rawUrl.startsWith("http")
+              ? rawUrl.replace(
+                  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                  backendBase,
+                )
+              : `${backendBase}${rawUrl}`;
+            picturesArray.push({ source: fallbackUrl });
           }
 
-          // Fallback: baixar via HTTP se não estiver no disco local
-          if (!imageBuffer) {
-            const axios = (await import("axios")).default;
-            const resp = await axios.get(imageUrl, {
-              responseType: "arraybuffer",
-              timeout: 10000,
-            });
-            imageBuffer = Buffer.from(resp.data);
-            console.log(
-              `[ListingUseCase] Imagem baixada via HTTP: ${imageUrl} (${imageBuffer.length} bytes)`,
-            );
+          if (picturesArray.length === 0) {
+            picturesArray = [
+              {
+                source: "https://via.placeholder.com/500x500.png?text=Produto",
+              },
+            ];
           }
-
-          // Upload direto para o ML
-          const picResult = await MLApiService.uploadPicture(
-            acc.accessToken,
-            imageBuffer,
-            fileName,
-          );
-          console.log(
-            `[ListingUseCase] Imagem enviada diretamente ao ML: pictureId=${picResult.id}`,
-          );
-          picturesArray = [{ id: picResult.id }];
         } catch (picErr) {
-          // Fallback: enviar source URL (comportamento anterior)
           console.warn(
-            `[ListingUseCase] Falha no upload direto da imagem ao ML, usando source URL como fallback:`,
+            `[ListingUseCase] Falha geral no upload de imagens ao ML:`,
             picErr instanceof Error ? picErr.message : String(picErr),
           );
           const backendBase =
             process.env.APP_BACKEND_URL || "http://localhost:3333";
-          const fallbackUrl = product.imageUrl!.startsWith("http")
-            ? product.imageUrl!.replace(
-                /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                backendBase,
-              )
-            : `${backendBase}${product.imageUrl}`;
-          picturesArray = [{ source: fallbackUrl }];
+          picturesArray = allImageUrls.map((rawUrl) => {
+            const fallbackUrl = rawUrl.startsWith("http")
+              ? rawUrl.replace(
+                  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                  backendBase,
+                )
+              : `${backendBase}${rawUrl}`;
+            return { source: fallbackUrl };
+          });
         }
       } else {
         picturesArray = [

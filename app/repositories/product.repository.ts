@@ -49,6 +49,7 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
 
     // Imagem do produto
     imageUrl: item.imageUrl ?? undefined,
+    imageUrls: (item as any).imageUrls ?? [],
   };
 }
 
@@ -92,6 +93,7 @@ class ProductRepositoryPrisma implements ProductRepository {
 
           // Imagem do produto
           imageUrl: data.imageUrl,
+          imageUrls: data.imageUrls ?? [],
         },
       });
 
@@ -174,6 +176,7 @@ class ProductRepositoryPrisma implements ProductRepository {
             isTraceable: true,
             sourceVehicle: true,
             imageUrl: true,
+            imageUrls: true,
             mlCategoryId: true,
             mlCategorySource: true,
             mlCategoryChosenAt: true,
@@ -315,6 +318,7 @@ class ProductRepositoryPrisma implements ProductRepository {
 
           // Imagem do produto
           ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
+          ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
         },
       });
 

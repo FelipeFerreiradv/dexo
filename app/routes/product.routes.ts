@@ -68,11 +68,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         weightKg,
 
         imageUrl,
+        imageUrls,
         // Opção para criar anúncio
         createListing,
         createListingCategoryId,
         listings,
-      } = request.body;
+      } = request.body as any;
 
       const user = (request as any).user;
 
@@ -113,6 +114,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             ? Number(weightKg)
             : undefined,
         imageUrl: imageUrl ?? undefined,
+        imageUrls: Array.isArray(imageUrls)
+          ? imageUrls.filter((u: any) => typeof u === "string" && u.trim())
+          : [],
         mlCategoryExternal: mlCategory ?? createListingCategoryId ?? undefined,
         mlCategorySource: mlCategorySource ?? undefined,
         createListing: Boolean(createListing),
@@ -227,6 +231,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           weightKg: sanitized.weightKg,
 
           imageUrl: sanitized.imageUrl,
+          imageUrls: sanitized.imageUrls,
         });
 
         // Registrar log de criação do produto (fire-and-forget, non-blocking)
@@ -487,7 +492,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           weightKg,
 
           imageUrl,
-        } = request.body;
+          imageUrls,
+        } = request.body as any;
 
         if (!id) {
           return reply
@@ -563,6 +569,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             weightKg,
 
             imageUrl,
+            imageUrls: Array.isArray(imageUrls) ? imageUrls : undefined,
           },
           userId,
         );

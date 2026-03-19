@@ -18,6 +18,7 @@ model User {
   createdAt                 DateTime             @default(now())
   updatedAt                 DateTime             @updatedAt
   defaultProductDescription String?
+  defaultCostPrice          Decimal?             @db.Decimal(10, 2)
   accounts                  MarketplaceAccount[]
   products                  Product[]
   systemLogs                SystemLog[]
@@ -46,6 +47,7 @@ model Product {
   isTraceable            Boolean              @default(false)
   sourceVehicle          String?
   imageUrl               String?
+  imageUrls              String[]             @default([])
   mlCategoryId           String?
   heightCm               Int?
   lengthCm               Int?

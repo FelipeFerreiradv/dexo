@@ -17,6 +17,7 @@ class UserRepositoryPrisma implements UserRepository {
       name: u.name,
       avatarUrl: u.avatarUrl ?? null,
       defaultProductDescription: u.defaultProductDescription ?? null,
+      defaultCostPrice: u.defaultCostPrice ? Number(u.defaultCostPrice) : null,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
@@ -31,6 +32,7 @@ class UserRepositoryPrisma implements UserRepository {
           password: data.password,
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
+          defaultCostPrice: data.defaultCostPrice,
         },
       });
       return this.mapUser(result);
@@ -81,6 +83,7 @@ class UserRepositoryPrisma implements UserRepository {
           password: data.password,
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
+          defaultCostPrice: data.defaultCostPrice,
         },
       });
       return this.mapUser(result);

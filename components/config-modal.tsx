@@ -53,6 +53,7 @@ export default function ConfigModal({
   const [email, setEmail] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [defaultDescription, setDefaultDescription] = useState("");
+  const [defaultCostPrice, setDefaultCostPrice] = useState<string>("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -76,6 +77,9 @@ export default function ConfigModal({
       setEmail(user.email ?? "");
       setAvatarUrl(user.avatarUrl ?? "");
       setDefaultDescription(user.defaultProductDescription ?? "");
+      setDefaultCostPrice(
+        user.defaultCostPrice != null ? String(user.defaultCostPrice) : "",
+      );
     } catch (error) {
       alert("Erro ao carregar configurações");
     } finally {
@@ -135,6 +139,7 @@ export default function ConfigModal({
         },
         body: JSON.stringify({
           defaultProductDescription: defaultDescription,
+          defaultCostPrice: defaultCostPrice ? Number(defaultCostPrice) : null,
         }),
       });
 
@@ -217,6 +222,8 @@ export default function ConfigModal({
               <PreferencesSection
                 defaultDescription={defaultDescription}
                 onDescriptionChange={setDefaultDescription}
+                defaultCostPrice={defaultCostPrice}
+                onCostPriceChange={setDefaultCostPrice}
                 onSave={handleSavePreferences}
                 saving={savingPrefs}
               />
@@ -372,16 +379,25 @@ function AccountSection(props: {
 function PreferencesSection(props: {
   defaultDescription: string;
   onDescriptionChange: (value: string) => void;
+  defaultCostPrice: string;
+  onCostPriceChange: (value: string) => void;
   onSave: () => void;
   saving: boolean;
 }) {
-  const { defaultDescription, onDescriptionChange, onSave, saving } = props;
+  const {
+    defaultDescription,
+    onDescriptionChange,
+    defaultCostPrice,
+    onCostPriceChange,
+    onSave,
+    saving,
+  } = props;
   return (
     <section className="space-y-4 rounded-xl border border-border/60 bg-muted/20 p-5 shadow-sm">
       <div className="space-y-1">
         <h3 className="text-base font-semibold">Preferências</h3>
         <p className="text-sm text-muted-foreground">
-          Defina a descrição padrão usada ao criar novos produtos.
+          Defina valores padrão usados ao criar novos produtos.
         </p>
       </div>
 
@@ -398,6 +414,27 @@ function PreferencesSection(props: {
         <p className="text-xs text-muted-foreground">
           Esta descrição será aplicada automaticamente quando você criar um
           produto sem especificar uma descrição.
+        </p>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-2">
+        <Label htmlFor="cfgDefaultCostPrice" className="font-bold">
+          Preço de custo padrão (R$)
+        </Label>
+        <Input
+          id="cfgDefaultCostPrice"
+          type="number"
+          step="0.01"
+          min="0"
+          placeholder="0,00"
+          value={defaultCostPrice}
+          onChange={(e) => onCostPriceChange(e.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          Este valor será preenchido automaticamente no campo &quot;Preço de
+          Custo&quot; ao criar um novo produto.
         </p>
       </div>
 

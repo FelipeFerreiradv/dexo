@@ -44,6 +44,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageUpload } from "@/components/ui/image-upload";
+import { MultiImageUpload } from "@/components/ui/multi-image-upload";
 import {
   Select,
   SelectContent,
@@ -88,6 +89,7 @@ const productSchema = z.object({
       // Aceitar URLs completas (http/https) ou URLs relativas que começam com /
       return /^https?:\/\/.+/.test(value) || /^\/.+/.test(value);
     }, "URL da imagem inválida"),
+  imageUrls: z.array(z.string()).optional(),
 
   // Step 4: Anúncio Mercado Livre (opcional)
   createMLListing: z.boolean().optional(),
@@ -123,8 +125,8 @@ const productSchema = z.object({
   brand: z.string().max(100).optional().nullable(),
   model: z.string().max(100).optional().nullable(),
   year: z.string().max(20).optional().nullable(),
-  version: z.string().max(100).optional().nullable(),
-  category: z.string().max(100).optional().nullable(),
+  version: z.string().max(200).optional().nullable(),
+  category: z.string().max(500).optional().nullable(),
   quality: z
     .enum(["SUCATA", "SEMINOVO", "NOVO", "RECONDICIONADO"])
     .optional()
@@ -273,6 +275,7 @@ export function CreateProductDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSku, setIsLoadingSku] = useState(false);
   const [defaultDescription, setDefaultDescription] = useState("");
+  const [defaultCostPrice, setDefaultCostPrice] = useState<number | null>(null);
   const [mlOptions, setMlOptions] = useState<{ id: string; value: string }[]>(
     [],
   );
@@ -309,6 +312,7 @@ export function CreateProductDialog({
       description: "",
       partNumber: "",
       imageUrl: "",
+      imageUrls: [],
       createMLListing: false,
       mlCategory: "",
       mlAccountIds: [],
@@ -402,12 +406,6 @@ export function CreateProductDialog({
     }
   }, [session?.user?.email]);
 
-  useEffect(() => {
-    if (open) {
-      fetchAccounts();
-    }
-  }, [open, fetchAccounts]);
-
   // Busca próximo SKU ao abrir o dialog
   const fetchNextSku = useCallback(async () => {
     const email = session?.user?.email;
@@ -428,7 +426,7 @@ export function CreateProductDialog({
     }
   }, [session?.user?.email, setValue]);
 
-  // Busca descrição padrão do usuário
+  // Busca descrição padrão e preço de custo padrão do usuário
   const fetchDefaultDescription = useCallback(async () => {
     // Sempre usamos o endpoint /users/me com header email para evitar 404s
     try {
@@ -441,6 +439,14 @@ export function CreateProductDialog({
           const desc = user.defaultProductDescription || "";
           setDefaultDescription(desc);
           setValue("description", desc);
+          const costPriceDefault =
+            user.defaultCostPrice != null
+              ? Number(user.defaultCostPrice)
+              : null;
+          setDefaultCostPrice(costPriceDefault);
+          if (costPriceDefault != null) {
+            setValue("costPrice", costPriceDefault);
+          }
         }
       }
     } catch (error) {
@@ -478,16 +484,17 @@ export function CreateProductDialog({
     // no-op here; actual parsing is triggered when name changes in the effect below
   }, []);
 
-  // Busca SKU, descrição padrão e categorias ML quando dialog abre
+  // Busca SKU, descrição padrão, preço de custo e status ML em paralelo quando dialog abre
   useEffect(() => {
     if (open) {
       // Reset auto-detection state when opening modal to avoid stale auto-detected values
       autoDetectedRef.current = null;
 
+      // Disparar todas as requisições em paralelo para abrir o modal mais rápido
       fetchNextSku();
       fetchDefaultDescription();
+      fetchAccounts();
 
-      // Buscar status da conta ML + categorias sincronizadas
       (async () => {
         try {
           const base = getApiBaseUrl();
@@ -504,12 +511,15 @@ export function CreateProductDialog({
         } catch (sErr) {
           console.error("Erro ao buscar status ML:", sErr);
         }
-
-        // Categorias ML são carregadas sob demanda quando o usuário ativa a criação de anúncio
-        // para evitar carregar 12k+ categorias desnecessariamente na abertura do modal
       })();
     }
-  }, [open, fetchNextSku, fetchDefaultDescription, session?.user?.email]);
+  }, [
+    open,
+    fetchNextSku,
+    fetchDefaultDescription,
+    fetchAccounts,
+    session?.user?.email,
+  ]);
 
   // Define descrição padrão quando carregada
   useEffect(() => {
@@ -1553,6 +1563,7 @@ export function CreateProductDialog({
         listings: listingsPayload,
         mlCategorySource: mlCategorySourceToSend,
         mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
+        imageUrls: data.imageUrls || [],
       };
 
       // Criar produto primeiro
@@ -1640,8 +1651,23 @@ export function CreateProductDialog({
 
     if (fieldsToValidate.length === 0) return true;
 
-    const isValid = await trigger(fieldsToValidate);
-    return isValid;
+    try {
+      const isValid = await trigger(fieldsToValidate);
+      if (!isValid) {
+        // Mostrar quais campos falharam para evitar travamento silencioso
+        const fieldErrors = fieldsToValidate
+          .map((f) => errors[f]?.message)
+          .filter(Boolean);
+        if (fieldErrors.length > 0) {
+          console.warn(`[Step ${currentStep}] Validação falhou:`, fieldErrors);
+          onToast(fieldErrors[0] as string, "warning");
+        }
+      }
+      return isValid;
+    } catch (err) {
+      console.error("Erro na validação do step:", err);
+      return true; // Não bloquear navegação por erro interno
+    }
   };
 
   const handleNext = async () => {
@@ -1688,7 +1714,7 @@ export function CreateProductDialog({
           Novo Produto
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[650px]">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-187.5">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
           <DialogDescription>
@@ -1701,7 +1727,7 @@ export function CreateProductDialog({
           <Progress value={progressPercentage} className="h-2" />
 
           {/* Step Indicators */}
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-1">
             {STEPS.map((step) => {
               const Icon = step.icon;
               const isActive = step.id === currentStep;
@@ -1714,12 +1740,12 @@ export function CreateProductDialog({
                   type="button"
                   onClick={() => goToStep(step.id)}
                   disabled={!isClickable}
-                  className={`flex flex-col items-center gap-1 transition-colors ${
+                  className={`flex flex-col items-center gap-1 transition-colors min-w-0 flex-1 ${
                     isClickable ? "cursor-pointer" : "cursor-default"
                   }`}
                 >
                   <div
-                    className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-all ${
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 transition-all ${
                       isActive
                         ? "border-primary bg-primary text-primary-foreground"
                         : isCompleted
@@ -1734,7 +1760,7 @@ export function CreateProductDialog({
                     )}
                   </div>
                   <span
-                    className={`text-xs font-medium ${
+                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 ${
                       isActive
                         ? "text-primary"
                         : isCompleted
@@ -1849,18 +1875,23 @@ export function CreateProductDialog({
           {currentStep === 2 && (
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>Foto do Produto *</Label>
+                <Label>Fotos do Produto *</Label>
                 <Controller
-                  name="imageUrl"
+                  name="imageUrls"
                   control={control}
-                  render={({ field }) => (
-                    <ImageUpload
-                      value={field.value}
-                      onChange={field.onChange}
+                  render={({ field: imageUrlsField }) => (
+                    <MultiImageUpload
+                      value={imageUrlsField.value || []}
+                      onChange={(urls) => {
+                        imageUrlsField.onChange(urls);
+                        // Manter imageUrl sincronizado com a primeira imagem
+                        setValue("imageUrl", urls[0] || "");
+                      }}
                       onError={(error: string) => {
                         console.error("Erro no upload:", error);
                         onToast("Erro ao fazer upload da imagem", "error");
                       }}
+                      maxImages={10}
                     />
                   )}
                 />
@@ -1870,8 +1901,8 @@ export function CreateProductDialog({
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Faça upload de uma foto clara do produto. Máximo 5MB,
-                  formatos: JPG, PNG, WebP.
+                  Faça upload de fotos do produto. A primeira imagem será a
+                  principal. Máximo 10 imagens, 5MB cada (JPG, PNG, WebP).
                 </p>
               </div>
             </div>
@@ -2225,9 +2256,11 @@ export function CreateProductDialog({
                         }}
                         value={field.value ?? ""}
                       >
-                        <SelectTrigger>
+                        <SelectTrigger className="h-auto min-h-10">
                           <SelectValue>
-                            {detailed || field.value || "Selecione..."}
+                            <span className="block whitespace-normal text-left leading-snug text-sm">
+                              {detailed || field.value || "Selecione..."}
+                            </span>
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
@@ -2644,7 +2677,24 @@ export function CreateProductDialog({
               <div className="rounded-lg border bg-muted/30 p-4">
                 <h4 className="mb-3 font-medium">Imagem</h4>
                 <div className="text-sm">
-                  {formValues.imageUrl ? (
+                  {formValues.imageUrls && formValues.imageUrls.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="flex gap-2 flex-wrap">
+                        {formValues.imageUrls.map((url, idx) => (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            key={`${url}-${idx}`}
+                            src={url}
+                            alt={`Produto ${idx + 1}`}
+                            className="h-20 w-20 rounded-lg object-cover border"
+                          />
+                        ))}
+                      </div>
+                      <p className="text-muted-foreground">
+                        {formValues.imageUrls.length} imagem(ns) carregada(s)
+                      </p>
+                    </div>
+                  ) : formValues.imageUrl ? (
                     <div className="space-y-2">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
