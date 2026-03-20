@@ -22,6 +22,7 @@ model User {
   accounts                  MarketplaceAccount[]
   products                  Product[]
   systemLogs                SystemLog[]
+  locations                 Location[]
 }
 
 model Product {
@@ -59,15 +60,37 @@ model Product {
   shopeeCategoryId       String?
   shopeeCategorySource   String?
   shopeeCategoryChosenAt DateTime?
+  locationId             String?
   orderItems             OrderItem[]
   mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
   user                   User?                @relation(fields: [userId], references: [id])
+  productLocation        Location?            @relation(fields: [locationId], references: [id])
   listings               ProductListing[]
   stockLogs              StockLog[]
 
   @@index([userId, createdAt])
   @@index([userId, updatedAt])
   @@index([sku])
+  @@index([locationId])
+}
+
+model Location {
+  id          String     @id @default(cuid())
+  userId      String
+  code        String
+  description String?
+  maxCapacity Int        @default(0)
+  parentId    String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  user        User       @relation(fields: [userId], references: [id])
+  parent      Location?  @relation("LocationHierarchy", fields: [parentId], references: [id])
+  children    Location[] @relation("LocationHierarchy")
+  products    Product[]
+
+  @@unique([userId, code])
+  @@index([userId])
+  @@index([parentId])
 }
 
 model MarketplaceAccount {

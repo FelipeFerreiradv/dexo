@@ -85,6 +85,7 @@ const productEditSchema = z.object({
   category: z.string().max(100).optional().nullable(),
   mlCategory: z.string().optional().nullable(),
   location: z.string().max(100).optional().nullable(),
+  locationId: z.string().optional().nullable(),
   partNumber: z.string().max(100).optional().nullable(),
   quality: z
     .enum(["SUCATA", "SEMINOVO", "NOVO", "RECONDICIONADO"])
@@ -145,6 +146,7 @@ interface Product {
   category?: string | null;
   mlCategory?: string | null;
   location?: string | null;
+  locationId?: string | null;
   partNumber?: string | null;
   quality?: Quality | null;
   isSecurityItem?: boolean;
@@ -198,6 +200,17 @@ export function EditProductDialog({
   >([]);
   const [createMlListing, setCreateMlListing] = useState(false);
   const [createShopeeListing, setCreateShopeeListing] = useState(false);
+  const [locationOptions, setLocationOptions] = useState<
+    Array<{
+      id: string;
+      code: string;
+      description?: string;
+      fullPath: string;
+      maxCapacity: number;
+      productsCount: number;
+      isFull: boolean;
+    }>
+  >([]);
 
   // Referências para valores originais do produto (para detectar edições do usuário)
   const originalNameRef = useRef(product.name);
@@ -324,6 +337,7 @@ export function EditProductDialog({
         category: product.category || "",
         mlCategory: product.mlCategory || "",
         location: product.location || "",
+        locationId: product.locationId || null,
         partNumber: product.partNumber || "",
         quality: product.quality || null,
         isSecurityItem: product.isSecurityItem || false,
@@ -357,6 +371,24 @@ export function EditProductDialog({
           }
         } catch (err) {
           console.error("Erro ao buscar categorias ML:", err);
+        }
+      })();
+
+      // Buscar localizações para o seletor
+      (async () => {
+        try {
+          const base = getApiBaseUrl();
+          const respLoc = await fetch(`${base}/locations/select`, {
+            headers: { email: session?.user?.email || "" },
+          });
+          if (respLoc.ok) {
+            const locJson = await respLoc.json();
+            setLocationOptions(
+              Array.isArray(locJson.locations) ? locJson.locations : [],
+            );
+          }
+        } catch (err) {
+          console.error("Erro ao buscar localizações:", err);
         }
       })();
 
@@ -480,9 +512,9 @@ export function EditProductDialog({
           prevBrand: prev.brand,
           detectedBrand: detected.brand,
           inputMounted: !!document.getElementById("edit-brand"),
-          inputDom: (document.getElementById(
-            "edit-brand",
-          ) as HTMLInputElement | null)?.value,
+          inputDom: (
+            document.getElementById("edit-brand") as HTMLInputElement | null
+          )?.value,
         });
       }
       if (shouldUpdateBrand) {
@@ -500,8 +532,11 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set brand", watch("brand"));
               console.debug(
                 "[auto-fill][edit] dom brand after set",
-                (document.getElementById("edit-brand") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-brand",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -522,8 +557,11 @@ export function EditProductDialog({
               );
               console.debug(
                 "[auto-fill][edit] dom brand after clear",
-                (document.getElementById("edit-brand") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-brand",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -546,9 +584,9 @@ export function EditProductDialog({
           prevModel: prev.model,
           detectedModel: detected.model,
           inputMounted: !!document.getElementById("edit-model"),
-          inputDom: (document.getElementById(
-            "edit-model",
-          ) as HTMLInputElement | null)?.value,
+          inputDom: (
+            document.getElementById("edit-model") as HTMLInputElement | null
+          )?.value,
         });
       }
       if (shouldUpdateModel) {
@@ -566,8 +604,11 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set model", watch("model"));
               console.debug(
                 "[auto-fill][edit] dom model after set",
-                (document.getElementById("edit-model") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-model",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -588,8 +629,11 @@ export function EditProductDialog({
               );
               console.debug(
                 "[auto-fill][edit] dom model after clear",
-                (document.getElementById("edit-model") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-model",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -612,9 +656,9 @@ export function EditProductDialog({
           prevYear: prev.year,
           detectedYear: detected.year,
           inputMounted: !!document.getElementById("edit-year"),
-          inputDom: (document.getElementById(
-            "edit-year",
-          ) as HTMLInputElement | null)?.value,
+          inputDom: (
+            document.getElementById("edit-year") as HTMLInputElement | null
+          )?.value,
         });
       }
       if (shouldUpdateYear) {
@@ -632,8 +676,11 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-set year", watch("year"));
               console.debug(
                 "[auto-fill][edit] dom year after set",
-                (document.getElementById("edit-year") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-year",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -651,8 +698,11 @@ export function EditProductDialog({
               console.debug("[auto-fill][edit] post-clear year", watch("year"));
               console.debug(
                 "[auto-fill][edit] dom year after clear",
-                (document.getElementById("edit-year") as HTMLInputElement | null)
-                  ?.value,
+                (
+                  document.getElementById(
+                    "edit-year",
+                  ) as HTMLInputElement | null
+                )?.value,
               );
             }, 50);
           }
@@ -1036,6 +1086,7 @@ export function EditProductDialog({
         version: data.version || undefined,
         category: data.category || undefined,
         location: data.location || undefined,
+        locationId: data.locationId || undefined,
         partNumber: data.partNumber || undefined,
         quality: data.quality || undefined,
         sourceVehicle: data.sourceVehicle || undefined,
@@ -1259,7 +1310,9 @@ export function EditProductDialog({
                 maxLength={4000}
               />
               <div className="flex items-start justify-between text-xs text-muted-foreground">
-                <span className="pr-3">Atualizada ao editar nome ou part number</span>
+                <span className="pr-3">
+                  Atualizada ao editar nome ou part number
+                </span>
                 <span>{watchDescription.length}/4000</span>
               </div>
               {errors.description && (
@@ -1535,9 +1588,7 @@ export function EditProductDialog({
                             field.onChange(val);
                             const match =
                               mlOptions.find((c) => c.value === val) ||
-                              ML_CATEGORY_OPTIONS.find(
-                                (c) => c.value === val,
-                              );
+                              ML_CATEGORY_OPTIONS.find((c) => c.value === val);
                             setValue("mlCategory", match?.id || "");
                           }}
                           value={field.value || undefined}
@@ -1634,11 +1685,52 @@ export function EditProductDialog({
 
                 <div className="space-y-2">
                   <Label htmlFor="edit-location">Localização</Label>
-                  <Input
-                    id="edit-location"
-                    placeholder="Ex: Prateleira A1"
-                    {...register("location")}
-                  />
+                  {locationOptions.length > 0 ? (
+                    <Controller
+                      name="locationId"
+                      control={control}
+                      render={({ field }) => (
+                        <Select
+                          onValueChange={(value) => {
+                            field.onChange(value === "__none__" ? null : value);
+                            const selected = locationOptions.find(
+                              (l) => l.id === value,
+                            );
+                            setValue("location", selected?.fullPath || "");
+                          }}
+                          value={field.value ?? "__none__"}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione uma localização" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">Nenhuma</SelectItem>
+                            {locationOptions.map((loc) => (
+                              <SelectItem
+                                key={loc.id}
+                                value={loc.id}
+                                disabled={loc.isFull && loc.id !== field.value}
+                              >
+                                {loc.fullPath}
+                                {loc.maxCapacity > 0
+                                  ? ` (${loc.productsCount}/${loc.maxCapacity})`
+                                  : ""}
+                                {loc.isFull && loc.id !== field.value
+                                  ? " — Lotado"
+                                  : ""}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    />
+                  ) : (
+                    <Input
+                      id="edit-location"
+                      placeholder="Ex: Prateleira A1"
+                      {...register("location")}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1804,115 +1896,115 @@ export function EditProductDialog({
                   </Label>
                 </div>
               </div>
-          </CollapsibleContent>
-        </Collapsible>
+            </CollapsibleContent>
+          </Collapsible>
 
-        {/* PublicaÃ§Ã£o de anÃºncios multi-contas */}
-        <div className="space-y-4 rounded-lg border p-4">
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Publicar anúncios</p>
-            <p className="text-xs text-muted-foreground">
-              Crie anúncios nas contas selecionadas (Mercado Livre e Shopee).
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Switch
-                id="edit-create-ml-listing"
-                checked={createMlListing}
-                onCheckedChange={setCreateMlListing}
-              />
-              <Label
-                htmlFor="edit-create-ml-listing"
-                className="cursor-pointer"
-              >
-                Criar anúncio no Mercado Livre
-              </Label>
-              <span className="text-xs text-muted-foreground">
-                Usa a categoria ML selecionada acima (se informada).
-              </span>
+          {/* PublicaÃ§Ã£o de anÃºncios multi-contas */}
+          <div className="space-y-4 rounded-lg border p-4">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Publicar anúncios</p>
+              <p className="text-xs text-muted-foreground">
+                Crie anúncios nas contas selecionadas (Mercado Livre e Shopee).
+              </p>
             </div>
-            {createMlListing && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {mlAccounts.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Conecte ao menos uma conta do Mercado Livre.
-                  </p>
-                ) : (
-                  mlAccounts.map((acc) => (
-                    <label
-                      key={acc.id}
-                      className="flex items-center justify-between rounded-md border p-2 text-sm"
-                    >
-                      <span>{acc.accountName || acc.id}</span>
-                      <Switch
-                        checked={selectedMlAccounts.includes(acc.id)}
-                        onCheckedChange={(checked) =>
-                          setSelectedMlAccounts((prev) =>
-                            checked
-                              ? [...prev, acc.id]
-                              : prev.filter((id) => id !== acc.id),
-                          )
-                        }
-                      />
-                    </label>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Switch
-                id="edit-create-shopee-listing"
-                checked={createShopeeListing}
-                onCheckedChange={setCreateShopeeListing}
-              />
-              <Label
-                htmlFor="edit-create-shopee-listing"
-                className="cursor-pointer"
-              >
-                Criar anúncio no Shopee
-              </Label>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Switch
+                  id="edit-create-ml-listing"
+                  checked={createMlListing}
+                  onCheckedChange={setCreateMlListing}
+                />
+                <Label
+                  htmlFor="edit-create-ml-listing"
+                  className="cursor-pointer"
+                >
+                  Criar anúncio no Mercado Livre
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  Usa a categoria ML selecionada acima (se informada).
+                </span>
+              </div>
+              {createMlListing && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {mlAccounts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Conecte ao menos uma conta do Mercado Livre.
+                    </p>
+                  ) : (
+                    mlAccounts.map((acc) => (
+                      <label
+                        key={acc.id}
+                        className="flex items-center justify-between rounded-md border p-2 text-sm"
+                      >
+                        <span>{acc.accountName || acc.id}</span>
+                        <Switch
+                          checked={selectedMlAccounts.includes(acc.id)}
+                          onCheckedChange={(checked) =>
+                            setSelectedMlAccounts((prev) =>
+                              checked
+                                ? [...prev, acc.id]
+                                : prev.filter((id) => id !== acc.id),
+                            )
+                          }
+                        />
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
-            {createShopeeListing && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {shopeeAccounts.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Conecte ao menos uma conta do Shopee.
-                  </p>
-                ) : (
-                  shopeeAccounts.map((acc) => (
-                    <label
-                      key={acc.id}
-                      className="flex items-center justify-between rounded-md border p-2 text-sm"
-                    >
-                      <span>{acc.accountName || acc.id}</span>
-                      <Switch
-                        checked={selectedShopeeAccounts.includes(acc.id)}
-                        onCheckedChange={(checked) =>
-                          setSelectedShopeeAccounts((prev) =>
-                            checked
-                              ? [...prev, acc.id]
-                              : prev.filter((id) => id !== acc.id),
-                          )
-                        }
-                      />
-                    </label>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        </div>
 
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Switch
+                  id="edit-create-shopee-listing"
+                  checked={createShopeeListing}
+                  onCheckedChange={setCreateShopeeListing}
+                />
+                <Label
+                  htmlFor="edit-create-shopee-listing"
+                  className="cursor-pointer"
+                >
+                  Criar anúncio no Shopee
+                </Label>
+              </div>
+              {createShopeeListing && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {shopeeAccounts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Conecte ao menos uma conta do Shopee.
+                    </p>
+                  ) : (
+                    shopeeAccounts.map((acc) => (
+                      <label
+                        key={acc.id}
+                        className="flex items-center justify-between rounded-md border p-2 text-sm"
+                      >
+                        <span>{acc.accountName || acc.id}</span>
+                        <Switch
+                          checked={selectedShopeeAccounts.includes(acc.id)}
+                          onCheckedChange={(checked) =>
+                            setSelectedShopeeAccounts((prev) =>
+                              checked
+                                ? [...prev, acc.id]
+                                : prev.filter((id) => id !== acc.id),
+                            )
+                          }
+                        />
+                      </label>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
               disabled={isSubmitting}
             >
               Cancelar

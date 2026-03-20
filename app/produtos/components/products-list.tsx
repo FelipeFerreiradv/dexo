@@ -67,6 +67,7 @@ interface Product {
   version?: string | null;
   category?: string | null;
   location?: string | null;
+  locationId?: string | null;
   partNumber?: string | null;
   quality?: Quality | null;
   isSecurityItem?: boolean;

@@ -120,6 +120,7 @@ const productSchema = z.object({
     .optional()
     .nullable(),
   location: z.string().max(100).optional().nullable(),
+  locationId: z.string().optional().nullable(),
 
   // Step 3: Veículo e Peça
   brand: z.string().max(100).optional().nullable(),
@@ -220,7 +221,7 @@ const STEPS = [
     title: "Preços e Estoque",
     description: "Valores e quantidade",
     icon: DollarSign,
-    fields: ["price", "stock", "costPrice", "markup", "location"],
+    fields: ["price", "stock", "costPrice", "markup", "location", "locationId"],
   },
   {
     id: 4,
@@ -294,6 +295,17 @@ export function CreateProductDialog({
   const [shopeeAccounts, setShopeeAccounts] = useState<
     Array<{ id: string; accountName: string; status?: string; shopId?: number }>
   >([]);
+  const [locationOptions, setLocationOptions] = useState<
+    Array<{
+      id: string;
+      code: string;
+      description?: string;
+      fullPath: string;
+      maxCapacity: number;
+      productsCount: number;
+      isFull: boolean;
+    }>
+  >([]);
 
   const {
     register,
@@ -323,6 +335,7 @@ export function CreateProductDialog({
       costPrice: null,
       markup: null,
       location: "",
+      locationId: null,
       brand: "",
       model: "",
       year: "",
@@ -494,6 +507,24 @@ export function CreateProductDialog({
       fetchNextSku();
       fetchDefaultDescription();
       fetchAccounts();
+
+      // Buscar localizações para o seletor
+      (async () => {
+        try {
+          const base = getApiBaseUrl();
+          const respLoc = await fetch(`${base}/locations/select`, {
+            headers: { email: session?.user?.email || "" },
+          });
+          if (respLoc.ok) {
+            const locJson = await respLoc.json();
+            setLocationOptions(
+              Array.isArray(locJson.locations) ? locJson.locations : [],
+            );
+          }
+        } catch (err) {
+          console.error("Erro ao buscar localizações:", err);
+        }
+      })();
 
       (async () => {
         try {
@@ -1545,6 +1576,7 @@ export function CreateProductDialog({
         version: data.version || undefined,
         category: data.category || undefined,
         location: data.location || undefined,
+        locationId: data.locationId || undefined,
         partNumber: data.partNumber || undefined,
         quality: data.quality || undefined,
         sourceVehicle: data.sourceVehicle || undefined,
@@ -2001,11 +2033,51 @@ export function CreateProductDialog({
 
               <div className="space-y-2">
                 <Label htmlFor="location">Localização no Estoque</Label>
-                <Input
-                  id="location"
-                  placeholder="Ex: Prateleira A1, Gaveta 3"
-                  {...register("location")}
-                />
+                {locationOptions.length > 0 ? (
+                  <Controller
+                    name="locationId"
+                    control={control}
+                    render={({ field }) => (
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(value === "__none__" ? null : value);
+                          // Also update the text location field for backward compat
+                          const selected = locationOptions.find(
+                            (l) => l.id === value,
+                          );
+                          setValue("location", selected?.fullPath || "");
+                        }}
+                        value={field.value ?? "__none__"}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecione uma localização" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">Nenhuma</SelectItem>
+                          {locationOptions.map((loc) => (
+                            <SelectItem
+                              key={loc.id}
+                              value={loc.id}
+                              disabled={loc.isFull}
+                            >
+                              {loc.fullPath}
+                              {loc.maxCapacity > 0
+                                ? ` (${loc.productsCount}/${loc.maxCapacity})`
+                                : ""}
+                              {loc.isFull ? " — Lotado" : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                ) : (
+                  <Input
+                    id="location"
+                    placeholder="Ex: Prateleira A1, Gaveta 3"
+                    {...register("location")}
+                  />
+                )}
                 <p className="text-xs text-muted-foreground">
                   Onde o produto está armazenado fisicamente
                 </p>

@@ -15,6 +15,7 @@ import { orderRoutes } from "../routes/order.routes";
 import { uploadRoutes } from "../routes/upload.routes";
 import { listingRoutes } from "../routes/listing.routes";
 import { systemLogRoutes } from "../routes/system-log.routes";
+import { locationRoutes } from "../routes/location.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
@@ -72,6 +73,10 @@ api.register(listingRoutes, {
 
 api.register(systemLogRoutes, {
   prefix: "/system-logs",
+});
+
+api.register(locationRoutes, {
+  prefix: "/locations",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

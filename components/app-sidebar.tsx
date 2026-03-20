@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   LineChart,
   Link2,
+  MapPin,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -57,6 +58,12 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
       { id: "produtos", label: "Produtos", href: "/produtos", icon: Package },
+      {
+        id: "localizacoes",
+        label: "Localizações",
+        href: "/localizacoes",
+        icon: MapPin,
+      },
       {
         id: "pedidos",
         label: "Pedidos",

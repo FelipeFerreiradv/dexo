@@ -21,6 +21,7 @@ export interface Product {
   version?: string;
   category?: string;
   location?: string;
+  locationId?: string;
   partNumber?: string;
   quality?: Quality;
   isSecurityItem?: boolean;
@@ -66,6 +67,7 @@ export interface ProductCreate {
   version?: string;
   category?: string;
   location?: string;
+  locationId?: string;
   partNumber?: string;
   quality?: Quality;
   isSecurityItem?: boolean;
@@ -117,6 +119,7 @@ export interface ProductUpdate {
   version?: string;
   category?: string;
   location?: string;
+  locationId?: string;
   partNumber?: string;
   quality?: Quality;
   isSecurityItem?: boolean;
