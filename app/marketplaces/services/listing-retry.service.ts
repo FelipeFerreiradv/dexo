@@ -5,6 +5,7 @@ import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MLItemCreatePayload } from "../types/ml-api.types";
 import { CategoryResolutionService } from "./category-resolution.service";
+import { ensureMLMinImageSize } from "./image-resize.service";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -328,9 +329,11 @@ export class ListingRetryService {
               // Estratégia 1: Upload binário
               if (imageBuffer) {
                 try {
+                  // Garantir dimensões mínimas exigidas pelo ML (500px após trim de bordas)
+                  const processedBuf = await ensureMLMinImageSize(imageBuffer);
                   const picResult = await MLApiService.uploadPicture(
                     account.accessToken,
-                    imageBuffer,
+                    processedBuf,
                     fileName,
                   );
                   console.log(

@@ -11,6 +11,7 @@ import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import { CategoryResolutionService } from "../services/category-resolution.service";
 import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
+import { ensureMLMinImageSize } from "../services/image-resize.service";
 
 export interface CreateListingResult {
   success: boolean;
@@ -849,11 +850,14 @@ export class ListingUseCase {
                 publicUrl,
               } = result.value;
 
+              // Garantir dimensões mínimas exigidas pelo ML (500px após trim de bordas)
+              const processedBuf = await ensureMLMinImageSize(imgBuf);
+
               // Estratégia 1: Upload binário direto (form-data com getBuffer)
               try {
                 const picResult = await MLApiService.uploadPicture(
                   acc.accessToken,
-                  imgBuf,
+                  processedBuf,
                   imgName,
                 );
                 console.log(
