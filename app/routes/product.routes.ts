@@ -302,6 +302,25 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                         );
                       }
                     }
+                  } else if (lst.platform === "SHOPEE") {
+                    const accounts = (lst.accountIds || []).length
+                      ? lst.accountIds
+                      : [undefined];
+                    for (const accId of accounts) {
+                      try {
+                        await ListingUseCase.createShopeeListing(
+                          bgUserId,
+                          bgProductId,
+                          lst.categoryId,
+                          accId,
+                        );
+                      } catch (e) {
+                        console.error(
+                          "[product:bg-listing] Shopee error:",
+                          e instanceof Error ? e.message : e,
+                        );
+                      }
+                    }
                   }
                 }
               }

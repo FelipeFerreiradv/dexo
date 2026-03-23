@@ -1953,10 +1953,14 @@ export class ListingUseCase {
         item_sku: product.sku,
         price: product.price,
         stock: Math.min(product.stock, 999999), // Shopee limita quantidade mÃ¡xima
-        weight: 1.0, // Peso padrÃ£o em kg
-        package_length: 10,
-        package_width: 10,
-        package_height: 10,
+        weight:
+          product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
+        package_length:
+          product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10,
+        package_width:
+          product.widthCm && product.widthCm > 0 ? product.widthCm : 10,
+        package_height:
+          product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
         image: {
           image_url_list: [
             product.imageUrl
