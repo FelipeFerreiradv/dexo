@@ -28,6 +28,7 @@ import {
   ClipboardCheck,
   Image,
   ShoppingCart,
+  Link2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,7 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { CurrencyInput } from "@/components/ui/currency-input";
+import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 
 // NextAuth
 import { useSession } from "next-auth/react";
@@ -242,20 +244,27 @@ const STEPS = [
   },
   {
     id: 5,
+    title: "Compatibilidade",
+    description: "Veículos compatíveis",
+    icon: Link2,
+    fields: [],
+  },
+  {
+    id: 6,
     title: "Mercado Livre",
     description: "Criar anúncio (opcional)",
     icon: ShoppingCart,
     fields: ["createMLListing", "mlCategory"],
   },
   {
-    id: 6,
+    id: 7,
     title: "Shopee",
     description: "Criar anúncio (opcional)",
     icon: ShoppingCart,
     fields: ["createShopeeListing", "shopeeAccountIds"],
   },
   {
-    id: 7,
+    id: 8,
     title: "Revisão",
     description: "Confirme os dados",
     icon: ClipboardCheck,
@@ -306,6 +315,9 @@ export function CreateProductDialog({
       isFull: boolean;
     }>
   >([]);
+  const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
+    [],
+  );
 
   const {
     register,
@@ -538,6 +550,7 @@ export function CreateProductDialog({
     if (open) {
       // Reset auto-detection state when opening modal to avoid stale auto-detected values
       autoDetectedRef.current = null;
+      compatAutofilledRef.current = {};
 
       // Disparar todas as requisições em paralelo para abrir o modal mais rápido
       fetchNextSku();
@@ -607,7 +620,7 @@ export function CreateProductDialog({
   const mlCategoriesLoadedRef = useRef(false);
   useEffect(() => {
     if (
-      currentStep === 5 &&
+      currentStep === 6 &&
       mlOptions.length === 0 &&
       !mlCategoriesLoadedRef.current
     ) {
@@ -640,6 +653,73 @@ export function CreateProductDialog({
       mlCategoriesLoadedRef.current = false;
     }
   }, [open]);
+
+  // AUTO-FILL A PARTIR DAS COMPATIBILIDADES (fonte primária)
+  // Quando o usuário adiciona/altera compatibilidades, preenche marca/modelo/ano/versão
+  // a partir da PRIMEIRA entrada, desde que os campos estejam vazios ou tenham sido
+  // preenchidos automaticamente anteriormente (nunca sobrescreve edição manual).
+  const compatAutofilledRef = useRef<{
+    brand?: string;
+    model?: string;
+    year?: string;
+    version?: string;
+  }>({});
+
+  useEffect(() => {
+    if (compatibilities.length === 0) return;
+
+    const first = compatibilities[0];
+    const norm = (s?: string | null) =>
+      (s || "").toString().trim().toLowerCase();
+    const prev = compatAutofilledRef.current;
+
+    const currentBrand = watch("brand");
+    const currentModel = watch("model");
+    const currentYear = watch("year");
+    const currentVersion = watch("version");
+
+    // Marca
+    const shouldUpdateBrand =
+      !currentBrand || norm(prev.brand) === norm(currentBrand);
+    if (shouldUpdateBrand && first.brand) {
+      setValue("brand", first.brand, { shouldDirty: true });
+    }
+
+    // Modelo
+    const shouldUpdateModel =
+      !currentModel || norm(prev.model) === norm(currentModel);
+    if (shouldUpdateModel && first.model) {
+      setValue("model", first.model, { shouldDirty: true });
+    }
+
+    // Ano: usar yearFrom (ou faixa yearFrom-yearTo)
+    const yearStr = first.yearFrom
+      ? first.yearTo && first.yearTo !== first.yearFrom
+        ? `${first.yearFrom}-${first.yearTo}`
+        : String(first.yearFrom)
+      : undefined;
+    const shouldUpdateYear =
+      !currentYear || norm(prev.year) === norm(currentYear);
+    if (shouldUpdateYear && yearStr) {
+      setValue("year", yearStr, { shouldDirty: true });
+    }
+
+    // Versão
+    const shouldUpdateVersion =
+      !currentVersion || norm(prev.version) === norm(currentVersion);
+    if (shouldUpdateVersion && first.version) {
+      setValue("version", first.version, { shouldDirty: true });
+    }
+
+    // Salvar o que foi auto-detectado para comparação futura
+    compatAutofilledRef.current = {
+      brand: first.brand || prev.brand,
+      model: first.model || prev.model,
+      year: yearStr || prev.year,
+      version: first.version || prev.version,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compatibilities]);
 
   // Sugere categoria e extrai marca/modelo/ano baseada no nome do produto (sempre atualiza quando nome muda).
   // Só sobrescreve campos se estiverem vazios ou se o valor atual for o mesmo que foi preenchido automaticamente antes.
@@ -1631,6 +1711,15 @@ export function CreateProductDialog({
         mlCategorySource: mlCategorySourceToSend,
         mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
         imageUrls: data.imageUrls || [],
+
+        // Compatibilidades veiculares
+        compatibilities: compatibilities.map((c) => ({
+          brand: c.brand,
+          model: c.model,
+          yearFrom: c.yearFrom ?? null,
+          yearTo: c.yearTo ?? null,
+          version: c.version ?? null,
+        })),
       };
 
       // Criar produto primeiro
@@ -1700,6 +1789,7 @@ export function CreateProductDialog({
     setCurrentStep(1);
     setMlCategorySearch("");
     setMlCategoryDropdownOpen(false);
+    setCompatibilities([]);
     setOpen(false);
   };
 
@@ -2441,8 +2531,16 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 5: Mercado Livre */}
+          {/* Step 5: Compatibilidade */}
           {currentStep === 5 && (
+            <CompatibilityTab
+              value={compatibilities}
+              onChange={setCompatibilities}
+            />
+          )}
+
+          {/* Step 6: Mercado Livre */}
+          {currentStep === 6 && (
             <div className="space-y-4">
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -2670,8 +2768,8 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 6: Shopee */}
-          {currentStep === 6 && (
+          {/* Step 7: Shopee */}
+          {currentStep === 7 && (
             <div className="space-y-4">
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -2748,8 +2846,8 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 7: Revisão */}
-          {currentStep === 7 && (
+          {/* Step 8: Revisão */}
+          {currentStep === 8 && (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/30 p-4">
                 <h4 className="mb-3 font-medium">Identificação</h4>
@@ -2914,6 +3012,38 @@ export function CreateProductDialog({
                       </span>
                     )}
                   </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-muted/30 p-4">
+                <h4 className="mb-3 font-medium">Compatibilidade</h4>
+                <div className="text-sm">
+                  {compatibilities.length > 0 ? (
+                    <div className="space-y-1">
+                      <p className="text-muted-foreground mb-2">
+                        {compatibilities.length} veículo(s) compatível(is)
+                      </p>
+                      {compatibilities.slice(0, 5).map((c, i) => (
+                        <div key={c._localId || i} className="text-sm">
+                          <span className="font-medium">{c.brand}</span>{" "}
+                          {c.model}
+                          {c.yearFrom
+                            ? ` (${c.yearFrom}${c.yearTo && c.yearTo !== c.yearFrom ? `–${c.yearTo}` : ""})`
+                            : ""}
+                          {c.version ? ` ${c.version}` : ""}
+                        </div>
+                      ))}
+                      {compatibilities.length > 5 && (
+                        <p className="text-muted-foreground text-xs">
+                          ... e mais {compatibilities.length - 5}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      Nenhuma compatibilidade adicionada
+                    </p>
+                  )}
                 </div>
               </div>
 

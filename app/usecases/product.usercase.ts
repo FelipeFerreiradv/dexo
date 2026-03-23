@@ -15,13 +15,16 @@ import {
 } from "../repositories/user.repository";
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
+import { ProductCompatibilityRepositoryPrisma } from "../repositories/compatibility.repository";
 
 export class ProductUseCase {
   private productRepository: ProductRepository;
   private userRepository: UserRepository;
+  private compatibilityRepository: ProductCompatibilityRepositoryPrisma;
   constructor() {
     this.productRepository = new ProductRepositoryPrisma();
     this.userRepository = new UserRepositoryPrisma();
+    this.compatibilityRepository = new ProductCompatibilityRepositoryPrisma();
   }
 
   async create(productData: ProductCreate): Promise<Product> {
@@ -64,6 +67,25 @@ export class ProductUseCase {
     }
 
     const data = await this.productRepository.create(productData);
+
+    // Salvar compatibilidades se fornecidas junto com o produto
+    if (productData.compatibilities && productData.compatibilities.length > 0) {
+      try {
+        await this.compatibilityRepository.createMany(
+          data.id,
+          productData.compatibilities.map((c) => ({
+            brand: c.brand,
+            model: c.model,
+            yearFrom: c.yearFrom ?? null,
+            yearTo: c.yearTo ?? null,
+            version: c.version ?? null,
+          })),
+        );
+      } catch (err) {
+        console.error("Erro ao salvar compatibilidades:", err);
+      }
+    }
+
     return data;
   }
 

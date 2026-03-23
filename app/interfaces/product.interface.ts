@@ -102,6 +102,15 @@ export interface ProductCreate {
     accountIds: string[];
     categoryId?: string;
   }>;
+
+  // Compatibilidades veiculares (criadas junto com o produto)
+  compatibilities?: Array<{
+    brand: string;
+    model: string;
+    yearFrom?: number | null;
+    yearTo?: number | null;
+    version?: string | null;
+  }>;
 }
 
 export interface ProductUpdate {
@@ -143,6 +152,15 @@ export interface ProductUpdate {
   // Imagem do produto
   imageUrl?: string;
   imageUrls?: string[];
+
+  // Compatibilidades veiculares
+  compatibilities?: Array<{
+    brand: string;
+    model: string;
+    yearFrom?: number | null;
+    yearTo?: number | null;
+    version?: string | null;
+  }>;
 }
 
 export interface ProductUpdateResult {

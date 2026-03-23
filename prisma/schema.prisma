@@ -62,6 +62,7 @@ model Product {
   shopeeCategoryChosenAt DateTime?
   locationId             String?
   orderItems             OrderItem[]
+  compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
   user                   User?                @relation(fields: [userId], references: [id])
   productLocation        Location?            @relation(fields: [locationId], references: [id])
@@ -72,6 +73,21 @@ model Product {
   @@index([userId, updatedAt])
   @@index([sku])
   @@index([locationId])
+}
+
+model ProductCompatibility {
+  id        String   @id @default(cuid())
+  productId String
+  brand     String
+  model     String
+  yearFrom  Int?
+  yearTo    Int?
+  version   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
 }
 
 model Location {

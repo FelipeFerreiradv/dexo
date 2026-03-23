@@ -4,9 +4,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Loader2, ChevronDown } from "lucide-react";
+import { Loader2, ChevronDown, Link2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -200,6 +201,12 @@ export function EditProductDialog({
   >([]);
   const [createMlListing, setCreateMlListing] = useState(false);
   const [createShopeeListing, setCreateShopeeListing] = useState(false);
+  const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
+    [],
+  );
+  const [compatibilitiesLoading, setCompatibilitiesLoading] = useState(false);
+  const [showCompatibilitySection, setShowCompatibilitySection] =
+    useState(false);
   const [locationOptions, setLocationOptions] = useState<
     Array<{
       id: string;
@@ -442,6 +449,47 @@ export function EditProductDialog({
           }
         } catch (err) {
           console.error("Erro ao buscar contas de marketplace:", err);
+        }
+      })();
+
+      // Buscar compatibilidades existentes do produto
+      (async () => {
+        if (!session?.user?.email || !product.id) return;
+        setCompatibilitiesLoading(true);
+        try {
+          const base = getApiBaseUrl();
+          const resp = await fetch(
+            `${base}/products/${product.id}/compatibilities`,
+            { headers: { email: session.user.email } },
+          );
+          if (resp.ok) {
+            const json = await resp.json();
+            const items: CompatibilityEntry[] = (
+              json.compatibilities || []
+            ).map(
+              (c: {
+                id: string;
+                brand: string;
+                model: string;
+                yearFrom?: number | null;
+                yearTo?: number | null;
+                version?: string | null;
+              }) => ({
+                _localId: c.id,
+                brand: c.brand,
+                model: c.model,
+                yearFrom: c.yearFrom ?? undefined,
+                yearTo: c.yearTo ?? undefined,
+                version: c.version ?? undefined,
+              }),
+            );
+            setCompatibilities(items);
+            setShowCompatibilitySection(items.length > 0);
+          }
+        } catch (err) {
+          console.error("Erro ao buscar compatibilidades:", err);
+        } finally {
+          setCompatibilitiesLoading(false);
         }
       })();
     }
@@ -1159,6 +1207,31 @@ export function EditProductDialog({
         throw new Error(result.error || "Erro ao atualizar produto");
       }
 
+      // Salvar compatibilidades (PUT substitui todas)
+      try {
+        await fetch(
+          `${getApiBaseUrl()}/products/${product.id}/compatibilities`,
+          {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              email: session?.user?.email || "",
+            },
+            body: JSON.stringify({
+              items: compatibilities.map((c) => ({
+                brand: c.brand,
+                model: c.model,
+                yearFrom: c.yearFrom || undefined,
+                yearTo: c.yearTo || undefined,
+                version: c.version || undefined,
+              })),
+            }),
+          },
+        );
+      } catch (err) {
+        console.error("Erro ao salvar compatibilidades:", err);
+      }
+
       const base = getApiBaseUrl();
       const listingResults: string[] = [];
 
@@ -1272,7 +1345,7 @@ export function EditProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-150">
         <DialogHeader>
           <DialogTitle>Editar Produto</DialogTitle>
           <DialogDescription>
@@ -1921,6 +1994,50 @@ export function EditProductDialog({
                   </Label>
                 </div>
               </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          {/* Seção: Compatibilidade de Veículos (Colapsável) */}
+          <Collapsible
+            open={showCompatibilitySection}
+            onOpenChange={setShowCompatibilitySection}
+          >
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="flex w-full justify-between p-0 hover:bg-transparent"
+              >
+                <span className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Link2 className="size-4" />
+                  Compatibilidade de Veículos
+                  {compatibilities.length > 0 && (
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">
+                      {compatibilities.length}
+                    </span>
+                  )}
+                </span>
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${
+                    showCompatibilitySection ? "rotate-180" : ""
+                  }`}
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-4">
+              {compatibilitiesLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                  <span className="ml-2 text-sm text-muted-foreground">
+                    Carregando compatibilidades...
+                  </span>
+                </div>
+              ) : (
+                <CompatibilityTab
+                  value={compatibilities}
+                  onChange={setCompatibilities}
+                />
+              )}
             </CollapsibleContent>
           </Collapsible>
 
