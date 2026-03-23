@@ -47,6 +47,22 @@ import { ProductSkeleton } from "./product-skeleton";
 import { CreateProductDialog } from "./create-product-dialog";
 import { EditProductDialog } from "./edit-product-dialog";
 
+type MarketplacePlatform = "MERCADO_LIVRE" | "SHOPEE";
+
+const MARKETPLACE_ICONS: Record<
+  MarketplacePlatform,
+  { label: string; src: string }
+> = {
+  MERCADO_LIVRE: {
+    label: "Mercado Livre",
+    src: "/marketplaces/mercado-livre.svg",
+  },
+  SHOPEE: {
+    label: "Shopee",
+    src: "/marketplaces/shopee.svg",
+  },
+};
+
 type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 
 interface Product {
@@ -74,6 +90,11 @@ interface Product {
   isTraceable?: boolean;
   sourceVehicle?: string | null;
   imageUrl?: string | null;
+  listings?: Array<{
+    platform: MarketplacePlatform;
+    accountIds: string[];
+    categoryId?: string;
+  }>;
 }
 
 interface ProductFormData {
@@ -94,6 +115,50 @@ interface Toast {
   id: string; // use uuid to avoid duplicate keys when multiple toasts fire in same ms
   message: string;
   type: "success" | "error" | "warning";
+}
+
+function MarketplaceBadges({
+  listings,
+  size = "md",
+}: {
+  listings?: Product["listings"];
+  size?: "sm" | "md";
+}) {
+  const platforms = Array.from(
+    new Set(
+      (listings || [])
+        .map((l) => l?.platform)
+        .filter((p): p is MarketplacePlatform =>
+          p === "MERCADO_LIVRE" || p === "SHOPEE",
+        ),
+    ),
+  );
+
+  if (platforms.length === 0) return null;
+
+  const imgClass = size === "sm" ? "h-4 w-auto" : "h-5 w-auto";
+  const chipClass =
+    size === "sm"
+      ? "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-[2px]"
+      : "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1";
+
+  return (
+    <div className="flex items-center gap-2">
+      {platforms.map((platform) => {
+        const icon = MARKETPLACE_ICONS[platform];
+        return (
+          <span
+            key={platform}
+            className={chipClass}
+            title={`Anúncio publicado no ${icon.label}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={icon.src} alt={icon.label} className={imgClass} />
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 export function ProductsList() {
@@ -343,6 +408,9 @@ export function ProductsList() {
                           <TableHead>SKU</TableHead>
                           <TableHead>Nome</TableHead>
                           <TableHead className="hidden md:table-cell">
+                            Marketplaces
+                          </TableHead>
+                          <TableHead className="hidden md:table-cell">
                             Preço
                           </TableHead>
                           <TableHead>Estoque</TableHead>
@@ -391,6 +459,9 @@ export function ProductsList() {
                                   </p>
                                 )}
                               </div>
+                            </TableCell>
+                            <TableCell className="hidden md:table-cell">
+                              <MarketplaceBadges listings={product.listings} />
                             </TableCell>
                             <TableCell className="hidden md:table-cell">
                               {formatPrice(product.price)}
@@ -492,6 +563,10 @@ export function ProductsList() {
                                 <p className="font-mono text-xs text-muted-foreground">
                                   {product.sku}
                                 </p>
+                                <MarketplaceBadges
+                                  listings={product.listings}
+                                  size="sm"
+                                />
                               </div>
                               <Badge
                                 variant={getStockBadgeVariant(product.stock)}

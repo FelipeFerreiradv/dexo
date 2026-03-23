@@ -370,8 +370,44 @@ export function CreateProductDialog({
   const watchWeight = watch("weightKg");
   const watchMlAccountIds = watch("mlAccountIds") || [];
   const watchShopeeAccountIds = watch("shopeeAccountIds") || [];
+  const watchCreateMLListing = watch("createMLListing");
   const watchCreateShopeeListing = watch("createShopeeListing");
   const watchDescription = watch("description") || "";
+  const mlAutofilledRef = useRef(false);
+  const shopeeAutofilledRef = useRef(false);
+
+  // Quando o usuário opta por criar anúncio, pré-selecionar todas as contas disponíveis
+  useEffect(() => {
+    if (!watchCreateMLListing) {
+      mlAutofilledRef.current = false;
+      return;
+    }
+    if (mlAccounts.length === 0) return;
+    if (mlAutofilledRef.current) return;
+    const allIds = mlAccounts.map((acc) => acc.id);
+    setValue("mlAccountIds", allIds, {
+      shouldDirty: true,
+      shouldValidate: true,
+      shouldTouch: true,
+    });
+    mlAutofilledRef.current = true;
+  }, [mlAccounts, setValue, watchCreateMLListing]);
+
+  useEffect(() => {
+    if (!watchCreateShopeeListing) {
+      shopeeAutofilledRef.current = false;
+      return;
+    }
+    if (shopeeAccounts.length === 0) return;
+    if (shopeeAutofilledRef.current) return;
+    const allIds = shopeeAccounts.map((acc) => acc.id);
+    setValue("shopeeAccountIds", allIds, {
+      shouldDirty: true,
+      shouldValidate: true,
+      shouldTouch: true,
+    });
+    shopeeAutofilledRef.current = true;
+  }, [shopeeAccounts, setValue, watchCreateShopeeListing]);
 
   useEffect(() => {
     if (!open) setTitleSuggestion("");
@@ -568,7 +604,6 @@ export function CreateProductDialog({
   }, [watchCostPrice, watchPrice, setValue]);
 
   // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
-  const watchCreateMLListing = watch("createMLListing");
   const mlCategoriesLoadedRef = useRef(false);
   useEffect(() => {
     if (

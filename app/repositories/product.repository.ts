@@ -6,10 +6,33 @@ import {
   Quality,
 } from "../interfaces/product.interface";
 import prisma from "../lib/prisma";
-import { Product as PrismaProduct } from "@prisma/client";
+import { Platform, Product as PrismaProduct } from "@prisma/client";
 
 // Helper para converter Prisma Product para interface Product
 function mapPrismaToProduct(item: PrismaProduct): Product {
+  const listingsRaw = (item as any).listings as
+    | Array<{
+        marketplaceAccountId: string;
+        requestedCategoryId?: string | null;
+        marketplaceAccount?: { platform?: Platform };
+      }>
+    | undefined;
+
+  const listings =
+    listingsRaw && listingsRaw.length > 0
+      ? (listingsRaw
+          .map((listing) => {
+            const platform = listing.marketplaceAccount?.platform;
+            if (!platform) return null;
+            return {
+              platform,
+              accountIds: [listing.marketplaceAccountId],
+              categoryId: listing.requestedCategoryId ?? undefined,
+            };
+          })
+          .filter(Boolean) as Product["listings"])
+      : undefined;
+
   return {
     id: item.id,
     userId: item.userId ?? undefined,
@@ -51,6 +74,9 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     // Imagem do produto
     imageUrl: item.imageUrl ?? undefined,
     imageUrls: (item as any).imageUrls ?? [],
+
+    // Listagens criadas em marketplaces (simplificadas para UI)
+    listings,
   };
 }
 
@@ -190,6 +216,13 @@ class ProductRepositoryPrisma implements ProductRepository {
             widthCm: true,
             lengthCm: true,
             weightKg: true,
+            listings: {
+              select: {
+                marketplaceAccountId: true,
+                requestedCategoryId: true,
+                marketplaceAccount: { select: { platform: true } },
+              },
+            },
           },
         }),
         prisma.product.count({ where }),

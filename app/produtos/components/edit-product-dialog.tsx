@@ -292,6 +292,31 @@ export function EditProductDialog({
   const watchMlCategory = watch("mlCategory");
   const watchDescription = watch("description") || "";
 
+  // Ao habilitar a criaÃ§Ã£o de anÃºncio, selecionar automaticamente todas as contas disponÃ­veis
+  useEffect(() => {
+    if (!createMlListing) return;
+    if (mlAccounts.length === 0) return;
+    setSelectedMlAccounts((prev) => {
+      const allIds = mlAccounts.map((acc) => acc.id);
+      const hasAll =
+        prev.length === allIds.length &&
+        allIds.every((id) => prev.includes(id));
+      return hasAll ? prev : allIds;
+    });
+  }, [createMlListing, mlAccounts]);
+
+  useEffect(() => {
+    if (!createShopeeListing) return;
+    if (shopeeAccounts.length === 0) return;
+    setSelectedShopeeAccounts((prev) => {
+      const allIds = shopeeAccounts.map((acc) => acc.id);
+      const hasAll =
+        prev.length === allIds.length &&
+        allIds.every((id) => prev.includes(id));
+      return hasAll ? prev : allIds;
+    });
+  }, [createShopeeListing, shopeeAccounts]);
+
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   const fetchDefaultDescription = useCallback(async () => {
     try {
