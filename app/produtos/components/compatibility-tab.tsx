@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Search,
   Plus,
@@ -9,8 +9,8 @@ import {
   Loader2,
   ListPlus,
   RotateCcw,
-  Save,
   HelpCircle,
+  ChevronsUpDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,7 +40,32 @@ import {
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { BRANDS } from "../../lib/product-parser";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  getVehicleBrands,
+  getModelsForBrand,
+  getYearsForModel,
+  getVersionsForModel,
+} from "../../lib/vehicle-catalog";
 
 // ---- Tipos locais ----
 
@@ -68,7 +93,108 @@ function localId(): string {
   return `compat-${Date.now()}-${_seq}`;
 }
 
-// ---- Componente ----
+// ---- Componente Combobox reutilizável (pesquisável) ----
+
+interface SearchableSelectProps {
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  searchPlaceholder?: string;
+  emptyMessage?: string;
+  disabled?: boolean;
+  allowCustom?: boolean;
+}
+
+function SearchableSelect({
+  options,
+  value,
+  onChange,
+  placeholder,
+  searchPlaceholder = "Pesquisar...",
+  emptyMessage = "Nenhuma opção encontrada.",
+  disabled = false,
+  allowCustom = true,
+}: SearchableSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+
+  useEffect(() => {
+    if (!open) setInputValue("");
+  }, [open]);
+
+  const filteredOptions = useMemo(() => {
+    if (!inputValue.trim()) return options;
+    const q = inputValue.toLowerCase();
+    return options.filter((o) => o.toLowerCase().includes(q));
+  }, [options, inputValue]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+          disabled={disabled}
+          type="button"
+        >
+          <span className={value ? "" : "text-muted-foreground"}>
+            {value || placeholder}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-[--radix-popover-trigger-width] p-0"
+        align="start"
+      >
+        <Command shouldFilter={false}>
+          <CommandInput
+            placeholder={searchPlaceholder}
+            value={inputValue}
+            onValueChange={setInputValue}
+          />
+          <CommandList>
+            <CommandEmpty>
+              {allowCustom && inputValue.trim() ? (
+                <button
+                  type="button"
+                  className="w-full px-2 py-1.5 text-left text-sm hover:bg-accent"
+                  onClick={() => {
+                    onChange(inputValue.trim());
+                    setOpen(false);
+                  }}
+                >
+                  Usar &quot;{inputValue.trim()}&quot;
+                </button>
+              ) : (
+                emptyMessage
+              )}
+            </CommandEmpty>
+            <CommandGroup>
+              {filteredOptions.map((option) => (
+                <CommandItem
+                  key={option}
+                  value={option}
+                  onSelect={() => {
+                    onChange(option);
+                    setOpen(false);
+                  }}
+                >
+                  {option}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ---- Componente principal ----
 
 export function CompatibilityTab({
   value,
@@ -80,7 +206,7 @@ export function CompatibilityTab({
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
 
-  // Form state para adicionar um registro
+  // Form state para adicionar um registro (cascata)
   const [addBrand, setAddBrand] = useState("");
   const [addModel, setAddModel] = useState("");
   const [addYearFrom, setAddYearFrom] = useState("");
@@ -89,6 +215,38 @@ export function CompatibilityTab({
 
   // Form state para adição em massa
   const [batchText, setBatchText] = useState("");
+
+  // Opções cascata baseadas no catálogo
+  const brandOptions = useMemo(() => getVehicleBrands(), []);
+  const modelOptions = useMemo(
+    () => (addBrand ? getModelsForBrand(addBrand) : []),
+    [addBrand],
+  );
+  const yearOptions = useMemo(
+    () => (addBrand && addModel ? getYearsForModel(addBrand, addModel) : []),
+    [addBrand, addModel],
+  );
+  const versionOptions = useMemo(
+    () => (addBrand && addModel ? getVersionsForModel(addBrand, addModel) : []),
+    [addBrand, addModel],
+  );
+
+  // Resetar campos dependentes quando muda a marca
+  const handleBrandChange = useCallback((newBrand: string) => {
+    setAddBrand(newBrand);
+    setAddModel("");
+    setAddYearFrom("");
+    setAddYearTo("");
+    setAddVersion("");
+  }, []);
+
+  // Resetar campos dependentes quando muda o modelo
+  const handleModelChange = useCallback((newModel: string) => {
+    setAddModel(newModel);
+    setAddYearFrom("");
+    setAddYearTo("");
+    setAddVersion("");
+  }, []);
 
   // Filtro de busca
   const filtered = useMemo(() => {
@@ -380,8 +538,20 @@ export function CompatibilityTab({
         </Button>
       </div>
 
-      {/* Dialog: Adicionar Individual */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+      {/* Dialog: Adicionar Individual (cascata) */}
+      <Dialog
+        open={addDialogOpen}
+        onOpenChange={(open) => {
+          setAddDialogOpen(open);
+          if (!open) {
+            setAddBrand("");
+            setAddModel("");
+            setAddYearFrom("");
+            setAddYearTo("");
+            setAddVersion("");
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Adicionar Compatibilidade</DialogTitle>
@@ -391,67 +561,140 @@ export function CompatibilityTab({
           </DialogHeader>
 
           <div className="space-y-4">
+            {/* Marca (pesquisável) */}
             <div className="space-y-2">
-              <Label htmlFor="compat-brand">Marca *</Label>
-              <Input
-                id="compat-brand"
-                placeholder="Ex: Honda, Fiat, Volkswagen"
+              <Label>Marca *</Label>
+              <SearchableSelect
+                options={brandOptions}
                 value={addBrand}
-                onChange={(e) => setAddBrand(e.target.value)}
-                list="compat-brands-list"
+                onChange={handleBrandChange}
+                placeholder="Selecione a marca..."
+                searchPlaceholder="Buscar marca..."
+                emptyMessage="Marca não encontrada."
+                allowCustom
               />
-              <datalist id="compat-brands-list">
-                {BRANDS.map((b) => (
-                  <option key={b} value={b} />
-                ))}
-              </datalist>
             </div>
 
+            {/* Modelo (pesquisável, depende da marca) */}
             <div className="space-y-2">
-              <Label htmlFor="compat-model">Modelo *</Label>
-              <Input
-                id="compat-model"
-                placeholder="Ex: Civic, Palio, Golf"
+              <Label>Modelo *</Label>
+              <SearchableSelect
+                options={modelOptions}
                 value={addModel}
-                onChange={(e) => setAddModel(e.target.value)}
+                onChange={handleModelChange}
+                placeholder={
+                  addBrand
+                    ? "Selecione o modelo..."
+                    : "Selecione a marca primeiro"
+                }
+                searchPlaceholder="Buscar modelo..."
+                emptyMessage="Modelo não encontrado."
+                disabled={!addBrand}
+                allowCustom
               />
             </div>
 
+            {/* Anos (depende de marca+modelo) */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="compat-year-from">Ano Inicial</Label>
-                <Input
-                  id="compat-year-from"
-                  type="number"
-                  placeholder="2015"
-                  min={1950}
-                  max={2040}
-                  value={addYearFrom}
-                  onChange={(e) => setAddYearFrom(e.target.value)}
-                />
+                <Label>Ano Inicial</Label>
+                {yearOptions.length > 0 ? (
+                  <Select
+                    value={addYearFrom}
+                    onValueChange={(v) => {
+                      setAddYearFrom(v);
+                      if (addYearTo && parseInt(addYearTo) < parseInt(v)) {
+                        setAddYearTo(v);
+                      }
+                    }}
+                    disabled={!addModel}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Ano inicial" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {yearOptions.map((y) => (
+                        <SelectItem key={y} value={String(y)}>
+                          {y}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    type="number"
+                    placeholder="2015"
+                    min={1950}
+                    max={2040}
+                    value={addYearFrom}
+                    onChange={(e) => setAddYearFrom(e.target.value)}
+                    disabled={!addModel}
+                  />
+                )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="compat-year-to">Ano Final</Label>
-                <Input
-                  id="compat-year-to"
-                  type="number"
-                  placeholder="2023"
-                  min={1950}
-                  max={2040}
-                  value={addYearTo}
-                  onChange={(e) => setAddYearTo(e.target.value)}
-                />
+                <Label>Ano Final</Label>
+                {yearOptions.length > 0 ? (
+                  <Select
+                    value={addYearTo}
+                    onValueChange={setAddYearTo}
+                    disabled={!addModel}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Ano final" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {yearOptions
+                        .filter(
+                          (y) => !addYearFrom || y >= parseInt(addYearFrom),
+                        )
+                        .map((y) => (
+                          <SelectItem key={y} value={String(y)}>
+                            {y}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    type="number"
+                    placeholder="2023"
+                    min={1950}
+                    max={2040}
+                    value={addYearTo}
+                    onChange={(e) => setAddYearTo(e.target.value)}
+                    disabled={!addModel}
+                  />
+                )}
               </div>
             </div>
 
+            {/* Versão (pesquisável, depende de marca+modelo) */}
             <div className="space-y-2">
-              <Label htmlFor="compat-version">Versão</Label>
-              <Input
-                id="compat-version"
-                placeholder="Ex: EXL, LX, Sport"
-                value={addVersion}
-                onChange={(e) => setAddVersion(e.target.value)}
-              />
+              <Label>Versão</Label>
+              {versionOptions.length > 0 ? (
+                <SearchableSelect
+                  options={versionOptions}
+                  value={addVersion}
+                  onChange={setAddVersion}
+                  placeholder={
+                    addModel
+                      ? "Selecione a versão..."
+                      : "Selecione o modelo primeiro"
+                  }
+                  searchPlaceholder="Buscar versão..."
+                  emptyMessage="Versão não encontrada."
+                  disabled={!addModel}
+                  allowCustom
+                />
+              ) : (
+                <Input
+                  placeholder="Ex: EXL, LX, Sport"
+                  value={addVersion}
+                  onChange={(e) => setAddVersion(e.target.value)}
+                  disabled={!addModel}
+                />
+              )}
             </div>
           </div>
 
