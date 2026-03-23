@@ -11,7 +11,9 @@ import {
   RotateCcw,
   HelpCircle,
   ChevronsUpDown,
+  Check,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -93,29 +95,45 @@ function localId(): string {
   return `compat-${Date.now()}-${_seq}`;
 }
 
-// ---- Componente Combobox reutilizável (pesquisável) ----
+// ---- Helpers para chave composta marca+modelo ----
 
-interface SearchableSelectProps {
-  options: string[];
+function makeModelKey(brand: string, model: string): string {
+  return `${brand}|||${model}`;
+}
+
+function parseModelKey(key: string): { brand: string; model: string } {
+  const idx = key.indexOf("|||");
+  if (idx === -1) return { brand: "", model: key };
+  return { brand: key.slice(0, idx), model: key.slice(idx + 3) };
+}
+
+// ---- Multi-select reutilizável (pesquisável, com checkmarks) ----
+
+interface MultiSelectOption {
   value: string;
-  onChange: (value: string) => void;
+  label: string;
+  group?: string;
+}
+
+interface MultiSearchableSelectProps {
+  options: MultiSelectOption[];
+  selected: string[];
+  onChange: (selected: string[]) => void;
   placeholder: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
   disabled?: boolean;
-  allowCustom?: boolean;
 }
 
-function SearchableSelect({
+function MultiSearchableSelect({
   options,
-  value,
+  selected,
   onChange,
   placeholder,
   searchPlaceholder = "Pesquisar...",
   emptyMessage = "Nenhuma opção encontrada.",
   disabled = false,
-  allowCustom = true,
-}: SearchableSelectProps) {
+}: MultiSearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
 
@@ -126,8 +144,53 @@ function SearchableSelect({
   const filteredOptions = useMemo(() => {
     if (!inputValue.trim()) return options;
     const q = inputValue.toLowerCase();
-    return options.filter((o) => o.toLowerCase().includes(q));
+    return options.filter((o) => o.label.toLowerCase().includes(q));
   }, [options, inputValue]);
+
+  // Agrupar opções por grupo quando existir
+  const grouped = useMemo(() => {
+    const hasGroups = filteredOptions.some((o) => o.group);
+    if (!hasGroups) return null;
+    const groups = new Map<string, MultiSelectOption[]>();
+    for (const opt of filteredOptions) {
+      const g = opt.group || "";
+      const arr = groups.get(g) || [];
+      arr.push(opt);
+      groups.set(g, arr);
+    }
+    return groups;
+  }, [filteredOptions]);
+
+  const toggle = useCallback(
+    (val: string) => {
+      onChange(
+        selected.includes(val)
+          ? selected.filter((v) => v !== val)
+          : [...selected, val],
+      );
+    },
+    [selected, onChange],
+  );
+
+  const selectedLabels = useMemo(() => {
+    return selected.map((v) => options.find((o) => o.value === v)?.label || v);
+  }, [selected, options]);
+
+  const renderOption = (opt: MultiSelectOption) => (
+    <CommandItem
+      key={opt.value}
+      value={opt.value}
+      onSelect={() => toggle(opt.value)}
+    >
+      <Check
+        className={cn(
+          "mr-2 h-4 w-4",
+          selected.includes(opt.value) ? "opacity-100" : "opacity-0",
+        )}
+      />
+      {opt.label}
+    </CommandItem>
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen} modal>
@@ -136,13 +199,29 @@ function SearchableSelect({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between font-normal"
+          className="w-full justify-between font-normal min-h-9 h-auto"
           disabled={disabled}
           type="button"
         >
-          <span className={value ? "" : "text-muted-foreground"}>
-            {value || placeholder}
-          </span>
+          {selected.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {selectedLabels.slice(0, 3).map((label, i) => (
+                <span
+                  key={selected[i]}
+                  className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium"
+                >
+                  {label}
+                </span>
+              ))}
+              {selectedLabels.length > 3 && (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                  +{selectedLabels.length - 3}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="text-muted-foreground">{placeholder}</span>
+          )}
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
@@ -157,36 +236,16 @@ function SearchableSelect({
             onValueChange={setInputValue}
           />
           <CommandList>
-            <CommandEmpty>
-              {allowCustom && inputValue.trim() ? (
-                <button
-                  type="button"
-                  className="w-full px-2 py-1.5 text-left text-sm hover:bg-accent"
-                  onClick={() => {
-                    onChange(inputValue.trim());
-                    setOpen(false);
-                  }}
-                >
-                  Usar &quot;{inputValue.trim()}&quot;
-                </button>
-              ) : (
-                emptyMessage
-              )}
-            </CommandEmpty>
-            <CommandGroup>
-              {filteredOptions.map((option) => (
-                <CommandItem
-                  key={option}
-                  value={option}
-                  onSelect={() => {
-                    onChange(option);
-                    setOpen(false);
-                  }}
-                >
-                  {option}
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            <CommandEmpty>{emptyMessage}</CommandEmpty>
+            {grouped ? (
+              Array.from(grouped.entries()).map(([group, opts]) => (
+                <CommandGroup key={group} heading={group}>
+                  {opts.map(renderOption)}
+                </CommandGroup>
+              ))
+            ) : (
+              <CommandGroup>{filteredOptions.map(renderOption)}</CommandGroup>
+            )}
           </CommandList>
         </Command>
       </PopoverContent>
@@ -206,46 +265,75 @@ export function CompatibilityTab({
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
 
-  // Form state para adicionar um registro (cascata)
-  const [addBrand, setAddBrand] = useState("");
-  const [addModel, setAddModel] = useState("");
+  // Form state para adicionar (multi-select cascata)
+  const [addBrands, setAddBrands] = useState<string[]>([]);
+  const [addModels, setAddModels] = useState<string[]>([]); // chave "brand|||model"
   const [addYearFrom, setAddYearFrom] = useState("");
   const [addYearTo, setAddYearTo] = useState("");
-  const [addVersion, setAddVersion] = useState("");
+  const [addVersions, setAddVersions] = useState<string[]>([]);
 
   // Form state para adição em massa
   const [batchText, setBatchText] = useState("");
 
-  // Opções cascata baseadas no catálogo
-  const brandOptions = useMemo(() => getVehicleBrands(), []);
-  const modelOptions = useMemo(
-    () => (addBrand ? getModelsForBrand(addBrand) : []),
-    [addBrand],
-  );
-  const yearOptions = useMemo(
-    () => (addBrand && addModel ? getYearsForModel(addBrand, addModel) : []),
-    [addBrand, addModel],
-  );
-  const versionOptions = useMemo(
-    () => (addBrand && addModel ? getVersionsForModel(addBrand, addModel) : []),
-    [addBrand, addModel],
+  // Opções cascata baseadas no catálogo (multi-select)
+  const brandOptions = useMemo(
+    () => getVehicleBrands().map((b) => ({ value: b, label: b })),
+    [],
   );
 
-  // Resetar campos dependentes quando muda a marca
-  const handleBrandChange = useCallback((newBrand: string) => {
-    setAddBrand(newBrand);
-    setAddModel("");
+  const modelGroupedOptions = useMemo(() => {
+    const result: MultiSelectOption[] = [];
+    for (const brand of addBrands) {
+      for (const model of getModelsForBrand(brand)) {
+        result.push({
+          value: makeModelKey(brand, model),
+          label: model,
+          group: brand,
+        });
+      }
+    }
+    return result;
+  }, [addBrands]);
+
+  const yearOptions = useMemo(() => {
+    const allYears = new Set<number>();
+    for (const key of addModels) {
+      const { brand, model } = parseModelKey(key);
+      for (const y of getYearsForModel(brand, model)) allYears.add(y);
+    }
+    return [...allYears].sort((a, b) => a - b);
+  }, [addModels]);
+
+  const versionOptions = useMemo(() => {
+    const allVersions = new Set<string>();
+    for (const key of addModels) {
+      const { brand, model } = parseModelKey(key);
+      for (const v of getVersionsForModel(brand, model)) allVersions.add(v);
+    }
+    return [...allVersions].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [addModels]);
+
+  // Resetar campos dependentes quando mudam as marcas
+  const handleBrandsChange = useCallback((newBrands: string[]) => {
+    setAddBrands(newBrands);
+    // Remover modelos de marcas que não estão mais selecionadas
+    setAddModels((prev) =>
+      prev.filter((key) => {
+        const { brand } = parseModelKey(key);
+        return newBrands.some((b) => b.toLowerCase() === brand.toLowerCase());
+      }),
+    );
     setAddYearFrom("");
     setAddYearTo("");
-    setAddVersion("");
+    setAddVersions([]);
   }, []);
 
-  // Resetar campos dependentes quando muda o modelo
-  const handleModelChange = useCallback((newModel: string) => {
-    setAddModel(newModel);
+  // Resetar campos dependentes quando mudam os modelos
+  const handleModelsChange = useCallback((newModels: string[]) => {
+    setAddModels(newModels);
     setAddYearFrom("");
     setAddYearTo("");
-    setAddVersion("");
+    setAddVersions([]);
   }, []);
 
   // Filtro de busca
@@ -287,25 +375,54 @@ export function CompatibilityTab({
     });
   }, [filtered]);
 
-  // Adicionar individual
+  // Adicionar: gera produto cartesiano de modelos × versões
   const handleAdd = useCallback(() => {
-    if (!addBrand.trim() || !addModel.trim()) return;
-    const entry: CompatibilityEntry = {
-      _localId: localId(),
-      brand: addBrand.trim(),
-      model: addModel.trim(),
-      yearFrom: addYearFrom ? parseInt(addYearFrom, 10) : null,
-      yearTo: addYearTo ? parseInt(addYearTo, 10) : null,
-      version: addVersion.trim() || null,
-    };
-    onChange([...value, entry]);
-    setAddBrand("");
-    setAddModel("");
+    if (addBrands.length === 0 || addModels.length === 0) return;
+    const entries: CompatibilityEntry[] = [];
+    const yFrom = addYearFrom ? parseInt(addYearFrom, 10) : null;
+    const yTo = addYearTo ? parseInt(addYearTo, 10) : null;
+
+    for (const key of addModels) {
+      const { brand, model } = parseModelKey(key);
+      if (addVersions.length > 0) {
+        for (const version of addVersions) {
+          entries.push({
+            _localId: localId(),
+            brand,
+            model,
+            yearFrom: yFrom,
+            yearTo: yTo,
+            version,
+          });
+        }
+      } else {
+        entries.push({
+          _localId: localId(),
+          brand,
+          model,
+          yearFrom: yFrom,
+          yearTo: yTo,
+          version: null,
+        });
+      }
+    }
+
+    onChange([...value, ...entries]);
+    setAddBrands([]);
+    setAddModels([]);
     setAddYearFrom("");
     setAddYearTo("");
-    setAddVersion("");
+    setAddVersions([]);
     setAddDialogOpen(false);
-  }, [addBrand, addModel, addYearFrom, addYearTo, addVersion, onChange, value]);
+  }, [
+    addBrands,
+    addModels,
+    addYearFrom,
+    addYearTo,
+    addVersions,
+    onChange,
+    value,
+  ]);
 
   // Adicionar em massa (formato: Marca; Modelo; AnoInicio; AnoFim; Versão — uma por linha)
   const handleBatchAdd = useCallback(() => {
@@ -538,17 +655,17 @@ export function CompatibilityTab({
         </Button>
       </div>
 
-      {/* Dialog: Adicionar Individual (cascata) */}
+      {/* Dialog: Adicionar (multi-select cascata) */}
       <Dialog
         open={addDialogOpen}
         onOpenChange={(open) => {
           setAddDialogOpen(open);
           if (!open) {
-            setAddBrand("");
-            setAddModel("");
+            setAddBrands([]);
+            setAddModels([]);
             setAddYearFrom("");
             setAddYearTo("");
-            setAddVersion("");
+            setAddVersions([]);
           }
         }}
       >
@@ -556,45 +673,44 @@ export function CompatibilityTab({
           <DialogHeader>
             <DialogTitle>Adicionar Compatibilidade</DialogTitle>
             <DialogDescription>
-              Informe os dados do veículo compatível com esta peça.
+              Selecione marcas, modelos, anos e versões. Cada combinação será
+              adicionada como uma entrada separada.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
-            {/* Marca (pesquisável) */}
+            {/* Marcas (multi-select pesquisável) */}
             <div className="space-y-2">
-              <Label>Marca *</Label>
-              <SearchableSelect
+              <Label>Marcas *</Label>
+              <MultiSearchableSelect
                 options={brandOptions}
-                value={addBrand}
-                onChange={handleBrandChange}
-                placeholder="Selecione a marca..."
+                selected={addBrands}
+                onChange={handleBrandsChange}
+                placeholder="Selecione as marcas..."
                 searchPlaceholder="Buscar marca..."
                 emptyMessage="Marca não encontrada."
-                allowCustom
               />
             </div>
 
-            {/* Modelo (pesquisável, depende da marca) */}
+            {/* Modelos (multi-select pesquisável, agrupado por marca) */}
             <div className="space-y-2">
-              <Label>Modelo *</Label>
-              <SearchableSelect
-                options={modelOptions}
-                value={addModel}
-                onChange={handleModelChange}
+              <Label>Modelos *</Label>
+              <MultiSearchableSelect
+                options={modelGroupedOptions}
+                selected={addModels}
+                onChange={handleModelsChange}
                 placeholder={
-                  addBrand
-                    ? "Selecione o modelo..."
-                    : "Selecione a marca primeiro"
+                  addBrands.length > 0
+                    ? "Selecione os modelos..."
+                    : "Selecione as marcas primeiro"
                 }
                 searchPlaceholder="Buscar modelo..."
-                emptyMessage="Modelo não encontrado."
-                disabled={!addBrand}
-                allowCustom
+                emptyMessage="Nenhum modelo encontrado."
+                disabled={addBrands.length === 0}
               />
             </div>
 
-            {/* Anos (depende de marca+modelo) */}
+            {/* Anos */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Ano Inicial</Label>
@@ -607,7 +723,7 @@ export function CompatibilityTab({
                         setAddYearTo(v);
                       }
                     }}
-                    disabled={!addModel}
+                    disabled={addModels.length === 0}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Ano inicial" />
@@ -628,7 +744,7 @@ export function CompatibilityTab({
                     max={2040}
                     value={addYearFrom}
                     onChange={(e) => setAddYearFrom(e.target.value)}
-                    disabled={!addModel}
+                    disabled={addModels.length === 0}
                   />
                 )}
               </div>
@@ -638,7 +754,7 @@ export function CompatibilityTab({
                   <Select
                     value={addYearTo}
                     onValueChange={setAddYearTo}
-                    disabled={!addModel}
+                    disabled={addModels.length === 0}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Ano final" />
@@ -663,39 +779,54 @@ export function CompatibilityTab({
                     max={2040}
                     value={addYearTo}
                     onChange={(e) => setAddYearTo(e.target.value)}
-                    disabled={!addModel}
+                    disabled={addModels.length === 0}
                   />
                 )}
               </div>
             </div>
 
-            {/* Versão (pesquisável, depende de marca+modelo) */}
+            {/* Versões (multi-select) */}
             <div className="space-y-2">
-              <Label>Versão</Label>
+              <Label>Versões</Label>
               {versionOptions.length > 0 ? (
-                <SearchableSelect
-                  options={versionOptions}
-                  value={addVersion}
-                  onChange={setAddVersion}
+                <MultiSearchableSelect
+                  options={versionOptions.map((v) => ({
+                    value: v,
+                    label: v,
+                  }))}
+                  selected={addVersions}
+                  onChange={setAddVersions}
                   placeholder={
-                    addModel
-                      ? "Selecione a versão..."
-                      : "Selecione o modelo primeiro"
+                    addModels.length > 0
+                      ? "Selecione as versões..."
+                      : "Selecione os modelos primeiro"
                   }
                   searchPlaceholder="Buscar versão..."
-                  emptyMessage="Versão não encontrada."
-                  disabled={!addModel}
-                  allowCustom
+                  emptyMessage="Nenhuma versão encontrada."
+                  disabled={addModels.length === 0}
                 />
               ) : (
                 <Input
                   placeholder="Ex: EXL, LX, Sport"
-                  value={addVersion}
-                  onChange={(e) => setAddVersion(e.target.value)}
-                  disabled={!addModel}
+                  value={addVersions[0] || ""}
+                  onChange={(e) =>
+                    setAddVersions(e.target.value ? [e.target.value] : [])
+                  }
+                  disabled={addModels.length === 0}
                 />
               )}
             </div>
+
+            {/* Preview: quantas entradas serão criadas */}
+            {addModels.length > 0 && (
+              <div className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+                Serão adicionadas{" "}
+                <span className="font-medium text-foreground">
+                  {addModels.length * Math.max(addVersions.length, 1)}
+                </span>{" "}
+                compatibilidade(s)
+              </div>
+            )}
           </div>
 
           <DialogFooter>
@@ -709,7 +840,7 @@ export function CompatibilityTab({
             <Button
               type="button"
               onClick={handleAdd}
-              disabled={!addBrand.trim() || !addModel.trim()}
+              disabled={addBrands.length === 0 || addModels.length === 0}
             >
               <Plus className="mr-1 h-4 w-4" />
               Adicionar
