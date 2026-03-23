@@ -98,6 +98,18 @@ const productSchema = z.object({
   mlCategory: z.string().optional(),
   mlAccountIds: z.array(z.string()).optional(),
 
+  // Configurações de anúncio ML
+  mlListingType: z.string().optional(),
+  mlHasWarranty: z.boolean().optional(),
+  mlWarrantyUnit: z.string().optional(),
+  mlWarrantyDuration: z.number().int().min(1).optional().nullable(),
+  mlItemCondition: z.string().optional(),
+  mlShippingMode: z.string().optional(),
+  mlFreeShipping: z.boolean().optional(),
+  mlLocalPickup: z.boolean().optional(),
+  mlManufacturingTime: z.number().int().min(0).optional().nullable(),
+  mlListingPrice: z.number().min(0).optional().nullable(),
+
   // Step 5: Anúncio Shopee (opcional)
   createShopeeListing: z.boolean().optional(),
   shopeeAccountIds: z.array(z.string()).optional(),
@@ -340,6 +352,16 @@ export function CreateProductDialog({
       createMLListing: false,
       mlCategory: "",
       mlAccountIds: [],
+      mlListingType: "bronze",
+      mlHasWarranty: false,
+      mlWarrantyUnit: "dias",
+      mlWarrantyDuration: 30,
+      mlItemCondition: "new",
+      mlShippingMode: "me2",
+      mlFreeShipping: false,
+      mlLocalPickup: false,
+      mlManufacturingTime: 0,
+      mlListingPrice: null,
       createShopeeListing: false,
       shopeeAccountIds: [],
       price: 0,
@@ -508,6 +530,32 @@ export function CreateProductDialog({
           if (costPriceDefault != null) {
             setValue("costPrice", costPriceDefault);
           }
+
+          // Pré-preencher padrões de anúncio ML do usuário
+          if (user.defaultListingType)
+            setValue("mlListingType", user.defaultListingType);
+          if (user.defaultHasWarranty != null)
+            setValue("mlHasWarranty", user.defaultHasWarranty);
+          if (user.defaultWarrantyUnit)
+            setValue("mlWarrantyUnit", user.defaultWarrantyUnit);
+          if (user.defaultWarrantyDuration != null)
+            setValue(
+              "mlWarrantyDuration",
+              Number(user.defaultWarrantyDuration),
+            );
+          if (user.defaultItemCondition)
+            setValue("mlItemCondition", user.defaultItemCondition);
+          if (user.defaultShippingMode)
+            setValue("mlShippingMode", user.defaultShippingMode);
+          if (user.defaultFreeShipping != null)
+            setValue("mlFreeShipping", user.defaultFreeShipping);
+          if (user.defaultLocalPickup != null)
+            setValue("mlLocalPickup", user.defaultLocalPickup);
+          if (user.defaultManufacturingTime != null)
+            setValue(
+              "mlManufacturingTime",
+              Number(user.defaultManufacturingTime),
+            );
         }
       }
     } catch (error) {
@@ -1654,6 +1702,16 @@ export function CreateProductDialog({
         platform: "MERCADO_LIVRE" | "SHOPEE";
         accountIds: string[];
         categoryId?: string;
+        listingType?: string;
+        hasWarranty?: boolean;
+        warrantyUnit?: string;
+        warrantyDuration?: number;
+        itemCondition?: string;
+        shippingMode?: string;
+        freeShipping?: boolean;
+        localPickup?: boolean;
+        manufacturingTime?: number;
+        listingPrice?: number;
       }> = [];
 
       if (data.createMLListing && selectedMlAccounts.length > 0) {
@@ -1662,6 +1720,17 @@ export function CreateProductDialog({
           accountIds: selectedMlAccounts,
           categoryId:
             data.mlCategory || autoDetectedRef.current?.mlCategory || undefined,
+          // Configurações do anúncio ML
+          listingType: data.mlListingType || undefined,
+          hasWarranty: data.mlHasWarranty || false,
+          warrantyUnit: data.mlWarrantyUnit || undefined,
+          warrantyDuration: data.mlWarrantyDuration ?? undefined,
+          itemCondition: data.mlItemCondition || undefined,
+          shippingMode: data.mlShippingMode || undefined,
+          freeShipping: data.mlFreeShipping || false,
+          localPickup: data.mlLocalPickup || false,
+          manufacturingTime: data.mlManufacturingTime ?? undefined,
+          listingPrice: data.mlListingPrice ?? undefined,
         });
       }
 
@@ -1983,7 +2052,7 @@ export function CreateProductDialog({
                       </span>
                       <Button
                         type="button"
-                        size="xs"
+                        size="sm"
                         variant="secondary"
                         onClick={() =>
                           setValue("name", titleSuggestion, {
@@ -2762,6 +2831,262 @@ export function CreateProductDialog({
                         Integrações.
                       </p>
                     )}
+                  </div>
+                )}
+
+                {/* Configurações do anúncio ML */}
+                {watch("createMLListing") && (
+                  <div className="space-y-4 rounded-lg border border-border/50 p-4">
+                    <h4 className="text-sm font-semibold">
+                      Configurações do Anúncio
+                    </h4>
+                    <p className="text-xs text-muted-foreground">
+                      Os valores abaixo foram pré-preenchidos com suas
+                      preferências padrão. Você pode alterar para este anúncio.
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="mlListingType">
+                          Listagem do anúncio
+                        </Label>
+                        <Controller
+                          name="mlListingType"
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              onValueChange={field.onChange}
+                              value={field.value ?? "bronze"}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Tipo de listagem" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="bronze">Grátis</SelectItem>
+                                <SelectItem value="gold_special">
+                                  Clássico
+                                </SelectItem>
+                                <SelectItem value="gold_pro">
+                                  Premium
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="mlItemCondition">
+                          Condição do item
+                        </Label>
+                        <Controller
+                          name="mlItemCondition"
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              onValueChange={field.onChange}
+                              value={field.value ?? "new"}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Condição" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="new">Novo</SelectItem>
+                                <SelectItem value="used">Usado</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-lg border border-border/40 p-3">
+                      <div className="flex items-center gap-3">
+                        <Controller
+                          name="mlHasWarranty"
+                          control={control}
+                          render={({ field }) => (
+                            <input
+                              type="checkbox"
+                              id="mlHasWarranty"
+                              checked={field.value || false}
+                              onChange={(e) => field.onChange(e.target.checked)}
+                              className="h-4 w-4 rounded border-gray-300"
+                            />
+                          )}
+                        />
+                        <Label
+                          htmlFor="mlHasWarranty"
+                          className="cursor-pointer font-medium"
+                        >
+                          Possui Garantia
+                        </Label>
+                      </div>
+
+                      {watch("mlHasWarranty") && (
+                        <div className="grid grid-cols-2 gap-4 pl-7">
+                          <div className="space-y-2">
+                            <Label htmlFor="mlWarrantyUnit">Garantia em</Label>
+                            <Controller
+                              name="mlWarrantyUnit"
+                              control={control}
+                              render={({ field }) => (
+                                <Select
+                                  onValueChange={field.onChange}
+                                  value={field.value ?? "dias"}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Unidade" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="dias">Dias</SelectItem>
+                                    <SelectItem value="meses">Meses</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              )}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label htmlFor="mlWarrantyDuration">
+                              Prazo da garantia
+                            </Label>
+                            <Input
+                              id="mlWarrantyDuration"
+                              type="number"
+                              min="1"
+                              step="1"
+                              {...register("mlWarrantyDuration", {
+                                valueAsNumber: true,
+                              })}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="mlShippingMode">Frete</Label>
+                        <Controller
+                          name="mlShippingMode"
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              onValueChange={field.onChange}
+                              value={field.value ?? "me2"}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Tipo de frete" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="me2">
+                                  Mercado Envios
+                                </SelectItem>
+                                <SelectItem value="me1">
+                                  Mercado Envios 1
+                                </SelectItem>
+                                <SelectItem value="custom">
+                                  Personalizado
+                                </SelectItem>
+                                <SelectItem value="not_specified">
+                                  Não especificado
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="mlFreeShipping">Frete grátis</Label>
+                        <Controller
+                          name="mlFreeShipping"
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              onValueChange={(v) =>
+                                field.onChange(v === "true")
+                              }
+                              value={field.value ? "true" : "false"}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Frete grátis?" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="true">Sim</SelectItem>
+                                <SelectItem value="false">Não</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="mlLocalPickup">
+                          Retirar pessoalmente
+                        </Label>
+                        <Controller
+                          name="mlLocalPickup"
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              onValueChange={(v) =>
+                                field.onChange(v === "true")
+                              }
+                              value={field.value ? "true" : "false"}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Retirar?" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="true">Sim</SelectItem>
+                                <SelectItem value="false">Não</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="mlManufacturingTime">
+                          Tempo de disponibilidade (Dias)
+                        </Label>
+                        <Input
+                          id="mlManufacturingTime"
+                          type="number"
+                          min="0"
+                          step="1"
+                          {...register("mlManufacturingTime", {
+                            valueAsNumber: true,
+                          })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="mlListingPrice">
+                        Valor do Anúncio (R$)
+                      </Label>
+                      <Controller
+                        name="mlListingPrice"
+                        control={control}
+                        render={({ field }) => (
+                          <CurrencyInput
+                            id="mlListingPrice"
+                            placeholder="Usar preço de venda do produto"
+                            value={field.value}
+                            onChange={field.onChange}
+                          />
+                        )}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Se não informado, será usado o preço de venda do
+                        produto.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

@@ -57,6 +57,19 @@ export default function ConfigModal({
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
+  // Padrões de anúncio ML
+  const [defaultListingType, setDefaultListingType] = useState("bronze");
+  const [defaultHasWarranty, setDefaultHasWarranty] = useState(false);
+  const [defaultWarrantyUnit, setDefaultWarrantyUnit] = useState("dias");
+  const [defaultWarrantyDuration, setDefaultWarrantyDuration] =
+    useState<string>("30");
+  const [defaultItemCondition, setDefaultItemCondition] = useState("new");
+  const [defaultShippingMode, setDefaultShippingMode] = useState("me2");
+  const [defaultFreeShipping, setDefaultFreeShipping] = useState(false);
+  const [defaultLocalPickup, setDefaultLocalPickup] = useState(false);
+  const [defaultManufacturingTime, setDefaultManufacturingTime] =
+    useState<string>("0");
+
   const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   // sync controlled open
@@ -79,6 +92,25 @@ export default function ConfigModal({
       setDefaultDescription(user.defaultProductDescription ?? "");
       setDefaultCostPrice(
         user.defaultCostPrice != null ? String(user.defaultCostPrice) : "",
+      );
+
+      // Padrões de anúncio ML
+      setDefaultListingType(user.defaultListingType ?? "bronze");
+      setDefaultHasWarranty(user.defaultHasWarranty ?? false);
+      setDefaultWarrantyUnit(user.defaultWarrantyUnit ?? "dias");
+      setDefaultWarrantyDuration(
+        user.defaultWarrantyDuration != null
+          ? String(user.defaultWarrantyDuration)
+          : "30",
+      );
+      setDefaultItemCondition(user.defaultItemCondition ?? "new");
+      setDefaultShippingMode(user.defaultShippingMode ?? "me2");
+      setDefaultFreeShipping(user.defaultFreeShipping ?? false);
+      setDefaultLocalPickup(user.defaultLocalPickup ?? false);
+      setDefaultManufacturingTime(
+        user.defaultManufacturingTime != null
+          ? String(user.defaultManufacturingTime)
+          : "0",
       );
     } catch (error) {
       alert("Erro ao carregar configurações");
@@ -140,6 +172,21 @@ export default function ConfigModal({
         body: JSON.stringify({
           defaultProductDescription: defaultDescription,
           defaultCostPrice: defaultCostPrice ? Number(defaultCostPrice) : null,
+
+          // Padrões de anúncio ML
+          defaultListingType: defaultListingType || "bronze",
+          defaultHasWarranty: defaultHasWarranty,
+          defaultWarrantyUnit: defaultWarrantyUnit || "dias",
+          defaultWarrantyDuration: defaultWarrantyDuration
+            ? Number(defaultWarrantyDuration)
+            : null,
+          defaultItemCondition: defaultItemCondition || "new",
+          defaultShippingMode: defaultShippingMode || "me2",
+          defaultFreeShipping: defaultFreeShipping,
+          defaultLocalPickup: defaultLocalPickup,
+          defaultManufacturingTime: defaultManufacturingTime
+            ? Number(defaultManufacturingTime)
+            : 0,
         }),
       });
 
@@ -224,6 +271,24 @@ export default function ConfigModal({
                 onDescriptionChange={setDefaultDescription}
                 defaultCostPrice={defaultCostPrice}
                 onCostPriceChange={setDefaultCostPrice}
+                defaultListingType={defaultListingType}
+                onListingTypeChange={setDefaultListingType}
+                defaultHasWarranty={defaultHasWarranty}
+                onHasWarrantyChange={setDefaultHasWarranty}
+                defaultWarrantyUnit={defaultWarrantyUnit}
+                onWarrantyUnitChange={setDefaultWarrantyUnit}
+                defaultWarrantyDuration={defaultWarrantyDuration}
+                onWarrantyDurationChange={setDefaultWarrantyDuration}
+                defaultItemCondition={defaultItemCondition}
+                onItemConditionChange={setDefaultItemCondition}
+                defaultShippingMode={defaultShippingMode}
+                onShippingModeChange={setDefaultShippingMode}
+                defaultFreeShipping={defaultFreeShipping}
+                onFreeShippingChange={setDefaultFreeShipping}
+                defaultLocalPickup={defaultLocalPickup}
+                onLocalPickupChange={setDefaultLocalPickup}
+                defaultManufacturingTime={defaultManufacturingTime}
+                onManufacturingTimeChange={setDefaultManufacturingTime}
                 onSave={handleSavePreferences}
                 saving={savingPrefs}
               />
@@ -381,6 +446,24 @@ function PreferencesSection(props: {
   onDescriptionChange: (value: string) => void;
   defaultCostPrice: string;
   onCostPriceChange: (value: string) => void;
+  defaultListingType: string;
+  onListingTypeChange: (value: string) => void;
+  defaultHasWarranty: boolean;
+  onHasWarrantyChange: (value: boolean) => void;
+  defaultWarrantyUnit: string;
+  onWarrantyUnitChange: (value: string) => void;
+  defaultWarrantyDuration: string;
+  onWarrantyDurationChange: (value: string) => void;
+  defaultItemCondition: string;
+  onItemConditionChange: (value: string) => void;
+  defaultShippingMode: string;
+  onShippingModeChange: (value: string) => void;
+  defaultFreeShipping: boolean;
+  onFreeShippingChange: (value: boolean) => void;
+  defaultLocalPickup: boolean;
+  onLocalPickupChange: (value: boolean) => void;
+  defaultManufacturingTime: string;
+  onManufacturingTimeChange: (value: string) => void;
   onSave: () => void;
   saving: boolean;
 }) {
@@ -389,6 +472,24 @@ function PreferencesSection(props: {
     onDescriptionChange,
     defaultCostPrice,
     onCostPriceChange,
+    defaultListingType,
+    onListingTypeChange,
+    defaultHasWarranty,
+    onHasWarrantyChange,
+    defaultWarrantyUnit,
+    onWarrantyUnitChange,
+    defaultWarrantyDuration,
+    onWarrantyDurationChange,
+    defaultItemCondition,
+    onItemConditionChange,
+    defaultShippingMode,
+    onShippingModeChange,
+    defaultFreeShipping,
+    onFreeShippingChange,
+    defaultLocalPickup,
+    onLocalPickupChange,
+    defaultManufacturingTime,
+    onManufacturingTimeChange,
     onSave,
     saving,
   } = props;
@@ -397,7 +498,7 @@ function PreferencesSection(props: {
       <div className="space-y-1">
         <h3 className="text-base font-semibold">Preferências</h3>
         <p className="text-sm text-muted-foreground">
-          Defina valores padrão usados ao criar novos produtos.
+          Defina valores padrão usados ao criar novos produtos e anúncios.
         </p>
       </div>
 
@@ -436,6 +537,164 @@ function PreferencesSection(props: {
           Este valor será preenchido automaticamente no campo &quot;Preço de
           Custo&quot; ao criar um novo produto.
         </p>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-1">
+        <h3 className="text-base font-semibold">
+          Padrões de Anúncio (Mercado Livre)
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          Valores padrão para criação de anúncios no Mercado Livre. Podem ser
+          alterados individualmente ao criar cada anúncio.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="cfgListingType" className="font-bold">
+            Listagem do anúncio
+          </Label>
+          <select
+            id="cfgListingType"
+            value={defaultListingType}
+            onChange={(e) => onListingTypeChange(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="bronze">Grátis</option>
+            <option value="gold_special">Clássico</option>
+            <option value="gold_pro">Premium</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="cfgItemCondition" className="font-bold">
+            Condição do item
+          </Label>
+          <select
+            id="cfgItemCondition"
+            value={defaultItemCondition}
+            onChange={(e) => onItemConditionChange(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="new">Novo</option>
+            <option value="used">Usado</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-border/40 p-3">
+        <div className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="cfgHasWarranty"
+            checked={defaultHasWarranty}
+            onChange={(e) => onHasWarrantyChange(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300"
+          />
+          <Label htmlFor="cfgHasWarranty" className="font-bold cursor-pointer">
+            Possui Garantia
+          </Label>
+        </div>
+
+        {defaultHasWarranty && (
+          <div className="grid grid-cols-2 gap-4 pl-7">
+            <div className="space-y-2">
+              <Label htmlFor="cfgWarrantyUnit">Garantia em</Label>
+              <select
+                id="cfgWarrantyUnit"
+                value={defaultWarrantyUnit}
+                onChange={(e) => onWarrantyUnitChange(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="dias">Dias</option>
+                <option value="meses">Meses</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="cfgWarrantyDuration">Prazo da garantia</Label>
+              <Input
+                id="cfgWarrantyDuration"
+                type="number"
+                min="1"
+                step="1"
+                value={defaultWarrantyDuration}
+                onChange={(e) => onWarrantyDurationChange(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="cfgShippingMode" className="font-bold">
+            Frete
+          </Label>
+          <select
+            id="cfgShippingMode"
+            value={defaultShippingMode}
+            onChange={(e) => onShippingModeChange(e.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="me2">Mercado Envios</option>
+            <option value="me1">Mercado Envios 1</option>
+            <option value="custom">Personalizado</option>
+            <option value="not_specified">Não especificado</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="cfgFreeShipping" className="font-bold">
+            Frete grátis
+          </Label>
+          <select
+            id="cfgFreeShipping"
+            value={defaultFreeShipping ? "true" : "false"}
+            onChange={(e) => onFreeShippingChange(e.target.value === "true")}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="true">Sim</option>
+            <option value="false">Não</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="cfgLocalPickup" className="font-bold">
+            Retirar pessoalmente
+          </Label>
+          <select
+            id="cfgLocalPickup"
+            value={defaultLocalPickup ? "true" : "false"}
+            onChange={(e) => onLocalPickupChange(e.target.value === "true")}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="true">Sim</option>
+            <option value="false">Não</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="cfgManufacturingTime" className="font-bold">
+            Tempo de disponibilidade (Dias)
+          </Label>
+          <Input
+            id="cfgManufacturingTime"
+            type="number"
+            min="0"
+            step="1"
+            value={defaultManufacturingTime}
+            onChange={(e) => onManufacturingTimeChange(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Prazo em dias para o produto ficar disponível para envio após a
+            venda.
+          </p>
+        </div>
       </div>
 
       <div className="flex gap-2">

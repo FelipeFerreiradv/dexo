@@ -24,6 +24,15 @@ export async function listingRoutes(app: FastifyInstance) {
           productId: string;
           categoryId?: string;
           accountId?: string;
+          listingType?: string;
+          hasWarranty?: boolean;
+          warrantyUnit?: string;
+          warrantyDuration?: number;
+          itemCondition?: string;
+          shippingMode?: string;
+          freeShipping?: boolean;
+          localPickup?: boolean;
+          manufacturingTime?: number;
         };
         const accountId =
           body.accountId ||
@@ -56,6 +65,17 @@ export async function listingRoutes(app: FastifyInstance) {
           body.productId,
           body.categoryId,
           accountId,
+          {
+            listingType: body.listingType,
+            hasWarranty: body.hasWarranty,
+            warrantyUnit: body.warrantyUnit,
+            warrantyDuration: body.warrantyDuration,
+            itemCondition: body.itemCondition,
+            shippingMode: body.shippingMode,
+            freeShipping: body.freeShipping,
+            localPickup: body.localPickup,
+            manufacturingTime: body.manufacturingTime,
+          },
         );
 
         if (!result.success) {

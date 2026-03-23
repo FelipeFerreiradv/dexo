@@ -3223,19 +3223,34 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
 // ---------------------------------------------------------------------------
 // Helpers para consulta rápida (cascata)
 // ---------------------------------------------------------------------------
+// Lookup caches pré-computados na inicialização do módulo (O(1) em vez de O(n))
+// ---------------------------------------------------------------------------
 
-/** Retorna a lista de marcas disponíveis (ordenada) */
-export function getVehicleBrands(): string[] {
-  return VEHICLE_CATALOG.map((b) => b.name).sort((a, b) =>
-    a.localeCompare(b, "pt-BR"),
+const _brandMap = new Map<string, VehicleBrand>();
+const _brandNames: string[] = [];
+
+// Inicializa caches uma única vez
+(function initCaches() {
+  for (const brand of VEHICLE_CATALOG) {
+    _brandMap.set(brand.name.toLowerCase(), brand);
+  }
+  _brandNames.push(
+    ...VEHICLE_CATALOG.map((b) => b.name).sort((a, b) =>
+      a.localeCompare(b, "pt-BR"),
+    ),
   );
+})();
+
+// ---------------------------------------------------------------------------
+
+/** Retorna a lista de marcas disponíveis (ordenada) — O(1) cached */
+export function getVehicleBrands(): string[] {
+  return _brandNames;
 }
 
 /** Retorna os modelos para uma marca específica (ordenados) */
 export function getModelsForBrand(brand: string): string[] {
-  const b = VEHICLE_CATALOG.find(
-    (v) => v.name.toLowerCase() === brand.toLowerCase(),
-  );
+  const b = _brandMap.get(brand.toLowerCase());
   if (!b) return [];
   return [...new Set(b.models.map((m) => m.name))].sort((a, b) =>
     a.localeCompare(b, "pt-BR"),
@@ -3244,11 +3259,10 @@ export function getModelsForBrand(brand: string): string[] {
 
 /** Retorna o intervalo de anos disponível para um modelo de uma marca */
 export function getYearsForModel(brand: string, model: string): number[] {
-  const b = VEHICLE_CATALOG.find(
-    (v) => v.name.toLowerCase() === brand.toLowerCase(),
-  );
+  const b = _brandMap.get(brand.toLowerCase());
   if (!b) return [];
-  const m = b.models.find((v) => v.name.toLowerCase() === model.toLowerCase());
+  const ml = model.toLowerCase();
+  const m = b.models.find((v) => v.name.toLowerCase() === ml);
   if (!m) return [];
   const years: number[] = [];
   for (let y = m.yearFrom; y <= m.yearTo; y++) {
@@ -3259,11 +3273,10 @@ export function getYearsForModel(brand: string, model: string): number[] {
 
 /** Retorna as versões disponíveis para uma combinação de marca+modelo */
 export function getVersionsForModel(brand: string, model: string): string[] {
-  const b = VEHICLE_CATALOG.find(
-    (v) => v.name.toLowerCase() === brand.toLowerCase(),
-  );
+  const b = _brandMap.get(brand.toLowerCase());
   if (!b) return [];
-  const m = b.models.find((v) => v.name.toLowerCase() === model.toLowerCase());
+  const ml = model.toLowerCase();
+  const m = b.models.find((v) => v.name.toLowerCase() === ml);
   if (!m) return [];
   return m.versions
     .filter((v) => v !== "")

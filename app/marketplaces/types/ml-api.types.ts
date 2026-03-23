@@ -101,6 +101,8 @@ export interface MLItemCreatePayload {
   // Optional shipping/package dimensions (cms / kg) — forwarded to ML when set
   shipping?: {
     mode?: string;
+    free_shipping?: boolean;
+    local_pick_up?: boolean;
     // A API aceita string no formato "HxWxL,weight" ou objeto; usamos string.
     dimensions?:
       | string
@@ -111,4 +113,10 @@ export interface MLItemCreatePayload {
           weight?: number; // kg
         };
   };
+
+  // Termos de venda (garantia, etc.)
+  sale_terms?: Array<{
+    id: string;
+    value_name?: string;
+  }>;
 }

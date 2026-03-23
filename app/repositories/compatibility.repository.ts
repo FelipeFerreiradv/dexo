@@ -51,7 +51,7 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
   ): Promise<ProductCompatibility[]> {
     if (data.length === 0) return [];
 
-    await prisma.productCompatibility.createMany({
+    const items = await prisma.productCompatibility.createManyAndReturn({
       data: data.map((d) => ({
         productId,
         brand: d.brand,
@@ -62,7 +62,7 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
       })),
     });
 
-    return this.findByProductId(productId);
+    return items.map(mapPrismaToCompatibility);
   }
 
   async delete(id: string): Promise<void> {
@@ -82,7 +82,7 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
 
       if (data.length === 0) return [];
 
-      await tx.productCompatibility.createMany({
+      const items = await tx.productCompatibility.createManyAndReturn({
         data: data.map((d) => ({
           productId,
           brand: d.brand,
@@ -93,10 +93,6 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
         })),
       });
 
-      const items = await tx.productCompatibility.findMany({
-        where: { productId },
-        orderBy: { createdAt: "asc" },
-      });
       return items.map(mapPrismaToCompatibility);
     });
   }

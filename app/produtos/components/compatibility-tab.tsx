@@ -161,6 +161,16 @@ function MultiSearchableSelect({
     if (!open) setInputValue("");
   }, [open]);
 
+  // Set para lookups O(1) em vez de O(n) com .includes()
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  // Map para resolução O(1) de value→label em vez de O(n) com .find()
+  const optionLabelMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const o of options) m.set(o.value, o.label);
+    return m;
+  }, [options]);
+
   const filteredOptions = useMemo(() => {
     if (!inputValue.trim()) return options;
     const q = inputValue.toLowerCase();
@@ -184,12 +194,12 @@ function MultiSearchableSelect({
   const toggle = useCallback(
     (val: string) => {
       onChange(
-        selected.includes(val)
+        selectedSet.has(val)
           ? selected.filter((v) => v !== val)
           : [...selected, val],
       );
     },
-    [selected, onChange],
+    [selected, selectedSet, onChange],
   );
 
   const allFilteredValues = useMemo(
@@ -198,11 +208,12 @@ function MultiSearchableSelect({
   );
   const allSelected =
     filteredOptions.length > 0 &&
-    filteredOptions.every((o) => selected.includes(o.value));
+    filteredOptions.every((o) => selectedSet.has(o.value));
 
   const handleSelectAll = useCallback(() => {
     if (allSelected) {
-      onChange(selected.filter((v) => !allFilteredValues.includes(v)));
+      const removeSet = new Set(allFilteredValues);
+      onChange(selected.filter((v) => !removeSet.has(v)));
     } else {
       const merged = new Set([...selected, ...allFilteredValues]);
       onChange([...merged]);
@@ -210,8 +221,8 @@ function MultiSearchableSelect({
   }, [allSelected, selected, allFilteredValues, onChange]);
 
   const selectedLabels = useMemo(() => {
-    return selected.map((v) => options.find((o) => o.value === v)?.label || v);
-  }, [selected, options]);
+    return selected.map((v) => optionLabelMap.get(v) || v);
+  }, [selected, optionLabelMap]);
 
   const renderOption = (opt: MultiSelectOption) => (
     <CommandItem
@@ -222,7 +233,7 @@ function MultiSearchableSelect({
       <Check
         className={cn(
           "mr-2 h-4 w-4",
-          selected.includes(opt.value) ? "opacity-100" : "opacity-0",
+          selectedSet.has(opt.value) ? "opacity-100" : "opacity-0",
         )}
       />
       {opt.label}

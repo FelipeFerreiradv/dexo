@@ -6,6 +6,7 @@ import { SystemLogService } from "../../services/system-log.service";
 import { MLItemCreatePayload } from "../types/ml-api.types";
 import { CategoryResolutionService } from "./category-resolution.service";
 import { ensureMLMinImageSize } from "./image-resize.service";
+import { UserRepositoryPrisma } from "../../repositories/user.repository";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -249,6 +250,34 @@ export class ListingRetryService {
         const backendBase =
           process.env.APP_BACKEND_URL || "http://localhost:3333";
 
+        // Carregar padrões do usuário para ML settings
+        const userRepo = new UserRepositoryPrisma();
+        const retryUserId = account.userId || (cand as any).userId;
+        let userDefaults: any = {};
+        try {
+          if (retryUserId) {
+            const user = await userRepo.findById(retryUserId);
+            if (user) {
+              userDefaults = {
+                listingType: user.defaultListingType || "bronze",
+                itemCondition: user.defaultItemCondition,
+                hasWarranty: user.defaultHasWarranty || false,
+                warrantyUnit: user.defaultWarrantyUnit || "dias",
+                warrantyDuration: user.defaultWarrantyDuration || 30,
+                shippingMode: user.defaultShippingMode || "me2",
+                freeShipping: user.defaultFreeShipping || false,
+                localPickup: user.defaultLocalPickup || false,
+                manufacturingTime: user.defaultManufacturingTime || 0,
+              };
+            }
+          }
+        } catch (e) {
+          console.warn(
+            "[ListingRetryService] failed to load user defaults:",
+            e,
+          );
+        }
+
         // Resolve categoria de forma determinística: explicit -> produto -> erro
         const resolvedCategory =
           await CategoryResolutionService.resolveMLCategory({
@@ -265,6 +294,10 @@ export class ListingRetryService {
           weightKg: product.weightKg,
         });
 
+        const retryCondition =
+          userDefaults.itemCondition ||
+          (product.quality === "NOVO" ? "new" : "used");
+
         const payload: any = {
           title: retryTitle,
           category_id: resolvedCategoryId,
@@ -272,8 +305,8 @@ export class ListingRetryService {
           currency_id: "BRL",
           available_quantity: product.stock || 1,
           buying_mode: "buy_it_now",
-          listing_type_id: "bronze",
-          condition: product.quality === "NOVO" ? "new" : "used",
+          listing_type_id: userDefaults.listingType || "bronze",
+          condition: retryCondition,
           pictures: await (async () => {
             if (!product.imageUrl) return [];
             // Coletar todas as URLs de imagens
@@ -429,10 +462,46 @@ export class ListingRetryService {
         // Shipping dimensions string se todos os campos existirem
         if (pkg) {
           payload.shipping = {
+            mode: userDefaults.shippingMode || "me2",
+            free_shipping: userDefaults.freeShipping || false,
+            local_pick_up: userDefaults.localPickup || false,
             dimensions: `${pkg.height}x${pkg.width}x${pkg.length},${Number(
               pkg.weightKg,
             )}`,
           };
+        } else {
+          payload.shipping = {
+            mode: userDefaults.shippingMode || "me2",
+            free_shipping: userDefaults.freeShipping || false,
+            local_pick_up: userDefaults.localPickup || false,
+          };
+        }
+
+        // sale_terms: garantia e tempo de fabricação
+        const saleTerms: Array<{ id: string; value_name: string }> = [];
+        if (userDefaults.hasWarranty) {
+          saleTerms.push({
+            id: "WARRANTY_TYPE",
+            value_name: "Garantia do vendedor",
+          });
+          const dur = userDefaults.warrantyDuration || 30;
+          const unit = userDefaults.warrantyUnit || "dias";
+          saleTerms.push({ id: "WARRANTY_TIME", value_name: `${dur} ${unit}` });
+        }
+        if (
+          userDefaults.manufacturingTime &&
+          userDefaults.manufacturingTime > 0
+        ) {
+          saleTerms.push({
+            id: "MANUFACTURING_TIME",
+            value_name: `${userDefaults.manufacturingTime} dias`,
+          });
+        }
+        if (saleTerms.length > 0) {
+          payload.sale_terms = saleTerms;
+        }
+
+        if (pkg) {
           const addPkgAttr = (id: string, val: number | string) => {
             const exists = payload.attributes.some((a: any) => a.id === id);
             if (!exists) {

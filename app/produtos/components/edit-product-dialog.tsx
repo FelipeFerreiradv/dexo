@@ -201,6 +201,17 @@ export function EditProductDialog({
   >([]);
   const [createMlListing, setCreateMlListing] = useState(false);
   const [createShopeeListing, setCreateShopeeListing] = useState(false);
+
+  // ML listing settings (loaded from user defaults)
+  const [mlListingType, setMlListingType] = useState("bronze");
+  const [mlHasWarranty, setMlHasWarranty] = useState(false);
+  const [mlWarrantyUnit, setMlWarrantyUnit] = useState("dias");
+  const [mlWarrantyDuration, setMlWarrantyDuration] = useState(30);
+  const [mlItemCondition, setMlItemCondition] = useState("new");
+  const [mlShippingMode, setMlShippingMode] = useState("me2");
+  const [mlFreeShipping, setMlFreeShipping] = useState(false);
+  const [mlLocalPickup, setMlLocalPickup] = useState(false);
+  const [mlManufacturingTime, setMlManufacturingTime] = useState(0);
   const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
     [],
   );
@@ -325,9 +336,10 @@ export function EditProductDialog({
   }, [createShopeeListing, shopeeAccounts]);
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
+  // e padrões de anúncio ML
   const fetchDefaultDescription = useCallback(async () => {
     try {
-      if (!product.description && session?.user?.email) {
+      if (session?.user?.email) {
         const resp = await fetch(`${getApiBaseUrl()}/users/me`, {
           headers: { email: session.user.email },
         });
@@ -336,6 +348,41 @@ export function EditProductDialog({
           const desc = user.defaultProductDescription || "";
           setDefaultDescription(desc);
           if (!product.description && desc) setValue("description", desc);
+
+          // Carregar padrões de anúncio ML
+          if (user.defaultListingType)
+            setMlListingType(user.defaultListingType);
+          if (
+            user.defaultHasWarranty !== undefined &&
+            user.defaultHasWarranty !== null
+          )
+            setMlHasWarranty(user.defaultHasWarranty);
+          if (user.defaultWarrantyUnit)
+            setMlWarrantyUnit(user.defaultWarrantyUnit);
+          if (
+            user.defaultWarrantyDuration !== undefined &&
+            user.defaultWarrantyDuration !== null
+          )
+            setMlWarrantyDuration(user.defaultWarrantyDuration);
+          if (user.defaultItemCondition)
+            setMlItemCondition(user.defaultItemCondition);
+          if (user.defaultShippingMode)
+            setMlShippingMode(user.defaultShippingMode);
+          if (
+            user.defaultFreeShipping !== undefined &&
+            user.defaultFreeShipping !== null
+          )
+            setMlFreeShipping(user.defaultFreeShipping);
+          if (
+            user.defaultLocalPickup !== undefined &&
+            user.defaultLocalPickup !== null
+          )
+            setMlLocalPickup(user.defaultLocalPickup);
+          if (
+            user.defaultManufacturingTime !== undefined &&
+            user.defaultManufacturingTime !== null
+          )
+            setMlManufacturingTime(user.defaultManufacturingTime);
         }
       }
     } catch (err) {
@@ -1254,6 +1301,15 @@ export function EditProductDialog({
                   body: JSON.stringify({
                     productId: product.id,
                     categoryId: data.mlCategory || undefined,
+                    listingType: mlListingType,
+                    hasWarranty: mlHasWarranty,
+                    warrantyUnit: mlWarrantyUnit,
+                    warrantyDuration: mlWarrantyDuration,
+                    itemCondition: mlItemCondition,
+                    shippingMode: mlShippingMode,
+                    freeShipping: mlFreeShipping,
+                    localPickup: mlLocalPickup,
+                    manufacturingTime: mlManufacturingTime,
                   }),
                 },
                 15000,
@@ -2093,6 +2149,180 @@ export function EditProductDialog({
                       </label>
                     ))
                   )}
+                </div>
+              )}
+
+              {/* Configurações do Anúncio ML */}
+              {createMlListing && (
+                <div className="space-y-3 rounded-md border p-3">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Configurações do Anúncio
+                  </p>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {/* Tipo de listagem */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Listagem do anúncio</Label>
+                      <Select
+                        value={mlListingType}
+                        onValueChange={setMlListingType}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="gold_special">
+                            Premium (gold_special)
+                          </SelectItem>
+                          <SelectItem value="gold_pro">
+                            Clássico (gold_pro)
+                          </SelectItem>
+                          <SelectItem value="bronze">
+                            Grátis (bronze)
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Condição do item */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Condição do item</Label>
+                      <Select
+                        value={mlItemCondition}
+                        onValueChange={setMlItemCondition}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="new">Novo</SelectItem>
+                          <SelectItem value="used">Usado</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Frete */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Frete</Label>
+                      <Select
+                        value={mlShippingMode}
+                        onValueChange={setMlShippingMode}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="me2">Mercado Envios</SelectItem>
+                          <SelectItem value="me1">Mercado Envios 1</SelectItem>
+                          <SelectItem value="custom">Personalizado</SelectItem>
+                          <SelectItem value="not_specified">
+                            Não especificado
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Frete grátis */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Frete grátis</Label>
+                      <Select
+                        value={mlFreeShipping ? "true" : "false"}
+                        onValueChange={(v) => setMlFreeShipping(v === "true")}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="true">Sim</SelectItem>
+                          <SelectItem value="false">Não</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Retirar pessoalmente */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Retirar pessoalmente</Label>
+                      <Select
+                        value={mlLocalPickup ? "true" : "false"}
+                        onValueChange={(v) => setMlLocalPickup(v === "true")}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="true">Sim</SelectItem>
+                          <SelectItem value="false">Não</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Tempo de disponibilidade */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">
+                        Tempo de disponibilidade (dias)
+                      </Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        className="h-8 text-xs"
+                        value={mlManufacturingTime}
+                        onChange={(e) =>
+                          setMlManufacturingTime(Number(e.target.value) || 0)
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {/* Garantia */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="edit-ml-has-warranty"
+                        checked={mlHasWarranty}
+                        onCheckedChange={setMlHasWarranty}
+                      />
+                      <Label
+                        htmlFor="edit-ml-has-warranty"
+                        className="cursor-pointer text-xs"
+                      >
+                        Possui garantia
+                      </Label>
+                    </div>
+                    {mlHasWarranty && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Garantia em</Label>
+                          <Select
+                            value={mlWarrantyUnit}
+                            onValueChange={setMlWarrantyUnit}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="dias">Dias</SelectItem>
+                              <SelectItem value="meses">Meses</SelectItem>
+                              <SelectItem value="anos">Anos</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Prazo da garantia</Label>
+                          <Input
+                            type="number"
+                            min={1}
+                            className="h-8 text-xs"
+                            value={mlWarrantyDuration}
+                            onChange={(e) =>
+                              setMlWarrantyDuration(
+                                Number(e.target.value) || 30,
+                              )
+                            }
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

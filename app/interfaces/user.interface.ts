@@ -9,6 +9,18 @@ export interface User {
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
+
+  // Padrões de anúncio ML
+  defaultListingType?: string | null;
+  defaultHasWarranty?: boolean | null;
+  defaultWarrantyUnit?: string | null;
+  defaultWarrantyDuration?: number | null;
+  defaultItemCondition?: string | null;
+  defaultShippingMode?: string | null;
+  defaultFreeShipping?: boolean | null;
+  defaultLocalPickup?: boolean | null;
+  defaultManufacturingTime?: number | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +41,18 @@ export interface UserUpdate {
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
+
+  // Padrões de anúncio ML
+  defaultListingType?: string | null;
+  defaultHasWarranty?: boolean | null;
+  defaultWarrantyUnit?: string | null;
+  defaultWarrantyDuration?: number | null;
+  defaultItemCondition?: string | null;
+  defaultShippingMode?: string | null;
+  defaultFreeShipping?: boolean | null;
+  defaultLocalPickup?: boolean | null;
+  defaultManufacturingTime?: number | null;
+
   role?: Role;
 }
 

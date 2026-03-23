@@ -273,11 +273,27 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                       : [undefined];
                     for (const accId of accounts) {
                       try {
+                        // Extrair configurações ML da listagem
+                        const mlSettings =
+                          lst.platform === "MERCADO_LIVRE"
+                            ? {
+                                listingType: lst.listingType,
+                                hasWarranty: lst.hasWarranty,
+                                warrantyUnit: lst.warrantyUnit,
+                                warrantyDuration: lst.warrantyDuration,
+                                itemCondition: lst.itemCondition,
+                                shippingMode: lst.shippingMode,
+                                freeShipping: lst.freeShipping,
+                                localPickup: lst.localPickup,
+                                manufacturingTime: lst.manufacturingTime,
+                              }
+                            : undefined;
                         await ListingUseCase.createMLListing(
                           bgUserId,
                           bgProductId,
                           lst.categoryId || bgCategoryId,
                           accId,
+                          mlSettings,
                         );
                       } catch (e) {
                         console.error(

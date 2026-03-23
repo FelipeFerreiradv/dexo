@@ -24,6 +24,18 @@ export interface CreateListingResult {
   mlError?: string;
 }
 
+export interface MLListingSettings {
+  listingType?: string; // "bronze" | "gold_special" | "gold_pro"
+  hasWarranty?: boolean;
+  warrantyUnit?: string; // "dias" | "meses"
+  warrantyDuration?: number;
+  itemCondition?: string; // "new" | "used"
+  shippingMode?: string; // "me2" | "me1" | "custom" | "not_specified"
+  freeShipping?: boolean;
+  localPickup?: boolean;
+  manufacturingTime?: number; // dias de disponibilidade
+}
+
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
   private static userRepository = new UserRepositoryPrisma();
@@ -47,10 +59,17 @@ export class ListingUseCase {
     platform: Platform,
     categoryId?: string,
     accountId?: string,
+    mlSettings?: MLListingSettings,
   ): Promise<CreateListingResult> {
     switch (platform) {
       case Platform.MERCADO_LIVRE:
-        return this.createMLListing(userId, productId, categoryId, accountId);
+        return this.createMLListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+          mlSettings,
+        );
       case Platform.SHOPEE:
         return this.createShopeeListing(
           userId,
@@ -416,6 +435,7 @@ export class ListingUseCase {
     productId: string,
     categoryId?: string,
     accountId?: string,
+    mlSettings?: MLListingSettings,
   ): Promise<CreateListingResult> {
     try {
       let account = accountId
@@ -680,23 +700,60 @@ export class ListingUseCase {
       let descriptionSource: "product" | "user_default" | "fallback" =
         product.description ? "product" : "fallback";
 
-      // Garantir descrição: se o produto não tiver, usar a descrição padrão do usuário (quando disponível)
-      if (!product.description && product.userId) {
+      // Carregar configurações do usuário (descrição padrão + padrões de anúncio ML)
+      let userDefaults: MLListingSettings = {};
+      if (product.userId) {
         try {
           const owner = await ListingUseCase.userRepository.findById(
             product.userId,
           );
-          if (owner?.defaultProductDescription) {
-            product.description = owner.defaultProductDescription;
-            descriptionSource = "user_default";
+          if (owner) {
+            // Descrição padrão
+            if (!product.description && owner.defaultProductDescription) {
+              product.description = owner.defaultProductDescription;
+              descriptionSource = "user_default";
+            }
+            // Padrões de anúncio ML do usuário
+            userDefaults = {
+              listingType: owner.defaultListingType ?? undefined,
+              hasWarranty: owner.defaultHasWarranty ?? undefined,
+              warrantyUnit: owner.defaultWarrantyUnit ?? undefined,
+              warrantyDuration: owner.defaultWarrantyDuration ?? undefined,
+              itemCondition: owner.defaultItemCondition ?? undefined,
+              shippingMode: owner.defaultShippingMode ?? undefined,
+              freeShipping: owner.defaultFreeShipping ?? undefined,
+              localPickup: owner.defaultLocalPickup ?? undefined,
+              manufacturingTime: owner.defaultManufacturingTime ?? undefined,
+            };
           }
         } catch (descErr) {
           console.warn(
-            "[ListingUseCase] Falha ao carregar descrição padrão do usuário:",
+            "[ListingUseCase] Falha ao carregar configurações do usuário:",
             descErr instanceof Error ? descErr.message : String(descErr),
           );
         }
       }
+
+      // Mesclar: settings explícitos > padrões do usuário > hardcoded
+      const effectiveSettings: MLListingSettings = {
+        listingType:
+          mlSettings?.listingType ?? userDefaults.listingType ?? "bronze",
+        hasWarranty:
+          mlSettings?.hasWarranty ?? userDefaults.hasWarranty ?? false,
+        warrantyUnit:
+          mlSettings?.warrantyUnit ?? userDefaults.warrantyUnit ?? "dias",
+        warrantyDuration:
+          mlSettings?.warrantyDuration ?? userDefaults.warrantyDuration ?? 30,
+        itemCondition: mlSettings?.itemCondition ?? userDefaults.itemCondition,
+        shippingMode:
+          mlSettings?.shippingMode ?? userDefaults.shippingMode ?? "me2",
+        freeShipping:
+          mlSettings?.freeShipping ?? userDefaults.freeShipping ?? false,
+        localPickup:
+          mlSettings?.localPickup ?? userDefaults.localPickup ?? false,
+        manufacturingTime:
+          mlSettings?.manufacturingTime ?? userDefaults.manufacturingTime ?? 0,
+      };
 
       // Detectar descrição corrompida (contém \uFFFD = encoding perdido) e logar aviso
       if (product.description && /\uFFFD/.test(product.description)) {
@@ -966,8 +1023,11 @@ export class ListingUseCase {
         currency_id: currencyId,
         available_quantity: Math.min(product.stock, 999999),
         buying_mode: "buy_it_now",
-        listing_type_id: "bronze",
-        condition: this.mapQualityToMLCondition(product.quality) || "new",
+        listing_type_id: effectiveSettings.listingType || "bronze",
+        condition:
+          effectiveSettings.itemCondition ||
+          this.mapQualityToMLCondition(product.quality) ||
+          "new",
         pictures: picturesArray,
         attributes,
         seller_custom_field: product.sku,
@@ -975,6 +1035,39 @@ export class ListingUseCase {
           plain_text: descriptionText,
         },
       };
+
+      // Garantia (sale_terms)
+      if (effectiveSettings.hasWarranty && effectiveSettings.warrantyDuration) {
+        const unit =
+          effectiveSettings.warrantyUnit === "meses" ? "meses" : "dias";
+        payload.sale_terms = [
+          { id: "WARRANTY_TYPE", value_name: "Garantia do vendedor" },
+          {
+            id: "WARRANTY_TIME",
+            value_name: `${effectiveSettings.warrantyDuration} ${unit}`,
+          },
+        ];
+        // Tempo de fabricação/disponibilidade (manufacturing_time)
+        if (
+          effectiveSettings.manufacturingTime &&
+          effectiveSettings.manufacturingTime > 0
+        ) {
+          payload.sale_terms.push({
+            id: "MANUFACTURING_TIME",
+            value_name: `${effectiveSettings.manufacturingTime} dias`,
+          });
+        }
+      } else if (
+        effectiveSettings.manufacturingTime &&
+        effectiveSettings.manufacturingTime > 0
+      ) {
+        payload.sale_terms = [
+          {
+            id: "MANUFACTURING_TIME",
+            value_name: `${effectiveSettings.manufacturingTime} dias`,
+          },
+        ];
+      }
 
       if (includeFamilyName) {
         if (familyNameValue) {
@@ -1051,7 +1144,12 @@ export class ListingUseCase {
         const dims = `${pkg.height}x${pkg.width}x${pkg.length},${Number(
           pkg.weightKg,
         )}`;
-        payload.shipping = { dimensions: dims };
+        payload.shipping = {
+          dimensions: dims,
+          mode: effectiveSettings.shippingMode || undefined,
+          free_shipping: effectiveSettings.freeShipping || false,
+          local_pick_up: effectiveSettings.localPickup || false,
+        };
 
         // Algumas contas/políticas do ML exigem os atributos seller_package_* mesmo quando enviamos shipping.dimensions.
         const ensureAttr = (id: string, value: string | number) => {

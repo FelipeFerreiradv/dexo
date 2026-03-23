@@ -19,6 +19,18 @@ model User {
   updatedAt                 DateTime             @updatedAt
   defaultProductDescription String?
   defaultCostPrice          Decimal?             @db.Decimal(10, 2)
+
+  // Padrões de anúncio ML (preferências do usuário)
+  defaultListingType        String?              // "bronze" | "gold_special" | "gold_pro"
+  defaultHasWarranty        Boolean?             @default(false)
+  defaultWarrantyUnit       String?              // "dias" | "meses"
+  defaultWarrantyDuration   Int?
+  defaultItemCondition      String?              // "new" | "used"
+  defaultShippingMode       String?              // "me2" | "me1" | "custom" | "not_specified"
+  defaultFreeShipping       Boolean?             @default(false)
+  defaultLocalPickup        Boolean?             @default(false)
+  defaultManufacturingTime  Int?                 @default(0)
+
   accounts                  MarketplaceAccount[]
   products                  Product[]
   systemLogs                SystemLog[]

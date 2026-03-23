@@ -101,6 +101,16 @@ export interface ProductCreate {
     platform: Platform;
     accountIds: string[];
     categoryId?: string;
+    // Configurações de anúncio ML (override por listagem)
+    listingType?: string;
+    hasWarranty?: boolean;
+    warrantyUnit?: string;
+    warrantyDuration?: number;
+    itemCondition?: string;
+    shippingMode?: string;
+    freeShipping?: boolean;
+    localPickup?: boolean;
+    manufacturingTime?: number;
   }>;
 
   // Compatibilidades veiculares (criadas junto com o produto)

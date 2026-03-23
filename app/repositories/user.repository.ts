@@ -18,6 +18,18 @@ class UserRepositoryPrisma implements UserRepository {
       avatarUrl: u.avatarUrl ?? null,
       defaultProductDescription: u.defaultProductDescription ?? null,
       defaultCostPrice: u.defaultCostPrice ? Number(u.defaultCostPrice) : null,
+
+      // Padrões de anúncio ML
+      defaultListingType: u.defaultListingType ?? null,
+      defaultHasWarranty: u.defaultHasWarranty ?? null,
+      defaultWarrantyUnit: u.defaultWarrantyUnit ?? null,
+      defaultWarrantyDuration: u.defaultWarrantyDuration ?? null,
+      defaultItemCondition: u.defaultItemCondition ?? null,
+      defaultShippingMode: u.defaultShippingMode ?? null,
+      defaultFreeShipping: u.defaultFreeShipping ?? null,
+      defaultLocalPickup: u.defaultLocalPickup ?? null,
+      defaultManufacturingTime: u.defaultManufacturingTime ?? null,
+
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
@@ -84,6 +96,35 @@ class UserRepositoryPrisma implements UserRepository {
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
           defaultCostPrice: data.defaultCostPrice,
+
+          // Padrões de anúncio ML (somente se fornecidos, não sobrescrever com undefined)
+          ...(data.defaultListingType !== undefined && {
+            defaultListingType: data.defaultListingType,
+          }),
+          ...(data.defaultHasWarranty !== undefined && {
+            defaultHasWarranty: data.defaultHasWarranty,
+          }),
+          ...(data.defaultWarrantyUnit !== undefined && {
+            defaultWarrantyUnit: data.defaultWarrantyUnit,
+          }),
+          ...(data.defaultWarrantyDuration !== undefined && {
+            defaultWarrantyDuration: data.defaultWarrantyDuration,
+          }),
+          ...(data.defaultItemCondition !== undefined && {
+            defaultItemCondition: data.defaultItemCondition,
+          }),
+          ...(data.defaultShippingMode !== undefined && {
+            defaultShippingMode: data.defaultShippingMode,
+          }),
+          ...(data.defaultFreeShipping !== undefined && {
+            defaultFreeShipping: data.defaultFreeShipping,
+          }),
+          ...(data.defaultLocalPickup !== undefined && {
+            defaultLocalPickup: data.defaultLocalPickup,
+          }),
+          ...(data.defaultManufacturingTime !== undefined && {
+            defaultManufacturingTime: data.defaultManufacturingTime,
+          }),
         },
       });
       return this.mapUser(result);
