@@ -11,6 +11,7 @@ import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
+import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 
 /**
  * Rotas para gerenciar conexÃµes com marketplaces
@@ -1019,15 +1020,32 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           });
         }
 
-        // userId pode vir da sessao atual ou do state persistido no redirect.
-        const userId = request.user?.id || state;
+        // Recuperar userId: (1) do state token armazenado, (2) da sessão atual
+        let userId = state ? ShopeeOAuthService.consumeState(state) : null;
         if (!userId) {
+          userId = request.user?.id ?? null;
+        }
+
+        if (!userId) {
+          console.error(
+            "[Shopee callback] userId não encontrado. state=",
+            state ?? "(ausente)",
+            "query=",
+            JSON.stringify(request.query),
+          );
           return reply.status(400).send({
-            error: "ParÃ¢metros invÃ¡lidos",
+            error: "Parâmetros inválidos",
             message:
-              "state (userId) Ã© obrigatÃ³rio para processar callback Shopee",
+              "state (userId) é obrigatório para processar callback Shopee",
           });
         }
+
+        console.log(
+          "[Shopee callback] userId resolvido:",
+          userId,
+          "via",
+          state ? "state" : "session",
+        );
 
         // Processar callback OAuth
         const account = await MarketplaceUseCase.handleShopeeOAuthCallback({

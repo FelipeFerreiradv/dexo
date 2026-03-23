@@ -364,13 +364,16 @@ export class MarketplaceUseCase {
     authUrl: string;
     state: string;
   } {
-    // Para Shopee, o userId Ã© armazenado no state da URL de callback
-    // O shop_id vem no callback, entÃ£o nÃ£o precisamos dele aqui
-    const oauthData = ShopeeOAuthService.initiateAuth(undefined, userId);
+    // Gerar state token seguro e armazenar userId associado (como ML faz)
+    const stateToken = userId ? ShopeeOAuthService.storeState(userId) : "";
+    const oauthData = ShopeeOAuthService.initiateAuth(
+      undefined,
+      stateToken || undefined,
+    );
 
     return {
       authUrl: oauthData.auth_url,
-      state: userId || "", // userId serÃ¡ usado no callback
+      state: stateToken,
     };
   }
 

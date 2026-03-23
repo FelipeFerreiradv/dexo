@@ -16,6 +16,46 @@ import {
  * Baseado em HMAC-SHA256 signatures
  */
 export class ShopeeOAuthService {
+  // Armazenamento temporário in-memory de estados OAuth (como ML faz)
+  // Mapeia stateToken → { userId, expiresAt }
+  private static pendingStates = new Map<
+    string,
+    { userId: string; expiresAt: Date }
+  >();
+
+  /**
+   * Gera token aleatório, armazena userId associado e retorna o token.
+   * TTL: 10 minutos.
+   */
+  static storeState(userId: string): string {
+    this.cleanupExpiredStates();
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    this.pendingStates.set(token, { userId, expiresAt });
+    return token;
+  }
+
+  /**
+   * Valida e consome o state token. Retorna userId ou null.
+   * Remove o token após uso (one-time use).
+   */
+  static consumeState(stateToken: string): string | null {
+    const entry = this.pendingStates.get(stateToken);
+    if (!entry) return null;
+    this.pendingStates.delete(stateToken);
+    if (new Date() > entry.expiresAt) return null;
+    return entry.userId;
+  }
+
+  /** Remove estados expirados para evitar memory leak */
+  private static cleanupExpiredStates(): void {
+    const now = new Date();
+    for (const [key, data] of this.pendingStates.entries()) {
+      if (now > data.expiresAt) {
+        this.pendingStates.delete(key);
+      }
+    }
+  }
   /**
    * Valida configuracao do Shopee antes de usar
    */
@@ -37,11 +77,19 @@ export class ShopeeOAuthService {
 
     const rawKey = SHOPEE_CONSTANTS.PARTNER_KEY!;
     // Shopee docs não dizem para decodificar a chave; assine com a string exata fornecida.
-    const signature = crypto.createHmac("sha256", rawKey).update(baseString).digest("hex");
+    const signature = crypto
+      .createHmac("sha256", rawKey)
+      .update(baseString)
+      .digest("hex");
 
     if (process.env.SHOPEE_DEBUG === "1") {
       console.log("[ShopeeSign:HMAC] baseString", baseString);
-      console.log("[ShopeeSign:HMAC] sign", signature.slice(0, 6), "...", signature.slice(-6));
+      console.log(
+        "[ShopeeSign:HMAC] sign",
+        signature.slice(0, 6),
+        "...",
+        signature.slice(-6),
+      );
     }
 
     return signature;
@@ -58,11 +106,19 @@ export class ShopeeOAuthService {
     // A chave é usada somente como segredo do HMAC, o redirect NÃO entra na assinatura.
     const baseString = `${partnerId}${apiPath}${timestamp}`;
     const rawKey = SHOPEE_CONSTANTS.PARTNER_KEY!;
-    const sig = crypto.createHmac("sha256", rawKey).update(baseString).digest("hex");
+    const sig = crypto
+      .createHmac("sha256", rawKey)
+      .update(baseString)
+      .digest("hex");
 
     if (process.env.SHOPEE_DEBUG === "1") {
       console.log("[ShopeeSign:AUTH] baseString", baseString);
-      console.log("[ShopeeSign:AUTH] sign", sig.slice(0, 6), "...", sig.slice(-6));
+      console.log(
+        "[ShopeeSign:AUTH] sign",
+        sig.slice(0, 6),
+        "...",
+        sig.slice(-6),
+      );
     }
 
     return sig;
@@ -94,11 +150,19 @@ export class ShopeeOAuthService {
    * Inicia fluxo de autenticacao com Shopee
    * Retorna URL para redirecionamento do usuario
    */
-  static initiateAuth(redirectUri?: string, state?: string): ShopeeAuthUrl {
+  static initiateAuth(
+    redirectUri?: string,
+    stateToken?: string,
+  ): ShopeeAuthUrl {
     const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
     const timestamp = Math.floor(Date.now() / 1000);
-    // Shopee recomenda que o redirect seja exatamente o cadastrado; não incluímos state para evitar mismatch de assinatura
     const redirect = new URL(redirectUri || SHOPEE_CONSTANTS.REDIRECT_URI);
+
+    // Embutir state token na redirect URL para recuperar userId no callback.
+    // Shopee preserva query params existentes ao redirecionar de volta.
+    if (stateToken) {
+      redirect.searchParams.set("state", stateToken);
+    }
 
     const signature = this.generateAuthUrlSignature(
       partnerId,
