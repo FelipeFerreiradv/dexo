@@ -8,12 +8,14 @@ import {
   Package,
   ChevronLeft,
   ChevronRight,
+  QrCode,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -43,6 +45,7 @@ import {
 
 // NextAuth
 import { useSession } from "next-auth/react";
+import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
 import { ProductSkeleton } from "./product-skeleton";
 import { CreateProductDialog } from "./create-product-dialog";
 import { EditProductDialog } from "./edit-product-dialog";
@@ -128,8 +131,9 @@ function MarketplaceBadges({
     new Set(
       (listings || [])
         .map((l) => l?.platform)
-        .filter((p): p is MarketplacePlatform =>
-          p === "MERCADO_LIVRE" || p === "SHOPEE",
+        .filter(
+          (p): p is MarketplacePlatform =>
+            p === "MERCADO_LIVRE" || p === "SHOPEE",
         ),
     ),
   );
@@ -174,6 +178,8 @@ export function ProductsList() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [isGeneratingLabels, setIsGeneratingLabels] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
@@ -243,11 +249,18 @@ export function ProductsList() {
     fetchProducts(1);
   }, [debouncedSearch, fetchProducts]);
 
+  // MantÃ©m seleÃ§Ãµes apenas para itens visÃ­veis na pÃ¡gina atual
+  useEffect(() => {
+    const visible = new Set(products.map((p) => p.id));
+    setSelectedIds((prev) => prev.filter((id) => visible.has(id)));
+  }, [products]);
+
   const handleSearch = (value: string) => {
     setSearchInput(value);
   };
 
   const handlePageChange = (newPage: number) => {
+    setSelectedIds([]);
     fetchProducts(newPage);
   };
 
@@ -343,6 +356,73 @@ export function ProductsList() {
     return "success";
   };
 
+  const selectionCount = selectedIds.length;
+  const allSelected = products.length > 0 && selectionCount === products.length;
+  const isIndeterminate =
+    selectionCount > 0 && selectionCount < products.length;
+
+  const toggleSelectAll = (checked: boolean | "indeterminate") => {
+    if (checked === true) {
+      setSelectedIds(products.map((p) => p.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const toggleSelectOne = (id: string, checked: boolean | "indeterminate") => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked === true) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return Array.from(next);
+    });
+  };
+
+  const handleGenerateLabels = async () => {
+    if (selectedIds.length === 0) {
+      showToast(
+        "Selecione pelo menos um produto para gerar etiquetas.",
+        "warning",
+      );
+      return;
+    }
+
+    const selected = products.filter((p) => selectedIds.includes(p.id));
+    if (selected.length === 0) {
+      showToast(
+        "Os itens selecionados nÃ£o estÃ£o na pÃ¡gina atual. Selecione novamente.",
+        "warning",
+      );
+      setSelectedIds([]);
+      return;
+    }
+
+    setIsGeneratingLabels(true);
+    try {
+      await generateLabelsPdf({
+        products: selected.map((p) => ({
+          id: p.id,
+          sku: p.sku,
+          name: p.name,
+          partNumber: p.partNumber ?? null,
+        })),
+        userName: session?.user?.name,
+      });
+      showToast("PDF de etiquetas gerado com sucesso!", "success");
+    } catch (error) {
+      console.error("Erro ao gerar etiquetas", error);
+      showToast(
+        error instanceof Error ? error.message : "Erro ao gerar etiquetas",
+        "error",
+      );
+    } finally {
+      setIsGeneratingLabels(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Toast notifications */}
@@ -382,19 +462,53 @@ export function ProductsList() {
           ) : (
             <div className="space-y-4">
               {/* Search */}
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1 max-w-sm">
-                  <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="Buscar por nome ou SKU..."
-                    value={searchInput}
-                    onChange={(e) => handleSearch(e.target.value)}
-                    className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
-                  />
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="relative flex-1 max-w-sm">
+                    <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      placeholder="Buscar por nome ou SKU..."
+                      value={searchInput}
+                      onChange={(e) => handleSearch(e.target.value)}
+                      className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
+                    />
+                  </div>
+                  <span className="text-sm text-muted-foreground">
+                    {pagination.total} produto(s)
+                  </span>
                 </div>
-                <span className="text-sm text-muted-foreground">
-                  {pagination.total} produto(s)
-                </span>
+
+                <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Checkbox
+                      aria-label="Selecionar todos os produtos desta pÃ¡gina"
+                      checked={
+                        allSelected
+                          ? true
+                          : isIndeterminate
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={toggleSelectAll}
+                    />
+                    <span className="whitespace-nowrap">Selecionar todos</span>
+                    {selectionCount > 0 && (
+                      <Badge variant="outline" className="font-normal">
+                        {selectionCount} selecionado(s)
+                      </Badge>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGenerateLabels}
+                    disabled={selectionCount === 0 || isGeneratingLabels}
+                    className="gap-2"
+                  >
+                    <QrCode className="size-4" />
+                    {isGeneratingLabels ? "Gerando..." : "Gerar etiquetas"}
+                  </Button>
+                </div>
               </div>
 
               {/* Desktop Table */}
@@ -404,6 +518,19 @@ export function ProductsList() {
                     <Table>
                       <TableHeader>
                         <TableRow>
+                          <TableHead className="w-12">
+                            <Checkbox
+                              aria-label="Selecionar todos os produtos desta página"
+                              checked={
+                                allSelected
+                                  ? true
+                                  : isIndeterminate
+                                    ? "indeterminate"
+                                    : false
+                              }
+                              onCheckedChange={toggleSelectAll}
+                            />
+                          </TableHead>
                           <TableHead>Imagem</TableHead>
                           <TableHead>SKU</TableHead>
                           <TableHead>Nome</TableHead>
@@ -422,7 +549,24 @@ export function ProductsList() {
                       </TableHeader>
                       <TableBody>
                         {products.map((product) => (
-                          <TableRow key={product.id} className="cursor-pointer">
+                          <TableRow
+                            key={product.id}
+                            data-state={
+                              selectedIds.includes(product.id)
+                                ? "selected"
+                                : undefined
+                            }
+                            className="cursor-pointer"
+                          >
+                            <TableCell>
+                              <Checkbox
+                                aria-label={`Selecionar ${product.name}`}
+                                checked={selectedIds.includes(product.id)}
+                                onCheckedChange={(checked) =>
+                                  toggleSelectOne(product.id, checked)
+                                }
+                              />
+                            </TableCell>
                             <TableCell>
                               {product.imageUrl ? (
                                 <>
@@ -537,6 +681,14 @@ export function ProductsList() {
                         className="rounded-lg border bg-card p-4 space-y-3"
                       >
                         <div className="flex items-start gap-3">
+                          <Checkbox
+                            aria-label={`Selecionar ${product.name}`}
+                            className="mt-1"
+                            checked={selectedIds.includes(product.id)}
+                            onCheckedChange={(checked) =>
+                              toggleSelectOne(product.id, checked)
+                            }
+                          />
                           {product.imageUrl ? (
                             <>
                               {/* eslint-disable-next-line @next/next/no-img-element */}
