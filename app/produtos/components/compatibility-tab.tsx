@@ -43,13 +43,6 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Command,
   CommandEmpty,
   CommandGroup,
@@ -107,6 +100,31 @@ function parseModelKey(key: string): { brand: string; model: string } {
   return { brand: key.slice(0, idx), model: key.slice(idx + 3) };
 }
 
+// Chave composta para ano+versão vinculado a marca+modelo
+function makeYearVersionKey(
+  brand: string,
+  model: string,
+  year: number,
+  version: string,
+): string {
+  return `${brand}|||${model}|||${year}|||${version}`;
+}
+
+function parseYearVersionKey(key: string): {
+  brand: string;
+  model: string;
+  year: number | null;
+  version: string;
+} {
+  const parts = key.split("|||");
+  return {
+    brand: parts[0] || "",
+    model: parts[1] || "",
+    year: parts[2] ? parseInt(parts[2], 10) : null,
+    version: parts[3] || "",
+  };
+}
+
 // ---- Multi-select reutilizável (pesquisável, com checkmarks) ----
 
 interface MultiSelectOption {
@@ -123,6 +141,7 @@ interface MultiSearchableSelectProps {
   searchPlaceholder?: string;
   emptyMessage?: string;
   disabled?: boolean;
+  showSelectAll?: boolean;
 }
 
 function MultiSearchableSelect({
@@ -133,6 +152,7 @@ function MultiSearchableSelect({
   searchPlaceholder = "Pesquisar...",
   emptyMessage = "Nenhuma opção encontrada.",
   disabled = false,
+  showSelectAll = false,
 }: MultiSearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
@@ -171,6 +191,23 @@ function MultiSearchableSelect({
     },
     [selected, onChange],
   );
+
+  const allFilteredValues = useMemo(
+    () => filteredOptions.map((o) => o.value),
+    [filteredOptions],
+  );
+  const allSelected =
+    filteredOptions.length > 0 &&
+    filteredOptions.every((o) => selected.includes(o.value));
+
+  const handleSelectAll = useCallback(() => {
+    if (allSelected) {
+      onChange(selected.filter((v) => !allFilteredValues.includes(v)));
+    } else {
+      const merged = new Set([...selected, ...allFilteredValues]);
+      onChange([...merged]);
+    }
+  }, [allSelected, selected, allFilteredValues, onChange]);
 
   const selectedLabels = useMemo(() => {
     return selected.map((v) => options.find((o) => o.value === v)?.label || v);
@@ -237,6 +274,19 @@ function MultiSearchableSelect({
           />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
+            {showSelectAll && filteredOptions.length > 0 && (
+              <CommandGroup>
+                <CommandItem onSelect={handleSelectAll}>
+                  <Check
+                    className={cn(
+                      "mr-2 h-4 w-4",
+                      allSelected ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  Selecionar Todos
+                </CommandItem>
+              </CommandGroup>
+            )}
             {grouped ? (
               Array.from(grouped.entries()).map(([group, opts]) => (
                 <CommandGroup key={group} heading={group}>
@@ -268,9 +318,7 @@ export function CompatibilityTab({
   // Form state para adicionar (multi-select cascata)
   const [addBrands, setAddBrands] = useState<string[]>([]);
   const [addModels, setAddModels] = useState<string[]>([]); // chave "brand|||model"
-  const [addYearFrom, setAddYearFrom] = useState("");
-  const [addYearTo, setAddYearTo] = useState("");
-  const [addVersions, setAddVersions] = useState<string[]>([]);
+  const [addYearVersions, setAddYearVersions] = useState<string[]>([]); // chave "brand|||model|||year|||version"
 
   // Form state para adição em massa
   const [batchText, setBatchText] = useState("");
@@ -295,45 +343,60 @@ export function CompatibilityTab({
     return result;
   }, [addBrands]);
 
-  const yearOptions = useMemo(() => {
-    const allYears = new Set<number>();
+  // Gera opções "ano versão" agrupadas por marca + modelo
+  const yearVersionOptions = useMemo(() => {
+    const result: MultiSelectOption[] = [];
     for (const key of addModels) {
       const { brand, model } = parseModelKey(key);
-      for (const y of getYearsForModel(brand, model)) allYears.add(y);
+      const years = getYearsForModel(brand, model);
+      const versions = getVersionsForModel(brand, model);
+      const groupLabel = addModels.length > 1 ? `${brand} - ${model}` : model;
+      if (versions.length > 0) {
+        for (const year of years) {
+          for (const ver of versions) {
+            result.push({
+              value: makeYearVersionKey(brand, model, year, ver),
+              label: `${year} ${ver}`,
+              group: groupLabel,
+            });
+          }
+        }
+      } else {
+        for (const year of years) {
+          result.push({
+            value: makeYearVersionKey(brand, model, year, ""),
+            label: String(year),
+            group: groupLabel,
+          });
+        }
+      }
     }
-    return [...allYears].sort((a, b) => a - b);
-  }, [addModels]);
-
-  const versionOptions = useMemo(() => {
-    const allVersions = new Set<string>();
-    for (const key of addModels) {
-      const { brand, model } = parseModelKey(key);
-      for (const v of getVersionsForModel(brand, model)) allVersions.add(v);
-    }
-    return [...allVersions].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    return result;
   }, [addModels]);
 
   // Resetar campos dependentes quando mudam as marcas
   const handleBrandsChange = useCallback((newBrands: string[]) => {
     setAddBrands(newBrands);
-    // Remover modelos de marcas que não estão mais selecionadas
     setAddModels((prev) =>
       prev.filter((key) => {
         const { brand } = parseModelKey(key);
         return newBrands.some((b) => b.toLowerCase() === brand.toLowerCase());
       }),
     );
-    setAddYearFrom("");
-    setAddYearTo("");
-    setAddVersions([]);
+    setAddYearVersions([]);
   }, []);
 
   // Resetar campos dependentes quando mudam os modelos
   const handleModelsChange = useCallback((newModels: string[]) => {
     setAddModels(newModels);
-    setAddYearFrom("");
-    setAddYearTo("");
-    setAddVersions([]);
+    // Remover year+versions de modelos que não estão mais selecionados
+    const modelKeys = new Set(newModels);
+    setAddYearVersions((prev) =>
+      prev.filter((key) => {
+        const { brand, model } = parseYearVersionKey(key);
+        return modelKeys.has(makeModelKey(brand, model));
+      }),
+    );
   }, []);
 
   // Filtro de busca
@@ -375,33 +438,33 @@ export function CompatibilityTab({
     });
   }, [filtered]);
 
-  // Adicionar: gera produto cartesiano de modelos × versões
+  // Adicionar: cada seleção em yearVersions gera uma entrada
   const handleAdd = useCallback(() => {
     if (addBrands.length === 0 || addModels.length === 0) return;
     const entries: CompatibilityEntry[] = [];
-    const yFrom = addYearFrom ? parseInt(addYearFrom, 10) : null;
-    const yTo = addYearTo ? parseInt(addYearTo, 10) : null;
 
-    for (const key of addModels) {
-      const { brand, model } = parseModelKey(key);
-      if (addVersions.length > 0) {
-        for (const version of addVersions) {
-          entries.push({
-            _localId: localId(),
-            brand,
-            model,
-            yearFrom: yFrom,
-            yearTo: yTo,
-            version,
-          });
-        }
-      } else {
+    if (addYearVersions.length > 0) {
+      for (const key of addYearVersions) {
+        const { brand, model, year, version } = parseYearVersionKey(key);
         entries.push({
           _localId: localId(),
           brand,
           model,
-          yearFrom: yFrom,
-          yearTo: yTo,
+          yearFrom: year || null,
+          yearTo: year || null,
+          version: version || null,
+        });
+      }
+    } else {
+      // Sem versão selecionada → uma entrada por modelo (sem ano/versão)
+      for (const key of addModels) {
+        const { brand, model } = parseModelKey(key);
+        entries.push({
+          _localId: localId(),
+          brand,
+          model,
+          yearFrom: null,
+          yearTo: null,
           version: null,
         });
       }
@@ -410,19 +473,9 @@ export function CompatibilityTab({
     onChange([...value, ...entries]);
     setAddBrands([]);
     setAddModels([]);
-    setAddYearFrom("");
-    setAddYearTo("");
-    setAddVersions([]);
+    setAddYearVersions([]);
     setAddDialogOpen(false);
-  }, [
-    addBrands,
-    addModels,
-    addYearFrom,
-    addYearTo,
-    addVersions,
-    onChange,
-    value,
-  ]);
+  }, [addBrands, addModels, addYearVersions, onChange, value]);
 
   // Adicionar em massa (formato: Marca; Modelo; AnoInicio; AnoFim; Versão — uma por linha)
   const handleBatchAdd = useCallback(() => {
@@ -663,9 +716,7 @@ export function CompatibilityTab({
           if (!open) {
             setAddBrands([]);
             setAddModels([]);
-            setAddYearFrom("");
-            setAddYearTo("");
-            setAddVersions([]);
+            setAddYearVersions([]);
           }
         }}
       >
@@ -673,7 +724,7 @@ export function CompatibilityTab({
           <DialogHeader>
             <DialogTitle>Adicionar Compatibilidade</DialogTitle>
             <DialogDescription>
-              Selecione marcas, modelos, anos e versões. Cada combinação será
+              Selecione marcas, modelos e versões. Cada combinação será
               adicionada como uma entrada separada.
             </DialogDescription>
           </DialogHeader>
@@ -710,119 +761,33 @@ export function CompatibilityTab({
               />
             </div>
 
-            {/* Anos */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Ano Inicial</Label>
-                {yearOptions.length > 0 ? (
-                  <Select
-                    value={addYearFrom}
-                    onValueChange={(v) => {
-                      setAddYearFrom(v);
-                      if (addYearTo && parseInt(addYearTo) < parseInt(v)) {
-                        setAddYearTo(v);
-                      }
-                    }}
-                    disabled={addModels.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Ano inicial" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {yearOptions.map((y) => (
-                        <SelectItem key={y} value={String(y)}>
-                          {y}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    type="number"
-                    placeholder="2015"
-                    min={1950}
-                    max={2040}
-                    value={addYearFrom}
-                    onChange={(e) => setAddYearFrom(e.target.value)}
-                    disabled={addModels.length === 0}
-                  />
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label>Ano Final</Label>
-                {yearOptions.length > 0 ? (
-                  <Select
-                    value={addYearTo}
-                    onValueChange={setAddYearTo}
-                    disabled={addModels.length === 0}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Ano final" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {yearOptions
-                        .filter(
-                          (y) => !addYearFrom || y >= parseInt(addYearFrom),
-                        )
-                        .map((y) => (
-                          <SelectItem key={y} value={String(y)}>
-                            {y}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    type="number"
-                    placeholder="2023"
-                    min={1950}
-                    max={2040}
-                    value={addYearTo}
-                    onChange={(e) => setAddYearTo(e.target.value)}
-                    disabled={addModels.length === 0}
-                  />
-                )}
-              </div>
-            </div>
-
-            {/* Versões (multi-select) */}
+            {/* Versão (ano + versão combinados, com Selecionar Todos) */}
             <div className="space-y-2">
-              <Label>Versões</Label>
-              {versionOptions.length > 0 ? (
-                <MultiSearchableSelect
-                  options={versionOptions.map((v) => ({
-                    value: v,
-                    label: v,
-                  }))}
-                  selected={addVersions}
-                  onChange={setAddVersions}
-                  placeholder={
-                    addModels.length > 0
-                      ? "Selecione as versões..."
-                      : "Selecione os modelos primeiro"
-                  }
-                  searchPlaceholder="Buscar versão..."
-                  emptyMessage="Nenhuma versão encontrada."
-                  disabled={addModels.length === 0}
-                />
-              ) : (
-                <Input
-                  placeholder="Ex: EXL, LX, Sport"
-                  value={addVersions[0] || ""}
-                  onChange={(e) =>
-                    setAddVersions(e.target.value ? [e.target.value] : [])
-                  }
-                  disabled={addModels.length === 0}
-                />
-              )}
+              <Label>Versão *</Label>
+              <MultiSearchableSelect
+                options={yearVersionOptions}
+                selected={addYearVersions}
+                onChange={setAddYearVersions}
+                placeholder={
+                  addModels.length > 0
+                    ? "Selecione as versões..."
+                    : "Selecione os modelos primeiro"
+                }
+                searchPlaceholder="Buscar versão..."
+                emptyMessage="Nenhuma versão encontrada."
+                disabled={addModels.length === 0}
+                showSelectAll
+              />
             </div>
 
             {/* Preview: quantas entradas serão criadas */}
-            {addModels.length > 0 && (
+            {(addYearVersions.length > 0 || addModels.length > 0) && (
               <div className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
                 Serão adicionadas{" "}
                 <span className="font-medium text-foreground">
-                  {addModels.length * Math.max(addVersions.length, 1)}
+                  {addYearVersions.length > 0
+                    ? addYearVersions.length
+                    : addModels.length}
                 </span>{" "}
                 compatibilidade(s)
               </div>
