@@ -2206,6 +2206,31 @@ export class ListingUseCase {
         );
       }
 
+      // Shopee Xpress limits: max 30kg, max 200cm per side, min 1cm per side
+      const SHOPEE_MAX_WEIGHT_KG = 30;
+      const SHOPEE_MAX_DIM_CM = 200;
+      const SHOPEE_MIN_DIM_CM = 1;
+
+      const rawWeightKg =
+        product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0;
+      const rawLength =
+        product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10;
+      const rawWidth =
+        product.widthCm && product.widthCm > 0 ? product.widthCm : 10;
+      const rawHeight =
+        product.heightCm && product.heightCm > 0 ? product.heightCm : 10;
+
+      const clampedWeightKg = Math.min(rawWeightKg, SHOPEE_MAX_WEIGHT_KG);
+      const clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawLength, SHOPEE_MAX_DIM_CM));
+      const clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawWidth, SHOPEE_MAX_DIM_CM));
+      const clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawHeight, SHOPEE_MAX_DIM_CM));
+
+      if (rawWeightKg !== clampedWeightKg || rawLength !== clampedLength || rawWidth !== clampedWidth || rawHeight !== clampedHeight) {
+        console.warn(
+          `[ListingUseCase] Shopee dimensions clamped: ${clampedHeight}x${clampedWidth}x${clampedLength}cm ${clampedWeightKg}kg (was ${rawHeight}x${rawWidth}x${rawLength}cm,${rawWeightKg}kg)`,
+        );
+      }
+
       const payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
@@ -2214,15 +2239,11 @@ export class ListingUseCase {
         original_price: Number(product.price) || 1,
         seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
         condition: shopeeCondition,
-        weight:
-          product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
+        weight: clampedWeightKg,
         dimension: {
-          package_length:
-            product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10,
-          package_width:
-            product.widthCm && product.widthCm > 0 ? product.widthCm : 10,
-          package_height:
-            product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
+          package_length: clampedLength,
+          package_width: clampedWidth,
+          package_height: clampedHeight,
         },
         image: {
           image_id_list: [shopeeImageId],
@@ -2269,6 +2290,7 @@ export class ListingUseCase {
           condition: payload.condition,
           original_price: payload.original_price,
           seller_stock: payload.seller_stock,
+          weight: payload.weight,
           dimension: payload.dimension,
           logistic_info_count: payload.logistic_info?.length || 0,
           attributes: (payload.attribute_list || []).map((a) => ({
