@@ -88,7 +88,8 @@ export function MLSyncTab() {
 
     try {
       const url = new URL(`${getApiBaseUrl()}/marketplace/ml/import`);
-      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+      if (selectedAccountId)
+        url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
         method: "POST",
@@ -121,7 +122,8 @@ export function MLSyncTab() {
 
     try {
       const url = new URL(`${getApiBaseUrl()}/marketplace/ml/sync`);
-      if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+      if (selectedAccountId)
+        url.searchParams.set("accountId", selectedAccountId);
 
       const response = await fetch(url.toString(), {
         method: "POST",
@@ -145,7 +147,9 @@ export function MLSyncTab() {
           successful: 0,
           failed: 0,
           results: [],
-          message: data.message || "Sincronização iniciada em segundo plano. Aguarde alguns instantes e recarregue a página.",
+          message:
+            data.message ||
+            "Sincronização iniciada em segundo plano. Aguarde alguns instantes e recarregue a página.",
         } as SyncResponse);
       } else {
         setSyncResult(data);
@@ -162,10 +166,9 @@ export function MLSyncTab() {
     const loadAccounts = async () => {
       if (!session?.user?.email) return;
       try {
-        const res = await fetch(
-          `${getApiBaseUrl()}/marketplace/ml/accounts`,
-          { headers: { email: session.user.email } },
-        );
+        const res = await fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
+          headers: { email: session.user.email },
+        });
         if (res.ok) {
           const data = await res.json();
           setAccounts(Array.isArray(data.accounts) ? data.accounts : []);
@@ -416,78 +419,84 @@ export function MLSyncTab() {
               </div>
 
               {!syncResult.message && (
-              <>
-                <div className="grid grid-cols-3 gap-4 text-center">
-                <div className="rounded-md bg-muted p-3">
-                  <div className="text-2xl font-bold">{syncResult.total}</div>
-                  <div className="text-xs text-muted-foreground">Total</div>
-                </div>
-                <div className="rounded-md bg-green-100 p-3 dark:bg-green-900/20">
-                  <div className="text-2xl font-bold text-green-700 dark:text-green-400">
-                    {syncResult.successful}
-                  </div>
-                  <div className="text-xs text-muted-foreground">Sucesso</div>
-                </div>
-                <div className="rounded-md bg-red-100 p-3 dark:bg-red-900/20">
-                  <div className="text-2xl font-bold text-red-700 dark:text-red-400">
-                    {syncResult.failed}
-                  </div>
-                  <div className="text-xs text-muted-foreground">Falhas</div>
-                </div>
-              </div>
-
-              {/* Lista de resultados */}
-              {syncResult.results.length > 0 && (
-                <Accordion type="single" collapsible className="w-full">
-                  <AccordionItem value="results">
-                    <AccordionTrigger className="text-sm">
-                      Ver detalhes ({syncResult.results.length} produtos)
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="max-h-60 space-y-2 overflow-y-auto">
-                        {syncResult.results.map((result) => (
-                          <div
-                            key={result.productId}
-                            className="flex items-center justify-between rounded-md border p-2 text-sm"
-                          >
-                            <div className="flex-1">
-                              <div className="font-mono text-xs">
-                                {result.externalListingId}
-                              </div>
-                              {result.success ? (
-                                <div className="text-xs text-muted-foreground">
-                                  Estoque: {result.previousStock} →{" "}
-                                  {result.newStock}
-                                </div>
-                              ) : (
-                                <div className="text-xs text-destructive">
-                                  {result.error}
-                                </div>
-                              )}
-                            </div>
-                            {result.success ? (
-                              <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />
-                            ) : (
-                              <XCircle className="h-4 w-4 shrink-0 text-destructive" />
-                            )}
-                          </div>
-                        ))}
+                <>
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div className="rounded-md bg-muted p-3">
+                      <div className="text-2xl font-bold">
+                        {syncResult.total}
                       </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                </Accordion>
-              )}
+                      <div className="text-xs text-muted-foreground">Total</div>
+                    </div>
+                    <div className="rounded-md bg-green-100 p-3 dark:bg-green-900/20">
+                      <div className="text-2xl font-bold text-green-700 dark:text-green-400">
+                        {syncResult.successful}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Sucesso
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-red-100 p-3 dark:bg-red-900/20">
+                      <div className="text-2xl font-bold text-red-700 dark:text-red-400">
+                        {syncResult.failed}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Falhas
+                      </div>
+                    </div>
+                  </div>
 
-              {syncResult.total === 0 && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Package className="h-4 w-4" />
-                  <span>
-                    Nenhum produto vinculado encontrado. Importe seus anúncios
-                    primeiro.
-                  </span>
-                </div>
-              )}
-              </>
+                  {/* Lista de resultados */}
+                  {syncResult.results.length > 0 && (
+                    <Accordion type="single" collapsible className="w-full">
+                      <AccordionItem value="results">
+                        <AccordionTrigger className="text-sm">
+                          Ver detalhes ({syncResult.results.length} produtos)
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          <div className="max-h-60 space-y-2 overflow-y-auto">
+                            {syncResult.results.map((result) => (
+                              <div
+                                key={result.productId}
+                                className="flex items-center justify-between rounded-md border p-2 text-sm"
+                              >
+                                <div className="flex-1">
+                                  <div className="font-mono text-xs">
+                                    {result.externalListingId}
+                                  </div>
+                                  {result.success ? (
+                                    <div className="text-xs text-muted-foreground">
+                                      Estoque: {result.previousStock} →{" "}
+                                      {result.newStock}
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-destructive">
+                                      {result.error}
+                                    </div>
+                                  )}
+                                </div>
+                                {result.success ? (
+                                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />
+                                ) : (
+                                  <XCircle className="h-4 w-4 shrink-0 text-destructive" />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
+                  )}
+
+                  {syncResult.total === 0 && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Package className="h-4 w-4" />
+                      <span>
+                        Nenhum produto vinculado encontrado. Importe seus
+                        anúncios primeiro.
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
