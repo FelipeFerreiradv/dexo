@@ -2215,7 +2215,7 @@ export class ListingUseCase {
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         original_price: Number(product.price) || 1,
-        normal_stock: Math.min(product.stock || 1, 999999),
+        seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
         condition: shopeeCondition,
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
@@ -2271,7 +2271,7 @@ export class ListingUseCase {
           brand: payload.brand,
           condition: payload.condition,
           original_price: payload.original_price,
-          normal_stock: payload.normal_stock,
+          seller_stock: payload.seller_stock,
           dimension: payload.dimension,
           logistic_info_count: payload.logistic_info?.length || 0,
           attributes: (payload.attribute_list || []).map((a) => ({

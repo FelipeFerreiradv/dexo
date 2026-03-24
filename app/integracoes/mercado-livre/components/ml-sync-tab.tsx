@@ -63,6 +63,7 @@ interface SyncResponse {
   successful: number;
   failed: number;
   results: SyncResult[];
+  message?: string;
 }
 
 export function MLSyncTab() {
@@ -129,13 +130,26 @@ export function MLSyncTab() {
         },
       });
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 202) {
         const data = await response.json();
         throw new Error(data.message || "Erro ao sincronizar estoque");
       }
 
-      const data: SyncResponse = await response.json();
-      setSyncResult(data);
+      const data = await response.json();
+
+      // 202 = sync rodando em background
+      if (response.status === 202) {
+        setSyncResult({
+          success: true,
+          total: 0,
+          successful: 0,
+          failed: 0,
+          results: [],
+          message: data.message || "Sincronização iniciada em segundo plano. Aguarde alguns instantes e recarregue a página.",
+        } as SyncResponse);
+      } else {
+        setSyncResult(data);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao sincronizar");
     } finally {
@@ -389,15 +403,21 @@ export function MLSyncTab() {
           {syncResult && (
             <div className="space-y-3 rounded-lg border p-4">
               <div className="flex items-center gap-2">
-                {syncResult.failed === 0 ? (
+                {syncResult.message ? (
+                  <RefreshCw className="h-5 w-5 text-blue-500" />
+                ) : syncResult.failed === 0 ? (
                   <CheckCircle2 className="h-5 w-5 text-green-500" />
                 ) : (
                   <AlertTriangle className="h-5 w-5 text-yellow-500" />
                 )}
-                <span className="font-medium">Sincronização concluída</span>
+                <span className="font-medium">
+                  {syncResult.message || "Sincronização concluída"}
+                </span>
               </div>
 
-              <div className="grid grid-cols-3 gap-4 text-center">
+              {!syncResult.message && (
+              <>
+                <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="rounded-md bg-muted p-3">
                   <div className="text-2xl font-bold">{syncResult.total}</div>
                   <div className="text-xs text-muted-foreground">Total</div>
@@ -466,6 +486,8 @@ export function MLSyncTab() {
                     primeiro.
                   </span>
                 </div>
+              )}
+              </>
               )}
             </div>
           )}

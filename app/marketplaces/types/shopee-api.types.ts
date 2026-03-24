@@ -133,7 +133,7 @@ export interface ShopeeItemCreatePayload {
   description: string;
   item_sku: string;
   original_price: number;
-  normal_stock: number;
+  seller_stock: Array<{ stock: number }>;
   weight: number;
   dimension: {
     package_length: number;
@@ -158,7 +158,7 @@ export interface ShopeeItemUpdatePayload {
   description?: string;
   item_sku?: string;
   original_price?: number;
-  normal_stock?: number;
+  seller_stock?: Array<{ stock: number }>;
   weight?: number;
   dimension?: {
     package_length: number;

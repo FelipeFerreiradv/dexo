@@ -518,23 +518,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   /**
    * POST /marketplace/ml/sync
    * Sincroniza estoque de todos os produtos vinculados ao ML (multi-contas)
+   * Retorna 202 imediatamente e processa em segundo plano para evitar timeout nginx
    */
-  app.post<{
-    Reply: {
-      success: boolean;
-      total: number;
-      successful: number;
-      failed: number;
-      results: Array<{
-        success: boolean;
-        productId: string;
-        externalListingId: string;
-        previousStock?: number;
-        newStock?: number;
-        error?: string;
-      }>;
-    };
-  }>(
+  app.post(
     "/ml/sync",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -546,33 +532,48 @@ export async function marketplaceRoutes(app: FastifyInstance) {
             ? [(request.query as any).accountId as string]
             : undefined);
 
-        const result = await SyncUseCase.syncAllStock(
-          userId,
-          Platform.MERCADO_LIVRE,
-          accountIds,
-        );
+        // Responder 202 imediatamente para evitar 504 do nginx
+        reply.status(202).send({
+          success: true,
+          message: "Sincronização iniciada em segundo plano",
+          total: 0,
+          successful: 0,
+          failed: 0,
+          results: [],
+        });
 
-        await SystemLogService.logSyncComplete(
-          userId,
-          "FULL_SYNC",
-          "MercadoLivre",
-          {
-            total: result.total,
-            successful: result.successful,
-            failed: result.failed,
-          },
-        );
+        // Processar sync em background (fire-and-forget)
+        setImmediate(async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.MERCADO_LIVRE,
+              accountIds,
+            );
 
-        return reply.send({
-          success: result.failed === 0,
-          total: result.total,
-          successful: result.successful,
-          failed: result.failed,
-          results: result.results,
+            await SystemLogService.logSyncComplete(
+              userId,
+              "FULL_SYNC",
+              "MercadoLivre",
+              {
+                total: result.total,
+                successful: result.successful,
+                failed: result.failed,
+              },
+            );
+            console.log(
+              `[ml/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (bgErr) {
+            console.error(
+              `[ml/sync] Background sync error:`,
+              bgErr instanceof Error ? bgErr.message : bgErr,
+            );
+          }
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao sincronizar estoque do Mercado Livre",
+          error: "Erro ao iniciar sincronização do Mercado Livre",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
