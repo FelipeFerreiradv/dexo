@@ -125,6 +125,7 @@ const shouldIncludeFamilyName = (categoryId?: string) => {
     "MLB193531",
     "MLB116479",
     "MLB193613",
+    "MLB188061",
     ...extra,
   ]);
   return forceEnv || (categoryId ? allow.has(categoryId) : false);
@@ -145,6 +146,7 @@ const noTitleWithFamily = (categoryId?: string) => {
     "MLB193531",
     "MLB116479",
     "MLB193613",
+    "MLB188061",
     ...envList,
   ]);
   return categoryId ? hard.has(categoryId) : false;

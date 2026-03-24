@@ -202,7 +202,7 @@ export class ShopeeApiService {
   ): Promise<{ item_id: number }> {
     return this.updateItem(accessToken, shopId, {
       item_id: itemId,
-      seller_stock: [{ stock }],
+      normal_stock: stock,
     });
   }
 
@@ -243,24 +243,104 @@ export class ShopeeApiService {
   }
 
   /**
-   * Faz upload de imagem para o Shopee
+   * Faz upload de imagem para o Shopee (multipart/form-data)
+   * Shopee exige que a imagem seja enviada como arquivo binário,
+   * não aceita JSON com URL.
    */
   static async uploadImage(
     accessToken: string,
     shopId: number,
     imageUrl: string,
   ): Promise<ShopeeImageUploadResponse> {
+    this.validateConfig();
     const apiPath = "/api/v2/media_space/upload_image";
+    const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
+    const timestamp = Math.floor(Date.now() / 1000);
 
-    const response = await this.makeAuthenticatedRequest<
+    const signature = ShopeeOAuthService.generateSignature({
+      partner_id: partnerId,
+      api_path: apiPath,
+      timestamp,
+      access_token: accessToken,
+      shop_id: shopId,
+    });
+
+    const url = new URL(apiPath, SHOPEE_CONSTANTS.API_URL);
+    url.searchParams.set("partner_id", partnerId.toString());
+    url.searchParams.set("timestamp", timestamp.toString());
+    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("shop_id", shopId.toString());
+    url.searchParams.set("sign", signature);
+
+    // 1. Baixar a imagem da URL
+    const imageResponse = await axios.get(imageUrl, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+    });
+    const imageBuffer = Buffer.from(imageResponse.data);
+    const contentType = imageResponse.headers["content-type"] || "image/jpeg";
+    const ext = contentType.includes("png") ? "png" : "jpg";
+
+    // 2. Criar FormData com a imagem (multipart/form-data)
+    const FormData = (await import("form-data")).default;
+    const form = new FormData();
+    form.append("image", imageBuffer, {
+      filename: `upload.${ext}`,
+      contentType,
+    });
+
+    const formHeaders = form.getHeaders();
+
+    // 3. Enviar como multipart
+    const response = await axios.post<
       ShopeeApiResponse<ShopeeImageUploadResponse>
-    >("POST", apiPath, accessToken, shopId, { image_url: imageUrl });
+    >(url.toString(), form, {
+      headers: {
+        ...formHeaders,
+      },
+      timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
+      maxContentLength: 10 * 1024 * 1024,
+      maxBodyLength: 10 * 1024 * 1024,
+    });
 
-    if (response.error) {
-      throw new Error(`Erro ao fazer upload de imagem: ${response.message}`);
+    const data = response.data;
+    if (data.error) {
+      throw new Error(`Erro ao fazer upload de imagem: ${data.message}`);
     }
 
-    return response.response!;
+    return data.response!;
+  }
+
+  /**
+   * Busca canais logísticos disponíveis para a loja
+   */
+  static async getLogisticsChannelList(
+    accessToken: string,
+    shopId: number,
+  ): Promise<
+    Array<{
+      logistics_channel_id: number;
+      logistics_channel_name: string;
+      enabled: boolean;
+    }>
+  > {
+    const apiPath = "/api/v2/logistics/get_channel_list";
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        logistics_channel_list: Array<{
+          logistics_channel_id: number;
+          logistics_channel_name: string;
+          enabled: boolean;
+        }>;
+      }>
+    >("GET", apiPath, accessToken, shopId);
+
+    if (response.error) {
+      throw new Error(`Erro ao buscar canais logísticos: ${response.message}`);
+    }
+
+    return response.response?.logistics_channel_list ?? [];
   }
 
   /**

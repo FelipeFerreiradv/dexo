@@ -133,18 +133,20 @@ export interface ShopeeItemCreatePayload {
   description: string;
   item_sku: string;
   original_price: number;
-  seller_stock: Array<{ stock: number }>;
+  normal_stock: number;
   weight: number;
-  package_length: number;
-  package_width: number;
-  package_height: number;
+  dimension: {
+    package_length: number;
+    package_width: number;
+    package_height: number;
+  };
   image: {
     image_id_list: string[];
   };
   attribute_list?: ShopeeItemAttribute[];
-  logistic_info?: ShopeeItemLogisticInfo[];
+  logistic_info?: Array<{ logistic_id: number; enabled: boolean }>;
   condition?: ShopeeItemCondition;
-  brand?: ShopeeItemBrand;
+  brand?: { brand_id: number; original_brand_name: string };
   item_status?: "NORMAL" | "UNLIST";
 }
 
@@ -156,18 +158,20 @@ export interface ShopeeItemUpdatePayload {
   description?: string;
   item_sku?: string;
   original_price?: number;
-  seller_stock?: Array<{ stock: number }>;
+  normal_stock?: number;
   weight?: number;
-  package_length?: number;
-  package_width?: number;
-  package_height?: number;
+  dimension?: {
+    package_length: number;
+    package_width: number;
+    package_height: number;
+  };
   image?: {
     image_id_list: string[];
   };
   attribute_list?: ShopeeItemAttribute[];
-  logistic_info?: ShopeeItemLogisticInfo[];
+  logistic_info?: Array<{ logistic_id: number; enabled: boolean }>;
   condition?: ShopeeItemCondition;
-  brand?: ShopeeItemBrand;
+  brand?: { brand_id: number; original_brand_name: string };
 }
 
 // Resposta da busca de itens

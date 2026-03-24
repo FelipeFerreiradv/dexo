@@ -397,6 +397,8 @@ export class ListingUseCase {
       "MLB193531", // Acessórios > Radiadores > Reservatório — observado exigindo family_name e recusando title
       "MLB116479", // Janelas e Vedações > Sistemas de Elevação > Outros — exige family_name e rejeita title
       "MLB193613", // Suspensão e Direção > Outros — exige family_name e rejeita title
+      "MLB188061", // Tampas de Combustível — observado exigindo family_name e recusando title
+      "MLB22693", // Peças de Carros e Caminhonetes — fluxo UP
       ...extra,
     ]);
 
@@ -424,6 +426,7 @@ export class ListingUseCase {
       "MLB193531", // Radiadores > Reservatório — exige family_name e bloqueia title
       "MLB116479", // Janelas e Vedações > Sistemas de Elevação > Outros — exige family_name e bloqueia title
       "MLB193613", // Suspensão e Direção > Outros — exige family_name e bloqueia title
+      "MLB188061", // Tampas de Combustível — observado exigindo family_name e bloqueando title
       ...envList,
     ]);
     if (!categoryId) return false;
@@ -2183,27 +2186,53 @@ export class ListingUseCase {
       const shopeeCondition: "NEW" | "USED" =
         (product as any).quality === "NOVO" ? "NEW" : "USED";
 
+      // Buscar canais logísticos disponíveis na loja Shopee
+      let logisticInfo: Array<{ logistic_id: number; enabled: boolean }> = [];
+      try {
+        const channels = await ShopeeApiService.getLogisticsChannelList(
+          account.accessToken,
+          account.shopId,
+        );
+        logisticInfo = channels
+          .filter((ch) => ch.enabled)
+          .map((ch) => ({
+            logistic_id: ch.logistics_channel_id,
+            enabled: true,
+          }));
+        console.log(
+          `[ListingUseCase] Shopee logistics channels found: ${logisticInfo.length}`,
+        );
+      } catch (logErr) {
+        console.warn(
+          `[ListingUseCase] Failed to fetch Shopee logistics, using empty:`,
+          (logErr as any)?.message || logErr,
+        );
+      }
+
       const payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         original_price: Number(product.price) || 1,
-        seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
+        normal_stock: Math.min(product.stock || 1, 999999),
         condition: shopeeCondition,
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
-        package_length:
-          product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10,
-        package_width:
-          product.widthCm && product.widthCm > 0 ? product.widthCm : 10,
-        package_height:
-          product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
+        dimension: {
+          package_length:
+            product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10,
+          package_width:
+            product.widthCm && product.widthCm > 0 ? product.widthCm : 10,
+          package_height:
+            product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
+        },
         image: {
           image_id_list: [shopeeImageId],
         },
         attribute_list: attributeList,
-        brand: { brand_id: 0, brand_name: brandName },
+        brand: { brand_id: 0, original_brand_name: brandName },
+        ...(logisticInfo.length > 0 ? { logistic_info: logisticInfo } : {}),
       };
 
       // 3.5 Criar placeholder local ANTES de chamar a API (visibilidade + retry)
@@ -2242,7 +2271,9 @@ export class ListingUseCase {
           brand: payload.brand,
           condition: payload.condition,
           original_price: payload.original_price,
-          seller_stock: payload.seller_stock,
+          normal_stock: payload.normal_stock,
+          dimension: payload.dimension,
+          logistic_info_count: payload.logistic_info?.length || 0,
           attributes: (payload.attribute_list || []).map((a) => ({
             id: a.attribute_id,
             name: a.attribute_name,
