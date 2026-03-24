@@ -1,5 +1,8 @@
 import axios from "axios";
-import { SHOPEE_CONSTANTS, validateShopeeConfig } from "../shopee/shopee-constants";
+import {
+  SHOPEE_CONSTANTS,
+  validateShopeeConfig,
+} from "../shopee/shopee-constants";
 import { ShopeeOAuthService } from "./shopee-oauth.service";
 import {
   ShopeeApiResponse,
@@ -114,12 +117,15 @@ export class ShopeeApiService {
 
     const fullApiPath = `${apiPath}?${queryParams.toString()}`;
 
-    return this.makeAuthenticatedRequest<ShopeeItemListResponse>(
-      "GET",
-      fullApiPath,
-      accessToken,
-      shopId,
-    );
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<ShopeeItemListResponse>
+    >("GET", fullApiPath, accessToken, shopId);
+
+    if (response.error) {
+      throw new Error(`Erro ao listar itens: ${response.message}`);
+    }
+
+    return response.response!;
   }
 
   /**
@@ -314,7 +320,12 @@ export class ShopeeApiService {
       ShopeeApiResponse<{
         more: boolean;
         next_cursor?: string;
-        order_list: { order_sn: string; order_status: string; create_time: number; update_time: number }[];
+        order_list: {
+          order_sn: string;
+          order_status: string;
+          create_time: number;
+          update_time: number;
+        }[];
       }>
     >("GET", `${apiPath}?${query.toString()}`, accessToken, shopId);
 
@@ -342,7 +353,9 @@ export class ShopeeApiService {
     >("GET", `${apiPath}?${query}`, accessToken, shopId);
 
     if (response.error) {
-      throw new Error(`Erro ao buscar detalhes de pedidos: ${response.message}`);
+      throw new Error(
+        `Erro ao buscar detalhes de pedidos: ${response.message}`,
+      );
     }
 
     return response.response?.order_list ?? [];

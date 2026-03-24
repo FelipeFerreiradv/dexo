@@ -879,6 +879,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           errors: result.errors,
         });
       } catch (error) {
+        console.error(
+          "[shopee/import] Error:",
+          error instanceof Error ? error.stack : error,
+        );
         return reply.status(500).send({
           error: "Erro ao importar itens",
           message: error instanceof Error ? error.message : "Erro desconhecido",

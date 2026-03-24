@@ -1038,6 +1038,7 @@ export class ListingUseCase {
       };
 
       // Garantia (sale_terms)
+      const isUsedItem = payload.condition === "used";
       if (effectiveSettings.hasWarranty && effectiveSettings.warrantyDuration) {
         const unit =
           effectiveSettings.warrantyUnit === "meses" ? "meses" : "dias";
@@ -1048,8 +1049,9 @@ export class ListingUseCase {
             value_name: `${effectiveSettings.warrantyDuration} ${unit}`,
           },
         ];
-        // Tempo de fabricação/disponibilidade (manufacturing_time)
+        // Tempo de fabricação — ML só aceita para itens novos
         if (
+          !isUsedItem &&
           effectiveSettings.manufacturingTime &&
           effectiveSettings.manufacturingTime > 0
         ) {
@@ -1059,6 +1061,7 @@ export class ListingUseCase {
           });
         }
       } else if (
+        !isUsedItem &&
         effectiveSettings.manufacturingTime &&
         effectiveSettings.manufacturingTime > 0
       ) {
@@ -2004,65 +2007,151 @@ export class ListingUseCase {
         };
       }
 
-      // 3. Preparar payload — atributos expandidos
+      // 3. Buscar atributos obrigatórios da categoria via API Shopee
       const attributeList: ShopeeItemCreatePayload["attribute_list"] = [];
 
-      // Marca (obrigatório)
-      attributeList.push({
-        attribute_id: 100001,
-        attribute_name: "Marca",
-        attribute_value_list: [
-          {
-            value_id: 0,
-            value_name: product.brand || "Genérica",
-            value_unit: "",
-          },
-        ],
-      });
+      // Mapa de valores do produto para os nomes de atributos mais comuns
+      const productAttrValues: Record<string, string> = {};
+      if (product.brand) productAttrValues["marca"] = product.brand;
+      if (product.brand) productAttrValues["brand"] = product.brand;
+      if (product.model) productAttrValues["modelo"] = product.model;
+      if (product.model) productAttrValues["model"] = product.model;
+      if (product.year) productAttrValues["ano"] = product.year;
+      if (product.year) productAttrValues["year"] = product.year;
+      if (product.partNumber)
+        productAttrValues["número de referência"] = product.partNumber;
+      if (product.partNumber)
+        productAttrValues["part number"] = product.partNumber;
+      if (product.partNumber)
+        productAttrValues["reference number"] = product.partNumber;
 
-      // Modelo
-      if (product.model || product.name) {
-        attributeList.push({
-          attribute_id: 100002,
-          attribute_name: "Modelo",
-          attribute_value_list: [
-            {
-              value_id: 0,
-              value_name: product.model || product.name,
-              value_unit: "",
-            },
-          ],
-        });
+      try {
+        const categoryAttrs = await ShopeeApiService.getCategoryAttributes(
+          account.accessToken,
+          account.shopId,
+          numericCategoryId,
+          "pt-BR",
+        );
+
+        const attrs = categoryAttrs?.attribute_list || [];
+        console.log(
+          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a) => a.is_mandatory).length} mandatory)`,
+        );
+
+        for (const attr of attrs) {
+          // Tentar encontrar um valor do produto para este atributo
+          const attrNameLower = attr.attribute_name.toLowerCase();
+          const productValue = productAttrValues[attrNameLower];
+
+          if (!productValue && !attr.is_mandatory) continue;
+
+          // Resolução de value_id: tentar casar com a lista de valores permitidos
+          let valueId = 0;
+          let valueName = productValue || "";
+
+          if (
+            attr.attribute_value_list &&
+            attr.attribute_value_list.length > 0
+          ) {
+            // Procurar match exato ou parcial na lista de valores permitidos
+            const exactMatch = attr.attribute_value_list.find(
+              (v) =>
+                v.value_name.toLowerCase() ===
+                (productValue || "").toLowerCase(),
+            );
+            if (exactMatch) {
+              valueId = exactMatch.value_id;
+              valueName = exactMatch.value_name;
+            } else if (productValue) {
+              // Match parcial (contém)
+              const partialMatch = attr.attribute_value_list.find(
+                (v) =>
+                  v.value_name
+                    .toLowerCase()
+                    .includes((productValue || "").toLowerCase()) ||
+                  (productValue || "")
+                    .toLowerCase()
+                    .includes(v.value_name.toLowerCase()),
+              );
+              if (partialMatch) {
+                valueId = partialMatch.value_id;
+                valueName = partialMatch.value_name;
+              }
+            }
+
+            // Se obrigatório e sem match, usar o primeiro valor ou "Outros"
+            if (attr.is_mandatory && !valueName) {
+              const otherValue = attr.attribute_value_list.find(
+                (v) =>
+                  v.value_name.toLowerCase() === "outros" ||
+                  v.value_name.toLowerCase() === "other" ||
+                  v.value_name.toLowerCase() === "genérica",
+              );
+              if (otherValue) {
+                valueId = otherValue.value_id;
+                valueName = otherValue.value_name;
+              } else {
+                // Fallback: primeiro valor da lista
+                valueId = attr.attribute_value_list[0].value_id;
+                valueName = attr.attribute_value_list[0].value_name;
+              }
+            }
+          } else if (attr.is_mandatory && !valueName) {
+            // Campo obrigatório do tipo texto livre sem lista de valores
+            valueName = productValue || product.brand || product.name;
+          }
+
+          if (valueName) {
+            attributeList.push({
+              attribute_id: attr.attribute_id,
+              attribute_name: attr.attribute_name,
+              attribute_value_list: [
+                {
+                  value_id: valueId,
+                  value_name: valueName,
+                  value_unit: "",
+                },
+              ],
+            });
+          }
+        }
+      } catch (attrErr) {
+        // Fallback: se não conseguiu buscar atributos da categoria, usar valores hardcoded
+        console.warn(
+          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, using fallback:`,
+          (attrErr as any)?.message || attrErr,
+        );
+
+        // Brand como campo do payload em vez de atributo
+        if (product.brand) {
+          attributeList.push({
+            attribute_id: 100001,
+            attribute_name: "Marca",
+            attribute_value_list: [
+              {
+                value_id: 0,
+                value_name: product.brand,
+                value_unit: "",
+              },
+            ],
+          });
+        }
       }
 
-      // Ano (se disponível)
-      if (product.year) {
-        attributeList.push({
-          attribute_id: 100003,
-          attribute_name: "Ano",
-          attribute_value_list: [
-            {
-              value_id: 0,
-              value_name: product.year,
-              value_unit: "",
-            },
-          ],
-        });
-      }
-
-      // Número da Peça / Part Number (se disponível)
-      if (product.partNumber) {
-        attributeList.push({
-          attribute_id: 100004,
-          attribute_name: "Número de referência",
-          attribute_value_list: [
-            {
-              value_id: 0,
-              value_name: product.partNumber,
-              value_unit: "",
-            },
-          ],
-        });
+      // Normalizar URL de imagem (evitar barra dupla)
+      const backendUrl = (
+        process.env.APP_BACKEND_URL || "http://localhost:3333"
+      ).replace(/\/+$/, "");
+      let imageUrl = "https://via.placeholder.com/500x500.png?text=Produto";
+      if (product.imageUrl) {
+        if (product.imageUrl.startsWith("http")) {
+          imageUrl = product.imageUrl;
+        } else {
+          const path = product.imageUrl.startsWith("/")
+            ? product.imageUrl
+            : `/${product.imageUrl}`;
+          imageUrl = `${backendUrl}${path}`;
+        }
       }
 
       const payload: ShopeeItemCreatePayload = {
@@ -2081,21 +2170,32 @@ export class ListingUseCase {
         package_height:
           product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
         image: {
-          image_url_list: [
-            product.imageUrl
-              ? product.imageUrl.startsWith("http")
-                ? product.imageUrl
-                : `${process.env.APP_BACKEND_URL || "http://localhost:3333"}${product.imageUrl}`
-              : "https://via.placeholder.com/500x500.png?text=Produto",
-          ],
+          image_url_list: [imageUrl],
         },
         attribute_list: attributeList,
+        brand: product.brand
+          ? { brand_id: 0, brand_name: product.brand }
+          : undefined,
         logistic_info: [],
       };
 
       // 4. Criar anúncio no Shopee (com retry em caso de erro de token)
       console.log(
         `[ListingUseCase] Creating Shopee listing for product ${productId} (${product.name})`,
+      );
+      console.log(
+        `[ListingUseCase] Shopee payload summary`,
+        JSON.stringify({
+          category_id: payload.category_id,
+          item_name: payload.item_name,
+          brand: payload.brand,
+          attributes: (payload.attribute_list || []).map((a) => ({
+            id: a.attribute_id,
+            name: a.attribute_name,
+            value: a.attribute_value_list?.[0]?.value_name,
+          })),
+          imageUrl,
+        }),
       );
 
       let shopeeItem: { item_id: number };

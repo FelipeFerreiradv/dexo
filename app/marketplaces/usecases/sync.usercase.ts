@@ -59,7 +59,10 @@ export class SyncUseCase {
    * Importa todos os itens do Mercado Livre e tenta vincular automaticamente por SKU
    * Nota: Apenas cria listings para itens que podem ser vinculados a produtos existentes
    */
-  static async importMLItems(userId: string, accountId?: string): Promise<ImportResult> {
+  static async importMLItems(
+    userId: string,
+    accountId?: string,
+  ): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
@@ -153,7 +156,9 @@ export class SyncUseCase {
           if (needsStatusUpdate || needsPermalinkUpdate) {
             await ListingRepository.updateListing(existingListing.id, {
               status: needsStatusUpdate ? item.status : undefined,
-              permalink: needsPermalinkUpdate ? item.permalink || null : undefined,
+              permalink: needsPermalinkUpdate
+                ? item.permalink || null
+                : undefined,
             });
           }
 
@@ -237,7 +242,10 @@ export class SyncUseCase {
   /**
    * Importa todos os itens do Shopee e tenta vincular automaticamente por SKU
    */
-  static async importShopeeItems(userId: string, accountId?: string): Promise<ImportResult> {
+  static async importShopeeItems(
+    userId: string,
+    accountId?: string,
+  ): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
@@ -265,18 +273,19 @@ export class SyncUseCase {
       { offset: 0, page_size: 100, item_status: ["NORMAL"] }, // Apenas itens normais/ativos
     );
 
-    if (itemList.item.length === 0) {
+    const items = itemList?.item || [];
+    if (items.length === 0) {
       return result;
     }
 
-    result.totalItems = itemList.item.length;
+    result.totalItems = items.length;
     console.log(
       `[IMPORT] Starting to process ${result.totalItems} Shopee items...`,
     );
 
     // 3. Buscar detalhes dos itens
     const itemDetails: ShopeeItem[] = [];
-    for (const item of itemList.item) {
+    for (const item of items) {
       try {
         const detail = await ShopeeApiService.getItemDetail(
           account.accessToken,
@@ -486,7 +495,9 @@ export class SyncUseCase {
           throw apiErr;
         }
       }
-      console.log(`[SYNC] Fetched ${roots.length} root categories for ${siteId}`);
+      console.log(
+        `[SYNC] Fetched ${roots.length} root categories for ${siteId}`,
+      );
 
       if (!roots || roots.length === 0) {
         throw new Error("ML API não retornou categorias; abortando sync.");
@@ -1289,6 +1300,3 @@ export class SyncUseCase {
     });
   }
 }
-
-
-
