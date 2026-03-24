@@ -137,6 +137,8 @@ export function ShopeeListingsTab() {
       active: { variant: "default" as const, label: "Ativo" },
       paused: { variant: "secondary" as const, label: "Pausado" },
       closed: { variant: "destructive" as const, label: "Encerrado" },
+      pending: { variant: "outline" as const, label: "Pendente" },
+      error: { variant: "destructive" as const, label: "Erro" },
       NORMAL: { variant: "default" as const, label: "Ativo" },
       DELETED: { variant: "destructive" as const, label: "Deletado" },
       BANNED: { variant: "destructive" as const, label: "Banido" },

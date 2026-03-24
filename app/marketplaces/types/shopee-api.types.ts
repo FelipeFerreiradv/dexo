@@ -126,14 +126,14 @@ export interface ShopeeItemBrand {
   brand_name: string;
 }
 
-// Payload para criar item
+// Payload para criar item (Shopee API v2 /product/add_item)
 export interface ShopeeItemCreatePayload {
   category_id: number;
   item_name: string;
   description: string;
   item_sku: string;
-  price: number;
-  stock: number;
+  original_price: number;
+  seller_stock: Array<{ stock: number }>;
   weight: number;
   package_length: number;
   package_width: number;
@@ -145,6 +145,7 @@ export interface ShopeeItemCreatePayload {
   logistic_info?: ShopeeItemLogisticInfo[];
   condition?: ShopeeItemCondition;
   brand?: ShopeeItemBrand;
+  item_status?: "NORMAL" | "UNLIST";
 }
 
 // Payload para atualizar item
@@ -154,8 +155,8 @@ export interface ShopeeItemUpdatePayload {
   item_name?: string;
   description?: string;
   item_sku?: string;
-  price?: number;
-  stock?: number;
+  original_price?: number;
+  seller_stock?: Array<{ stock: number }>;
   weight?: number;
   package_length?: number;
   package_width?: number;

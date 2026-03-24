@@ -1896,8 +1896,9 @@ export class ListingUseCase {
     categoryId?: string,
     accountId?: string,
   ): Promise<CreateListingResult> {
+    let account: any = null;
     try {
-      let account = accountId
+      account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
         : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
             userId,
@@ -2154,13 +2155,21 @@ export class ListingUseCase {
         }
       }
 
+      // Shopee exige brand — fallback "Genérica" se produto não tiver marca
+      const brandName = product.brand || "Genérica";
+
+      // Mapear condição do produto para Shopee (uppercase)
+      const shopeeCondition: "NEW" | "USED" =
+        (product as any).quality === "NOVO" ? "NEW" : "USED";
+
       const payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
-        price: product.price,
-        stock: Math.min(product.stock, 999999),
+        original_price: Number(product.price) || 1,
+        seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
+        condition: shopeeCondition,
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
         package_length:
@@ -2173,11 +2182,32 @@ export class ListingUseCase {
           image_url_list: [imageUrl],
         },
         attribute_list: attributeList,
-        brand: product.brand
-          ? { brand_id: 0, brand_name: product.brand }
-          : undefined,
-        logistic_info: [],
+        brand: { brand_id: 0, brand_name: brandName },
       };
+
+      // 3.5 Criar placeholder local ANTES de chamar a API (visibilidade + retry)
+      let listing = await ListingRepository.findByProductAndAccount(
+        productId,
+        account.id,
+      );
+      if (!listing) {
+        listing = await ListingRepository.createListing({
+          productId,
+          marketplaceAccountId: account.id,
+          externalListingId: `PENDING_SHP_${Date.now()}`,
+          externalSku: product.sku,
+          permalink: null,
+          status: "pending",
+          retryAttempts: 0,
+          nextRetryAt: null,
+          lastError: null,
+          retryEnabled: true,
+          requestedCategoryId: String(numericCategoryId),
+        });
+        console.log(
+          `[ListingUseCase] Shopee placeholder created: ${listing.id} for product ${productId}`,
+        );
+      }
 
       // 4. Criar anúncio no Shopee (com retry em caso de erro de token)
       console.log(
@@ -2189,6 +2219,9 @@ export class ListingUseCase {
           category_id: payload.category_id,
           item_name: payload.item_name,
           brand: payload.brand,
+          condition: payload.condition,
+          original_price: payload.original_price,
+          seller_stock: payload.seller_stock,
           attributes: (payload.attribute_list || []).map((a) => ({
             id: a.attribute_id,
             name: a.attribute_name,
@@ -2252,14 +2285,13 @@ export class ListingUseCase {
         JSON.stringify(shopeeItem, null, 2),
       );
 
-      // 5. Criar vínculo local (ProductListing)
-      const listing = await ListingRepository.createListing({
-        productId,
-        marketplaceAccountId: account.id,
+      // 5. Atualizar placeholder com dados reais do Shopee
+      await ListingRepository.updateListing(listing.id, {
         externalListingId: shopeeItem.item_id.toString(),
-        externalSku: product.sku,
-        permalink: `https://shopee.com.br/product/${shopeeItem.item_id}`,
+        permalink: `https://shopee.com.br/product/${account.shopId}/${shopeeItem.item_id}`,
         status: "active",
+        lastError: null,
+        retryEnabled: false,
       });
 
       console.log(
@@ -2272,10 +2304,41 @@ export class ListingUseCase {
         externalListingId: shopeeItem.item_id.toString(),
       };
     } catch (error) {
-      console.error("[ListingUseCase] Error creating Shopee listing:", error);
+      const errorMsg =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      console.error(
+        `[ListingUseCase] Error creating Shopee listing for product ${productId}:`,
+        errorMsg,
+      );
+
+      // Atualizar placeholder com erro para visibilidade e retry futuro
+      try {
+        const acctId = account?.id;
+        if (acctId) {
+          const existingListing =
+            await ListingRepository.findByProductAndAccount(
+              productId,
+              acctId,
+            );
+          if (existingListing) {
+            await ListingRepository.updateListing(existingListing.id, {
+              status: "error",
+              lastError: errorMsg.substring(0, 500),
+              retryEnabled: true,
+              nextRetryAt: new Date(Date.now() + 60_000),
+            });
+          }
+        }
+      } catch (updateErr) {
+        console.error(
+          `[ListingUseCase] Failed to update Shopee placeholder with error:`,
+          updateErr,
+        );
+      }
+
       return {
         success: false,
-        error: error instanceof Error ? error.message : "Erro desconhecido",
+        error: errorMsg,
       };
     }
   }

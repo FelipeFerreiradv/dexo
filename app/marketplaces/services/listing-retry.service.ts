@@ -198,6 +198,52 @@ export class ListingRetryService {
         }
 
         const account = cand.marketplaceAccount;
+
+        // Shopee placeholders: delegar para ListingUseCase.createShopeeListing
+        if (
+          account?.platform === "SHOPEE" ||
+          cand.externalListingId?.startsWith("PENDING_SHP_")
+        ) {
+          console.log(
+            `[ListingRetryService] delegating Shopee retry for ${cand.id} to createShopeeListing`,
+          );
+          try {
+            const { ListingUseCase } = await import(
+              "../usecases/listing.usercase"
+            );
+            const result = await ListingUseCase.createShopeeListing(
+              account?.userId || "",
+              cand.productId,
+              cand.requestedCategoryId || undefined,
+              account?.id,
+            );
+            if (result.success) {
+              console.log(
+                `[ListingRetryService] Shopee retry succeeded for ${cand.id}: ${result.externalListingId}`,
+              );
+            } else {
+              console.warn(
+                `[ListingRetryService] Shopee retry failed for ${cand.id}: ${result.error}`,
+              );
+            }
+          } catch (shopeeErr) {
+            console.error(
+              `[ListingRetryService] Shopee retry exception for ${cand.id}:`,
+              errMsg(shopeeErr),
+            );
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const nextDelay =
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              lastError: errMsg(shopeeErr),
+              nextRetryAt: new Date(Date.now() + nextDelay * 1000),
+              retryEnabled: attempts < MAX_ATTEMPTS,
+            });
+          }
+          continue;
+        }
         if (!account || !account.accessToken) {
           console.log(
             `[ListingRetryService] skipping ${cand.id} (no account/token)`,

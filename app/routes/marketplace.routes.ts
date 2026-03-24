@@ -955,6 +955,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
                 externalListingId: true,
                 externalSku: true,
                 status: true,
+                lastError: true,
                 createdAt: true,
               },
               orderBy: { createdAt: "desc" },
