@@ -8,28 +8,23 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { getApiBaseUrl } from "@/lib/api";
 import { ImageUpload } from "@/components/ui/image-upload";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  BadgeCheck,
-  User,
-  Settings,
-  RefreshCw,
-  Lock,
-  Image as ImageIcon,
-} from "lucide-react";
+import { User, Settings } from "lucide-react";
 
 interface ConfigModalProps {
   open?: boolean;
@@ -207,92 +202,119 @@ export default function ConfigModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="w-full max-w-5xl md:max-w-6xl max-h-[85vh] overflow-auto border border-border/70 bg-card/70 p-0 backdrop-blur">
-        <div className="flex items-start justify-between border-b border-border/60 px-6 py-5">
-          <DialogHeader className="space-y-1 text-left">
-            <DialogTitle className="text-xl font-bold">
-              Configurações
-            </DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              Ajuste os dados da sua conta e preferências rápidas.
-            </p>
-          </DialogHeader>
-          {/* <Button
-            variant="ghost"
-            size="sm"
-            onClick={fetchUserSettings}
-            className="gap-2 rounded-full border border-border/60 bg-muted/40"
-          >
-            <RefreshCw className="size-4" />
-            Recarregar
-          </Button> */}
-        </div>
-
-        <div className="grid grid-cols-1 items-start gap-6 p-6 md:grid-cols-[240px_minmax(0,1fr)]">
-          <aside className="space-y-2">
-            <NavItem
-              icon={<User className="size-4" />}
-              active={activeTab === "conta"}
-              label="Conta"
-              onClick={() => setActiveTab("conta")}
-            />
-            <NavItem
-              icon={<Settings className="size-4" />}
-              active={activeTab === "preferencias"}
-              label="Preferências"
-              onClick={() => setActiveTab("preferencias")}
-            />
+      <DialogContent className="w-full max-w-6xl md:max-w-7xl h-[88vh] max-h-[88vh] overflow-hidden border border-border/80 bg-card/95 p-0 shadow-2xl">
+        <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="bg-sidebar text-sidebar-foreground hidden h-full min-h-0 flex-col border-r border-sidebar-border/60 md:flex">
+            <div className="border-b border-sidebar-border/60 px-5 py-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-sidebar-foreground/60">
+                Navegação
+              </p>
+              <p className="text-lg font-semibold text-sidebar-foreground">
+                Configurações
+              </p>
+            </div>
+            <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-3">
+              <NavItem
+                icon={<User className="size-4" />}
+                active={activeTab === "conta"}
+                label="Conta"
+                description="Identidade, acesso e avatar"
+                onClick={() => setActiveTab("conta")}
+              />
+              <NavItem
+                icon={<Settings className="size-4" />}
+                active={activeTab === "preferencias"}
+                label="Preferências"
+                description="Padrões de produto e anúncio"
+                onClick={() => setActiveTab("preferencias")}
+              />
+            </nav>
+            <div className="border-t border-sidebar-border/60 px-4 py-3 text-xs text-sidebar-foreground/70">
+              <p className="font-semibold text-sidebar-foreground">Atalhos</p>
+              <p>Ctrl/Cmd + B para recolher.</p>
+            </div>
           </aside>
 
-          <main className="min-w-0">
-            {loading ? (
-              <div className="space-y-3">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-32 w-full" />
-                <Skeleton className="h-10 w-48" />
+          <main className="flex h-full min-h-0 flex-col bg-card">
+            <div className="border-b border-border/70 px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <DialogHeader className="space-y-1 text-left">
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                    {activeTab === "conta" ? "Conta" : "Preferências"}
+                  </p>
+                  <DialogTitle className="text-2xl font-semibold leading-tight">
+                    {activeTab === "conta"
+                      ? "Ajuste sua conta"
+                      : "Defina preferências padrão"}
+                  </DialogTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Todas as alterações respeitam tema, acessibilidade e fluxos
+                    existentes.
+                  </p>
+                </DialogHeader>
               </div>
-            ) : activeTab === "conta" ? (
-              <AccountSection
-                username={username}
-                email={email}
-                avatarUrl={avatarUrl}
-                newPassword={newPassword}
-                confirmPassword={confirmPassword}
-                onUsernameChange={setUsername}
-                onAvatarChange={setAvatarUrl}
-                onNewPasswordChange={setNewPassword}
-                onConfirmPasswordChange={setConfirmPassword}
-                onSave={handleSaveAccount}
-                saving={savingAccount}
-              />
-            ) : (
-              <PreferencesSection
-                defaultDescription={defaultDescription}
-                onDescriptionChange={setDefaultDescription}
-                defaultCostPrice={defaultCostPrice}
-                onCostPriceChange={setDefaultCostPrice}
-                defaultListingType={defaultListingType}
-                onListingTypeChange={setDefaultListingType}
-                defaultHasWarranty={defaultHasWarranty}
-                onHasWarrantyChange={setDefaultHasWarranty}
-                defaultWarrantyUnit={defaultWarrantyUnit}
-                onWarrantyUnitChange={setDefaultWarrantyUnit}
-                defaultWarrantyDuration={defaultWarrantyDuration}
-                onWarrantyDurationChange={setDefaultWarrantyDuration}
-                defaultItemCondition={defaultItemCondition}
-                onItemConditionChange={setDefaultItemCondition}
-                defaultShippingMode={defaultShippingMode}
-                onShippingModeChange={setDefaultShippingMode}
-                defaultFreeShipping={defaultFreeShipping}
-                onFreeShippingChange={setDefaultFreeShipping}
-                defaultLocalPickup={defaultLocalPickup}
-                onLocalPickupChange={setDefaultLocalPickup}
-                defaultManufacturingTime={defaultManufacturingTime}
-                onManufacturingTimeChange={setDefaultManufacturingTime}
-                onSave={handleSavePreferences}
-                saving={savingPrefs}
-              />
-            )}
+              <div className="mt-3 flex gap-2 md:hidden">
+                <NavPill
+                  icon={<User className="size-4" />}
+                  label="Conta"
+                  active={activeTab === "conta"}
+                  onClick={() => setActiveTab("conta")}
+                />
+                <NavPill
+                  icon={<Settings className="size-4" />}
+                  label="Preferências"
+                  active={activeTab === "preferencias"}
+                  onClick={() => setActiveTab("preferencias")}
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5">
+              {loading ? (
+                <SettingsSkeleton />
+              ) : activeTab === "conta" ? (
+                <AccountSection
+                  username={username}
+                  email={email}
+                  avatarUrl={avatarUrl}
+                  newPassword={newPassword}
+                  confirmPassword={confirmPassword}
+                  onUsernameChange={setUsername}
+                  onAvatarChange={setAvatarUrl}
+                  onNewPasswordChange={setNewPassword}
+                  onConfirmPasswordChange={setConfirmPassword}
+                  onSave={handleSaveAccount}
+                  saving={savingAccount}
+                />
+              ) : (
+                <PreferencesSection
+                  defaultDescription={defaultDescription}
+                  onDescriptionChange={setDefaultDescription}
+                  defaultCostPrice={defaultCostPrice}
+                  onCostPriceChange={setDefaultCostPrice}
+                  defaultListingType={defaultListingType}
+                  onListingTypeChange={setDefaultListingType}
+                  defaultHasWarranty={defaultHasWarranty}
+                  onHasWarrantyChange={setDefaultHasWarranty}
+                  defaultWarrantyUnit={defaultWarrantyUnit}
+                  onWarrantyUnitChange={setDefaultWarrantyUnit}
+                  defaultWarrantyDuration={defaultWarrantyDuration}
+                  onWarrantyDurationChange={setDefaultWarrantyDuration}
+                  defaultItemCondition={defaultItemCondition}
+                  onItemConditionChange={setDefaultItemCondition}
+                  defaultShippingMode={defaultShippingMode}
+                  onShippingModeChange={setDefaultShippingMode}
+                  defaultFreeShipping={defaultFreeShipping}
+                  onFreeShippingChange={setDefaultFreeShipping}
+                  defaultLocalPickup={defaultLocalPickup}
+                  onLocalPickupChange={setDefaultLocalPickup}
+                  defaultManufacturingTime={defaultManufacturingTime}
+                  onManufacturingTimeChange={setDefaultManufacturingTime}
+                  onSave={handleSavePreferences}
+                  saving={savingPrefs}
+                />
+              )}
+            </div>
           </main>
         </div>
       </DialogContent>
@@ -301,6 +323,45 @@ export default function ConfigModal({
 }
 
 function NavItem({
+  icon,
+  label,
+  description,
+  active,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  description?: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active}
+      className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition ${
+        active
+          ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
+          : "text-sidebar-foreground/80 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+      }`}
+    >
+      <span className="flex size-9 items-center justify-center rounded-lg bg-sidebar-accent/20 text-sidebar-foreground">
+        {icon}
+      </span>
+      <span className="flex-1 text-left">
+        <span className="block font-medium leading-tight">{label}</span>
+        {description ? (
+          <span className="text-xs text-sidebar-foreground/70">
+            {description}
+          </span>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+function NavPill({
   icon,
   label,
   active,
@@ -313,18 +374,15 @@ function NavItem({
 }) {
   return (
     <button
-      type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-sm font-medium transition ${
+      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition ${
         active
-          ? "border-primary/50 bg-primary/10 text-primary shadow-sm"
-          : "border-border/70 bg-card/70 text-foreground hover:border-primary/30 hover:text-primary"
+          ? "border-primary/40 bg-primary/10 text-primary"
+          : "border-border/60 bg-card/70 text-muted-foreground hover:text-foreground"
       }`}
     >
-      <span className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
-        {icon}
-      </span>
-      <span>{label}</span>
+      {icon}
+      <span className="font-medium">{label}</span>
     </button>
   );
 }
@@ -357,21 +415,31 @@ function AccountSection(props: {
   } = props;
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-xl border border-border/60 bg-muted/20 p-5 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="space-y-5">
+      <SettingGroup
+        title="Perfil e identidade"
+        description="Mantenha seus dados de conta alinhados e seguros."
+      >
+        <SettingRow
+          title="Foto de perfil"
+          description="Atualize a imagem exibida em toda a plataforma."
+          alignTop
+        >
+          <ImageUpload
+            value={avatarUrl}
+            onChange={onAvatarChange}
+            onError={(err) => alert(err)}
+            className="w-full max-w-[260px]"
+          />
+        </SettingRow>
+        <SettingRow
+          title="Nome de usuário"
+          description="Esse nome aparece em colaborações e registros."
+        >
           <div className="space-y-1">
-            <h3 className="text-base font-semibold">Dados da conta</h3>
-            <p className="text-sm text-muted-foreground">
-              Atualize nome de usuário, email e foto de perfil.
-            </p>
-          </div>
-          <BadgeCheck className="size-5 text-primary" />
-        </div>
-
-        <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="username">Nome de usuário</Label>
+            <Label htmlFor="username" className="sr-only">
+              Nome de usuário
+            </Label>
             <Input
               id="username"
               value={username}
@@ -379,64 +447,68 @@ function AccountSection(props: {
               placeholder="Seu nome de exibição"
             />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" value={email} disabled className="opacity-80" />
-          </div>
-        </div>
-
-        <Separator className="my-6" />
-
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.1fr_minmax(320px,0.9fr)]">
-          <div className="space-y-3">
-            <Label className="flex items-center gap-2">
-              <ImageIcon className="size-4" />
-              Foto de perfil
+        </SettingRow>
+        <SettingRow
+          title="Email"
+          description="Email utilizado para login e integrações."
+        >
+          <div className="space-y-1">
+            <Label htmlFor="email" className="sr-only">
+              Email
             </Label>
-            <ImageUpload
-              value={avatarUrl}
-              onChange={onAvatarChange}
-              onError={(err) => alert(err)}
-              className="w-full"
+            <Input
+              id="email"
+              value={email}
+              disabled
+              aria-readonly
+              className="opacity-80"
             />
           </div>
+        </SettingRow>
+      </SettingGroup>
 
-          <div className="space-y-3 rounded-xl border border-border/60 bg-card/60 p-4 shadow-sm">
+      <SettingGroup
+        title="Segurança"
+        description="Atualize sua senha. Deixe em branco para manter a atual."
+      >
+        <SettingRow title="Senha" description="Use pelo menos 8 caracteres.">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             <div className="space-y-1">
-              <Label className="flex items-center gap-2">
-                <Lock className="size-4" />
-                Senha
+              <Label htmlFor="new-password" className="sr-only">
+                Nova senha
               </Label>
-              <p className="text-xs text-muted-foreground">
-                Deixe em branco para manter a senha atual.
-              </p>
-            </div>
-            <div className="space-y-2">
               <Input
+                id="new-password"
                 type="password"
                 placeholder="Nova senha"
                 value={newPassword}
                 onChange={(e) => onNewPasswordChange(e.target.value)}
               />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="confirm-password" className="sr-only">
+                Confirmar nova senha
+              </Label>
               <Input
+                id="confirm-password"
                 type="password"
                 placeholder="Confirmar nova senha"
                 value={confirmPassword}
                 onChange={(e) => onConfirmPasswordChange(e.target.value)}
               />
             </div>
-            <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Use uma senha forte com pelo menos 8 caracteres.
-            </div>
           </div>
-        </div>
+          <p className="text-xs text-muted-foreground">
+            Senhas não são salvas se estes campos ficarem vazios.
+          </p>
+        </SettingRow>
+      </SettingGroup>
 
-        <div className="mt-6 flex flex-wrap gap-2">
-          <Button onClick={onSave} disabled={saving}>
-            {saving ? "Salvando..." : "Salvar alterações"}
-          </Button>
-        </div>
-      </section>
+      <div className="flex justify-end">
+        <Button onClick={onSave} disabled={saving}>
+          {saving ? "Salvando..." : "Salvar alterações"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -494,214 +566,281 @@ function PreferencesSection(props: {
     saving,
   } = props;
   return (
-    <section className="space-y-4 rounded-xl border border-border/60 bg-muted/20 p-5 shadow-sm">
-      <div className="space-y-1">
-        <h3 className="text-base font-semibold">Preferências</h3>
-        <p className="text-sm text-muted-foreground">
-          Defina valores padrão usados ao criar novos produtos e anúncios.
-        </p>
-      </div>
+    <div className="space-y-5">
+      <SettingGroup
+        title="Produto"
+        description="Defina os valores padrão usados ao criar produtos."
+      >
+        <SettingRow
+          title="Descrição padrão"
+          description="Usada quando nenhum texto é informado ao criar um produto."
+          alignTop
+        >
+          <div className="space-y-1">
+            <Label htmlFor="cfgDefaultDescription" className="sr-only">
+              Descrição padrão
+            </Label>
+            <Textarea
+              id="cfgDefaultDescription"
+              value={defaultDescription}
+              onChange={(e) => onDescriptionChange(e.target.value)}
+              rows={5}
+            />
+          </div>
+        </SettingRow>
+        <SettingRow
+          title="Preço de custo padrão (R$)"
+          description="Preenche automaticamente o campo de custo no cadastro."
+        >
+          <div className="space-y-1">
+            <Label htmlFor="cfgDefaultCostPrice" className="sr-only">
+              Preço de custo padrão (R$)
+            </Label>
+            <Input
+              id="cfgDefaultCostPrice"
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="0,00"
+              value={defaultCostPrice}
+              onChange={(e) => onCostPriceChange(e.target.value)}
+            />
+          </div>
+        </SettingRow>
+      </SettingGroup>
 
-      <div className="space-y-2">
-        <Label htmlFor="cfgDefaultDescription" className="font-bold">
-          Descrição padrão
-        </Label>
-        <Textarea
-          id="cfgDefaultDescription"
-          value={defaultDescription}
-          onChange={(e) => onDescriptionChange(e.target.value)}
-          rows={6}
-        />
-        <p className="text-xs text-muted-foreground">
-          Esta descrição será aplicada automaticamente quando você criar um
-          produto sem especificar uma descrição.
-        </p>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-2">
-        <Label htmlFor="cfgDefaultCostPrice" className="font-bold">
-          Preço de custo padrão (R$)
-        </Label>
-        <Input
-          id="cfgDefaultCostPrice"
-          type="number"
-          step="0.01"
-          min="0"
-          placeholder="0,00"
-          value={defaultCostPrice}
-          onChange={(e) => onCostPriceChange(e.target.value)}
-        />
-        <p className="text-xs text-muted-foreground">
-          Este valor será preenchido automaticamente no campo &quot;Preço de
-          Custo&quot; ao criar um novo produto.
-        </p>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-1">
-        <h3 className="text-base font-semibold">
-          Padrões de Anúncio (Mercado Livre)
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          Valores padrão para criação de anúncios no Mercado Livre. Podem ser
-          alterados individualmente ao criar cada anúncio.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="cfgListingType" className="font-bold">
-            Listagem do anúncio
-          </Label>
-          <select
-            id="cfgListingType"
+      <SettingGroup
+        title="Padrões de anúncio (Mercado Livre)"
+        description="Aplicados por padrão, mas podem ser alterados por anúncio."
+      >
+        <SettingRow
+          title="Listagem do anúncio"
+          description="Tipo de plano a ser utilizado ao publicar."
+        >
+          <Select
             value={defaultListingType}
-            onChange={(e) => onListingTypeChange(e.target.value)}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onValueChange={onListingTypeChange}
           >
-            <option value="bronze">Grátis</option>
-            <option value="gold_special">Clássico</option>
-            <option value="gold_pro">Premium</option>
-          </select>
-        </div>
+            <SelectTrigger className="w-full md:w-64">
+              <SelectValue placeholder="Selecione" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bronze">Grátis</SelectItem>
+              <SelectItem value="gold_special">Clássico</SelectItem>
+              <SelectItem value="gold_pro">Premium</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
 
-        <div className="space-y-2">
-          <Label htmlFor="cfgItemCondition" className="font-bold">
-            Condição do item
-          </Label>
-          <select
-            id="cfgItemCondition"
+        <SettingRow
+          title="Condição do item"
+          description="Padroniza o estado inicial do produto."
+        >
+          <Select
             value={defaultItemCondition}
-            onChange={(e) => onItemConditionChange(e.target.value)}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onValueChange={onItemConditionChange}
           >
-            <option value="new">Novo</option>
-            <option value="used">Usado</option>
-          </select>
-        </div>
-      </div>
+            <SelectTrigger className="w-full md:w-64">
+              <SelectValue placeholder="Selecione" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="new">Novo</SelectItem>
+              <SelectItem value="used">Usado</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
 
-      <div className="space-y-3 rounded-lg border border-border/40 p-3">
-        <div className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            id="cfgHasWarranty"
-            checked={defaultHasWarranty}
-            onChange={(e) => onHasWarrantyChange(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300"
-          />
-          <Label htmlFor="cfgHasWarranty" className="font-bold cursor-pointer">
-            Possui Garantia
-          </Label>
-        </div>
+        <SettingRow
+          title="Garantia"
+          description="Ative se seus produtos oferecem garantia."
+        >
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Possui garantia</p>
+              <p className="text-xs text-muted-foreground">
+                Exibe campos de prazo e unidade.
+              </p>
+            </div>
+            <Switch
+              id="cfgHasWarranty"
+              checked={defaultHasWarranty}
+              onCheckedChange={onHasWarrantyChange}
+            />
+          </div>
+        </SettingRow>
 
         {defaultHasWarranty && (
-          <div className="grid grid-cols-2 gap-4 pl-7">
-            <div className="space-y-2">
-              <Label htmlFor="cfgWarrantyUnit">Garantia em</Label>
-              <select
-                id="cfgWarrantyUnit"
+          <SettingRow
+            title="Detalhes da garantia"
+            description="Escolha a unidade e a duração padrão."
+          >
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Select
                 value={defaultWarrantyUnit}
-                onChange={(e) => onWarrantyUnitChange(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onValueChange={onWarrantyUnitChange}
               >
-                <option value="dias">Dias</option>
-                <option value="meses">Meses</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue placeholder="Unidade" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dias">Dias</SelectItem>
+                  <SelectItem value="meses">Meses</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="space-y-1">
+                <Label htmlFor="cfgWarrantyDuration" className="sr-only">
+                  Prazo da garantia
+                </Label>
+                <Input
+                  id="cfgWarrantyDuration"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={defaultWarrantyDuration}
+                  onChange={(e) => onWarrantyDurationChange(e.target.value)}
+                />
+              </div>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="cfgWarrantyDuration">Prazo da garantia</Label>
-              <Input
-                id="cfgWarrantyDuration"
-                type="number"
-                min="1"
-                step="1"
-                value={defaultWarrantyDuration}
-                onChange={(e) => onWarrantyDurationChange(e.target.value)}
-              />
-            </div>
-          </div>
+          </SettingRow>
         )}
-      </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="cfgShippingMode" className="font-bold">
-            Frete
-          </Label>
-          <select
-            id="cfgShippingMode"
+        <SettingRow
+          title="Frete"
+          description="Modo padrão de envio para novos anúncios."
+        >
+          <Select
             value={defaultShippingMode}
-            onChange={(e) => onShippingModeChange(e.target.value)}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onValueChange={onShippingModeChange}
           >
-            <option value="me2">Mercado Envios</option>
-            <option value="me1">Mercado Envios 1</option>
-            <option value="custom">Personalizado</option>
-            <option value="not_specified">Não especificado</option>
-          </select>
-        </div>
+            <SelectTrigger className="w-full md:w-72">
+              <SelectValue placeholder="Selecione o modo de frete" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="me2">Mercado Envios</SelectItem>
+              <SelectItem value="me1">Mercado Envios 1</SelectItem>
+              <SelectItem value="custom">Personalizado</SelectItem>
+              <SelectItem value="not_specified">Não especificado</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
 
-        <div className="space-y-2">
-          <Label htmlFor="cfgFreeShipping" className="font-bold">
-            Frete grátis
-          </Label>
-          <select
+        <SettingRow
+          title="Frete grátis"
+          description="Define se anúncios nascem com frete grátis habilitado."
+        >
+          <Switch
             id="cfgFreeShipping"
-            value={defaultFreeShipping ? "true" : "false"}
-            onChange={(e) => onFreeShippingChange(e.target.value === "true")}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <option value="true">Sim</option>
-            <option value="false">Não</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="cfgLocalPickup" className="font-bold">
-            Retirar pessoalmente
-          </Label>
-          <select
-            id="cfgLocalPickup"
-            value={defaultLocalPickup ? "true" : "false"}
-            onChange={(e) => onLocalPickupChange(e.target.value === "true")}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <option value="true">Sim</option>
-            <option value="false">Não</option>
-          </select>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="cfgManufacturingTime" className="font-bold">
-            Tempo de disponibilidade (Dias)
-          </Label>
-          <Input
-            id="cfgManufacturingTime"
-            type="number"
-            min="0"
-            step="1"
-            value={defaultManufacturingTime}
-            onChange={(e) => onManufacturingTimeChange(e.target.value)}
+            checked={defaultFreeShipping}
+            onCheckedChange={onFreeShippingChange}
           />
-          <p className="text-xs text-muted-foreground">
-            Prazo em dias para o produto ficar disponível para envio após a
-            venda.
-          </p>
-        </div>
-      </div>
+        </SettingRow>
 
-      <div className="flex gap-2">
+        <SettingRow
+          title="Retirada local"
+          description="Permite retirada em mãos por padrão."
+        >
+          <Switch
+            id="cfgLocalPickup"
+            checked={defaultLocalPickup}
+            onCheckedChange={onLocalPickupChange}
+          />
+        </SettingRow>
+
+        <SettingRow
+          title="Disponibilidade (dias)"
+          description="Prazo para o item ficar pronto para envio após a venda."
+        >
+          <div className="space-y-1">
+            <Label htmlFor="cfgManufacturingTime" className="sr-only">
+              Disponibilidade em dias
+            </Label>
+            <Input
+              id="cfgManufacturingTime"
+              type="number"
+              min="0"
+              step="1"
+              value={defaultManufacturingTime}
+              onChange={(e) => onManufacturingTimeChange(e.target.value)}
+            />
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <div className="flex justify-end">
         <Button onClick={onSave} disabled={saving}>
           {saving ? "Salvando..." : "Salvar"}
         </Button>
       </div>
+    </div>
+  );
+}
+
+function SettingGroup({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-border/70 bg-card/80 shadow-sm">
+      <div className="border-b border-border/60 px-5 py-4">
+        <p className="text-sm font-semibold leading-tight">{title}</p>
+        {description ? (
+          <p className="text-sm text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      <div className="divide-y divide-border/60">{children}</div>
     </section>
+  );
+}
+
+function SettingRow({
+  title,
+  description,
+  children,
+  alignTop = false,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+  alignTop?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 px-5 py-4 md:grid-cols-[1.05fr_minmax(0,1.4fr)]">
+      <div className="space-y-1">
+        <p className="text-sm font-medium leading-tight">{title}</p>
+        {description ? (
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      <div
+        className={`flex w-full ${alignTop ? "items-start" : "items-center"} justify-end`}
+      >
+        <div className="w-full max-w-xl space-y-2">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsSkeleton() {
+  return (
+    <div className="space-y-4">
+      <Skeleton className="h-10 w-48" />
+      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-20 w-full" />
+      </div>
+      <div className="space-y-3 rounded-xl border border-border/70 bg-card/70 p-4">
+        <Skeleton className="h-6 w-52" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </div>
+    </div>
   );
 }
