@@ -594,6 +594,29 @@ export function CreateProductDialog({
     [backendBase, session?.user?.email],
   );
 
+  const fetchShopeeCategorySuggestion = useCallback(
+    async (
+      title: string,
+      signal?: AbortSignal,
+    ): Promise<SuggestionResponse | null> => {
+      try {
+        const resp = await fetch(
+          `${backendBase}/marketplace/shopee/category-suggest?title=${encodeURIComponent(
+            title,
+          )}`,
+          { headers: { email: session?.user?.email || "" }, signal },
+        );
+        if (!resp.ok) return null;
+        return (await resp.json()) as SuggestionResponse;
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return null;
+        console.error("Erro ao sugerir categoria Shopee:", err);
+        return null;
+      }
+    },
+    [backendBase, session?.user?.email],
+  );
+
   // Import shared parser
   // NOTE: keep logic same, just using central util to avoid duplication
   useEffect(() => {
@@ -817,6 +840,7 @@ export function CreateProductDialog({
     year?: string;
     category?: string;
     mlCategory?: string;
+    shopeeCategory?: string;
     partNumber?: string;
     // medidas auto-detectadas
     heightCm?: number;
@@ -1423,6 +1447,7 @@ export function CreateProductDialog({
           mlOptions.find((c) => c.value === mapping.detailedValue)?.id ??
           mapping.detailedId ??
           autoDetectedRef.current?.mlCategory,
+        shopeeCategory: autoDetectedRef.current?.shopeeCategory,
         heightCm:
           getMeasurementsForCategory(
             mapping.topLevel || detected.category || watchName,
@@ -1466,16 +1491,57 @@ export function CreateProductDialog({
 
     categorySuggestTimerRef.current = window.setTimeout(async () => {
       if (cancelled) return;
-      const suggestion = await fetchCategorySuggestion(
-        watchName,
-        controller.signal,
-      );
-      if (!suggestion || cancelled) return;
-      const best = suggestion.suggestions?.[0];
-      if (!best) return;
+
+      // Fetch ML and Shopee suggestions in parallel
+      const [suggestion, shopeeSuggestion] = await Promise.all([
+        fetchCategorySuggestion(watchName, controller.signal),
+        fetchShopeeCategorySuggestion(watchName, controller.signal),
+      ]);
+      if (cancelled) return;
 
       const norm = (s?: string) => (s || "").toString().trim().toLowerCase();
       const prev = autoDetectedRef.current || {};
+
+      // --- Shopee category auto-detect ---
+      let shopeeValue: string | undefined;
+      const shopeeBest = shopeeSuggestion?.suggestions?.[0];
+      if (shopeeBest) {
+        const currentShopeeCategory = watch("shopeeCategory");
+        shopeeValue =
+          shopeeOptions.find(
+            (c) =>
+              c.id === shopeeBest.categoryId || c.value === shopeeBest.fullPath,
+          )?.id || shopeeBest.categoryId;
+        const isPrevAutoShopee =
+          prev.shopeeCategory &&
+          norm(prev.shopeeCategory) === norm(currentShopeeCategory || "");
+        if ((!currentShopeeCategory || isPrevAutoShopee) && shopeeValue) {
+          setValue("shopeeCategory", shopeeValue, { shouldDirty: true });
+        }
+      }
+
+      // --- ML category + attributes auto-detect ---
+      if (!suggestion) {
+        // Still save Shopee even if ML failed
+        if (shopeeValue) {
+          autoDetectedRef.current = {
+            ...prev,
+            shopeeCategory: shopeeValue || prev.shopeeCategory,
+          };
+        }
+        return;
+      }
+      const best = suggestion.suggestions?.[0];
+      if (!best) {
+        if (shopeeValue) {
+          autoDetectedRef.current = {
+            ...prev,
+            shopeeCategory: shopeeValue || prev.shopeeCategory,
+          };
+        }
+        return;
+      }
+
       const currentCategory = watch("category");
       const currentMlCategory = watch("mlCategory");
       const currentBrand = watch("brand");
@@ -1592,6 +1658,7 @@ export function CreateProductDialog({
         ...prev,
         category: best.fullPath || prev.category,
         mlCategory: mlValue || prev.mlCategory,
+        shopeeCategory: shopeeValue || prev.shopeeCategory,
         brand: attributes.brand || prev.brand,
         model: attributes.model || prev.model,
         year: attributes.year || prev.year,
@@ -1611,7 +1678,13 @@ export function CreateProductDialog({
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchName, fetchCategorySuggestion, mlOptions]);
+  }, [
+    watchName,
+    fetchCategorySuggestion,
+    fetchShopeeCategorySuggestion,
+    mlOptions,
+    shopeeOptions,
+  ]);
 
   // When category (top-level or mlCategory) changes via MANUAL user selection, update measurements.
   // This effect is debounced to avoid cascade: auto-fill effects already set measurements,

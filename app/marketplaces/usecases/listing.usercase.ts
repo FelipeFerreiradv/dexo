@@ -2,6 +2,7 @@
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
+import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -1921,8 +1922,54 @@ export class ListingUseCase {
       if (!account || !account.accessToken || !account.shopId) {
         return {
           success: false,
-          error: "Conta do Shopee nÃ£o conectada ou sem credenciais vÃ¡lidas",
+          error: "Conta do Shopee não conectada ou sem credenciais válidas",
         };
+      }
+
+      // --- Token refresh automático (mesmo padrão do ML) ---
+      const now = new Date();
+      if (account.expiresAt < now) {
+        try {
+          console.debug(
+            `[ListingUseCase] Shopee token expired for account ${account.id}, attempting refresh`,
+          );
+          const refreshed = await ShopeeOAuthService.refreshAccessToken(
+            account.refreshToken,
+            account.shopId,
+          );
+
+          console.debug(
+            `[ListingUseCase] Shopee token refresh returned, updating DB tokens`,
+          );
+          const updated = await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: refreshed.access_token,
+            refreshToken: refreshed.refresh_token,
+            expiresAt: ShopeeOAuthService.calculateExpiryDate(
+              refreshed.expire_in,
+            ),
+          });
+
+          if (updated) {
+            account = updated as any;
+            console.debug(
+              `[ListingUseCase] Shopee account tokens updated successfully`,
+            );
+          }
+        } catch (refreshErr) {
+          await MarketplaceRepository.updateStatus(
+            account.id,
+            AccountStatus.ERROR,
+          );
+          console.warn(
+            `[ListingUseCase] Failed to refresh Shopee token for account ${account.id}:`,
+            (refreshErr as any)?.message || refreshErr,
+          );
+          return {
+            success: false,
+            error:
+              "Conta do Shopee expirou ou token inválido — reconecte a conta",
+          };
+        }
       }
 
       // 2. Buscar dados do produto
@@ -1931,7 +1978,7 @@ export class ListingUseCase {
       if (!product) {
         return {
           success: false,
-          error: "Produto nÃ£o encontrado",
+          error: "Produto não encontrado",
         };
       }
 
@@ -1957,14 +2004,74 @@ export class ListingUseCase {
         };
       }
 
-      // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
+      // 3. Preparar payload — atributos expandidos
+      const attributeList: ShopeeItemCreatePayload["attribute_list"] = [];
+
+      // Marca (obrigatório)
+      attributeList.push({
+        attribute_id: 100001,
+        attribute_name: "Marca",
+        attribute_value_list: [
+          {
+            value_id: 0,
+            value_name: product.brand || "Genérica",
+            value_unit: "",
+          },
+        ],
+      });
+
+      // Modelo
+      if (product.model || product.name) {
+        attributeList.push({
+          attribute_id: 100002,
+          attribute_name: "Modelo",
+          attribute_value_list: [
+            {
+              value_id: 0,
+              value_name: product.model || product.name,
+              value_unit: "",
+            },
+          ],
+        });
+      }
+
+      // Ano (se disponível)
+      if (product.year) {
+        attributeList.push({
+          attribute_id: 100003,
+          attribute_name: "Ano",
+          attribute_value_list: [
+            {
+              value_id: 0,
+              value_name: product.year,
+              value_unit: "",
+            },
+          ],
+        });
+      }
+
+      // Número da Peça / Part Number (se disponível)
+      if (product.partNumber) {
+        attributeList.push({
+          attribute_id: 100004,
+          attribute_name: "Número de referência",
+          attribute_value_list: [
+            {
+              value_id: 0,
+              value_name: product.partNumber,
+              value_unit: "",
+            },
+          ],
+        });
+      }
+
       const payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         price: product.price,
-        stock: Math.min(product.stock, 999999), // Shopee limita quantidade mÃ¡xima
+        stock: Math.min(product.stock, 999999),
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
         package_length:
@@ -1982,52 +2089,70 @@ export class ListingUseCase {
               : "https://via.placeholder.com/500x500.png?text=Produto",
           ],
         },
-        attribute_list: [
-          {
-            attribute_id: 100001, // Marca
-            attribute_name: "Marca",
-            attribute_value_list: [
-              {
-                value_id: 0,
-                value_name: product.brand || "GenÃ©rica",
-                value_unit: "",
-              },
-            ],
-          },
-          {
-            attribute_id: 100002, // Modelo
-            attribute_name: "Modelo",
-            attribute_value_list: [
-              {
-                value_id: 0,
-                value_name: product.model || product.name,
-                value_unit: "",
-              },
-            ],
-          },
-        ],
-        logistic_info: [], // LogÃ­stica serÃ¡ configurada separadamente
+        attribute_list: attributeList,
+        logistic_info: [],
       };
 
-      // 4. Criar anÃºncio no Shopee
+      // 4. Criar anúncio no Shopee (com retry em caso de erro de token)
       console.log(
         `[ListingUseCase] Creating Shopee listing for product ${productId} (${product.name})`,
       );
-      console.log(
-        `[ListingUseCase] Payload being sent:`,
-        JSON.stringify(payload, null, 2),
-      );
-      const shopeeItem = await ShopeeApiService.createItem(
-        account.accessToken,
-        account.shopId,
-        payload,
-      );
+
+      let shopeeItem: { item_id: number };
+      try {
+        shopeeItem = await ShopeeApiService.createItem(
+          account.accessToken,
+          account.shopId,
+          payload,
+        );
+      } catch (firstErr) {
+        // Retry: se erro parece ser de token, tentar refresh e retry uma vez
+        const errMsg =
+          (firstErr instanceof Error ? firstErr.message : String(firstErr)) ||
+          "";
+        const isAuthError =
+          /token|auth|permission|forbidden|unauthorized|expire/i.test(errMsg);
+
+        if (isAuthError && account.refreshToken) {
+          console.warn(
+            `[ListingUseCase] Shopee API auth error, attempting token refresh and retry`,
+          );
+          try {
+            const refreshed = await ShopeeOAuthService.refreshAccessToken(
+              account.refreshToken,
+              account.shopId,
+            );
+            await MarketplaceRepository.updateTokens(account.id, {
+              accessToken: refreshed.access_token,
+              refreshToken: refreshed.refresh_token,
+              expiresAt: ShopeeOAuthService.calculateExpiryDate(
+                refreshed.expire_in,
+              ),
+            });
+
+            shopeeItem = await ShopeeApiService.createItem(
+              refreshed.access_token,
+              account.shopId,
+              payload,
+            );
+          } catch (retryErr) {
+            console.error(
+              `[ListingUseCase] Shopee retry also failed:`,
+              retryErr,
+            );
+            throw retryErr;
+          }
+        } else {
+          throw firstErr;
+        }
+      }
+
       console.log(
         `[ListingUseCase] Shopee response:`,
         JSON.stringify(shopeeItem, null, 2),
       );
 
-      // 5. Criar vÃ­nculo local (ProductListing)
+      // 5. Criar vínculo local (ProductListing)
       const listing = await ListingRepository.createListing({
         productId,
         marketplaceAccountId: account.id,
