@@ -73,10 +73,9 @@ export function ShopeeListingsTab() {
       setError(null);
 
       try {
-        const url = new URL(
-          `${getApiBaseUrl()}/marketplace/shopee/listings`,
-        );
-        if (selectedAccountId) url.searchParams.set("accountId", selectedAccountId);
+        const url = new URL(`${getApiBaseUrl()}/marketplace/shopee/listings`);
+        if (selectedAccountId)
+          url.searchParams.set("accountId", selectedAccountId);
 
         const response = await fetch(url.toString(), {
           headers: {

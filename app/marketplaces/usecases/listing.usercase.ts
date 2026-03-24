@@ -2316,10 +2316,7 @@ export class ListingUseCase {
         const acctId = account?.id;
         if (acctId) {
           const existingListing =
-            await ListingRepository.findByProductAndAccount(
-              productId,
-              acctId,
-            );
+            await ListingRepository.findByProductAndAccount(productId, acctId);
           if (existingListing) {
             await ListingRepository.updateListing(existingListing.id, {
               status: "error",

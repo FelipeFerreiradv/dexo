@@ -208,9 +208,8 @@ export class ListingRetryService {
             `[ListingRetryService] delegating Shopee retry for ${cand.id} to createShopeeListing`,
           );
           try {
-            const { ListingUseCase } = await import(
-              "../usecases/listing.usercase"
-            );
+            const { ListingUseCase } =
+              await import("../usecases/listing.usercase");
             const result = await ListingUseCase.createShopeeListing(
               account?.userId || "",
               cand.productId,
