@@ -12,6 +12,7 @@ import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
+import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 
 /**
  * Rotas para gerenciar conexÃµes com marketplaces
@@ -644,6 +645,160 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao iniciar retry de anÃºncios pendentes",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/shopee/sync-categories
+   * Sincroniza categorias do Shopee para o banco local (MarketplaceCategory com siteId="SHP")
+   */
+  app.post(
+    "/shopee/sync-categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+
+        // Buscar uma conta Shopee conectada para usar nas chamadas da API
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.SHOPEE,
+        );
+        const active = (accounts || []).find(
+          (acc) => acc.status === "ACTIVE" && acc.accessToken && acc.shopId,
+        );
+        if (!active) {
+          return reply.status(400).send({
+            error: "Nenhuma conta Shopee ativa encontrada",
+            message:
+              "Conecte uma conta do Shopee antes de sincronizar categorias.",
+          });
+        }
+
+        const shopId =
+          typeof active.shopId === "string"
+            ? parseInt(active.shopId)
+            : (active.shopId as number);
+
+        const categoryResponse = await ShopeeApiService.getCategories(
+          active.accessToken!,
+          shopId,
+          "pt-BR",
+        );
+
+        const categoryList = (categoryResponse.category_list || []) as any[];
+
+        // A API v2 usa display_category_name (localizado) ou original_category_name
+        const getName = (cat: any): string =>
+          cat.display_category_name ||
+          cat.category_name ||
+          cat.original_category_name ||
+          `Cat_${cat.category_id}`;
+
+        // Construir mapa de nomes por ID para fullPath
+        const nameMap = new Map<number, string>();
+        for (const cat of categoryList) {
+          nameMap.set(cat.category_id, getName(cat));
+        }
+
+        // Construir fullPath a partir do parent
+        const buildFullPath = (cat: any): string => {
+          const parts: string[] = [];
+          let currentParentId = cat.parent_category_id;
+          parts.unshift(getName(cat));
+          while (currentParentId && currentParentId > 0) {
+            const parentName = nameMap.get(currentParentId);
+            if (parentName) {
+              parts.unshift(parentName);
+            }
+            // Encontrar o parent para subir na árvore
+            const parentCat = categoryList.find(
+              (c) => c.category_id === currentParentId,
+            );
+            currentParentId = parentCat?.parent_category_id ?? 0;
+          }
+          return parts.join(" > ");
+        };
+
+        const entries = categoryList.map((cat: any) => ({
+          externalId: `SHP_${cat.category_id}`,
+          siteId: "SHP",
+          name: getName(cat),
+          fullPath: buildFullPath(cat),
+          pathFromRoot: [cat.parent_category_id, cat.category_id],
+          parentExternalId:
+            cat.parent_category_id > 0 ? `SHP_${cat.parent_category_id}` : null,
+          keywords: null,
+        }));
+
+        await CategoryRepository.upsertMany(entries);
+
+        return reply.send({
+          success: true,
+          count: entries.length,
+          message: `${entries.length} categorias do Shopee sincronizadas.`,
+        });
+      } catch (error) {
+        console.error("[shopee/sync-categories] Erro:", error);
+        return reply.status(500).send({
+          error: "Erro ao sincronizar categorias do Shopee",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/shopee/categories
+   * Lista categorias do Shopee já sincronizadas (flatten)
+   */
+  app.get(
+    "/shopee/categories",
+    { preHandler: [authMiddleware] },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const raw = await CategoryRepository.listFlattenedOptions("SHP");
+        const categories = (raw || []).map((c: any) => ({
+          id: c.externalId || c.id,
+          value: c.fullPath || c.name || c.externalId || c.id,
+        }));
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias Shopee",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/shopee/category-suggest?title=...
+   * Sugere categorias do Shopee com base no título usando catálogo sincronizado.
+   */
+  app.get(
+    "/shopee/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const title = (request.query as any)?.title as string | undefined;
+      if (!title || !title.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'title' é obrigatório" });
+      }
+
+      try {
+        const suggestions = await CategorySuggestionService.suggestFromTitle(
+          title,
+          "SHP",
+        );
+        return reply.send(suggestions);
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categorias Shopee",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

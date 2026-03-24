@@ -1945,9 +1945,21 @@ export class ListingUseCase {
         };
       }
 
+      // Strip "SHP_" prefix if present to get the numeric category ID
+      const numericCategoryId = parseInt(
+        String(resolvedShopeeCategoryId).replace(/^SHP_/i, ""),
+        10,
+      );
+      if (isNaN(numericCategoryId)) {
+        return {
+          success: false,
+          error: `Categoria do Shopee inválida: ${resolvedShopeeCategoryId}`,
+        };
+      }
+
       // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
       const payload: ShopeeItemCreatePayload = {
-        category_id: parseInt(resolvedShopeeCategoryId),
+        category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,

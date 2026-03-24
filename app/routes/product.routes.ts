@@ -61,6 +61,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         sourceVehicle,
         mlCategory,
         mlCategorySource,
+        shopeeCategory,
+        shopeeCategorySource,
 
         // Medidas / peso
         heightCm,
@@ -121,6 +123,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           : [],
         mlCategoryExternal: mlCategory ?? createListingCategoryId ?? undefined,
         mlCategorySource: mlCategorySource ?? undefined,
+        shopeeCategory: shopeeCategory ?? undefined,
+        shopeeCategorySource: shopeeCategorySource ?? undefined,
         createListing: Boolean(createListing),
         createListingCategoryId: createListingCategoryId ?? undefined,
         listings: Array.isArray(listings) ? listings : undefined,
@@ -200,6 +204,52 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         });
       }
 
+      // Resolver categoria Shopee (externalId -> FK), similar ao ML
+      let resolvedShopeeCategoryId: string | undefined;
+      let resolvedShopeeCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedShopeeCategoryChosenAt: Date | undefined;
+
+      let shopeeCategoryExternalToResolve = sanitized.shopeeCategory;
+      if (!shopeeCategoryExternalToResolve && sanitized.listings?.length) {
+        const firstShopeeListing = sanitized.listings.find(
+          (l: any) => l.platform === "SHOPEE" && !!l.categoryId,
+        );
+        if (firstShopeeListing?.categoryId) {
+          shopeeCategoryExternalToResolve = firstShopeeListing.categoryId;
+        }
+      }
+
+      if (shopeeCategoryExternalToResolve) {
+        // Shopee externalIds use prefix "SHP_"
+        const externalId = shopeeCategoryExternalToResolve.startsWith("SHP_")
+          ? shopeeCategoryExternalToResolve
+          : `SHP_${shopeeCategoryExternalToResolve}`;
+        const cat = await CategoryRepository.findByExternalId(externalId);
+        if (cat) {
+          // Store the raw numeric Shopee category ID (e.g. "12345") — not the DB UUID
+          // because createShopeeListing does parseInt() on this value
+          resolvedShopeeCategoryId = externalId.replace("SHP_", "");
+          resolvedShopeeCategorySource =
+            (sanitized.shopeeCategorySource as any) ||
+            (shopeeCategory ? "manual" : "auto");
+          resolvedShopeeCategoryChosenAt = new Date();
+        }
+      }
+
+      const requiresShopeeCategory = Boolean(
+        sanitized.listings?.some((l: any) => l.platform === "SHOPEE"),
+      );
+      if (requiresShopeeCategory && !resolvedShopeeCategoryId) {
+        return reply.status(400).send({
+          error:
+            "Produto não possui categoria do Shopee. Selecione uma categoria antes de criar o anúncio.",
+        });
+      }
+
       try {
         const data = await productUseCase.create({
           sku: sanitized.sku,
@@ -226,6 +276,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           mlCategoryId: resolvedMlCategoryId,
           mlCategorySource: resolvedMlCategorySource,
           mlCategoryChosenAt: resolvedMlCategoryChosenAt,
+          shopeeCategoryId: resolvedShopeeCategoryId,
+          shopeeCategorySource: resolvedShopeeCategorySource,
+          shopeeCategoryChosenAt: resolvedShopeeCategoryChosenAt,
 
           // Medidas / peso
           heightCm: sanitized.heightCm,
@@ -308,12 +361,18 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                       : [undefined];
                     for (const accId of accounts) {
                       try {
-                        await ListingUseCase.createShopeeListing(
-                          bgUserId,
-                          bgProductId,
-                          lst.categoryId,
-                          accId,
-                        );
+                        const shopeeResult =
+                          await ListingUseCase.createShopeeListing(
+                            bgUserId,
+                            bgProductId,
+                            lst.categoryId,
+                            accId,
+                          );
+                        if (!shopeeResult.success) {
+                          console.error(
+                            `[product:bg-listing] Shopee listing failed: ${shopeeResult.error}`,
+                          );
+                        }
                       } catch (e) {
                         console.error(
                           "[product:bg-listing] Shopee error:",

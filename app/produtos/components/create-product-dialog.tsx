@@ -113,6 +113,7 @@ const productSchema = z.object({
   // Step 5: Anúncio Shopee (opcional)
   createShopeeListing: z.boolean().optional(),
   shopeeAccountIds: z.array(z.string()).optional(),
+  shopeeCategory: z.string().optional(),
 
   // Step 2: Preços e Estoque
   price: z
@@ -273,7 +274,7 @@ const STEPS = [
     title: "Shopee",
     description: "Criar anúncio (opcional)",
     icon: ShoppingCart,
-    fields: ["createShopeeListing", "shopeeAccountIds"],
+    fields: ["createShopeeListing", "shopeeAccountIds", "shopeeCategory"],
   },
   {
     id: 8,
@@ -310,6 +311,12 @@ export function CreateProductDialog({
   const [titleSuggestion, setTitleSuggestion] = useState("");
   const [mlCategorySearch, setMlCategorySearch] = useState("");
   const [mlCategoryDropdownOpen, setMlCategoryDropdownOpen] = useState(false);
+  const [shopeeOptions, setShopeeOptions] = useState<
+    { id: string; value: string }[]
+  >([]);
+  const [shopeeCategorySearch, setShopeeCategorySearch] = useState("");
+  const [shopeeCategoryDropdownOpen, setShopeeCategoryDropdownOpen] =
+    useState(false);
   const [mlAccounts, setMlAccounts] = useState<
     Array<{ id: string; accountName: string; status?: string }>
   >([]);
@@ -364,6 +371,7 @@ export function CreateProductDialog({
       mlListingPrice: null,
       createShopeeListing: false,
       shopeeAccountIds: [],
+      shopeeCategory: "",
       price: 0,
       stock: 0,
       costPrice: null,
@@ -699,8 +707,40 @@ export function CreateProductDialog({
   useEffect(() => {
     if (!open) {
       mlCategoriesLoadedRef.current = false;
+      shopeeCategoriesLoadedRef.current = false;
     }
   }, [open]);
+
+  // Lazy-load Shopee categories only when user navigates to Shopee step
+  const shopeeCategoriesLoadedRef = useRef(false);
+  useEffect(() => {
+    if (
+      currentStep === 7 &&
+      shopeeOptions.length === 0 &&
+      !shopeeCategoriesLoadedRef.current
+    ) {
+      shopeeCategoriesLoadedRef.current = true;
+      (async () => {
+        try {
+          const base = getApiBaseUrl();
+          const respCat = await fetch(`${base}/marketplace/shopee/categories`, {
+            headers: { email: session?.user?.email || "" },
+          });
+          if (respCat.ok) {
+            const catJson = await respCat.json();
+            const cats = Array.isArray(catJson?.categories)
+              ? catJson.categories
+              : [];
+            if (cats.length > 0) {
+              setShopeeOptions(cats);
+            }
+          }
+        } catch (catErr) {
+          console.error("Erro ao buscar categorias Shopee:", catErr);
+        }
+      })();
+    }
+  }, [currentStep, shopeeOptions.length, session?.user?.email]);
 
   // AUTO-FILL A PARTIR DAS COMPATIBILIDADES (fonte primária)
   // Quando o usuário adiciona/altera compatibilidades, preenche marca/modelo/ano/versão
@@ -1697,6 +1737,14 @@ export function CreateProductDialog({
         setIsSubmitting(false);
         return;
       }
+      if (data.createShopeeListing && !data.shopeeCategory) {
+        onToast(
+          "Selecione uma categoria do Shopee antes de criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
 
       const listingsPayload: Array<{
         platform: "MERCADO_LIVRE" | "SHOPEE";
@@ -1738,6 +1786,7 @@ export function CreateProductDialog({
         listingsPayload.push({
           platform: "SHOPEE",
           accountIds: selectedShopeeAccounts,
+          categoryId: data.shopeeCategory || undefined,
         });
       }
 
@@ -1779,6 +1828,8 @@ export function CreateProductDialog({
         listings: listingsPayload,
         mlCategorySource: mlCategorySourceToSend,
         mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
+        shopeeCategory: data.shopeeCategory || undefined,
+        shopeeCategorySource: data.shopeeCategory ? "manual" : undefined,
         imageUrls: data.imageUrls || [],
 
         // Compatibilidades veiculares
@@ -3163,6 +3214,115 @@ export function CreateProductDialog({
                     ) : (
                       <p className="text-xs text-muted-foreground">
                         Nenhuma conta Shopee conectada. Conecte em Integrações.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {watchCreateShopeeListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="shopeeCategory">Categoria no Shopee</Label>
+                    <Controller
+                      name="shopeeCategory"
+                      control={control}
+                      render={({ field }) => {
+                        const optionsSource = shopeeOptions;
+
+                        const selectedLabel =
+                          optionsSource.find((o) => o.id === field.value)
+                            ?.value || undefined;
+
+                        const searchNorm = shopeeCategorySearch
+                          .normalize("NFD")
+                          .replace(/[\u0300-\u036f]/g, "")
+                          .toLowerCase()
+                          .trim();
+                        const filteredOptions = searchNorm
+                          ? optionsSource
+                              .filter((c) =>
+                                c.value
+                                  .normalize("NFD")
+                                  .replace(/[\u0300-\u036f]/g, "")
+                                  .toLowerCase()
+                                  .includes(searchNorm),
+                              )
+                              .slice(0, 50)
+                          : [];
+
+                        return (
+                          <div className="relative">
+                            {selectedLabel && !shopeeCategoryDropdownOpen && (
+                              <div
+                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                onClick={() => {
+                                  setShopeeCategoryDropdownOpen(true);
+                                  setShopeeCategorySearch("");
+                                }}
+                              >
+                                <span className="truncate">
+                                  {selectedLabel}
+                                </span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  Alterar
+                                </span>
+                              </div>
+                            )}
+
+                            {(shopeeCategoryDropdownOpen || !selectedLabel) && (
+                              <>
+                                <Input
+                                  placeholder="Buscar categoria do Shopee..."
+                                  value={shopeeCategorySearch}
+                                  onChange={(e) =>
+                                    setShopeeCategorySearch(e.target.value)
+                                  }
+                                  onBlur={() => {
+                                    setTimeout(
+                                      () =>
+                                        setShopeeCategoryDropdownOpen(false),
+                                      200,
+                                    );
+                                  }}
+                                  autoFocus={shopeeCategoryDropdownOpen}
+                                />
+                                {searchNorm && filteredOptions.length > 0 && (
+                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                    {filteredOptions.map((cat) => (
+                                      <button
+                                        type="button"
+                                        key={cat.id}
+                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                          cat.id === field.value
+                                            ? "bg-accent font-medium"
+                                            : ""
+                                        }`}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          field.onChange(cat.id);
+                                          setShopeeCategorySearch("");
+                                          setShopeeCategoryDropdownOpen(false);
+                                        }}
+                                      >
+                                        {cat.value}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {searchNorm && filteredOptions.length === 0 && (
+                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                    Nenhuma categoria encontrada
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      }}
+                    />
+                    {shopeeOptions.length === 0 && (
+                      <p className="text-xs text-yellow-600">
+                        Nenhuma categoria Shopee sincronizada. Vá em Integrações
+                        e sincronize as categorias do Shopee.
                       </p>
                     )}
                   </div>
