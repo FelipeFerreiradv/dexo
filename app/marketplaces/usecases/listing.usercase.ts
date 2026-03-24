@@ -2206,9 +2206,10 @@ export class ListingUseCase {
         );
       }
 
-      // Shopee Xpress limits: max 30kg, max 200cm per side, min 1cm per side
+      // Shopee Xpress BR limits: max 30kg, max 100cm per side, L+W+H <= 200cm
       const SHOPEE_MAX_WEIGHT_KG = 30;
-      const SHOPEE_MAX_DIM_CM = 200;
+      const SHOPEE_MAX_DIM_CM = 100;
+      const SHOPEE_MAX_SUM_CM = 200;
       const SHOPEE_MIN_DIM_CM = 1;
 
       const rawWeightKg =
@@ -2221,9 +2222,18 @@ export class ListingUseCase {
         product.heightCm && product.heightCm > 0 ? product.heightCm : 10;
 
       const clampedWeightKg = Math.min(rawWeightKg, SHOPEE_MAX_WEIGHT_KG);
-      const clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawLength, SHOPEE_MAX_DIM_CM));
-      const clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawWidth, SHOPEE_MAX_DIM_CM));
-      const clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawHeight, SHOPEE_MAX_DIM_CM));
+      let clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawLength, SHOPEE_MAX_DIM_CM));
+      let clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawWidth, SHOPEE_MAX_DIM_CM));
+      let clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawHeight, SHOPEE_MAX_DIM_CM));
+
+      // Ensure L+W+H <= 200cm (scale down proportionally if needed)
+      const dimSum = clampedLength + clampedWidth + clampedHeight;
+      if (dimSum > SHOPEE_MAX_SUM_CM) {
+        const scale = SHOPEE_MAX_SUM_CM / dimSum;
+        clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedLength * scale));
+        clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedWidth * scale));
+        clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedHeight * scale));
+      }
 
       if (rawWeightKg !== clampedWeightKg || rawLength !== clampedLength || rawWidth !== clampedWidth || rawHeight !== clampedHeight) {
         console.warn(
