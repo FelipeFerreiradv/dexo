@@ -2123,13 +2123,14 @@ export class ListingUseCase {
           }
         }
       } catch (attrErr) {
-        // Fallback: se não conseguiu buscar atributos da categoria, usar valores hardcoded
+        // Fallback: se não conseguiu buscar atributos da categoria, logar e continuar
+        // com atributos mínimos. O erro será capturado pela API Shopee se faltarem campos.
         console.warn(
           `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, using fallback:`,
           (attrErr as any)?.message || attrErr,
         );
 
-        // Brand como campo do payload em vez de atributo
+        // Adicionar brand como atributo obrigatório (ID 100001 é o mais comum para Marca)
         if (product.brand) {
           attributeList.push({
             attribute_id: 100001,
@@ -2142,13 +2143,27 @@ export class ListingUseCase {
             ],
           });
         }
+
+        // Adicionar modelo se disponível
+        if (product.model) {
+          attributeList.push({
+            attribute_id: 100002,
+            attribute_name: "Modelo",
+            attribute_value_list: [
+              {
+                value_id: 0,
+                original_value_name: product.model,
+              } as any,
+            ],
+          });
+        }
       }
 
       // Normalizar URL de imagem (evitar barra dupla)
       const backendUrl = (
         process.env.APP_BACKEND_URL || "http://localhost:3333"
       ).replace(/\/+$/, "");
-      let imageUrl = "https://via.placeholder.com/500x500.png?text=Produto";
+      let imageUrl = "";
       if (product.imageUrl) {
         if (product.imageUrl.startsWith("http")) {
           imageUrl = product.imageUrl;
@@ -2158,6 +2173,13 @@ export class ListingUseCase {
             : `/${product.imageUrl}`;
           imageUrl = `${backendUrl}${path}`;
         }
+      }
+
+      // Validar que temos uma imagem válida antes de upload
+      if (!imageUrl) {
+        throw new Error(
+          "Produto sem imagem. A Shopee exige pelo menos uma imagem para criar o anúncio.",
+        );
       }
 
       // Upload da imagem ao Shopee (API requer image_id, não URL direta)
@@ -2217,7 +2239,7 @@ export class ListingUseCase {
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         original_price: Number(product.price) || 1,
-        normal_stock: Math.min(product.stock || 1, 999999),
+        seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
         condition: shopeeCondition,
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
@@ -2273,7 +2295,7 @@ export class ListingUseCase {
           brand: payload.brand,
           condition: payload.condition,
           original_price: payload.original_price,
-          normal_stock: payload.normal_stock,
+          seller_stock: payload.seller_stock,
           dimension: payload.dimension,
           logistic_info_count: payload.logistic_info?.length || 0,
           attributes: (payload.attribute_list || []).map((a) => ({

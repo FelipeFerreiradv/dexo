@@ -28,13 +28,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface Listing {
   id: string;
   productId: string;
   externalListingId: string;
   externalSku: string | null;
+  permalink: string | null;
   status: string;
+  lastError?: string | null;
   createdAt: string;
   product?: {
     name: string;
@@ -47,6 +50,38 @@ interface ListingsResponse {
   success: boolean;
   count: number;
   listings: Listing[];
+}
+
+function ShopeeListingsSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+          <Skeleton className="h-9 w-24" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border">
+          <div className="p-4 space-y-4">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <Skeleton className="h-4 w-4" />
+                <Skeleton className="h-4 flex-1" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-6 w-16" />
+                <Skeleton className="h-8 w-8" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function ShopeeListingsTab() {
@@ -130,146 +165,204 @@ export function ShopeeListingsTab() {
     loadAccounts();
   }, [session?.user?.email]);
 
-  // Status badge
+  const handleRefresh = () => {
+    fetchListings(true);
+  };
+
+  // Status badge -- alinhado com o padrão do Mercado Livre
   const getStatusBadge = (status: string) => {
-    const statusConfig = {
-      active: { variant: "default" as const, label: "Ativo" },
-      paused: { variant: "secondary" as const, label: "Pausado" },
-      closed: { variant: "destructive" as const, label: "Encerrado" },
-      pending: { variant: "outline" as const, label: "Pendente" },
-      error: { variant: "destructive" as const, label: "Erro" },
-      NORMAL: { variant: "default" as const, label: "Ativo" },
-      DELETED: { variant: "destructive" as const, label: "Deletado" },
-      BANNED: { variant: "destructive" as const, label: "Banido" },
-      UNLIST: { variant: "secondary" as const, label: "Deslistado" },
-    };
-
-    const config = statusConfig[status as keyof typeof statusConfig] || {
-      variant: "outline" as const,
-      label: status,
-    };
-
-    return <Badge variant={config.variant}>{config.label}</Badge>;
+    switch (status.toLowerCase()) {
+      case "active":
+      case "normal":
+        return <Badge variant="default">Ativo</Badge>;
+      case "paused":
+      case "unlist":
+        return <Badge variant="secondary">Pausado</Badge>;
+      case "pending":
+        return <Badge variant="outline">Pendente</Badge>;
+      case "error":
+        return <Badge variant="destructive">Erro</Badge>;
+      case "closed":
+      case "deleted":
+      case "seller_deleted":
+        return <Badge variant="outline">Fechado</Badge>;
+      case "banned":
+        return <Badge variant="destructive">Banido</Badge>;
+      case "reviewing":
+        return <Badge variant="outline">Em revisão</Badge>;
+      default:
+        return <Badge variant="secondary">{status}</Badge>;
+    }
   };
 
   if (isLoading) {
-    return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <RefreshCw className="h-8 w-8 animate-spin" />
-          <span className="ml-2">Carregando anúncios...</span>
-        </CardContent>
-      </Card>
-    );
+    return <ShopeeListingsSkeleton />;
   }
 
   return (
-    <div className="space-y-4">
-      {error && (
-        <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-          {error}
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Link2 className="h-5 w-5" />
+              Vínculos Produto-Anúncio
+            </CardTitle>
+            <CardDescription>
+              Produtos do seu estoque vinculados à sua conta do Shopee
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              Atualizar
+            </Button>
+          </div>
         </div>
-      )}
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        )}
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Package className="h-5 w-5" />
-                Anúncios no Shopee
-              </CardTitle>
-              <CardDescription>
-                Lista de produtos vinculados à sua conta do Shopee
-              </CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <select
-                className="rounded border px-2 py-1 text-sm"
-                value={selectedAccountId}
-                onChange={(e) => setSelectedAccountId(e.target.value)}
-              >
-                <option value="">Todas as contas</option>
-                {accounts.map((acc) => (
-                  <option key={acc.id} value={acc.id}>
-                    {acc.accountName || acc.id}
-                  </option>
+        {listings.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <Package className="h-12 w-12 text-muted-foreground/50" />
+            <h3 className="mt-4 text-lg font-medium">
+              Nenhum vínculo encontrado
+            </h3>
+            <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+              Seus anúncios do Shopee ainda não estão vinculados aos produtos do
+              seu estoque. Use a aba de Sincronização para importar e vincular
+              anúncios.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Produto</TableHead>
+                  <TableHead>SKU Shopee</TableHead>
+                  <TableHead>ID Anúncio</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Ações</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {listings.map((listing) => (
+                  <TableRow key={listing.id}>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <span className="font-medium">
+                          {listing.product?.name || "Produto não encontrado"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          SKU: {listing.product?.sku || "-"}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        {listing.externalSku || "-"}
+                      </code>
+                    </TableCell>
+                    <TableCell>
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                        {listing.externalListingId}
+                      </code>
+                    </TableCell>
+                    <TableCell>
+                      {getStatusBadge(listing.status)}
+                      {listing.lastError ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {listing.lastError.slice(0, 120)}
+                          {listing.lastError.length > 120 ? "\u2026" : ""}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {(() => {
+                        const hasExternalId = Boolean(
+                          listing.externalListingId,
+                        );
+                        const hasPermalink = Boolean(listing.permalink);
+                        const isPlaceholder =
+                          (listing.externalListingId || "").startsWith(
+                            "PENDING_",
+                          ) ||
+                          (!hasPermalink && !hasExternalId);
+
+                        if (isPlaceholder) {
+                          return (
+                            <Button variant="ghost" size="sm" disabled>
+                              <AlertCircle className="h-4 w-4 text-muted-foreground/70" />
+                              <span className="sr-only">Anúncio pendente</span>
+                            </Button>
+                          );
+                        }
+
+                        return (
+                          <Button variant="ghost" size="sm" asChild>
+                            <a
+                              href={
+                                listing.permalink ||
+                                (hasExternalId
+                                  ? `https://shopee.com.br/product/${listing.externalListingId}`
+                                  : "#")
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              <span className="sr-only">Ver no Shopee</span>
+                            </a>
+                          </Button>
+                        );
+                      })()}
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </select>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fetchListings(true)}
-                disabled={isRefreshing}
-              >
-                {isRefreshing ? (
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        {listings.length > 0 && (
+          <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+            <div className="flex items-center gap-1">
+              <AlertCircle className="h-4 w-4" />
+              <span>
+                {listings.length}{" "}
+                {listings.length === 1
+                  ? "vínculo encontrado"
+                  : "vínculos encontrados"}
+              </span>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          {listings.length === 0 ? (
-            <div className="text-center py-8">
-              <Package className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-muted-foreground mb-2">
-                Nenhum anúncio encontrado
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                Conecte sua conta do Shopee e importe seus anúncios para
-                começar.
-              </p>
-            </div>
-          ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Produto</TableHead>
-                    <TableHead>SKU</TableHead>
-                    <TableHead>Estoque</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Criado em</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {listings.map((listing) => (
-                    <TableRow key={listing.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Link2 className="h-4 w-4 text-muted-foreground" />
-                          <div>
-                            <div className="font-medium">
-                              {listing.product?.name ||
-                                "Produto não encontrado"}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              ID: {listing.externalListingId}
-                            </div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {listing.externalSku || listing.product?.sku || "-"}
-                      </TableCell>
-                      <TableCell>{listing.product?.stock ?? "-"}</TableCell>
-                      <TableCell>{getStatusBadge(listing.status)}</TableCell>
-                      <TableCell>
-                        {new Date(listing.createdAt).toLocaleDateString(
-                          "pt-BR",
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

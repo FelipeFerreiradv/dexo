@@ -202,7 +202,7 @@ export class ShopeeApiService {
   ): Promise<{ item_id: number }> {
     return this.updateItem(accessToken, shopId, {
       item_id: itemId,
-      normal_stock: stock,
+      seller_stock: [{ stock }],
     });
   }
 

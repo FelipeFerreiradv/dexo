@@ -957,7 +957,15 @@ export async function marketplaceRoutes(app: FastifyInstance) {
                 externalSku: true,
                 status: true,
                 lastError: true,
+                permalink: true,
                 createdAt: true,
+                product: {
+                  select: {
+                    name: true,
+                    sku: true,
+                    stock: true,
+                  },
+                },
               },
               orderBy: { createdAt: "desc" },
             }),

@@ -950,7 +950,7 @@ export class SyncUseCase {
     for (const account of accounts) {
       const listings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
-        include: { product: true },
+        include: { product: true, marketplaceAccount: true },
       });
 
       // Deduplicar por productId (mesmo produto pode ter listings duplicados)
