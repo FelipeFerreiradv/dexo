@@ -2106,16 +2106,19 @@ export class ListingUseCase {
           }
 
           if (valueName) {
+            const attrValue: Record<string, unknown> = {
+              value_id: valueId,
+            };
+            if (valueId === 0) {
+              attrValue.original_value_name = valueName;
+            } else {
+              attrValue.original_value_name = valueName;
+              attrValue.value_id = valueId;
+            }
             attributeList.push({
               attribute_id: attr.attribute_id,
               attribute_name: attr.attribute_name,
-              attribute_value_list: [
-                {
-                  value_id: valueId,
-                  value_name: valueName,
-                  value_unit: "",
-                },
-              ],
+              attribute_value_list: [attrValue as any],
             });
           }
         }
@@ -2134,9 +2137,8 @@ export class ListingUseCase {
             attribute_value_list: [
               {
                 value_id: 0,
-                value_name: product.brand,
-                value_unit: "",
-              },
+                original_value_name: product.brand,
+              } as any,
             ],
           });
         }
@@ -2215,7 +2217,7 @@ export class ListingUseCase {
         description: this.buildShopeeDescription(product),
         item_sku: product.sku,
         original_price: Number(product.price) || 1,
-        seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
+        normal_stock: Math.min(product.stock || 1, 999999),
         condition: shopeeCondition,
         weight:
           product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0,
@@ -2271,7 +2273,7 @@ export class ListingUseCase {
           brand: payload.brand,
           condition: payload.condition,
           original_price: payload.original_price,
-          seller_stock: payload.seller_stock,
+          normal_stock: payload.normal_stock,
           dimension: payload.dimension,
           logistic_info_count: payload.logistic_info?.length || 0,
           attributes: (payload.attribute_list || []).map((a) => ({

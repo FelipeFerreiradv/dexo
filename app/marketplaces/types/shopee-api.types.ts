@@ -62,8 +62,9 @@ export interface ShopeeItemAttribute {
 
 export interface ShopeeItemAttributeValue {
   value_id: number;
-  value_name: string;
-  value_unit: string;
+  value_name?: string;
+  original_value_name?: string;
+  value_unit?: string;
 }
 
 export interface ShopeeItemPriceInfo {
@@ -133,7 +134,7 @@ export interface ShopeeItemCreatePayload {
   description: string;
   item_sku: string;
   original_price: number;
-  seller_stock: Array<{ stock: number }>;
+  normal_stock: number;
   weight: number;
   dimension: {
     package_length: number;
@@ -158,7 +159,7 @@ export interface ShopeeItemUpdatePayload {
   description?: string;
   item_sku?: string;
   original_price?: number;
-  seller_stock?: Array<{ stock: number }>;
+  normal_stock?: number;
   weight?: number;
   dimension?: {
     package_length: number;

@@ -946,30 +946,81 @@ export class SyncUseCase {
       throw new Error(`Conta do ${platform} nÃ£o encontrada`);
     }
 
-    // 2. Para cada conta, buscar listings e sincronizar
+    // 2. Para cada conta, buscar listings e sincronizar diretamente (sem re-query)
     for (const account of accounts) {
       const listings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
         include: { product: true },
       });
 
-      result.total += listings.length;
+      // Deduplicar por productId (mesmo produto pode ter listings duplicados)
+      const seen = new Set<string>();
+      const uniqueListings = listings.filter((l) => {
+        if (!l.product || seen.has(l.product.id)) return false;
+        seen.add(l.product.id);
+        return true;
+      });
 
-      for (const listing of listings) {
-        if (!listing.product) continue;
+      result.total += uniqueListings.length;
+      console.log(
+        `[syncAllStock] Conta ${account.id} (${platform}): ${uniqueListings.length} listings únicos de ${listings.length} totais`,
+      );
 
-        const syncResults = await this.syncProductStock(listing.product.id);
-
-        const relevantResult = syncResults.find(
-          (r) => r.externalListingId === listing.externalListingId,
+      // Processar em lotes de 3 para evitar sobrecarga de conexão DB + API
+      const BATCH_SIZE = 3;
+      for (let i = 0; i < uniqueListings.length; i += BATCH_SIZE) {
+        const batch = uniqueListings.slice(i, i + BATCH_SIZE);
+        console.log(
+          `[syncAllStock] Processando lote ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(uniqueListings.length / BATCH_SIZE)} (${batch.length} itens)`,
         );
 
-        if (relevantResult) {
-          result.results.push(relevantResult);
-          if (relevantResult.success) {
-            result.successful++;
+        const batchResults = await Promise.allSettled(
+          batch.map(async (listing) => {
+            // Timeout de 15s por item para evitar travamento
+            const timeoutMs = 15000;
+            const syncPromise = (async () => {
+              switch (platform) {
+                case Platform.MERCADO_LIVRE:
+                  return this.syncMLProductStock(listing, listing.product);
+                case Platform.SHOPEE:
+                  return this.syncShopeeProductStock(listing, listing.product);
+                default:
+                  return {
+                    success: false,
+                    productId: listing.product!.id,
+                    externalListingId: listing.externalListingId,
+                    error: `Plataforma ${platform} não suportada`,
+                  } as SyncResult;
+              }
+            })();
+
+            const timeoutPromise = new Promise<SyncResult>((_, reject) =>
+              setTimeout(
+                () => reject(new Error("Timeout ao sincronizar estoque")),
+                timeoutMs,
+              ),
+            );
+
+            return Promise.race([syncPromise, timeoutPromise]);
+          }),
+        );
+
+        for (const settled of batchResults) {
+          if (settled.status === "fulfilled") {
+            result.results.push(settled.value);
+            if (settled.value.success) {
+              result.successful++;
+            } else {
+              result.failed++;
+            }
           } else {
             result.failed++;
+            result.results.push({
+              success: false,
+              productId: "",
+              externalListingId: "",
+              error: settled.reason?.message || "Erro desconhecido",
+            });
           }
         }
       }
@@ -988,6 +1039,10 @@ export class SyncUseCase {
         },
       );
     }
+
+    console.log(
+      `[syncAllStock] Concluído: ${result.successful}/${result.total} sucesso, ${result.failed} falhas`,
+    );
 
     return result;
   }
