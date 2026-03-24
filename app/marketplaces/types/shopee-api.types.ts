@@ -139,7 +139,7 @@ export interface ShopeeItemCreatePayload {
   package_width: number;
   package_height: number;
   image: {
-    image_url_list: string[];
+    image_id_list: string[];
   };
   attribute_list?: ShopeeItemAttribute[];
   logistic_info?: ShopeeItemLogisticInfo[];
@@ -162,7 +162,7 @@ export interface ShopeeItemUpdatePayload {
   package_width?: number;
   package_height?: number;
   image?: {
-    image_url_list: string[];
+    image_id_list: string[];
   };
   attribute_list?: ShopeeItemAttribute[];
   logistic_info?: ShopeeItemLogisticInfo[];

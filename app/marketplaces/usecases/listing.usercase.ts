@@ -2155,6 +2155,27 @@ export class ListingUseCase {
         }
       }
 
+      // Upload da imagem ao Shopee (API requer image_id, não URL direta)
+      let shopeeImageId: string;
+      try {
+        console.log(`[ListingUseCase] Uploading image to Shopee: ${imageUrl}`);
+        const uploadResult = await ShopeeApiService.uploadImage(
+          account.accessToken,
+          account.shopId,
+          imageUrl,
+        );
+        shopeeImageId = uploadResult.image_info.image_id;
+        console.log(`[ListingUseCase] Shopee image uploaded: ${shopeeImageId}`);
+      } catch (imgErr) {
+        console.error(
+          `[ListingUseCase] Shopee image upload failed:`,
+          (imgErr as any)?.message || imgErr,
+        );
+        throw new Error(
+          `Falha ao fazer upload da imagem para Shopee: ${(imgErr as any)?.message || imgErr}`,
+        );
+      }
+
       // Shopee exige brand — fallback "Genérica" se produto não tiver marca
       const brandName = product.brand || "Genérica";
 
@@ -2179,7 +2200,7 @@ export class ListingUseCase {
         package_height:
           product.heightCm && product.heightCm > 0 ? product.heightCm : 10,
         image: {
-          image_url_list: [imageUrl],
+          image_id_list: [shopeeImageId],
         },
         attribute_list: attributeList,
         brand: { brand_id: 0, brand_name: brandName },
@@ -2227,7 +2248,7 @@ export class ListingUseCase {
             name: a.attribute_name,
             value: a.attribute_value_list?.[0]?.value_name,
           })),
-          imageUrl,
+          imageId: shopeeImageId,
         }),
       );
 
