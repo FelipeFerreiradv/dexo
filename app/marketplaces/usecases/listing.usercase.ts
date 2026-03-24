@@ -2123,40 +2123,13 @@ export class ListingUseCase {
           }
         }
       } catch (attrErr) {
-        // Fallback: se não conseguiu buscar atributos da categoria, logar e continuar
-        // com atributos mínimos. O erro será capturado pela API Shopee se faltarem campos.
+        // Fallback: se não conseguiu buscar atributos da categoria, enviar lista vazia.
+        // IDs de atributos variam por categoria – hardcodar IDs causa rejeição.
+        // A API Shopee retornará erro específico se atributos obrigatórios estiverem faltando.
         console.warn(
-          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, using fallback:`,
+          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
           (attrErr as any)?.message || attrErr,
         );
-
-        // Adicionar brand como atributo obrigatório (ID 100001 é o mais comum para Marca)
-        if (product.brand) {
-          attributeList.push({
-            attribute_id: 100001,
-            attribute_name: "Marca",
-            attribute_value_list: [
-              {
-                value_id: 0,
-                original_value_name: product.brand,
-              } as any,
-            ],
-          });
-        }
-
-        // Adicionar modelo se disponível
-        if (product.model) {
-          attributeList.push({
-            attribute_id: 100002,
-            attribute_name: "Modelo",
-            attribute_value_list: [
-              {
-                value_id: 0,
-                original_value_name: product.model,
-              } as any,
-            ],
-          });
-        }
       }
 
       // Normalizar URL de imagem (evitar barra dupla)
