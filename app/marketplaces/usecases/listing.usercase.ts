@@ -2029,109 +2029,6 @@ export class ListingUseCase {
       if (product.partNumber)
         productAttrValues["reference number"] = product.partNumber;
 
-      try {
-        const categoryAttrs = await ShopeeApiService.getCategoryAttributes(
-          account.accessToken,
-          account.shopId,
-          numericCategoryId,
-          "pt-BR",
-        );
-
-        const attrs = categoryAttrs?.attribute_list || [];
-        console.log(
-          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a) => a.is_mandatory).length} mandatory)`,
-        );
-
-        for (const attr of attrs) {
-          // Tentar encontrar um valor do produto para este atributo
-          const attrNameLower = attr.attribute_name.toLowerCase();
-          const productValue = productAttrValues[attrNameLower];
-
-          if (!productValue && !attr.is_mandatory) continue;
-
-          // Resolução de value_id: tentar casar com a lista de valores permitidos
-          let valueId = 0;
-          let valueName = productValue || "";
-
-          if (
-            attr.attribute_value_list &&
-            attr.attribute_value_list.length > 0
-          ) {
-            // Procurar match exato ou parcial na lista de valores permitidos
-            const exactMatch = attr.attribute_value_list.find(
-              (v) =>
-                v.value_name.toLowerCase() ===
-                (productValue || "").toLowerCase(),
-            );
-            if (exactMatch) {
-              valueId = exactMatch.value_id;
-              valueName = exactMatch.value_name;
-            } else if (productValue) {
-              // Match parcial (contém)
-              const partialMatch = attr.attribute_value_list.find(
-                (v) =>
-                  v.value_name
-                    .toLowerCase()
-                    .includes((productValue || "").toLowerCase()) ||
-                  (productValue || "")
-                    .toLowerCase()
-                    .includes(v.value_name.toLowerCase()),
-              );
-              if (partialMatch) {
-                valueId = partialMatch.value_id;
-                valueName = partialMatch.value_name;
-              }
-            }
-
-            // Se obrigatório e sem match, usar o primeiro valor ou "Outros"
-            if (attr.is_mandatory && !valueName) {
-              const otherValue = attr.attribute_value_list.find(
-                (v) =>
-                  v.value_name.toLowerCase() === "outros" ||
-                  v.value_name.toLowerCase() === "other" ||
-                  v.value_name.toLowerCase() === "genérica",
-              );
-              if (otherValue) {
-                valueId = otherValue.value_id;
-                valueName = otherValue.value_name;
-              } else {
-                // Fallback: primeiro valor da lista
-                valueId = attr.attribute_value_list[0].value_id;
-                valueName = attr.attribute_value_list[0].value_name;
-              }
-            }
-          } else if (attr.is_mandatory && !valueName) {
-            // Campo obrigatório do tipo texto livre sem lista de valores
-            valueName = productValue || product.brand || product.name;
-          }
-
-          if (valueName) {
-            const attrValue: Record<string, unknown> = {
-              value_id: valueId,
-            };
-            if (valueId === 0) {
-              attrValue.original_value_name = valueName;
-            } else {
-              attrValue.original_value_name = valueName;
-              attrValue.value_id = valueId;
-            }
-            attributeList.push({
-              attribute_id: attr.attribute_id,
-              attribute_name: attr.attribute_name,
-              attribute_value_list: [attrValue as any],
-            });
-          }
-        }
-      } catch (attrErr) {
-        // Fallback: se não conseguiu buscar atributos da categoria, enviar lista vazia.
-        // IDs de atributos variam por categoria – hardcodar IDs causa rejeição.
-        // A API Shopee retornará erro específico se atributos obrigatórios estiverem faltando.
-        console.warn(
-          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
-          (attrErr as any)?.message || attrErr,
-        );
-      }
-
       // Normalizar URL de imagem (evitar barra dupla)
       const backendUrl = (
         process.env.APP_BACKEND_URL || "http://localhost:3333"
@@ -2155,24 +2052,133 @@ export class ListingUseCase {
         );
       }
 
-      // Upload da imagem ao Shopee (API requer image_id, não URL direta)
-      let shopeeImageId: string;
-      try {
-        console.log(`[ListingUseCase] Uploading image to Shopee: ${imageUrl}`);
-        const uploadResult = await ShopeeApiService.uploadImage(
-          account.accessToken,
-          account.shopId,
-          imageUrl,
+      // ── OPT-1: Executar 3 stages independentes em paralelo ──
+      // categoryAttributes, imageUpload e logisticsChannels não dependem entre si.
+      // Antes: sequencial (5-16s). Agora: paralelo (3-10s, limitado pelo mais lento).
+      console.log(`[ListingUseCase] Uploading image to Shopee: ${imageUrl}`);
+
+      const [categoryAttrsResult, imageUploadResult, logisticsResult] =
+        await Promise.allSettled([
+          // Stage 4: Category Attributes
+          ShopeeApiService.getCategoryAttributes(
+            account.accessToken,
+            account.shopId,
+            numericCategoryId,
+            "pt-BR",
+          ),
+          // Stage 5: Image Upload
+          ShopeeApiService.uploadImage(
+            account.accessToken,
+            account.shopId,
+            imageUrl,
+          ),
+          // Stage 6: Logistics Channels
+          ShopeeApiService.getLogisticsChannelList(
+            account.accessToken,
+            account.shopId,
+          ),
+        ]);
+
+      // ── Processar resultados de Category Attributes (mesmo tratamento de antes) ──
+      if (categoryAttrsResult.status === "fulfilled") {
+        const categoryAttrs = categoryAttrsResult.value;
+        const attrs = categoryAttrs?.attribute_list || [];
+        console.log(
+          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a) => a.is_mandatory).length} mandatory)`,
         );
-        shopeeImageId = uploadResult.image_info.image_id;
+
+        for (const attr of attrs) {
+          const attrNameLower = attr.attribute_name.toLowerCase();
+          const productValue = productAttrValues[attrNameLower];
+
+          if (!productValue && !attr.is_mandatory) continue;
+
+          let valueId = 0;
+          let valueName = productValue || "";
+
+          if (
+            attr.attribute_value_list &&
+            attr.attribute_value_list.length > 0
+          ) {
+            const exactMatch = attr.attribute_value_list.find(
+              (v) =>
+                v.value_name.toLowerCase() ===
+                (productValue || "").toLowerCase(),
+            );
+            if (exactMatch) {
+              valueId = exactMatch.value_id;
+              valueName = exactMatch.value_name;
+            } else if (productValue) {
+              const partialMatch = attr.attribute_value_list.find(
+                (v) =>
+                  v.value_name
+                    .toLowerCase()
+                    .includes((productValue || "").toLowerCase()) ||
+                  (productValue || "")
+                    .toLowerCase()
+                    .includes(v.value_name.toLowerCase()),
+              );
+              if (partialMatch) {
+                valueId = partialMatch.value_id;
+                valueName = partialMatch.value_name;
+              }
+            }
+
+            if (attr.is_mandatory && !valueName) {
+              const otherValue = attr.attribute_value_list.find(
+                (v) =>
+                  v.value_name.toLowerCase() === "outros" ||
+                  v.value_name.toLowerCase() === "other" ||
+                  v.value_name.toLowerCase() === "genérica",
+              );
+              if (otherValue) {
+                valueId = otherValue.value_id;
+                valueName = otherValue.value_name;
+              } else {
+                valueId = attr.attribute_value_list[0].value_id;
+                valueName = attr.attribute_value_list[0].value_name;
+              }
+            }
+          } else if (attr.is_mandatory && !valueName) {
+            valueName = productValue || product.brand || product.name;
+          }
+
+          if (valueName) {
+            const attrValue: Record<string, unknown> = {
+              value_id: valueId,
+            };
+            if (valueId === 0) {
+              attrValue.original_value_name = valueName;
+            } else {
+              attrValue.original_value_name = valueName;
+              attrValue.value_id = valueId;
+            }
+            attributeList.push({
+              attribute_id: attr.attribute_id,
+              attribute_name: attr.attribute_name,
+              attribute_value_list: [attrValue as any],
+            });
+          }
+        }
+      } else {
+        console.warn(
+          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
+          categoryAttrsResult.reason?.message || categoryAttrsResult.reason,
+        );
+      }
+
+      // ── Processar resultado de Image Upload (throw se falhou, como antes) ──
+      let shopeeImageId: string;
+      if (imageUploadResult.status === "fulfilled") {
+        shopeeImageId = imageUploadResult.value.image_info.image_id;
         console.log(`[ListingUseCase] Shopee image uploaded: ${shopeeImageId}`);
-      } catch (imgErr) {
+      } else {
         console.error(
           `[ListingUseCase] Shopee image upload failed:`,
-          (imgErr as any)?.message || imgErr,
+          imageUploadResult.reason?.message || imageUploadResult.reason,
         );
         throw new Error(
-          `Falha ao fazer upload da imagem para Shopee: ${(imgErr as any)?.message || imgErr}`,
+          `Falha ao fazer upload da imagem para Shopee: ${imageUploadResult.reason?.message || imageUploadResult.reason}`,
         );
       }
 
@@ -2183,14 +2189,10 @@ export class ListingUseCase {
       const shopeeCondition: "NEW" | "USED" =
         (product as any).quality === "NOVO" ? "NEW" : "USED";
 
-      // Buscar canais logísticos disponíveis na loja Shopee
+      // ── Processar resultado de Logistics Channels (fallback vazio se falhou) ──
       let logisticInfo: Array<{ logistic_id: number; enabled: boolean }> = [];
-      try {
-        const channels = await ShopeeApiService.getLogisticsChannelList(
-          account.accessToken,
-          account.shopId,
-        );
-        logisticInfo = channels
+      if (logisticsResult.status === "fulfilled") {
+        logisticInfo = logisticsResult.value
           .filter((ch) => ch.enabled)
           .map((ch) => ({
             logistic_id: ch.logistics_channel_id,
@@ -2199,10 +2201,10 @@ export class ListingUseCase {
         console.log(
           `[ListingUseCase] Shopee logistics channels found: ${logisticInfo.length}`,
         );
-      } catch (logErr) {
+      } else {
         console.warn(
           `[ListingUseCase] Failed to fetch Shopee logistics, using empty:`,
-          (logErr as any)?.message || logErr,
+          logisticsResult.reason?.message || logisticsResult.reason,
         );
       }
 

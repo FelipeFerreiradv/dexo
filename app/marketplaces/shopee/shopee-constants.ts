@@ -34,6 +34,7 @@ export const SHOPEE_CONSTANTS = {
 };
 
 // Validar configuração
+let shopeeConfigValidated = false;
 export function validateShopeeConfig(): void {
   const requiredEnvVars = ["SHOPEE_PARTNER_ID", "SHOPEE_PARTNER_KEY"];
 
@@ -50,7 +51,10 @@ export function validateShopeeConfig(): void {
     );
   }
 
-  // debug info
-  console.log("[ShopeeConfig] partnerId", process.env.SHOPEE_PARTNER_ID);
-  console.log("[ShopeeConfig] key length", key.length);
+  // debug info — log only once
+  if (!shopeeConfigValidated) {
+    console.log("[ShopeeConfig] partnerId", process.env.SHOPEE_PARTNER_ID);
+    console.log("[ShopeeConfig] key length", key.length);
+    shopeeConfigValidated = true;
+  }
 }

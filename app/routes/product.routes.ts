@@ -150,7 +150,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           .status(400)
           .send({ error: "Imagem do produto é obrigatória" });
 
-      // Resolver categoria do ML (externalId -> FK) de forma determinística
+      // Resolver categorias ML e Shopee em paralelo (OPT-5)
       let resolvedMlCategoryId: string | undefined;
       let resolvedMlCategoryPath: string | undefined;
       let resolvedMlCategorySource: "auto" | "manual" | "imported" | undefined;
@@ -166,25 +166,66 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         }
       }
 
-      if (mlCategoryExternalToResolve) {
-        // Garante leaf e caminho completo usando ML API
-        const resolved = await CategoryResolutionService.resolveMLCategory({
-          explicitCategoryId: mlCategoryExternalToResolve,
-          validateWithMLAPI: false,
-        });
+      let resolvedShopeeCategoryId: string | undefined;
+      let resolvedShopeeCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedShopeeCategoryChosenAt: Date | undefined;
 
-        const cat = await CategoryRepository.findByExternalId(
-          resolved.externalId,
+      let shopeeCategoryExternalToResolve = sanitized.shopeeCategory;
+      if (!shopeeCategoryExternalToResolve && sanitized.listings?.length) {
+        const firstShopeeListing = sanitized.listings.find(
+          (l: any) => l.platform === "SHOPEE" && !!l.categoryId,
         );
-        if (!cat) {
+        if (firstShopeeListing?.categoryId) {
+          shopeeCategoryExternalToResolve = firstShopeeListing.categoryId;
+        }
+      }
+
+      // Run both category resolutions in parallel
+      const [mlCatResult, shopeeCatResult] = await Promise.all([
+        mlCategoryExternalToResolve
+          ? (async () => {
+              const resolved =
+                await CategoryResolutionService.resolveMLCategory({
+                  explicitCategoryId: mlCategoryExternalToResolve,
+                  validateWithMLAPI: false,
+                });
+              const cat = await CategoryRepository.findByExternalId(
+                resolved.externalId,
+              );
+              return { resolved, cat };
+            })()
+          : Promise.resolve(null),
+        shopeeCategoryExternalToResolve
+          ? (async () => {
+              const externalId =
+                shopeeCategoryExternalToResolve!.startsWith("SHP_")
+                  ? shopeeCategoryExternalToResolve!
+                  : `SHP_${shopeeCategoryExternalToResolve}`;
+              const cat =
+                await CategoryRepository.findByExternalId(externalId);
+              return { externalId, cat };
+            })()
+          : Promise.resolve(null),
+      ]);
+
+      // Process ML result
+      if (mlCatResult) {
+        if (!mlCatResult.cat) {
           return reply.status(400).send({
             error:
               "Categoria do Mercado Livre não está sincronizada. Escolha outra ou sincronize as categorias.",
           });
         }
-        resolvedMlCategoryId = cat.id;
+        resolvedMlCategoryId = mlCatResult.cat.id;
         resolvedMlCategoryPath =
-          resolved.fullPath || cat.fullPath || cat.name || sanitized.category;
+          mlCatResult.resolved.fullPath ||
+          mlCatResult.cat.fullPath ||
+          mlCatResult.cat.name ||
+          sanitized.category;
         const manualSelection = !!mlCategory;
         resolvedMlCategorySource =
           (sanitized.mlCategorySource as any) ||
@@ -204,40 +245,16 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         });
       }
 
-      // Resolver categoria Shopee (externalId -> FK), similar ao ML
-      let resolvedShopeeCategoryId: string | undefined;
-      let resolvedShopeeCategorySource:
-        | "auto"
-        | "manual"
-        | "imported"
-        | undefined;
-      let resolvedShopeeCategoryChosenAt: Date | undefined;
-
-      let shopeeCategoryExternalToResolve = sanitized.shopeeCategory;
-      if (!shopeeCategoryExternalToResolve && sanitized.listings?.length) {
-        const firstShopeeListing = sanitized.listings.find(
-          (l: any) => l.platform === "SHOPEE" && !!l.categoryId,
+      // Process Shopee result
+      if (shopeeCatResult?.cat) {
+        resolvedShopeeCategoryId = shopeeCatResult.externalId.replace(
+          "SHP_",
+          "",
         );
-        if (firstShopeeListing?.categoryId) {
-          shopeeCategoryExternalToResolve = firstShopeeListing.categoryId;
-        }
-      }
-
-      if (shopeeCategoryExternalToResolve) {
-        // Shopee externalIds use prefix "SHP_"
-        const externalId = shopeeCategoryExternalToResolve.startsWith("SHP_")
-          ? shopeeCategoryExternalToResolve
-          : `SHP_${shopeeCategoryExternalToResolve}`;
-        const cat = await CategoryRepository.findByExternalId(externalId);
-        if (cat) {
-          // Store the raw numeric Shopee category ID (e.g. "12345") — not the DB UUID
-          // because createShopeeListing does parseInt() on this value
-          resolvedShopeeCategoryId = externalId.replace("SHP_", "");
-          resolvedShopeeCategorySource =
-            (sanitized.shopeeCategorySource as any) ||
-            (shopeeCategory ? "manual" : "auto");
-          resolvedShopeeCategoryChosenAt = new Date();
-        }
+        resolvedShopeeCategorySource =
+          (sanitized.shopeeCategorySource as any) ||
+          (shopeeCategory ? "manual" : "auto");
+        resolvedShopeeCategoryChosenAt = new Date();
       }
 
       const requiresShopeeCategory = Boolean(
@@ -319,69 +336,81 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             try {
               // Fluxo multi-contas
               if (bgListings.length > 0) {
+                // OPT-2: Paralelizar criação de listings entre plataformas e contas
+                const listingPromises: Promise<void>[] = [];
+
                 for (const lst of bgListings) {
                   if (lst.platform === "MERCADO_LIVRE") {
                     const accounts = (lst.accountIds || []).length
                       ? lst.accountIds
                       : [undefined];
                     for (const accId of accounts) {
-                      try {
-                        // Extrair configurações ML da listagem
-                        const mlSettings =
-                          lst.platform === "MERCADO_LIVRE"
-                            ? {
-                                listingType: lst.listingType,
-                                hasWarranty: lst.hasWarranty,
-                                warrantyUnit: lst.warrantyUnit,
-                                warrantyDuration: lst.warrantyDuration,
-                                itemCondition: lst.itemCondition,
-                                shippingMode: lst.shippingMode,
-                                freeShipping: lst.freeShipping,
-                                localPickup: lst.localPickup,
-                                manufacturingTime: lst.manufacturingTime,
-                              }
-                            : undefined;
-                        await ListingUseCase.createMLListing(
-                          bgUserId,
-                          bgProductId,
-                          lst.categoryId || bgCategoryId,
-                          accId,
-                          mlSettings,
-                        );
-                      } catch (e) {
-                        console.error(
-                          "[product:bg-listing] ML error:",
-                          e instanceof Error ? e.message : e,
-                        );
-                      }
+                      listingPromises.push(
+                        (async () => {
+                          try {
+                            const mlSettings =
+                              lst.platform === "MERCADO_LIVRE"
+                                ? {
+                                    listingType: lst.listingType,
+                                    hasWarranty: lst.hasWarranty,
+                                    warrantyUnit: lst.warrantyUnit,
+                                    warrantyDuration: lst.warrantyDuration,
+                                    itemCondition: lst.itemCondition,
+                                    shippingMode: lst.shippingMode,
+                                    freeShipping: lst.freeShipping,
+                                    localPickup: lst.localPickup,
+                                    manufacturingTime: lst.manufacturingTime,
+                                  }
+                                : undefined;
+                            await ListingUseCase.createMLListing(
+                              bgUserId,
+                              bgProductId,
+                              lst.categoryId || bgCategoryId,
+                              accId,
+                              mlSettings,
+                            );
+                          } catch (e) {
+                            console.error(
+                              "[product:bg-listing] ML error:",
+                              e instanceof Error ? e.message : e,
+                            );
+                          }
+                        })(),
+                      );
                     }
                   } else if (lst.platform === "SHOPEE") {
                     const accounts = (lst.accountIds || []).length
                       ? lst.accountIds
                       : [undefined];
                     for (const accId of accounts) {
-                      try {
-                        const shopeeResult =
-                          await ListingUseCase.createShopeeListing(
-                            bgUserId,
-                            bgProductId,
-                            lst.categoryId,
-                            accId,
-                          );
-                        if (!shopeeResult.success) {
-                          console.error(
-                            `[product:bg-listing] Shopee listing failed: ${shopeeResult.error}`,
-                          );
-                        }
-                      } catch (e) {
-                        console.error(
-                          "[product:bg-listing] Shopee error:",
-                          e instanceof Error ? e.message : e,
-                        );
-                      }
+                      listingPromises.push(
+                        (async () => {
+                          try {
+                            const shopeeResult =
+                              await ListingUseCase.createShopeeListing(
+                                bgUserId,
+                                bgProductId,
+                                lst.categoryId,
+                                accId,
+                              );
+                            if (!shopeeResult.success) {
+                              console.error(
+                                `[product:bg-listing] Shopee listing failed: ${shopeeResult.error}`,
+                              );
+                            }
+                          } catch (e) {
+                            console.error(
+                              "[product:bg-listing] Shopee error:",
+                              e instanceof Error ? e.message : e,
+                            );
+                          }
+                        })(),
+                      );
                     }
                   }
                 }
+
+                await Promise.allSettled(listingPromises);
               }
 
               // Fluxo legado

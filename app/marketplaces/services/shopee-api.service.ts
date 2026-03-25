@@ -1,4 +1,7 @@
 import axios from "axios";
+import FormData from "form-data";
+import { readFile } from "fs/promises";
+import { join, basename } from "path";
 import {
   SHOPEE_CONSTANTS,
   validateShopeeConfig,
@@ -25,6 +28,20 @@ import {
  * 4. Sincronizar estoque e preço
  */
 export class ShopeeApiService {
+  // OPT-3: Cache de logistics channels por shopId (TTL 15 min)
+  private static logisticsCache = new Map<
+    number,
+    {
+      data: Array<{
+        logistics_channel_id: number;
+        logistics_channel_name: string;
+        enabled: boolean;
+      }>;
+      fetchedAt: number;
+    }
+  >();
+  private static readonly LOGISTICS_CACHE_TTL_MS = 15 * 60 * 1000;
+
   /**
    * Valida configuração antes de fazer requests
    */
@@ -272,17 +289,41 @@ export class ShopeeApiService {
     url.searchParams.set("shop_id", shopId.toString());
     url.searchParams.set("sign", signature);
 
-    // 1. Baixar a imagem da URL
-    const imageResponse = await axios.get(imageUrl, {
-      responseType: "arraybuffer",
-      timeout: 15000,
-    });
-    const imageBuffer = Buffer.from(imageResponse.data);
-    const contentType = imageResponse.headers["content-type"] || "image/jpeg";
+    // 1. Baixar a imagem da URL (OPT-8: leitura local direta quando possível)
+    const appBackendUrl = (
+      process.env.APP_BACKEND_URL || "http://localhost:3333"
+    ).replace(/\/+$/, "");
+    let imageBuffer: Buffer;
+    let contentType: string;
+
+    if (imageUrl.startsWith(appBackendUrl + "/uploads/")) {
+      // Imagem local — ler direto do disco, sem HTTP roundtrip
+      const filename = basename(new URL(imageUrl).pathname);
+      const localPath = join(process.cwd(), "public", "uploads", filename);
+      try {
+        imageBuffer = await readFile(localPath);
+        contentType = filename.endsWith(".png") ? "image/png" : "image/jpeg";
+      } catch {
+        // Fallback: se arquivo não encontrado no disco, baixar via HTTP
+        const imageResponse = await axios.get(imageUrl, {
+          responseType: "arraybuffer",
+          timeout: 15000,
+        });
+        imageBuffer = Buffer.from(imageResponse.data);
+        contentType = imageResponse.headers["content-type"] || "image/jpeg";
+      }
+    } else {
+      // URL externa — baixar via HTTP como antes
+      const imageResponse = await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+        timeout: 15000,
+      });
+      imageBuffer = Buffer.from(imageResponse.data);
+      contentType = imageResponse.headers["content-type"] || "image/jpeg";
+    }
     const ext = contentType.includes("png") ? "png" : "jpg";
 
     // 2. Criar FormData com a imagem (multipart/form-data)
-    const FormData = (await import("form-data")).default;
     const form = new FormData();
     form.append("image", imageBuffer, {
       filename: `upload.${ext}`,
@@ -324,6 +365,12 @@ export class ShopeeApiService {
       enabled: boolean;
     }>
   > {
+    // OPT-3: Cache por shopId (TTL 15 min)
+    const cached = this.logisticsCache.get(shopId);
+    if (cached && Date.now() - cached.fetchedAt < this.LOGISTICS_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
     const apiPath = "/api/v2/logistics/get_channel_list";
 
     const response = await this.makeAuthenticatedRequest<
@@ -340,7 +387,9 @@ export class ShopeeApiService {
       throw new Error(`Erro ao buscar canais logísticos: ${response.message}`);
     }
 
-    return response.response?.logistics_channel_list ?? [];
+    const result = response.response?.logistics_channel_list ?? [];
+    this.logisticsCache.set(shopId, { data: result, fetchedAt: Date.now() });
+    return result;
   }
 
   /**

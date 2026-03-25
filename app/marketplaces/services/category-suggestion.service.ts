@@ -35,16 +35,14 @@ type CategoryEntry = Awaited<
 >[number];
 
 export class CategorySuggestionService {
-  private static aliasCache: {
-    loadedAt: number;
-    siteId: string;
-    items: AliasEntry[];
-  } | null = null;
-  private static categoryCache: {
-    loadedAt: number;
-    siteId: string;
-    items: CategoryEntry[];
-  } | null = null;
+  private static aliasCacheMap = new Map<
+    string,
+    { loadedAt: number; items: AliasEntry[] }
+  >();
+  private static categoryCacheMap = new Map<
+    string,
+    { loadedAt: number; items: CategoryEntry[] }
+  >();
   private static readonly CACHE_MS = 5 * 60 * 1000;
 
   private static normalize(text?: string): string {
@@ -111,28 +109,22 @@ export class CategorySuggestionService {
   }
 
   private static async loadAliases(siteId: string) {
-    if (
-      this.aliasCache &&
-      this.aliasCache.siteId === siteId &&
-      Date.now() - this.aliasCache.loadedAt < this.CACHE_MS
-    ) {
-      return this.aliasCache.items;
+    const cached = this.aliasCacheMap.get(siteId);
+    if (cached && Date.now() - cached.loadedAt < this.CACHE_MS) {
+      return cached.items;
     }
     const items = await CategoryAliasRepository.listWithCategory(siteId);
-    this.aliasCache = { siteId, loadedAt: Date.now(), items };
+    this.aliasCacheMap.set(siteId, { loadedAt: Date.now(), items });
     return items;
   }
 
   private static async loadCategories(siteId: string) {
-    if (
-      this.categoryCache &&
-      this.categoryCache.siteId === siteId &&
-      Date.now() - this.categoryCache.loadedAt < this.CACHE_MS
-    ) {
-      return this.categoryCache.items;
+    const cached = this.categoryCacheMap.get(siteId);
+    if (cached && Date.now() - cached.loadedAt < this.CACHE_MS) {
+      return cached.items;
     }
     const items = await CategoryRepository.listWithParents(siteId);
-    this.categoryCache = { siteId, loadedAt: Date.now(), items };
+    this.categoryCacheMap.set(siteId, { loadedAt: Date.now(), items });
     return items;
   }
 
