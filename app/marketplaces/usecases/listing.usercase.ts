@@ -2243,7 +2243,7 @@ export class ListingUseCase {
         );
       }
 
-      const payload: ShopeeItemCreatePayload = {
+      let payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
@@ -2345,6 +2345,34 @@ export class ListingUseCase {
                 refreshed.expire_in,
               ),
             });
+
+            // Re-fetch logistics with fresh token if payload has no logistics
+            if (!payload.logistic_info || payload.logistic_info.length === 0) {
+              try {
+                const freshLogistics =
+                  await ShopeeApiService.getLogisticsChannelList(
+                    refreshed.access_token,
+                    account.shopId,
+                  );
+                const freshLogisticInfo = freshLogistics
+                  .filter((ch) => ch.enabled)
+                  .map((ch) => ({
+                    logistic_id: ch.logistics_channel_id,
+                    enabled: true as const,
+                  }));
+                if (freshLogisticInfo.length > 0) {
+                  payload.logistic_info = freshLogisticInfo;
+                  console.log(
+                    `[ListingUseCase] Shopee logistics re-fetched on retry: ${freshLogisticInfo.length} channels`,
+                  );
+                }
+              } catch (logErr) {
+                console.warn(
+                  `[ListingUseCase] Failed to re-fetch logistics on retry:`,
+                  (logErr as any)?.message || logErr,
+                );
+              }
+            }
 
             shopeeItem = await ShopeeApiService.createItem(
               refreshed.access_token,

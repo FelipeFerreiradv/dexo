@@ -454,6 +454,26 @@ export class OrderUseCase {
           itemsTotal: shopeeOrder.item_list.length,
         });
       } catch (error) {
+        // Handle concurrent duplicate (P2002) gracefully as "already_exists"
+        const isPrismaUniqueError =
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as any).code === "P2002";
+        if (isPrismaUniqueError) {
+          result.alreadyExists++;
+          result.results.push({
+            success: true,
+            orderId: null,
+            externalOrderId,
+            status: "already_exists",
+            message: "Pedido já importado (concurrent)",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: shopeeOrder.item_list.length,
+          });
+          continue;
+        }
         console.error("[OrderUseCase] Erro ao importar pedido Shopee:", error);
         result.errors++;
         result.results.push({
@@ -567,6 +587,24 @@ export class OrderUseCase {
         itemsTotal: mlOrder.order_items.length,
       };
     } catch (error) {
+      // Handle concurrent duplicate (P2002) gracefully as "already_exists"
+      const isPrismaUniqueError =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as any).code === "P2002";
+      if (isPrismaUniqueError) {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          status: "already_exists",
+          message: "Pedido já importado (concurrent)",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: mlOrder.order_items.length,
+        };
+      }
       console.error(
         `[OrderUseCase] Error processing order ${externalOrderId}:`,
         error,
