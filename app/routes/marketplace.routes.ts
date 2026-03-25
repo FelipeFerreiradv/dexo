@@ -144,8 +144,38 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
       // --- Webhook notification do Mercado Livre (resource + topic + user_id) ---
       if (body.resource || body.topic || body.user_id) {
-        // Aceitar webhook silenciosamente (ML espera 200 para parar de reenviar)
-        return reply.status(200).send({ received: true });
+        // Retornar 200 imediatamente (ML espera resposta rápida para parar de reenviar)
+        reply.status(200).send({ received: true });
+
+        // Processar webhook em background (fire-and-forget)
+        setImmediate(async () => {
+          try {
+            if (WebhookUseCase.validateWebhookPayload(body)) {
+              const result =
+                await WebhookUseCase.processOrderWebhook(body);
+              if (result.success) {
+                console.log(
+                  `[ML Webhook] Processado com sucesso: ${result.action} (order: ${result.orderId})`,
+                );
+              } else {
+                console.warn(
+                  `[ML Webhook] Falha no processamento: ${result.error}`,
+                );
+              }
+            } else {
+              console.log(
+                `[ML Webhook] Payload ignorado (topic: ${body.topic || "unknown"})`,
+              );
+            }
+          } catch (err) {
+            console.error(
+              "[ML Webhook] Erro no processamento em background:",
+              err instanceof Error ? err.message : err,
+            );
+          }
+        });
+
+        return reply;
       }
 
       // --- OAuth callback (code + state) ---
@@ -1118,10 +1148,73 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   );
 
   /**
+   * POST /marketplace/shopee/webhook
+   * Recebe push notifications da Shopee (configurado no Partner Portal)
+   * Sem auth middleware - Shopee envia diretamente
+   * Códigos: 4 = order status update, 3 = order tracking update
+   */
+  app.post(
+    "/shopee/webhook",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body || {}) as Record<string, any>;
+
+      // Retornar 200 imediatamente (Shopee espera resposta rápida)
+      reply.status(200).send({ received: true });
+
+      // Processar em background
+      setImmediate(async () => {
+        try {
+          const shopId = body.shop_id as number | undefined;
+          const code = body.code as number | undefined;
+
+          if (!shopId || !code) {
+            console.log(
+              "[Shopee Webhook] Payload sem shop_id ou code, ignorando",
+            );
+            return;
+          }
+
+          // Códigos de pedido: 3 = order tracking, 4 = order status
+          if (code !== 3 && code !== 4) {
+            console.log(
+              `[Shopee Webhook] Código ${code} ignorado (não é pedido)`,
+            );
+            return;
+          }
+
+          console.log(
+            `[Shopee Webhook] Recebido code=${code}, shop_id=${shopId}, order=${body.data?.ordersn || "N/A"}`,
+          );
+
+          const result =
+            await WebhookUseCase.processShopeeOrderWebhook(body as any);
+
+          if (result.success) {
+            console.log(
+              `[Shopee Webhook] Processado com sucesso: ${result.action}`,
+            );
+          } else {
+            console.warn(
+              `[Shopee Webhook] Falha no processamento: ${result.error}`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            "[Shopee Webhook] Erro no processamento em background:",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      });
+
+      return reply;
+    },
+  );
+
+  /**
    * POST /marketplace/shopee/auth
-   * Inicia fluxo de autenticaÃ§Ã£o com Shopee
-   * Retorna URL para redirecionamento do usuÃ¡rio
-   * Requer autenticaÃ§Ã£o - userId vem da sessÃ£o
+   * Inicia fluxo de autenticação com Shopee
+   * Retorna URL para redirecionamento do usuário
+   * Requer autenticação - userId vem da sessão
    */
   app.post<{
     Reply: { authUrl: string; state: string };
@@ -1168,24 +1261,42 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   }>(
     "/shopee/callback",
     async (request: FastifyRequest, reply: FastifyReply) => {
+      // Detectar se é um redirect do browser (vindo do Shopee) ou chamada da API (fetch)
+      const acceptHeader = ((request.headers.accept as string) || "").toString();
+      const isBrowserRedirect = acceptHeader.includes("text/html");
+      const frontendUrl =
+        process.env.NEXTAUTH_URL ||
+        process.env.CORS_ORIGIN ||
+        "http://localhost:3000";
+
       try {
         const code = (request.query as any).code as string | undefined;
         const shopIdStr = (request.query as any).shop_id as string | undefined;
         const state = (request.query as any).state as string | undefined;
 
-        // Validar parÃ¢metros obrigatÃ³rios
+        // Validar parâmetros obrigatórios
         if (!code || !shopIdStr) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/shopee/callback?result=error&message=${encodeURIComponent("code e shop_id são obrigatórios")}`,
+            );
+          }
           return reply.status(400).send({
-            error: "ParÃ¢metros invÃ¡lidos",
-            message: "code e shop_id sÃ£o obrigatÃ³rios",
+            error: "Parâmetros inválidos",
+            message: "code e shop_id são obrigatórios",
           });
         }
 
         const shopId = parseInt(shopIdStr);
         if (isNaN(shopId)) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/shopee/callback?result=error&message=${encodeURIComponent("shop_id deve ser um número válido")}`,
+            );
+          }
           return reply.status(400).send({
-            error: "ParÃ¢metros invÃ¡lidos",
-            message: "shop_id deve ser um nÃºmero vÃ¡lido",
+            error: "Parâmetros inválidos",
+            message: "shop_id deve ser um número válido",
           });
         }
 
@@ -1202,6 +1313,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
             "query=",
             JSON.stringify(request.query),
           );
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/shopee/callback?result=error&message=${encodeURIComponent("state (userId) é obrigatório para processar callback Shopee")}`,
+            );
+          }
           return reply.status(400).send({
             error: "Parâmetros inválidos",
             message:
@@ -1223,6 +1339,14 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           userId,
         });
 
+        // Se veio do browser (redirect do Shopee), redirecionar para a página de callback do frontend
+        // para que o postMessage funcione e o popup feche corretamente
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/shopee/callback?result=success`,
+          );
+        }
+
         return reply.send({
           success: true,
           message: "Conta Shopee conectada com sucesso",
@@ -1235,6 +1359,13 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           },
         });
       } catch (error) {
+        if (isBrowserRedirect) {
+          const errorMsg =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return reply.redirect(
+            `${frontendUrl}/integracoes/shopee/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+          );
+        }
         return reply.status(500).send({
           error: "Erro ao processar callback Shopee",
           message: error instanceof Error ? error.message : "Erro desconhecido",

@@ -15,7 +15,10 @@ import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { orderRepository } from "@/app/repositories/order.repository";
 import type { MLOrderDetails, MLOrderItem } from "../types/ml-order.types";
-import type { ShopeeOrderDetail, ShopeeOrderItem } from "../types/shopee-api.types";
+import type {
+  ShopeeOrderDetail,
+  ShopeeOrderItem,
+} from "../types/shopee-api.types";
 import type {
   OrderCreate,
   OrderItemCreate,
@@ -162,7 +165,9 @@ export class OrderUseCase {
   ): Promise<ImportOrdersResult> {
     const account = await MarketplaceRepository.findById(marketplaceAccountId);
     if (!account || !account.accessToken || !account.externalUserId) {
-      throw new Error("Conta do Mercado Livre não conectada ou sem credenciais");
+      throw new Error(
+        "Conta do Mercado Livre não conectada ou sem credenciais",
+      );
     }
 
     const result: ImportOrdersResult = {
@@ -235,14 +240,19 @@ export class OrderUseCase {
     days: number = 3,
     deductStock: boolean = true,
   ): Promise<ImportOrdersResult> {
-    const account = await MarketplaceRepository.findFirstActiveByUserAndPlatform(
-      userId,
-      Platform.SHOPEE,
-    );
+    const account =
+      await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+        userId,
+        Platform.SHOPEE,
+      );
     if (!account || !account.accessToken || !account.shopId) {
       throw new Error("Conta do Shopee não conectada ou sem credenciais");
     }
-    return this.importRecentShopeeOrdersForAccount(account.id, days, deductStock);
+    return this.importRecentShopeeOrdersForAccount(
+      account.id,
+      days,
+      deductStock,
+    );
   }
 
   /**
@@ -358,7 +368,9 @@ export class OrderUseCase {
           externalOrderId,
           status: "error",
           message:
-            error instanceof Error ? error.message : "Erro desconhecido ao importar pedido Shopee",
+            error instanceof Error
+              ? error.message
+              : "Erro desconhecido ao importar pedido Shopee",
           stockDeducted: false,
           itemsLinked: 0,
           itemsTotal: shopeeOrder.item_list.length,
@@ -605,7 +617,9 @@ export class OrderUseCase {
       });
 
       if (!product) {
-        console.log(`[OrderUseCase] Produto com SKU "${sku}" (Shopee) não encontrado`);
+        console.log(
+          `[OrderUseCase] Produto com SKU "${sku}" (Shopee) não encontrado`,
+        );
         continue;
       }
 
@@ -770,6 +784,8 @@ export class OrderUseCase {
     userId: string,
     options?: {
       status?: string;
+      platform?: string;
+      search?: string;
       page?: number;
       limit?: number;
     },
@@ -777,6 +793,8 @@ export class OrderUseCase {
     return orderRepository.findAll({
       userId,
       status: options?.status as any,
+      platform: options?.platform,
+      search: options?.search,
       page: options?.page,
       limit: options?.limit,
     });

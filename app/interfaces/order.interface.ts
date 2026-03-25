@@ -83,6 +83,7 @@ export interface OrderUpdate {
 export interface OrderFindOptions {
   marketplaceAccountId?: string;
   userId?: string;
+  platform?: string;
   status?: OrderStatus;
   search?: string;
   page?: number;

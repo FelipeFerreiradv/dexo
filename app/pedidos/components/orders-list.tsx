@@ -10,6 +10,13 @@ import { getApiBaseUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -72,20 +79,16 @@ export function OrdersList() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
+  const [platformFilter, setPlatformFilter] = useState<string>("ALL");
 
   useEffect(() => {
-    const timer = setTimeout(
-      () => setDebouncedSearch(searchInput.trim()),
-      250,
-    );
+    const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
   useEffect(() => {
-    setPagination((prev) =>
-      prev.page === 1 ? prev : { ...prev, page: 1 },
-    );
-  }, [debouncedSearch]);
+    setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
+  }, [debouncedSearch, platformFilter]);
 
   useEffect(() => {
     const param = searchParams?.get("search") ?? "";
@@ -121,6 +124,9 @@ export function OrdersList() {
       if (term.length >= 2) {
         params.set("search", term);
       }
+      if (platformFilter && platformFilter !== "ALL") {
+        params.set("platform", platformFilter);
+      }
 
       const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/orders?${params}`, {
@@ -145,19 +151,27 @@ export function OrdersList() {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedSearch, pagination.limit, pagination.page, session, showToast]);
+  }, [debouncedSearch, pagination.limit, pagination.page, platformFilter, session, showToast]);
 
   const fetchStats = useCallback(async () => {
     if (!session?.user?.email) {
       return;
     }
     try {
-      const response = await fetch(`${getApiBaseUrl()}/orders/stats`, {
-        headers: {
-          "Content-Type": "application/json",
-          email: session.user.email,
+      const statsParams = new URLSearchParams();
+      if (platformFilter && platformFilter !== "ALL") {
+        statsParams.set("platform", platformFilter);
+      }
+      const qs = statsParams.toString();
+      const response = await fetch(
+        `${getApiBaseUrl()}/orders/stats${qs ? `?${qs}` : ""}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
         },
-      });
+      );
       if (!response.ok) throw new Error("Erro ao buscar estatísticas");
 
       const data = await response.json();
@@ -180,7 +194,7 @@ export function OrdersList() {
     } catch (error) {
       console.error("Erro ao buscar estatísticas:", error);
     }
-  }, [session]);
+  }, [session, platformFilter]);
 
   const handleImportOrders = async () => {
     if (!session?.user?.email) {
@@ -195,13 +209,16 @@ export function OrdersList() {
           "Content-Type": "application/json",
           email: session.user.email,
         },
-        body: JSON.stringify({ deductStock: true }),
+        body: JSON.stringify({ deductStock: true, platform: "ALL" }),
       });
 
       if (!response.ok) throw new Error("Erro ao importar pedidos");
 
       const data = await response.json();
-      showToast(`Importados ${data.imported} pedidos`, "success");
+      showToast(
+        `Importados ${data.imported} pedidos de todos os marketplaces`,
+        "success",
+      );
       fetchOrders();
       fetchStats();
     } catch (error) {
@@ -229,6 +246,17 @@ export function OrdersList() {
       CANCELLED: "destructive",
     };
     return <Badge variant={variants[status] || "default"}>{status}</Badge>;
+  };
+
+  const getPlatformLabel = (platform: string) => {
+    switch (platform) {
+      case "MERCADO_LIVRE":
+        return "Mercado Livre";
+      case "SHOPEE":
+        return "Shopee";
+      default:
+        return platform;
+    }
   };
 
   useEffect(() => {
@@ -337,6 +365,16 @@ export function OrdersList() {
               className="h-10 w-[300px] rounded-full border border-border/70 bg-muted/20 pl-8"
             />
           </div>
+          <Select value={platformFilter} onValueChange={setPlatformFilter}>
+            <SelectTrigger className="h-10 w-[180px]">
+              <SelectValue placeholder="Plataforma" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Todos</SelectItem>
+              <SelectItem value="MERCADO_LIVRE">Mercado Livre</SelectItem>
+              <SelectItem value="SHOPEE">Shopee</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <Button onClick={handleImportOrders} disabled={isImporting}>
           {isImporting ? "Importando..." : "Importar Pedidos"}
@@ -360,6 +398,7 @@ export function OrdersList() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>ID Externo</TableHead>
+                    <TableHead>Plataforma</TableHead>
                     <TableHead>Cliente</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Total</TableHead>
@@ -372,6 +411,22 @@ export function OrdersList() {
                     <TableRow key={order.id}>
                       <TableCell className="font-mono text-sm">
                         {order.externalOrderId}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={
+                            order.marketplaceAccount?.platform === "MERCADO_LIVRE"
+                              ? "border-yellow-500/50 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400"
+                              : order.marketplaceAccount?.platform === "SHOPEE"
+                                ? "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-400"
+                                : ""
+                          }
+                        >
+                          {getPlatformLabel(
+                            order.marketplaceAccount?.platform || "—",
+                          )}
+                        </Badge>
                       </TableCell>
                       <TableCell>{order.customerName || "N/A"}</TableCell>
                       <TableCell>{getStatusBadge(order.status)}</TableCell>

@@ -271,7 +271,7 @@ class OrderRepositoryPrisma implements OrderRepository {
     // Construir filtros
     const where: {
       marketplaceAccountId?: string;
-      marketplaceAccount?: { userId?: string };
+      marketplaceAccount?: { userId?: string; platform?: any };
       status?: PrismaOrderStatus;
       createdAt?: {
         gte?: Date;
@@ -287,6 +287,13 @@ class OrderRepositoryPrisma implements OrderRepository {
       where.marketplaceAccountId = options.marketplaceAccountId;
     } else if (options?.userId) {
       where.marketplaceAccount = { userId: options.userId };
+    }
+
+    if (options?.platform) {
+      where.marketplaceAccount = {
+        ...where.marketplaceAccount,
+        platform: options.platform,
+      };
     }
 
     if (options?.status) {

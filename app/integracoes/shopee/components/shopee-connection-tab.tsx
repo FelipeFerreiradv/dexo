@@ -49,10 +49,18 @@ export function ShopeeConnectionTab() {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Verifica status de conexão
+  // Verifica status de conexão (com proteção contra múltiplas chamadas simultâneas)
   const fetchStatus = useCallback(async () => {
     if (!session?.user?.email) return;
 
+    if (fetchStatus.isRunning) {
+      console.log(
+        "[Shopee Marketplace] fetchStatus já em execução, ignorando chamada duplicada",
+      );
+      return;
+    }
+
+    fetchStatus.isRunning = true;
     setIsLoading(true);
     setError(null);
 
@@ -87,6 +95,7 @@ export function ShopeeConnectionTab() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");
     } finally {
+      fetchStatus.isRunning = false;
       setIsLoading(false);
     }
   }, [session?.user?.email]);
@@ -136,24 +145,31 @@ export function ShopeeConnectionTab() {
       }
 
       // 3. Monitorar popup e aguardar callback
+      // O postMessage do callback page é o mecanismo principal (vide useEffect abaixo)
+      // Este polling é o fallback seguro
       const checkClosed = setInterval(() => {
         if (popup.closed) {
           clearInterval(checkClosed);
-          // Recarregar status após fechar popup
-          fetchStatus();
+          clearTimeout(hardTimeout);
           setIsConnecting(false);
+          console.log("[Shopee OAuth] Popup fechado, atualizando status...");
+          // Delay para garantir que o backend persistiu a conta
+          setTimeout(() => {
+            fetchStatus.isRunning = false;
+            fetchStatus();
+          }, 1000);
         }
-      }, 1000);
+      }, 500);
 
-      // Timeout de 5 minutos
-      setTimeout(
+      // Hard timeout de 5 minutos (segurança)
+      const hardTimeout = setTimeout(
         () => {
+          clearInterval(checkClosed);
           if (!popup.closed) {
             popup.close();
-            clearInterval(checkClosed);
-            setError("Timeout na autenticação. Tente novamente.");
-            setIsConnecting(false);
           }
+          setIsConnecting(false);
+          setError("Timeout na autenticação. Tente novamente.");
         },
         5 * 60 * 1000,
       );
@@ -187,8 +203,8 @@ export function ShopeeConnectionTab() {
           throw new Error(data.message || "Erro ao desconectar");
         }
 
-      // Recarregar status
-      await fetchStatus();
+        // Recarregar status
+        await fetchStatus();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Erro ao desconectar");
       } finally {
@@ -201,6 +217,68 @@ export function ShopeeConnectionTab() {
   // Carregar status inicial
   useEffect(() => {
     fetchStatus();
+  }, [fetchStatus]);
+
+  // Listener para mensagens do popup (callback success) - MECANISMO PRINCIPAL
+  useEffect(() => {
+    let isMountedRef = true;
+
+    const handleMessage = (event: MessageEvent) => {
+      if (typeof window !== "undefined") {
+        const isValidOrigin =
+          event.origin === window.location.origin ||
+          event.origin.includes("localhost");
+
+        if (!isValidOrigin) {
+          return;
+        }
+      }
+
+      if (event.data?.type === "SHOPEE_OAUTH_SUCCESS") {
+        if (!isMountedRef) return;
+
+        console.log("[Shopee OAuth] Sucesso confirmado via postMessage");
+        setIsConnecting(false);
+
+        // Retry fetchStatus com delays crescentes caso o status ainda não reflita a conexão
+        const retryFetch = async (attempt: number) => {
+          if (!isMountedRef) return;
+          fetchStatus.isRunning = false;
+          await fetchStatus();
+          setTimeout(() => {
+            if (!isMountedRef) return;
+            setStatus((currentStatus) => {
+              if (!currentStatus?.connected && attempt < 3) {
+                console.log(
+                  `[Shopee OAuth] Retentativa ${attempt + 1} de fetchStatus...`,
+                );
+                retryFetch(attempt + 1);
+              }
+              return currentStatus;
+            });
+          }, 1500);
+        };
+
+        // Espera inicial para o backend persistir a conta
+        setTimeout(() => retryFetch(0), 800);
+      } else if (event.data?.type === "SHOPEE_OAUTH_ERROR") {
+        if (!isMountedRef) return;
+
+        console.error(
+          "[Shopee OAuth] Erro confirmado via postMessage:",
+          event.data.message,
+        );
+        setIsConnecting(false);
+        setError(event.data.message || "Erro na autenticação");
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+
+    return () => {
+      isMountedRef = false;
+      window.removeEventListener("message", handleMessage);
+    };
   }, [fetchStatus]);
 
   if (isLoading) {
@@ -287,39 +365,58 @@ export function ShopeeConnectionTab() {
                 )}
               </div>
 
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={isDisconnecting}>
-                    {isDisconnecting ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Desconectando...
-                      </>
-                    ) : (
-                      <>
-                        <Unplug className="mr-2 h-4 w-4" />
-                        Desconectar todas
-                      </>
-                    )}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Tem certeza que deseja desconectar todas as contas do Shopee?
-                      Isso removerá as vinculações e você precisará reconectar para
-                      continuar sincronizando.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => handleDisconnect()}>
-                      Desconectar tudo
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleConnect}
+                  disabled={isConnecting || isDisconnecting}
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Conectando...
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Adicionar nova conta
+                    </>
+                  )}
+                </Button>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" disabled={isDisconnecting}>
+                      {isDisconnecting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Desconectando...
+                        </>
+                      ) : (
+                        <>
+                          <Unplug className="mr-2 h-4 w-4" />
+                          Desconectar todas
+                        </>
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Tem certeza que deseja desconectar todas as contas do
+                        Shopee? Isso removerá as vinculações e você precisará
+                        reconectar para continuar sincronizando.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => handleDisconnect()}>
+                        Desconectar tudo
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">

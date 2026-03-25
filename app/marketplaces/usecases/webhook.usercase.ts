@@ -4,16 +4,16 @@ import { MLOrderWebhookPayload } from "../types/ml-order.types";
 import { OrderUseCase } from "./order.usercase";
 
 /**
- * Use Case para processar webhooks do Mercado Livre
+ * Use Case para processar webhooks do Mercado Livre e Shopee
  * Responsável por:
  * 1. Validar webhook payload
- * 2. Identificar usuário através da conta ML
+ * 2. Identificar usuário através da conta do marketplace
  * 3. Processar notificações de pedidos automaticamente
  */
 export class WebhookUseCase {
   /**
    * Processa webhook de pedido do Mercado Livre
-   * Identifica o usuário através do user_id do ML e importa/sync pedidos automaticamente
+   * Identifica a conta ML via user_id e importa pedidos recentes da conta
    */
   static async processOrderWebhook(payload: MLOrderWebhookPayload): Promise<{
     success: boolean;
@@ -55,14 +55,13 @@ export class WebhookUseCase {
         };
       }
 
-      // Importar pedido automaticamente
-      const importResult = await OrderUseCase.importRecentOrders(
-        account.userId,
+      // Importar pedidos recentes da conta específica (1 dia, com desconto de estoque)
+      const importResult = await OrderUseCase.importRecentOrdersForAccount(
+        account.id,
         1,
         true,
-      ); // 1 dia, com desconto de estoque
+      );
 
-      // Verificar se houve erros na importação
       if (importResult.errors > 0) {
         return {
           success: false,
@@ -72,7 +71,6 @@ export class WebhookUseCase {
         };
       }
 
-      // Verificar se algum pedido foi importado
       if (importResult.imported === 0) {
         return {
           success: true,
@@ -100,7 +98,73 @@ export class WebhookUseCase {
   }
 
   /**
-   * Valida se o payload do webhook é válido
+   * Processa webhook de pedido da Shopee
+   * Identifica a conta Shopee via shop_id e importa pedidos recentes
+   */
+  static async processShopeeOrderWebhook(payload: {
+    shop_id: number;
+    code: number;
+    timestamp: number;
+    data?: { ordersn?: string; status?: string };
+  }): Promise<{
+    success: boolean;
+    accountId?: string;
+    action?: string;
+    error?: string;
+  }> {
+    try {
+      const account = await MarketplaceRepository.findByShopId(payload.shop_id);
+
+      if (!account) {
+        return {
+          success: false,
+          error: `Conta Shopee não encontrada para shop_id: ${payload.shop_id}`,
+        };
+      }
+
+      if (account.status !== "ACTIVE") {
+        return {
+          success: false,
+          error: `Conta Shopee não está ativa (status: ${account.status})`,
+        };
+      }
+
+      const importResult =
+        await OrderUseCase.importRecentShopeeOrdersForAccount(
+          account.id,
+          1,
+          true,
+        );
+
+      if (importResult.errors > 0) {
+        return {
+          success: false,
+          accountId: account.id,
+          error: `Erro ao importar pedidos Shopee: ${importResult.errors} erros`,
+        };
+      }
+
+      return {
+        success: true,
+        accountId: account.id,
+        action:
+          importResult.imported > 0
+            ? `imported_${importResult.imported}_orders`
+            : "no_new_orders",
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido no processamento do webhook Shopee",
+      };
+    }
+  }
+
+  /**
+   * Valida se o payload do webhook ML é válido
    */
   static validateWebhookPayload(
     payload: any,
@@ -109,7 +173,6 @@ export class WebhookUseCase {
       return false;
     }
 
-    // Verificar campos obrigatórios
     if (
       !payload.resource ||
       !payload.user_id ||
@@ -122,12 +185,10 @@ export class WebhookUseCase {
       return false;
     }
 
-    // Verificar se é um webhook de orders_v2
     if (payload.topic !== "orders_v2") {
       return false;
     }
 
-    // Verificar formato do resource
     if (!/^\/orders\/\d+$/.test(payload.resource)) {
       return false;
     }

@@ -270,6 +270,26 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Busca conta Shopee ativa apenas por shopId (usado em webhooks)
+   */
+  static async findByShopId(shopId: number) {
+    try {
+      const account = await prisma.marketplaceAccount.findFirst({
+        where: {
+          shopId,
+          platform: Platform.SHOPEE,
+          status: AccountStatus.ACTIVE,
+        },
+      });
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao buscar conta Shopee por shopId (webhook): ${error}`,
+      );
+    }
+  }
+
+  /**
    * Deleta conta de marketplace e todos os registros relacionados
    */
   static async deleteAccount(id: string): Promise<void> {

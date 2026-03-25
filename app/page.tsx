@@ -158,6 +158,22 @@ async function getProductMetrics(userEmail: string): Promise<
   }
 }
 
+async function getAccountStats(
+  userEmail: string,
+): Promise<Record<string, { revenue: number; orders: number }>> {
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/dashboard/account-stats`, {
+      cache: "no-store",
+      headers: { email: userEmail },
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data.accountStats || {};
+  } catch {
+    return {};
+  }
+}
+
 function formatTimeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -212,14 +228,21 @@ export default async function Home() {
     redirect("/login");
   }
 
-  const [stats, integrations, ordersOverTime, stockChanges, productMetrics] =
-    await Promise.all([
-      getDashboardStats(userSession.user?.email || ""),
-      getMarketplaceIntegrations(userSession.user?.email || ""),
-      getOrdersOverTime(userSession.user?.email || ""),
-      getStockChanges(userSession.user?.email || ""),
-      getProductMetrics(userSession.user?.email || ""),
-    ]);
+  const [
+    stats,
+    integrations,
+    ordersOverTime,
+    stockChanges,
+    productMetrics,
+    accountStats,
+  ] = await Promise.all([
+    getDashboardStats(userSession.user?.email || ""),
+    getMarketplaceIntegrations(userSession.user?.email || ""),
+    getOrdersOverTime(userSession.user?.email || ""),
+    getStockChanges(userSession.user?.email || ""),
+    getProductMetrics(userSession.user?.email || ""),
+    getAccountStats(userSession.user?.email || ""),
+  ]);
 
   const activeIntegrations = integrations.filter((i) => i.status === "ACTIVE");
   const sortedOrders = [...ordersOverTime].sort(
@@ -297,10 +320,11 @@ export default async function Home() {
   ];
 
   const heatmapData = buildHeatmapData(sortedOrders);
-  const accountStats = buildAccountSales(
+  const accountSales = buildAccountSales(
     integrations,
     totalRevenue,
     totalOrders,
+    accountStats,
   );
   const topProducts = buildTopProducts(productMetrics);
 
@@ -343,7 +367,7 @@ export default async function Home() {
       <section className="grid gap-4 xl:grid-cols-3">
         <div className="xl:col-span-1">
           <CountryGrid
-            items={accountStats}
+            items={accountSales}
             viewAllHref="/integracoes/mercado-livre"
           />
         </div>
@@ -398,6 +422,7 @@ function buildAccountSales(
   integrations: MarketplaceIntegration[],
   totalRevenue: number,
   totalOrders: number,
+  perAccountStats: Record<string, { revenue: number; orders: number }>,
 ): AccountStat[] {
   if (!integrations?.length) {
     return [
@@ -417,13 +442,14 @@ function buildAccountSales(
   return integrations.slice(0, 6).map((integration) => {
     const display = getPlatformDisplay(integration.platform);
     const isActive = integration.status === "ACTIVE";
+    const stats = perAccountStats[integration.id];
     return {
       id: integration.id,
       code: display.abbrev,
       account: integration.accountName ?? display.name,
       platform: display.name,
-      revenue: "-", // ainda sem dado financeiro por conta
-      orders: "-", // sem agregado por conta no endpoint atual
+      revenue: stats ? formatCurrencyBRL(stats.revenue) : "-",
+      orders: stats ? formatNumber(stats.orders) : "-",
       status: isActive ? "active" : "pending",
       accent: isActive ? "primary" : "muted",
       lastSync: integration.updatedAt

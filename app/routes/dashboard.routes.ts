@@ -571,6 +571,53 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
   );
 
   /**
+   * GET /dashboard/account-stats
+   * Retorna receita e total de pedidos agrupados por conta de marketplace
+   */
+  fastify.get(
+    "/account-stats",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const grouped = await prisma.order.groupBy({
+          by: ["marketplaceAccountId"],
+          _count: { _all: true },
+          _sum: { totalAmount: true },
+          where: { marketplaceAccount: { userId } },
+        });
+
+        const accountStats: Record<
+          string,
+          { revenue: number; orders: number }
+        > = {};
+        for (const row of grouped) {
+          const rev = row._sum.totalAmount
+            ? typeof (row._sum.totalAmount as any).toNumber === "function"
+              ? (row._sum.totalAmount as any).toNumber()
+              : Number(row._sum.totalAmount)
+            : 0;
+          accountStats[row.marketplaceAccountId] = {
+            revenue: rev,
+            orders: row._count._all,
+          };
+        }
+
+        return reply.status(200).send({ accountStats });
+      } catch (error) {
+        console.error("Erro account-stats:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar account-stats" });
+      }
+    },
+  );
+
+  /**
    * GET /dashboard/notifications
    * Eventos recentes para o dashboard (pedidos, produtos, integrações, métricas de anúncios)
    */

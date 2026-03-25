@@ -1,28 +1,31 @@
 /**
  * Rotas para gerenciar pedidos (Orders)
- * Inclui importação do ML e listagem local
+ * Inclui importação do ML/Shopee e listagem local
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { OrderUseCase } from "../marketplaces/usecases/order.usercase";
+import type { ImportOrdersResult } from "../marketplaces/usecases/order.usercase";
 import { orderRepository } from "../repositories/order.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 
 export async function orderRoutes(app: FastifyInstance) {
   // ====================================================================
-  // ROTAS DE IMPORTAÇÃO DO MERCADO LIVRE
+  // ROTAS DE IMPORTAÇÃO DE PEDIDOS (ML + SHOPEE)
   // ====================================================================
 
   /**
    * POST /orders/import
-   * Importa pedidos recentes do Mercado Livre
+   * Importa pedidos recentes dos marketplaces conectados
+   * Aceita platform: "MERCADO_LIVRE", "SHOPEE" ou "ALL" (padrão: "ALL")
    * Desconta estoque automaticamente para pedidos pagos
    */
   app.post<{
     Body: {
       days?: number;
       deductStock?: boolean;
+      platform?: string;
     };
   }>(
     "/import",
@@ -30,38 +33,130 @@ export async function orderRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.id;
-        const body = request.body as { days?: number; deductStock?: boolean };
+        const body = request.body as {
+          days?: number;
+          deductStock?: boolean;
+          platform?: string;
+        };
         const days = body?.days ?? 7;
         const deductStock = body?.deductStock ?? true;
+        const platform = (body?.platform ?? "ALL").toUpperCase();
 
         console.log(
-          `[Orders] Importing orders for user ${userId}, last ${days} days, deductStock: ${deductStock}`,
+          `[Orders] Importing orders for user ${userId}, platform: ${platform}, last ${days} days, deductStock: ${deductStock}`,
         );
 
-        const result = await OrderUseCase.importRecentOrders(
-          userId,
-          days,
-          deductStock,
-        );
+        const importML = platform === "ALL" || platform === "MERCADO_LIVRE";
+        const importShopee = platform === "ALL" || platform === "SHOPEE";
 
-        // Registrar log de importação de pedidos (fire-and-forget, non-blocking)
-        void SystemLogService.logSyncComplete(
-          userId,
-          "ORDER_IMPORT",
-          "MercadoLivre",
-          {
-            imported: result.imported,
-            alreadyExists: result.alreadyExists,
-            errors: result.errors,
-            days,
-            deductStock,
-          },
+        const results: Array<{
+          platform: string;
+          result?: ImportOrdersResult;
+          error?: string;
+        }> = [];
+
+        let totalImported = 0;
+
+        if (importML) {
+          try {
+            const mlResult = await OrderUseCase.importRecentOrders(
+              userId,
+              days,
+              deductStock,
+            );
+            totalImported += mlResult.imported;
+            results.push({ platform: "MERCADO_LIVRE", result: mlResult });
+
+            void SystemLogService.logSyncComplete(
+              userId,
+              "ORDER_IMPORT",
+              "MercadoLivre",
+              {
+                imported: mlResult.imported,
+                alreadyExists: mlResult.alreadyExists,
+                errors: mlResult.errors,
+                days,
+                deductStock,
+              },
+            );
+          } catch (mlError) {
+            console.warn(
+              "[Orders] ML import error (non-blocking):",
+              mlError instanceof Error ? mlError.message : mlError,
+            );
+            results.push({
+              platform: "MERCADO_LIVRE",
+              error:
+                mlError instanceof Error
+                  ? mlError.message
+                  : "Erro ao importar do ML",
+            });
+          }
+        }
+
+        if (importShopee) {
+          try {
+            const shopeeResult = await OrderUseCase.importRecentShopeeOrders(
+              userId,
+              Math.min(days, 15), // Shopee API limita a 15 dias
+              deductStock,
+            );
+            totalImported += shopeeResult.imported;
+            results.push({ platform: "SHOPEE", result: shopeeResult });
+
+            void SystemLogService.logSyncComplete(
+              userId,
+              "ORDER_IMPORT",
+              "Shopee",
+              {
+                imported: shopeeResult.imported,
+                alreadyExists: shopeeResult.alreadyExists,
+                errors: shopeeResult.errors,
+                days,
+                deductStock,
+              },
+            );
+          } catch (shopeeError) {
+            console.warn(
+              "[Orders] Shopee import error (non-blocking):",
+              shopeeError instanceof Error ? shopeeError.message : shopeeError,
+            );
+            results.push({
+              platform: "SHOPEE",
+              error:
+                shopeeError instanceof Error
+                  ? shopeeError.message
+                  : "Erro ao importar do Shopee",
+            });
+          }
+        }
+
+        // Agregar para manter compatibilidade com resposta anterior
+        const totalOrders = results.reduce(
+          (sum, r) => sum + (r.result?.totalOrders ?? 0),
+          0,
+        );
+        const alreadyExists = results.reduce(
+          (sum, r) => sum + (r.result?.alreadyExists ?? 0),
+          0,
+        );
+        const errors = results.reduce(
+          (sum, r) => sum + (r.result?.errors ?? 0),
+          0,
         );
 
         return reply.status(200).send({
           success: true,
-          message: `Importação concluída: ${result.imported} novos pedidos`,
-          ...result,
+          message: `Importação concluída: ${totalImported} novos pedidos`,
+          imported: totalImported,
+          totalOrders,
+          alreadyExists,
+          errors,
+          stockDeductions: results.reduce(
+            (sum, r) => sum + (r.result?.stockDeductions ?? 0),
+            0,
+          ),
+          results,
         });
       } catch (error) {
         console.error("[Orders] Import error:", error);
@@ -88,6 +183,7 @@ export async function orderRoutes(app: FastifyInstance) {
       page?: string;
       limit?: string;
       search?: string;
+      platform?: string;
     };
   }>(
     "/",
@@ -100,10 +196,13 @@ export async function orderRoutes(app: FastifyInstance) {
           page?: string;
           limit?: string;
           search?: string;
+          platform?: string;
         };
 
         const result = await OrderUseCase.getOrders(userId, {
           status: query.status,
+          platform: query.platform,
+          search: query.search,
           page: query.page ? parseInt(query.page, 10) : 1,
           limit: query.limit ? parseInt(query.limit, 10) : 10,
         });
@@ -221,12 +320,16 @@ export async function orderRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.id;
+        const query = request.query as { platform?: string };
         const prisma = (await import("../lib/prisma")).default;
 
-        const baseWhere = { marketplaceAccount: { userId } };
+        const baseWhere: any = { marketplaceAccount: { userId } };
+        if (query.platform) {
+          baseWhere.marketplaceAccount.platform = query.platform;
+        }
 
         // Single groupBy + aggregate instead of 7 separate COUNT queries
-        const [statusCounts, revenue] = await Promise.all([
+        const [statusCounts, revenue, platformCounts] = await Promise.all([
           prisma.order.groupBy({
             by: ["status"],
             _count: { _all: true },
@@ -236,6 +339,13 @@ export async function orderRoutes(app: FastifyInstance) {
             where: baseWhere,
             _sum: { totalAmount: true },
             _count: { _all: true },
+          }),
+          // Per-platform breakdown (always unfiltered by platform)
+          prisma.order.groupBy({
+            by: ["marketplaceAccountId"],
+            _count: { _all: true },
+            _sum: { totalAmount: true },
+            where: { marketplaceAccount: { userId } },
           }),
         ]);
 
@@ -251,6 +361,34 @@ export async function orderRoutes(app: FastifyInstance) {
             ? (revenue._sum.totalAmount as any).toNumber()
             : Number(revenue._sum.totalAmount || 0)) || 0;
 
+        // Build per-platform breakdown
+        const accountIds = platformCounts.map((r) => r.marketplaceAccountId);
+        const accounts = accountIds.length > 0
+          ? await prisma.marketplaceAccount.findMany({
+              where: { id: { in: accountIds } },
+              select: { id: true, platform: true },
+            })
+          : [];
+        const accountPlatformMap: Record<string, string> = {};
+        for (const acc of accounts) {
+          accountPlatformMap[acc.id] = acc.platform;
+        }
+
+        const platformBreakdown: Record<string, { total: number; revenue: number }> = {};
+        for (const row of platformCounts) {
+          const platform = accountPlatformMap[row.marketplaceAccountId] || "UNKNOWN";
+          if (!platformBreakdown[platform]) {
+            platformBreakdown[platform] = { total: 0, revenue: 0 };
+          }
+          platformBreakdown[platform].total += row._count._all;
+          const rev = row._sum.totalAmount
+            ? (typeof (row._sum.totalAmount as any).toNumber === "function"
+                ? (row._sum.totalAmount as any).toNumber()
+                : Number(row._sum.totalAmount))
+            : 0;
+          platformBreakdown[platform].revenue += rev;
+        }
+
         return reply.status(200).send({
           success: true,
           stats: {
@@ -261,6 +399,7 @@ export async function orderRoutes(app: FastifyInstance) {
             delivered: countMap["DELIVERED"] || 0,
             cancelled: countMap["CANCELLED"] || 0,
             totalRevenue,
+            platformBreakdown,
           },
         });
       } catch (error) {
