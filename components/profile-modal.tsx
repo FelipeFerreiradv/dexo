@@ -49,12 +49,7 @@ export function ProfileModal({
       email: session.user.email,
       avatarUrl: (session.user as any).image ?? null,
     }),
-    [
-      session.user?.email,
-      session.user?.id,
-      session.user?.name,
-      (session.user as any)?.image,
-    ],
+    [session.user],
   );
 
   useEffect(() => {

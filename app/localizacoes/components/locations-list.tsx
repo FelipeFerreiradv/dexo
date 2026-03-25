@@ -17,6 +17,7 @@ import {
   X,
   Loader2,
 } from "lucide-react";
+import Image from "next/image";
 import { useSession } from "next-auth/react";
 
 import { Button } from "@/components/ui/button";
@@ -1118,10 +1119,12 @@ export function LocationsList() {
                         }
                       />
                       {product.imageUrl ? (
-                        <img
+                        <Image
                           src={product.imageUrl}
                           alt={product.name}
-                          className="size-10 rounded-md border object-cover"
+                          width={40}
+                          height={40}
+                          className="rounded-md border object-cover"
                         />
                       ) : (
                         <div className="flex size-10 items-center justify-center rounded-md border bg-muted">

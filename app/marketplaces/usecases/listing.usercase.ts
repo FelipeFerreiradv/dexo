@@ -2243,7 +2243,7 @@ export class ListingUseCase {
         );
       }
 
-      let payload: ShopeeItemCreatePayload = {
+      const payload: ShopeeItemCreatePayload = {
         category_id: numericCategoryId,
         item_name: this.buildShopeeTitle(product),
         description: this.buildShopeeDescription(product),
