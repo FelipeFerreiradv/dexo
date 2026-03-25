@@ -96,7 +96,8 @@ export function OrdersList() {
       setSearchInput(param);
       setDebouncedSearch(param.trim());
     }
-  }, [searchInput, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -151,7 +152,7 @@ export function OrdersList() {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedSearch, pagination.limit, pagination.page, platformFilter, session, showToast]);
+  }, [debouncedSearch, pagination.limit, pagination.page, platformFilter, session?.user?.email, showToast]);
 
   const fetchStats = useCallback(async () => {
     if (!session?.user?.email) {
@@ -194,7 +195,7 @@ export function OrdersList() {
     } catch (error) {
       console.error("Erro ao buscar estatísticas:", error);
     }
-  }, [session, platformFilter]);
+  }, [session?.user?.email, platformFilter]);
 
   const handleImportOrders = async () => {
     if (!session?.user?.email) {

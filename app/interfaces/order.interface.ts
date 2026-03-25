@@ -90,6 +90,7 @@ export interface OrderFindOptions {
   limit?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  includeItems?: boolean;
 }
 
 // Resultado paginado

@@ -55,80 +55,88 @@ export async function orderRoutes(app: FastifyInstance) {
           error?: string;
         }> = [];
 
-        let totalImported = 0;
+        // Run ML and Shopee imports in parallel (independent external APIs)
+        const importTasks: Array<Promise<void>> = [];
 
         if (importML) {
-          try {
-            const mlResult = await OrderUseCase.importRecentOrders(
-              userId,
-              days,
-              deductStock,
-            );
-            totalImported += mlResult.imported;
-            results.push({ platform: "MERCADO_LIVRE", result: mlResult });
-
-            void SystemLogService.logSyncComplete(
-              userId,
-              "ORDER_IMPORT",
-              "MercadoLivre",
-              {
-                imported: mlResult.imported,
-                alreadyExists: mlResult.alreadyExists,
-                errors: mlResult.errors,
-                days,
-                deductStock,
-              },
-            );
-          } catch (mlError) {
-            console.warn(
-              "[Orders] ML import error (non-blocking):",
-              mlError instanceof Error ? mlError.message : mlError,
-            );
-            results.push({
-              platform: "MERCADO_LIVRE",
-              error:
-                mlError instanceof Error
-                  ? mlError.message
-                  : "Erro ao importar do ML",
-            });
-          }
+          importTasks.push(
+            OrderUseCase.importRecentOrders(userId, days, deductStock)
+              .then((mlResult) => {
+                results.push({ platform: "MERCADO_LIVRE", result: mlResult });
+                void SystemLogService.logSyncComplete(
+                  userId,
+                  "ORDER_IMPORT",
+                  "MercadoLivre",
+                  {
+                    imported: mlResult.imported,
+                    alreadyExists: mlResult.alreadyExists,
+                    errors: mlResult.errors,
+                    days,
+                    deductStock,
+                  },
+                );
+              })
+              .catch((mlError) => {
+                console.warn(
+                  "[Orders] ML import error (non-blocking):",
+                  mlError instanceof Error ? mlError.message : mlError,
+                );
+                results.push({
+                  platform: "MERCADO_LIVRE",
+                  error:
+                    mlError instanceof Error
+                      ? mlError.message
+                      : "Erro ao importar do ML",
+                });
+              }),
+          );
         }
 
         if (importShopee) {
-          try {
-            const shopeeResult = await OrderUseCase.importRecentShopeeOrders(
+          importTasks.push(
+            OrderUseCase.importRecentShopeeOrders(
               userId,
               Math.min(days, 15), // Shopee API limita a 15 dias
               deductStock,
-            );
-            totalImported += shopeeResult.imported;
-            results.push({ platform: "SHOPEE", result: shopeeResult });
+            )
+              .then((shopeeResult) => {
+                results.push({ platform: "SHOPEE", result: shopeeResult });
+                void SystemLogService.logSyncComplete(
+                  userId,
+                  "ORDER_IMPORT",
+                  "Shopee",
+                  {
+                    imported: shopeeResult.imported,
+                    alreadyExists: shopeeResult.alreadyExists,
+                    errors: shopeeResult.errors,
+                    days,
+                    deductStock,
+                  },
+                );
+              })
+              .catch((shopeeError) => {
+                console.warn(
+                  "[Orders] Shopee import error (non-blocking):",
+                  shopeeError instanceof Error
+                    ? shopeeError.message
+                    : shopeeError,
+                );
+                results.push({
+                  platform: "SHOPEE",
+                  error:
+                    shopeeError instanceof Error
+                      ? shopeeError.message
+                      : "Erro ao importar do Shopee",
+                });
+              }),
+          );
+        }
 
-            void SystemLogService.logSyncComplete(
-              userId,
-              "ORDER_IMPORT",
-              "Shopee",
-              {
-                imported: shopeeResult.imported,
-                alreadyExists: shopeeResult.alreadyExists,
-                errors: shopeeResult.errors,
-                days,
-                deductStock,
-              },
-            );
-          } catch (shopeeError) {
-            console.warn(
-              "[Orders] Shopee import error (non-blocking):",
-              shopeeError instanceof Error ? shopeeError.message : shopeeError,
-            );
-            results.push({
-              platform: "SHOPEE",
-              error:
-                shopeeError instanceof Error
-                  ? shopeeError.message
-                  : "Erro ao importar do Shopee",
-            });
-          }
+        await Promise.all(importTasks);
+
+        let totalImported = 0;
+        for (const r of results) {
+          totalImported += r.result?.imported ?? 0;
         }
 
         // Agregar para manter compatibilidade com resposta anterior
@@ -329,7 +337,7 @@ export async function orderRoutes(app: FastifyInstance) {
         }
 
         // Single groupBy + aggregate instead of 7 separate COUNT queries
-        const [statusCounts, revenue, platformCounts] = await Promise.all([
+        const [statusCounts, revenue, platformCounts, userAccounts] = await Promise.all([
           prisma.order.groupBy({
             by: ["status"],
             _count: { _all: true },
@@ -347,6 +355,11 @@ export async function orderRoutes(app: FastifyInstance) {
             _sum: { totalAmount: true },
             where: { marketplaceAccount: { userId } },
           }),
+          // Fetch account→platform mapping in parallel
+          prisma.marketplaceAccount.findMany({
+            where: { userId },
+            select: { id: true, platform: true },
+          }),
         ]);
 
         const countMap: Record<string, number> = {};
@@ -361,16 +374,9 @@ export async function orderRoutes(app: FastifyInstance) {
             ? (revenue._sum.totalAmount as any).toNumber()
             : Number(revenue._sum.totalAmount || 0)) || 0;
 
-        // Build per-platform breakdown
-        const accountIds = platformCounts.map((r) => r.marketplaceAccountId);
-        const accounts = accountIds.length > 0
-          ? await prisma.marketplaceAccount.findMany({
-              where: { id: { in: accountIds } },
-              select: { id: true, platform: true },
-            })
-          : [];
+        // Build per-platform breakdown using pre-fetched account map
         const accountPlatformMap: Record<string, string> = {};
-        for (const acc of accounts) {
+        for (const acc of userAccounts) {
           accountPlatformMap[acc.id] = acc.platform;
         }
 

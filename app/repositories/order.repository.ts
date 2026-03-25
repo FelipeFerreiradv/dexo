@@ -318,6 +318,7 @@ class OrderRepositoryPrisma implements OrderRepository {
     }
 
     try {
+      const includeItems = options?.includeItems ?? true;
       const [orders, total] = await Promise.all([
         prisma.order.findMany({
           where,
@@ -325,25 +326,27 @@ class OrderRepositoryPrisma implements OrderRepository {
           take: limit,
           orderBy: { createdAt: "desc" },
           include: {
-            items: {
-              include: {
-                product: {
-                  select: {
-                    id: true,
-                    name: true,
-                    sku: true,
-                    stock: true,
+            items: includeItems
+              ? {
+                  include: {
+                    product: {
+                      select: {
+                        id: true,
+                        name: true,
+                        sku: true,
+                        stock: true,
+                      },
+                    },
+                    listing: {
+                      select: {
+                        id: true,
+                        externalListingId: true,
+                        permalink: true,
+                      },
+                    },
                   },
-                },
-                listing: {
-                  select: {
-                    id: true,
-                    externalListingId: true,
-                    permalink: true,
-                  },
-                },
-              },
-            },
+                }
+              : false,
             marketplaceAccount: {
               select: {
                 id: true,

@@ -109,12 +109,49 @@ export class OrderUseCase {
     result.totalOrders = mlOrders.length;
     console.log(`[OrderUseCase] Found ${mlOrders.length} paid orders`);
 
+    // Batch check: find all already-imported order IDs in one query
+    const externalIds = mlOrders.map((o) => o.id.toString());
+    const existingOrders = await prisma.order.findMany({
+      where: { externalOrderId: { in: externalIds } },
+      select: { externalOrderId: true },
+    });
+    const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
+
+    // Prefetch all listings for this account (avoids N+1 in mapOrderItems)
+    const accountListings = await prisma.productListing.findMany({
+      where: { marketplaceAccountId: account.id },
+      include: { product: true },
+    });
+    const listingMap = new Map(
+      accountListings.map((l) => [
+        `${l.marketplaceAccountId}_${l.externalListingId}`,
+        l,
+      ]),
+    );
+
     // 3. Processar cada pedido
     for (const mlOrder of mlOrders) {
+      const extId = mlOrder.id.toString();
+      if (existingSet.has(extId)) {
+        result.alreadyExists++;
+        result.results.push({
+          success: true,
+          orderId: null,
+          externalOrderId: extId,
+          status: "already_exists",
+          message: "Pedido já importado anteriormente",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: mlOrder.order_items.length,
+        });
+        continue;
+      }
+
       const importResult = await this.processOrder(
         mlOrder,
         account.id,
         deductStock,
+        listingMap,
       );
       result.results.push(importResult);
 
@@ -189,11 +226,47 @@ export class OrderUseCase {
 
     result.totalOrders = mlOrders.length;
 
+    // Batch check + prefetch (same optimization as importRecentOrders)
+    const externalIds = mlOrders.map((o) => o.id.toString());
+    const existingOrders = await prisma.order.findMany({
+      where: { externalOrderId: { in: externalIds } },
+      select: { externalOrderId: true },
+    });
+    const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
+
+    const accountListings = await prisma.productListing.findMany({
+      where: { marketplaceAccountId: account.id },
+      include: { product: true },
+    });
+    const listingMap = new Map(
+      accountListings.map((l) => [
+        `${l.marketplaceAccountId}_${l.externalListingId}`,
+        l,
+      ]),
+    );
+
     for (const mlOrder of mlOrders) {
+      const extId = mlOrder.id.toString();
+      if (existingSet.has(extId)) {
+        result.alreadyExists++;
+        result.results.push({
+          success: true,
+          orderId: null,
+          externalOrderId: extId,
+          status: "already_exists",
+          message: "Pedido já importado anteriormente",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: mlOrder.order_items.length,
+        });
+        continue;
+      }
+
       const importResult = await this.processOrder(
         mlOrder,
         account.id,
         deductStock,
+        listingMap,
       );
       result.results.push(importResult);
 
@@ -286,11 +359,31 @@ export class OrderUseCase {
 
     result.totalOrders = shopeeOrders.length;
 
+    // Batch check + prefetch (same optimization as ML imports)
+    const externalIds = (shopeeOrders as ShopeeOrderDetail[]).map(
+      (o) => o.order_sn,
+    );
+    const existingOrders = await prisma.order.findMany({
+      where: { externalOrderId: { in: externalIds } },
+      select: { externalOrderId: true },
+    });
+    const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
+
+    const accountListings = await prisma.productListing.findMany({
+      where: { marketplaceAccountId: account.id },
+      include: { product: true },
+    });
+    const listingMap = new Map(
+      accountListings.map((l) => [
+        `${l.marketplaceAccountId}_${l.externalListingId}`,
+        l,
+      ]),
+    );
+
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const externalOrderId = shopeeOrder.order_sn;
       try {
-        const exists = await orderRepository.exists(externalOrderId);
-        if (exists) {
+        if (existingSet.has(externalOrderId)) {
           result.results.push({
             success: true,
             orderId: null,
@@ -308,6 +401,7 @@ export class OrderUseCase {
         const { items, linkedCount } = await this.mapShopeeOrderItems(
           shopeeOrder.item_list,
           marketplaceAccountId,
+          listingMap,
         );
 
         if (items.length === 0) {
@@ -401,11 +495,12 @@ export class OrderUseCase {
     mlOrder: MLOrderDetails,
     marketplaceAccountId: string,
     deductStock: boolean,
+    listingMap?: Map<string, any>,
   ): Promise<ImportOrderResult> {
     const externalOrderId = mlOrder.id.toString();
 
     try {
-      // Verificar se pedido já foi importado
+      // Verificar se pedido já foi importado (fallback for direct calls without batch check)
       const exists = await orderRepository.exists(externalOrderId);
       if (exists) {
         return {
@@ -424,6 +519,7 @@ export class OrderUseCase {
       const { items, linkedCount } = await this.mapOrderItems(
         mlOrder.order_items,
         marketplaceAccountId,
+        listingMap,
       );
 
       // Se nenhum item foi vinculado, não importar
@@ -494,6 +590,7 @@ export class OrderUseCase {
   private static async mapOrderItems(
     mlItems: MLOrderItem[],
     marketplaceAccountId: string,
+    listingMap?: Map<string, any>,
   ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
     const items: OrderItemCreate[] = [];
     let linkedCount = 0;
@@ -501,15 +598,20 @@ export class OrderUseCase {
     for (const mlItem of mlItems) {
       // 1) Tentar vincular pelo ID do anúncio no marketplace
       const externalListingId = mlItem.item.id;
-      const listing = await prisma.productListing.findUnique({
-        where: {
-          marketplaceAccountId_externalListingId: {
-            marketplaceAccountId,
-            externalListingId,
-          },
-        },
-        include: { product: true },
-      });
+      const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
+
+      // Use prefetched map if available, otherwise fallback to DB query
+      const listing = listingMap
+        ? listingMap.get(cacheKey)
+        : await prisma.productListing.findUnique({
+            where: {
+              marketplaceAccountId_externalListingId: {
+                marketplaceAccountId,
+                externalListingId,
+              },
+            },
+            include: { product: true },
+          });
 
       if (listing && listing.product) {
         items.push({
@@ -577,21 +679,27 @@ export class OrderUseCase {
   private static async mapShopeeOrderItems(
     items: ShopeeOrderItem[],
     marketplaceAccountId: string,
+    listingMap?: Map<string, any>,
   ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
     const result: OrderItemCreate[] = [];
     let linkedCount = 0;
 
     for (const item of items) {
       const externalListingId = item.item_id.toString();
-      const listing = await prisma.productListing.findUnique({
-        where: {
-          marketplaceAccountId_externalListingId: {
-            marketplaceAccountId,
-            externalListingId,
-          },
-        },
-        include: { product: true },
-      });
+      const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
+
+      // Use prefetched map if available, otherwise fallback to DB query
+      const listing = listingMap
+        ? listingMap.get(cacheKey)
+        : await prisma.productListing.findUnique({
+            where: {
+              marketplaceAccountId_externalListingId: {
+                marketplaceAccountId,
+                externalListingId,
+              },
+            },
+            include: { product: true },
+          });
 
       if (listing && listing.product) {
         result.push({
@@ -667,28 +775,34 @@ export class OrderUseCase {
   ): Promise<OrderStockDeduction[]> {
     const deductions: OrderStockDeduction[] = [];
 
-    if (!order.items) return deductions;
+    if (!order.items || order.items.length === 0) return deductions;
+
+    // Batch fetch all products in one query
+    const productIds = order.items.map((item) => item.productId);
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, stock: true },
+    });
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    // Build transaction operations for all items at once
+    const txOps: Parameters<typeof prisma.$transaction>[0] = [];
 
     for (const item of order.items) {
-      try {
-        // Buscar produto atual
-        const product = await prisma.product.findUnique({
+      const product = productMap.get(item.productId);
+      if (!product) continue;
+
+      const previousStock = product.stock;
+      const newStock = Math.max(0, previousStock - item.quantity);
+
+      txOps.push(
+        prisma.product.update({
           where: { id: item.productId },
-        });
-
-        if (!product) continue;
-
-        const previousStock = product.stock;
-        const newStock = Math.max(0, previousStock - item.quantity);
-
-        // Atualizar estoque
-        await prisma.product.update({
-          where: { id: item.productId },
-          data: { stock: newStock },
-        });
-
-        // Registrar log de estoque
-        await prisma.stockLog.create({
+          data: { stock: { decrement: Math.min(item.quantity, previousStock) } },
+        }),
+      );
+      txOps.push(
+        prisma.stockLog.create({
           data: {
             productId: item.productId,
             change: -item.quantity,
@@ -696,22 +810,28 @@ export class OrderUseCase {
             previousStock,
             newStock,
           },
-        });
+        }),
+      );
 
-        deductions.push({
-          productId: item.productId,
-          productName: product.name,
-          previousStock,
-          newStock,
-          quantity: item.quantity,
-        });
+      deductions.push({
+        productId: item.productId,
+        productName: product.name,
+        previousStock,
+        newStock,
+        quantity: item.quantity,
+      });
 
-        console.log(
-          `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
-        );
+      console.log(
+        `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
+      );
+    }
+
+    if (txOps.length > 0) {
+      try {
+        await prisma.$transaction(txOps);
       } catch (error) {
         console.error(
-          `[OrderUseCase] Error deducting stock for product ${item.productId}:`,
+          `[OrderUseCase] Error in stock deduction transaction:`,
           error,
         );
       }
@@ -797,6 +917,7 @@ export class OrderUseCase {
       search: options?.search,
       page: options?.page,
       limit: options?.limit,
+      includeItems: false,
     });
   }
 
