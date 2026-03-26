@@ -1,4 +1,3 @@
-import { Activity, ChartLine, Link2, Package } from "lucide-react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
@@ -13,20 +12,9 @@ import {
   type AccountStat,
 } from "@/components/dashboard/country-grid";
 import {
-  ProductRow,
-  TopProductsTable,
-} from "@/components/dashboard/top-products-table";
-
-interface DashboardStats {
-  totalProducts: number;
-  totalStock: number;
-  lowStockProducts: {
-    id: string;
-    name: string;
-    sku: string | null;
-    stock: number;
-  }[];
-}
+  ListingsOverview,
+  type ListingStats,
+} from "@/components/dashboard/listings-overview";
 
 interface MarketplaceIntegration {
   id: string;
@@ -42,18 +30,7 @@ interface OrderOverTimeItem {
   totalAmount: number;
 }
 
-interface StockChangeItem {
-  productId: string;
-  productName: string;
-  productSku?: string | null;
-  productImageUrl?: string | null;
-  changes: {
-    date: string;
-    change: number;
-    previousStock: number;
-    newStock: number;
-  }[];
-}
+interface ListingStatsResponse extends ListingStats {}
 
 type HeatmapCell = {
   day: string;
@@ -66,21 +43,6 @@ export const metadata: Metadata = {
   description:
     "Painel de controle com métricas de estoque, vendas e integrações dos seus marketplaces.",
 };
-
-async function getDashboardStats(
-  userEmail: string,
-): Promise<DashboardStats | null> {
-  try {
-    const response = await fetch(`${getApiBaseUrl()}/dashboard/stats`, {
-      cache: "no-store",
-      headers: { email: userEmail },
-    });
-    if (!response.ok) return null;
-    return response.json();
-  } catch {
-    return null;
-  }
-}
 
 async function getMarketplaceIntegrations(
   userEmail: string,
@@ -115,46 +77,18 @@ async function getOrdersOverTime(
   }
 }
 
-async function getStockChanges(userEmail: string): Promise<StockChangeItem[]> {
+async function getListingStats(
+  userEmail: string,
+): Promise<ListingStatsResponse | null> {
   try {
     const res = await fetch(
-      `${getApiBaseUrl()}/dashboard/stock-changes?days=30`,
+      `${getApiBaseUrl()}/dashboard/listing-stats?days=180`,
       { cache: "no-store", headers: { email: userEmail } },
     );
-    if (!res.ok) return [];
-    return (await res.json()) as StockChangeItem[];
+    if (!res.ok) return null;
+    return (await res.json()) as ListingStatsResponse;
   } catch {
-    return [];
-  }
-}
-
-async function getProductMetrics(userEmail: string): Promise<
-  {
-    productId: string;
-    listingId?: string | null;
-    name: string;
-    sku: string;
-    stock: number;
-    sales: number;
-    revenue: number;
-    growth: number | null;
-    reviews: number;
-    views: number;
-    platform?: string | null;
-    accountName?: string | null;
-    lastDate: string | null;
-  }[]
-> {
-  try {
-    const res = await fetch(
-      `${getApiBaseUrl()}/dashboard/product-metrics?days=30&limit=8`,
-      { cache: "no-store", headers: { email: userEmail } },
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.items || [];
-  } catch {
-    return [];
+    return null;
   }
 }
 
@@ -229,18 +163,14 @@ export default async function Home() {
   }
 
   const [
-    stats,
     integrations,
     ordersOverTime,
-    stockChanges,
-    productMetrics,
+    listingStats,
     accountStats,
   ] = await Promise.all([
-    getDashboardStats(userSession.user?.email || ""),
     getMarketplaceIntegrations(userSession.user?.email || ""),
     getOrdersOverTime(userSession.user?.email || ""),
-    getStockChanges(userSession.user?.email || ""),
-    getProductMetrics(userSession.user?.email || ""),
+    getListingStats(userSession.user?.email || ""),
     getAccountStats(userSession.user?.email || ""),
   ]);
 
@@ -263,18 +193,6 @@ export default async function Home() {
   const revenueDelta = computeDelta(sortedOrders, "totalAmount");
   const ordersDelta = computeDelta(sortedOrders, "orders");
 
-  const netStockChange = stockChanges.reduce((sum, item) => {
-    const last = item.changes?.[0];
-    return sum + (last?.change ?? 0);
-  }, 0);
-
-  const stockDelta =
-    stats?.totalStock && stats.totalStock !== 0
-      ? (netStockChange / Math.max(stats.totalStock - netStockChange, 1)) * 100
-      : null;
-
-  const criticalProducts = stats?.lowStockProducts ?? [];
-
   const metricCards = [
     {
       title: "Receita total",
@@ -296,15 +214,14 @@ export default async function Home() {
       tone: "neutral" as const,
     },
     {
-      title: "Estoque disponível",
-      value: formatNumber(stats?.totalStock ?? 0),
-      caption: `${criticalProducts.length} produtos em nível crítico`,
-      delta: stockDelta,
+      title: "Total de anúncios",
+      value: formatNumber(listingStats?.totalListings ?? 0),
+      caption: `${formatNumber(
+        listingStats?.totalListingsActive ?? 0,
+      )} em contas ativas`,
+      delta: null,
       deltaLabel: "",
-      tone:
-        stockDelta !== null && stockDelta < 0
-          ? ("negative" as const)
-          : ("positive" as const),
+      tone: "neutral" as const,
     },
     {
       title: "Integrações ativas",
@@ -326,7 +243,6 @@ export default async function Home() {
     totalOrders,
     accountStats,
   );
-  const topProducts = buildTopProducts(productMetrics);
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6 pb-10">
@@ -372,7 +288,7 @@ export default async function Home() {
           />
         </div>
         <div className="xl:col-span-2">
-          <TopProductsTable rows={topProducts} />
+          <ListingsOverview stats={listingStats} />
         </div>
       </section>
     </div>
@@ -455,51 +371,6 @@ function buildAccountSales(
       lastSync: integration.updatedAt
         ? formatTimeAgo(integration.updatedAt)
         : undefined,
-    };
-  });
-}
-
-function buildTopProducts(
-  metrics: {
-    productId: string;
-    listingId?: string | null;
-    name: string;
-    sku: string;
-    stock: number;
-    sales: number;
-    revenue: number;
-    growth: number | null;
-    reviews: number;
-    views: number;
-    platform?: string | null;
-    accountName?: string | null;
-  }[],
-): ProductRow[] {
-  return (metrics ?? []).map((item) => {
-    const direction =
-      item.growth === null
-        ? "flat"
-        : item.growth > 0
-          ? "up"
-          : item.growth < 0
-            ? "down"
-            : "flat";
-
-    const growthLabel =
-      item.growth === null
-        ? "—"
-        : `${item.growth > 0 ? "+" : ""}${item.growth.toFixed(1)}%`;
-
-    return {
-      id: item.listingId ?? item.productId,
-      name: item.name,
-      sku: item.sku === "—" ? undefined : item.sku,
-      stock: formatNumber(item.stock ?? 0),
-      sales: formatNumber(item.sales ?? 0),
-      growth: growthLabel,
-      reviews: formatNumber(item.reviews ?? 0),
-      views: formatNumber(item.views ?? 0),
-      direction,
     };
   });
 }

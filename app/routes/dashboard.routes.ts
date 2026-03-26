@@ -5,6 +5,97 @@ import { Platform } from "@prisma/client";
 
 export const dashboardRoutes = async (fastify: FastifyInstance) => {
   /**
+   * GET /dashboard/listing-stats
+   * Retorna contagem de anúncios por conta e linha do tempo de criação
+   */
+  fastify.get(
+    "/listing-stats",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user?.id;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const days = Number((request.query as any)?.days) || 180;
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+
+        const accounts = await prisma.marketplaceAccount.findMany({
+          where: { userId },
+          select: {
+            id: true,
+            platform: true,
+            accountName: true,
+            status: true,
+            _count: { select: { listings: true } },
+          },
+        });
+
+        const totalListings = accounts.reduce(
+          (sum, acc) => sum + (acc._count.listings ?? 0),
+          0,
+        );
+
+        const totalListingsActive = accounts
+          .filter((acc) => acc.status === "ACTIVE")
+          .reduce((sum, acc) => sum + (acc._count.listings ?? 0), 0);
+
+        const created = await prisma.productListing.findMany({
+          where: { createdAt: { gte: since }, marketplaceAccount: { userId } },
+          select: { createdAt: true, marketplaceAccountId: true },
+          orderBy: { createdAt: "asc" },
+        });
+
+        const toDayKey = (d: Date) => d.toISOString().slice(0, 10);
+        const globalMap: Record<string, number> = {};
+        const perAccountMap: Record<string, Record<string, number>> = {};
+
+        for (const row of created) {
+          const day = toDayKey(row.createdAt);
+          globalMap[day] = (globalMap[day] ?? 0) + 1;
+          const acc = (perAccountMap[row.marketplaceAccountId] ||= {});
+          acc[day] = (acc[day] ?? 0) + 1;
+        }
+
+        const mapToSeries = (m: Record<string, number>) =>
+          Object.keys(m)
+            .sort()
+            .map((date) => ({ date, count: m[date] }));
+
+        const perAccountSeries = Object.fromEntries(
+          Object.entries(perAccountMap).map(([accId, m]) => [
+            accId,
+            mapToSeries(m),
+          ]),
+        );
+
+        return reply.status(200).send({
+          totalListings,
+          totalListingsActive,
+          perAccount: accounts.map((acc) => ({
+            accountId: acc.id,
+            accountName: acc.accountName ?? acc.platform,
+            platform: acc.platform,
+            status: acc.status,
+            totalListings: acc._count.listings ?? 0,
+          })),
+          timeline: {
+            global: mapToSeries(globalMap),
+            perAccount: perAccountSeries,
+          },
+        });
+      } catch (error) {
+        console.error("Erro listing-stats:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar estatísticas de anúncios" });
+      }
+    },
+  );
+
+  /**
    * GET /dashboard/stats
    * Retorna estatísticas gerais do sistema
    */
@@ -347,6 +438,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     "/stock-changes",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      // @deprecated Usado somente pelo dashboard antigo. Remover após migração para listing-stats.
       try {
         const userId = (request as any).user?.id as string;
         const daysParam = (request.query as any)?.days;
