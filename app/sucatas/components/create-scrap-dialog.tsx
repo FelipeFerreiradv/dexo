@@ -183,14 +183,16 @@ export function CreateScrapDialog({
     form.brand && form.model ? getVersionsForModel(form.brand, form.model) : [];
 
   // Load locations
+  const userEmail = session?.user?.email;
+
   useEffect(() => {
-    if (!open || !session?.user?.email || hasLoadedLocationsRef.current) return;
+    if (!open || !userEmail || hasLoadedLocationsRef.current) return;
     hasLoadedLocationsRef.current = true;
 
     const load = async () => {
       try {
         const res = await fetch(`${getApiBaseUrl()}/locations/select`, {
-          headers: { email: session.user!.email! },
+          headers: { email: userEmail! },
         });
         if (res.ok) {
           const data = await res.json();
@@ -207,7 +209,7 @@ export function CreateScrapDialog({
       }
     };
     load();
-  }, [open, session?.user?.email]);
+  }, [open, userEmail]);
 
   // Populate form when editing
   useEffect(() => {

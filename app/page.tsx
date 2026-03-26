@@ -30,8 +30,6 @@ interface OrderOverTimeItem {
   totalAmount: number;
 }
 
-interface ListingStatsResponse extends ListingStats {}
-
 type HeatmapCell = {
   day: string;
   slot: "morning" | "afternoon" | "evening";
@@ -79,7 +77,7 @@ async function getOrdersOverTime(
 
 async function getListingStats(
   userEmail: string,
-): Promise<ListingStatsResponse | null> {
+): Promise<ListingStats | null> {
   try {
     const res = await fetch(
       `${getApiBaseUrl()}/dashboard/listing-stats?days=180`,

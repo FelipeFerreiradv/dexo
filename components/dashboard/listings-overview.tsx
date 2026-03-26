@@ -78,18 +78,20 @@ function colorForIndex(idx: number) {
 }
 
 export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
-  const globalSeries = stats?.timeline.global ?? [];
-  const perAccountSeries = stats?.timeline.perAccount ?? {};
-  const totalListings = stats?.totalListings ?? 0;
-  const totalListingsActive = stats?.totalListingsActive ?? 0;
-
   const merged = useMemo(
-    () => mergeSeries(globalSeries, perAccountSeries),
-    [globalSeries, perAccountSeries],
+    () =>
+      mergeSeries(stats?.timeline.global ?? [], stats?.timeline.perAccount ?? {}),
+    [stats],
   );
 
-  const accountIds = Object.keys(perAccountSeries);
+  const accountIds = useMemo(
+    () => Object.keys(stats?.timeline.perAccount ?? {}),
+    [stats],
+  );
+
   const perAccount = stats?.perAccount ?? [];
+  const totalListings = stats?.totalListings ?? 0;
+  const totalListingsActive = stats?.totalListingsActive ?? 0;
 
   return (
     <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
