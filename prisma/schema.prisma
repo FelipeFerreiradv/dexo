@@ -35,6 +35,7 @@ model User {
   products                  Product[]
   systemLogs                SystemLog[]
   locations                 Location[]
+  scraps                    Scrap[]
 }
 
 model Product {
@@ -73,11 +74,13 @@ model Product {
   shopeeCategorySource   String?
   shopeeCategoryChosenAt DateTime?
   locationId             String?
+  scrapId                String?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
   user                   User?                @relation(fields: [userId], references: [id])
   productLocation        Location?            @relation(fields: [locationId], references: [id])
+  scrap                  Scrap?               @relation(fields: [scrapId], references: [id], onDelete: SetNull)
   listings               ProductListing[]
   stockLogs              StockLog[]
 
@@ -85,6 +88,7 @@ model Product {
   @@index([userId, updatedAt])
   @@index([sku])
   @@index([locationId])
+  @@index([scrapId])
 }
 
 model ProductCompatibility {
@@ -115,6 +119,7 @@ model Location {
   parent      Location?  @relation("LocationHierarchy", fields: [parentId], references: [id])
   children    Location[] @relation("LocationHierarchy")
   products    Product[]
+  scraps      Scrap[]
 
   @@unique([userId, code])
   @@index([userId])
@@ -327,4 +332,73 @@ enum LogLevel {
   INFO
   WARNING
   ERROR
+}
+
+enum ScrapStatus {
+  AVAILABLE
+  IN_USE
+  DEPLETED
+  ARCHIVED
+}
+
+model Scrap {
+  id                 String      @id @default(cuid())
+  userId             String
+
+  // Dados do veículo
+  brand              String
+  model              String
+  year               String?
+  version            String?
+  color              String?
+  plate              String?
+  chassis            String?
+  engineNumber       String?
+  renavam            String?
+  lot                String?
+  deregistrationCert String?
+
+  // Custo e pagamento
+  cost               Decimal?    @db.Decimal(10, 2)
+  paymentMethod      String?
+
+  // Localização (referência à entidade Location existente)
+  locationId         String?
+  location           Location?   @relation(fields: [locationId], references: [id])
+
+  // Dados fiscais / NF-e
+  ncm                String?
+  supplierCnpj       String?
+  accessKey          String?
+  issueDate          DateTime?
+  entryDate          DateTime?
+  nfeNumber          String?
+  nfeProtocol        String?
+  operationNature    String?
+  nfeSeries          String?
+  fiscalModel        String?
+  icmsValue          Decimal?    @db.Decimal(10, 2)
+  icmsCtValue        Decimal?    @db.Decimal(10, 2)
+  freightMode        String?
+  issuePurpose       String?
+
+  // Imagens/Anexos
+  imageUrls          String[]    @default([])
+
+  // Status e controle
+  status             ScrapStatus @default(AVAILABLE)
+  notes              String?
+
+  // Timestamps
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  // Relacionamentos
+  user               User        @relation(fields: [userId], references: [id])
+  products           Product[]
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([plate])
+  @@index([chassis])
 }

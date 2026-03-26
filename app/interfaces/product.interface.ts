@@ -46,6 +46,9 @@ export interface Product {
   // Imagem do produto
   imageUrl?: string;
   imageUrls?: string[];
+
+  // Sucata vinculada
+  scrapId?: string;
 }
 
 import { Platform } from "@prisma/client";
@@ -91,6 +94,9 @@ export interface ProductCreate {
   // Imagem do produto (obrigatória)
   imageUrl: string;
   imageUrls?: string[];
+
+  // Sucata vinculada (opcional)
+  scrapId?: string;
 
   // Opção para criar anúncio no ML automaticamente
   createListing?: boolean;

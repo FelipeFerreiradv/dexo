@@ -75,6 +75,9 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     imageUrl: item.imageUrl ?? undefined,
     imageUrls: (item as any).imageUrls ?? [],
 
+    // Sucata vinculada
+    scrapId: (item as any).scrapId ?? undefined,
+
     // Listagens criadas em marketplaces (simplificadas para UI)
     listings,
   };
@@ -122,6 +125,9 @@ class ProductRepositoryPrisma implements ProductRepository {
           // Imagem do produto
           imageUrl: data.imageUrl,
           imageUrls: data.imageUrls ?? [],
+
+          // Sucata vinculada
+          scrapId: data.scrapId ?? null,
         },
       });
 
@@ -216,6 +222,7 @@ class ProductRepositoryPrisma implements ProductRepository {
             widthCm: true,
             lengthCm: true,
             weightKg: true,
+            scrapId: true,
             listings: {
               select: {
                 marketplaceAccountId: true,

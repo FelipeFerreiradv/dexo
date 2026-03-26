@@ -338,6 +338,34 @@ export function CreateProductDialog({
     [],
   );
 
+  // Sucata selecionada para herdar dados do veículo
+  const [selectedScrap, setSelectedScrap] = useState<{
+    id: string;
+    brand: string;
+    model: string;
+    year?: string;
+    version?: string;
+    plate?: string;
+  } | null>(null);
+  const [availableScraps, setAvailableScraps] = useState<
+    Array<{
+      id: string;
+      brand: string;
+      model: string;
+      year?: string;
+      version?: string;
+      plate?: string;
+    }>
+  >([]);
+  const hasFetchedOnOpenRef = useRef(false);
+  const scrapAutofilledRef = useRef<{
+    brand?: string;
+    model?: string;
+    year?: string;
+    version?: string;
+    sourceVehicle?: string;
+  }>({});
+
   const {
     register,
     handleSubmit,
@@ -626,7 +654,9 @@ export function CreateProductDialog({
 
   // Busca SKU, descrição padrão, preço de custo e status ML em paralelo quando dialog abre
   useEffect(() => {
-    if (open) {
+    if (open && !hasFetchedOnOpenRef.current) {
+      hasFetchedOnOpenRef.current = true;
+
       // Reset auto-detection state when opening modal to avoid stale auto-detected values
       autoDetectedRef.current = null;
       compatAutofilledRef.current = {};
@@ -651,6 +681,23 @@ export function CreateProductDialog({
           }
         } catch (err) {
           console.error("Erro ao buscar localizações:", err);
+        }
+      })();
+
+      // Buscar sucatas disponíveis para seleção
+      (async () => {
+        try {
+          const base = getApiBaseUrl();
+          const respScraps = await fetch(
+            `${base}/scraps?status=AVAILABLE&limit=100`,
+            { headers: { email: session?.user?.email || "" } },
+          );
+          if (respScraps.ok) {
+            const scrapsJson = await respScraps.json();
+            setAvailableScraps(scrapsJson.scraps || []);
+          }
+        } catch (err) {
+          console.error("Erro ao buscar sucatas:", err);
         }
       })();
 
@@ -1905,6 +1952,9 @@ export function CreateProductDialog({
         shopeeCategorySource: data.shopeeCategory ? "manual" : undefined,
         imageUrls: data.imageUrls || [],
 
+        // Sucata vinculada
+        scrapId: selectedScrap?.id || undefined,
+
         // Compatibilidades veiculares
         compatibilities: compatibilities.map((c) => ({
           brand: c.brand,
@@ -1983,6 +2033,8 @@ export function CreateProductDialog({
     setMlCategorySearch("");
     setMlCategoryDropdownOpen(false);
     setCompatibilities([]);
+    setSelectedScrap(null);
+    scrapAutofilledRef.current = {};
     setOpen(false);
   };
 
@@ -2406,6 +2458,76 @@ export function CreateProductDialog({
           {/* Step 4: Veículo e Peça */}
           {currentStep === 4 && (
             <div className="space-y-4">
+              {/* Seleção de Sucata (opcional) */}
+              {availableScraps.length > 0 && (
+                <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
+                  <Label>Vincular a uma sucata (opcional)</Label>
+                  <Select
+                    value={selectedScrap?.id ?? "NONE"}
+                    onValueChange={(v) => {
+                      if (v === "NONE") {
+                        // Desvincular: limpar campos preenchidos pela sucata
+                        const prev = scrapAutofilledRef.current;
+                        if (prev.brand && watch("brand") === prev.brand)
+                          setValue("brand", "");
+                        if (prev.model && watch("model") === prev.model)
+                          setValue("model", "");
+                        if (prev.year && watch("year") === prev.year)
+                          setValue("year", "");
+                        if (prev.version && watch("version") === prev.version)
+                          setValue("version", "");
+                        if (
+                          prev.sourceVehicle &&
+                          watch("sourceVehicle") === prev.sourceVehicle
+                        )
+                          setValue("sourceVehicle", "");
+                        setSelectedScrap(null);
+                        scrapAutofilledRef.current = {};
+                      } else {
+                        const scrap = availableScraps.find((s) => s.id === v);
+                        if (scrap) {
+                          setSelectedScrap(scrap);
+                          // Herdar dados do veículo
+                          const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
+                          setValue("brand", scrap.brand);
+                          setValue("model", scrap.model);
+                          if (scrap.year) setValue("year", scrap.year);
+                          if (scrap.version) setValue("version", scrap.version);
+                          setValue("sourceVehicle", sourceDesc);
+                          scrapAutofilledRef.current = {
+                            brand: scrap.brand,
+                            model: scrap.model,
+                            year: scrap.year,
+                            version: scrap.version,
+                            sourceVehicle: sourceDesc,
+                          };
+                        }
+                      }
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Nenhuma sucata selecionada" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="NONE">Nenhuma sucata</SelectItem>
+                      {availableScraps.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {s.brand} {s.model}
+                          {s.year ? ` ${s.year}` : ""}
+                          {s.plate ? ` — ${s.plate}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedScrap && (
+                    <p className="text-xs text-muted-foreground">
+                      Marca, modelo, ano e versão foram preenchidos pela sucata
+                      selecionada.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="quality">Qualidade</Label>

@@ -18,6 +18,7 @@ import {
   ShoppingBag,
   Store,
   ChevronDown,
+  Car,
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
@@ -58,6 +59,12 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
       { id: "produtos", label: "Produtos", href: "/produtos", icon: Package },
+      {
+        id: "sucatas",
+        label: "Sucatas",
+        href: "/sucatas",
+        icon: Car,
+      },
       {
         id: "localizacoes",
         label: "Localizações",

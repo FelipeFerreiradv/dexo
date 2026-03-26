@@ -72,6 +72,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
         imageUrl,
         imageUrls,
+        // Sucata vinculada
+        scrapId,
         // Opção para criar anúncio
         createListing,
         createListingCategoryId,
@@ -128,6 +130,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         createListing: Boolean(createListing),
         createListingCategoryId: createListingCategoryId ?? undefined,
         listings: Array.isArray(listings) ? listings : undefined,
+        scrapId: typeof scrapId === "string" && scrapId ? scrapId : undefined,
       } as const;
 
       // Server-side validation: reject clearly malformed requests before hitting usecase/DB
@@ -305,6 +308,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           imageUrl: sanitized.imageUrl,
           imageUrls: sanitized.imageUrls,
+
+          // Sucata vinculada
+          scrapId: sanitized.scrapId,
         });
 
         // Registrar log de criação do produto (fire-and-forget, non-blocking)

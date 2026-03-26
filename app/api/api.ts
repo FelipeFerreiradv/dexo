@@ -17,6 +17,7 @@ import { listingRoutes } from "../routes/listing.routes";
 import { systemLogRoutes } from "../routes/system-log.routes";
 import { locationRoutes } from "../routes/location.routes";
 import { compatibilityRoutes } from "../routes/compatibility.routes";
+import { scrapRoutes } from "../routes/scrap.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
@@ -82,6 +83,10 @@ api.register(locationRoutes, {
 
 api.register(compatibilityRoutes, {
   prefix: "/products",
+});
+
+api.register(scrapRoutes, {
+  prefix: "/scraps",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
