@@ -22,16 +22,23 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const since = new Date();
         since.setDate(since.getDate() - days);
 
-        const accounts = await prisma.marketplaceAccount.findMany({
-          where: { userId },
-          select: {
-            id: true,
-            platform: true,
-            accountName: true,
-            status: true,
-            _count: { select: { listings: true } },
-          },
-        });
+        const [accounts, created] = await Promise.all([
+          prisma.marketplaceAccount.findMany({
+            where: { userId },
+            select: {
+              id: true,
+              platform: true,
+              accountName: true,
+              status: true,
+              _count: { select: { listings: true } },
+            },
+          }),
+          prisma.productListing.findMany({
+            where: { createdAt: { gte: since }, marketplaceAccount: { userId } },
+            select: { createdAt: true, marketplaceAccountId: true },
+            orderBy: { createdAt: "asc" },
+          }),
+        ]);
 
         const totalListings = accounts.reduce(
           (sum, acc) => sum + (acc._count.listings ?? 0),
@@ -41,12 +48,6 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const totalListingsActive = accounts
           .filter((acc) => acc.status === "ACTIVE")
           .reduce((sum, acc) => sum + (acc._count.listings ?? 0), 0);
-
-        const created = await prisma.productListing.findMany({
-          where: { createdAt: { gte: since }, marketplaceAccount: { userId } },
-          select: { createdAt: true, marketplaceAccountId: true },
-          orderBy: { createdAt: "asc" },
-        });
 
         const toDayKey = (d: Date) => d.toISOString().slice(0, 10);
         const globalMap: Record<string, number> = {};
