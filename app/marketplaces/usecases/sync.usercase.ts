@@ -85,11 +85,10 @@ export class SyncUseCase {
       );
     }
 
-    // 2. Buscar todos os IDs de itens ATIVOS do vendedor
+    // 2. Buscar todos os IDs do vendedor via scan (status filtrado depois)
     const itemIds = await MLApiService.getSellerItemIds(
       account.accessToken,
       account.externalUserId,
-      "active", // Apenas itens ativos (podem ser atualizados)
     );
 
     if (itemIds.length === 0) {
@@ -102,12 +101,21 @@ export class SyncUseCase {
       itemIds,
     );
 
-    result.totalItems = itemsDetails.length;
-    console.log(`[IMPORT] Starting to process ${result.totalItems} items...`);
+    // Filtrar itens ativos apenas após coletar todos os IDs (scan não aceita status)
+    const activeItems = itemsDetails.filter((item) => item.status === "active");
+    if (activeItems.length === 0) {
+      console.log("[IMPORT] Nenhum item ativo encontrado após filtro");
+      return result;
+    }
+
+    result.totalItems = activeItems.length;
+    console.log(
+      `[IMPORT] Starting to process ${result.totalItems} active items (de ${itemsDetails.length} totais)...`,
+    );
 
     // 4. Preparar dados para processamento otimizado
-    const externalItemIds = itemsDetails.map((item) => item.id);
-    const skus = itemsDetails
+    const externalItemIds = activeItems.map((item) => item.id);
+    const skus = activeItems
       .map((item) => this.extractSku(item))
       .filter(Boolean) as string[];
 
@@ -126,7 +134,7 @@ export class SyncUseCase {
     const products =
       skus.length > 0
         ? await prisma.product.findMany({
-            where: { sku: { in: skus } },
+            where: { sku: { in: skus }, userId: account.userId },
           })
         : [];
     const productsMap = new Map(
@@ -139,7 +147,7 @@ export class SyncUseCase {
 
     // 5. Processar cada item
     let processedCount = 0;
-    for (const item of itemsDetails) {
+    for (const item of activeItems) {
       try {
         const sku = this.extractSku(item);
         const existingListing = existingListingsMap.get(item.id);
@@ -322,7 +330,7 @@ export class SyncUseCase {
     const products =
       skus.length > 0
         ? await prisma.product.findMany({
-            where: { sku: { in: skus } },
+            where: { sku: { in: skus }, userId: account.userId },
           })
         : [];
     const productsMap = new Map(
@@ -640,6 +648,33 @@ export class SyncUseCase {
       if (skuAttr?.value_name) {
         return skuAttr.value_name;
       }
+    }
+
+    // Por fim, tentar extrair SKU das variações (seller_custom_field ou atributos)
+    if (Array.isArray((item as any).variations) && (item as any).variations.length > 0) {
+      const variationSkus = new Set<string>();
+      for (const v of (item as any).variations) {
+        if (v?.seller_custom_field) {
+          variationSkus.add(String(v.seller_custom_field));
+          continue;
+        }
+        if (Array.isArray(v?.attributes)) {
+          const attrSku = v.attributes.find(
+            (attr: any) =>
+              attr.id === "SELLER_SKU" ||
+              attr.id === "SKU" ||
+              (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
+          );
+          if (attrSku?.value_name) {
+            variationSkus.add(String(attrSku.value_name));
+            continue;
+          }
+        }
+      }
+      if (variationSkus.size === 1) {
+        return Array.from(variationSkus)[0];
+      }
+      // Se houver múltiplos SKUs diferentes entre variações, não arriscar matching errado
     }
 
     return null;

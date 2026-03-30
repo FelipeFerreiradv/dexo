@@ -62,18 +62,18 @@ export class MLApiService {
    * Lista todos os IDs de items de um vendedor
    * @param accessToken Token de acesso OAuth
    * @param sellerId ID do vendedor no ML
-   * @param status Filtro por status (opcional, padrÃ£o: "active")
+   * @param status Filtro por status (ignorado na query para evitar cap de offset do ML)
    * @param maxItems Limite mÃ¡ximo de IDs a buscar (opcional, sem limite por padrÃ£o)
    */
   static async getSellerItemIds(
     accessToken: string,
     sellerId: string,
-    status: "active" | "paused" | "closed" = "active", // PadrÃ£o: apenas itens ativos
-    maxItems?: number, // Sem limite por padrÃ£o
+    _status: "active" | "paused" | "closed" = "active", // Status filtrado depois nos detalhes
+    maxItems?: number, // Sem limite por padrão
   ): Promise<string[]> {
     const allItemIds: string[] = [];
-    let offset = 0;
-    const limit = 50; // ML aceita no mÃ¡ximo 50 por pÃ¡gina
+    const limit = 50; // ML aceita no mÃ¡ximo 50 por página
+    let scrollId: string | undefined;
 
     try {
       while (true) {
@@ -82,8 +82,10 @@ export class MLApiService {
           ML_CONSTANTS.API_URL,
         );
         url.searchParams.set("limit", limit.toString());
-        url.searchParams.set("offset", offset.toString());
-        url.searchParams.set("status", status);
+        url.searchParams.set("search_type", "scan"); // scan/scroll para percorrer >1000 resultados
+        if (scrollId) {
+          url.searchParams.set("scroll_id", scrollId);
+        }
 
         const response = await axios.get<MLItemsSearchResponse>(
           url.toString(),
@@ -95,36 +97,42 @@ export class MLApiService {
           },
         );
 
-        allItemIds.push(...response.data.results);
-
-        // Verificar se hÃ¡ mais pÃ¡ginas
-        if (response.data.results.length < limit) {
+        const batchIds = response.data.results || [];
+        if (batchIds.length === 0) {
           break;
         }
-        offset += limit;
 
-        // Limite opcional (se especificado)
+        for (const id of batchIds) {
+          allItemIds.push(id);
+          if (maxItems && allItemIds.length >= maxItems) {
+            break;
+          }
+        }
+
         if (maxItems && allItemIds.length >= maxItems) {
           break;
         }
 
-        // IMPORTANTE: API do ML limita offset a 1000 quando usa filtro de status
-        // Ref: https://developers.mercadolivre.com.br/pt_br/items-e-buscas
-        if (offset >= 1000) {
-          console.log(
-            `[ML API] Reached ML API offset limit (1000 with status filter). Total: ${allItemIds.length}`,
-          );
+        scrollId = response.data.scroll_id || scrollId;
+
+        // Se o ML não retornar scroll_id, evitamos loop infinito
+        if (!scrollId) {
           break;
         }
 
         // Pequena pausa para evitar rate limiting
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 120));
       }
 
-      console.log(`[ML API] Fetched ${allItemIds.length} item IDs`);
+      console.log(
+        `[ML API] Fetched ${allItemIds.length} item IDs via scan (status filtrado depois)`,
+      );
       return allItemIds;
     } catch (error) {
-      console.error(`[ML API] Error fetching IDs at offset ${offset}:`, error);
+      console.error(
+        `[ML API] Error fetching IDs (scroll_id=${scrollId ?? "start"}):`,
+        error,
+      );
       if (axios.isAxiosError(error)) {
         throw new Error(
           `Erro ao buscar items do vendedor: ${error.response?.data?.message || error.message}`,
@@ -163,40 +171,52 @@ export class MLApiService {
 
     const allItems: MLItemDetails[] = [];
 
-    try {
-      let chunkIndex = 0;
-      for (const chunk of chunks) {
-        chunkIndex++;
+    // Limitar concorrência para acelerar sem estourar rate limits
+    const maxConcurrent = Math.min(4, chunks.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+      while (true) {
+        const current = nextIndex++;
+        if (current >= chunks.length) break;
+
+        const chunk = chunks[current];
         const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}`;
 
-        const response = await axios.get<MLMultigetResponse[]>(url, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
+        try {
+          const response = await axios.get<MLMultigetResponse[]>(url, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
 
-        // Filtrar apenas respostas com sucesso
-        for (const item of response.data) {
-          if (item.code === 200) {
-            allItems.push(item.body);
+          for (const item of response.data) {
+            if (item.code === 200) {
+              allItems.push(item.body);
+            }
           }
+        } catch (error) {
+          console.error(`[ML API] Error fetching item details chunk ${current}:`, error);
+          if (axios.isAxiosError(error)) {
+            throw new Error(
+              `Erro ao obter detalhes dos items: ${error.response?.data?.message || error.message}`,
+            );
+          }
+          throw error;
         }
 
-        // Pequena pausa entre chunks para evitar rate limiting
-        if (chunkIndex < chunks.length) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
+        // Pausa leve entre requisições do mesmo worker para suavizar burst
+        if (current + maxConcurrent < chunks.length) {
+          await new Promise((resolve) => setTimeout(resolve, 40));
         }
       }
+    };
 
+    try {
+      await Promise.all(Array.from({ length: maxConcurrent }, worker));
       console.log(`[ML API] Fetched ${allItems.length} item details`);
       return allItems;
     } catch (error) {
-      console.error(`[ML API] Error fetching item details:`, error);
-      if (axios.isAxiosError(error)) {
-        throw new Error(
-          `Erro ao obter detalhes dos items: ${error.response?.data?.message || error.message}`,
-        );
-      }
       throw error;
     }
   }

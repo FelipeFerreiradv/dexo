@@ -200,7 +200,7 @@ export interface ProductUpdateResult {
 
 export interface ProductRepository {
   create(data: ProductCreate): Promise<Product>;
-  findBySku(sku: string, userId?: string): Promise<Product | null>;
+  findBySku(sku: string, userId: string): Promise<Product | null>;
   findById(id: string, userId?: string): Promise<Product | null>;
   findAll(
     options?: {

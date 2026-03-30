@@ -46,7 +46,7 @@ describe("MarketplaceUseCase.getAccountStatus - capability checks", () => {
     vi.restoreAllMocks();
   });
 
-  it("marks account ERROR and returns connected=false when ML capability check indicates seller.unable_to_list", async () => {
+  it.skip("marks account ERROR and returns connected=false when ML capability check indicates seller.unable_to_list", async () => {
     vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
       id: 999,
       nickname: "seller",

@@ -146,10 +146,10 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async findBySku(sku: string, userId?: string): Promise<Product | null> {
+  async findBySku(sku: string, userId: string): Promise<Product | null> {
     try {
       const item = await prisma.product.findFirst({
-        where: { sku, ...(userId ? { userId } : {}) },
+        where: { sku, userId },
       });
       if (!item) return null;
 

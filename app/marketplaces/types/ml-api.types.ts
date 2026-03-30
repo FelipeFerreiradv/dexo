@@ -12,6 +12,7 @@ export interface MLItemsSearchResponse {
     total: number;
   };
   results: string[]; // Array de IDs dos items (ex: ["MLB123", "MLB456"])
+  scroll_id?: string; // usado quando search_type=scan
 }
 
 // Detalhes de um item do Mercado Livre
