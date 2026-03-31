@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   QrCode,
+  Loader2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -176,7 +177,8 @@ export function ProductsList() {
   });
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [isFetching, setIsFetching] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isGeneratingLabels, setIsGeneratingLabels] = useState(false);
@@ -210,7 +212,7 @@ export function ProductsList() {
         showToast("Sessão expirada. Faça login novamente.", "error");
         return;
       }
-      setIsLoading(true);
+      setIsFetching(true);
       try {
         const params = new URLSearchParams({
           page: page.toString(),
@@ -239,7 +241,8 @@ export function ProductsList() {
           "error",
         );
       } finally {
-        setIsLoading(false);
+        setIsFetching(false);
+        setIsBootstrapping(false);
       }
     },
     [debouncedSearch, session?.user?.email, showToast],
@@ -457,7 +460,7 @@ export function ProductsList() {
           </div>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isBootstrapping ? (
             <ProductSkeleton />
           ) : (
             <div className="space-y-4">
@@ -472,6 +475,9 @@ export function ProductsList() {
                       onChange={(e) => handleSearch(e.target.value)}
                       className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
                     />
+                    {isFetching && (
+                      <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground animate-spin" />
+                    )}
                   </div>
                   <span className="text-sm text-muted-foreground">
                     {pagination.total} produto(s)
@@ -511,11 +517,14 @@ export function ProductsList() {
                 </div>
               </div>
 
-              {/* Desktop Table */}
-              {products.length > 0 ? (
-                <>
-                  <div className="hidden sm:block rounded-md border">
-                    <Table>
+              <div
+                className={`space-y-4 transition-opacity ${isFetching ? "opacity-60" : ""}`}
+              >
+                {/* Desktop Table */}
+                {products.length > 0 ? (
+                  <>
+                    <div className="hidden sm:block rounded-md border">
+                      <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="w-12">
@@ -841,6 +850,13 @@ export function ProductsList() {
                       ? `Nenhum produto encontrado para "${searchInput}". Tente outro termo de busca.`
                       : "Comece adicionando seu primeiro produto ao catálogo."}
                   </p>
+                </div>
+              )}
+              </div>
+              {isFetching && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  Atualizando resultados...
                 </div>
               )}
             </div>

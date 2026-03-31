@@ -6,7 +6,7 @@ import {
   Quality,
 } from "../interfaces/product.interface";
 import prisma from "../lib/prisma";
-import { Platform, Product as PrismaProduct } from "@prisma/client";
+import { Platform, Product as PrismaProduct, Prisma } from "@prisma/client";
 
 // Helper para converter Prisma Product para interface Product
 function mapPrismaToProduct(item: PrismaProduct): Product {
@@ -84,6 +84,98 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
 }
 
 class ProductRepositoryPrisma implements ProductRepository {
+  private static extensionsReady = false;
+
+  /**
+   * Garanta extensões e índices para busca tolerante a erro.
+   * Usa IF NOT EXISTS para ser idempotente e roda apenas uma vez por processo.
+   */
+  private async ensureTextSearchExtensions() {
+    if (ProductRepositoryPrisma.extensionsReady) return;
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        -- wrapper imutável sem depender da extensão unaccent
+        CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
+        RETURNS text
+        LANGUAGE sql
+        IMMUTABLE
+        PARALLEL SAFE
+        AS $$
+          SELECT translate(
+            $1,
+            'ÁÀÂÃÄÅáàâãäåÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÕÖóòôõöÚÙÛÜúùûüÇçÑñÝýÿ',
+            'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCcNnYyy'
+          )
+        $$;
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_name_trgm_idx') THEN
+            EXECUTE 'CREATE INDEX product_name_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("name")) gin_trgm_ops)';
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_sku_trgm_idx') THEN
+            EXECUTE 'CREATE INDEX product_sku_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("sku")) gin_trgm_ops)';
+          END IF;
+        END$$;
+      `);
+    } catch (error) {
+      console.error(
+        "[product-search] Falha ao garantir pg_trgm/unaccent; usando busca simples.",
+        error,
+      );
+    } finally {
+      ProductRepositoryPrisma.extensionsReady = true;
+    }
+  }
+
+  private get productSelect() {
+    return {
+      id: true,
+      userId: true,
+      sku: true,
+      name: true,
+      description: true,
+      price: true,
+      stock: true,
+      createdAt: true,
+      updatedAt: true,
+      costPrice: true,
+      markup: true,
+      brand: true,
+      model: true,
+      year: true,
+      version: true,
+      category: true,
+      location: true,
+      locationId: true,
+      partNumber: true,
+      quality: true,
+      isSecurityItem: true,
+      isTraceable: true,
+      sourceVehicle: true,
+      imageUrl: true,
+      imageUrls: true,
+      mlCategoryId: true,
+      mlCategorySource: true,
+      mlCategoryChosenAt: true,
+      shopeeCategoryId: true,
+      shopeeCategorySource: true,
+      shopeeCategoryChosenAt: true,
+      heightCm: true,
+      widthCm: true,
+      lengthCm: true,
+      weightKg: true,
+      scrapId: true,
+      listings: {
+        select: {
+          marketplaceAccountId: true,
+          requestedCategoryId: true,
+          marketplaceAccount: { select: { platform: true } },
+        },
+      },
+    } as const;
+  }
+
   async create(data: ProductCreate): Promise<Product> {
     try {
       const result = await prisma.product.create({
@@ -170,7 +262,97 @@ class ProductRepositoryPrisma implements ProductRepository {
     const page = options?.page ?? 1;
     const limit = options?.limit ?? 10;
     const skip = (page - 1) * limit;
-    const search = options?.search ?? "";
+    const search = (options?.search ?? "").trim();
+
+    // Rota rápida: se o termo é puramente numérico, trate como SKU exato
+    if (search && /^[0-9]+$/.test(search)) {
+      const whereExact: any = {
+        ...(userId ? { userId } : {}),
+        sku: search,
+      };
+      const [items, total] = await Promise.all([
+        prisma.product.findMany({
+          where: whereExact,
+          skip,
+          take: limit,
+          orderBy: { createdAt: "desc" },
+          select: this.productSelect,
+        }),
+        prisma.product.count({ where: whereExact }),
+      ]);
+
+      const products: Product[] = items.map(mapPrismaToProduct);
+      return { products, total };
+    }
+
+    // Fuzzy/híbrida: SKU parcial + nome com tolerância a erros
+    if (search) {
+      try {
+        await this.ensureTextSearchExtensions();
+        const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
+        const userPredicate = userId
+          ? Prisma.sql`"userId" = ${userId} AND`
+          : Prisma.sql``;
+
+        const rankedIds = await prisma.$queryRaw<
+          { id: string; score: number }[]
+        >`
+          SELECT "id",
+                 GREATEST(
+                   similarity(immutable_unaccent(lower("name")), immutable_unaccent(lower(${search}))),
+                   similarity(immutable_unaccent(lower("sku")),  immutable_unaccent(lower(${search})))
+                 ) AS score
+          FROM "Product"
+          WHERE ${userPredicate}
+                (
+                  immutable_unaccent("name") ILIKE immutable_unaccent('%' || ${search} || '%') OR
+                  immutable_unaccent("sku")  ILIKE immutable_unaccent('%' || ${search} || '%') OR
+                  similarity(immutable_unaccent("name"), ${search}) >= ${similarityThreshold} OR
+                  similarity(immutable_unaccent("sku"),  ${search}) >= ${similarityThreshold}
+                )
+          ORDER BY score DESC, "createdAt" DESC
+          OFFSET ${skip} LIMIT ${limit};
+        `;
+
+        const idOrder = rankedIds.map((r) => r.id);
+
+        const totalRow = await prisma.$queryRaw<{ count: bigint }[]>`
+          SELECT COUNT(*)::bigint as count
+          FROM "Product"
+          WHERE ${userPredicate}
+                (
+                  immutable_unaccent("name") ILIKE immutable_unaccent('%' || ${search} || '%') OR
+                  immutable_unaccent("sku")  ILIKE immutable_unaccent('%' || ${search} || '%') OR
+                  similarity(immutable_unaccent("name"), ${search}) >= ${similarityThreshold} OR
+                  similarity(immutable_unaccent("sku"),  ${search}) >= ${similarityThreshold}
+                );
+        `;
+        const total = Number(totalRow?.[0]?.count ?? 0);
+
+        if (idOrder.length === 0) {
+          return { products: [], total };
+        }
+
+        const items = await prisma.product.findMany({
+          where: { id: { in: idOrder }, ...(userId ? { userId } : {}) },
+          select: this.productSelect,
+        });
+
+        const mapped = new Map(
+          items.map((p) => [p.id, mapPrismaToProduct(p as unknown as PrismaProduct)]),
+        );
+        const products = idOrder
+          .map((id) => mapped.get(id))
+          .filter(Boolean) as Product[];
+
+        return { products, total };
+      } catch (error) {
+        console.error(
+          "[product-search] fallback para busca simples devido a erro:",
+          error,
+        );
+      }
+    }
 
     const where: any = userId ? { userId } : {};
     if (search) {
@@ -186,51 +368,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           skip,
           take: limit,
           orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            userId: true,
-            sku: true,
-            name: true,
-            description: true,
-            price: true,
-            stock: true,
-            createdAt: true,
-            updatedAt: true,
-            costPrice: true,
-            markup: true,
-            brand: true,
-            model: true,
-            year: true,
-            version: true,
-            category: true,
-            location: true,
-            locationId: true,
-            partNumber: true,
-            quality: true,
-            isSecurityItem: true,
-            isTraceable: true,
-            sourceVehicle: true,
-            imageUrl: true,
-            imageUrls: true,
-            mlCategoryId: true,
-            mlCategorySource: true,
-            mlCategoryChosenAt: true,
-            shopeeCategoryId: true,
-            shopeeCategorySource: true,
-            shopeeCategoryChosenAt: true,
-            heightCm: true,
-            widthCm: true,
-            lengthCm: true,
-            weightKg: true,
-            scrapId: true,
-            listings: {
-              select: {
-                marketplaceAccountId: true,
-                requestedCategoryId: true,
-                marketplaceAccount: { select: { platform: true } },
-              },
-            },
-          },
+          select: this.productSelect,
         }),
         prisma.product.count({ where }),
       ]);
