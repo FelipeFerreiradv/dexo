@@ -537,6 +537,9 @@ export function ProductsList() {
                           <TableHead className="hidden md:table-cell">
                             Marketplaces
                           </TableHead>
+                          <TableHead className="hidden lg:table-cell">
+                            Localização
+                          </TableHead>
                           <TableHead className="hidden md:table-cell">
                             Preço
                           </TableHead>
@@ -606,6 +609,9 @@ export function ProductsList() {
                             </TableCell>
                             <TableCell className="hidden md:table-cell">
                               <MarketplaceBadges listings={product.listings} />
+                            </TableCell>
+                            <TableCell className="hidden lg:table-cell text-muted-foreground">
+                              {product.location ?? "—"}
                             </TableCell>
                             <TableCell className="hidden md:table-cell">
                               {formatPrice(product.price)}
@@ -719,6 +725,11 @@ export function ProductsList() {
                                   listings={product.listings}
                                   size="sm"
                                 />
+                                {product.location && (
+                                  <p className="text-xs text-muted-foreground">
+                                    {product.location}
+                                  </p>
+                                )}
                               </div>
                               <Badge
                                 variant={getStockBadgeVariant(product.stock)}
