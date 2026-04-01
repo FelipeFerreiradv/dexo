@@ -11,7 +11,7 @@ import {
   Store,
 } from "lucide-react";
 
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -115,6 +115,7 @@ export function OrderDetailSheet({
         side="right"
         className="w-full gap-0 overflow-hidden border-l border-border/60 bg-gradient-to-b from-background via-background to-muted p-0 shadow-2xl sm:max-w-[900px] lg:max-w-[1100px]"
       >
+        <SheetTitle className="sr-only">Detalhes do pedido</SheetTitle>
         <div className="relative flex h-full flex-col">
           <div className="relative isolate overflow-hidden border-b border-border/60 bg-gradient-to-r from-primary/12 via-primary/6 to-transparent pl-6 pr-12 pb-6 pt-6">
             <div

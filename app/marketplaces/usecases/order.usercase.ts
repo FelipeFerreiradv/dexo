@@ -955,7 +955,7 @@ export class OrderUseCase {
       search: options?.search,
       page: options?.page,
       limit: options?.limit,
-      includeItems: false,
+      includeItems: true,
     });
   }
 
