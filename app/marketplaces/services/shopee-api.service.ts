@@ -97,9 +97,11 @@ export class ShopeeApiService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
-          `Erro na API Shopee: ${error.response?.data?.message || error.message}`,
-        );
+        const status = error.response?.status;
+        const message = error.response?.data?.message || error.message;
+        const err = new Error(`Shopee API ${status ?? ""}: ${message}`);
+        (err as any).status = status;
+        throw err;
       }
       throw error;
     }
@@ -131,6 +133,13 @@ export class ShopeeApiService {
     if (params.update_time_to) {
       queryParams.set("update_time_to", params.update_time_to.toString());
     }
+
+    // Garantir que recebemos o item_sku (não vem por padrão na API)
+    const optionalFields =
+      params.response_optional_fields && params.response_optional_fields.length > 0
+        ? params.response_optional_fields
+        : ["item_sku"];
+    queryParams.set("response_optional_fields", optionalFields.join(","));
 
     const fullApiPath = `${apiPath}?${queryParams.toString()}`;
 
@@ -164,6 +173,44 @@ export class ShopeeApiService {
     }
 
     return response.response!;
+  }
+
+  /**
+   * Busca detalhes base de vários itens (melhor para performance e consistência)
+   */
+  static async getItemsBaseInfo(
+    accessToken: string,
+    shopId: number,
+    itemIds: number[],
+  ): Promise<ShopeeItem[]> {
+    const apiPath = "/api/v2/product/get_item_base_info";
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{ item_list: ShopeeItem[] }>
+    >(
+      "POST",
+      apiPath,
+      accessToken,
+      shopId,
+      {
+        item_id_list: itemIds,
+        need_model: true,
+        // Pedir SKU do item e das variações; sem isso a API costuma não retornar
+        response_optional_fields: [
+          "item_sku",
+          "model_list",
+          "price_info",
+          "stock_info",
+          "item_status",
+        ],
+      },
+    );
+
+    if (response.error) {
+      throw new Error(`Erro ao buscar itens base: ${response.message}`);
+    }
+
+    return response.response?.item_list || [];
   }
 
   /**

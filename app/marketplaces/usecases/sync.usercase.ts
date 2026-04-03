@@ -12,6 +12,7 @@ import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
+import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -274,46 +275,227 @@ export class SyncUseCase {
       throw new Error("Conta do Shopee nÃ£o conectada ou sem credenciais");
     }
 
-    // 2. Buscar todos os itens da loja
-    const itemList = await ShopeeApiService.getItemList(
-      account.accessToken,
-      account.shopId,
-      { offset: 0, page_size: 100, item_status: ["NORMAL"] }, // Apenas itens normais/ativos
-    );
+    // Helper: refresh token on auth error (401/403) once
+    let accessToken = account.accessToken;
+    const refreshIfNeeded = async (err: any) => {
+      const status = err?.status;
+      if (
+        (status === 401 || status === 403) &&
+        account.refreshToken &&
+        account.shopId
+      ) {
+        const refreshed = await ShopeeOAuthService.refreshAccessToken(
+          account.refreshToken,
+          account.shopId,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          expiresAt: new Date(Date.now() + refreshed.expire_in * 1000),
+        });
+        accessToken = refreshed.access_token;
+        return true;
+      }
+      return false;
+    };
 
-    const items = itemList?.item || [];
-    if (items.length === 0) {
+    // 2. Buscar todos os itens da loja com paginação
+    const allItemIds: number[] = [];
+    let offset = 0;
+    const pageSize = 100;
+    let page = 1;
+    // Use para fallback se detalhe falhar
+    const listingSnapshot: { item_id: number; item_sku?: string; item_name?: string; status?: string }[] = [];
+    while (true) {
+      try {
+        const itemList = await ShopeeApiService.getItemList(
+          accessToken,
+          account.shopId,
+          {
+            offset,
+            page_size: pageSize,
+            item_status: ["NORMAL"],
+            response_optional_fields: ["item_sku"],
+          },
+        );
+        const items = itemList?.item || [];
+        allItemIds.push(...items.map((i) => i.item_id));
+        listingSnapshot.push(
+          ...items.map((i: any) => ({
+            item_id: i.item_id,
+            item_sku: i.item_sku,
+            item_name: i.item_name,
+            status: i.item_status || i.status,
+          })),
+        );
+        console.log(
+          `[IMPORT][Shopee] page ${page} items=${items.length} has_next=${itemList?.has_next_page}`,
+        );
+        if (!itemList?.has_next_page) break;
+        offset = itemList.next_offset || offset + pageSize;
+        page++;
+      } catch (error: any) {
+        const refreshed = await refreshIfNeeded(error);
+        if (refreshed) continue;
+        throw error;
+      }
+    }
+
+    if (allItemIds.length === 0) {
       return result;
     }
 
-    result.totalItems = items.length;
-    console.log(
-      `[IMPORT] Starting to process ${result.totalItems} Shopee items...`,
-    );
+    // Mapa rápido do snapshot para reaproveitar SKU do get_item_list
+    const snapshotMap = new Map<number, { item_sku?: string; item_name?: string; status?: string }>();
+    for (const snap of listingSnapshot) {
+      snapshotMap.set(snap.item_id, snap);
+    }
 
-    // 3. Buscar detalhes dos itens
+    const sampleSnapshotSkus = Array.from(snapshotMap.values())
+      .map((s) => s.item_sku)
+      .filter(Boolean)
+      .slice(0, 20);
+    console.log(`[IMPORT][Shopee] Sample item_sku from list call:`, sampleSnapshotSkus);
+
+    // 3. Buscar detalhes dos itens em lote (base info) com retry em auth
+    result.totalItems = allItemIds.length;
     const itemDetails: ShopeeItem[] = [];
-    for (const item of items) {
+    const notFoundIds: number[] = [];
+    const batchSize = 50;
+    for (let i = 0; i < allItemIds.length; i += batchSize) {
+      const slice = allItemIds.slice(i, i + batchSize);
       try {
-        const detail = await ShopeeApiService.getItemDetail(
-          account.accessToken,
+        const details = await ShopeeApiService.getItemsBaseInfo(
+          accessToken,
           account.shopId,
-          item.item_id,
+          slice,
         );
-        itemDetails.push(detail);
-      } catch (error) {
-        console.error(
-          `Erro ao buscar detalhes do item ${item.item_id}:`,
-          error,
+        itemDetails.push(...details);
+      } catch (error: any) {
+        const refreshed = await refreshIfNeeded(error);
+        if (refreshed) {
+          try {
+            const details = await ShopeeApiService.getItemsBaseInfo(
+              accessToken,
+              account.shopId,
+              slice,
+            );
+            itemDetails.push(...details);
+            continue;
+          } catch (err) {
+            const status = (err as any)?.status;
+            if (status === 404) {
+              notFoundIds.push(...slice);
+              continue;
+            }
+            console.error(
+              `[IMPORT] Erro em batch ${i /
+                batchSize + 1} após refresh:`,
+              err,
+            );
+            result.errors.push(
+              `Batch ${i / batchSize + 1}: ${
+                err instanceof Error ? err.message : err
+              }`,
+            );
+            continue;
+          }
+        }
+        const status = (error as any)?.status;
+        if (status === 404) {
+          notFoundIds.push(...slice);
+          continue;
+        }
+        console.error(`[IMPORT] Erro em batch ${i / batchSize + 1}:`, error);
+        result.errors.push(
+          `Batch ${i / batchSize + 1}: ${
+            error instanceof Error ? error.message : error
+          }`,
         );
       }
     }
 
-    // 4. Preparar dados para processamento otimizado
-    const externalItemIds = itemDetails.map((item) => item.item_id.toString());
-    const skus = itemDetails
-      .map((item) => item.item_sku)
-      .filter(Boolean) as string[];
+    if (itemDetails.length > 0) {
+      const sample = itemDetails.slice(0, 3).map((it: any) => ({
+        item_id: it.item_id,
+        item_sku: it.item_sku,
+        has_model: it.has_model,
+        model_sample: Array.isArray(it.model_list)
+          ? it.model_list.slice(0, 2).map((m: any) => ({
+              model_id: m.model_id,
+              model_sku: m.model_sku,
+              status: m.status,
+            }))
+          : null,
+      }));
+      console.log(`[IMPORT][Shopee] Sample base_info items:`, sample);
+    }
+
+    // 4. Flatten itens e variações
+    type FlatItem = {
+      externalId: string;
+      sku: string | null;
+      title: string;
+      status: string;
+      itemId: number;
+    };
+    const flatItems: FlatItem[] = [];
+    for (const item of itemDetails) {
+      const baseStatus =
+        item.status === "NORMAL" ? "active" : item.status.toLowerCase();
+      const snapshot = snapshotMap.get(item.item_id);
+      if (item.has_model && Array.isArray((item as any).model_list)) {
+        for (const model of (item as any).model_list as any[]) {
+          const sku =
+            this.extractShopeeSku(item, model) ||
+            snapshot?.item_sku ||
+            null;
+          const externalId = `${item.item_id}:${model.model_id}`;
+          flatItems.push({
+            externalId,
+            sku,
+            title: `${item.item_name} - ${model.model_name || "variação"}`,
+            status:
+              model.status === "NORMAL"
+                ? "active"
+                : (model.status || baseStatus).toLowerCase(),
+            itemId: item.item_id,
+          });
+        }
+      } else {
+        flatItems.push({
+          externalId: item.item_id.toString(),
+          sku: this.extractShopeeSku(item) /* item-level SKU */ || snapshot?.item_sku || null,
+          title: item.item_name,
+          status: baseStatus,
+          itemId: item.item_id,
+        });
+      }
+    }
+
+    // Fallback para itens que retornaram 404: usar snapshot da listagem
+    if (notFoundIds.length > 0) {
+      for (const id of notFoundIds) {
+        const snap = listingSnapshot.find((s) => s.item_id === id);
+        flatItems.push({
+          externalId: id.toString(),
+          sku: snap?.item_sku || null,
+          title: snap?.item_name || `Shopee item ${id}`,
+          status: (snap?.status || "unlinked").toLowerCase(),
+          itemId: id,
+        });
+        result.errors.push(`Item ${id} não encontrado (404); fallback da listagem`);
+      }
+    }
+
+    result.totalItems = flatItems.length || result.totalItems;
+    console.log(
+      `[IMPORT] Starting to process ${result.totalItems} Shopee items (flattened)...`,
+    );
+
+    const externalItemIds = flatItems.map((fi) => fi.externalId);
+    const norm = (s?: string | null) =>
+      s && typeof s === "string" ? s.trim().toLowerCase() : null;
 
     // Buscar listings existentes
     const existingListings = await prisma.productListing.findMany({
@@ -326,43 +508,61 @@ export class SyncUseCase {
       existingListings.map((listing) => [listing.externalListingId, listing]),
     );
 
-    // Buscar produtos por SKU
-    const products =
-      skus.length > 0
-        ? await prisma.product.findMany({
-            where: { sku: { in: skus }, userId: account.userId },
-          })
-        : [];
-    const productsMap = new Map(
-      products.map((product) => [product.sku, product]),
-    );
+    // Indexar todos os produtos do usuário por SKU normalizado (evita case/spacing mismatch)
+    const userProducts = await prisma.product.findMany({
+      where: { userId: account.userId },
+      select: { id: true, sku: true },
+    });
+    const productsMap = new Map<string, { id: string; sku: string }>();
+    for (const p of userProducts) {
+      const key = norm(p.sku);
+      if (key) productsMap.set(key, p);
+    }
 
+    const itemsWithSku = flatItems.filter((i) => norm(i.sku)).length;
+    const matchedSkus = flatItems.filter(
+      (i) => norm(i.sku) && productsMap.has(norm(i.sku) as string),
+    ).length;
+    const sampleSkus = Array.from(
+      new Set(
+        flatItems
+          .map((i) => norm(i.sku))
+          .filter(Boolean)
+          .slice(0, 20) as string[],
+      ),
+    );
     console.log(
-      `[IMPORT] Found ${existingListings.length} existing listings and ${products.length} matching products`,
+      `[IMPORT] Found ${existingListings.length} existing listings; products indexed=${userProducts.length}; itemsWithSku=${itemsWithSku}; itemsWithoutSku=${flatItems.length - itemsWithSku}; matchedSkus=${matchedSkus}`,
+    );
+    console.log(`[IMPORT] Sample SKUs from Shopee (normalized):`, sampleSkus);
+    console.log(
+      `[IMPORT] Account userId=${account.userId}, marketplaceAccountId=${account.id}`,
     );
 
     // 5. Processar cada item
     let processedCount = 0;
-    for (const item of itemDetails) {
+    for (const item of flatItems) {
       try {
-        const sku = item.item_sku;
-        const externalId = item.item_id.toString();
+        const sku = item.sku;
+        const normSku = norm(sku);
+        const externalId = item.externalId;
         const existingListing = existingListingsMap.get(externalId);
-        const product = sku ? productsMap.get(sku) : null;
+        const product = normSku ? productsMap.get(normSku) : null;
 
         let processedItem: ImportResult["items"][0];
 
         if (existingListing) {
           // JÃ¡ existe, atualizar status se necessÃ¡rio
-          const newStatus =
-            item.status === "NORMAL" ? "active" : item.status.toLowerCase();
-          if (existingListing.status !== newStatus) {
-            await ListingRepository.updateStatus(existingListing.id, newStatus);
+          if (existingListing.status !== item.status) {
+            await ListingRepository.updateStatus(
+              existingListing.id,
+              item.status,
+            );
           }
 
           processedItem = {
             externalListingId: externalId,
-            title: item.item_name,
+            title: item.title,
             sku,
             linkedProductId: existingListing.productId,
             status: "linked",
@@ -378,14 +578,13 @@ export class SyncUseCase {
               marketplaceAccountId: account.id,
               externalListingId: externalId,
               externalSku: sku || undefined,
-              status:
-                item.status === "NORMAL" ? "active" : item.status.toLowerCase(),
+              status: item.status,
             });
           }
 
           processedItem = {
             externalListingId: externalId,
-            title: item.item_name,
+            title: item.title,
             sku,
             linkedProductId,
             status: linkedProductId ? "linked" : "unlinked",
@@ -409,11 +608,11 @@ export class SyncUseCase {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
-        result.errors.push(`Item ${item.item_id}: ${errorMessage}`);
+        result.errors.push(`Item ${item.externalId}: ${errorMessage}`);
         result.items.push({
-          externalListingId: item.item_id.toString(),
-          title: item.item_name,
-          sku: item.item_sku,
+          externalListingId: item.externalId,
+          title: item.title,
+          sku: item.sku,
           linkedProductId: null,
           status: "error",
         });
@@ -436,6 +635,7 @@ export class SyncUseCase {
 
     return result;
   }
+
 
   // Sincroniza categorias do Mercado Livre para DB (siteId ex: "MLB")
   static async syncMLCategories(
@@ -681,6 +881,18 @@ export class SyncUseCase {
   }
 
   /**
+   * Extrai SKU de item ou modelo do Shopee, normalizando strings vazias.
+   */
+  private static extractShopeeSku(
+    item: Partial<ShopeeItem>,
+    model?: { model_sku?: string | null },
+  ): string | null {
+    const raw =
+      (model?.model_sku ?? item.item_sku ?? "").toString().trim() || null;
+    return raw && raw.length > 0 ? raw : null;
+  }
+
+  /**
    * Sincroniza o estoque de um produto especÃ­fico para todos os marketplaces conectados
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
@@ -886,21 +1098,47 @@ export class SyncUseCase {
       };
     }
 
+    const parseItemId = (externalId: string) =>
+      parseInt(externalId.split(":")[0], 10);
+    let accessToken = account.accessToken;
+
+    const refreshIfNeeded = async (err: any) => {
+      const status = err?.status;
+      if (
+        (status === 401 || status === 403) &&
+        account.refreshToken &&
+        account.shopId
+      ) {
+        const refreshed = await ShopeeOAuthService.refreshAccessToken(
+          account.refreshToken,
+          account.shopId,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          expiresAt: new Date(Date.now() + refreshed.expire_in * 1000),
+        });
+        accessToken = refreshed.access_token;
+        return true;
+      }
+      return false;
+    };
+
     try {
       // Buscar item atual no Shopee para log
       const currentItem = await ShopeeApiService.getItemDetail(
-        account.accessToken,
+        accessToken,
         account.shopId,
-        parseInt(listing.externalListingId),
+        parseItemId(listing.externalListingId),
       );
 
       const previousStock = currentItem.stock_info[0]?.stock_quantity ?? 0;
 
       // Atualizar estoque no Shopee
       await ShopeeApiService.updateItemStock(
-        account.accessToken,
+        accessToken,
         account.shopId,
-        parseInt(listing.externalListingId),
+        parseItemId(listing.externalListingId),
         product.stock,
       );
 
@@ -926,6 +1164,14 @@ export class SyncUseCase {
         newStock: product.stock,
       };
     } catch (error) {
+      const maybeRefreshed = await refreshIfNeeded(error as any);
+      if (maybeRefreshed) {
+        return this.syncShopeeProductStock(
+          { ...listing, marketplaceAccount: { ...account, accessToken } },
+          product,
+        );
+      }
+
       const errorMessage =
         error instanceof Error ? error.message : "Erro desconhecido";
 

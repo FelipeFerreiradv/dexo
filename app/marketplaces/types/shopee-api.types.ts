@@ -43,6 +43,8 @@ export interface ShopeeItem {
   condition: ShopeeItemCondition;
   video_info: ShopeeItemVideoInfo[];
   brand: ShopeeItemBrand;
+  // Optional: variations/models list (may be absent depending on API params)
+  model_list?: ShopeeItemModel[];
   item_rating?: {
     rating_star?: number;
     rating_count?: number[];
@@ -109,8 +111,18 @@ export type ShopeeItemStatus =
   | "BANNED" // Banido
   | "DELETED" // Deletado
   | "UNLIST" // Deslistado
-  | "REVIEWING" // Em revisão
+  | "REVIEWING" // Em revisao
   | "SELLER_DELETED"; // Deletado pelo vendedor
+
+// Model/variation of an item
+export interface ShopeeItemModel {
+  model_id: number;
+  model_name?: string;
+  model_sku?: string;
+  price_info?: ShopeeItemPriceInfo[];
+  stock_info?: ShopeeItemStockInfo[];
+  status?: ShopeeItemStatus;
+}
 
 export type ShopeeItemCondition =
   | "NEW" // Novo
@@ -190,6 +202,8 @@ export interface ShopeeItemListParams {
   item_status?: ShopeeItemStatus[];
   update_time_from?: number;
   update_time_to?: number;
+  /** Campos opcionais a retornar; quando omitido, a API pode não enviar item_sku. */
+  response_optional_fields?: string[];
 }
 
 // Resposta de upload de imagem
