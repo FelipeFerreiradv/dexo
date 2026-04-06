@@ -210,7 +210,7 @@ model CategoryAlias {
 model Order {
   id                   String             @id @default(cuid())
   marketplaceAccountId String
-  externalOrderId      String             @unique
+  externalOrderId      String
   status               OrderStatus        @default(PENDING)
   totalAmount          Decimal            @db.Decimal(10, 2)
   customerName         String?
@@ -222,6 +222,7 @@ model Order {
 
   @@index([marketplaceAccountId, createdAt])
   @@index([status, updatedAt])
+  @@unique([marketplaceAccountId, externalOrderId])
 }
 
 model OrderItem {

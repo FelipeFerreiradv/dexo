@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Rotas para gerenciar pedidos (Orders)
  * Inclui importação do ML/Shopee e listagem local
  */
@@ -418,3 +418,4 @@ export async function orderRoutes(app: FastifyInstance) {
     },
   );
 }
+

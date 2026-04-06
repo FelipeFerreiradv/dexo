@@ -1,4 +1,4 @@
-/**
+﻿/**
  * OrderUseCase - Orquestração de importação e gestão de pedidos
  *
  * Responsabilidades:
@@ -306,26 +306,71 @@ export class OrderUseCase {
   }
 
   /**
-   * Importa pedidos recentes do Shopee (por usuário -> primeira conta ativa)
+   * Importa pedidos recentes do Shopee (todas as contas ativas do usuário)
    */
   static async importRecentShopeeOrders(
     userId: string,
     days: number = 3,
     deductStock: boolean = true,
   ): Promise<ImportOrdersResult> {
-    const account =
-      await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+    const accounts =
+      await MarketplaceRepository.findAllByUserIdAndPlatform(
         userId,
         Platform.SHOPEE,
       );
-    if (!account || !account.accessToken || !account.shopId) {
+
+    const validAccounts =
+      accounts?.filter((acc) => acc.accessToken && acc.shopId) ?? [];
+
+    if (validAccounts.length === 0) {
       throw new Error("Conta do Shopee não conectada ou sem credenciais");
     }
-    return this.importRecentShopeeOrdersForAccount(
-      account.id,
-      days,
-      deductStock,
-    );
+
+    const aggregated: ImportOrdersResult = {
+      totalOrders: 0,
+      imported: 0,
+      alreadyExists: 0,
+      noProducts: 0,
+      errors: 0,
+      stockDeductions: 0,
+      results: [],
+    };
+
+    // Executa sequencialmente para evitar estouro de rate limit
+    for (const account of validAccounts) {
+      try {
+        const result = await this.importRecentShopeeOrdersForAccount(
+          account.id,
+          days,
+          deductStock,
+        );
+
+        aggregated.totalOrders += result.totalOrders;
+        aggregated.imported += result.imported;
+        aggregated.alreadyExists += result.alreadyExists;
+        aggregated.noProducts += result.noProducts;
+        aggregated.errors += result.errors;
+        aggregated.stockDeductions += result.stockDeductions;
+        aggregated.results.push(...result.results);
+      } catch (error) {
+        aggregated.errors += 1;
+        aggregated.results.push({
+          success: false,
+          orderId: null,
+          externalOrderId: `ACCOUNT_${account.id}`,
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao importar conta Shopee",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: 0,
+        });
+      }
+    }
+
+    return aggregated;
   }
 
   /**
@@ -436,7 +481,10 @@ export class OrderUseCase {
         const created = await orderRepository.create(orderData);
 
         let stockDeducted = false;
-        if (deductStock) {
+        if (
+          deductStock &&
+          ["PAID", "SHIPPED", "DELIVERED"].includes(orderData.status)
+        ) {
           await this.deductStockForOrder(created, "Importação Shopee");
           stockDeducted = true;
         }
@@ -794,7 +842,7 @@ export class OrderUseCase {
       case "READY_TO_SHIP":
       case "PROCESSED":
       case "SHIPPED":
-        return "PAID";
+        return "SHIPPED";
       case "CANCELLED":
       case "IN_CANCEL":
         return "CANCELLED";
@@ -966,3 +1014,4 @@ export class OrderUseCase {
     return orderRepository.findById(orderId);
   }
 }
+
