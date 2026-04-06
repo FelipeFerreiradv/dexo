@@ -37,6 +37,7 @@ interface Listing {
   externalSku: string | null;
   permalink: string | null;
   status: string;
+  shopId?: number | null;
   lastError?: string | null;
   createdAt: string;
   product?: {
@@ -308,6 +309,7 @@ export function ShopeeListingsTab() {
                           listing.externalListingId,
                         );
                         const hasPermalink = Boolean(listing.permalink);
+                        const itemIdOnly = listing.externalListingId?.split(":")[0];
                         const isPlaceholder =
                           (listing.externalListingId || "").startsWith(
                             "PENDING_",
@@ -328,8 +330,8 @@ export function ShopeeListingsTab() {
                             <a
                               href={
                                 listing.permalink ||
-                                (hasExternalId
-                                  ? `https://shopee.com.br/product/${listing.externalListingId}`
+                                (hasExternalId && listing.shopId && itemIdOnly
+                                  ? `https://shopee.com.br/product/${listing.shopId}/${itemIdOnly}`
                                   : "#")
                               }
                               target="_blank"

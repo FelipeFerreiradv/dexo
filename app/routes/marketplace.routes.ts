@@ -864,17 +864,9 @@ export async function marketplaceRoutes(app: FastifyInstance) {
   app.post<{
     Reply: {
       success: boolean;
-      totalItems: number;
-      linkedItems: number;
-      unlinkedItems: number;
-      items: Array<{
-        externalListingId: string;
-        title: string;
-        sku: string | null;
-        linkedProductId: string | null;
-        status: string;
-      }>;
-      errors: string[];
+      importId: string;
+      status: string;
+      message: string;
     };
   }>(
     "/shopee/import",
@@ -891,23 +883,13 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         const accountId =
           accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        const result = await SyncUseCase.importShopeeItems(userId, accountId);
+        const job = await SyncUseCase.startShopeeImportJob(userId, accountId);
 
-        // Registrar log de importaÃ§Ã£o
-        await SystemLogService.logSyncComplete(userId, "IMPORT", "Shopee", {
-          totalItems: result.totalItems,
-          linkedItems: result.linkedItems,
-          unlinkedItems: result.unlinkedItems,
-          errors: result.errors.length,
-        });
-
-        return reply.send({
+        return reply.status(202).send({
           success: true,
-          totalItems: result.totalItems,
-          linkedItems: result.linkedItems,
-          unlinkedItems: result.unlinkedItems,
-          items: result.items,
-          errors: result.errors,
+          importId: job.importId,
+          status: job.status,
+          message: job.message,
         });
       } catch (error) {
         console.error(
@@ -917,6 +899,39 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         return reply.status(500).send({
           error: "Erro ao importar itens",
           message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  app.get<{
+    Params: { importId: string };
+  }>(
+    "/shopee/import/:importId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { importId } = request.params as { importId: string };
+        const status = await SyncUseCase.getShopeeImportJobStatus(
+          userId,
+          importId,
+        );
+
+        return reply.send({
+          success: true,
+          importId: status.importId,
+          status: status.status,
+          progress: status.progress,
+          result: status.result,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const statusCode = /não encontrada|not found/i.test(message) ? 404 : 500;
+        return reply.status(statusCode).send({
+          error: "Erro ao consultar importação Shopee",
+          message,
         });
       }
     },
@@ -937,6 +952,8 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         externalListingId: string;
         externalSku: string | null;
         status: string;
+        permalink: string | null;
+        shopId?: number | null;
         createdAt: Date;
       }>;
     };
@@ -989,6 +1006,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
                 lastError: true,
                 permalink: true,
                 createdAt: true,
+                marketplaceAccount: { select: { shopId: true } },
                 product: {
                   select: {
                     name: true,
@@ -1006,7 +1024,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         return reply.send({
           success: true,
           count: listings.length,
-          listings,
+          listings: listings.map((l: any) => ({
+            ...l,
+            shopId: l.marketplaceAccount?.shopId ?? null,
+          })),
         });
       } catch (error) {
         return reply.status(500).send({

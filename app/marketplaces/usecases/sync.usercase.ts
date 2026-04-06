@@ -27,6 +27,9 @@ export interface ImportResult {
   totalItems: number;
   linkedItems: number;
   unlinkedItems: number;
+  errorCount?: number;
+  itemsPreviewTruncated?: boolean;
+  errorsPreviewTruncated?: boolean;
   errors: string[];
   items: {
     externalListingId: string;
@@ -35,6 +38,58 @@ export interface ImportResult {
     linkedProductId: string | null;
     status: "linked" | "unlinked" | "error";
   }[];
+}
+
+type ImportItemResult = ImportResult["items"][number];
+
+type ShopeeImportJobState = "queued" | "running" | "completed" | "failed";
+
+interface ShopeeImportJobPayload {
+  kind: "SHOPEE_IMPORT";
+  state: ShopeeImportJobState;
+  phase: "queued" | "listing" | "details" | "processing" | "completed" | "failed";
+  importId: string;
+  accountId: string;
+  totalItemIds: number;
+  totalItems: number;
+  pagesFetched: number;
+  fetchedBaseInfo: number;
+  processedItems: number;
+  linkedItems: number;
+  unlinkedItems: number;
+  errorCount: number;
+  itemsPreview: ImportItemResult[];
+  errorsPreview: string[];
+  itemsPreviewTruncated: boolean;
+  errorsPreviewTruncated: boolean;
+  startedAt: string;
+  finishedAt?: string;
+  message?: string;
+}
+
+interface ShopeeImportJobStatus {
+  importId: string;
+  status: ShopeeImportJobState;
+  progress: Omit<ShopeeImportJobPayload, "kind" | "importId" | "accountId">;
+  result?: ImportResult;
+}
+
+interface ShopeeImportProgress {
+  phase?: ShopeeImportJobPayload["phase"];
+  totalItemIds?: number;
+  totalItems?: number;
+  pagesFetched?: number;
+  fetchedBaseInfo?: number;
+  processedItems?: number;
+  linkedItems?: number;
+  unlinkedItems?: number;
+  errorCount?: number;
+  itemsPreview?: ImportItemResult[];
+  errorsPreview?: string[];
+  itemsPreviewTruncated?: boolean;
+  errorsPreviewTruncated?: boolean;
+  message?: string;
+  finishedAt?: string;
 }
 
 export interface SyncResult {
@@ -56,6 +111,14 @@ export interface SyncAllResult {
 }
 
 export class SyncUseCase {
+  private static readonly IMPORT_ITEMS_PREVIEW_LIMIT = 100;
+  private static readonly IMPORT_ERRORS_PREVIEW_LIMIT = 50;
+  private static readonly SHOPEE_IMPORT_BATCH_SIZE = 50;
+  private static readonly SHOPEE_IMPORT_MAX_CONCURRENT_BATCHES = 4;
+  private static readonly SHOPEE_IMPORT_MIN_BASE_INFO_RATIO = 0.1;
+  private static readonly SHOPEE_IMPORT_PROGRESS_FLUSH_MS = 1000;
+  private static readonly SHOPEE_IMPORT_STALE_MS = 15 * 60 * 1000;
+
   /**
    * Importa todos os itens do Mercado Livre e tenta vincular automaticamente por SKU
    * Nota: Apenas cria listings para itens que podem ser vinculados a produtos existentes
@@ -203,7 +266,7 @@ export class SyncUseCase {
           };
         }
 
-        result.items.push(processedItem);
+        pushItemPreview(processedItem);
 
         if (processedItem.status === "linked") {
           result.linkedItems++;
@@ -254,26 +317,61 @@ export class SyncUseCase {
   static async importShopeeItems(
     userId: string,
     accountId?: string,
+    options?: {
+      onProgress?: (progress: ShopeeImportProgress) => Promise<void> | void;
+      skipFinalLog?: boolean;
+    },
   ): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
       unlinkedItems: 0,
+      errorCount: 0,
+      itemsPreviewTruncated: false,
+      errorsPreviewTruncated: false,
       errors: [],
       items: [],
     };
 
     // 1. Buscar conta do marketplace
-    const account = accountId
-      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
-      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
-          userId,
-          Platform.SHOPEE,
-        );
+    const account = await this.resolveShopeeAccount(userId, accountId);
 
-    if (!account || !account.accessToken || !account.shopId) {
-      throw new Error("Conta do Shopee nÃ£o conectada ou sem credenciais");
-    }
+    const emitProgress = async (partial: ShopeeImportProgress = {}) => {
+      if (!options?.onProgress) {
+        return;
+      }
+
+      await options.onProgress({
+        totalItems: result.totalItems,
+        linkedItems: result.linkedItems,
+        unlinkedItems: result.unlinkedItems,
+        errorCount: result.errorCount ?? 0,
+        itemsPreview: [...result.items],
+        errorsPreview: [...result.errors],
+        itemsPreviewTruncated: !!result.itemsPreviewTruncated,
+        errorsPreviewTruncated: !!result.errorsPreviewTruncated,
+        ...partial,
+      });
+    };
+
+    const pushItemPreview = (item: ImportItemResult) => {
+      if (result.items.length < this.IMPORT_ITEMS_PREVIEW_LIMIT) {
+        result.items.push(item);
+        return;
+      }
+
+      result.itemsPreviewTruncated = true;
+    };
+
+    const recordError = (message: string, increment = 1) => {
+      result.errorCount = (result.errorCount ?? 0) + increment;
+      if (result.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
+        result.errors.push(message);
+        return;
+      }
+
+      result.errorsPreviewTruncated = true;
+    };
 
     // Helper: refresh token on auth error (401/403) once
     let accessToken = account.accessToken;
@@ -306,6 +404,12 @@ export class SyncUseCase {
     let page = 1;
     // Use para fallback se detalhe falhar
     const listingSnapshot: { item_id: number; item_sku?: string; item_name?: string; status?: string }[] = [];
+    await emitProgress({
+      phase: "listing",
+      pagesFetched: 0,
+      totalItemIds: 0,
+      message: "Coletando itens Shopee da loja",
+    });
     while (true) {
       try {
         const itemList = await ShopeeApiService.getItemList(
@@ -331,6 +435,12 @@ export class SyncUseCase {
         console.log(
           `[IMPORT][Shopee] page ${page} items=${items.length} has_next=${itemList?.has_next_page}`,
         );
+        await emitProgress({
+          phase: "listing",
+          pagesFetched: page,
+          totalItemIds: allItemIds.length,
+          message: `Itens Shopee coletados: ${allItemIds.length}`,
+        });
         if (!itemList?.has_next_page) break;
         offset = itemList.next_offset || offset + pageSize;
         page++;
@@ -342,6 +452,12 @@ export class SyncUseCase {
     }
 
     if (allItemIds.length === 0) {
+      await emitProgress({
+        phase: "completed",
+        totalItemIds: 0,
+        totalItems: 0,
+        message: "Nenhum item Shopee encontrado para importar",
+      });
       return result;
     }
 
@@ -361,58 +477,117 @@ export class SyncUseCase {
     result.totalItems = allItemIds.length;
     const itemDetails: ShopeeItem[] = [];
     const notFoundIds: number[] = [];
-    const batchSize = 50;
+    const batchSize = this.SHOPEE_IMPORT_BATCH_SIZE;
+    const batches: number[][] = [];
     for (let i = 0; i < allItemIds.length; i += batchSize) {
-      const slice = allItemIds.slice(i, i + batchSize);
-      try {
-        const details = await ShopeeApiService.getItemsBaseInfo(
-          accessToken,
-          account.shopId,
-          slice,
-        );
-        itemDetails.push(...details);
-      } catch (error: any) {
-        const refreshed = await refreshIfNeeded(error);
-        if (refreshed) {
-          try {
-            const details = await ShopeeApiService.getItemsBaseInfo(
-              accessToken,
-              account.shopId,
-              slice,
-            );
-            itemDetails.push(...details);
-            continue;
-          } catch (err) {
-            const status = (err as any)?.status;
-            if (status === 404) {
-              notFoundIds.push(...slice);
+      batches.push(allItemIds.slice(i, i + batchSize));
+    }
+
+    let nextBatchIndex = 0;
+    const worker = async () => {
+      while (true) {
+        const batchIndex = nextBatchIndex++;
+        if (batchIndex >= batches.length) {
+          break;
+        }
+
+        const slice = batches[batchIndex];
+        const batchLabel = batchIndex + 1;
+
+        try {
+          const details = await ShopeeApiService.getItemsBaseInfo(
+            accessToken,
+            account.shopId,
+            slice,
+          );
+          itemDetails.push(...details);
+          await emitProgress({
+            phase: "details",
+            totalItemIds: allItemIds.length,
+            fetchedBaseInfo: itemDetails.length,
+            message: `Detalhes Shopee carregados: ${itemDetails.length}/${allItemIds.length}`,
+          });
+        } catch (error: any) {
+          const refreshed = await refreshIfNeeded(error);
+          if (refreshed) {
+            try {
+              const details = await ShopeeApiService.getItemsBaseInfo(
+                accessToken,
+                account.shopId,
+                slice,
+              );
+              itemDetails.push(...details);
+              await emitProgress({
+                phase: "details",
+                totalItemIds: allItemIds.length,
+                fetchedBaseInfo: itemDetails.length,
+                message: `Detalhes Shopee carregados: ${itemDetails.length}/${allItemIds.length}`,
+              });
+              continue;
+            } catch (err) {
+              const status = (err as any)?.status;
+              if (status === 404) {
+                notFoundIds.push(...slice);
+                recordError(
+                  `Batch ${batchLabel}: ${slice.length} item(ns) não encontrado(s) em get_item_base_info`,
+                  slice.length,
+                );
+                continue;
+              }
+              console.error(`[IMPORT] Erro em batch ${batchLabel} após refresh:`, err);
+              recordError(
+                `Batch ${batchLabel}: ${err instanceof Error ? err.message : err}`,
+                slice.length,
+              );
               continue;
             }
-            console.error(
-              `[IMPORT] Erro em batch ${i /
-                batchSize + 1} após refresh:`,
-              err,
-            );
-            result.errors.push(
-              `Batch ${i / batchSize + 1}: ${
-                err instanceof Error ? err.message : err
-              }`,
+          }
+          const status = (error as any)?.status;
+          if (status === 404) {
+            notFoundIds.push(...slice);
+            recordError(
+              `Batch ${batchLabel}: ${slice.length} item(ns) não encontrado(s) em get_item_base_info`,
+              slice.length,
             );
             continue;
           }
+          console.error(`[IMPORT] Erro em batch ${batchLabel}:`, error);
+          recordError(
+            `Batch ${batchLabel}: ${error instanceof Error ? error.message : error}`,
+            slice.length,
+          );
         }
-        const status = (error as any)?.status;
-        if (status === 404) {
-          notFoundIds.push(...slice);
-          continue;
-        }
-        console.error(`[IMPORT] Erro em batch ${i / batchSize + 1}:`, error);
-        result.errors.push(
-          `Batch ${i / batchSize + 1}: ${
-            error instanceof Error ? error.message : error
-          }`,
-        );
       }
+    };
+
+    const workers = Array.from(
+      {
+        length: Math.min(
+          this.SHOPEE_IMPORT_MAX_CONCURRENT_BATCHES,
+          batches.length,
+        ),
+      },
+      () => worker(),
+    );
+    await Promise.all(workers);
+
+    const baseInfoRatio =
+      allItemIds.length > 0 ? itemDetails.length / allItemIds.length : 1;
+    if (
+      allItemIds.length > 0 &&
+      (itemDetails.length === 0 ||
+        baseInfoRatio < this.SHOPEE_IMPORT_MIN_BASE_INFO_RATIO)
+    ) {
+      const ratioPct = (baseInfoRatio * 100).toFixed(1);
+      const message = `Falha crítica ao obter detalhes base do Shopee (${itemDetails.length}/${allItemIds.length}, ${ratioPct}% de sucesso)`;
+      recordError(message, Math.max(allItemIds.length - itemDetails.length, 1));
+      await emitProgress({
+        phase: "failed",
+        totalItemIds: allItemIds.length,
+        fetchedBaseInfo: itemDetails.length,
+        message,
+      });
+      throw new Error(message);
     }
 
     if (itemDetails.length > 0) {
@@ -432,6 +607,16 @@ export class SyncUseCase {
     }
 
     // 4. Flatten itens e variações
+    const normalizeShopeeStatus = (status?: string | null) => {
+      if (typeof status === "string" && status.length > 0) {
+        const upper = status.toUpperCase();
+        if (upper === "NORMAL") return "active";
+        if (upper === "UNLINKED") return "pending";
+        return upper.toLowerCase();
+      }
+      return "active";
+    };
+
     type FlatItem = {
       externalId: string;
       sku: string | null;
@@ -441,8 +626,7 @@ export class SyncUseCase {
     };
     const flatItems: FlatItem[] = [];
     for (const item of itemDetails) {
-      const baseStatus =
-        item.status === "NORMAL" ? "active" : item.status.toLowerCase();
+      const baseStatus = normalizeShopeeStatus(item.status);
       const snapshot = snapshotMap.get(item.item_id);
       if (item.has_model && Array.isArray((item as any).model_list)) {
         for (const model of (item as any).model_list as any[]) {
@@ -456,9 +640,9 @@ export class SyncUseCase {
             sku,
             title: `${item.item_name} - ${model.model_name || "variação"}`,
             status:
-              model.status === "NORMAL"
-                ? "active"
-                : (model.status || baseStatus).toLowerCase(),
+              model.status
+                ? normalizeShopeeStatus(model.status)
+                : baseStatus,
             itemId: item.item_id,
           });
         }
@@ -475,16 +659,18 @@ export class SyncUseCase {
 
     // Fallback para itens que retornaram 404: usar snapshot da listagem
     if (notFoundIds.length > 0) {
+      console.warn(
+        `[IMPORT] ${notFoundIds.length} item(ns) Shopee com 404 em base_info; usando snapshot da listagem como fallback`,
+      );
       for (const id of notFoundIds) {
         const snap = listingSnapshot.find((s) => s.item_id === id);
         flatItems.push({
           externalId: id.toString(),
           sku: snap?.item_sku || null,
           title: snap?.item_name || `Shopee item ${id}`,
-          status: (snap?.status || "unlinked").toLowerCase(),
+          status: normalizeShopeeStatus(snap?.status || "unlinked"),
           itemId: id,
         });
-        result.errors.push(`Item ${id} não encontrado (404); fallback da listagem`);
       }
     }
 
@@ -492,6 +678,13 @@ export class SyncUseCase {
     console.log(
       `[IMPORT] Starting to process ${result.totalItems} Shopee items (flattened)...`,
     );
+    await emitProgress({
+      phase: "processing",
+      totalItemIds: allItemIds.length,
+      totalItems: result.totalItems,
+      fetchedBaseInfo: itemDetails.length,
+      message: `Processando ${result.totalItems} item(ns) Shopee`,
+    });
 
     const externalItemIds = flatItems.map((fi) => fi.externalId);
     const norm = (s?: string | null) =>
@@ -509,10 +702,20 @@ export class SyncUseCase {
     );
 
     // Indexar todos os produtos do usuário por SKU normalizado (evita case/spacing mismatch)
-    const userProducts = await prisma.product.findMany({
-      where: { userId: account.userId },
-      select: { id: true, sku: true },
-    });
+    // Buscar apenas os SKUs que aparecem nos itens, evitando ler todos os produtos do usuário
+    const uniqueSkus = Array.from(
+      new Set(
+        flatItems
+          .map((i) => norm(i.sku))
+          .filter((s): s is string => Boolean(s)),
+      ),
+    );
+    const userProducts = uniqueSkus.length
+      ? await prisma.product.findMany({
+          where: { userId: account.userId, sku: { in: uniqueSkus } },
+          select: { id: true, sku: true },
+        })
+      : [];
     const productsMap = new Map<string, { id: string; sku: string }>();
     for (const p of userProducts) {
       const key = norm(p.sku);
@@ -604,12 +807,20 @@ export class SyncUseCase {
           console.log(
             `[IMPORT] Processed ${processedCount}/${result.totalItems} Shopee items (${result.linkedItems} linked, ${result.unlinkedItems} unlinked)`,
           );
+          await emitProgress({
+            phase: "processing",
+            totalItems: result.totalItems,
+            processedItems: processedCount,
+            linkedItems: result.linkedItems,
+            unlinkedItems: result.unlinkedItems,
+            message: `Processados ${processedCount}/${result.totalItems} item(ns) Shopee`,
+          });
         }
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
-        result.errors.push(`Item ${item.externalId}: ${errorMessage}`);
-        result.items.push({
+        recordError(`Item ${item.externalId}: ${errorMessage}`);
+        pushItemPreview({
           externalListingId: item.externalId,
           title: item.title,
           sku: item.sku,
@@ -621,19 +832,265 @@ export class SyncUseCase {
     }
 
     console.log(
-      `[IMPORT] Completed processing ${processedCount} Shopee items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
+      `[IMPORT] Completed processing ${processedCount} Shopee items. Final: ${result.linkedItems} linked, ${result.unlinkedItems} unlinked, ${result.errorCount} errors`,
     );
+    await emitProgress({
+      phase: "completed",
+      totalItems: result.totalItems,
+      processedItems: processedCount,
+      linkedItems: result.linkedItems,
+      unlinkedItems: result.unlinkedItems,
+      finishedAt: new Date().toISOString(),
+      message: `Importação Shopee concluída: ${result.linkedItems} vinculado(s), ${result.unlinkedItems} não vinculado(s)`,
+    });
 
     // Registrar log da importaÃ§Ã£o
-    await this.logSync(
-      account.id,
-      SyncType.PRODUCT_SYNC,
-      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Importados ${result.totalItems} itens do Shopee, ${result.linkedItems} vinculados`,
-      { totalItems: result.totalItems, linkedItems: result.linkedItems },
-    );
+    if (!options?.skipFinalLog) {
+      await this.logSync(
+        account.id,
+        SyncType.PRODUCT_SYNC,
+        result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+        `Importados ${result.totalItems} itens do Shopee, ${result.linkedItems} vinculados`,
+        {
+          totalItems: result.totalItems,
+          linkedItems: result.linkedItems,
+          unlinkedItems: result.unlinkedItems,
+          errorCount: result.errorCount ?? 0,
+        },
+      );
+    }
 
     return result;
+  }
+
+  static async startShopeeImportJob(
+    userId: string,
+    accountId?: string,
+  ): Promise<{ importId: string; status: ShopeeImportJobState; message: string }> {
+    const account = await this.resolveShopeeAccount(userId, accountId);
+    const queuedMessage = "Importação Shopee enfileirada";
+    const created = await prisma.syncLog.create({
+      data: {
+        marketplaceAccountId: account.id,
+        type: SyncType.PRODUCT_SYNC,
+        status: SyncStatus.WARNING,
+        message: queuedMessage,
+        payload: {} as object,
+      },
+    });
+
+    let payload = this.createShopeeImportPayload(created.id, account.id, {
+      message: queuedMessage,
+    });
+    await prisma.syncLog.update({
+      where: { id: created.id },
+      data: {
+        status: this.getShopeeImportSyncStatus(payload.state, payload.errorCount),
+        message: payload.message,
+        payload: payload as object,
+      },
+    });
+
+    setImmediate(async () => {
+      let lastFlushAt = 0;
+      const flushProgress = async (
+        partial: ShopeeImportProgress,
+        force = false,
+      ) => {
+        payload = this.mergeShopeeImportPayload(payload, partial);
+        if (
+          !force &&
+          Date.now() - lastFlushAt < this.SHOPEE_IMPORT_PROGRESS_FLUSH_MS
+        ) {
+          return;
+        }
+
+        await prisma.syncLog.update({
+          where: { id: created.id },
+          data: {
+            status: this.getShopeeImportSyncStatus(
+              payload.state,
+              payload.errorCount,
+            ),
+            message: payload.message,
+            payload: payload as object,
+          },
+        });
+        lastFlushAt = Date.now();
+      };
+
+      try {
+        await flushProgress(
+          {
+            phase: "listing",
+            message: "Importação Shopee iniciada",
+          },
+          true,
+        );
+
+        const result = await this.importShopeeItems(userId, accountId, {
+          skipFinalLog: true,
+          onProgress: async (progress) => {
+            await flushProgress(progress);
+          },
+        });
+
+        await flushProgress(
+          {
+            phase: "completed",
+            totalItems: result.totalItems,
+            processedItems: result.totalItems,
+            linkedItems: result.linkedItems,
+            unlinkedItems: result.unlinkedItems,
+            errorCount: result.errorCount ?? result.errors.length,
+            itemsPreview: result.items,
+            errorsPreview: result.errors,
+            itemsPreviewTruncated: !!result.itemsPreviewTruncated,
+            errorsPreviewTruncated: !!result.errorsPreviewTruncated,
+            finishedAt: new Date().toISOString(),
+            message: this.formatShopeeImportSummary(result),
+          },
+          true,
+        );
+
+        await (
+          await import("@/app/services/system-log.service")
+        ).SystemLogService.logSyncComplete(userId, "IMPORT", "Shopee", {
+          totalItems: result.totalItems,
+          linkedItems: result.linkedItems,
+          unlinkedItems: result.unlinkedItems,
+          errorCount: result.errorCount ?? result.errors.length,
+          importId: created.id,
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const errorsPreview = [...payload.errorsPreview];
+        if (
+          !errorsPreview.includes(errorMessage) &&
+          errorsPreview.length < this.IMPORT_ERRORS_PREVIEW_LIMIT
+        ) {
+          errorsPreview.push(errorMessage);
+        }
+
+        await flushProgress(
+          {
+            phase: "failed",
+            errorCount: Math.max(payload.errorCount, 1),
+            errorsPreview,
+            errorsPreviewTruncated:
+              payload.errorsPreviewTruncated ||
+              errorsPreview.length >= this.IMPORT_ERRORS_PREVIEW_LIMIT,
+            finishedAt: new Date().toISOString(),
+            message: errorMessage,
+          },
+          true,
+        );
+
+        await (
+          await import("@/app/services/system-log.service")
+        ).SystemLogService.logSyncError(
+          userId,
+          "IMPORT",
+          "Shopee",
+          `${errorMessage} (importId=${created.id})`,
+        );
+        console.error(
+          `[ShopeeImportJob] importId=${created.id} failed:`,
+          error instanceof Error ? error.stack : error,
+        );
+      }
+    });
+
+    return {
+      importId: created.id,
+      status: payload.state,
+      message: queuedMessage,
+    };
+  }
+
+  static async getShopeeImportJobStatus(
+    userId: string,
+    importId: string,
+  ): Promise<ShopeeImportJobStatus> {
+    const syncLog = await prisma.syncLog.findFirst({
+      where: {
+        id: importId,
+        marketplaceAccount: {
+          userId,
+          platform: Platform.SHOPEE,
+        },
+      },
+    });
+
+    if (!syncLog) {
+      throw new Error("Importação Shopee não encontrada");
+    }
+
+    let payload = this.parseShopeeImportPayload(syncLog.payload, syncLog.id);
+    const lastUpdatedMs =
+      payload.finishedAt
+        ? Date.parse(payload.finishedAt)
+        : payload.startedAt
+          ? Date.parse(payload.startedAt)
+          : syncLog.createdAt.getTime();
+
+    if (
+      (payload.state === "queued" || payload.state === "running") &&
+      Date.now() - lastUpdatedMs > this.SHOPEE_IMPORT_STALE_MS
+    ) {
+      payload = this.mergeShopeeImportPayload(payload, {
+        phase: "failed",
+        finishedAt: new Date().toISOString(),
+        message:
+          "Importação Shopee expirada antes da conclusão. Inicie uma nova importação.",
+      });
+      await prisma.syncLog.update({
+        where: { id: syncLog.id },
+        data: {
+          status: SyncStatus.FAILURE,
+          message: payload.message,
+          payload: payload as object,
+        },
+      });
+    }
+
+    return {
+      importId: syncLog.id,
+      status: payload.state,
+      progress: {
+        state: payload.state,
+        phase: payload.phase,
+        totalItemIds: payload.totalItemIds,
+        totalItems: payload.totalItems,
+        pagesFetched: payload.pagesFetched,
+        fetchedBaseInfo: payload.fetchedBaseInfo,
+        processedItems: payload.processedItems,
+        linkedItems: payload.linkedItems,
+        unlinkedItems: payload.unlinkedItems,
+        errorCount: payload.errorCount,
+        itemsPreview: payload.itemsPreview,
+        errorsPreview: payload.errorsPreview,
+        itemsPreviewTruncated: payload.itemsPreviewTruncated,
+        errorsPreviewTruncated: payload.errorsPreviewTruncated,
+        startedAt: payload.startedAt,
+        finishedAt: payload.finishedAt,
+        message: payload.message,
+      },
+      result:
+        payload.state === "completed" || payload.state === "failed"
+          ? {
+              totalItems: payload.totalItems,
+              linkedItems: payload.linkedItems,
+              unlinkedItems: payload.unlinkedItems,
+              errorCount: payload.errorCount,
+              itemsPreviewTruncated: payload.itemsPreviewTruncated,
+              errorsPreviewTruncated: payload.errorsPreviewTruncated,
+              items: payload.itemsPreview,
+              errors: payload.errorsPreview,
+            }
+          : undefined,
+    };
   }
 
 
@@ -831,6 +1288,113 @@ export class SyncUseCase {
   /**
    * Extrai o SKU de um item do ML (pode estar em diferentes lugares)
    */
+  private static async resolveShopeeAccount(userId: string, accountId?: string) {
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.SHOPEE,
+        );
+
+    if (!account || !account.accessToken || !account.shopId) {
+      throw new Error("Conta do Shopee não conectada ou sem credenciais");
+    }
+
+    return account;
+  }
+
+  private static createShopeeImportPayload(
+    importId: string,
+    accountId: string,
+    partial: Partial<ShopeeImportJobPayload> = {},
+  ): ShopeeImportJobPayload {
+    return {
+      kind: "SHOPEE_IMPORT",
+      state: "queued",
+      phase: "queued",
+      importId,
+      accountId,
+      totalItemIds: 0,
+      totalItems: 0,
+      pagesFetched: 0,
+      fetchedBaseInfo: 0,
+      processedItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      errorCount: 0,
+      itemsPreview: [],
+      errorsPreview: [],
+      itemsPreviewTruncated: false,
+      errorsPreviewTruncated: false,
+      startedAt: new Date().toISOString(),
+      ...partial,
+    };
+  }
+
+  private static parseShopeeImportPayload(
+    payload: unknown,
+    importId: string,
+  ): ShopeeImportJobPayload {
+    const parsed =
+      payload && typeof payload === "object"
+        ? (payload as Partial<ShopeeImportJobPayload>)
+        : {};
+
+    return this.createShopeeImportPayload(
+      importId,
+      parsed.accountId || "",
+      parsed,
+    );
+  }
+
+  private static mergeShopeeImportPayload(
+    current: ShopeeImportJobPayload,
+    partial: ShopeeImportProgress,
+  ): ShopeeImportJobPayload {
+    const phase = partial.phase ?? current.phase;
+    let state = current.state;
+    if (phase === "completed") {
+      state = "completed";
+    } else if (phase === "failed") {
+      state = "failed";
+    } else if (phase !== "queued") {
+      state = "running";
+    }
+
+    return {
+      ...current,
+      ...partial,
+      state,
+      phase,
+      itemsPreview: partial.itemsPreview ?? current.itemsPreview,
+      errorsPreview: partial.errorsPreview ?? current.errorsPreview,
+      itemsPreviewTruncated:
+        partial.itemsPreviewTruncated ?? current.itemsPreviewTruncated,
+      errorsPreviewTruncated:
+        partial.errorsPreviewTruncated ?? current.errorsPreviewTruncated,
+      finishedAt: partial.finishedAt ?? current.finishedAt,
+      message: partial.message ?? current.message,
+    };
+  }
+
+  private static getShopeeImportSyncStatus(
+    state: ShopeeImportJobState,
+    errorCount: number,
+  ): SyncStatus {
+    if (state === "failed") {
+      return SyncStatus.FAILURE;
+    }
+    if (state === "completed" && errorCount === 0) {
+      return SyncStatus.SUCCESS;
+    }
+    return SyncStatus.WARNING;
+  }
+
+  private static formatShopeeImportSummary(result: ImportResult): string {
+    const errorCount = result.errorCount ?? result.errors.length;
+    return `Importação Shopee concluída: ${result.totalItems} item(ns), ${result.linkedItems} vinculado(s), ${result.unlinkedItems} não vinculado(s), ${errorCount} erro(s)`;
+  }
+
   private static extractSku(item: MLItemDetails): string | null {
     // Primeiro, verificar seller_custom_field
     if (item.seller_custom_field) {
@@ -890,6 +1454,22 @@ export class SyncUseCase {
     const raw =
       (model?.model_sku ?? item.item_sku ?? "").toString().trim() || null;
     return raw && raw.length > 0 ? raw : null;
+  }
+
+  private static getShopeeAvailableStock(item: Partial<ShopeeItem> & any): number {
+    const summaryStock = item?.stock_info_v2?.summary_info?.total_available_stock;
+    if (typeof summaryStock === "number") {
+      return summaryStock;
+    }
+
+    if (Array.isArray(item?.stock_info) && item.stock_info.length > 0) {
+      const quantity = item.stock_info[0]?.stock_quantity;
+      if (typeof quantity === "number") {
+        return quantity;
+      }
+    }
+
+    return 0;
   }
 
   /**
@@ -1126,13 +1706,13 @@ export class SyncUseCase {
 
     try {
       // Buscar item atual no Shopee para log
-      const currentItem = await ShopeeApiService.getItemDetail(
+      const currentItem = await ShopeeApiService.getItemBaseInfo(
         accessToken,
         account.shopId,
         parseItemId(listing.externalListingId),
       );
 
-      const previousStock = currentItem.stock_info[0]?.stock_quantity ?? 0;
+      const previousStock = this.getShopeeAvailableStock(currentItem);
 
       // Atualizar estoque no Shopee
       await ShopeeApiService.updateItemStock(
@@ -1546,7 +2126,7 @@ export class SyncUseCase {
       }
 
       // Buscar item atual no Shopee
-      const currentItem = await ShopeeApiService.getItemDetail(
+      const currentItem = await ShopeeApiService.getItemBaseInfo(
         account.accessToken,
         account.shopId,
         parseInt(externalListingId),
@@ -1587,7 +2167,7 @@ export class SyncUseCase {
       console.log(`[SYNC] Resposta do Shopee:`, updatedItem);
 
       result.success = true;
-      result.previousStock = currentItem.stock_info[0]?.stock_quantity ?? 0;
+      result.previousStock = this.getShopeeAvailableStock(currentItem);
       result.newStock = product.stock;
       result.previousPrice = currentItem.price_info[0]?.current_price ?? 0;
       result.newPrice = Number(product.price);

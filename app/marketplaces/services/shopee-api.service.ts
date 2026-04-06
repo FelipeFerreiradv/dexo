@@ -162,17 +162,7 @@ export class ShopeeApiService {
     shopId: number,
     itemId: number,
   ): Promise<ShopeeItem> {
-    const apiPath = "/api/v2/product/get_item_detail";
-
-    const response = await this.makeAuthenticatedRequest<
-      ShopeeApiResponse<ShopeeItem>
-    >("GET", `${apiPath}?item_id=${itemId}`, accessToken, shopId);
-
-    if (response.error) {
-      throw new Error(`Erro ao buscar item: ${response.message}`);
-    }
-
-    return response.response!;
+    return this.getItemBaseInfo(accessToken, shopId, itemId);
   }
 
   /**
@@ -183,13 +173,29 @@ export class ShopeeApiService {
     shopId: number,
     itemIds: number[],
   ): Promise<ShopeeItem[]> {
+    if (itemIds.length === 0) {
+      return [];
+    }
+
     const apiPath = "/api/v2/product/get_item_base_info";
+    const queryParams = new URLSearchParams({
+      item_id_list: itemIds.join(","),
+      need_model: "true",
+      response_optional_fields: [
+        "item_sku",
+        "model_list",
+        "price_info",
+        "stock_info",
+        "item_status",
+      ].join(","),
+    });
+    const fullApiPath = `${apiPath}?${queryParams.toString()}`;
 
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<{ item_list: ShopeeItem[] }>
     >(
-      "POST",
-      apiPath,
+      "GET",
+      fullApiPath,
       accessToken,
       shopId,
       {
@@ -211,6 +217,24 @@ export class ShopeeApiService {
     }
 
     return response.response?.item_list || [];
+  }
+
+  /**
+   * Busca os dados base de um unico item.
+   */
+  static async getItemBaseInfo(
+    accessToken: string,
+    shopId: number,
+    itemId: number,
+  ): Promise<ShopeeItem> {
+    const items = await this.getItemsBaseInfo(accessToken, shopId, [itemId]);
+    const item = items[0];
+
+    if (!item) {
+      throw new Error(`Item Shopee ${itemId} nao encontrado`);
+    }
+
+    return item;
   }
 
   /**

@@ -44,8 +44,50 @@ interface ImportResult {
   totalItems: number;
   linkedItems: number;
   unlinkedItems: number;
+  errorCount?: number;
+  itemsPreviewTruncated?: boolean;
+  errorsPreviewTruncated?: boolean;
   items: ImportItem[];
   errors: string[];
+}
+
+interface ImportProgress {
+  state: "queued" | "running" | "completed" | "failed";
+  phase:
+    | "queued"
+    | "listing"
+    | "details"
+    | "processing"
+    | "completed"
+    | "failed";
+  totalItemIds: number;
+  totalItems: number;
+  pagesFetched: number;
+  fetchedBaseInfo: number;
+  processedItems: number;
+  linkedItems: number;
+  unlinkedItems: number;
+  errorCount: number;
+  itemsPreviewTruncated?: boolean;
+  errorsPreviewTruncated?: boolean;
+  startedAt: string;
+  finishedAt?: string;
+  message?: string;
+}
+
+interface ImportJobStartResponse {
+  success: boolean;
+  importId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  message: string;
+}
+
+interface ImportJobStatusResponse {
+  success: boolean;
+  importId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: ImportProgress;
+  result?: ImportResult;
 }
 
 interface SyncResult {
@@ -70,12 +112,64 @@ export function ShopeeSyncTab() {
   const [isImporting, setIsImporting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<
+    ImportJobStatusResponse["status"] | null
+  >(null);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(
+    null,
+  );
   const [syncResult, setSyncResult] = useState<SyncResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<
     Array<{ id: string; accountName: string; shopId?: number }>
   >([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+
+  const pollImportStatus = useCallback(
+    async (jobId: string) => {
+      if (!session?.user?.email) return;
+
+      const response = await fetch(
+        `${getApiBaseUrl()}/marketplace/shopee/import/${jobId}`,
+        {
+          headers: {
+            email: session.user.email,
+          },
+        },
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || "Erro ao consultar importação");
+      }
+
+      const statusData = data as ImportJobStatusResponse;
+      setImportStatus(statusData.status);
+      setImportProgress(statusData.progress);
+
+      if (statusData.result) {
+        setImportResult(statusData.result);
+      }
+
+      if (statusData.status === "completed") {
+        setIsImporting(false);
+        setImportJobId(null);
+        return;
+      }
+
+      if (statusData.status === "failed") {
+        setIsImporting(false);
+        setImportJobId(null);
+        setError(
+          statusData.progress?.message ||
+            statusData.result?.errors?.[0] ||
+            "Erro ao importar anúncios do Shopee",
+        );
+      }
+    },
+    [session?.user?.email],
+  );
 
   // Importar itens do Shopee
   const handleImport = useCallback(async () => {
@@ -84,6 +178,9 @@ export function ShopeeSyncTab() {
     setIsImporting(true);
     setError(null);
     setImportResult(null);
+    setImportJobId(null);
+    setImportStatus(null);
+    setImportProgress(null);
 
     try {
       const url = new URL(`${getApiBaseUrl()}/marketplace/shopee/import`);
@@ -96,16 +193,33 @@ export function ShopeeSyncTab() {
         },
       });
 
-      if (!response.ok) {
-        const data = await response.json();
+      const data = (await response.json()) as ImportJobStartResponse;
+
+      if (!response.ok && response.status !== 202) {
         throw new Error(data.message || "Erro ao importar itens");
       }
 
-      const data: ImportResult = await response.json();
-      setImportResult(data);
+      setImportJobId(data.importId);
+      setImportStatus(data.status);
+      setImportProgress((prev) => ({
+        state: data.status,
+        phase: prev?.phase || "queued",
+        totalItemIds: prev?.totalItemIds || 0,
+        totalItems: prev?.totalItems || 0,
+        pagesFetched: prev?.pagesFetched || 0,
+        fetchedBaseInfo: prev?.fetchedBaseInfo || 0,
+        processedItems: prev?.processedItems || 0,
+        linkedItems: prev?.linkedItems || 0,
+        unlinkedItems: prev?.unlinkedItems || 0,
+        errorCount: prev?.errorCount || 0,
+        startedAt: prev?.startedAt || new Date().toISOString(),
+        finishedAt: prev?.finishedAt,
+        message: data.message,
+      }));
     } catch (err) {
+      setImportJobId(null);
+      setImportStatus(null);
       setError(err instanceof Error ? err.message : "Erro ao importar");
-    } finally {
       setIsImporting(false);
     }
   }, [session?.user?.email, selectedAccountId]);
@@ -163,6 +277,36 @@ export function ShopeeSyncTab() {
     loadAccounts();
   }, [session?.user?.email]);
 
+  useEffect(() => {
+    if (!importJobId || !isImporting) return;
+
+    let cancelled = false;
+    const runPoll = async () => {
+      if (cancelled) return;
+      try {
+        await pollImportStatus(importJobId);
+      } catch (err) {
+        if (cancelled) return;
+        setImportJobId(null);
+        setImportStatus(null);
+        setIsImporting(false);
+        setError(
+          err instanceof Error ? err.message : "Erro ao consultar importação",
+        );
+      }
+    };
+
+    void runPoll();
+    const intervalId = window.setInterval(() => {
+      void runPoll();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [importJobId, isImporting, pollImportStatus]);
+
   return (
     <div className="space-y-4">
       {error && (
@@ -202,7 +346,7 @@ export function ShopeeSyncTab() {
             {isImporting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Importando...
+                {importStatus === "queued" ? "Enfileirando..." : "Importando..."}
               </>
             ) : (
               <>
@@ -213,10 +357,66 @@ export function ShopeeSyncTab() {
           </Button>
 
           {/* Resultado da importação */}
+          {isImporting && importProgress && (
+            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-4">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                <span className="font-medium">
+                  ImportaÃ§Ã£o Shopee em andamento
+                </span>
+              </div>
+              {importProgress.message && (
+                <p className="text-sm text-muted-foreground">
+                  {importProgress.message}
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-3 text-center md:grid-cols-4">
+                <div className="rounded-md bg-background p-3">
+                  <div className="text-lg font-semibold">
+                    {importProgress.totalItemIds}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    IDs coletados
+                  </div>
+                </div>
+                <div className="rounded-md bg-background p-3">
+                  <div className="text-lg font-semibold">
+                    {importProgress.fetchedBaseInfo}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Base info
+                  </div>
+                </div>
+                <div className="rounded-md bg-background p-3">
+                  <div className="text-lg font-semibold">
+                    {importProgress.processedItems}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Processados
+                  </div>
+                </div>
+                <div className="rounded-md bg-background p-3">
+                  <div className="text-lg font-semibold">
+                    {importProgress.errorCount}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Erros</div>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                O processamento continua no backend e a interface consulta o
+                progresso periodicamente.
+              </p>
+            </div>
+          )}
+
           {importResult && (
             <div className="space-y-3 rounded-lg border p-4">
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-5 w-5 text-green-500" />
+                {importStatus === "failed" ? (
+                  <XCircle className="h-5 w-5 text-red-500" />
+                ) : (
+                  <CheckCircle2 className="h-5 w-5 text-green-500" />
+                )}
                 <span className="font-medium">Importação concluída</span>
               </div>
 
@@ -248,13 +448,13 @@ export function ShopeeSyncTab() {
               </div>
 
               {/* Detalhes dos erros */}
-              {importResult.errors.length > 0 && (
+              {(importResult.errorCount ?? importResult.errors.length) > 0 && (
                 <Accordion type="single" collapsible>
                   <AccordionItem value="errors">
                     <AccordionTrigger className="text-sm">
                       <div className="flex items-center gap-2">
                         <AlertTriangle className="h-4 w-4 text-red-500" />
-                        {importResult.errors.length} erro(s) encontrado(s)
+                        {importResult.errorCount ?? importResult.errors.length} erro(s) encontrado(s)
                       </div>
                     </AccordionTrigger>
                     <AccordionContent>
@@ -267,6 +467,11 @@ export function ShopeeSyncTab() {
                             {error}
                           </div>
                         ))}
+                        {importResult.errorsPreviewTruncated && (
+                          <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                            Exibindo apenas uma prÃ©via dos erros.
+                          </div>
+                        )}
                       </div>
                     </AccordionContent>
                   </AccordionItem>
@@ -301,6 +506,11 @@ export function ShopeeSyncTab() {
                               <Badge variant="outline">Não vinculado</Badge>
                             </div>
                           ))}
+                        {importResult.itemsPreviewTruncated && (
+                          <div className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                            Exibindo apenas uma prÃ©via dos itens processados.
+                          </div>
+                        )}
                       </div>
                     </AccordionContent>
                   </AccordionItem>
