@@ -546,7 +546,11 @@ export class ShopeeApiService {
   ) {
     if (!orderSnList.length) return [];
     const apiPath = "/api/v2/order/get_order_detail";
-    const query = `order_sn_list=${orderSnList.join(",")}`;
+    const query = new URLSearchParams({
+      order_sn_list: orderSnList.join(","),
+      // item_list is required to map Shopee items back to local SKU/product.
+      response_optional_fields: "item_list,buyer_username,total_amount",
+    }).toString();
 
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<{ order_list: any[] }>
@@ -581,7 +585,6 @@ export class ShopeeApiService {
         time_to: nowSec,
         cursor,
         page_size: 50,
-        order_status: ["COMPLETED", "READY_TO_SHIP", "SHIPPED", "PROCESSED"],
       });
 
       orderSns.push(...(listResp.order_list?.map((o) => o.order_sn) ?? []));
@@ -603,7 +606,15 @@ export class ShopeeApiService {
       }
     }
 
-    return details;
+    const allowedStatuses = new Set([
+      "COMPLETED",
+      "READY_TO_SHIP",
+      "SHIPPED",
+      "PROCESSED",
+      "TO_CONFIRM_RECEIVE",
+    ]);
+
+    return details.filter((order) => allowedStatuses.has(order.order_status));
   }
 
   /**

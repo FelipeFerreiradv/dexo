@@ -280,6 +280,13 @@ export class MarketplaceRepository {
           platform: Platform.SHOPEE,
           status: AccountStatus.ACTIVE,
         },
+        // Duplicated ACTIVE records can exist for the same shopId.
+        // Prefer the most recently refreshed/updated account for webhook processing.
+        orderBy: [
+          { updatedAt: "desc" },
+          { expiresAt: "desc" },
+          { createdAt: "desc" },
+        ],
       });
       return account;
     } catch (error) {

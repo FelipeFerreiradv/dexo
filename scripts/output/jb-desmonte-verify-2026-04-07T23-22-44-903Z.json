@@ -1,0 +1,218 @@
+{
+  "generatedAt": "2026-04-07T23:22:44.902Z",
+  "target": {
+    "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+    "sellerId": "2985478180",
+    "reviewedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountName": "JOTABEDESMONTE",
+    "tokenUser": {
+      "id": "2985478180",
+      "nickname": "JOTABEDESMONTE",
+      "email": "desmontejotabe@gmail.com"
+    }
+  },
+  "blockedAccounts": [
+    {
+      "id": "cmn5yipye002n18yma21ge2jx",
+      "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+      "accountName": "JOTABÊ AUTOPEÇAS",
+      "externalUserId": "1289108824",
+      "status": "ACTIVE",
+      "expiresAt": "2026-04-08T03:54:38.114Z",
+      "createdAt": "2026-03-25T11:25:15.110Z",
+      "updatedAt": "2026-04-07T21:54:38.115Z",
+      "listingCount": 13310,
+      "orderCount": 183
+    }
+  ],
+  "inventory": {
+    "total": 24676,
+    "statusCounts": {
+      "closed": 8930,
+      "under_review": 2892,
+      "inactive": 12,
+      "active": 12702,
+      "paused": 140
+    },
+    "actionableRemaining": 12842,
+    "actionableSample": [
+      {
+        "id": "MLB4356265719",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Máquina Vidro Dianteiro Direito Audi A3"
+      },
+      {
+        "id": "MLB4356266767",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Fechadura Tampa Traseira Volkswagen Gol G5"
+      },
+      {
+        "id": "MLB4356266793",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Guia Vidro Dianteiro Direito Fiat Palio"
+      },
+      {
+        "id": "MLB4356267301",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Moldura Coluna Esquerda Parabrisa Dianteiro Citroen C3"
+      },
+      {
+        "id": "MLB4356267351",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Carcaça Válvula Termostática Hyundai Hb20 1.6"
+      },
+      {
+        "id": "MLB4356267849",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Moldura Coluna Esquerda Parabrisa Dianteiro Fiat Punto "
+      },
+      {
+        "id": "MLB4356268199",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Coletor Admissão Volkswagen Gol G6 1.6"
+      },
+      {
+        "id": "MLB4356268225",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Coletor Admissão Ford Ka 1.0 3c"
+      },
+      {
+        "id": "MLB4356268273",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Tampa Caixa Fusível Hyundai Hb20 2015"
+      },
+      {
+        "id": "MLB4356268345",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Moldura Painel Instrumento Hyundai Hb20 2015"
+      },
+      {
+        "id": "MLB4356268359",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Quebra Sol Direito Hyundai Hb20 2015"
+      },
+      {
+        "id": "MLB4356268367",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Puxador Interno Capo Hyundai Hb20 2014 2015"
+      },
+      {
+        "id": "MLB4356268383",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Coletor Admissão Chevrolet Onix 1.0"
+      },
+      {
+        "id": "MLB4356268775",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Lanterna Direita Tampa Traseira Ford Fusion 2015 Com Led"
+      },
+      {
+        "id": "MLB4356268875",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Farol Neblina Esquerdo Honda City 2011"
+      },
+      {
+        "id": "MLB4356269281",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Grade Inferior Renault Kwid 2020"
+      },
+      {
+        "id": "MLB4356269359",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Circuito Lanterna Esquerda Gol G7 G8 "
+      },
+      {
+        "id": "MLB4356269719",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Bico Injetor Volkswagen Polo Golf Gol Saveiro 1.6"
+      },
+      {
+        "id": "MLB4356269917",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Mangueira Caixa Filtro Ar Ford Fusion 2016"
+      },
+      {
+        "id": "MLB4356270369",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Grade Parachoque Dianteiro Toyota Yaris Hacht "
+      },
+      {
+        "id": "MLB4356270619",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Máquina Vidro Dianteiro Esquerdo Fiat Palio "
+      },
+      {
+        "id": "MLB4356270747",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Grande Parachoque Dianteiro Volkswagen T-cross"
+      },
+      {
+        "id": "MLB4356271521",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Máquina Vidro Direito Fiat Uno Vivace "
+      },
+      {
+        "id": "MLB4356271751",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Moldura Farol Milha Volkswagen Gol 2013 Direito"
+      },
+      {
+        "id": "MLB4356272423",
+        "status": "active",
+        "sub_status": [],
+        "seller_id": 2985478180,
+        "title": "Fechadura Capo Chevrolet Prisma 2019"
+      }
+    ]
+  },
+  "verdict": "fail"
+}

@@ -1,6 +1,8 @@
 import {
+  ProductFilterOptions,
   Product,
   ProductCreate,
+  ProductListFilters,
   ProductUpdate,
   ProductUpdateResult,
   ProductRepository,
@@ -16,6 +18,7 @@ import {
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
 import { ProductCompatibilityRepositoryPrisma } from "../repositories/compatibility.repository";
+import { getVehicleBrands } from "../lib/vehicle-catalog";
 
 export class ProductUseCase {
   private productRepository: ProductRepository;
@@ -89,17 +92,24 @@ export class ProductUseCase {
     return data;
   }
 
-  async listProducts(options: {
-    search?: string;
-    page?: number;
-    limit?: number;
-    userId: string;
-  }): Promise<{ products: Product[]; total: number; totalPages: number }> {
+  async listProducts(
+    options: ProductListFilters & { userId: string },
+  ): Promise<{ products: Product[]; total: number; totalPages: number }> {
     const { userId, ...rest } = options;
     const data = await this.productRepository.findAll(rest, userId);
     return {
       ...data,
       totalPages: Math.ceil(data.total / (options?.limit || 10)),
+    };
+  }
+
+  async getFilterOptions(userId: string): Promise<ProductFilterOptions> {
+    const publishedCategories =
+      await this.productRepository.findPublishedCategories(userId);
+
+    return {
+      brands: getVehicleBrands(),
+      publishedCategories,
     };
   }
 

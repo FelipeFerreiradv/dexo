@@ -1,5 +1,52 @@
-// Enum de qualidade da peça
+import { Platform } from "@prisma/client";
+
 export type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
+export type ProductPublicationStatus =
+  | "ACTIVE"
+  | "PAUSED"
+  | "PENDING"
+  | "ERROR"
+  | "CLOSED"
+  | "NO_LISTING";
+export type ProductStockStatus = "IN_STOCK" | "OUT_OF_STOCK" | "LOW_STOCK";
+export type ProductMarketplaceFilter = Platform | "BOTH";
+
+export interface ProductListingSummary {
+  platform: Platform;
+  marketplaceAccountId: string;
+  accountIds: string[];
+  categoryId?: string;
+  status?: string;
+}
+
+export interface ProductListFilters {
+  search?: string;
+  page?: number;
+  limit?: number;
+  createdFrom?: Date;
+  createdTo?: Date;
+  publicationStatus?: ProductPublicationStatus;
+  stockStatus?: ProductStockStatus;
+  priceMin?: number;
+  priceMax?: number;
+  listingCategory?: string;
+  brand?: string;
+  quality?: Quality;
+  locationId?: string;
+  marketplace?: ProductMarketplaceFilter;
+}
+
+export interface ProductPublishedCategoryFilterOption {
+  value: string;
+  label: string;
+  platform: Platform;
+  categoryId: string;
+}
+
+export interface ProductFilterOptions {
+  brands: string[];
+  publishedCategories: ProductPublishedCategoryFilterOption[];
+}
 
 export interface Product {
   id: string;
@@ -12,56 +59,6 @@ export interface Product {
   createdAt: Date;
   updatedAt: Date;
 
-  // Campos de autopeças (opcionais)
-  costPrice?: number;
-  markup?: number;
-  brand?: string;
-  model?: string;
-  year?: string;
-  version?: string;
-  category?: string;
-  location?: string;
-  locationId?: string;
-  partNumber?: string;
-  quality?: Quality;
-  isSecurityItem?: boolean;
-  isTraceable?: boolean;
-  sourceVehicle?: string;
-  mlCategory?: string; // external id enviado pelo front
-  mlCategoryId?: string; // FK to MarketplaceCategory (Mercado Livre)
-  mlCategorySource?: "auto" | "manual" | "imported";
-  mlCategoryChosenAt?: Date;
-
-  // Shopee (preparação futura)
-  shopeeCategoryId?: string;
-  shopeeCategorySource?: "auto" | "manual" | "imported";
-  shopeeCategoryChosenAt?: Date;
-
-  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
-  heightCm?: number; // altura em centímetros
-  widthCm?: number; // largura em centímetros
-  lengthCm?: number; // comprimento em centímetros
-  weightKg?: number; // peso em quilogramas
-
-  // Imagem do produto
-  imageUrl?: string;
-  imageUrls?: string[];
-
-  // Sucata vinculada
-  scrapId?: string;
-}
-
-import { Platform } from "@prisma/client";
-
-export interface ProductCreate {
-  userId: string; // Adicionado para buscar descrição padrão do usuário
-  sku: string;
-  name: string;
-  description?: string;
-  stock: number;
-  price: number;
-
-  // Campos de autopeças (opcionais)
   costPrice?: number;
   markup?: number;
   brand?: string;
@@ -85,29 +82,66 @@ export interface ProductCreate {
   shopeeCategorySource?: "auto" | "manual" | "imported";
   shopeeCategoryChosenAt?: Date;
 
-  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
   heightCm?: number;
   widthCm?: number;
   lengthCm?: number;
   weightKg?: number;
 
-  // Imagem do produto (obrigatória)
+  imageUrl?: string;
+  imageUrls?: string[];
+
+  scrapId?: string;
+  listings?: ProductListingSummary[];
+}
+
+export interface ProductCreate {
+  userId: string;
+  sku: string;
+  name: string;
+  description?: string;
+  stock: number;
+  price: number;
+
+  costPrice?: number;
+  markup?: number;
+  brand?: string;
+  model?: string;
+  year?: string;
+  version?: string;
+  category?: string;
+  location?: string;
+  locationId?: string;
+  partNumber?: string;
+  quality?: Quality;
+  isSecurityItem?: boolean;
+  isTraceable?: boolean;
+  sourceVehicle?: string;
+  mlCategory?: string;
+  mlCategoryId?: string;
+  mlCategorySource?: "auto" | "manual" | "imported";
+  mlCategoryChosenAt?: Date;
+
+  shopeeCategoryId?: string;
+  shopeeCategorySource?: "auto" | "manual" | "imported";
+  shopeeCategoryChosenAt?: Date;
+
+  heightCm?: number;
+  widthCm?: number;
+  lengthCm?: number;
+  weightKg?: number;
+
   imageUrl: string;
   imageUrls?: string[];
 
-  // Sucata vinculada (opcional)
   scrapId?: string;
 
-  // Opção para criar anúncio no ML automaticamente
   createListing?: boolean;
   createListingCategoryId?: string;
 
-  // Novo: criação de anúncios multi-contas/plataformas
   listings?: Array<{
     platform: Platform;
     accountIds: string[];
     categoryId?: string;
-    // Configurações de anúncio ML (override por listagem)
     listingType?: string;
     hasWarranty?: boolean;
     warrantyUnit?: string;
@@ -119,7 +153,6 @@ export interface ProductCreate {
     manufacturingTime?: number;
   }>;
 
-  // Compatibilidades veiculares (criadas junto com o produto)
   compatibilities?: Array<{
     brand: string;
     model: string;
@@ -135,7 +168,6 @@ export interface ProductUpdate {
   stock?: number;
   price?: number;
 
-  // Campos de autopeças (opcionais)
   costPrice?: number;
   markup?: number;
   brand?: string;
@@ -159,17 +191,14 @@ export interface ProductUpdate {
   shopeeCategorySource?: "auto" | "manual" | "imported";
   shopeeCategoryChosenAt?: Date;
 
-  // Medidas / peso (nova funcionalidade) — unidades: cm / kg
   heightCm?: number;
   widthCm?: number;
   lengthCm?: number;
   weightKg?: number;
 
-  // Imagem do produto
   imageUrl?: string;
   imageUrls?: string[];
 
-  // Compatibilidades veiculares
   compatibilities?: Array<{
     brand: string;
     model: string;
@@ -203,13 +232,12 @@ export interface ProductRepository {
   findBySku(sku: string, userId: string): Promise<Product | null>;
   findById(id: string, userId?: string): Promise<Product | null>;
   findAll(
-    options?: {
-      search?: string;
-      page?: number;
-      limit?: number;
-    },
+    filters?: ProductListFilters,
     userId?: string,
   ): Promise<{ products: Product[]; total: number }>;
+  findPublishedCategories(
+    userId: string,
+  ): Promise<ProductPublishedCategoryFilterOption[]>;
   delete(id: string, userId?: string): Promise<void>;
   update(id: string, data: ProductUpdate, userId?: string): Promise<Product>;
   count(userId?: string): Promise<number>;

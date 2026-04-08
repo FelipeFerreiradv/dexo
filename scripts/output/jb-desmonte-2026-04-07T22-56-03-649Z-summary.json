@@ -1,0 +1,252 @@
+{
+  "mode": "dry_run",
+  "target": {
+    "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+    "sellerId": "2985478180",
+    "reviewedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountName": "JOTABEDESMONTE",
+    "resolvedExternalUserId": "2985478180",
+    "tokenUser": {
+      "id": "2985478180",
+      "nickname": "JOTABEDESMONTE",
+      "email": "desmontejotabe@gmail.com"
+    }
+  },
+  "blocklist": {
+    "blockedAccountIds": [
+      "cmn5yipye002n18yma21ge2jx"
+    ],
+    "blockedSellerIds": [
+      "1289108824"
+    ],
+    "detectedBlockedAccounts": [
+      {
+        "id": "cmn5yipye002n18yma21ge2jx",
+        "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+        "accountName": "JOTABÊ AUTOPEÇAS",
+        "externalUserId": "1289108824",
+        "status": "ACTIVE",
+        "expiresAt": "2026-04-08T03:54:38.114Z",
+        "createdAt": "2026-03-25T11:25:15.110Z",
+        "updatedAt": "2026-04-07T21:54:38.115Z",
+        "listingCount": 13310,
+        "orderCount": 183
+      }
+    ]
+  },
+  "files": {
+    "backupJsonPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-07T22-56-03-649Z-backup.json",
+    "backupCsvPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-07T22-56-03-649Z-backup.csv",
+    "summaryJsonPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-07T22-56-03-649Z-summary.json",
+    "eventsJsonlPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-07T22-56-03-649Z-events.jsonl"
+  },
+  "inventory": {
+    "total": 24671,
+    "statusCounts": {
+      "closed": 8905,
+      "under_review": 2892,
+      "inactive": 12,
+      "active": 12722,
+      "paused": 140
+    },
+    "actionableTotal": 12862,
+    "selectedActionableTotal": 12862,
+    "skippedByLimitTotal": 0,
+    "actionablePreview": [
+      {
+        "id": "MLB4356245253",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Regua Alma Parachoque Traseira Audi A3"
+      },
+      {
+        "id": "MLB4356245419",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Acabamento Lateral Painel Esquerdo Audi A3"
+      },
+      {
+        "id": "MLB4356245749",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Bico Injetor Fiat Palio 1.0"
+      },
+      {
+        "id": "MLB4356246309",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Caixa Filtro Ar Fiat Mobi 16"
+      },
+      {
+        "id": "MLB4356246371",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Maçaneta Externa Traseira Direita Volkswagen Gol G5 Traseira"
+      },
+      {
+        "id": "MLB4356246643",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Bomba Partida Fria Fiat Punto 1.8"
+      },
+      {
+        "id": "MLB4356247015",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Fechadura Traseira Direita Fiat Punto "
+      },
+      {
+        "id": "MLB4356247031",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Chevrolet Onix 2013 Vermelho"
+      },
+      {
+        "id": "MLB4356247687",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Ford Fiesta "
+      },
+      {
+        "id": "MLB4356247949",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tubo Abafador Escapamento Hyundai Hb20 2015 1.6"
+      },
+      {
+        "id": "MLB4356247999",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Bico Injetor Hyundai Hb20 1.6 2015"
+      },
+      {
+        "id": "MLB4356248561",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Maçaneta Interna Traseira Esquerda Ford Ecosport Preto Traseira"
+      },
+      {
+        "id": "MLB4356248861",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Moldura Interna Esquerda Tampa Traseira Gm Astra Sedan "
+      },
+      {
+        "id": "MLB4356248913",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Guia Parachoque Dianteiro Fiat Idea Adventure 2011 A 2021"
+      },
+      {
+        "id": "MLB4356249071",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Moldura Interna Esquerda Parabrisa Dianteiro Citroen C3"
+      },
+      {
+        "id": "MLB4356250049",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Farol Milha Esquerdo Volkswagen Gol G6"
+      },
+      {
+        "id": "MLB4356264159",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Capa Painel Volkswagen Gol G5"
+      },
+      {
+        "id": "MLB4356264499",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Maçaneta Capo Audi A3"
+      },
+      {
+        "id": "MLB4356264535",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Circuito Lanterna Traseira Esquerda Volkswagen Gol G6"
+      },
+      {
+        "id": "MLB4356265033",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Fechadura Porta Esquerdo Fiat Uno"
+      },
+      {
+        "id": "MLB4356265111",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Paralama Direito Volkswagen Gol G6"
+      },
+      {
+        "id": "MLB4356265167",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Fiat Siena Bbb 2008 A 2013 Com Detalhe"
+      },
+      {
+        "id": "MLB4356265179",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Fiat Siena 2007"
+      },
+      {
+        "id": "MLB4356265491",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Volkswagen Gol Bola 1998 Ate 2001 Branco"
+      },
+      {
+        "id": "MLB4356265705",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Traseira Vw Gol G3 Preto"
+      }
+    ]
+  },
+  "execution": {
+    "startedAt": "2026-04-07T23:00:34.296Z",
+    "finishedAt": "2026-04-07T23:00:34.734Z",
+    "durationMs": 438,
+    "counters": {
+      "found": 24671,
+      "actionable": 12862,
+      "selectedActionable": 12862,
+      "processed": 0,
+      "succeeded": 0,
+      "failed": 0,
+      "skipped": 11809,
+      "wouldProcess": 12862,
+      "tokenRefreshCount": 0
+    },
+    "failureSamples": [],
+    "skippedSamples": []
+  }
+}

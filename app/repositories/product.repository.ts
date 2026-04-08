@@ -1,19 +1,91 @@
 import {
+  ProductPublishedCategoryFilterOption,
   Product,
   ProductCreate,
-  ProductUpdate,
+  ProductListFilters,
+  ProductMarketplaceFilter,
+  ProductPublicationStatus,
   ProductRepository,
+  ProductUpdate,
   Quality,
 } from "../interfaces/product.interface";
 import prisma from "../lib/prisma";
-import { Platform, Product as PrismaProduct, Prisma } from "@prisma/client";
+import { Platform, Prisma, Product as PrismaProduct } from "@prisma/client";
+import {
+  buildProductListingCategoryValue,
+  normalizeProductListingCategoryId,
+  parseProductListingCategoryValue,
+} from "../lib/product-listing-category";
 
-// Helper para converter Prisma Product para interface Product
+const LOW_STOCK_THRESHOLD = 10;
+const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
+type PublishedMarketplacePlatform =
+  (typeof PUBLISHED_MARKETPLACE_PLATFORMS)[number];
+
+const MARKETPLACE_LABELS: Record<PublishedMarketplacePlatform, string> = {
+  MERCADO_LIVRE: "Mercado Livre",
+  SHOPEE: "Shopee",
+};
+const PUBLICATION_STATUS_VALUES: Record<
+  Exclude<ProductPublicationStatus, "NO_LISTING">,
+  string[]
+> = {
+  ACTIVE: ["active", "normal"],
+  PAUSED: ["paused", "unlist"],
+  PENDING: ["pending", "reviewing"],
+  ERROR: ["error", "banned"],
+  CLOSED: ["closed", "deleted", "seller_deleted", "inactive"],
+};
+
+function isPublishedMarketplacePlatform(
+  platform: Platform | null | undefined,
+): platform is PublishedMarketplacePlatform {
+  return platform === "MERCADO_LIVRE" || platform === "SHOPEE";
+}
+
+function combineWhereClauses(
+  ...clauses: Array<Prisma.ProductWhereInput | undefined>
+): Prisma.ProductWhereInput {
+  const validClauses = clauses.filter(
+    (clause): clause is Prisma.ProductWhereInput =>
+      clause !== undefined && Object.keys(clause).length > 0,
+  );
+
+  if (validClauses.length === 0) return {};
+  if (validClauses.length === 1) return validClauses[0];
+  return { AND: validClauses };
+}
+
+function combineListingWhereClauses(
+  ...clauses: Array<Prisma.ProductListingWhereInput | undefined>
+): Prisma.ProductListingWhereInput {
+  const validClauses = clauses.filter(
+    (clause): clause is Prisma.ProductListingWhereInput =>
+      clause !== undefined && Object.keys(clause).length > 0,
+  );
+
+  if (validClauses.length === 0) return {};
+  if (validClauses.length === 1) return validClauses[0];
+  return { AND: validClauses };
+}
+
+function combineSqlClauses(clauses: Prisma.Sql[]): Prisma.Sql {
+  if (clauses.length === 0) {
+    return Prisma.sql`TRUE`;
+  }
+
+  return clauses.slice(1).reduce(
+    (combined, clause) => Prisma.sql`${combined} AND ${clause}`,
+    clauses[0],
+  );
+}
+
 function mapPrismaToProduct(item: PrismaProduct): Product {
   const listingsRaw = (item as any).listings as
     | Array<{
         marketplaceAccountId: string;
         requestedCategoryId?: string | null;
+        status?: string | null;
         marketplaceAccount?: { platform?: Platform };
       }>
     | undefined;
@@ -24,10 +96,13 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
           .map((listing) => {
             const platform = listing.marketplaceAccount?.platform;
             if (!platform) return null;
+
             return {
               platform,
+              marketplaceAccountId: listing.marketplaceAccountId,
               accountIds: [listing.marketplaceAccountId],
               categoryId: listing.requestedCategoryId ?? undefined,
+              status: listing.status ?? undefined,
             };
           })
           .filter(Boolean) as Product["listings"])
@@ -43,7 +118,6 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     price: item.price.toNumber(),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    // Campos de autopeças
     costPrice: item.costPrice?.toNumber() ?? undefined,
     markup: item.markup?.toNumber() ?? undefined,
     brand: item.brand ?? undefined,
@@ -64,21 +138,13 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     shopeeCategoryId: (item as any).shopeeCategoryId ?? undefined,
     shopeeCategorySource: (item as any).shopeeCategorySource ?? undefined,
     shopeeCategoryChosenAt: (item as any).shopeeCategoryChosenAt ?? undefined,
-
-    // Medidas / peso
     heightCm: item.heightCm ?? undefined,
     widthCm: item.widthCm ?? undefined,
     lengthCm: item.lengthCm ?? undefined,
     weightKg: item.weightKg?.toNumber() ?? undefined,
-
-    // Imagem do produto
     imageUrl: item.imageUrl ?? undefined,
     imageUrls: (item as any).imageUrls ?? [],
-
-    // Sucata vinculada
     scrapId: (item as any).scrapId ?? undefined,
-
-    // Listagens criadas em marketplaces (simplificadas para UI)
     listings,
   };
 }
@@ -86,16 +152,12 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
 class ProductRepositoryPrisma implements ProductRepository {
   private static extensionsReady = false;
 
-  /**
-   * Garanta extensões e índices para busca tolerante a erro.
-   * Usa IF NOT EXISTS para ser idempotente e roda apenas uma vez por processo.
-   */
   private async ensureTextSearchExtensions() {
     if (ProductRepositoryPrisma.extensionsReady) return;
+
     try {
       await prisma.$executeRawUnsafe(`
         CREATE EXTENSION IF NOT EXISTS pg_trgm;
-        -- wrapper imutável sem depender da extensão unaccent
         CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
         RETURNS text
         LANGUAGE sql
@@ -170,10 +232,428 @@ class ProductRepositoryPrisma implements ProductRepository {
         select: {
           marketplaceAccountId: true,
           requestedCategoryId: true,
-          marketplaceAccount: { select: { platform: true } },
+          status: true,
+          marketplaceAccount: {
+            select: {
+              platform: true,
+            },
+          },
         },
       },
     } as const;
+  }
+
+  private buildPublicationListingWhere(
+    publicationStatus?: ProductPublicationStatus,
+    marketplace?: ProductMarketplaceFilter,
+    listingCategory?: string,
+  ): Prisma.ProductListingWhereInput | undefined {
+    const clauses: Prisma.ProductListingWhereInput[] = [];
+    const parsedListingCategory = parseProductListingCategoryValue(
+      listingCategory,
+    );
+    const effectiveMarketplace =
+      parsedListingCategory?.platform ??
+      (marketplace === "MERCADO_LIVRE" || marketplace === "SHOPEE"
+        ? marketplace
+        : undefined);
+
+    if (effectiveMarketplace) {
+      clauses.push({
+        marketplaceAccount: {
+          is: {
+            platform: effectiveMarketplace,
+          },
+        },
+      });
+    }
+
+    if (parsedListingCategory) {
+      clauses.push({
+        OR: parsedListingCategory.requestedCategoryIds.map((categoryId) => ({
+          requestedCategoryId: {
+            equals: categoryId,
+            mode: "insensitive" as const,
+          },
+        })),
+      });
+    }
+
+    if (publicationStatus && publicationStatus !== "NO_LISTING") {
+      clauses.push({
+        OR: PUBLICATION_STATUS_VALUES[publicationStatus].map((status) => ({
+          status: {
+            equals: status,
+            mode: "insensitive" as const,
+          },
+        })),
+      });
+    }
+
+    return clauses.length > 0
+      ? combineListingWhereClauses(...clauses)
+      : undefined;
+  }
+
+  private buildMarketplaceMembershipWhere(
+    marketplace?: ProductMarketplaceFilter,
+  ): Prisma.ProductWhereInput | undefined {
+    switch (marketplace) {
+      case "MERCADO_LIVRE":
+        return combineWhereClauses(
+          {
+            listings: {
+              some: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "MERCADO_LIVRE",
+                  },
+                },
+              },
+            },
+          },
+          {
+            listings: {
+              none: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "SHOPEE",
+                  },
+                },
+              },
+            },
+          },
+        );
+      case "SHOPEE":
+        return combineWhereClauses(
+          {
+            listings: {
+              some: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "SHOPEE",
+                  },
+                },
+              },
+            },
+          },
+          {
+            listings: {
+              none: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "MERCADO_LIVRE",
+                  },
+                },
+              },
+            },
+          },
+        );
+      case "BOTH":
+        return combineWhereClauses(
+          {
+            listings: {
+              some: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "MERCADO_LIVRE",
+                  },
+                },
+              },
+            },
+          },
+          {
+            listings: {
+              some: {
+                marketplaceAccount: {
+                  is: {
+                    platform: "SHOPEE",
+                  },
+                },
+              },
+            },
+          },
+        );
+      default:
+        return undefined;
+    }
+  }
+
+  private buildMarketplaceMembershipSqlClauses(
+    marketplace?: ProductMarketplaceFilter,
+  ): Prisma.Sql[] {
+    const existsInPlatform = (platform: PublishedMarketplacePlatform) =>
+      Prisma.sql`EXISTS (
+        SELECT 1
+        FROM "ProductListing" pl_scope
+        JOIN "MarketplaceAccount" ma_scope
+          ON ma_scope."id" = pl_scope."marketplaceAccountId"
+        WHERE pl_scope."productId" = p."id"
+          AND ma_scope."platform" = ${platform}
+      )`;
+
+    const doesNotExistInPlatform = (platform: PublishedMarketplacePlatform) =>
+      Prisma.sql`NOT EXISTS (
+        SELECT 1
+        FROM "ProductListing" pl_scope
+        JOIN "MarketplaceAccount" ma_scope
+          ON ma_scope."id" = pl_scope."marketplaceAccountId"
+        WHERE pl_scope."productId" = p."id"
+          AND ma_scope."platform" = ${platform}
+      )`;
+
+    switch (marketplace) {
+      case "MERCADO_LIVRE":
+        return [
+          existsInPlatform("MERCADO_LIVRE"),
+          doesNotExistInPlatform("SHOPEE"),
+        ];
+      case "SHOPEE":
+        return [
+          existsInPlatform("SHOPEE"),
+          doesNotExistInPlatform("MERCADO_LIVRE"),
+        ];
+      case "BOTH":
+        return [existsInPlatform("MERCADO_LIVRE"), existsInPlatform("SHOPEE")];
+      default:
+        return [];
+    }
+  }
+
+  private buildBaseWhere(
+    filters?: ProductListFilters,
+    userId?: string,
+  ): Prisma.ProductWhereInput {
+    const clauses: Prisma.ProductWhereInput[] = [];
+
+    if (userId) {
+      clauses.push({ userId });
+    }
+
+    const marketplaceMembershipWhere = this.buildMarketplaceMembershipWhere(
+      filters?.marketplace,
+    );
+
+    if (marketplaceMembershipWhere) {
+      clauses.push(marketplaceMembershipWhere);
+    }
+
+    if (filters?.createdFrom || filters?.createdTo) {
+      clauses.push({
+        createdAt: {
+          ...(filters.createdFrom ? { gte: filters.createdFrom } : {}),
+          ...(filters.createdTo ? { lte: filters.createdTo } : {}),
+        },
+      });
+    }
+
+    if (filters?.stockStatus === "IN_STOCK") {
+      clauses.push({ stock: { gt: 0 } });
+    }
+
+    if (filters?.stockStatus === "OUT_OF_STOCK") {
+      clauses.push({ stock: 0 });
+    }
+
+    if (filters?.stockStatus === "LOW_STOCK") {
+      clauses.push({ stock: { lte: LOW_STOCK_THRESHOLD } });
+    }
+
+    if (filters?.priceMin !== undefined || filters?.priceMax !== undefined) {
+      clauses.push({
+        price: {
+          ...(filters.priceMin !== undefined ? { gte: filters.priceMin } : {}),
+          ...(filters.priceMax !== undefined ? { lte: filters.priceMax } : {}),
+        },
+      });
+    }
+
+    if (filters?.brand) {
+      clauses.push({
+        OR: [
+          {
+            brand: {
+              equals: filters.brand,
+              mode: "insensitive",
+            },
+          },
+          {
+            compatibilities: {
+              some: {
+                brand: {
+                  equals: filters.brand,
+                  mode: "insensitive",
+                },
+              },
+            },
+          },
+        ],
+      });
+    }
+
+    if (filters?.quality) {
+      clauses.push({ quality: filters.quality });
+    }
+
+    if (filters?.locationId) {
+      clauses.push({ locationId: filters.locationId });
+    }
+
+    if (filters?.publicationStatus === "NO_LISTING") {
+      clauses.push({
+        listings: {
+          none:
+            this.buildPublicationListingWhere(
+              undefined,
+              filters.marketplace,
+              filters.listingCategory,
+            ) ?? {},
+        },
+      });
+    } else {
+      const listingWhere = this.buildPublicationListingWhere(
+        filters?.publicationStatus,
+        filters?.marketplace,
+        filters?.listingCategory,
+      );
+
+      if (listingWhere) {
+        clauses.push({
+          listings: {
+            some: listingWhere,
+          },
+        });
+      }
+    }
+
+    return combineWhereClauses(...clauses);
+  }
+
+  private buildBaseSqlWhere(
+    filters?: ProductListFilters,
+    userId?: string,
+  ): Prisma.Sql {
+    const clauses: Prisma.Sql[] = [];
+    const parsedListingCategory = parseProductListingCategoryValue(
+      filters?.listingCategory,
+    );
+
+    if (userId) {
+      clauses.push(Prisma.sql`p."userId" = ${userId}`);
+    }
+
+    clauses.push(...this.buildMarketplaceMembershipSqlClauses(filters?.marketplace));
+
+    if (filters?.createdFrom) {
+      clauses.push(Prisma.sql`p."createdAt" >= ${filters.createdFrom}`);
+    }
+
+    if (filters?.createdTo) {
+      clauses.push(Prisma.sql`p."createdAt" <= ${filters.createdTo}`);
+    }
+
+    if (filters?.stockStatus === "IN_STOCK") {
+      clauses.push(Prisma.sql`p."stock" > 0`);
+    }
+
+    if (filters?.stockStatus === "OUT_OF_STOCK") {
+      clauses.push(Prisma.sql`p."stock" = 0`);
+    }
+
+    if (filters?.stockStatus === "LOW_STOCK") {
+      clauses.push(Prisma.sql`p."stock" <= ${LOW_STOCK_THRESHOLD}`);
+    }
+
+    if (filters?.priceMin !== undefined) {
+      clauses.push(Prisma.sql`p."price" >= ${filters.priceMin}`);
+    }
+
+    if (filters?.priceMax !== undefined) {
+      clauses.push(Prisma.sql`p."price" <= ${filters.priceMax}`);
+    }
+
+    if (filters?.brand) {
+      clauses.push(
+        Prisma.sql`(
+          LOWER(COALESCE(p."brand", '')) = LOWER(${filters.brand}) OR
+          EXISTS (
+            SELECT 1
+            FROM "ProductCompatibility" pc
+            WHERE pc."productId" = p."id"
+              AND LOWER(COALESCE(pc."brand", '')) = LOWER(${filters.brand})
+          )
+        )`,
+      );
+    }
+
+    if (filters?.quality) {
+      clauses.push(Prisma.sql`p."quality" = ${filters.quality}`);
+    }
+
+    if (filters?.locationId) {
+      clauses.push(Prisma.sql`p."locationId" = ${filters.locationId}`);
+    }
+
+    const listingClauses: Prisma.Sql[] = [Prisma.sql`pl."productId" = p."id"`];
+
+    const scopedMarketplace =
+      parsedListingCategory?.platform ??
+      (filters?.marketplace === "MERCADO_LIVRE" ||
+      filters?.marketplace === "SHOPEE"
+        ? filters.marketplace
+        : undefined);
+
+    if (scopedMarketplace) {
+      listingClauses.push(
+        Prisma.sql`ma."platform" = ${scopedMarketplace}`,
+      );
+    }
+
+    if (parsedListingCategory) {
+      listingClauses.push(
+        Prisma.sql`LOWER(COALESCE(pl."requestedCategoryId", '')) IN (${Prisma.join(
+          parsedListingCategory.requestedCategoryIds.map((categoryId) =>
+            categoryId.toLowerCase(),
+          ),
+        )})`,
+      );
+    }
+
+    if (filters?.publicationStatus === "NO_LISTING") {
+      clauses.push(
+        Prisma.sql`NOT EXISTS (
+          SELECT 1
+          FROM "ProductListing" pl
+          JOIN "MarketplaceAccount" ma
+            ON ma."id" = pl."marketplaceAccountId"
+          WHERE ${combineSqlClauses(listingClauses)}
+        )`,
+      );
+    } else if (filters?.publicationStatus || filters?.marketplace) {
+      const scopedListingClauses = [...listingClauses];
+
+      if (filters?.publicationStatus) {
+        scopedListingClauses.push(
+          Prisma.sql`LOWER(pl."status") IN (${Prisma.join(
+            PUBLICATION_STATUS_VALUES[filters.publicationStatus].map((status) =>
+              status.toLowerCase(),
+            ),
+          )})`,
+        );
+      }
+
+      clauses.push(
+        Prisma.sql`EXISTS (
+          SELECT 1
+          FROM "ProductListing" pl
+          JOIN "MarketplaceAccount" ma
+            ON ma."id" = pl."marketplaceAccountId"
+          WHERE ${combineSqlClauses(scopedListingClauses)}
+        )`,
+      );
+    }
+
+    return combineSqlClauses(clauses);
   }
 
   async create(data: ProductCreate): Promise<Product> {
@@ -186,7 +666,6 @@ class ProductRepositoryPrisma implements ProductRepository {
           description: data.description ?? null,
           price: data.price,
           stock: data.stock,
-          // Campos de autopeças
           costPrice: data.costPrice ?? null,
           markup: data.markup ?? null,
           brand: data.brand ?? null,
@@ -207,18 +686,12 @@ class ProductRepositoryPrisma implements ProductRepository {
           shopeeCategoryId: data.shopeeCategoryId ?? null,
           shopeeCategorySource: data.shopeeCategorySource ?? null,
           shopeeCategoryChosenAt: data.shopeeCategoryChosenAt ?? null,
-
-          // Medidas / peso
           heightCm: data.heightCm ?? null,
           widthCm: data.widthCm ?? null,
           lengthCm: data.lengthCm ?? null,
           weightKg: data.weightKg ?? null,
-
-          // Imagem do produto
           imageUrl: data.imageUrl,
           imageUrls: data.imageUrls ?? [],
-
-          // Sucata vinculada
           scrapId: data.scrapId ?? null,
         },
       });
@@ -227,7 +700,6 @@ class ProductRepositoryPrisma implements ProductRepository {
     } catch (error: any) {
       console.error("Erro Prisma ao criar produto:", error);
 
-      // Prisma unique constraint (sku) -> normalize message
       if (error?.code === "P2002" && error?.meta?.target?.includes("sku")) {
         throw new Error("Produto com esse sku já existe");
       }
@@ -243,8 +715,8 @@ class ProductRepositoryPrisma implements ProductRepository {
       const item = await prisma.product.findFirst({
         where: { sku, userId },
       });
-      if (!item) return null;
 
+      if (!item) return null;
       return mapPrismaToProduct(item);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
@@ -252,24 +724,17 @@ class ProductRepositoryPrisma implements ProductRepository {
   }
 
   async findAll(
-    options?: {
-      search?: string;
-      page?: number;
-      limit?: number;
-    },
+    filters?: ProductListFilters,
     userId?: string,
   ): Promise<{ products: Product[]; total: number }> {
-    const page = options?.page ?? 1;
-    const limit = options?.limit ?? 10;
+    const page = filters?.page ?? 1;
+    const limit = filters?.limit ?? 10;
     const skip = (page - 1) * limit;
-    const search = (options?.search ?? "").trim();
+    const search = (filters?.search ?? "").trim();
+    const baseWhere = this.buildBaseWhere(filters, userId);
 
-    // Rota rápida: se o termo é puramente numérico, trate como SKU exato
     if (search && /^[0-9]+$/.test(search)) {
-      const whereExact: any = {
-        ...(userId ? { userId } : {}),
-        sku: search,
-      };
+      const whereExact = combineWhereClauses(baseWhere, { sku: search });
       const [items, total] = await Promise.all([
         prisma.product.findMany({
           where: whereExact,
@@ -281,71 +746,70 @@ class ProductRepositoryPrisma implements ProductRepository {
         prisma.product.count({ where: whereExact }),
       ]);
 
-      const products: Product[] = items.map(mapPrismaToProduct);
-      return { products, total };
+      return {
+        products: items.map(mapPrismaToProduct),
+        total,
+      };
     }
 
-    // Fuzzy/híbrida: SKU parcial + nome com tolerância a erros
     if (search) {
       try {
         await this.ensureTextSearchExtensions();
         const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
-        const userPredicate = userId
-          ? Prisma.sql`"userId" = ${userId} AND`
-          : Prisma.sql``;
+        const baseSqlWhere = this.buildBaseSqlWhere(filters, userId);
+        const fuzzyPredicate = Prisma.sql`(
+          immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
+          immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
+          similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
+          similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold}
+        )`;
+        const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
 
-        const rankedIds = await prisma.$queryRaw<
-          { id: string; score: number }[]
-        >`
-          SELECT "id",
-                 GREATEST(
-                   similarity(immutable_unaccent(lower("name")), immutable_unaccent(lower(${search}))),
-                   similarity(immutable_unaccent(lower("sku")),  immutable_unaccent(lower(${search})))
-                 ) AS score
-          FROM "Product"
-          WHERE ${userPredicate}
-                (
-                  immutable_unaccent("name") ILIKE immutable_unaccent('%' || ${search} || '%') OR
-                  immutable_unaccent("sku")  ILIKE immutable_unaccent('%' || ${search} || '%') OR
-                  similarity(immutable_unaccent("name"), ${search}) >= ${similarityThreshold} OR
-                  similarity(immutable_unaccent("sku"),  ${search}) >= ${similarityThreshold}
-                )
-          ORDER BY score DESC, "createdAt" DESC
-          OFFSET ${skip} LIMIT ${limit};
-        `;
-
-        const idOrder = rankedIds.map((r) => r.id);
-
-        const totalRow = await prisma.$queryRaw<{ count: bigint }[]>`
-          SELECT COUNT(*)::bigint as count
-          FROM "Product"
-          WHERE ${userPredicate}
-                (
-                  immutable_unaccent("name") ILIKE immutable_unaccent('%' || ${search} || '%') OR
-                  immutable_unaccent("sku")  ILIKE immutable_unaccent('%' || ${search} || '%') OR
-                  similarity(immutable_unaccent("name"), ${search}) >= ${similarityThreshold} OR
-                  similarity(immutable_unaccent("sku"),  ${search}) >= ${similarityThreshold}
-                );
-        `;
+        const [rankedIds, totalRow] = await Promise.all([
+          prisma.$queryRaw<{ id: string; score: number }[]>`
+            SELECT p."id",
+                   GREATEST(
+                     similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
+                     similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
+                   ) AS score
+            FROM "Product" p
+            WHERE ${rankedWhere}
+            ORDER BY score DESC, p."createdAt" DESC
+            OFFSET ${skip} LIMIT ${limit};
+          `,
+          prisma.$queryRaw<{ count: bigint }[]>`
+            SELECT COUNT(*)::bigint as count
+            FROM "Product" p
+            WHERE ${rankedWhere};
+          `,
+        ]);
         const total = Number(totalRow?.[0]?.count ?? 0);
+        const idOrder = rankedIds.map((item) => item.id);
 
         if (idOrder.length === 0) {
           return { products: [], total };
         }
 
         const items = await prisma.product.findMany({
-          where: { id: { in: idOrder }, ...(userId ? { userId } : {}) },
+          where: combineWhereClauses(baseWhere, {
+            id: { in: idOrder },
+          }),
           select: this.productSelect,
         });
 
         const mapped = new Map(
-          items.map((p) => [p.id, mapPrismaToProduct(p as unknown as PrismaProduct)]),
+          items.map((item) => [
+            item.id,
+            mapPrismaToProduct(item as unknown as PrismaProduct),
+          ]),
         );
-        const products = idOrder
-          .map((id) => mapped.get(id))
-          .filter(Boolean) as Product[];
 
-        return { products, total };
+        return {
+          products: idOrder
+            .map((id) => mapped.get(id))
+            .filter(Boolean) as Product[],
+          total,
+        };
       } catch (error) {
         console.error(
           "[product-search] fallback para busca simples devido a erro:",
@@ -354,13 +818,15 @@ class ProductRepositoryPrisma implements ProductRepository {
       }
     }
 
-    const where: any = userId ? { userId } : {};
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" as const } },
-        { sku: { contains: search, mode: "insensitive" as const } },
-      ];
-    }
+    const where = search
+      ? combineWhereClauses(baseWhere, {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { sku: { contains: search, mode: "insensitive" } },
+          ],
+        })
+      : baseWhere;
+
     try {
       const [items, total] = await Promise.all([
         prisma.product.findMany({
@@ -373,30 +839,143 @@ class ProductRepositoryPrisma implements ProductRepository {
         prisma.product.count({ where }),
       ]);
 
-      const products: Product[] = items.map(mapPrismaToProduct);
-      return { products, total };
+      return {
+        products: items.map(mapPrismaToProduct),
+        total,
+      };
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
   }
 
+  async findPublishedCategories(
+    userId: string,
+  ): Promise<ProductPublishedCategoryFilterOption[]> {
+    const listings = await prisma.productListing.findMany({
+      where: {
+        requestedCategoryId: { not: null },
+        product: { userId },
+        marketplaceAccount: {
+          is: {
+            platform: {
+              in: [...PUBLISHED_MARKETPLACE_PLATFORMS],
+            },
+          },
+        },
+      },
+      select: {
+        requestedCategoryId: true,
+        marketplaceAccount: {
+          select: {
+            platform: true,
+          },
+        },
+      },
+    });
+
+    const distinctCategories = new Map<
+      string,
+      {
+        platform: PublishedMarketplacePlatform;
+        normalizedCategoryId: string;
+        rawCategoryId: string;
+      }
+    >();
+
+    for (const listing of listings) {
+      const requestedCategoryId = listing.requestedCategoryId?.trim();
+      const platform = listing.marketplaceAccount?.platform;
+
+      if (!requestedCategoryId || !isPublishedMarketplacePlatform(platform)) {
+        continue;
+      }
+
+      const normalizedCategoryId = normalizeProductListingCategoryId(
+        platform,
+        requestedCategoryId,
+      );
+
+      if (!normalizedCategoryId) {
+        continue;
+      }
+
+      const key = buildProductListingCategoryValue(platform, normalizedCategoryId);
+      if (!key || distinctCategories.has(key)) {
+        continue;
+      }
+
+      distinctCategories.set(key, {
+        platform,
+        normalizedCategoryId,
+        rawCategoryId: requestedCategoryId,
+      });
+    }
+
+    if (distinctCategories.size === 0) {
+      return [];
+    }
+
+    const categoryRecords = await prisma.marketplaceCategory.findMany({
+      where: {
+        externalId: {
+          in: Array.from(distinctCategories.values()).map(
+            (item) => item.normalizedCategoryId,
+          ),
+        },
+      },
+      select: {
+        externalId: true,
+        fullPath: true,
+        name: true,
+      },
+    });
+
+    const categoryLookup = new Map(
+      categoryRecords.map((category) => [
+        category.externalId,
+        category.fullPath || category.name || category.externalId,
+      ]),
+    );
+
+    return Array.from(distinctCategories.values())
+      .map((item) => {
+        const categoryName =
+          categoryLookup.get(item.normalizedCategoryId) || item.rawCategoryId;
+
+        return {
+          value: buildProductListingCategoryValue(
+            item.platform,
+            item.normalizedCategoryId,
+          ),
+          label: `${MARKETPLACE_LABELS[item.platform]} \u2022 ${categoryName}`,
+          platform: item.platform,
+          categoryId: item.normalizedCategoryId,
+        };
+      })
+      .sort((left, right) =>
+        left.label.localeCompare(right.label, "pt-BR", {
+          sensitivity: "base",
+        }),
+      );
+  }
+
   async delete(id: string, userId?: string): Promise<void> {
     try {
-      // Parallel pre-checks: ownership + order items count
       const [owner, orderItemsCount] = await Promise.all([
         userId
           ? prisma.product.findFirst({
               where: { id, userId },
               select: { id: true },
             })
-          : Promise.resolve({ id }), // skip check if no userId
+          : Promise.resolve({ id }),
         prisma.orderItem.count({
           where: { productId: id },
         }),
       ]);
 
-      if (userId && !owner)
+      if (userId && !owner) {
         throw new Error("Produto não encontrado para este usuário");
+      }
 
       if (orderItemsCount > 0) {
         throw new Error(
@@ -404,7 +983,6 @@ class ProductRepositoryPrisma implements ProductRepository {
         );
       }
 
-      // Use transaction for atomic cascade delete
       await prisma.$transaction([
         prisma.stockLog.deleteMany({ where: { productId: id } }),
         prisma.productListing.deleteMany({ where: { productId: id } }),
@@ -422,7 +1000,6 @@ class ProductRepositoryPrisma implements ProductRepository {
       });
 
       if (!item) return null;
-
       return mapPrismaToProduct(item);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
@@ -440,9 +1017,12 @@ class ProductRepositoryPrisma implements ProductRepository {
           where: { id, userId },
           select: { id: true },
         });
-        if (!owner)
-          throw new Error("Produto nÃ£o encontrado para este usuÃ¡rio");
+
+        if (!owner) {
+          throw new Error("Produto não encontrado para este usuário");
+        }
       }
+
       const result = await prisma.product.update({
         where: { id },
         data: {
@@ -452,7 +1032,6 @@ class ProductRepositoryPrisma implements ProductRepository {
           }),
           ...(data.price !== undefined && { price: data.price }),
           ...(data.stock !== undefined && { stock: data.stock }),
-          // Campos de autopeças
           ...(data.costPrice !== undefined && { costPrice: data.costPrice }),
           ...(data.markup !== undefined && { markup: data.markup }),
           ...(data.brand !== undefined && { brand: data.brand }),
@@ -491,14 +1070,10 @@ class ProductRepositoryPrisma implements ProductRepository {
           ...(data.shopeeCategoryChosenAt !== undefined && {
             shopeeCategoryChosenAt: data.shopeeCategoryChosenAt as any,
           }),
-
-          // Medidas / peso
           ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
           ...(data.widthCm !== undefined && { widthCm: data.widthCm }),
           ...(data.lengthCm !== undefined && { lengthCm: data.lengthCm }),
           ...(data.weightKg !== undefined && { weightKg: data.weightKg }),
-
-          // Imagem do produto
           ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
           ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
         },
@@ -510,9 +1085,6 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  /**
-   * Conta total de produtos para gerar próximo SKU
-   */
   async count(userId?: string): Promise<number> {
     try {
       return await prisma.product.count({ where: userId ? { userId } : {} });
@@ -521,11 +1093,6 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  /**
-   * Busca o maior SKU numérico existente (para evitar duplicação)
-   * Exemplo: PROD-005 → retorna 5
-   * Uses DB-side ordering to avoid fetching all products
-   */
   async getMaxSkuNumber(userId?: string): Promise<number> {
     try {
       const result = await prisma.product.findFirst({
@@ -546,4 +1113,5 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 }
+
 export { ProductRepositoryPrisma };

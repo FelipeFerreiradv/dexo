@@ -3,6 +3,7 @@ import fastify from "fastify";
 import { productRoutes } from "../app/routes/product.routes";
 import { UserRepositoryPrisma } from "../app/repositories/user.repository";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
+import { ProductUseCase } from "../app/usecases/product.usercase";
 
 // Prevent heavy marketplace/usecase imports from pulling prisma alias in this test
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
@@ -498,6 +499,138 @@ describe("POST /products (integration)", () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.payload);
     expect(body).toHaveProperty("error");
+  });
+
+  it("parses advanced list filters and forwards userId to the use case", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const listSpy = vi
+      .spyOn(ProductUseCase.prototype, "listProducts")
+      .mockResolvedValue({
+        products: [],
+        total: 0,
+        totalPages: 0,
+      });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/products?search=cubo&page=2&limit=25&createdFrom=2026-01-01&createdTo=2026-01-31&publicationStatus=ACTIVE&stockStatus=LOW_STOCK&priceMin=10&priceMax=20.5&listingCategory=SHOPEE:SHP_12345&brand=Fiat&quality=SEMINOVO&locationId=loc-1&marketplace=SHOPEE",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    const filters = listSpy.mock.calls[0][0];
+    expect(filters).toMatchObject({
+      userId: "user-1",
+      search: "cubo",
+      page: 2,
+      limit: 25,
+      publicationStatus: "ACTIVE",
+      stockStatus: "LOW_STOCK",
+      priceMin: 10,
+      priceMax: 20.5,
+      listingCategory: "SHOPEE:SHP_12345",
+      brand: "Fiat",
+      quality: "SEMINOVO",
+      locationId: "loc-1",
+      marketplace: "SHOPEE",
+    });
+    expect(filters.createdFrom).toBeInstanceOf(Date);
+    expect(filters.createdTo).toBeInstanceOf(Date);
+  });
+
+  it("accepts BOTH as explicit marketplace filter without rejecting listing categories", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const listSpy = vi
+      .spyOn(ProductUseCase.prototype, "listProducts")
+      .mockResolvedValue({
+        products: [],
+        total: 0,
+        totalPages: 0,
+      });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/products?marketplace=BOTH&listingCategory=SHOPEE:SHP_12345",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy.mock.calls[0][0]).toMatchObject({
+      userId: "user-1",
+      marketplace: "BOTH",
+      listingCategory: "SHOPEE:SHP_12345",
+    });
+  });
+
+  it("returns 400 when a list filter query param is invalid", async () => {
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+    } as any);
+
+    const listSpy = vi.spyOn(ProductUseCase.prototype, "listProducts");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/products?publicationStatus=INVALID_STATUS",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(res.payload)).toHaveProperty("error");
+  });
+
+  it("returns product filter options for dynamic category and brand selects", async () => {
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+    } as any);
+
+    const optionsSpy = vi
+      .spyOn(ProductUseCase.prototype, "getFilterOptions")
+      .mockResolvedValue({
+        brands: ["Fiat", "Ford"],
+        publishedCategories: [
+          {
+            value: "MERCADO_LIVRE:MLB114766",
+            label: "Mercado Livre • Peças > Motor",
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB114766",
+          },
+        ],
+      });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/products/filter-options",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(optionsSpy).toHaveBeenCalledWith("user-1");
+    expect(JSON.parse(res.payload)).toEqual({
+      brands: ["Fiat", "Ford"],
+      publishedCategories: [
+        {
+          value: "MERCADO_LIVRE:MLB114766",
+          label: "Mercado Livre • Peças > Motor",
+          platform: "MERCADO_LIVRE",
+          categoryId: "MLB114766",
+        },
+      ],
+    });
   });
 
   it("deletes a product when authenticated and product exists", async () => {

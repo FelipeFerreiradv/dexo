@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-04-08T01:51:32.611Z",
+  "target": {
+    "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+    "sellerId": "2985478180",
+    "reviewedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountName": "JOTABEDESMONTE",
+    "tokenUser": {
+      "id": "2985478180",
+      "nickname": "JOTABEDESMONTE",
+      "email": "desmontejotabe@gmail.com"
+    }
+  },
+  "blockedAccounts": [
+    {
+      "id": "cmn5yipye002n18yma21ge2jx",
+      "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+      "accountName": "JOTABÊ AUTOPEÇAS",
+      "externalUserId": "1289108824",
+      "status": "ACTIVE",
+      "expiresAt": "2026-04-08T03:54:38.114Z",
+      "createdAt": "2026-03-25T11:25:15.110Z",
+      "updatedAt": "2026-04-07T21:54:38.115Z",
+      "listingCount": 13310,
+      "orderCount": 183
+    }
+  ],
+  "inventory": {
+    "total": 23134,
+    "statusCounts": {
+      "closed": 21858,
+      "under_review": 1240,
+      "inactive": 36
+    },
+    "actionableRemaining": 0,
+    "actionableSample": []
+  },
+  "verdict": "pass"
+}

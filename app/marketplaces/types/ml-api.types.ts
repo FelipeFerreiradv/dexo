@@ -27,7 +27,7 @@ export interface MLItemDetails {
   initial_quantity: number;
   available_quantity: number;
   sold_quantity: number;
-  status: "active" | "paused" | "closed" | "under_review";
+  status: "active" | "paused" | "closed" | "under_review" | "inactive";
   sub_status?: string[];
   permalink: string;
   thumbnail: string;

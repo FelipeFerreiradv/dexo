@@ -11,6 +11,7 @@
 import prisma from "@/app/lib/prisma";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
+import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { orderRepository } from "@/app/repositories/order.repository";
@@ -75,7 +76,7 @@ export class OrderUseCase {
     days: number = 7,
     deductStock: boolean = true,
   ): Promise<ImportOrdersResult> {
-    const result: ImportOrdersResult = {
+    const aggregated: ImportOrdersResult = {
       totalOrders: 0,
       imported: 0,
       alreadyExists: 0,
@@ -85,111 +86,55 @@ export class OrderUseCase {
       results: [],
     };
 
-    // 1. Buscar conta do marketplace
-    const account = await MarketplaceRepository.findByUserIdAndPlatform(
-      userId,
-      Platform.MERCADO_LIVRE,
-    );
+    const accounts =
+      await MarketplaceRepository.findAllByUserIdAndPlatform(
+        userId,
+        Platform.MERCADO_LIVRE,
+      );
 
-    if (!account || !account.accessToken || !account.externalUserId) {
+    const validAccounts =
+      accounts?.filter((acc) => acc.accessToken && acc.externalUserId) ?? [];
+
+    if (validAccounts.length === 0) {
       throw new Error(
         "Conta do Mercado Livre não conectada ou sem credenciais",
       );
     }
 
-    // 2. Buscar pedidos pagos do ML
-    console.log(`[OrderUseCase] Fetching recent orders for user ${userId}`);
-    const mlOrders = await MLApiService.getRecentOrders(
-      account.accessToken,
-      account.externalUserId,
-      days,
-      "paid", // Apenas pedidos pagos
-    );
+    for (const account of validAccounts) {
+      try {
+        const result = await this.importRecentOrdersForAccount(
+          account.id,
+          days,
+          deductStock,
+        );
 
-    result.totalOrders = mlOrders.length;
-    console.log(`[OrderUseCase] Found ${mlOrders.length} paid orders`);
-
-    // Batch check: find all already-imported order IDs in one query
-    const externalIds = mlOrders.map((o) => o.id.toString());
-    const existingOrders = await prisma.order.findMany({
-      where: { externalOrderId: { in: externalIds } },
-      select: { externalOrderId: true },
-    });
-    const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
-
-    // Prefetch all listings for this account (avoids N+1 in mapOrderItems)
-    const accountListings = await prisma.productListing.findMany({
-      where: { marketplaceAccountId: account.id },
-      include: { product: true },
-    });
-    const listingMap = new Map(
-      accountListings.map((l) => [
-        `${l.marketplaceAccountId}_${l.externalListingId}`,
-        l,
-      ]),
-    );
-
-    // 3. Processar cada pedido
-    for (const mlOrder of mlOrders) {
-      const extId = mlOrder.id.toString();
-      if (existingSet.has(extId)) {
-        result.alreadyExists++;
-        result.results.push({
-          success: true,
+        aggregated.totalOrders += result.totalOrders;
+        aggregated.imported += result.imported;
+        aggregated.alreadyExists += result.alreadyExists;
+        aggregated.noProducts += result.noProducts;
+        aggregated.errors += result.errors;
+        aggregated.stockDeductions += result.stockDeductions;
+        aggregated.results.push(...result.results);
+      } catch (error) {
+        aggregated.errors += 1;
+        aggregated.results.push({
+          success: false,
           orderId: null,
-          externalOrderId: extId,
-          status: "already_exists",
-          message: "Pedido já importado anteriormente",
+          externalOrderId: `ACCOUNT_${account.id}`,
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao importar conta Mercado Livre",
           stockDeducted: false,
           itemsLinked: 0,
-          itemsTotal: mlOrder.order_items.length,
+          itemsTotal: 0,
         });
-        continue;
-      }
-
-      const importResult = await this.processOrder(
-        mlOrder,
-        account.id,
-        deductStock,
-        listingMap,
-      );
-      result.results.push(importResult);
-
-      // Contabilizar resultados
-      switch (importResult.status) {
-        case "imported":
-          result.imported++;
-          if (importResult.stockDeducted) {
-            result.stockDeductions++;
-          }
-          break;
-        case "already_exists":
-          result.alreadyExists++;
-          break;
-        case "no_products":
-          result.noProducts++;
-          break;
-        case "error":
-          result.errors++;
-          break;
       }
     }
 
-    // 4. Registrar log de sincronização
-    await this.logSync(
-      account.id,
-      SyncType.ORDER_IMPORT,
-      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Importados ${result.imported} de ${result.totalOrders} pedidos. Estoque descontado: ${result.stockDeductions}`,
-      {
-        totalOrders: result.totalOrders,
-        imported: result.imported,
-        alreadyExists: result.alreadyExists,
-        errors: result.errors,
-      },
-    );
-
-    return result;
+    return aggregated;
   }
 
   /**
@@ -217,12 +162,7 @@ export class OrderUseCase {
       results: [],
     };
 
-    const mlOrders = await MLApiService.getRecentOrders(
-      account.accessToken,
-      account.externalUserId,
-      days,
-      "paid",
-    );
+    const mlOrders = await this.getRecentMLOrdersWithRefresh(account, days);
 
     result.totalOrders = mlOrders.length;
 
@@ -267,6 +207,7 @@ export class OrderUseCase {
         account.id,
         deductStock,
         listingMap,
+        account.userId,
       );
       result.results.push(importResult);
 
@@ -445,6 +386,7 @@ export class OrderUseCase {
 
         const { items, linkedCount } = await this.mapShopeeOrderItems(
           shopeeOrder.item_list,
+          account.userId,
           marketplaceAccountId,
           listingMap,
         );
@@ -481,10 +423,9 @@ export class OrderUseCase {
         const created = await orderRepository.create(orderData);
 
         let stockDeducted = false;
-        if (
-          deductStock &&
-          ["PAID", "SHIPPED", "DELIVERED"].includes(orderData.status)
-        ) {
+        // getRecentOrders() já retorna apenas pedidos em estados pós-venda.
+        // Não repetir a decisão de baixa com base no status local mapeado.
+        if (deductStock) {
           await this.deductStockForOrder(created, "Importação Shopee");
           stockDeducted = true;
         }
@@ -564,6 +505,7 @@ export class OrderUseCase {
     marketplaceAccountId: string,
     deductStock: boolean,
     listingMap?: Map<string, any>,
+    userId?: string,
   ): Promise<ImportOrderResult> {
     const externalOrderId = mlOrder.id.toString();
 
@@ -586,6 +528,7 @@ export class OrderUseCase {
       // Mapear itens do pedido para produtos locais
       const { items, linkedCount } = await this.mapOrderItems(
         mlOrder.order_items,
+        userId,
         marketplaceAccountId,
         listingMap,
       );
@@ -675,6 +618,7 @@ export class OrderUseCase {
    */
   private static async mapOrderItems(
     mlItems: MLOrderItem[],
+    userId: string | undefined,
     marketplaceAccountId: string,
     listingMap?: Map<string, any>,
   ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
@@ -721,8 +665,8 @@ export class OrderUseCase {
       }
 
       // Buscar produto pelo SKU
-      const product = await prisma.product.findUnique({
-        where: { sku },
+      const product = await prisma.product.findFirst({
+        where: userId ? { sku, userId } : { sku },
       });
 
       if (!product) {
@@ -764,6 +708,7 @@ export class OrderUseCase {
    */
   private static async mapShopeeOrderItems(
     items: ShopeeOrderItem[],
+    userId: string | undefined,
     marketplaceAccountId: string,
     listingMap?: Map<string, any>,
   ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
@@ -806,8 +751,8 @@ export class OrderUseCase {
         continue;
       }
 
-      const product = await prisma.product.findUnique({
-        where: { sku },
+      const product = await prisma.product.findFirst({
+        where: userId ? { sku, userId } : { sku },
       });
 
       if (!product) {
@@ -850,6 +795,53 @@ export class OrderUseCase {
       default:
         return "PENDING";
     }
+  }
+
+  private static async getRecentMLOrdersWithRefresh(
+    account: {
+      id: string;
+      accessToken: string;
+      refreshToken: string;
+      externalUserId: string;
+    },
+    days: number,
+  ): Promise<MLOrderDetails[]> {
+    try {
+      return await MLApiService.getRecentOrders(
+        account.accessToken,
+        account.externalUserId,
+        days,
+        "paid",
+      );
+    } catch (error) {
+      if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
+        throw error;
+      }
+
+      const refreshed = await MLOAuthService.refreshAccessToken(
+        account.refreshToken,
+      );
+
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+
+      return MLApiService.getRecentOrders(
+        refreshed.accessToken,
+        account.externalUserId,
+        days,
+        "paid",
+      );
+    }
+  }
+
+  private static isMarketplaceAuthError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /unauthorized|invalid access token|token expired|forbidden/i.test(
+      message,
+    );
   }
 
   /**

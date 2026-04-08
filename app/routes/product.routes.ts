@@ -1,12 +1,104 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ProductUseCase } from "../usecases/product.usercase";
-import { ProductCreate, ProductUpdate } from "../interfaces/product.interface";
+import {
+  ProductCreate,
+  ProductListFilters,
+  ProductMarketplaceFilter,
+  ProductPublicationStatus,
+  ProductStockStatus,
+  ProductUpdate,
+  Quality,
+} from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
-import { Platform } from "@prisma/client";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
+import { parseProductListingCategoryValue } from "../lib/product-listing-category";
+
+const PUBLICATION_STATUS_VALUES = new Set<ProductPublicationStatus>([
+  "ACTIVE",
+  "PAUSED",
+  "PENDING",
+  "ERROR",
+  "CLOSED",
+  "NO_LISTING",
+]);
+const STOCK_STATUS_VALUES = new Set<ProductStockStatus>([
+  "IN_STOCK",
+  "OUT_OF_STOCK",
+  "LOW_STOCK",
+]);
+const QUALITY_VALUES = new Set<Quality>([
+  "SUCATA",
+  "SEMINOVO",
+  "NOVO",
+  "RECONDICIONADO",
+]);
+const MARKETPLACE_VALUES = new Set<ProductMarketplaceFilter>([
+  "MERCADO_LIVRE",
+  "SHOPEE",
+  "BOTH",
+]);
+
+function parsePositiveInteger(
+  value: string | undefined,
+  field: string,
+  fallback: number,
+) {
+  if (!value) return fallback;
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${field} inválido`);
+  }
+
+  return parsed;
+}
+
+function parseNonNegativeNumber(value: string | undefined, field: string) {
+  if (!value) return undefined;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${field} inválido`);
+  }
+
+  return parsed;
+}
+
+function parseDateBoundary(
+  value: string | undefined,
+  field: string,
+  endOfDay = false,
+) {
+  if (!value) return undefined;
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${field} inválido`);
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    parsed.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+  }
+
+  return parsed;
+}
+
+function parseEnumValue<T extends string>(
+  value: string | undefined,
+  validValues: Set<T>,
+  field: string,
+): T | undefined {
+  if (!value) return undefined;
+
+  if (!validValues.has(value as T)) {
+    throw new Error(`${field} inválido`);
+  }
+
+  return value as T;
+}
 
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
@@ -26,6 +118,25 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao gerar SKU",
+        });
+      }
+    },
+  );
+
+  fastify.get(
+    "/filter-options",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const options = await productUseCase.getFilterOptions(userId);
+        return reply.status(200).send(options);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao carregar opções de filtro",
         });
       }
     },
@@ -498,37 +609,169 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       search?: string;
       page?: string;
       limit?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      publicationStatus?: string;
+      stockStatus?: string;
+      priceMin?: string;
+      priceMax?: string;
+      listingCategory?: string;
+      brand?: string;
+      quality?: string;
+      locationId?: string;
+      marketplace?: string;
     };
   }>(
     "/",
     { preHandler: [authMiddleware] },
     async (
       request: FastifyRequest<{
-        Querystring: { search?: string; page?: string; limit?: string };
+        Querystring: {
+          search?: string;
+          page?: string;
+          limit?: string;
+          createdFrom?: string;
+          createdTo?: string;
+          publicationStatus?: string;
+          stockStatus?: string;
+          priceMin?: string;
+          priceMax?: string;
+          listingCategory?: string;
+          brand?: string;
+          quality?: string;
+          locationId?: string;
+          marketplace?: string;
+        };
       }>,
       reply: FastifyReply,
     ) => {
       try {
-        const { search, page, limit } = request.query;
+        const {
+          search,
+          page,
+          limit,
+          createdFrom,
+          createdTo,
+          publicationStatus,
+          stockStatus,
+          priceMin,
+          priceMax,
+          listingCategory,
+          brand,
+          quality,
+          locationId,
+          marketplace,
+        } = request.query;
         const userId = (request as any).user?.id as string;
+        const parsedPage = parsePositiveInteger(page, "Página", 1);
+        const parsedLimit = parsePositiveInteger(limit, "Limite", 10);
+        const parsedCreatedFrom = parseDateBoundary(
+          createdFrom,
+          "Data inicial",
+        );
+        const parsedCreatedTo = parseDateBoundary(
+          createdTo,
+          "Data final",
+          true,
+        );
+        const parsedPriceMin = parseNonNegativeNumber(priceMin, "Preço mínimo");
+        const parsedPriceMax = parseNonNegativeNumber(priceMax, "Preço máximo");
+        const parsedPublicationStatus = parseEnumValue(
+          publicationStatus,
+          PUBLICATION_STATUS_VALUES,
+          "Status de publicação",
+        );
+        const parsedStockStatus = parseEnumValue(
+          stockStatus,
+          STOCK_STATUS_VALUES,
+          "Status de estoque",
+        );
+        const parsedQuality = parseEnumValue(
+          quality,
+          QUALITY_VALUES,
+          "Qualidade",
+        );
+        const parsedMarketplace = parseEnumValue(
+          marketplace,
+          MARKETPLACE_VALUES,
+          "Marketplace",
+        );
+        const parsedListingCategory = parseProductListingCategoryValue(
+          listingCategory,
+        );
 
-        const data = await productUseCase.listProducts({
-          search: search || "",
-          page: page ? parseInt(page) : 1,
-          limit: limit ? parseInt(limit) : 10,
+        if (listingCategory && !parsedListingCategory) {
+          throw new Error("Categoria publicada invÃ¡lida");
+        }
+
+        if (
+          parsedMarketplace &&
+          parsedMarketplace !== "BOTH" &&
+          parsedListingCategory &&
+          parsedListingCategory.platform !== parsedMarketplace
+        ) {
+          return reply.status(400).send({
+            error: "Categoria publicada nÃ£o pertence ao marketplace informado",
+          });
+        }
+
+        if (
+          parsedCreatedFrom &&
+          parsedCreatedTo &&
+          parsedCreatedFrom > parsedCreatedTo
+        ) {
+          return reply
+            .status(400)
+            .send({ error: "Data inicial deve ser menor ou igual à final" });
+        }
+
+        if (
+          parsedPriceMin !== undefined &&
+          parsedPriceMax !== undefined &&
+          parsedPriceMin > parsedPriceMax
+        ) {
+          return reply
+            .status(400)
+            .send({ error: "Preço mínimo deve ser menor ou igual ao máximo" });
+        }
+
+        const filters: ProductListFilters & { userId: string } = {
+          search: search?.trim() || "",
+          page: parsedPage,
+          limit: parsedLimit,
+          createdFrom: parsedCreatedFrom,
+          createdTo: parsedCreatedTo,
+          publicationStatus: parsedPublicationStatus,
+          stockStatus: parsedStockStatus,
+          priceMin: parsedPriceMin,
+          priceMax: parsedPriceMax,
+          listingCategory: parsedListingCategory?.value,
+          brand: brand?.trim() || undefined,
+          quality: parsedQuality,
+          locationId: locationId?.trim() || undefined,
+          marketplace: parsedMarketplace,
           userId,
-        });
+        };
+
+        const data = await productUseCase.listProducts(filters);
 
         return reply.status(200).send({
           products: data.products,
           pagination: {
-            page: request.query.page ? parseInt(page!) : 1,
-            limit: request.query.limit ? parseInt(limit!) : 10,
+            page: parsedPage,
+            limit: parsedLimit,
             total: data.total,
             totalPages: data.totalPages,
           },
         });
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.toLowerCase().includes("inválido")
+        ) {
+          return reply.status(400).send({ error: error.message });
+        }
+
         reply.status(500).send({
           error:
             error instanceof Error

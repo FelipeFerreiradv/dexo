@@ -1,0 +1,251 @@
+{
+  "mode": "confirmed",
+  "target": {
+    "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+    "sellerId": "2985478180",
+    "reviewedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountId": "cmnp6utcf1goj18ighujy0vz1",
+    "resolvedAccountName": "JOTABEDESMONTE",
+    "resolvedExternalUserId": "2985478180",
+    "tokenUser": {
+      "id": "2985478180",
+      "nickname": "JOTABEDESMONTE",
+      "email": "desmontejotabe@gmail.com"
+    }
+  },
+  "blocklist": {
+    "blockedAccountIds": [
+      "cmn5yipye002n18yma21ge2jx"
+    ],
+    "blockedSellerIds": [
+      "1289108824"
+    ],
+    "detectedBlockedAccounts": [
+      {
+        "id": "cmn5yipye002n18yma21ge2jx",
+        "userId": "cmn5yc4rn0000vsasmwv9m8nc",
+        "accountName": "JOTABÊ AUTOPEÇAS",
+        "externalUserId": "1289108824",
+        "status": "ACTIVE",
+        "expiresAt": "2026-04-08T03:54:38.114Z",
+        "createdAt": "2026-03-25T11:25:15.110Z",
+        "updatedAt": "2026-04-07T21:54:38.115Z",
+        "listingCount": 13310,
+        "orderCount": 183
+      }
+    ]
+  },
+  "files": {
+    "backupJsonPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-08T01-29-14-881Z-backup.json",
+    "backupCsvPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-08T01-29-14-881Z-backup.csv",
+    "summaryJsonPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-08T01-29-14-881Z-summary.json",
+    "eventsJsonlPath": "C:\\Users\\Casa\\Documents\\GitHub\\ghd-plataform\\scripts\\output\\jb-desmonte-2026-04-08T01-29-14-881Z-events.jsonl"
+  },
+  "inventory": {
+    "total": 23452,
+    "statusCounts": {
+      "closed": 20713,
+      "under_review": 1310,
+      "inactive": 423,
+      "active": 1006
+    },
+    "actionableTotal": 1006,
+    "selectedActionableTotal": 1006,
+    "skippedByLimitTotal": 0,
+    "actionablePreview": [
+      {
+        "id": "MLB4590405443",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Kit Parafuso Tbi Corpo Borboleta Volkswagen Up"
+      },
+      {
+        "id": "MLB6169976206",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Suporte Maçaneta Externa Dianteira Direita Ford Fusion 2009 Preto Dianteira"
+      },
+      {
+        "id": "MLB6251337866",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Limitador Porta Dianteira Esquerda Fiat Uno Vivace 2012"
+      },
+      {
+        "id": "MLB6310345444",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Guia Suporte Parachoque Traseiro Direito Hb20 Sedan 13 A 19"
+      },
+      {
+        "id": "MLB6310761756",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Reservatorio Radiador Fiat Bravo 2010"
+      },
+      {
+        "id": "MLB6310768608",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Lanterna Neblina Esquerdo Fiat Freemont 2013 Esquerdo/motorista Vermelho"
+      },
+      {
+        "id": "MLB6310769824",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Sensor Map Fiat Mobi 1.0 2020"
+      },
+      {
+        "id": "MLB6310937664",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Interruptor Sensor Luz Freio Volkswagen Gol G5 Polo 2009"
+      },
+      {
+        "id": "MLB6310951864",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Grade Farol Milha Esquerdo Volkswagen Gol G5 2011 Preto Esquerdo"
+      },
+      {
+        "id": "MLB6310960856",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Acabamento Painel Direito Renault Duster 2014 Cinza Lisa"
+      },
+      {
+        "id": "MLB6310963802",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Guia Parachoque Traseiro Direito Ford Ka Sedan 2015"
+      },
+      {
+        "id": "MLB6310972516",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Reservatório Fluido Freio Vw Polo 2007 A 2012 Amarelo"
+      },
+      {
+        "id": "MLB6310978898",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Suporte Coxim Chevrolet Captiva 3.6 V6 2011"
+      },
+      {
+        "id": "MLB6310986018",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Motor Reservatorio Partida Fria Volkswagen Fox 1.6 2010"
+      },
+      {
+        "id": "MLB6310991626",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Maquina Vidro Manual Direita Volkswagen Saveiro G7 2016"
+      },
+      {
+        "id": "MLB6310992886",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Pedal Freio Hyundai Hb20 2019"
+      },
+      {
+        "id": "MLB6310997840",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Módulo Abs Renault Duster 2.0 2012"
+      },
+      {
+        "id": "MLB6311028496",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Buzina Hyundai Hb20 1.0 3c 2013 2014 2015 2016"
+      },
+      {
+        "id": "MLB6311047808",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Acabamento Churrasqueira Toyota Etios Esquerdo"
+      },
+      {
+        "id": "MLB6311053900",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Fechadura Porta Traseira Direita Ford Fiesta 2014"
+      },
+      {
+        "id": "MLB6311064940",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Moldura Chave Seta Volkswagen Gol 2013"
+      },
+      {
+        "id": "MLB6311065484",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Guia Vidro Dianteira Direito Palio 1996 Preto"
+      },
+      {
+        "id": "MLB6311077972",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Resistencia Ar Condicionado Renault Sandero 1.0 2014"
+      },
+      {
+        "id": "MLB6311083498",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Coxim Motor Traseiro Punto 1.4 8v 2013 2014 2015 2016 2017"
+      },
+      {
+        "id": "MLB6311088216",
+        "seller_id": 2985478180,
+        "status": "active",
+        "sub_status": [],
+        "title": "Tampa Reservatorio Agua Fiat Toro 2020"
+      }
+    ]
+  },
+  "execution": {
+    "startedAt": "2026-04-08T01:33:28.096Z",
+    "finishedAt": "2026-04-08T01:47:10.286Z",
+    "durationMs": 822190,
+    "counters": {
+      "found": 23452,
+      "actionable": 1006,
+      "selectedActionable": 1006,
+      "processed": 1006,
+      "succeeded": 1006,
+      "failed": 0,
+      "skipped": 22446,
+      "wouldProcess": 0,
+      "tokenRefreshCount": 0
+    },
+    "failureSamples": [],
+    "skippedSamples": []
+  }
+}

@@ -2,10 +2,22 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
 
 // Shared mocks for prisma client methods used in repository
-const mockQueryRaw = vi.fn();
-const mockExecuteRawUnsafe = vi.fn();
-const mockFindMany = vi.fn();
-const mockCount = vi.fn();
+const {
+  mockQueryRaw,
+  mockExecuteRawUnsafe,
+  mockFindMany,
+  mockCount,
+  mockProductListingFindMany,
+  mockMarketplaceCategoryFindMany,
+} =
+  vi.hoisted(() => ({
+    mockQueryRaw: vi.fn(),
+    mockExecuteRawUnsafe: vi.fn(),
+    mockFindMany: vi.fn(),
+    mockCount: vi.fn(),
+    mockProductListingFindMany: vi.fn(),
+    mockMarketplaceCategoryFindMany: vi.fn(),
+  }));
 
 vi.mock("../app/lib/prisma", () => ({
   default: {
@@ -21,13 +33,27 @@ vi.mock("../app/lib/prisma", () => ({
     },
     orderItem: { count: vi.fn() },
     stockLog: { deleteMany: vi.fn() },
-    productListing: { deleteMany: vi.fn() },
+    productListing: {
+      deleteMany: vi.fn(),
+      findMany: mockProductListingFindMany,
+    },
+    marketplaceCategory: {
+      findMany: mockMarketplaceCategoryFindMany,
+    },
     $transaction: vi.fn(),
   },
 }));
 
 // Helper to mimic Prisma Decimal-like objects
 const money = (value: number) => ({ toNumber: () => value });
+
+function flattenAndClauses<T extends { AND?: T[] }>(clause: T): T[] {
+  if (!clause.AND || clause.AND.length === 0) {
+    return [clause];
+  }
+
+  return clause.AND.flatMap((item) => flattenAndClauses(item));
+}
 
 const baseProduct = {
   userId: "user-1",
@@ -68,6 +94,8 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     mockExecuteRawUnsafe.mockReset();
     mockFindMany.mockReset();
     mockCount.mockReset();
+    mockProductListingFindMany.mockReset();
+    mockMarketplaceCategoryFindMany.mockReset();
   });
 
   it("orders results by trigram score while returning hydrated products", async () => {
@@ -137,6 +165,386 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(result.products).toHaveLength(1);
     expect(result.total).toBe(1);
+  });
+
+  it("applies scalar and relational filters to the base prisma query", async () => {
+    const repo = new ProductRepositoryPrisma();
+    const createdFrom = new Date("2026-01-01T00:00:00.000Z");
+    const createdTo = new Date("2026-01-31T23:59:59.999Z");
+
+    mockFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue(0);
+
+    await repo.findAll(
+      {
+        search: "",
+        page: 1,
+        limit: 10,
+        createdFrom,
+        createdTo,
+        publicationStatus: "ACTIVE",
+        stockStatus: "LOW_STOCK",
+        priceMin: 50,
+        priceMax: 200,
+        listingCategory: "MERCADO_LIVRE:MLB123",
+        brand: "Fiat",
+        quality: "SEMINOVO",
+        locationId: "loc-1",
+        marketplace: "MERCADO_LIVRE",
+      },
+      "user-1",
+    );
+
+    const where = mockFindMany.mock.calls[0][0].where;
+    const clauses = flattenAndClauses(where);
+
+    expect(clauses).toEqual(
+      expect.arrayContaining([
+        { userId: "user-1" },
+        { createdAt: { gte: createdFrom, lte: createdTo } },
+        { stock: { lte: 10 } },
+        { price: { gte: 50, lte: 200 } },
+        { quality: "SEMINOVO" },
+        { locationId: "loc-1" },
+        {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "MERCADO_LIVRE",
+                },
+              },
+            },
+          },
+        },
+        {
+          listings: {
+            none: {
+              marketplaceAccount: {
+                is: {
+                  platform: "SHOPEE",
+                },
+              },
+            },
+          },
+        },
+      ]),
+    );
+
+    const brandClause = clauses.find((clause: any) => clause.OR);
+    expect(brandClause).toMatchObject({
+      OR: expect.arrayContaining([
+        { brand: { equals: "Fiat", mode: "insensitive" } },
+        {
+          compatibilities: {
+            some: {
+              brand: { equals: "Fiat", mode: "insensitive" },
+            },
+          },
+        },
+      ]),
+    });
+
+    const listingClause = clauses.find((clause: any) => clause.listings?.some?.AND);
+    expect(listingClause).toMatchObject({
+      listings: {
+        some: {
+          AND: expect.arrayContaining([
+            {
+              OR: expect.arrayContaining([
+                {
+                  requestedCategoryId: {
+                    equals: "MLB123",
+                    mode: "insensitive",
+                  },
+                },
+              ]),
+            },
+            {
+              marketplaceAccount: {
+                is: {
+                  platform: "MERCADO_LIVRE",
+                },
+              },
+            },
+          ]),
+        },
+      },
+    });
+  });
+
+  it("keeps advanced filters when hydrating fuzzy-search results", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    mockQueryRaw
+      .mockResolvedValueOnce([{ id: "prod-fuzzy", score: 0.88 }])
+      .mockResolvedValueOnce([{ count: BigInt(1) }]);
+    mockFindMany.mockResolvedValue([
+      {
+        ...baseProduct,
+        id: "prod-fuzzy",
+        sku: "CUBO-777",
+        name: "Cubo Shopee Fiat",
+        brand: "Fiat",
+        price: money(77),
+        stock: 4,
+        createdAt: new Date("2026-01-10"),
+        updatedAt: new Date("2026-01-10"),
+      },
+    ]);
+
+    const result = await repo.findAll(
+      {
+        search: "cubo",
+        page: 1,
+        limit: 10,
+        publicationStatus: "ACTIVE",
+        marketplace: "SHOPEE",
+        brand: "Fiat",
+      },
+      "user-1",
+    );
+
+    expect(result.total).toBe(1);
+    expect(result.products[0]).toMatchObject({
+      id: "prod-fuzzy",
+      sku: "CUBO-777",
+    });
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
+
+    const hydrationWhere = mockFindMany.mock.calls[0][0].where;
+    const hydrationClauses = flattenAndClauses(hydrationWhere);
+
+    expect(hydrationClauses).toEqual(
+      expect.arrayContaining([
+        { userId: "user-1" },
+        { id: { in: ["prod-fuzzy"] } },
+      ]),
+    );
+
+    const brandClause = hydrationClauses.find((clause: any) => clause.OR);
+    expect(brandClause).toMatchObject({
+      OR: expect.arrayContaining([
+        { brand: { equals: "Fiat", mode: "insensitive" } },
+        {
+          compatibilities: {
+            some: {
+              brand: { equals: "Fiat", mode: "insensitive" },
+            },
+          },
+        },
+      ]),
+    });
+
+    expect(hydrationClauses).toEqual(
+      expect.arrayContaining([
+        {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "SHOPEE",
+                },
+              },
+            },
+          },
+        },
+        {
+          listings: {
+            none: {
+              marketplaceAccount: {
+                is: {
+                  platform: "MERCADO_LIVRE",
+                },
+              },
+            },
+          },
+        },
+      ]),
+    );
+
+    const listingClause = hydrationClauses.find(
+      (clause: any) => clause.listings?.some?.AND,
+    );
+    expect(listingClause).toMatchObject({
+      listings: {
+        some: {
+          AND: expect.arrayContaining([
+            {
+              marketplaceAccount: {
+                is: {
+                  platform: "SHOPEE",
+                },
+              },
+            },
+          ]),
+        },
+      },
+    });
+  });
+
+  it("filters by marketplace even when no publication status is provided", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    mockFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue(0);
+
+    await repo.findAll(
+      {
+        search: "",
+        page: 1,
+        limit: 10,
+        marketplace: "MERCADO_LIVRE",
+      },
+      "user-1",
+    );
+
+    const where = mockFindMany.mock.calls[0][0].where;
+    const clauses = flattenAndClauses(where);
+
+    expect(clauses).toEqual(
+      expect.arrayContaining([
+        {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "MERCADO_LIVRE",
+                },
+              },
+            },
+          },
+        },
+        {
+          listings: {
+            none: {
+              marketplaceAccount: {
+                is: {
+                  platform: "SHOPEE",
+                },
+              },
+            },
+          },
+        },
+      ]),
+    );
+  });
+
+  it("filters by BOTH when the product must exist in both marketplaces", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    mockFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue(0);
+
+    await repo.findAll(
+      {
+        search: "",
+        page: 1,
+        limit: 10,
+        marketplace: "BOTH",
+      },
+      "user-1",
+    );
+
+    const where = mockFindMany.mock.calls[0][0].where;
+    const clauses = flattenAndClauses(where);
+
+    expect(clauses).toEqual(
+      expect.arrayContaining([
+        {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "MERCADO_LIVRE",
+                },
+              },
+            },
+          },
+        },
+        {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "SHOPEE",
+                },
+              },
+            },
+          },
+        },
+      ]),
+    );
+  });
+
+  it("lists published categories with shopee normalization and grouped labels", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    mockProductListingFindMany.mockResolvedValue([
+      {
+        requestedCategoryId: "MLB114766",
+        marketplaceAccount: { platform: "MERCADO_LIVRE" },
+      },
+      {
+        requestedCategoryId: "12345",
+        marketplaceAccount: { platform: "SHOPEE" },
+      },
+      {
+        requestedCategoryId: "SHP_12345",
+        marketplaceAccount: { platform: "SHOPEE" },
+      },
+    ]);
+    mockMarketplaceCategoryFindMany.mockResolvedValue([
+      {
+        externalId: "MLB114766",
+        fullPath: "Peças > Motor",
+        name: "Motor",
+      },
+      {
+        externalId: "SHP_12345",
+        fullPath: "Auto > Cubos de roda",
+        name: "Cubos de roda",
+      },
+    ]);
+
+    const result = await repo.findPublishedCategories("user-1");
+
+    expect(mockProductListingFindMany).toHaveBeenCalledWith({
+      where: {
+        requestedCategoryId: { not: null },
+        product: { userId: "user-1" },
+        marketplaceAccount: {
+          is: {
+            platform: {
+              in: ["MERCADO_LIVRE", "SHOPEE"],
+            },
+          },
+        },
+      },
+      select: {
+        requestedCategoryId: true,
+        marketplaceAccount: {
+          select: {
+            platform: true,
+          },
+        },
+      },
+    });
+
+    expect(result).toEqual([
+      {
+        value: "MERCADO_LIVRE:MLB114766",
+        label: "Mercado Livre • Peças > Motor",
+        platform: "MERCADO_LIVRE",
+        categoryId: "MLB114766",
+      },
+      {
+        value: "SHOPEE:SHP_12345",
+        label: "Shopee • Auto > Cubos de roda",
+        platform: "SHOPEE",
+        categoryId: "SHP_12345",
+      },
+    ]);
   });
 
   it("when search is purely numeric, performs exact SKU match (no fuzzy)", async () => {
