@@ -74,10 +74,12 @@ function combineSqlClauses(clauses: Prisma.Sql[]): Prisma.Sql {
     return Prisma.sql`TRUE`;
   }
 
-  return clauses.slice(1).reduce(
-    (combined, clause) => Prisma.sql`${combined} AND ${clause}`,
-    clauses[0],
-  );
+  return clauses
+    .slice(1)
+    .reduce(
+      (combined, clause) => Prisma.sql`${combined} AND ${clause}`,
+      clauses[0],
+    );
 }
 
 function mapPrismaToProduct(item: PrismaProduct): Product {
@@ -85,8 +87,11 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     | Array<{
         marketplaceAccountId: string;
         requestedCategoryId?: string | null;
+        externalListingId?: string | null;
+        permalink?: string | null;
         status?: string | null;
-        marketplaceAccount?: { platform?: Platform };
+        updatedAt?: Date | null;
+        marketplaceAccount?: { platform?: Platform; shopId?: number | null };
       }>
     | undefined;
 
@@ -102,7 +107,11 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
               marketplaceAccountId: listing.marketplaceAccountId,
               accountIds: [listing.marketplaceAccountId],
               categoryId: listing.requestedCategoryId ?? undefined,
+              externalListingId: listing.externalListingId ?? undefined,
+              permalink: listing.permalink ?? undefined,
+              shopId: listing.marketplaceAccount?.shopId ?? undefined,
               status: listing.status ?? undefined,
+              updatedAt: listing.updatedAt ?? undefined,
             };
           })
           .filter(Boolean) as Product["listings"])
@@ -232,10 +241,14 @@ class ProductRepositoryPrisma implements ProductRepository {
         select: {
           marketplaceAccountId: true,
           requestedCategoryId: true,
+          externalListingId: true,
+          permalink: true,
           status: true,
+          updatedAt: true,
           marketplaceAccount: {
             select: {
               platform: true,
+              shopId: true,
             },
           },
         },
@@ -249,9 +262,8 @@ class ProductRepositoryPrisma implements ProductRepository {
     listingCategory?: string,
   ): Prisma.ProductListingWhereInput | undefined {
     const clauses: Prisma.ProductListingWhereInput[] = [];
-    const parsedListingCategory = parseProductListingCategoryValue(
-      listingCategory,
-    );
+    const parsedListingCategory =
+      parseProductListingCategoryValue(listingCategory);
     const effectiveMarketplace =
       parsedListingCategory?.platform ??
       (marketplace === "MERCADO_LIVRE" || marketplace === "SHOPEE"
@@ -542,7 +554,9 @@ class ProductRepositoryPrisma implements ProductRepository {
       clauses.push(Prisma.sql`p."userId" = ${userId}`);
     }
 
-    clauses.push(...this.buildMarketplaceMembershipSqlClauses(filters?.marketplace));
+    clauses.push(
+      ...this.buildMarketplaceMembershipSqlClauses(filters?.marketplace),
+    );
 
     if (filters?.createdFrom) {
       clauses.push(Prisma.sql`p."createdAt" >= ${filters.createdFrom}`);
@@ -604,9 +618,7 @@ class ProductRepositoryPrisma implements ProductRepository {
         : undefined);
 
     if (scopedMarketplace) {
-      listingClauses.push(
-        Prisma.sql`ma."platform" = ${scopedMarketplace}`,
-      );
+      listingClauses.push(Prisma.sql`ma."platform" = ${scopedMarketplace}`);
     }
 
     if (parsedListingCategory) {
@@ -899,7 +911,10 @@ class ProductRepositoryPrisma implements ProductRepository {
         continue;
       }
 
-      const key = buildProductListingCategoryValue(platform, normalizedCategoryId);
+      const key = buildProductListingCategoryValue(
+        platform,
+        normalizedCategoryId,
+      );
       if (!key || distinctCategories.has(key)) {
         continue;
       }

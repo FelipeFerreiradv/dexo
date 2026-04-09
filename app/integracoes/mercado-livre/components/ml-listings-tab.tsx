@@ -12,6 +12,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
+import { resolveMarketplaceListingLinkState } from "@/app/lib/marketplace-listing-links";
 import {
   Card,
   CardContent,
@@ -264,20 +265,24 @@ export function MLListingsTab() {
                     </TableCell>
                     <TableCell className="text-right">
                       {(() => {
-                        // Consider placeholder only when we truly don't have an ID (or it's an explicit PENDING_ placeholder).
-                        const hasExternalId = Boolean(
-                          listing.externalListingId,
-                        );
-                        const hasPermalink = Boolean(listing.permalink);
-                        const isPlaceholder =
-                          (listing.externalListingId || "").startsWith(
-                            "PENDING_",
-                          ) ||
-                          (!hasPermalink && !hasExternalId);
+                        // Reuse the same open/disabled rules used in product listings.
+                        const linkListing = {
+                          platform: "MERCADO_LIVRE" as const,
+                          externalListingId: listing.externalListingId,
+                          permalink: listing.permalink,
+                          status: listing.status,
+                        };
+                        const linkState =
+                          resolveMarketplaceListingLinkState(linkListing);
 
-                        if (isPlaceholder) {
+                        if (!linkState.isOpenable) {
                           return (
-                            <Button variant="ghost" size="sm" disabled>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled
+                              title={linkState.disabledReason ?? undefined}
+                            >
                               <AlertCircle className="h-4 w-4 text-muted-foreground/70" />
                               <span className="sr-only">Anúncio pausado</span>
                             </Button>
@@ -287,12 +292,7 @@ export function MLListingsTab() {
                         return (
                           <Button variant="ghost" size="sm" asChild>
                             <a
-                              href={
-                                listing.permalink ||
-                                (hasExternalId
-                                  ? `https://produto.mercadolivre.com.br/${listing.externalListingId}`
-                                  : "#")
-                              }
+                              href={linkState.href ?? "#"}
                               target="_blank"
                               rel="noopener noreferrer"
                             >

@@ -9,15 +9,14 @@ const {
   mockCount,
   mockProductListingFindMany,
   mockMarketplaceCategoryFindMany,
-} =
-  vi.hoisted(() => ({
-    mockQueryRaw: vi.fn(),
-    mockExecuteRawUnsafe: vi.fn(),
-    mockFindMany: vi.fn(),
-    mockCount: vi.fn(),
-    mockProductListingFindMany: vi.fn(),
-    mockMarketplaceCategoryFindMany: vi.fn(),
-  }));
+} = vi.hoisted(() => ({
+  mockQueryRaw: vi.fn(),
+  mockExecuteRawUnsafe: vi.fn(),
+  mockFindMany: vi.fn(),
+  mockCount: vi.fn(),
+  mockProductListingFindMany: vi.fn(),
+  mockMarketplaceCategoryFindMany: vi.fn(),
+}));
 
 vi.mock("../app/lib/prisma", () => ({
   default: {
@@ -160,11 +159,89 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     ]);
     mockCount.mockResolvedValue(1);
 
-    const result = await repo.findAll({ search: "", page: 1, limit: 10 }, "user-1");
+    const result = await repo.findAll(
+      { search: "", page: 1, limit: 10 },
+      "user-1",
+    );
 
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(result.products).toHaveLength(1);
     expect(result.total).toBe(1);
+  });
+
+  it("returns listing link metadata in the hydrated products payload", async () => {
+    const repo = new ProductRepositoryPrisma();
+    const listingUpdatedAt = new Date("2026-04-08T12:34:56.000Z");
+
+    mockFindMany.mockResolvedValue([
+      {
+        ...baseProduct,
+        id: "prod-links",
+        sku: "SKU-LINK",
+        name: "Produto com anuncio",
+        price: money(150),
+        stock: 7,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+        listings: [
+          {
+            marketplaceAccountId: "acc-ml",
+            requestedCategoryId: "MLB123",
+            externalListingId: "MLB999",
+            permalink: "https://produto.mercadolivre.com.br/MLB999",
+            status: "active",
+            updatedAt: listingUpdatedAt,
+            marketplaceAccount: {
+              platform: "MERCADO_LIVRE",
+              shopId: null,
+            },
+          },
+          {
+            marketplaceAccountId: "acc-shp",
+            requestedCategoryId: "SHP_456",
+            externalListingId: "44556677:889900",
+            permalink: null,
+            status: "normal",
+            updatedAt: listingUpdatedAt,
+            marketplaceAccount: {
+              platform: "SHOPEE",
+              shopId: 778899,
+            },
+          },
+        ],
+      },
+    ]);
+    mockCount.mockResolvedValue(1);
+
+    const result = await repo.findAll(
+      { search: "", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    expect(result.products[0].listings).toEqual([
+      {
+        platform: "MERCADO_LIVRE",
+        marketplaceAccountId: "acc-ml",
+        accountIds: ["acc-ml"],
+        categoryId: "MLB123",
+        externalListingId: "MLB999",
+        permalink: "https://produto.mercadolivre.com.br/MLB999",
+        shopId: undefined,
+        status: "active",
+        updatedAt: listingUpdatedAt,
+      },
+      {
+        platform: "SHOPEE",
+        marketplaceAccountId: "acc-shp",
+        accountIds: ["acc-shp"],
+        categoryId: "SHP_456",
+        externalListingId: "44556677:889900",
+        permalink: undefined,
+        shopId: 778899,
+        status: "normal",
+        updatedAt: listingUpdatedAt,
+      },
+    ]);
   });
 
   it("applies scalar and relational filters to the base prisma query", async () => {
@@ -245,7 +322,9 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
       ]),
     });
 
-    const listingClause = clauses.find((clause: any) => clause.listings?.some?.AND);
+    const listingClause = clauses.find(
+      (clause: any) => clause.listings?.some?.AND,
+    );
     expect(listingClause).toMatchObject({
       listings: {
         some: {
@@ -564,7 +643,10 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     ]);
     mockCount.mockResolvedValue(1);
 
-    const result = await repo.findAll({ search: "12345", page: 1, limit: 10 }, "user-1");
+    const result = await repo.findAll(
+      { search: "12345", page: 1, limit: 10 },
+      "user-1",
+    );
 
     expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(result.products[0].sku).toBe("12345");

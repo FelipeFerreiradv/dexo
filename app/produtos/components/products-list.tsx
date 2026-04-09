@@ -58,6 +58,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  MARKETPLACE_LISTING_PLATFORMS,
+  pickPreferredListingsByPlatform,
+  type MarketplaceListingLinkInput,
+  type MarketplaceListingPlatform,
+} from "@/app/lib/marketplace-listing-links";
 import { getApiBaseUrl } from "@/lib/api";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
 import {
@@ -77,7 +88,11 @@ import { CreateProductDialog } from "./create-product-dialog";
 import { EditProductDialog } from "./edit-product-dialog";
 import { ProductSkeleton } from "./product-skeleton";
 
-type MarketplacePlatform = "MERCADO_LIVRE" | "SHOPEE";
+type MarketplacePlatform = MarketplaceListingPlatform;
+type ProductListing = MarketplaceListingLinkInput & {
+  accountIds: string[];
+  categoryId?: string;
+};
 type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
 
 interface Product {
@@ -104,13 +119,7 @@ interface Product {
   isTraceable?: boolean;
   sourceVehicle?: string | null;
   imageUrl?: string | null;
-  listings?: Array<{
-    platform: MarketplacePlatform;
-    marketplaceAccountId?: string;
-    accountIds: string[];
-    categoryId?: string;
-    status?: string;
-  }>;
+  listings?: ProductListing[];
 }
 
 interface Pagination {
@@ -203,7 +212,10 @@ const QUALITY_OPTIONS: Array<{
   { value: "RECONDICIONADO", label: "Recondicionado" },
 ];
 
-const locationOptionsCache = new Map<string, TimedCacheEntry<LocationOption[]>>();
+const locationOptionsCache = new Map<
+  string,
+  TimedCacheEntry<LocationOption[]>
+>();
 const locationOptionsInFlight = new Map<string, Promise<LocationOption[]>>();
 const productFilterOptionsCache = new Map<
   string,
@@ -347,38 +359,69 @@ function MarketplaceBadges({
   listings?: Product["listings"];
   size?: "sm" | "md";
 }) {
-  const platforms = Array.from(
-    new Set(
-      (listings || [])
-        .map((listing) => listing?.platform)
-        .filter(
-          (platform): platform is MarketplacePlatform =>
-            platform === "MERCADO_LIVRE" || platform === "SHOPEE",
-        ),
-    ),
+  const preferredListings = useMemo(
+    () =>
+      pickPreferredListingsByPlatform(listings, MARKETPLACE_LISTING_PLATFORMS),
+    [listings],
   );
 
-  if (platforms.length === 0) return null;
+  if (preferredListings.length === 0) return null;
 
   const imgClass = size === "sm" ? "h-4 w-auto" : "h-5 w-auto";
   const chipClass =
     size === "sm"
       ? "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-[2px]"
       : "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1";
+  const linkClass =
+    "transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+  const disabledClass = "cursor-not-allowed opacity-60";
 
   return (
     <div className="flex items-center gap-2">
-      {platforms.map((platform) => {
+      {preferredListings.map(({ platform, linkState }) => {
         const icon = MARKETPLACE_ICONS[platform];
-        return (
-          <span
-            key={platform}
-            className={chipClass}
-            title={`Anúncio publicado no ${icon.label}`}
-          >
+        const reason =
+          linkState.disabledReason ||
+          `Anuncio publicado no ${icon.label}, mas ainda indisponivel para abertura.`;
+        const badgeContent = (
+          <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={icon.src} alt={icon.label} className={imgClass} />
-          </span>
+            <span className="sr-only">{icon.label}</span>
+          </>
+        );
+
+        if (linkState.isOpenable && linkState.href) {
+          return (
+            <a
+              key={platform}
+              href={linkState.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`${chipClass} ${linkClass}`}
+              title={`Abrir anuncio no ${icon.label}`}
+              aria-label={`Abrir anuncio no ${icon.label}`}
+            >
+              {badgeContent}
+            </a>
+          );
+        }
+
+        return (
+          <Tooltip key={platform}>
+            <TooltipTrigger asChild>
+              <span
+                className={`${chipClass} ${disabledClass}`}
+                tabIndex={0}
+                aria-label={reason}
+                title={`Anúncio publicado no ${icon.label}`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={icon.src} alt={icon.label} className={imgClass} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent sideOffset={6}>{reason}</TooltipContent>
+          </Tooltip>
         );
       })}
     </div>
@@ -440,61 +483,67 @@ export function ProductsList() {
     [],
   );
 
-  const fetchLocationOptions = useCallback(async (force = false) => {
-    const email = session?.user?.email;
-    if (!email) return;
+  const fetchLocationOptions = useCallback(
+    async (force = false) => {
+      const email = session?.user?.email;
+      if (!email) return;
 
-    const requestId = locationOptionsRequestIdRef.current + 1;
-    locationOptionsRequestIdRef.current = requestId;
+      const requestId = locationOptionsRequestIdRef.current + 1;
+      locationOptionsRequestIdRef.current = requestId;
 
-    try {
-      const options = await loadLocationOptions(email, force);
-      if (requestId !== locationOptionsRequestIdRef.current) {
-        return;
+      try {
+        const options = await loadLocationOptions(email, force);
+        if (requestId !== locationOptionsRequestIdRef.current) {
+          return;
+        }
+
+        startTransition(() => {
+          setLocationOptions(options);
+        });
+      } catch (error) {
+        console.error("Erro ao carregar localizações para filtros:", error);
       }
-
-      startTransition(() => {
-        setLocationOptions(options);
-      });
-    } catch (error) {
-      console.error("Erro ao carregar localizações para filtros:", error);
-    }
-  }, [session?.user?.email]);
+    },
+    [session?.user?.email],
+  );
 
   useEffect(() => {
     fetchLocationOptions();
   }, [fetchLocationOptions]);
 
-  const fetchFilterOptions = useCallback(async (force = false) => {
-    const email = session?.user?.email;
-    if (status === "loading") return;
-    if (!email) {
-      setIsLoadingFilterOptions(false);
-      return;
-    }
-
-    const requestId = filterOptionsRequestIdRef.current + 1;
-    filterOptionsRequestIdRef.current = requestId;
-
-    setIsLoadingFilterOptions(true);
-    try {
-      const data = await loadProductFilterOptions(email, force);
-      if (requestId !== filterOptionsRequestIdRef.current) {
+  const fetchFilterOptions = useCallback(
+    async (force = false) => {
+      const email = session?.user?.email;
+      if (status === "loading") return;
+      if (!email) {
+        setIsLoadingFilterOptions(false);
         return;
       }
 
-      startTransition(() => {
-        setBrandOptions(data.brands);
-        setPublishedCategoryOptions(data.publishedCategories);
-      });
-    } catch (error) {
-      console.error("Erro ao carregar opcoes de filtro de produtos:", error);
-    } finally {
-      if (requestId === filterOptionsRequestIdRef.current) {
-        setIsLoadingFilterOptions(false);
+      const requestId = filterOptionsRequestIdRef.current + 1;
+      filterOptionsRequestIdRef.current = requestId;
+
+      setIsLoadingFilterOptions(true);
+      try {
+        const data = await loadProductFilterOptions(email, force);
+        if (requestId !== filterOptionsRequestIdRef.current) {
+          return;
+        }
+
+        startTransition(() => {
+          setBrandOptions(data.brands);
+          setPublishedCategoryOptions(data.publishedCategories);
+        });
+      } catch (error) {
+        console.error("Erro ao carregar opcoes de filtro de produtos:", error);
+      } finally {
+        if (requestId === filterOptionsRequestIdRef.current) {
+          setIsLoadingFilterOptions(false);
+        }
       }
-    }
-  }, [session?.user?.email, status]);
+    },
+    [session?.user?.email, status],
+  );
 
   useEffect(() => {
     fetchFilterOptions();
@@ -534,7 +583,10 @@ export function ProductsList() {
           throw new Error(data.error || "Erro ao buscar produtos");
         }
 
-        if (controller.signal.aborted || requestId !== productsRequestIdRef.current) {
+        if (
+          controller.signal.aborted ||
+          requestId !== productsRequestIdRef.current
+        ) {
           return;
         }
 
@@ -629,23 +681,15 @@ export function ProductsList() {
         ? prev
         : { ...prev, listingCategory: compatibleListingCategory },
     );
-  }, [
-    filters.listingCategory,
-    filters.marketplace,
-    publishedCategoryOptions,
-  ]);
+  }, [filters.listingCategory, filters.marketplace, publishedCategoryOptions]);
 
-  const updateFilter = useCallback(
-    function updateFilterValue<K extends keyof ProductFiltersState>(
-      key: K,
-      value: ProductFiltersState[K],
-    ) {
-      setFilters((prev) =>
-        prev[key] === value ? prev : { ...prev, [key]: value },
-      );
-    },
-    [],
-  );
+  const updateFilter = useCallback(function updateFilterValue<
+    K extends keyof ProductFiltersState,
+  >(key: K, value: ProductFiltersState[K]) {
+    setFilters((prev) =>
+      prev[key] === value ? prev : { ...prev, [key]: value },
+    );
+  }, []);
 
   const clearFilters = () => {
     setSearchInput("");
@@ -843,7 +887,9 @@ export function ProductsList() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">Status da publicação</label>
+              <label className="text-sm font-medium">
+                Status da publicação
+              </label>
               <Select
                 value={filters.publicationStatus || SELECT_ALL_VALUE}
                 onValueChange={(value) =>
@@ -859,7 +905,9 @@ export function ProductsList() {
                   <SelectValue placeholder="Todos os status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={SELECT_ALL_VALUE}>Todos os status</SelectItem>
+                  <SelectItem value={SELECT_ALL_VALUE}>
+                    Todos os status
+                  </SelectItem>
                   {PUBLICATION_STATUS_OPTIONS.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
                       {option.label}
@@ -914,7 +962,9 @@ export function ProductsList() {
               <Input
                 type="date"
                 value={filters.createdTo}
-                onChange={(event) => updateFilter("createdTo", event.target.value)}
+                onChange={(event) =>
+                  updateFilter("createdTo", event.target.value)
+                }
               />
             </div>
 
@@ -926,7 +976,9 @@ export function ProductsList() {
                 step="0.01"
                 placeholder="0,00"
                 value={filters.priceMin}
-                onChange={(event) => updateFilter("priceMin", event.target.value)}
+                onChange={(event) =>
+                  updateFilter("priceMin", event.target.value)
+                }
               />
             </div>
 
@@ -938,7 +990,9 @@ export function ProductsList() {
                 step="0.01"
                 placeholder="0,00"
                 value={filters.priceMax}
-                onChange={(event) => updateFilter("priceMax", event.target.value)}
+                onChange={(event) =>
+                  updateFilter("priceMax", event.target.value)
+                }
               />
             </div>
 
@@ -1009,7 +1063,9 @@ export function ProductsList() {
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={SELECT_ALL_VALUE}>Todas as marcas</SelectItem>
+                  <SelectItem value={SELECT_ALL_VALUE}>
+                    Todas as marcas
+                  </SelectItem>
                   {brandOptions.map((brand) => (
                     <SelectItem key={brand} value={brand}>
                       {brand}
@@ -1249,7 +1305,8 @@ export function ProductsList() {
                                     alt={product.name}
                                     className="h-12 w-12 rounded border object-cover"
                                     onError={(event) => {
-                                      event.currentTarget.style.display = "none";
+                                      event.currentTarget.style.display =
+                                        "none";
                                     }}
                                   />
                                 ) : (
@@ -1277,13 +1334,17 @@ export function ProductsList() {
                                 </div>
                               </TableCell>
                               <TableCell className="hidden md:table-cell">
-                                <MarketplaceBadges listings={product.listings} />
+                                <MarketplaceBadges
+                                  listings={product.listings}
+                                />
                               </TableCell>
                               <TableCell className="hidden md:table-cell">
                                 {formatPrice(product.price)}
                               </TableCell>
                               <TableCell>
-                                <Badge variant={getStockBadgeVariant(product.stock)}>
+                                <Badge
+                                  variant={getStockBadgeVariant(product.stock)}
+                                >
                                   {product.stock} un.
                                 </Badge>
                               </TableCell>
@@ -1328,7 +1389,9 @@ export function ProductsList() {
                                           Cancelar
                                         </AlertDialogCancel>
                                         <AlertDialogAction
-                                          onClick={() => handleDelete(product.id)}
+                                          onClick={() =>
+                                            handleDelete(product.id)
+                                          }
                                           className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                                         >
                                           Excluir
@@ -1393,7 +1456,9 @@ export function ProductsList() {
                                     </p>
                                   )}
                                 </div>
-                                <Badge variant={getStockBadgeVariant(product.stock)}>
+                                <Badge
+                                  variant={getStockBadgeVariant(product.stock)}
+                                >
                                   {product.stock} un.
                                 </Badge>
                               </div>
@@ -1466,7 +1531,9 @@ export function ProductsList() {
                             variant="outline"
                             size="sm"
                             disabled={pagination.page === 1}
-                            onClick={() => handlePageChange(pagination.page - 1)}
+                            onClick={() =>
+                              handlePageChange(pagination.page - 1)
+                            }
                           >
                             <ChevronLeft className="size-4" />
                             Anterior
@@ -1475,7 +1542,9 @@ export function ProductsList() {
                             variant="outline"
                             size="sm"
                             disabled={pagination.page === pagination.totalPages}
-                            onClick={() => handlePageChange(pagination.page + 1)}
+                            onClick={() =>
+                              handlePageChange(pagination.page + 1)
+                            }
                           >
                             Próxima
                             <ChevronRight className="size-4" />

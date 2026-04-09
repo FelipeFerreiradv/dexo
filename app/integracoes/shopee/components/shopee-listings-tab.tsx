@@ -12,6 +12,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
+import { resolveMarketplaceListingLinkState } from "@/app/lib/marketplace-listing-links";
 import {
   Card,
   CardContent,
@@ -305,20 +306,24 @@ export function ShopeeListingsTab() {
                     </TableCell>
                     <TableCell className="text-right">
                       {(() => {
-                        const hasExternalId = Boolean(
-                          listing.externalListingId,
-                        );
-                        const hasPermalink = Boolean(listing.permalink);
-                        const itemIdOnly = listing.externalListingId?.split(":")[0];
-                        const isPlaceholder =
-                          (listing.externalListingId || "").startsWith(
-                            "PENDING_",
-                          ) ||
-                          (!hasPermalink && !hasExternalId);
+                        const linkListing = {
+                          platform: "SHOPEE" as const,
+                          externalListingId: listing.externalListingId,
+                          permalink: listing.permalink,
+                          shopId: listing.shopId,
+                          status: listing.status,
+                        };
+                        const linkState =
+                          resolveMarketplaceListingLinkState(linkListing);
 
-                        if (isPlaceholder) {
+                        if (!linkState.isOpenable) {
                           return (
-                            <Button variant="ghost" size="sm" disabled>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled
+                              title={linkState.disabledReason ?? undefined}
+                            >
                               <AlertCircle className="h-4 w-4 text-muted-foreground/70" />
                               <span className="sr-only">Anúncio pendente</span>
                             </Button>
@@ -328,12 +333,7 @@ export function ShopeeListingsTab() {
                         return (
                           <Button variant="ghost" size="sm" asChild>
                             <a
-                              href={
-                                listing.permalink ||
-                                (hasExternalId && listing.shopId && itemIdOnly
-                                  ? `https://shopee.com.br/product/${listing.shopId}/${itemIdOnly}`
-                                  : "#")
-                              }
+                              href={linkState.href ?? "#"}
                               target="_blank"
                               rel="noopener noreferrer"
                             >

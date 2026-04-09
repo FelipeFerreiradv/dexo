@@ -17,6 +17,10 @@ export interface ProductListingSummary {
   accountIds: string[];
   categoryId?: string;
   status?: string;
+  externalListingId?: string;
+  permalink?: string;
+  shopId?: number;
+  updatedAt?: Date;
 }
 
 export interface ProductListFilters {
