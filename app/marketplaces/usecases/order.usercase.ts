@@ -13,7 +13,9 @@ import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
+import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import type { MLOrderDetails, MLOrderItem } from "../types/ml-order.types";
 import type {
@@ -337,9 +339,8 @@ export class OrderUseCase {
       results: [],
     };
 
-    const shopeeOrders = await ShopeeApiService.getRecentOrders(
-      account.accessToken,
-      account.shopId,
+    const shopeeOrders = await this.getRecentShopeeOrdersWithRefresh(
+      account,
       days,
     );
 
@@ -837,8 +838,57 @@ export class OrderUseCase {
     }
   }
 
+  private static async getRecentShopeeOrdersWithRefresh(
+    account: {
+      id: string;
+      accessToken: string;
+      refreshToken: string | null;
+      shopId: number;
+    },
+    days: number,
+  ): Promise<ShopeeOrderDetail[]> {
+    try {
+      return await ShopeeApiService.getRecentOrders(
+        account.accessToken,
+        account.shopId,
+        days,
+      );
+    } catch (error) {
+      if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
+        throw error;
+      }
+
+      const refreshed = await ShopeeOAuthService.refreshAccessToken(
+        account.refreshToken,
+        account.shopId,
+      );
+
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.access_token,
+        refreshToken: refreshed.refresh_token,
+        expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+      });
+
+      return ShopeeApiService.getRecentOrders(
+        refreshed.access_token,
+        account.shopId,
+        days,
+      );
+    }
+  }
+
   private static isMarketplaceAuthError(error: unknown): boolean {
+    const status =
+      error &&
+      typeof error === "object" &&
+      "status" in error &&
+      typeof (error as any).status === "number"
+        ? (error as any).status
+        : undefined;
     const message = error instanceof Error ? error.message : String(error);
+    if (status === 401 || status === 403) {
+      return true;
+    }
     return /unauthorized|invalid access token|token expired|forbidden/i.test(
       message,
     );
@@ -862,6 +912,7 @@ export class OrderUseCase {
       select: { id: true, name: true, stock: true },
     });
     const productMap = new Map(products.map((p) => [p.id, p]));
+    const syncedProductIds = new Set<string>();
 
     // Build transaction operations for all items at once
     const txOps: Parameters<typeof prisma.$transaction>[0] = [];
@@ -898,15 +949,18 @@ export class OrderUseCase {
         newStock,
         quantity: item.quantity,
       });
+      syncedProductIds.add(item.productId);
 
       console.log(
         `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
       );
     }
 
+    let stockUpdated = false;
     if (txOps.length > 0) {
       try {
         await prisma.$transaction(txOps);
+        stockUpdated = true;
       } catch (error) {
         console.error(
           `[OrderUseCase] Error in stock deduction transaction:`,
@@ -915,7 +969,40 @@ export class OrderUseCase {
       }
     }
 
+    if (stockUpdated && syncedProductIds.size > 0) {
+      await this.syncMarketplaceStockForProducts([...syncedProductIds]);
+    }
+
     return deductions;
+  }
+
+  private static async syncMarketplaceStockForProducts(
+    productIds: string[],
+  ): Promise<void> {
+    const uniqueProductIds = [...new Set(productIds.filter(Boolean))];
+    if (uniqueProductIds.length === 0) return;
+
+    const syncResults = await Promise.allSettled(
+      uniqueProductIds.map((productId) => SyncUseCase.syncProductStock(productId)),
+    );
+
+    syncResults.forEach((result, index) => {
+      const productId = uniqueProductIds[index];
+      if (result.status === "rejected") {
+        console.error(
+          `[OrderUseCase] Error syncing marketplace stock for product ${productId}:`,
+          result.reason,
+        );
+        return;
+      }
+
+      const failedListings = result.value.filter((entry) => !entry.success).length;
+      if (failedListings > 0) {
+        console.warn(
+          `[OrderUseCase] Marketplace stock sync finished with ${failedListings} failed listing(s) for product ${productId}`,
+        );
+      }
+    });
   }
 
   /**

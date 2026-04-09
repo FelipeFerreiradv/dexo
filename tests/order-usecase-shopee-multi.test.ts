@@ -7,6 +7,8 @@ import {
 } from "@/app/marketplaces/usecases/order.usercase";
 import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
 import { ShopeeApiService } from "@/app/marketplaces/services/shopee-api.service";
+import { ShopeeOAuthService } from "@/app/marketplaces/services/shopee-oauth.service";
+import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import prisma from "@/app/lib/prisma";
 
@@ -106,6 +108,169 @@ describe("OrderUseCase.mapShopeeStatus", () => {
 describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("renova token Shopee e repete a importação após 403 invalid access token", async () => {
+    const authError = Object.assign(new Error("Invalid access_token"), {
+      status: 403,
+    });
+    const createdOrder = {
+      id: "order-refresh-1",
+      items: [
+        {
+          productId: "prod-1",
+          quantity: 1,
+          unitPrice: 100,
+          listingId: null,
+        },
+      ],
+    };
+
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-1",
+      userId: "user-1",
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      shopId: 123,
+    } as any);
+    vi.spyOn(ShopeeApiService, "getRecentOrders")
+      .mockRejectedValueOnce(authError)
+      .mockResolvedValueOnce([
+        {
+          order_sn: "SHP-ORDER-REFRESH",
+          order_status: "READY_TO_SHIP",
+          total_amount: 100,
+          buyer_username: "cliente",
+          item_list: [
+            {
+              item_id: 999,
+              model_quantity_purchased: 1,
+            },
+          ],
+        },
+      ] as any);
+    const refreshSpy = vi
+      .spyOn(ShopeeOAuthService, "refreshAccessToken")
+      .mockResolvedValue({
+        access_token: "new-token",
+        refresh_token: "new-refresh-token",
+        expire_in: 3600,
+      } as any);
+    const updateTokensSpy = vi
+      .spyOn(MarketplaceRepository, "updateTokens")
+      .mockResolvedValue({} as any);
+    vi.spyOn(prisma.order, "findMany").mockResolvedValue([]);
+    vi.spyOn(prisma.productListing, "findMany").mockResolvedValue([]);
+    vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
+    vi.spyOn(OrderUseCase as any, "mapShopeeOrderItems").mockResolvedValue({
+      items: createdOrder.items,
+      linkedCount: 1,
+    });
+    vi.spyOn(orderRepository, "create").mockResolvedValue(createdOrder as any);
+    const deductSpy = vi
+      .spyOn(OrderUseCase as any, "deductStockForOrder")
+      .mockResolvedValue([]);
+
+    const result = await OrderUseCase.importRecentShopeeOrdersForAccount(
+      "acc-1",
+      3,
+      true,
+    );
+
+    expect(refreshSpy).toHaveBeenCalledWith("refresh-token", 123);
+    expect(updateTokensSpy).toHaveBeenCalledWith(
+      "acc-1",
+      expect.objectContaining({
+        accessToken: "new-token",
+        refreshToken: "new-refresh-token",
+        expiresAt: expect.any(Date),
+      }),
+    );
+    expect(ShopeeApiService.getRecentOrders).toHaveBeenNthCalledWith(
+      1,
+      "expired-token",
+      123,
+      3,
+    );
+    expect(ShopeeApiService.getRecentOrders).toHaveBeenNthCalledWith(
+      2,
+      "new-token",
+      123,
+      3,
+    );
+    expect(orderRepository.create).toHaveBeenCalledTimes(1);
+    expect(deductSpy).toHaveBeenCalledTimes(1);
+    expect(deductSpy).toHaveBeenCalledWith(createdOrder, "Importação Shopee");
+    expect(result).toMatchObject({
+      totalOrders: 1,
+      imported: 1,
+      errors: 0,
+      stockDeductions: 1,
+    });
+  });
+
+  it("não renova token Shopee quando a credencial atual ainda funciona", async () => {
+    const refreshSpy = vi.spyOn(ShopeeOAuthService, "refreshAccessToken");
+    const updateTokensSpy = vi.spyOn(MarketplaceRepository, "updateTokens");
+
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-1",
+      userId: "user-1",
+      accessToken: "valid-token",
+      refreshToken: "refresh-token",
+      shopId: 123,
+    } as any);
+    vi.spyOn(ShopeeApiService, "getRecentOrders").mockResolvedValue([]);
+    vi.spyOn(prisma.order, "findMany").mockResolvedValue([]);
+    vi.spyOn(prisma.productListing, "findMany").mockResolvedValue([]);
+    vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
+
+    const result = await OrderUseCase.importRecentShopeeOrdersForAccount(
+      "acc-1",
+      3,
+      true,
+    );
+
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(updateTokensSpy).not.toHaveBeenCalled();
+    expect(ShopeeApiService.getRecentOrders).toHaveBeenCalledTimes(1);
+    expect(ShopeeApiService.getRecentOrders).toHaveBeenCalledWith(
+      "valid-token",
+      123,
+      3,
+    );
+    expect(result).toMatchObject({
+      totalOrders: 0,
+      imported: 0,
+      errors: 0,
+    });
+  });
+
+  it("falha sem criar pedido nem baixar estoque quando o refresh Shopee falha", async () => {
+    const authError = Object.assign(new Error("Invalid access_token"), {
+      status: 403,
+    });
+
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-1",
+      userId: "user-1",
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      shopId: 123,
+    } as any);
+    vi.spyOn(ShopeeApiService, "getRecentOrders").mockRejectedValue(authError);
+    vi.spyOn(ShopeeOAuthService, "refreshAccessToken").mockRejectedValue(
+      new Error("Erro ao renovar token"),
+    );
+    const createSpy = vi.spyOn(orderRepository, "create");
+    const deductSpy = vi.spyOn(OrderUseCase as any, "deductStockForOrder");
+
+    await expect(
+      OrderUseCase.importRecentShopeeOrdersForAccount("acc-1", 3, true),
+    ).rejects.toThrow("Erro ao renovar token");
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(deductSpy).not.toHaveBeenCalled();
   });
 
   it("faz fallback por SKU usando o userId da conta Shopee", async () => {
@@ -318,6 +483,9 @@ describe("OrderUseCase.deductStockForOrder", () => {
       .spyOn(prisma.stockLog, "create")
       .mockResolvedValue({} as any);
     const txSpy = vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
+    const syncSpy = vi
+      .spyOn(SyncUseCase, "syncProductStock")
+      .mockResolvedValue([]);
 
     const result = await (OrderUseCase as any).deductStockForOrder(
       order,
@@ -338,6 +506,8 @@ describe("OrderUseCase.deductStockForOrder", () => {
       },
     });
     expect(txSpy).toHaveBeenCalledTimes(1);
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(syncSpy).toHaveBeenCalledWith("prod-1");
     expect(result).toEqual([
       {
         productId: "prod-1",
@@ -345,6 +515,140 @@ describe("OrderUseCase.deductStockForOrder", () => {
         previousStock: 2,
         newStock: 0,
         quantity: 3,
+      },
+    ]);
+  });
+
+  it("sincroniza anúncios uma vez por productId após concluir a baixa local", async () => {
+    const order = {
+      id: "order-2",
+      items: [
+        {
+          productId: "prod-1",
+          quantity: 1,
+        },
+        {
+          productId: "prod-1",
+          quantity: 1,
+        },
+        {
+          productId: "prod-2",
+          quantity: 1,
+        },
+      ],
+    };
+
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-1",
+        name: "Produto 1",
+        stock: 5,
+      },
+      {
+        id: "prod-2",
+        name: "Produto 2",
+        stock: 2,
+      },
+    ] as any);
+    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
+    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
+    const txSpy = vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
+    const syncSpy = vi
+      .spyOn(SyncUseCase, "syncProductStock")
+      .mockResolvedValue([]);
+
+    await (OrderUseCase as any).deductStockForOrder(order, "Importação Shopee");
+
+    expect(txSpy).toHaveBeenCalledTimes(1);
+    expect(syncSpy).toHaveBeenCalledTimes(2);
+    expect(syncSpy).toHaveBeenCalledWith("prod-1");
+    expect(syncSpy).toHaveBeenCalledWith("prod-2");
+    expect(new Set(syncSpy.mock.calls.map(([productId]) => productId))).toEqual(
+      new Set(["prod-1", "prod-2"]),
+    );
+    expect(txSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      syncSpy.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("não sincroniza anúncios quando a transação local de estoque falha", async () => {
+    const order = {
+      id: "order-3",
+      items: [
+        {
+          productId: "prod-1",
+          quantity: 1,
+        },
+      ],
+    };
+
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-1",
+        name: "Produto teste",
+        stock: 2,
+      },
+    ] as any);
+    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
+    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
+    vi.spyOn(prisma, "$transaction").mockRejectedValue(new Error("tx failed"));
+    const syncSpy = vi.spyOn(SyncUseCase, "syncProductStock");
+
+    const result = await (OrderUseCase as any).deductStockForOrder(
+      order,
+      "Importação Shopee",
+    );
+
+    expect(syncSpy).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        productId: "prod-1",
+        productName: "Produto teste",
+        previousStock: 2,
+        newStock: 1,
+        quantity: 1,
+      },
+    ]);
+  });
+
+  it("mantém a baixa local mesmo quando a sincronização externa falha", async () => {
+    const order = {
+      id: "order-4",
+      items: [
+        {
+          productId: "prod-1",
+          quantity: 1,
+        },
+      ],
+    };
+
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-1",
+        name: "Produto teste",
+        stock: 2,
+      },
+    ] as any);
+    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
+    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
+    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
+    const syncSpy = vi
+      .spyOn(SyncUseCase, "syncProductStock")
+      .mockRejectedValue(new Error("sync failed"));
+
+    const result = await (OrderUseCase as any).deductStockForOrder(
+      order,
+      "Importação Shopee",
+    );
+
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([
+      {
+        productId: "prod-1",
+        productName: "Produto teste",
+        previousStock: 2,
+        newStock: 1,
+        quantity: 1,
       },
     ]);
   });
