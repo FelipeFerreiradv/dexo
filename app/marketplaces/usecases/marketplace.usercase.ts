@@ -62,7 +62,23 @@ export class MarketplaceUseCase {
       // 3. Obter informaÃ§Ãµes do usuÃ¡rio (seller) do Mercado Livre
       const userInfo = await MLOAuthService.getUserInfo(tokenData.accessToken);
 
-      // 4. Verificar se jÃ¡ existe conta conectada
+      // 4. Bloquear vinculaÃ§Ã£o cross-tenant do mesmo seller
+      const conflictingMlAccounts =
+        await MarketplaceRepository.findAllByExternalUserId(
+          tokenData.externalUserId,
+          Platform.MERCADO_LIVRE,
+        );
+      const conflictingMlAccount = conflictingMlAccounts.find(
+        (account) => account.userId !== userId,
+      );
+
+      if (conflictingMlAccount) {
+        throw new Error(
+          "Esta conta do Mercado Livre jÃ¡ estÃ¡ vinculada a outro usuÃ¡rio. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      // 5. Verificar se jÃ¡ existe conta conectada
       const existingAccount =
         await MarketplaceRepository.findByUserAndExternalUserId(
           userId,
@@ -70,7 +86,7 @@ export class MarketplaceUseCase {
           Platform.MERCADO_LIVRE,
         );
 
-      // 5. Criar ou atualizar conta
+      // 6. Criar ou atualizar conta
       let account;
       const expiresAt = new Date(Date.now() + tokenData.expiresIn * 1000);
 
@@ -108,7 +124,7 @@ export class MarketplaceUseCase {
         });
       }
 
-      // 6. Multi-contas: manter todas as contas ativas do mesmo user+platform
+      // 7. Multi-contas: manter todas as contas ativas do mesmo user+platform
       // Apenas logar quantas contas ativas existem para diagnóstico
       try {
         const allAccounts =
@@ -402,14 +418,36 @@ export class MarketplaceUseCase {
         data.shopId,
       );
 
-      // 3. Verificar se jÃ¡ existe conta conectada
+      const shopeeExternalUserId =
+        tokenData.merchant_id?.toString() || data.shopId.toString();
+
+      // 3. Bloquear vinculaÃ§Ã£o cross-tenant da mesma loja Shopee
+      const conflictingAccountsByShopId =
+        await MarketplaceRepository.findAllShopeeByShopId(data.shopId);
+      const conflictingAccountsByExternalUserId =
+        await MarketplaceRepository.findAllByExternalUserId(
+          shopeeExternalUserId,
+          Platform.SHOPEE,
+        );
+      const conflictingShopeeAccount = [
+        ...conflictingAccountsByShopId,
+        ...conflictingAccountsByExternalUserId,
+      ].find((account) => account.userId !== userId);
+
+      if (conflictingShopeeAccount) {
+        throw new Error(
+          "Esta loja Shopee jÃ¡ estÃ¡ vinculada a outro usuÃ¡rio. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      // 4. Verificar se jÃ¡ existe conta conectada
       const existingAccount =
         await MarketplaceRepository.findShopeeByUserAndShopId(
           userId,
           data.shopId,
         );
 
-      // 4. Criar ou atualizar conta
+      // 5. Criar ou atualizar conta
       let account;
       const expiresAt = new Date(Date.now() + tokenData.expire_in * 1000);
 
@@ -442,8 +480,7 @@ export class MarketplaceUseCase {
           userId: userId,
           platform: Platform.SHOPEE,
           accountName: `Shopee Shop ${data.shopId}`,
-          externalUserId:
-            tokenData.merchant_id?.toString() || data.shopId.toString(),
+          externalUserId: shopeeExternalUserId,
           accessToken: tokenData.access_token,
           refreshToken: tokenData.refresh_token,
           expiresAt,

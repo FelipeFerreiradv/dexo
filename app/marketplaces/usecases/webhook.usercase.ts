@@ -34,20 +34,28 @@ export class WebhookUseCase {
 
       const mlOrderId = orderIdMatch[1];
 
-      // Encontrar conta do ML através do user_id do webhook
-      const account = await MarketplaceRepository.findByExternalUserId(
+      const accounts = await MarketplaceRepository.findAllByExternalUserId(
         payload.user_id.toString(),
         Platform.MERCADO_LIVRE,
+        true,
       );
 
-      if (!account) {
+      if (accounts.length === 0) {
         return {
           success: false,
           error: `Conta do Mercado Livre não encontrada para user_id: ${payload.user_id}`,
         };
       }
 
-      // Verificar se a conta está ativa
+      if (accounts.length > 1) {
+        return {
+          success: false,
+          error: `Múltiplas contas ativas do Mercado Livre encontradas para user_id: ${payload.user_id}. Resolva a duplicidade antes de processar webhooks.`,
+        };
+      }
+
+      const [account] = accounts;
+
       if (account.status !== "ACTIVE") {
         return {
           success: false,
@@ -55,7 +63,6 @@ export class WebhookUseCase {
         };
       }
 
-      // Importar pedidos recentes da conta específica (1 dia, com desconto de estoque)
       const importResult = await OrderUseCase.importRecentOrdersForAccount(
         account.id,
         1,
@@ -113,14 +120,26 @@ export class WebhookUseCase {
     error?: string;
   }> {
     try {
-      const account = await MarketplaceRepository.findByShopId(payload.shop_id);
+      const accounts = await MarketplaceRepository.findAllShopeeByShopId(
+        payload.shop_id,
+        true,
+      );
 
-      if (!account) {
+      if (accounts.length === 0) {
         return {
           success: false,
           error: `Conta Shopee não encontrada para shop_id: ${payload.shop_id}`,
         };
       }
+
+      if (accounts.length > 1) {
+        return {
+          success: false,
+          error: `Múltiplas contas Shopee ativas encontradas para shop_id: ${payload.shop_id}. Resolva a duplicidade antes de processar webhooks.`,
+        };
+      }
+
+      const [account] = accounts;
 
       if (account.status !== "ACTIVE") {
         return {

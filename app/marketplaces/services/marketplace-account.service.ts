@@ -23,8 +23,10 @@ export class MarketplaceAccountService {
     const isAuthFailure = [
       "unauthorized",
       "invalid access token",
+      "invalid_client",
       "invalid_grant",
       "invalid grant",
+      "client_id does not match the original",
       "refresh failed",
       "token expired",
       "invalid_refresh_token",

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Prisma, PrismaClient } from "@prisma/client";
 import * as XLSX from "xlsx";
+import { normalizeSku as buildSkuNormalized } from "../app/lib/sku";
 
 type RawRow = {
   sourceFile: string;
@@ -231,6 +232,7 @@ const main = async () => {
           data: batch.map((item) => ({
             userId: USER_ID,
             sku: item.sku.trim(),
+            skuNormalized: buildSkuNormalized(item.sku),
             name: item.title.trim(),
             price: new Prisma.Decimal(item.price),
             stock: item.quantity,

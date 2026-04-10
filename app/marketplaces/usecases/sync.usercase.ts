@@ -19,6 +19,7 @@ import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
+import { normalizeSku } from "@/app/lib/sku";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -96,6 +97,7 @@ export interface SyncResult {
   success: boolean;
   productId: string;
   externalListingId: string;
+  platform?: Platform;
   previousStock?: number;
   newStock?: number;
   previousPrice?: number;
@@ -179,9 +181,13 @@ export class SyncUseCase {
 
     // 4. Preparar dados para processamento otimizado
     const externalItemIds = activeItems.map((item) => item.id);
-    const skus = activeItems
-      .map((item) => this.extractSku(item))
-      .filter(Boolean) as string[];
+    const normalizedSkus = Array.from(
+      new Set(
+        activeItems
+          .map((item) => normalizeSku(this.extractSku(item)))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
 
     // Buscar listings existentes em lote
     const existingListings = await prisma.productListing.findMany({
@@ -196,13 +202,23 @@ export class SyncUseCase {
 
     // Buscar produtos por SKU em lote
     const products =
-      skus.length > 0
+      normalizedSkus.length > 0
         ? await prisma.product.findMany({
-            where: { sku: { in: skus }, userId: account.userId },
+            where: {
+              skuNormalized: { in: normalizedSkus },
+              userId: account.userId,
+            },
           })
         : [];
     const productsMap = new Map(
-      products.map((product) => [product.sku, product]),
+      products
+        .map((product) => [product.skuNormalized, product] as const)
+        .filter(
+          (
+            entry,
+          ): entry is readonly [string, (typeof products)[number]] =>
+            Boolean(entry[0]),
+        ),
     );
 
     console.log(
@@ -214,8 +230,9 @@ export class SyncUseCase {
     for (const item of activeItems) {
       try {
         const sku = this.extractSku(item);
+        const normalizedSku = normalizeSku(sku);
         const existingListing = existingListingsMap.get(item.id);
-        const product = sku ? productsMap.get(sku) : null;
+        const product = normalizedSku ? productsMap.get(normalizedSku) : null;
 
         let processedItem: ImportResult["items"][0];
 
@@ -687,9 +704,6 @@ export class SyncUseCase {
     });
 
     const externalItemIds = flatItems.map((fi) => fi.externalId);
-    const norm = (s?: string | null) =>
-      s && typeof s === "string" ? s.trim().toLowerCase() : null;
-
     // Buscar listings existentes
     const existingListings = await prisma.productListing.findMany({
       where: {
@@ -706,30 +720,36 @@ export class SyncUseCase {
     const uniqueSkus = Array.from(
       new Set(
         flatItems
-          .map((i) => norm(i.sku))
+          .map((i) => normalizeSku(i.sku))
           .filter((s): s is string => Boolean(s)),
       ),
     );
     const userProducts = uniqueSkus.length
       ? await prisma.product.findMany({
-          where: { userId: account.userId, sku: { in: uniqueSkus } },
-          select: { id: true, sku: true },
+          where: { userId: account.userId, skuNormalized: { in: uniqueSkus } },
+          select: { id: true, sku: true, skuNormalized: true },
         })
       : [];
-    const productsMap = new Map<string, { id: string; sku: string }>();
+    const productsMap = new Map<
+      string,
+      { id: string; sku: string; skuNormalized: string | null }
+    >();
     for (const p of userProducts) {
-      const key = norm(p.sku);
+      const key = p.skuNormalized;
       if (key) productsMap.set(key, p);
     }
 
-    const itemsWithSku = flatItems.filter((i) => norm(i.sku)).length;
+    const itemsWithSku = flatItems.filter((i) => normalizeSku(i.sku)).length;
     const matchedSkus = flatItems.filter(
-      (i) => norm(i.sku) && productsMap.has(norm(i.sku) as string),
+      (i) => {
+        const normalizedSku = normalizeSku(i.sku);
+        return normalizedSku ? productsMap.has(normalizedSku) : false;
+      },
     ).length;
     const sampleSkus = Array.from(
       new Set(
         flatItems
-          .map((i) => norm(i.sku))
+          .map((i) => normalizeSku(i.sku))
           .filter(Boolean)
           .slice(0, 20) as string[],
       ),
@@ -747,7 +767,7 @@ export class SyncUseCase {
     for (const item of flatItems) {
       try {
         const sku = item.sku;
-        const normSku = norm(sku);
+        const normSku = normalizeSku(sku);
         const externalId = item.externalId;
         const existingListing = existingListingsMap.get(externalId);
         const product = normSku ? productsMap.get(normSku) : null;
@@ -1535,7 +1555,7 @@ export class SyncUseCase {
             };
         }
 
-        results.push(result);
+        results.push({ ...result, platform: account.platform });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Erro desconhecido";
@@ -1543,12 +1563,46 @@ export class SyncUseCase {
           success: false,
           productId,
           externalListingId: listing.externalListingId,
+          platform: account.platform,
           error: errorMessage,
         });
       }
     }
 
     return results;
+  }
+
+  private static async logMLStockWarningAndReturn(
+    accountId: string,
+    listing: any,
+    product: any,
+    currentItem: MLItemDetails,
+    message: string,
+  ): Promise<SyncResult> {
+    const previousStock = currentItem?.available_quantity ?? 0;
+
+    await this.logSync(
+      accountId,
+      SyncType.STOCK_UPDATE,
+      SyncStatus.WARNING,
+      message,
+      {
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        previousStock,
+        desiredStock: product.stock,
+        remoteStatus: currentItem.status,
+        remoteAvailableQuantity: previousStock,
+      },
+    );
+
+    return {
+      success: true,
+      productId: product.id,
+      externalListingId: listing.externalListingId,
+      previousStock,
+      newStock: previousStock,
+    };
   }
 
   /**
@@ -1606,6 +1660,62 @@ export class SyncUseCase {
       );
 
       const previousStock = currentItem?.available_quantity ?? 0;
+      const currentStatus = currentItem?.status;
+
+      if (currentStatus === "closed") {
+        return this.logMLStockWarningAndReturn(
+          account.id,
+          listing,
+          product,
+          currentItem,
+          `Anúncio ${listing.externalListingId} está fechado no Mercado Livre; sincronização de estoque ignorada.`,
+        );
+      }
+
+      if (product.stock <= 0) {
+        if (
+          currentStatus === "paused" ||
+          currentStatus === "inactive" ||
+          currentStatus === "under_review"
+        ) {
+          return this.logMLStockWarningAndReturn(
+            account.id,
+            listing,
+            product,
+            currentItem,
+            `Anúncio ${listing.externalListingId} já está ${currentStatus} no Mercado Livre; estoque local 0 não exige atualização de quantidade.`,
+          );
+        }
+
+        if (currentStatus === "active") {
+          await MLApiService.updateItem(account.accessToken, listing.externalListingId, {
+            status: "paused",
+          });
+
+          await this.logSync(
+            account.id,
+            SyncType.STOCK_UPDATE,
+            SyncStatus.SUCCESS,
+            `Anúncio ${listing.externalListingId} pausado no Mercado Livre porque o estoque local do produto ${product.name} chegou a 0.`,
+            {
+              productId: product.id,
+              externalListingId: listing.externalListingId,
+              previousStock,
+              desiredStock: product.stock,
+              remoteStatusBefore: currentStatus,
+              remoteStatusAfter: "paused",
+            },
+          );
+
+          return {
+            success: true,
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            previousStock,
+            newStock: product.stock,
+          };
+        }
+      }
 
       // Atualizar estoque no ML
       await MLApiService.updateItemStock(
@@ -2028,13 +2138,38 @@ export class SyncUseCase {
       // Preparar dados para atualizaÃ§Ã£o baseados no status
       const updateData: MLItemUpdatePayload = {};
 
-      // Sempre sincronizar preÃ§o e estoque (campos suportados pela API)
+      if (currentItem.status === "closed") {
+        await this.logSync(
+          account.id,
+          SyncType.PRODUCT_SYNC,
+          SyncStatus.WARNING,
+          `Anúncio ${externalListingId} está fechado no Mercado Livre; sincronização completa ignorada.`,
+          {
+            productId: product.id,
+            externalListingId,
+            previousStock: currentItem.available_quantity,
+            desiredStock: product.stock,
+            remoteStatus: currentItem.status,
+          },
+        );
+
+        result.success = true;
+        result.previousStock = currentItem.available_quantity;
+        result.newStock = currentItem.available_quantity;
+        return result;
+      }
+
+      // Sempre sincronizar preÃ§o; estoque depende do estado do anúncio
       updateData.price = Number(product.price);
-      updateData.available_quantity = product.stock;
+      if (product.stock > 0) {
+        updateData.available_quantity = product.stock;
+      } else if (currentItem.status === "active") {
+        updateData.status = "paused";
+      }
 
       // SÃ³ sincronizar tÃ­tulo e descriÃ§Ã£o se o anÃºncio estiver ativo
       // AnÃºncios pausados nÃ£o permitem atualizaÃ§Ã£o de tÃ­tulo/descriÃ§Ã£o
-      if (currentItem.status === "active") {
+      if (currentItem.status === "active" && product.stock > 0) {
         // Sincronizar nome se foi alterado
         if (product.name && product.name !== currentItem.title) {
           updateData.title = product.name;

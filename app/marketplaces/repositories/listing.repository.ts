@@ -47,6 +47,37 @@ export class ListingRepository {
     }
   }
 
+  static async upsertFromOrderFallback(data: {
+    productId: string;
+    marketplaceAccountId: string;
+    externalListingId: string;
+    externalSku?: string | null;
+    status: string;
+  }) {
+    try {
+      return await prisma.productListing.upsert({
+        where: {
+          marketplaceAccountId_externalListingId: {
+            marketplaceAccountId: data.marketplaceAccountId,
+            externalListingId: data.externalListingId,
+          },
+        },
+        create: {
+          productId: data.productId,
+          marketplaceAccountId: data.marketplaceAccountId,
+          externalListingId: data.externalListingId,
+          externalSku: data.externalSku || null,
+          status: data.status,
+        },
+        update: {},
+      });
+    } catch (error) {
+      throw new Error(
+        `Erro ao criar listing via fallback do pedido: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
   /**
    * Busca listing por ID do anúncio externo (ML ID)
    */

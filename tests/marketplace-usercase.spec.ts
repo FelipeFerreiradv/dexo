@@ -5,8 +5,15 @@ vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findByUserIdAndPlatform: vi.fn(),
     findFirstActiveByUserAndPlatform: vi.fn(),
+    findAllByUserIdAndPlatform: vi.fn(),
+    findAllByExternalUserId: vi.fn(),
+    findByUserAndExternalUserId: vi.fn(),
+    findShopeeByUserAndShopId: vi.fn(),
+    findAllShopeeByShopId: vi.fn(),
+    createAccount: vi.fn(),
     updateTokens: vi.fn(),
     updateStatus: vi.fn(),
+    updateShopId: vi.fn(),
   },
 }));
 
@@ -23,6 +30,7 @@ import { MarketplaceUseCase } from "../app/marketplaces/usecases/marketplace.use
 import { MarketplaceRepository } from "../app/marketplaces/repositories/marketplace.repository";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
+import { ShopeeOAuthService } from "../app/marketplaces/services/shopee-oauth.service";
 import { SystemLogService } from "../app/services/system-log.service";
 
 describe("MarketplaceUseCase.getAccountStatus - capability checks", () => {
@@ -72,5 +80,75 @@ describe("MarketplaceUseCase.getAccountStatus - capability checks", () => {
     expect(res.connected).toBe(true);
     expect(res.message).toMatch(/restri[cç]ão|restric/i);
     expect((res as any).restricted).toBe(true);
+  });
+});
+
+describe("MarketplaceUseCase OAuth ownership guard", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("bloqueia callback ML quando o seller ja pertence a outro usuario", async () => {
+    vi.spyOn(MLOAuthService, "validateState").mockReturnValue({
+      valid: true,
+      codeVerifier: "verifier",
+      userId: "user-2",
+    } as any);
+    vi.spyOn(MLOAuthService, "exchangeCodeForTokens").mockResolvedValue({
+      accessToken: "token",
+      refreshToken: "refresh",
+      externalUserId: "ml-seller-1",
+      expiresIn: 3600,
+    } as any);
+    vi.spyOn(MLOAuthService, "getUserInfo").mockResolvedValue({
+      nickname: "seller",
+    } as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllByExternalUserId",
+    ).mockResolvedValue([
+      {
+        id: "acc-foreign-1",
+        userId: "user-1",
+      },
+    ] as any);
+
+    await expect(
+      MarketplaceUseCase.handleOAuthCallback({
+        code: "code-1",
+        state: "state-1",
+      }),
+    ).rejects.toThrow(/vinculad[ao].*outro usu/i);
+  });
+
+  it("bloqueia callback Shopee quando o shopId ja pertence a outro usuario", async () => {
+    vi.spyOn(ShopeeOAuthService, "exchangeCodeForTokens").mockResolvedValue({
+      access_token: "token",
+      refresh_token: "refresh",
+      expire_in: 3600,
+      merchant_id: 12345,
+    } as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllShopeeByShopId",
+    ).mockResolvedValue([
+      {
+        id: "acc-foreign-2",
+        userId: "user-1",
+        shopId: 998877,
+      },
+    ] as any);
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllByExternalUserId",
+    ).mockResolvedValue([] as any);
+
+    await expect(
+      MarketplaceUseCase.handleShopeeOAuthCallback({
+        code: "code-2",
+        shopId: 998877,
+        userId: "user-2",
+      }),
+    ).rejects.toThrow(/vinculad[ao].*outro usu/i);
   });
 });

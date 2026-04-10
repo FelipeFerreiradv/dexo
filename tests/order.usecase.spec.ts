@@ -4,8 +4,11 @@ import { OrderUseCase } from "@/app/marketplaces/usecases/order.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
+import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "@/app/marketplaces/services/ml-oauth.service";
+import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
+import { SystemLogService } from "@/app/services/system-log.service";
 
 describe("OrderUseCase.getOrders", () => {
   afterEach(() => {
@@ -114,11 +117,16 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
   it("faz fallback por SKU usando o userId da conta ML", async () => {
     vi.spyOn(orderRepository, "exists").mockResolvedValue(false);
     vi.spyOn(prisma.productListing, "findUnique").mockResolvedValue(null);
+    const fallbackListing = { id: "listing-fallback-ml-1" };
     const findFirstSpy = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
       id: "prod-1",
       sku: "ML-SKU-1",
+      skuNormalized: "ml-sku-1",
       userId: "user-ml-1",
     } as any);
+    const upsertFallbackSpy = vi
+      .spyOn(ListingRepository, "upsertFromOrderFallback")
+      .mockResolvedValue(fallbackListing as any);
     vi.spyOn(orderRepository, "create").mockResolvedValue({
       id: "order-ml-sku",
       items: [
@@ -126,7 +134,7 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
           productId: "prod-1",
           quantity: 1,
           unitPrice: 250,
-          listingId: null,
+          listingId: fallbackListing.id,
         },
       ],
     } as any);
@@ -162,9 +170,16 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
 
     expect(findFirstSpy).toHaveBeenCalledWith({
       where: {
-        sku: "ML-SKU-1",
+        skuNormalized: "ml-sku-1",
         userId: "user-ml-1",
       },
+    });
+    expect(upsertFallbackSpy).toHaveBeenCalledWith({
+      productId: "prod-1",
+      marketplaceAccountId: "acc-ml-1",
+      externalListingId: "ml-listing-1",
+      externalSku: "ML-SKU-1",
+      status: "active",
     });
     expect(result).toMatchObject({
       success: true,
@@ -340,5 +355,79 @@ describe("OrderUseCase.importRecentOrdersForAccount - Mercado Livre auth", () =>
       imported: 0,
       errors: 0,
     });
+  });
+});
+
+describe("OrderUseCase.deductStockForOrder - logging", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("registra warning agregado quando a sincronização cross-marketplace falha parcialmente", async () => {
+    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+      {
+        id: "prod-1",
+        name: "Produto teste",
+        stock: 2,
+      },
+    ] as any);
+    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
+    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
+    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
+    vi.spyOn(SyncUseCase, "syncProductStock").mockResolvedValue([
+      {
+        success: false,
+        productId: "prod-1",
+        externalListingId: "ml-listing-1",
+        platform: "MERCADO_LIVRE",
+        error: "rate limit",
+      },
+      {
+        success: true,
+        productId: "prod-1",
+        externalListingId: "123:1",
+        platform: "SHOPEE",
+      },
+    ] as any);
+    const logWarningSpy = vi
+      .spyOn(SystemLogService, "logWarning")
+      .mockResolvedValue(undefined as any);
+
+    await (OrderUseCase as any).deductStockForOrder(
+      {
+        id: "order-partial-1",
+        marketplaceAccountId: "acc-shp-1",
+        externalOrderId: "SHP-1",
+        status: "PAID",
+        totalAmount: 100,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        marketplaceAccount: {
+          id: "acc-shp-1",
+          platform: "SHOPEE",
+          accountName: "Shopee A",
+        },
+        items: [{ productId: "prod-1", quantity: 1, unitPrice: 100 }],
+      },
+      "Importação Shopee",
+    );
+
+    expect(logWarningSpy).toHaveBeenCalledWith(
+      "SYNC_STOCK",
+      expect.stringContaining("falhas parciais"),
+      expect.objectContaining({
+        resource: "Order",
+        resourceId: "order-partial-1",
+        details: expect.objectContaining({
+          orderId: "order-partial-1",
+          platform: "SHOPEE",
+          totalListings: 2,
+          successCount: 1,
+          failureCount: 1,
+          failedPlatforms: ["MERCADO_LIVRE"],
+          productIds: ["prod-1"],
+        }),
+      }),
+    );
   });
 });

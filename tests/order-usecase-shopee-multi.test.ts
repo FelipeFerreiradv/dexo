@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi, afterEach } from "vitest";
+﻿import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import {
@@ -6,11 +6,13 @@ import {
   type ImportOrdersResult,
 } from "@/app/marketplaces/usecases/order.usercase";
 import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
+import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ShopeeApiService } from "@/app/marketplaces/services/shopee-api.service";
 import { ShopeeOAuthService } from "@/app/marketplaces/services/shopee-oauth.service";
 import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import prisma from "@/app/lib/prisma";
+import { SystemLogService } from "@/app/services/system-log.service";
 
 const makeResult = (
   accountId: string,
@@ -300,11 +302,16 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
     vi.spyOn(prisma.order, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.productListing, "findMany").mockResolvedValue([]);
     vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
+    const fallbackListing = { id: "listing-fallback-shp-1" };
     const findFirstSpy = vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
       id: "prod-22534",
       sku: "22534",
+      skuNormalized: "22534",
       userId: "user-1",
     } as any);
+    const upsertFallbackSpy = vi
+      .spyOn(ListingRepository, "upsertFromOrderFallback")
+      .mockResolvedValue(fallbackListing as any);
     vi.spyOn(orderRepository, "create").mockResolvedValue({
       id: "order-sku-1",
       items: [
@@ -312,7 +319,7 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
           productId: "prod-22534",
           quantity: 1,
           unitPrice: 100,
-          listingId: null,
+          listingId: fallbackListing.id,
         },
       ],
     } as any);
@@ -326,9 +333,16 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
 
     expect(findFirstSpy).toHaveBeenCalledWith({
       where: {
-        sku: "22534",
+        skuNormalized: "22534",
         userId: "user-1",
       },
+    });
+    expect(upsertFallbackSpy).toHaveBeenCalledWith({
+      productId: "prod-22534",
+      marketplaceAccountId: "acc-1",
+      externalListingId: "999",
+      externalSku: "22534",
+      status: "active",
     });
     expect(orderRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -336,7 +350,7 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
         items: [
           expect.objectContaining({
             productId: "prod-22534",
-            listingId: null,
+            listingId: fallbackListing.id,
           }),
         ],
       }),
@@ -454,6 +468,11 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
 });
 
 describe("OrderUseCase.deductStockForOrder", () => {
+  beforeEach(() => {
+    vi.spyOn(SystemLogService, "logInfo").mockResolvedValue(undefined as any);
+    vi.spyOn(SystemLogService, "logWarning").mockResolvedValue(undefined as any);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

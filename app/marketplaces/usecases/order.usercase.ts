@@ -14,9 +14,11 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
+import { normalizeSku } from "@/app/lib/sku";
 import type { MLOrderDetails, MLOrderItem } from "../types/ml-order.types";
 import type {
   ShopeeOrderDetail,
@@ -28,6 +30,7 @@ import type {
   Order,
   OrderStatus,
 } from "@/app/interfaces/order.interface";
+import { SystemLogService } from "@/app/services/system-log.service";
 
 // ====================================================================
 // TIPOS PARA RESULTADOS
@@ -60,6 +63,11 @@ export interface OrderStockDeduction {
   previousStock: number;
   newStock: number;
   quantity: number;
+}
+
+interface SyncLogContext {
+  orderId?: string;
+  platform?: string | null;
 }
 
 // ====================================================================
@@ -666,18 +674,23 @@ export class OrderUseCase {
       }
 
       // Buscar produto pelo SKU
-      const product = await prisma.product.findFirst({
-        where: userId ? { sku, userId } : { sku },
-      });
+      const product = await this.findProductByFallbackSku(sku, userId);
 
       if (!product) {
         console.log(`[OrderUseCase] Produto com SKU "${sku}" não encontrado`);
         continue;
       }
 
+      const fallbackListing = await this.upsertFallbackListing({
+        productId: product.id,
+        marketplaceAccountId,
+        externalListingId,
+        externalSku: sku,
+      });
+
       items.push({
         productId: product.id,
-        listingId: null,
+        listingId: fallbackListing?.id ?? null,
         quantity: mlItem.quantity,
         unitPrice: mlItem.unit_price,
       });
@@ -702,6 +715,42 @@ export class OrderUseCase {
     }
 
     return null;
+  }
+
+  private static async findProductByFallbackSku(
+    sku: string | null,
+    userId?: string,
+  ) {
+    const normalizedSku = normalizeSku(sku);
+    if (!normalizedSku) {
+      return null;
+    }
+
+    return prisma.product.findFirst({
+      where: userId
+        ? { skuNormalized: normalizedSku, userId }
+        : { skuNormalized: normalizedSku },
+    });
+  }
+
+  private static async upsertFallbackListing(data: {
+    productId: string;
+    marketplaceAccountId: string;
+    externalListingId: string;
+    externalSku?: string | null;
+  }) {
+    try {
+      return await ListingRepository.upsertFromOrderFallback({
+        ...data,
+        status: "active",
+      });
+    } catch (error) {
+      console.error(
+        `[OrderUseCase] Erro ao materializar listing via fallback para ${data.marketplaceAccountId}/${data.externalListingId}:`,
+        error,
+      );
+      return null;
+    }
   }
 
   /**
@@ -752,9 +801,7 @@ export class OrderUseCase {
         continue;
       }
 
-      const product = await prisma.product.findFirst({
-        where: userId ? { sku, userId } : { sku },
-      });
+      const product = await this.findProductByFallbackSku(sku, userId);
 
       if (!product) {
         console.log(
@@ -763,9 +810,16 @@ export class OrderUseCase {
         continue;
       }
 
+      const fallbackListing = await this.upsertFallbackListing({
+        productId: product.id,
+        marketplaceAccountId,
+        externalListingId,
+        externalSku: sku,
+      });
+
       result.push({
         productId: product.id,
-        listingId: null,
+        listingId: fallbackListing?.id ?? null,
         quantity: item.model_quantity_purchased,
         unitPrice: Number(item.model_original_price ?? 0),
       });
@@ -970,7 +1024,10 @@ export class OrderUseCase {
     }
 
     if (stockUpdated && syncedProductIds.size > 0) {
-      await this.syncMarketplaceStockForProducts([...syncedProductIds]);
+      await this.syncMarketplaceStockForProducts([...syncedProductIds], {
+        orderId: order.id,
+        platform: order.marketplaceAccount?.platform ?? null,
+      });
     }
 
     return deductions;
@@ -978,6 +1035,7 @@ export class OrderUseCase {
 
   private static async syncMarketplaceStockForProducts(
     productIds: string[],
+    context: SyncLogContext = {},
   ): Promise<void> {
     const uniqueProductIds = [...new Set(productIds.filter(Boolean))];
     if (uniqueProductIds.length === 0) return;
@@ -986,9 +1044,16 @@ export class OrderUseCase {
       uniqueProductIds.map((productId) => SyncUseCase.syncProductStock(productId)),
     );
 
+    let totalListings = 0;
+    let successCount = 0;
+    let failureCount = 0;
+    const failedPlatforms = new Set<string>();
+
     syncResults.forEach((result, index) => {
       const productId = uniqueProductIds[index];
       if (result.status === "rejected") {
+        failureCount++;
+        failedPlatforms.add("UNKNOWN");
         console.error(
           `[OrderUseCase] Error syncing marketplace stock for product ${productId}:`,
           result.reason,
@@ -996,13 +1061,57 @@ export class OrderUseCase {
         return;
       }
 
+      totalListings += result.value.length;
+      successCount += result.value.filter((entry) => entry.success).length;
       const failedListings = result.value.filter((entry) => !entry.success).length;
+      failureCount += failedListings;
+
+      result.value
+        .filter((entry) => !entry.success)
+        .forEach((entry) => failedPlatforms.add(entry.platform ?? "UNKNOWN"));
+
       if (failedListings > 0) {
         console.warn(
           `[OrderUseCase] Marketplace stock sync finished with ${failedListings} failed listing(s) for product ${productId}`,
         );
       }
     });
+
+    const details = {
+      orderId: context.orderId ?? null,
+      platform: context.platform ?? "UNKNOWN",
+      totalListings,
+      successCount,
+      failureCount,
+      failedPlatforms: [...failedPlatforms],
+      productIds: uniqueProductIds,
+    };
+
+    const message =
+      failureCount > 0
+        ? `Sincronização cross-marketplace do pedido ${context.orderId ?? "sem-id"} finalizada com falhas parciais`
+        : `Sincronização cross-marketplace do pedido ${context.orderId ?? "sem-id"} concluída`;
+
+    try {
+      if (failureCount > 0) {
+        await SystemLogService.logWarning("SYNC_STOCK", message, {
+          resource: "Order",
+          resourceId: context.orderId,
+          details,
+        });
+      } else {
+        await SystemLogService.logInfo("SYNC_STOCK", message, {
+          resource: "Order",
+          resourceId: context.orderId,
+          details,
+        });
+      }
+    } catch (error) {
+      console.error(
+        "[OrderUseCase] Falha ao registrar log agregado de sincronização:",
+        error,
+      );
+    }
   }
 
   /**

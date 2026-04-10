@@ -36,6 +36,11 @@ export class MarketplaceRepository {
 
       return account;
     } catch (error) {
+      if ((error as any)?.code === "P2002") {
+        throw new Error(
+          "Esta conta de marketplace já está vinculada a outro usuário ou já existe no sistema.",
+        );
+      }
       throw new Error(`Erro ao criar conta de marketplace: ${error}`);
     }
   }
@@ -227,6 +232,25 @@ export class MarketplaceRepository {
     }
   }
 
+  static async findAllByExternalUserId(
+    externalUserId: string,
+    platform: Platform,
+    onlyActive = false,
+  ) {
+    try {
+      return await prisma.marketplaceAccount.findMany({
+        where: {
+          externalUserId,
+          platform,
+          ...(onlyActive ? { status: AccountStatus.ACTIVE } : {}),
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      });
+    } catch (error) {
+      throw new Error(`Erro ao listar contas por externalUserId: ${error}`);
+    }
+  }
+
   /**
    * Busca conta por externalUserId E userId (evita pegar conta de outro usuário)
    */
@@ -266,6 +290,21 @@ export class MarketplaceRepository {
       return account;
     } catch (error) {
       throw new Error(`Erro ao buscar conta Shopee por shopId: ${error}`);
+    }
+  }
+
+  static async findAllShopeeByShopId(shopId: number, onlyActive = false) {
+    try {
+      return await prisma.marketplaceAccount.findMany({
+        where: {
+          shopId,
+          platform: Platform.SHOPEE,
+          ...(onlyActive ? { status: AccountStatus.ACTIVE } : {}),
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      });
+    } catch (error) {
+      throw new Error(`Erro ao listar contas Shopee por shopId: ${error}`);
     }
   }
 

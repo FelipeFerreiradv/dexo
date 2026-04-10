@@ -41,6 +41,7 @@ model User {
 model Product {
   id                     String               @id @default(cuid())
   sku                    String
+  skuNormalized          String?
   name                   String
   description            String?
   price                  Decimal              @db.Decimal(10, 2)
@@ -85,6 +86,7 @@ model Product {
   stockLogs              StockLog[]
 
   @@unique([userId, sku])
+  @@index([userId, skuNormalized])
   @@index([userId, createdAt])
   @@index([userId, updatedAt])
   @@index([sku])
@@ -145,6 +147,8 @@ model MarketplaceAccount {
   listings       ProductListing[]
   syncLogs       SyncLog[]
 
+  @@unique([platform, externalUserId])
+  @@unique([platform, shopId])
   @@index([userId])
 }
 

@@ -25,6 +25,35 @@ export class MLApiService {
   // cache simples para app access token obtido via client_credentials
   private static appToken: { token: string; exp: number } | null = null;
 
+  private static formatAxiosError(prefix: string, error: unknown): string {
+    if (!axios.isAxiosError(error)) {
+      return `${prefix}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    const responseData = error.response?.data as
+      | {
+          message?: string;
+          cause?: Array<{ code?: string; message?: string }>;
+        }
+      | undefined;
+    const baseMessage = responseData?.message || error.message;
+    const causeMessage = Array.isArray(responseData?.cause)
+      ? responseData.cause
+          .map((cause) => {
+            const code = cause?.code?.trim();
+            const message = cause?.message?.trim();
+            if (code && message) return `${code}: ${message}`;
+            return code || message || "";
+          })
+          .filter(Boolean)
+          .join(" | ")
+      : "";
+
+    return causeMessage
+      ? `${prefix}: ${baseMessage} (${causeMessage})`
+      : `${prefix}: ${baseMessage}`;
+  }
+
   private static async getAppAccessToken(): Promise<string | null> {
     const now = Date.now();
     if (this.appToken && this.appToken.exp > now + 10_000) {
@@ -543,9 +572,7 @@ export class MLApiService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
-          `Erro ao atualizar item: ${error.response?.data?.message || error.message}`,
-        );
+        throw new Error(this.formatAxiosError("Erro ao atualizar item", error));
       }
       throw error;
     }

@@ -2475,6 +2475,32 @@ export class ListingUseCase {
         return { success: false, error: "Conta sem credenciais vÃ¡lidas" };
       }
 
+      const currentItem = await MLApiService.getItemDetails(
+        account.accessToken,
+        listing.externalListingId,
+      );
+
+      if (currentItem.status === "closed") {
+        return { success: true };
+      }
+
+      if (quantity <= 0) {
+        if (
+          currentItem.status === "paused" ||
+          currentItem.status === "inactive" ||
+          currentItem.status === "under_review"
+        ) {
+          return { success: true };
+        }
+
+        if (currentItem.status === "active") {
+          await MLApiService.updateItem(account.accessToken, listing.externalListingId, {
+            status: "paused",
+          });
+          return { success: true };
+        }
+      }
+
       // Atualizar estoque no ML
       await MLApiService.updateItemStock(
         account.accessToken,

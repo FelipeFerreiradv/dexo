@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Prisma, PrismaClient } from "@prisma/client";
 import * as XLSX from "xlsx";
+import { normalizeSku } from "../app/lib/sku";
 
 type RawRow = Record<string, unknown>;
 
@@ -153,6 +154,7 @@ async function main() {
     const product: Prisma.ProductCreateManyInput = {
       userId,
       sku,
+      skuNormalized: normalizeSku(sku),
       name: toStringValue(get("Produto")) ?? `Produto ${sku}`,
       price,
       stock: toInteger(get("Estoque")) ?? 0,
@@ -211,6 +213,7 @@ async function main() {
     const tx = slice.map((item) => {
       const updateData: Prisma.ProductUpdateInput = {
         user: { connect: { id: userId } },
+        skuNormalized: normalizeSku(item.sku as string),
         name: item.name,
         price: item.price,
         stock: item.stock,

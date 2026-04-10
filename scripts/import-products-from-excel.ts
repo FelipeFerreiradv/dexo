@@ -2,6 +2,7 @@ import 'dotenv/config';
 import path from 'path';
 import XLSX from 'xlsx';
 import { Prisma, PrismaClient, Quality } from '@prisma/client';
+import { normalizeSku } from '../app/lib/sku';
 
 const prisma = new PrismaClient();
 
@@ -164,6 +165,7 @@ async function main() {
     await prisma.product.createMany({
       data: part.map((data) => ({
         sku: data.sku,
+        skuNormalized: normalizeSku(data.sku),
         name: data.name,
         description: data.description,
         price: data.price,
@@ -182,6 +184,7 @@ async function main() {
         prisma.product.update({
           where: { sku: data.sku },
           data: compact({
+            skuNormalized: normalizeSku(data.sku),
             name: data.name,
             description: data.description,
             price: data.price,
@@ -202,6 +205,7 @@ async function main() {
           where: { sku: data.sku },
           data: compact({
             userId: TARGET_USER_ID,
+            skuNormalized: normalizeSku(data.sku),
             name: data.name,
             description: data.description,
             price: data.price,

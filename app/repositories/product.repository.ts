@@ -16,6 +16,7 @@ import {
   normalizeProductListingCategoryId,
   parseProductListingCategoryValue,
 } from "../lib/product-listing-category";
+import { normalizeSku } from "../lib/sku";
 
 const LOW_STOCK_THRESHOLD = 10;
 const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
@@ -675,6 +676,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           userId: data.userId ?? null,
           name: data.name,
           sku: data.sku,
+          skuNormalized: normalizeSku(data.sku),
           description: data.description ?? null,
           price: data.price,
           stock: data.stock,
