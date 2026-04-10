@@ -51,6 +51,49 @@ export class ListingUseCase {
     process.env.ML_MAX_WEIGHT_KG || 70,
   ); // 70 kg (70000 g)
 
+  // Limites de quantidade de imagens por marketplace (Shopee: 9, ML: 12)
+  private static readonly SHOPEE_MAX_IMAGES = 9;
+  private static readonly ML_MAX_IMAGES = 12;
+
+  /**
+   * Coleta a galeria completa de imagens de um produto preservando ordem.
+   * Usa `imageUrls` (lista) quando disponível; cai para `imageUrl` (único)
+   * como fallback. Dedupe preservando ordem.
+   */
+  private static collectProductImageUrls(product: {
+    imageUrls?: string[] | null;
+    imageUrl?: string | null;
+  }): string[] {
+    const collected: string[] = [];
+    const list = Array.isArray(product.imageUrls) ? product.imageUrls : [];
+    for (const url of list) {
+      if (typeof url === "string" && url.trim().length > 0) {
+        collected.push(url.trim());
+      }
+    }
+    if (
+      collected.length === 0 &&
+      typeof product.imageUrl === "string" &&
+      product.imageUrl.trim().length > 0
+    ) {
+      collected.push(product.imageUrl.trim());
+    }
+    return Array.from(new Set(collected));
+  }
+
+  /**
+   * Converte uma URL relativa (ex.: "/uploads/foo.jpg") em URL absoluta usando
+   * APP_BACKEND_URL. URLs já absolutas são retornadas sem alteração.
+   */
+  private static toAbsoluteImageUrl(rawUrl: string): string {
+    const backendUrl = (
+      process.env.APP_BACKEND_URL || "http://localhost:3333"
+    ).replace(/\/+$/, "");
+    if (rawUrl.startsWith("http")) return rawUrl;
+    const path = rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`;
+    return `${backendUrl}${path}`;
+  }
+
   /**
    * Cria um anÃºncio em qualquer marketplace suportado
    */
@@ -830,12 +873,9 @@ export class ListingUseCase {
       // Upload da imagem diretamente para o ML (mais confiável do que source URL)
       let picturesArray: MLItemCreatePayload["pictures"];
       // Coletar todas as URLs de imagens (imageUrls se disponível, ou apenas imageUrl)
-      const allImageUrls: string[] = [];
-      if (product.imageUrls && product.imageUrls.length > 0) {
-        allImageUrls.push(...product.imageUrls);
-      } else if (product.imageUrl) {
-        allImageUrls.push(product.imageUrl);
-      }
+      const allImageUrls = ListingUseCase.collectProductImageUrls(
+        product,
+      ).slice(0, ListingUseCase.ML_MAX_IMAGES);
 
       if (allImageUrls.length > 0) {
         try {
@@ -2029,24 +2069,14 @@ export class ListingUseCase {
       if (product.partNumber)
         productAttrValues["reference number"] = product.partNumber;
 
-      // Normalizar URL de imagem (evitar barra dupla)
-      const backendUrl = (
-        process.env.APP_BACKEND_URL || "http://localhost:3333"
-      ).replace(/\/+$/, "");
-      let imageUrl = "";
-      if (product.imageUrl) {
-        if (product.imageUrl.startsWith("http")) {
-          imageUrl = product.imageUrl;
-        } else {
-          const path = product.imageUrl.startsWith("/")
-            ? product.imageUrl
-            : `/${product.imageUrl}`;
-          imageUrl = `${backendUrl}${path}`;
-        }
-      }
+      // Coletar TODAS as URLs de imagens do produto (galeria completa).
+      // Shopee aceita até 9 imagens por item; preservar ordem original.
+      const shopeeImageUrls = ListingUseCase.collectProductImageUrls(product)
+        .slice(0, ListingUseCase.SHOPEE_MAX_IMAGES)
+        .map((raw) => ListingUseCase.toAbsoluteImageUrl(raw));
 
-      // Validar que temos uma imagem válida antes de upload
-      if (!imageUrl) {
+      // Validar que temos pelo menos uma imagem antes de upload
+      if (shopeeImageUrls.length === 0) {
         throw new Error(
           "Produto sem imagem. A Shopee exige pelo menos uma imagem para criar o anúncio.",
         );
@@ -2055,7 +2085,21 @@ export class ListingUseCase {
       // ── OPT-1: Executar 3 stages independentes em paralelo ──
       // categoryAttributes, imageUpload e logisticsChannels não dependem entre si.
       // Antes: sequencial (5-16s). Agora: paralelo (3-10s, limitado pelo mais lento).
-      console.log(`[ListingUseCase] Uploading image to Shopee: ${imageUrl}`);
+      // Imagens da galeria são enviadas em paralelo (Promise.allSettled) dentro
+      // do stage de upload para preservar a ordem e tolerar falhas parciais.
+      console.log(
+        `[ListingUseCase] Uploading ${shopeeImageUrls.length} image(s) to Shopee`,
+      );
+
+      const imageUploadStage = Promise.allSettled(
+        shopeeImageUrls.map((url) =>
+          ShopeeApiService.uploadImage(
+            account.accessToken,
+            account.shopId,
+            url,
+          ),
+        ),
+      );
 
       const [categoryAttrsResult, imageUploadResult, logisticsResult] =
         await Promise.allSettled([
@@ -2066,12 +2110,8 @@ export class ListingUseCase {
             numericCategoryId,
             "pt-BR",
           ),
-          // Stage 5: Image Upload
-          ShopeeApiService.uploadImage(
-            account.accessToken,
-            account.shopId,
-            imageUrl,
-          ),
+          // Stage 5: Image Upload (multi-imagem em paralelo)
+          imageUploadStage,
           // Stage 6: Logistics Channels
           ShopeeApiService.getLogisticsChannelList(
             account.accessToken,
@@ -2167,18 +2207,48 @@ export class ListingUseCase {
         );
       }
 
-      // ── Processar resultado de Image Upload (throw se falhou, como antes) ──
-      let shopeeImageId: string;
+      // ── Processar resultado dos uploads de imagens (multi-imagem) ──
+      // imageUploadResult é um Promise.allSettled aninhado, então o outer
+      // sempre resolve "fulfilled" com um array de PromiseSettledResult.
+      // Preservamos a ordem original e aceitamos sucesso parcial:
+      // só falhamos se NENHUMA imagem foi enviada com sucesso.
+      const shopeeImageIds: string[] = [];
+      const imageUploadFailures: string[] = [];
       if (imageUploadResult.status === "fulfilled") {
-        shopeeImageId = imageUploadResult.value.image_info.image_id;
-        console.log(`[ListingUseCase] Shopee image uploaded: ${shopeeImageId}`);
+        const perImageResults = imageUploadResult.value;
+        for (let i = 0; i < perImageResults.length; i++) {
+          const r = perImageResults[i];
+          const sourceUrl = shopeeImageUrls[i];
+          if (r.status === "fulfilled") {
+            const imgId = r.value.image_info.image_id;
+            shopeeImageIds.push(imgId);
+            console.log(
+              `[ListingUseCase] Shopee image uploaded (${i + 1}/${perImageResults.length}): ${imgId}`,
+            );
+          } else {
+            const reasonMsg =
+              (r.reason as any)?.message || String(r.reason || "unknown");
+            imageUploadFailures.push(`${sourceUrl}: ${reasonMsg}`);
+            console.warn(
+              `[ListingUseCase] Shopee image upload failed (${i + 1}/${perImageResults.length}) for ${sourceUrl}:`,
+              reasonMsg,
+            );
+          }
+        }
       } else {
+        const reasonMsg =
+          (imageUploadResult.reason as any)?.message ||
+          String(imageUploadResult.reason || "unknown");
+        imageUploadFailures.push(reasonMsg);
         console.error(
-          `[ListingUseCase] Shopee image upload failed:`,
-          imageUploadResult.reason?.message || imageUploadResult.reason,
+          `[ListingUseCase] Shopee image upload stage rejected:`,
+          reasonMsg,
         );
+      }
+
+      if (shopeeImageIds.length === 0) {
         throw new Error(
-          `Falha ao fazer upload da imagem para Shopee: ${imageUploadResult.reason?.message || imageUploadResult.reason}`,
+          `Falha ao fazer upload da(s) imagem(ns) para Shopee: ${imageUploadFailures.join("; ")}`,
         );
       }
 
@@ -2258,7 +2328,7 @@ export class ListingUseCase {
           package_height: clampedHeight,
         },
         image: {
-          image_id_list: [shopeeImageId],
+          image_id_list: shopeeImageIds,
         },
         attribute_list: attributeList,
         brand: { brand_id: 0, original_brand_name: brandName },
@@ -2310,7 +2380,8 @@ export class ListingUseCase {
             name: a.attribute_name,
             value: a.attribute_value_list?.[0]?.value_name,
           })),
-          imageId: shopeeImageId,
+          imageIds: shopeeImageIds,
+          imageCount: shopeeImageIds.length,
         }),
       );
 
