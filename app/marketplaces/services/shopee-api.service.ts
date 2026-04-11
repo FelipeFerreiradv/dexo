@@ -2,6 +2,7 @@ import axios from "axios";
 import FormData from "form-data";
 import { readFile } from "fs/promises";
 import { join, basename } from "path";
+import sharp from "sharp";
 import {
   SHOPEE_CONSTANTS,
   validateShopeeConfig,
@@ -36,6 +37,17 @@ export class ShopeeApiService {
         logistics_channel_id: number;
         logistics_channel_name: string;
         enabled: boolean;
+        weight_limit?: {
+          item_min_weight?: number;
+          item_max_weight?: number;
+        };
+        item_max_dimension?: {
+          length?: number;
+          width?: number;
+          height?: number;
+          unit?: string;
+          dimension_sum?: number;
+        };
       }>;
       fetchedAt: number;
     }
@@ -373,7 +385,9 @@ export class ShopeeApiService {
       const localPath = join(process.cwd(), "public", "uploads", filename);
       try {
         imageBuffer = await readFile(localPath);
-        contentType = filename.endsWith(".png") ? "image/png" : "image/jpeg";
+        if (filename.endsWith(".png")) contentType = "image/png";
+        else if (filename.endsWith(".webp")) contentType = "image/webp";
+        else contentType = "image/jpeg";
       } catch {
         // Fallback: se arquivo não encontrado no disco, baixar via HTTP
         const imageResponse = await axios.get(imageUrl, {
@@ -391,6 +405,24 @@ export class ShopeeApiService {
       });
       imageBuffer = Buffer.from(imageResponse.data);
       contentType = imageResponse.headers["content-type"] || "image/jpeg";
+    }
+
+    // Shopee aceita JPG/PNG — transcodar formatos não suportados (webp, gif, avif, etc.)
+    const isSupported =
+      contentType.includes("jpeg") ||
+      contentType.includes("jpg") ||
+      contentType.includes("png");
+    if (!isSupported) {
+      try {
+        imageBuffer = await sharp(imageBuffer)
+          .jpeg({ quality: 90 })
+          .toBuffer();
+        contentType = "image/jpeg";
+      } catch (transcodeErr) {
+        throw new Error(
+          `Erro ao converter imagem ${contentType} para JPEG: ${(transcodeErr as Error).message}`,
+        );
+      }
     }
     const ext = contentType.includes("png") ? "png" : "jpg";
 
@@ -434,6 +466,17 @@ export class ShopeeApiService {
       logistics_channel_id: number;
       logistics_channel_name: string;
       enabled: boolean;
+      weight_limit?: {
+        item_min_weight?: number;
+        item_max_weight?: number;
+      };
+      item_max_dimension?: {
+        length?: number;
+        width?: number;
+        height?: number;
+        unit?: string;
+        dimension_sum?: number;
+      };
     }>
   > {
     // OPT-3: Cache por shopId (TTL 15 min)
@@ -450,6 +493,17 @@ export class ShopeeApiService {
           logistics_channel_id: number;
           logistics_channel_name: string;
           enabled: boolean;
+          weight_limit?: {
+            item_min_weight?: number;
+            item_max_weight?: number;
+          };
+          item_max_dimension?: {
+            length?: number;
+            width?: number;
+            height?: number;
+            unit?: string;
+            dimension_sum?: number;
+          };
         }>;
       }>
     >("GET", apiPath, accessToken, shopId);

@@ -2342,16 +2342,29 @@ export class ListingUseCase {
         (product as any).quality === "NOVO" ? "NEW" : "USED";
 
       // ── Processar resultado de Logistics Channels (fallback vazio se falhou) ──
-      let logisticInfo: Array<{ logistic_id: number; enabled: boolean }> = [];
+      // Mantemos os canais completos (com weight_limit/item_max_dimension) para
+      // poder filtrar depois com base nas dimensões reais do produto.
+      type ShopeeChannel = {
+        logistics_channel_id: number;
+        logistics_channel_name: string;
+        enabled: boolean;
+        weight_limit?: {
+          item_min_weight?: number;
+          item_max_weight?: number;
+        };
+        item_max_dimension?: {
+          length?: number;
+          width?: number;
+          height?: number;
+          unit?: string;
+          dimension_sum?: number;
+        };
+      };
+      let enabledChannels: ShopeeChannel[] = [];
       if (logisticsResult.status === "fulfilled") {
-        logisticInfo = logisticsResult.value
-          .filter((ch) => ch.enabled)
-          .map((ch) => ({
-            logistic_id: ch.logistics_channel_id,
-            enabled: true,
-          }));
+        enabledChannels = logisticsResult.value.filter((ch) => ch.enabled);
         console.log(
-          `[ListingUseCase] Shopee logistics channels found: ${logisticInfo.length}`,
+          `[ListingUseCase] Shopee logistics channels found: ${enabledChannels.length}`,
         );
       } else {
         console.warn(
@@ -2392,6 +2405,88 @@ export class ListingUseCase {
       if (rawWeightKg !== clampedWeightKg || rawLength !== clampedLength || rawWidth !== clampedWidth || rawHeight !== clampedHeight) {
         console.warn(
           `[ListingUseCase] Shopee dimensions clamped: ${clampedHeight}x${clampedWidth}x${clampedLength}cm ${clampedWeightKg}kg (was ${rawHeight}x${rawWidth}x${rawLength}cm,${rawWeightKg}kg)`,
+        );
+      }
+
+      // ── Filtrar canais logísticos que aceitam as dimensões/peso do produto ──
+      // Shopee rejeita o createItem inteiro se QUALQUER canal passado em
+      // logistic_info não aceitar o item. Por isso, só enviamos canais que
+      // efetivamente cabem. Se o canal não informa limites, assumimos que aceita.
+      const productMaxSide = Math.max(clampedLength, clampedWidth, clampedHeight);
+      const productDimSum = clampedLength + clampedWidth + clampedHeight;
+      const channelRejections: string[] = [];
+      const compatibleChannels = enabledChannels.filter((ch) => {
+        const wl = ch.weight_limit;
+        if (wl) {
+          if (
+            typeof wl.item_max_weight === "number" &&
+            wl.item_max_weight > 0 &&
+            clampedWeightKg > wl.item_max_weight
+          ) {
+            channelRejections.push(
+              `${ch.logistics_channel_name}: peso ${clampedWeightKg}kg > máx ${wl.item_max_weight}kg`,
+            );
+            return false;
+          }
+          if (
+            typeof wl.item_min_weight === "number" &&
+            wl.item_min_weight > 0 &&
+            clampedWeightKg < wl.item_min_weight
+          ) {
+            channelRejections.push(
+              `${ch.logistics_channel_name}: peso ${clampedWeightKg}kg < mín ${wl.item_min_weight}kg`,
+            );
+            return false;
+          }
+        }
+        const md = ch.item_max_dimension;
+        if (md) {
+          const channelMaxSide = Math.max(
+            md.length || 0,
+            md.width || 0,
+            md.height || 0,
+          );
+          if (channelMaxSide > 0 && productMaxSide > channelMaxSide) {
+            channelRejections.push(
+              `${ch.logistics_channel_name}: lado ${productMaxSide}cm > máx ${channelMaxSide}cm`,
+            );
+            return false;
+          }
+          if (
+            typeof md.dimension_sum === "number" &&
+            md.dimension_sum > 0 &&
+            productDimSum > md.dimension_sum
+          ) {
+            channelRejections.push(
+              `${ch.logistics_channel_name}: soma ${productDimSum}cm > máx ${md.dimension_sum}cm`,
+            );
+            return false;
+          }
+        }
+        return true;
+      });
+
+      const logisticInfo: Array<{ logistic_id: number; enabled: boolean }> =
+        compatibleChannels.map((ch) => ({
+          logistic_id: ch.logistics_channel_id,
+          enabled: true,
+        }));
+
+      if (enabledChannels.length > 0 && compatibleChannels.length === 0) {
+        const detail =
+          channelRejections.length > 0
+            ? ` Detalhes: ${channelRejections.join("; ")}.`
+            : "";
+        throw new Error(
+          `Produto excede os limites de todos os canais logísticos habilitados no Shopee ` +
+            `(${clampedHeight}x${clampedWidth}x${clampedLength}cm, ${clampedWeightKg}kg).${detail} ` +
+            `Ajuste as dimensões/peso do produto ou habilite um canal compatível na loja.`,
+        );
+      }
+
+      if (compatibleChannels.length < enabledChannels.length) {
+        console.warn(
+          `[ListingUseCase] Shopee logistics filtered: ${compatibleChannels.length}/${enabledChannels.length} canais compatíveis. Rejeitados: ${channelRejections.join("; ")}`,
         );
       }
 
