@@ -83,6 +83,26 @@ function combineSqlClauses(clauses: Prisma.Sql[]): Prisma.Sql {
     );
 }
 
+function mapPrismaCompatibilities(item: PrismaProduct): Product["compatibilities"] {
+  const raw = (item as any).compatibilities as
+    | Array<{
+        brand: string;
+        model: string;
+        yearFrom?: number | null;
+        yearTo?: number | null;
+        version?: string | null;
+      }>
+    | undefined;
+  if (!raw || raw.length === 0) return undefined;
+  return raw.map((c) => ({
+    brand: c.brand,
+    model: c.model,
+    yearFrom: c.yearFrom ?? null,
+    yearTo: c.yearTo ?? null,
+    version: c.version ?? null,
+  }));
+}
+
 function mapPrismaToProduct(item: PrismaProduct): Product {
   const listingsRaw = (item as any).listings as
     | Array<{
@@ -156,6 +176,7 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     imageUrls: (item as any).imageUrls ?? [],
     scrapId: (item as any).scrapId ?? undefined,
     listings,
+    compatibilities: mapPrismaCompatibilities(item),
   };
 }
 
@@ -671,6 +692,28 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async create(data: ProductCreate): Promise<Product> {
     try {
+      const compatInput = Array.isArray(data.compatibilities)
+        ? data.compatibilities
+            .filter(
+              (c) =>
+                c &&
+                typeof c.brand === "string" &&
+                c.brand.trim().length > 0 &&
+                typeof c.model === "string" &&
+                c.model.trim().length > 0,
+            )
+            .map((c) => ({
+              brand: c.brand.trim(),
+              model: c.model.trim(),
+              yearFrom: c.yearFrom ?? null,
+              yearTo: c.yearTo ?? null,
+              version:
+                typeof c.version === "string" && c.version.trim().length > 0
+                  ? c.version.trim()
+                  : null,
+            }))
+        : [];
+
       const result = await prisma.product.create({
         data: {
           userId: data.userId ?? null,
@@ -707,7 +750,11 @@ class ProductRepositoryPrisma implements ProductRepository {
           imageUrl: data.imageUrl,
           imageUrls: data.imageUrls ?? [],
           scrapId: data.scrapId ?? null,
+          ...(compatInput.length > 0
+            ? { compatibilities: { create: compatInput } }
+            : {}),
         },
+        include: { compatibilities: true },
       });
 
       return mapPrismaToProduct(result);
@@ -1014,10 +1061,11 @@ class ProductRepositoryPrisma implements ProductRepository {
     try {
       const item = await prisma.product.findFirst({
         where: { id, ...(userId ? { userId } : {}) },
+        include: { compatibilities: true },
       });
 
       if (!item) return null;
-      return mapPrismaToProduct(item);
+      return mapPrismaToProduct(item as unknown as PrismaProduct);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -1038,6 +1086,41 @@ class ProductRepositoryPrisma implements ProductRepository {
         if (!owner) {
           throw new Error("Produto não encontrado para este usuário");
         }
+      }
+
+      if (data.compatibilities !== undefined) {
+        const compatInput = Array.isArray(data.compatibilities)
+          ? data.compatibilities
+              .filter(
+                (c) =>
+                  c &&
+                  typeof c.brand === "string" &&
+                  c.brand.trim().length > 0 &&
+                  typeof c.model === "string" &&
+                  c.model.trim().length > 0,
+              )
+              .map((c) => ({
+                brand: c.brand.trim(),
+                model: c.model.trim(),
+                yearFrom: c.yearFrom ?? null,
+                yearTo: c.yearTo ?? null,
+                version:
+                  typeof c.version === "string" && c.version.trim().length > 0
+                    ? c.version.trim()
+                    : null,
+              }))
+          : [];
+
+        await prisma.$transaction([
+          prisma.productCompatibility.deleteMany({ where: { productId: id } }),
+          ...(compatInput.length > 0
+            ? [
+                prisma.productCompatibility.createMany({
+                  data: compatInput.map((c) => ({ ...c, productId: id })),
+                }),
+              ]
+            : []),
+        ]);
       }
 
       const result = await prisma.product.update({
@@ -1094,9 +1177,10 @@ class ProductRepositoryPrisma implements ProductRepository {
           ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
           ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
         },
+        include: { compatibilities: true },
       });
 
-      return mapPrismaToProduct(result);
+      return mapPrismaToProduct(result as unknown as PrismaProduct);
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }

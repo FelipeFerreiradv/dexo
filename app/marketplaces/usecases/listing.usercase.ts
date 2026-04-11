@@ -82,6 +82,60 @@ export class ListingUseCase {
   }
 
   /**
+   * Formata a lista de compatibilidades do produto como linhas legíveis
+   * ("MARCA MODELO ANO ... VERSÃO"). Usado para enriquecer a descrição dos
+   * anúncios (ML e Shopee) — garante que o comprador veja os veículos
+   * compatíveis mesmo sem chamadas a endpoints proprietários de compat.
+   */
+  private static formatCompatibilityLines(product: {
+    compatibilities?: Array<{
+      brand: string;
+      model: string;
+      yearFrom?: number | null;
+      yearTo?: number | null;
+      version?: string | null;
+    }> | null;
+  }): string[] {
+    const list = Array.isArray(product.compatibilities)
+      ? product.compatibilities
+      : [];
+    const lines: string[] = [];
+    const seen = new Set<string>();
+    for (const compat of list) {
+      if (!compat) continue;
+      const brand = (compat.brand || "").trim();
+      const model = (compat.model || "").trim();
+      if (!brand || !model) continue;
+      const yFrom =
+        typeof compat.yearFrom === "number" && compat.yearFrom > 0
+          ? compat.yearFrom
+          : null;
+      const yTo =
+        typeof compat.yearTo === "number" && compat.yearTo > 0
+          ? compat.yearTo
+          : null;
+      let yearPart = "";
+      if (yFrom && yTo && yFrom !== yTo) yearPart = `${yFrom}-${yTo}`;
+      else if (yFrom && yTo && yFrom === yTo) yearPart = `${yFrom}`;
+      else if (yFrom) yearPart = `${yFrom}+`;
+      else if (yTo) yearPart = `até ${yTo}`;
+      const versionPart =
+        typeof compat.version === "string" && compat.version.trim().length > 0
+          ? compat.version.trim()
+          : "";
+      const parts = [brand.toUpperCase(), model, yearPart, versionPart]
+        .filter((p) => p && p.length > 0)
+        .join(" ");
+      const key = parts.toLowerCase();
+      if (parts && !seen.has(key)) {
+        seen.add(key);
+        lines.push(parts);
+      }
+    }
+    return lines;
+  }
+
+  /**
    * Converte uma URL relativa (ex.: "/uploads/foo.jpg") em URL absoluta usando
    * APP_BACKEND_URL. URLs já absolutas são retornadas sem alteração.
    */
@@ -365,9 +419,20 @@ export class ListingUseCase {
       return text && text.length > max ? text.slice(0, max) : text;
     };
 
+    const compatLines = this.formatCompatibilityLines(product);
+    const compatBlock =
+      compatLines.length > 0
+        ? `\n\nCompatível com:\n- ${compatLines
+            .map((l) => this.normalizeUtf8(l))
+            .join("\n- ")}`
+        : "";
+
     if (product.description) {
+      const base = this.normalizeUtf8(product.description);
+      const alreadyHasCompat = /compat[ií]vel com/i.test(base);
+      const text = alreadyHasCompat ? base : `${base}${compatBlock}`;
       return {
-        text: clamp(this.normalizeUtf8(product.description)),
+        text: clamp(text),
         source: hintedSource || "product",
       };
     }
@@ -405,6 +470,11 @@ export class ListingUseCase {
     if (details.length > 0) {
       parts.push("Detalhes Técnicos:");
       parts.push(details.join("\n"));
+    }
+
+    if (compatLines.length > 0) {
+      parts.push("Compatível com:");
+      parts.push(compatLines.map((l) => `- ${this.normalizeUtf8(l)}`).join("\n"));
     }
 
     if (product.sku) parts.push(`SKU: ${product.sku}`);
@@ -1900,28 +1970,40 @@ export class ListingUseCase {
   private static buildShopeeDescription(product: any): string {
     const parts: string[] = [];
 
-    // DescriÃ§Ã£o principal
+    // Descrição principal
     if (product.description) {
       parts.push(product.description);
     }
 
-    // Detalhes tÃ©cnicos
+    // Detalhes técnicos
     const details: string[] = [];
     if (product.brand) details.push(`Marca: ${product.brand}`);
     if (product.model) details.push(`Modelo: ${product.model}`);
     if (product.year) details.push(`Ano: ${product.year}`);
-    if (product.version) details.push(`VersÃ£o: ${product.version}`);
+    if (product.version) details.push(`Versão: ${product.version}`);
     if (product.partNumber)
-      details.push(`NÃºmero da PeÃ§a: ${product.partNumber}`);
+      details.push(`Número da Peça: ${product.partNumber}`);
     if (product.quality) details.push(`Qualidade: ${product.quality}`);
-    if (product.location) details.push(`LocalizaÃ§Ã£o: ${product.location}`);
+    if (product.location) details.push(`Localização: ${product.location}`);
 
     if (details.length > 0) {
-      parts.push("Detalhes TÃ©cnicos:");
+      parts.push("Detalhes Técnicos:");
       parts.push(details.join("\n"));
     }
 
-    // SKU para referÃªncia
+    // Compatibilidades — o Shopee não tem endpoint/atributo dedicado para isso
+    // no fluxo de peças automotivas, então expomos via descrição (visível ao
+    // comprador e indexável pela busca do próprio Shopee).
+    const compatLines = this.formatCompatibilityLines(product);
+    const descriptionAlreadyHasCompat =
+      typeof product.description === "string" &&
+      /compat[ií]vel com/i.test(product.description);
+    if (compatLines.length > 0 && !descriptionAlreadyHasCompat) {
+      parts.push("Compatível com:");
+      parts.push(compatLines.map((l) => `- ${l}`).join("\n"));
+    }
+
+    // SKU para referência
     parts.push(`SKU: ${product.sku}`);
 
     return parts.join("\n\n");

@@ -96,6 +96,13 @@ export interface Product {
 
   scrapId?: string;
   listings?: ProductListingSummary[];
+  compatibilities?: Array<{
+    brand: string;
+    model: string;
+    yearFrom?: number | null;
+    yearTo?: number | null;
+    version?: string | null;
+  }>;
 }
 
 export interface ProductCreate {
