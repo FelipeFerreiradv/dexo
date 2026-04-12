@@ -12,10 +12,17 @@ interface GenerateLabelsPdfParams {
   userName?: string | null;
 }
 
-const LABEL_QR_URL = "https://usedexo.com.br/produtos";
 const pdfLibPromise = import("pdf-lib");
 const qrLibPromise = import("qrcode");
-let cachedQrDataUrl: string | null = null;
+const qrDataUrlCache = new Map<string, string>();
+
+export function getProductUrl(productId: string): string {
+  const base =
+    typeof window !== "undefined"
+      ? process.env.NEXT_PUBLIC_APP_URL || window.location.origin
+      : process.env.NEXT_PUBLIC_APP_URL || "";
+  return `${base}/produtos/${productId}`;
+}
 
 function wrapText(
   text: string,
@@ -95,32 +102,63 @@ export async function generateLabelsPdf({
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  if (!cachedQrDataUrl) {
-    cachedQrDataUrl = await QRCode.toDataURL(LABEL_QR_URL, {
-      width: 260,
-      margin: 0,
-      color: { dark: "#000000", light: "#ffffff" },
-    });
+  // Pre-compute unique product URLs once
+  const productUrls = new Map<string, string>();
+  for (const product of products) {
+    if (!productUrls.has(product.id)) {
+      productUrls.set(product.id, getProductUrl(product.id));
+    }
   }
-  const qrImage = await pdfDoc.embedPng(cachedQrDataUrl);
 
-  const safeUserName = (userName || "UsuÃ¡rio").toUpperCase();
+  // Generate QR data URLs for uncached URLs only
+  const uncachedUrls = [...new Set(productUrls.values())].filter(
+    (url) => !qrDataUrlCache.has(url),
+  );
+  if (uncachedUrls.length > 0) {
+    await Promise.all(
+      uncachedUrls.map(async (url) => {
+        const dataUrl = await QRCode.toDataURL(url, {
+          width: 260,
+          margin: 0,
+          color: { dark: "#000000", light: "#ffffff" },
+        });
+        qrDataUrlCache.set(url, dataUrl);
+      }),
+    );
+  }
+
+  // Embed unique QR PNG images into the PDF document in one pass
+  const uniqueUrls = [...new Set(productUrls.values())];
+  const qrImages = new Map<string, Awaited<ReturnType<typeof pdfDoc.embedPng>>>();
+  await Promise.all(
+    uniqueUrls.map(async (url) => {
+      const img = await pdfDoc.embedPng(qrDataUrlCache.get(url)!);
+      qrImages.set(url, img);
+    }),
+  );
+
+  const safeUserName = (userName || "Usuário").toUpperCase();
+  const footerHost = (
+    process.env.NEXT_PUBLIC_APP_URL || "https://usedexo.com.br"
+  ).replace(/^https?:\/\//, "");
+
+  const pageWidth = 520;
+  const pageHeight = 260;
+  const margin = 20;
+  const qrSize = 170;
 
   products.forEach((product) => {
-    const pageWidth = 520;
-    const pageHeight = 260;
-    const margin = 20;
-    const qrSize = 170;
-
     const page = pdfDoc.addPage([pageWidth, pageHeight]);
     const { height } = page.getSize();
     page.setFont(font);
     page.setFontSize(12);
     page.setFontColor(rgb(0, 0, 0));
 
+    const productUrl = productUrls.get(product.id)!;
+    const productQrImage = qrImages.get(productUrl)!;
     const qrX = margin;
     const qrY = height - margin - qrSize;
-    page.drawImage(qrImage, {
+    page.drawImage(productQrImage, {
       x: qrX,
       y: qrY,
       width: qrSize,
@@ -185,8 +223,8 @@ export async function generateLabelsPdf({
       nameY -= 18;
     });
 
-    // Footer URL (fixed)
-    page.drawText("www.usedexo.com.br", {
+    // Footer URL
+    page.drawText(footerHost, {
       x: margin,
       y: margin,
       size: 12,

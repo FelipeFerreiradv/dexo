@@ -1071,6 +1071,91 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
+  async findByIdDetailed(id: string, userId: string) {
+    // Run product + stock-log queries in parallel (independent reads)
+    const [item, recentStockChanges] = await Promise.all([
+      prisma.product.findFirst({
+        where: { id, userId },
+        include: {
+          compatibilities: true,
+          listings: {
+            include: {
+              marketplaceAccount: {
+                select: {
+                  id: true,
+                  platform: true,
+                  accountName: true,
+                  shopId: true,
+                },
+              },
+            },
+          },
+          scrap: {
+            select: {
+              id: true,
+              brand: true,
+              model: true,
+              year: true,
+              version: true,
+              color: true,
+              plate: true,
+            },
+          },
+        },
+      }),
+      prisma.stockLog.findMany({
+        where: { productId: id },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          change: true,
+          reason: true,
+          previousStock: true,
+          newStock: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    if (!item) return null;
+
+    const product = mapPrismaToProduct(item as unknown as PrismaProduct);
+
+    // Enrich listings with account details
+    const detailedListings = (item.listings || []).map((listing) => ({
+      id: listing.id,
+      platform: listing.marketplaceAccount.platform,
+      accountName: listing.marketplaceAccount.accountName,
+      marketplaceAccountId: listing.marketplaceAccountId,
+      externalListingId: listing.externalListingId,
+      status: listing.status,
+      permalink: listing.permalink ?? undefined,
+      shopId: listing.marketplaceAccount.shopId ?? undefined,
+      createdAt: listing.createdAt,
+      updatedAt: listing.updatedAt,
+    }));
+
+    const scrapSummary = item.scrap
+      ? {
+          id: item.scrap.id,
+          brand: item.scrap.brand,
+          model: item.scrap.model,
+          year: item.scrap.year ?? undefined,
+          version: item.scrap.version ?? undefined,
+          color: item.scrap.color ?? undefined,
+          plate: item.scrap.plate ?? undefined,
+        }
+      : undefined;
+
+    return {
+      product,
+      detailedListings,
+      recentStockChanges,
+      scrapSummary,
+    };
+  }
+
   async update(
     id: string,
     data: ProductUpdate,

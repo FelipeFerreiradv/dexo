@@ -814,6 +814,38 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  /**
+   * GET /products/:id
+   * Retorna detalhe completo de um produto (listings enriquecidos, stock logs, sucata)
+   */
+  fastify.get<{ Params: { id: string } }>(
+    "/:id",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const { id } = request.params;
+        const userId = (request as any).user?.id as string;
+        const result = await productUseCase.getDetail(id, userId);
+
+        if (!result) {
+          return reply.status(404).send({ error: "Produto não encontrado" });
+        }
+
+        return reply.status(200).send(result);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar produto",
+        });
+      }
+    },
+  );
+
   fastify.delete(
     "/:id",
     { preHandler: [authMiddleware] },

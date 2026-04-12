@@ -71,6 +71,11 @@ export class ProductUseCase {
     return this.productRepository.create(productData);
   }
 
+  async getDetail(id: string, userId: string) {
+    const repo = this.productRepository as ProductRepositoryPrisma;
+    return repo.findByIdDetailed(id, userId);
+  }
+
   async listProducts(
     options: ProductListFilters & { userId: string },
   ): Promise<{ products: Product[]; total: number; totalPages: number }> {

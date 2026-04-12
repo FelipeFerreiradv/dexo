@@ -10,7 +10,21 @@ export const metadata = {
     "Acesse sua conta Dexo e gerencie seu estoque centralizado com integrações ao Mercado Livre e Shopee.",
 };
 
-export default function LoginPage() {
+interface LoginPageProps {
+  searchParams: Promise<{ callbackUrl?: string }>;
+}
+
+function sanitizeCallbackUrl(raw?: string): string {
+  if (!raw || typeof raw !== "string") return "/";
+  const trimmed = raw.trim();
+  // Only accept relative paths starting with /
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return "/";
+  return trimmed;
+}
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const { callbackUrl: rawCallback } = await searchParams;
+  const callbackUrl = sanitizeCallbackUrl(rawCallback);
   return (
     <main className="dark relative isolate flex min-h-screen w-full flex-col items-center overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
@@ -58,7 +72,7 @@ export default function LoginPage() {
           </div>
 
           <div className="w-full">
-            <DexoLoginForm />
+            <DexoLoginForm callbackUrl={callbackUrl} />
           </div>
         </div>
       </div>
