@@ -935,6 +935,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           imageUrl,
           imageUrls,
+
+          // Compatibilidades veiculares
+          compatibilities,
         } = request.body as any;
 
         if (!id) {
@@ -1037,6 +1040,35 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
             imageUrl,
             imageUrls: Array.isArray(imageUrls) ? imageUrls : undefined,
+
+            // Compatibilidades veiculares (persistidas atomicamente pelo repositório)
+            compatibilities: Array.isArray(compatibilities)
+              ? compatibilities
+                  .filter(
+                    (c: any) =>
+                      c &&
+                      typeof c.brand === "string" &&
+                      c.brand.trim().length > 0 &&
+                      typeof c.model === "string" &&
+                      c.model.trim().length > 0,
+                  )
+                  .map((c: any) => ({
+                    brand: c.brand.trim(),
+                    model: c.model.trim(),
+                    yearFrom:
+                      c.yearFrom !== undefined && c.yearFrom !== null
+                        ? Number(c.yearFrom)
+                        : null,
+                    yearTo:
+                      c.yearTo !== undefined && c.yearTo !== null
+                        ? Number(c.yearTo)
+                        : null,
+                    version:
+                      typeof c.version === "string" && c.version.trim().length > 0
+                        ? c.version.trim()
+                        : null,
+                  }))
+              : undefined,
           },
           userId,
         );

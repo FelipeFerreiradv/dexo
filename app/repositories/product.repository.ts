@@ -1173,96 +1173,104 @@ class ProductRepositoryPrisma implements ProductRepository {
         }
       }
 
-      if (data.compatibilities !== undefined) {
-        const compatInput = Array.isArray(data.compatibilities)
-          ? data.compatibilities
-              .filter(
-                (c) =>
-                  c &&
-                  typeof c.brand === "string" &&
-                  c.brand.trim().length > 0 &&
-                  typeof c.model === "string" &&
-                  c.model.trim().length > 0,
-              )
-              .map((c) => ({
-                brand: c.brand.trim(),
-                model: c.model.trim(),
-                yearFrom: c.yearFrom ?? null,
-                yearTo: c.yearTo ?? null,
-                version:
-                  typeof c.version === "string" && c.version.trim().length > 0
-                    ? c.version.trim()
-                    : null,
-              }))
-          : [];
+      // Preparar compatibilidades se fornecidas
+      const compatInput =
+        data.compatibilities !== undefined
+          ? (Array.isArray(data.compatibilities)
+              ? data.compatibilities
+                  .filter(
+                    (c) =>
+                      c &&
+                      typeof c.brand === "string" &&
+                      c.brand.trim().length > 0 &&
+                      typeof c.model === "string" &&
+                      c.model.trim().length > 0,
+                  )
+                  .map((c) => ({
+                    brand: c.brand.trim(),
+                    model: c.model.trim(),
+                    yearFrom: c.yearFrom ?? null,
+                    yearTo: c.yearTo ?? null,
+                    version:
+                      typeof c.version === "string" &&
+                      c.version.trim().length > 0
+                        ? c.version.trim()
+                        : null,
+                  }))
+              : [])
+          : undefined;
 
-        await prisma.$transaction([
-          prisma.productCompatibility.deleteMany({ where: { productId: id } }),
-          ...(compatInput.length > 0
-            ? [
-                prisma.productCompatibility.createMany({
-                  data: compatInput.map((c) => ({ ...c, productId: id })),
-                }),
-              ]
-            : []),
-        ]);
-      }
+      const productData: Prisma.ProductUpdateInput = {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.description !== undefined && {
+          description: data.description,
+        }),
+        ...(data.price !== undefined && { price: data.price }),
+        ...(data.stock !== undefined && { stock: data.stock }),
+        ...(data.costPrice !== undefined && { costPrice: data.costPrice }),
+        ...(data.markup !== undefined && { markup: data.markup }),
+        ...(data.brand !== undefined && { brand: data.brand }),
+        ...(data.model !== undefined && { model: data.model }),
+        ...(data.year !== undefined && { year: data.year }),
+        ...(data.version !== undefined && { version: data.version }),
+        ...(data.category !== undefined && { category: data.category }),
+        ...(data.location !== undefined && { location: data.location }),
+        ...(data.locationId !== undefined && { locationId: data.locationId }),
+        ...(data.partNumber !== undefined && { partNumber: data.partNumber }),
+        ...(data.quality !== undefined && { quality: data.quality }),
+        ...(data.isSecurityItem !== undefined && {
+          isSecurityItem: data.isSecurityItem,
+        }),
+        ...(data.isTraceable !== undefined && {
+          isTraceable: data.isTraceable,
+        }),
+        ...(data.sourceVehicle !== undefined && {
+          sourceVehicle: data.sourceVehicle,
+        }),
+        ...(data.mlCategoryId !== undefined && {
+          mlCategoryId: data.mlCategoryId,
+        }),
+        ...(data.mlCategorySource !== undefined && {
+          mlCategorySource: data.mlCategorySource,
+        }),
+        ...(data.mlCategoryChosenAt !== undefined && {
+          mlCategoryChosenAt: data.mlCategoryChosenAt as any,
+        }),
+        ...(data.shopeeCategoryId !== undefined && {
+          shopeeCategoryId: data.shopeeCategoryId,
+        }),
+        ...(data.shopeeCategorySource !== undefined && {
+          shopeeCategorySource: data.shopeeCategorySource,
+        }),
+        ...(data.shopeeCategoryChosenAt !== undefined && {
+          shopeeCategoryChosenAt: data.shopeeCategoryChosenAt as any,
+        }),
+        ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
+        ...(data.widthCm !== undefined && { widthCm: data.widthCm }),
+        ...(data.lengthCm !== undefined && { lengthCm: data.lengthCm }),
+        ...(data.weightKg !== undefined && { weightKg: data.weightKg }),
+        ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
+        ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
+      };
 
-      const result = await prisma.product.update({
-        where: { id },
-        data: {
-          ...(data.name !== undefined && { name: data.name }),
-          ...(data.description !== undefined && {
-            description: data.description,
-          }),
-          ...(data.price !== undefined && { price: data.price }),
-          ...(data.stock !== undefined && { stock: data.stock }),
-          ...(data.costPrice !== undefined && { costPrice: data.costPrice }),
-          ...(data.markup !== undefined && { markup: data.markup }),
-          ...(data.brand !== undefined && { brand: data.brand }),
-          ...(data.model !== undefined && { model: data.model }),
-          ...(data.year !== undefined && { year: data.year }),
-          ...(data.version !== undefined && { version: data.version }),
-          ...(data.category !== undefined && { category: data.category }),
-          ...(data.location !== undefined && { location: data.location }),
-          ...(data.locationId !== undefined && { locationId: data.locationId }),
-          ...(data.partNumber !== undefined && { partNumber: data.partNumber }),
-          ...(data.quality !== undefined && { quality: data.quality }),
-          ...(data.isSecurityItem !== undefined && {
-            isSecurityItem: data.isSecurityItem,
-          }),
-          ...(data.isTraceable !== undefined && {
-            isTraceable: data.isTraceable,
-          }),
-          ...(data.sourceVehicle !== undefined && {
-            sourceVehicle: data.sourceVehicle,
-          }),
-          ...(data.mlCategoryId !== undefined && {
-            mlCategoryId: data.mlCategoryId,
-          }),
-          ...(data.mlCategorySource !== undefined && {
-            mlCategorySource: data.mlCategorySource,
-          }),
-          ...(data.mlCategoryChosenAt !== undefined && {
-            mlCategoryChosenAt: data.mlCategoryChosenAt as any,
-          }),
-          ...(data.shopeeCategoryId !== undefined && {
-            shopeeCategoryId: data.shopeeCategoryId,
-          }),
-          ...(data.shopeeCategorySource !== undefined && {
-            shopeeCategorySource: data.shopeeCategorySource,
-          }),
-          ...(data.shopeeCategoryChosenAt !== undefined && {
-            shopeeCategoryChosenAt: data.shopeeCategoryChosenAt as any,
-          }),
-          ...(data.heightCm !== undefined && { heightCm: data.heightCm }),
-          ...(data.widthCm !== undefined && { widthCm: data.widthCm }),
-          ...(data.lengthCm !== undefined && { lengthCm: data.lengthCm }),
-          ...(data.weightKg !== undefined && { weightKg: data.weightKg }),
-          ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
-          ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
-        },
-        include: { compatibilities: true },
+      // Transação atômica: produto + compatibilidades juntos
+      const result = await prisma.$transaction(async (tx) => {
+        if (compatInput !== undefined) {
+          await tx.productCompatibility.deleteMany({
+            where: { productId: id },
+          });
+          if (compatInput.length > 0) {
+            await tx.productCompatibility.createMany({
+              data: compatInput.map((c) => ({ ...c, productId: id })),
+            });
+          }
+        }
+
+        return tx.product.update({
+          where: { id },
+          data: productData,
+          include: { compatibilities: true },
+        });
       });
 
       return mapPrismaToProduct(result as unknown as PrismaProduct);
