@@ -204,6 +204,145 @@ describe("POST /products (integration)", () => {
     expect(body).toHaveProperty("category", payload.category);
   });
 
+  it("forwards compatibilities to repository exactly once on create", async () => {
+    const fakeUser = {
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any;
+
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
+      null,
+    );
+
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(
+        async (data: any) =>
+          ({
+            id: "prod-compat-1",
+            sku: data.sku,
+            name: data.name,
+            stock: data.stock,
+            price: data.price,
+            imageUrl: data.imageUrl,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }) as any,
+      );
+
+    const payload = {
+      sku: "PROD-COMPAT-1",
+      name: "Amortecedor dianteiro",
+      price: 250,
+      stock: 3,
+      imageUrl: "http://localhost/img.jpg",
+      compatibilities: [
+        {
+          brand: "Fiat",
+          model: "Stilo",
+          yearFrom: 2008,
+          yearTo: 2011,
+          version: "Attractive 1.8 8V Flex",
+        },
+        {
+          brand: "Fiat",
+          model: "Stilo",
+          yearFrom: 2008,
+          yearTo: 2011,
+          version: "Blackmotion 1.8 8V Flex",
+        },
+      ],
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload,
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    expect(arg.compatibilities).toHaveLength(2);
+    expect(arg.compatibilities[0]).toMatchObject({
+      brand: "Fiat",
+      model: "Stilo",
+      yearFrom: 2008,
+      yearTo: 2011,
+      version: "Attractive 1.8 8V Flex",
+    });
+  });
+
+  it("drops malformed compatibilities entries on create", async () => {
+    const fakeUser = {
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any;
+
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
+      null,
+    );
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(
+        async () =>
+          ({
+            id: "prod-compat-2",
+            sku: "PROD-COMPAT-2",
+            name: "X",
+            stock: 1,
+            price: 10,
+            imageUrl: "http://x/y.jpg",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }) as any,
+      );
+
+    await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-COMPAT-2",
+        name: "X",
+        price: 10,
+        stock: 1,
+        imageUrl: "http://x/y.jpg",
+        compatibilities: [
+          { brand: "", model: "Stilo" },
+          { brand: "Fiat", model: "" },
+          { brand: "Fiat", model: "Stilo" },
+          null,
+          { brand: "Honda", model: "Civic", yearFrom: "2018" },
+        ],
+      },
+    });
+
+    const arg = createSpy.mock.calls[0][0] as any;
+    expect(arg.compatibilities).toHaveLength(2);
+    expect(arg.compatibilities[0].model).toBe("Stilo");
+    expect(arg.compatibilities[1]).toMatchObject({
+      brand: "Honda",
+      model: "Civic",
+      yearFrom: 2018,
+    });
+  });
+
   it.skip("creates product and triggers listing creation when createListing is true", async () => {
     const fakeUser = {
       id: "user-1",

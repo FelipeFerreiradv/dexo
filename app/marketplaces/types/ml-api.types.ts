@@ -121,3 +121,76 @@ export interface MLItemCreatePayload {
     value_name?: string;
   }>;
 }
+
+// =========================================================================
+// Compatibilidade nativa do Mercado Livre (autopeças)
+// =========================================================================
+
+/** Valor permitido de um atributo dentro de um domínio de catálogo. */
+export interface MLCatalogAttributeValue {
+  id: string;
+  name: string;
+}
+
+/** Atributo retornado em GET /catalog_domains/{id}. */
+export interface MLCatalogDomainAttribute {
+  id: string;
+  name: string;
+  values?: MLCatalogAttributeValue[] | null;
+}
+
+export interface MLCatalogDomainResponse {
+  domain_id: string;
+  domain_name?: string;
+  attributes?: MLCatalogDomainAttribute[];
+}
+
+/** Atributo de um catalog product devolvido pelos chunks. */
+export interface MLCatalogProductAttribute {
+  id: string;
+  name?: string;
+  value_id?: string | null;
+  value_name?: string | null;
+  values?: Array<{ id?: string | null; name?: string | null }>;
+}
+
+/** Um catalog product dentro de uma página de chunks. */
+export interface MLCatalogCompatibilityProduct {
+  id?: string;
+  name?: string;
+  status?: string;
+  domain_id?: string;
+  attributes?: MLCatalogProductAttribute[];
+}
+
+export interface MLCatalogCompatibilityChunkResponse {
+  paging?: { total?: number; limit?: number; offset?: number };
+  results?: MLCatalogCompatibilityProduct[];
+}
+
+/** Opções normalizadas que o backend devolve ao frontend. */
+export interface MLCompatibilityBrandOption {
+  valueId: string;
+  name: string;
+}
+
+export interface MLCompatibilityModelOption {
+  valueId: string;
+  name: string;
+  brandValueId: string;
+  brandName: string;
+}
+
+export interface MLCompatibilityVehicleOption {
+  /** Identificador estável: prioriza catalog product id; senão combina atributos. */
+  key: string;
+  brand: string;
+  brandValueId: string;
+  model: string;
+  modelValueId: string;
+  year: number | null;
+  /** Versão canônica: TRIM OU `SHORT_VERSION + ENGINE` (sem duplicar motor). */
+  version: string;
+  /** Rótulo completo usado na UI: `${year} ${version}` ou apenas year/version. */
+  label: string;
+}

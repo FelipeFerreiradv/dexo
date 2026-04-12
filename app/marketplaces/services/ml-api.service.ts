@@ -6,6 +6,14 @@ import {
   MLMultigetResponse,
   MLItemUpdatePayload,
   MLItemCreatePayload,
+  MLCatalogDomainResponse,
+  MLCatalogDomainAttribute,
+  MLCatalogCompatibilityChunkResponse,
+  MLCatalogCompatibilityProduct,
+  MLCatalogProductAttribute,
+  MLCompatibilityBrandOption,
+  MLCompatibilityModelOption,
+  MLCompatibilityVehicleOption,
 } from "../types/ml-api.types";
 import {
   MLOrderDetails,
@@ -13,6 +21,140 @@ import {
   MLOrdersSearchParams,
   MLOrderStatus,
 } from "../types/ml-order.types";
+
+export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
+
+const ML_ATTR = {
+  BRAND: "BRAND",
+  MODEL: "MODEL",
+  VEHICLE_YEAR: "VEHICLE_YEAR",
+  SHORT_VERSION: "SHORT_VERSION",
+  ENGINE: "ENGINE",
+  TRIM: "TRIM",
+} as const;
+
+/**
+ * Compõe a versão canônica do veículo seguindo a regra do ML:
+ *   1) se TRIM estiver presente, usa-o integralmente;
+ *   2) caso contrário, concatena SHORT_VERSION + ENGINE evitando duplicidade
+ *      (se o motor já aparece no short_version, não repete).
+ * Pura, exportada para testes.
+ */
+export function composeCanonicalVersion(input: {
+  trim?: string | null;
+  shortVersion?: string | null;
+  engine?: string | null;
+}): string {
+  const trim = (input.trim ?? "").trim();
+  if (trim) return trim;
+
+  const sv = (input.shortVersion ?? "").trim();
+  const eng = (input.engine ?? "").trim();
+
+  if (sv && eng) {
+    const svNorm = sv.toLowerCase().replace(/\s+/g, " ");
+    const engNorm = eng.toLowerCase().replace(/\s+/g, " ");
+    if (svNorm.includes(engNorm)) return sv;
+    return `${sv} ${eng}`.replace(/\s+/g, " ").trim();
+  }
+  return sv || eng || "";
+}
+
+/** Extrai o primeiro atributo pelo id, tolerando ausência. */
+function findProductAttribute(
+  product: MLCatalogCompatibilityProduct,
+  id: string,
+): MLCatalogProductAttribute | undefined {
+  const attrs = product.attributes;
+  if (!attrs || attrs.length === 0) return undefined;
+  return attrs.find((a) => a?.id === id);
+}
+
+function firstAttrValue(
+  attr: MLCatalogProductAttribute | undefined,
+): { id: string | null; name: string | null } {
+  if (!attr) return { id: null, name: null };
+  if (attr.value_id || attr.value_name) {
+    return { id: attr.value_id ?? null, name: attr.value_name ?? null };
+  }
+  const first = attr.values?.[0];
+  if (first) {
+    return { id: first.id ?? null, name: first.name ?? null };
+  }
+  return { id: null, name: null };
+}
+
+function parseYearFromAttr(name: string | null): number | null {
+  if (!name) return null;
+  const match = name.match(/\b(19|20)\d{2}\b/);
+  if (!match) return null;
+  const n = parseInt(match[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Converte um catalog product em uma opção normalizada de veículo.
+ * Ausências são toleradas — retorna null quando faltam brand/model.
+ */
+export function mapCatalogProductToVehicle(
+  product: MLCatalogCompatibilityProduct,
+): MLCompatibilityVehicleOption | null {
+  const brandAttr = findProductAttribute(product, ML_ATTR.BRAND);
+  const modelAttr = findProductAttribute(product, ML_ATTR.MODEL);
+  const yearAttr = findProductAttribute(product, ML_ATTR.VEHICLE_YEAR);
+  const shortVersionAttr = findProductAttribute(product, ML_ATTR.SHORT_VERSION);
+  const engineAttr = findProductAttribute(product, ML_ATTR.ENGINE);
+  const trimAttr = findProductAttribute(product, ML_ATTR.TRIM);
+
+  const brand = firstAttrValue(brandAttr);
+  const model = firstAttrValue(modelAttr);
+  if (!brand.name || !model.name) return null;
+
+  const year = parseYearFromAttr(firstAttrValue(yearAttr).name);
+  const version = composeCanonicalVersion({
+    trim: firstAttrValue(trimAttr).name,
+    shortVersion: firstAttrValue(shortVersionAttr).name,
+    engine: firstAttrValue(engineAttr).name,
+  });
+
+  const key =
+    product.id ||
+    `${brand.id ?? brand.name}|${model.id ?? model.name}|${year ?? ""}|${version}`;
+
+  const labelParts: string[] = [];
+  if (year) labelParts.push(String(year));
+  if (version) labelParts.push(version);
+
+  return {
+    key,
+    brand: brand.name,
+    brandValueId: brand.id ?? "",
+    model: model.name,
+    modelValueId: model.id ?? "",
+    year,
+    version,
+    label: labelParts.join(" ") || model.name,
+  };
+}
+
+/** Cache global leve (TTL) para dados públicos do catálogo do ML. */
+type CompatCacheEntry<T> = { data: T; exp: number };
+const COMPAT_CACHE_TTL_MS = 10 * 60 * 1000;
+const compatCache = new Map<string, CompatCacheEntry<unknown>>();
+
+function compatCacheGet<T>(key: string): T | null {
+  const entry = compatCache.get(key);
+  if (!entry) return null;
+  if (entry.exp <= Date.now()) {
+    compatCache.delete(key);
+    return null;
+  }
+  return entry.data as T;
+}
+
+function compatCacheSet<T>(key: string, data: T): void {
+  compatCache.set(key, { data, exp: Date.now() + COMPAT_CACHE_TTL_MS });
+}
 
 /**
  * Cliente para API do Mercado Livre
@@ -1028,6 +1170,224 @@ export class MLApiService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Faz upload de uma imagem ao ML via source URL (ML baixa a imagem).
+   * Retorna o picture ID de forma síncrona (diferente do source no payload do item,
+   * que é assíncrono e pode causar image_download_pending).
+   */
+  // =========================================================================
+  // Compatibilidade nativa do Mercado Livre (autopeças)
+  // Todos os métodos usam o domínio MLB-CARS_AND_VANS e o endpoint
+  // /catalog_compatibilities/products_search/chunks para navegar o catálogo.
+  // =========================================================================
+
+  /**
+   * GET /catalog_domains/MLB-CARS_AND_VANS
+   * Fonte primária da lista de marcas (allowed values do atributo BRAND).
+   */
+  static async getCarsAndVansDomain(
+    accessToken: string,
+  ): Promise<MLCatalogDomainResponse> {
+    try {
+      const response = await axios.get<MLCatalogDomainResponse>(
+        `${ML_CONSTANTS.API_URL}/catalog_domains/${ML_COMPAT_DOMAIN_ID}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 15000,
+        },
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(
+        this.formatAxiosError(
+          "[ML Compat] Falha ao consultar catalog_domains",
+          error,
+        ),
+      );
+    }
+  }
+
+  /**
+   * POST /catalog_compatibilities/products_search/chunks
+   * Retorna uma página de catalog products filtrada por known_attributes.
+   */
+  static async searchCatalogCompatibilityChunks(
+    accessToken: string,
+    params: {
+      knownAttributes: Array<{ id: string; value_id: string }>;
+      limit?: number;
+      offset?: number;
+    },
+  ): Promise<MLCatalogCompatibilityChunkResponse> {
+    const body = {
+      domain_id: ML_COMPAT_DOMAIN_ID,
+      known_attributes: params.knownAttributes,
+      limit: params.limit ?? 50,
+      offset: params.offset ?? 0,
+    };
+    try {
+      const response = await axios.post<MLCatalogCompatibilityChunkResponse>(
+        `${ML_CONSTANTS.API_URL}/catalog_compatibilities/products_search/chunks`,
+        body,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 20000,
+        },
+      );
+      return response.data ?? {};
+    } catch (error) {
+      throw new Error(
+        this.formatAxiosError(
+          "[ML Compat] Falha ao consultar products_search/chunks",
+          error,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Lista marcas do domínio MLB-CARS_AND_VANS na nomenclatura oficial do ML.
+   * Cache global TTL — os dados não variam por usuário.
+   */
+  static async listCompatibilityBrands(
+    accessToken: string,
+  ): Promise<MLCompatibilityBrandOption[]> {
+    const cacheKey = `compat:brands:${ML_COMPAT_DOMAIN_ID}`;
+    const cached = compatCacheGet<MLCompatibilityBrandOption[]>(cacheKey);
+    if (cached) return cached;
+
+    const domain = await this.getCarsAndVansDomain(accessToken);
+    const brandAttr = (domain.attributes ?? []).find(
+      (a: MLCatalogDomainAttribute) => a?.id === ML_ATTR.BRAND,
+    );
+    const values = brandAttr?.values ?? [];
+
+    const seen = new Map<string, MLCompatibilityBrandOption>();
+    for (const v of values) {
+      if (!v?.id || !v?.name) continue;
+      if (!seen.has(v.id)) {
+        seen.set(v.id, { valueId: v.id, name: v.name });
+      }
+    }
+    const brands = Array.from(seen.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, "pt-BR"),
+    );
+
+    compatCacheSet(cacheKey, brands);
+    return brands;
+  }
+
+  /**
+   * Lista modelos para uma marca iterando pages do chunks até esgotar.
+   * Dedup por MODEL.value_id. Cache por marca.
+   */
+  static async listCompatibilityModels(
+    accessToken: string,
+    brand: { valueId: string; name?: string },
+  ): Promise<MLCompatibilityModelOption[]> {
+    const cacheKey = `compat:models:${brand.valueId}`;
+    const cached = compatCacheGet<MLCompatibilityModelOption[]>(cacheKey);
+    if (cached) return cached;
+
+    const pageSize = 50;
+    const maxPages = 40; // teto de segurança (2000 produtos)
+    const seen = new Map<string, MLCompatibilityModelOption>();
+    let brandName = brand.name ?? "";
+
+    for (let page = 0; page < maxPages; page++) {
+      const chunk = await this.searchCatalogCompatibilityChunks(accessToken, {
+        knownAttributes: [{ id: ML_ATTR.BRAND, value_id: brand.valueId }],
+        limit: pageSize,
+        offset: page * pageSize,
+      });
+      const results = chunk.results ?? [];
+      if (results.length === 0) break;
+
+      for (const product of results) {
+        const brandAttr = findProductAttribute(product, ML_ATTR.BRAND);
+        const modelAttr = findProductAttribute(product, ML_ATTR.MODEL);
+        const brandVal = firstAttrValue(brandAttr);
+        const modelVal = firstAttrValue(modelAttr);
+        if (!modelVal.name) continue;
+        if (!brandName && brandVal.name) brandName = brandVal.name;
+
+        const id = modelVal.id ?? modelVal.name;
+        if (!seen.has(id)) {
+          seen.set(id, {
+            valueId: modelVal.id ?? "",
+            name: modelVal.name,
+            brandValueId: brand.valueId,
+            brandName: brandVal.name || brandName || "",
+          });
+        }
+      }
+
+      const total = chunk.paging?.total;
+      if (typeof total === "number" && (page + 1) * pageSize >= total) break;
+      if (results.length < pageSize) break;
+    }
+
+    const models = Array.from(seen.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, "pt-BR"),
+    );
+    compatCacheSet(cacheKey, models);
+    return models;
+  }
+
+  /**
+   * Lista veículos (linhas ano+versão) para marca+modelo.
+   * Dedup por key (catalog product id quando disponível).
+   * Ordena por ano desc depois por label.
+   */
+  static async listCompatibilityVehicles(
+    accessToken: string,
+    brand: { valueId: string },
+    model: { valueId: string },
+  ): Promise<MLCompatibilityVehicleOption[]> {
+    const cacheKey = `compat:vehicles:${brand.valueId}:${model.valueId}`;
+    const cached = compatCacheGet<MLCompatibilityVehicleOption[]>(cacheKey);
+    if (cached) return cached;
+
+    const pageSize = 50;
+    const maxPages = 20;
+    const seen = new Map<string, MLCompatibilityVehicleOption>();
+
+    for (let page = 0; page < maxPages; page++) {
+      const chunk = await this.searchCatalogCompatibilityChunks(accessToken, {
+        knownAttributes: [
+          { id: ML_ATTR.BRAND, value_id: brand.valueId },
+          { id: ML_ATTR.MODEL, value_id: model.valueId },
+        ],
+        limit: pageSize,
+        offset: page * pageSize,
+      });
+      const results = chunk.results ?? [];
+      if (results.length === 0) break;
+
+      for (const product of results) {
+        const vehicle = mapCatalogProductToVehicle(product);
+        if (!vehicle) continue;
+        if (!seen.has(vehicle.key)) seen.set(vehicle.key, vehicle);
+      }
+
+      const total = chunk.paging?.total;
+      if (typeof total === "number" && (page + 1) * pageSize >= total) break;
+      if (results.length < pageSize) break;
+    }
+
+    const vehicles = Array.from(seen.values()).sort((a, b) => {
+      const ya = a.year ?? 0;
+      const yb = b.year ?? 0;
+      if (ya !== yb) return yb - ya;
+      return a.label.localeCompare(b.label, "pt-BR");
+    });
+    compatCacheSet(cacheKey, vehicles);
+    return vehicles;
   }
 
   /**

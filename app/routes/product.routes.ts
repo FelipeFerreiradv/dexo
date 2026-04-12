@@ -189,6 +189,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         createListing,
         createListingCategoryId,
         listings,
+        // Compatibilidades veiculares
+        compatibilities,
       } = request.body as any;
 
       const user = (request as any).user;
@@ -242,6 +244,33 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         createListingCategoryId: createListingCategoryId ?? undefined,
         listings: Array.isArray(listings) ? listings : undefined,
         scrapId: typeof scrapId === "string" && scrapId ? scrapId : undefined,
+        compatibilities: Array.isArray(compatibilities)
+          ? compatibilities
+              .filter(
+                (c: any) =>
+                  c &&
+                  typeof c.brand === "string" &&
+                  c.brand.trim() &&
+                  typeof c.model === "string" &&
+                  c.model.trim(),
+              )
+              .map((c: any) => ({
+                brand: String(c.brand).trim(),
+                model: String(c.model).trim(),
+                yearFrom:
+                  c.yearFrom === null || c.yearFrom === undefined
+                    ? null
+                    : Number(c.yearFrom) || null,
+                yearTo:
+                  c.yearTo === null || c.yearTo === undefined
+                    ? null
+                    : Number(c.yearTo) || null,
+                version:
+                  typeof c.version === "string" && c.version.trim()
+                    ? c.version.trim()
+                    : null,
+              }))
+          : undefined,
       } as const;
 
       // Server-side validation: reject clearly malformed requests before hitting usecase/DB
@@ -422,6 +451,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           // Sucata vinculada
           scrapId: sanitized.scrapId,
+
+          // Compatibilidades veiculares (persistidas transacionalmente pelo repositório)
+          compatibilities: sanitized.compatibilities,
         });
 
         // Registrar log de criação do produto (fire-and-forget, non-blocking)

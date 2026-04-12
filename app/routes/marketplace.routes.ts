@@ -13,6 +13,100 @@ import { ListingRetryService } from "../marketplaces/services/listing-retry.serv
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { MLApiService } from "../marketplaces/services/ml-api.service";
+import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { AccountStatus } from "@prisma/client";
+
+/**
+ * Cache curto (60s) do par { accountId, accessToken } resolvido por usuário.
+ * As chamadas /ml/compatibility/* disparam em sequência quando o usuário abre o
+ * modal (marcas → modelos → veículos). Sem este cache cada request repete
+ * 2 queries Prisma + potencial refresh de token, custando ~700ms cada.
+ * TTL curto para que renovações de token/troca de conta propaguem rápido.
+ */
+type ResolvedMlAccount = { accountId: string; accessToken: string };
+const resolvedAccountCache = new Map<
+  string,
+  { data: ResolvedMlAccount; exp: number }
+>();
+const RESOLVED_ACCOUNT_TTL_MS = 60 * 1000;
+
+function resolvedAccountCacheKey(userId: string, accountId?: string): string {
+  return `${userId}::${accountId ?? ""}`;
+}
+
+/**
+ * Resolve a conta Mercado Livre a ser usada para consultas de compatibilidade:
+ *   - usa accountId explícito se informado e pertencer ao usuário;
+ *   - senão, cai para a conta ATIVA mais recente do usuário;
+ *   - renova o token automaticamente se estiver expirado, persistindo a renovação;
+ *   - devolve { account, accessToken } ou null se não houver conta utilizável.
+ */
+async function resolveMlAccountForCompat(
+  userId: string,
+  accountId?: string,
+): Promise<ResolvedMlAccount | null> {
+  const cacheKey = resolvedAccountCacheKey(userId, accountId);
+  const cached = resolvedAccountCache.get(cacheKey);
+  if (cached && cached.exp > Date.now()) {
+    return cached.data;
+  }
+
+  let account = accountId
+    ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+    : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+        userId,
+        Platform.MERCADO_LIVRE,
+      );
+
+  if (!account && !accountId) {
+    const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.MERCADO_LIVRE,
+    );
+    const active = (all || []).filter(
+      (acc) => acc.status === AccountStatus.ACTIVE,
+    );
+    if (active.length > 0) {
+      account = active.sort(
+        (a, b) =>
+          new Date(b.updatedAt || b.createdAt || 0).getTime() -
+          new Date(a.updatedAt || a.createdAt || 0).getTime(),
+      )[0];
+    }
+  }
+
+  if (!account || !account.accessToken || !account.refreshToken) return null;
+
+  let accessToken = account.accessToken;
+  if (account.expiresAt && new Date(account.expiresAt) <= new Date()) {
+    try {
+      const refreshed = await MLOAuthService.refreshAccessToken(
+        account.refreshToken,
+      );
+      const updated = await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+      if (updated) accessToken = updated.accessToken;
+      else accessToken = refreshed.accessToken;
+    } catch (err) {
+      console.warn(
+        `[marketplace:ml-compat] Falha ao renovar token da conta ${account.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  const resolved: ResolvedMlAccount = { accountId: account.id, accessToken };
+  resolvedAccountCache.set(cacheKey, {
+    data: resolved,
+    exp: Date.now() + RESOLVED_ACCOUNT_TTL_MS,
+  });
+  return resolved;
+}
 
 /**
  * Rotas para gerenciar conexÃµes com marketplaces
@@ -1441,6 +1535,155 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           error: "Erro ao obter status Shopee",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
+      }
+    },
+  );
+
+  // =========================================================================
+  // Compatibilidade nativa do ML (seletor guiado do modal de produtos)
+  // =========================================================================
+
+  /**
+   * GET /marketplace/ml/compatibility/brands
+   * Retorna marcas oficiais do domínio MLB-CARS_AND_VANS.
+   */
+  app.get<{ Querystring: { accountId?: string } }>(
+    "/ml/compatibility/brands",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const accountId = (request.query as any)?.accountId as
+          | string
+          | undefined;
+        const resolved = await resolveMlAccountForCompat(userId, accountId);
+        if (!resolved) {
+          return reply.status(412).send({
+            error: "ML_ACCOUNT_REQUIRED",
+            message:
+              "Conecte uma conta ativa do Mercado Livre para usar o seletor guiado de compatibilidade.",
+          });
+        }
+
+        const brands = await MLApiService.listCompatibilityBrands(
+          resolved.accessToken,
+        );
+        return reply.status(200).send({
+          accountId: resolved.accountId,
+          brands,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("[marketplace:ml-compat] brands error:", msg);
+        return reply
+          .status(500)
+          .send({ error: "ML_COMPAT_BRANDS_FAILED", message: msg });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/compatibility/models?brandValueId=...&brandName=...
+   */
+  app.get<{
+    Querystring: {
+      brandValueId?: string;
+      brandName?: string;
+      accountId?: string;
+    };
+  }>(
+    "/ml/compatibility/models",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { brandValueId, brandName, accountId } =
+          (request.query as any) || {};
+        if (!brandValueId || typeof brandValueId !== "string") {
+          return reply
+            .status(400)
+            .send({ error: "brandValueId é obrigatório" });
+        }
+
+        const resolved = await resolveMlAccountForCompat(userId, accountId);
+        if (!resolved) {
+          return reply.status(412).send({
+            error: "ML_ACCOUNT_REQUIRED",
+            message:
+              "Conecte uma conta ativa do Mercado Livre para usar o seletor guiado de compatibilidade.",
+          });
+        }
+
+        const models = await MLApiService.listCompatibilityModels(
+          resolved.accessToken,
+          { valueId: brandValueId, name: brandName },
+        );
+        return reply.status(200).send({
+          accountId: resolved.accountId,
+          models,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("[marketplace:ml-compat] models error:", msg);
+        return reply
+          .status(500)
+          .send({ error: "ML_COMPAT_MODELS_FAILED", message: msg });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/compatibility/vehicles?brandValueId=...&modelValueId=...
+   */
+  app.get<{
+    Querystring: {
+      brandValueId?: string;
+      modelValueId?: string;
+      accountId?: string;
+    };
+  }>(
+    "/ml/compatibility/vehicles",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { brandValueId, modelValueId, accountId } =
+          (request.query as any) || {};
+        if (!brandValueId || typeof brandValueId !== "string") {
+          return reply
+            .status(400)
+            .send({ error: "brandValueId é obrigatório" });
+        }
+        if (!modelValueId || typeof modelValueId !== "string") {
+          return reply
+            .status(400)
+            .send({ error: "modelValueId é obrigatório" });
+        }
+
+        const resolved = await resolveMlAccountForCompat(userId, accountId);
+        if (!resolved) {
+          return reply.status(412).send({
+            error: "ML_ACCOUNT_REQUIRED",
+            message:
+              "Conecte uma conta ativa do Mercado Livre para usar o seletor guiado de compatibilidade.",
+          });
+        }
+
+        const vehicles = await MLApiService.listCompatibilityVehicles(
+          resolved.accessToken,
+          { valueId: brandValueId },
+          { valueId: modelValueId },
+        );
+        return reply.status(200).send({
+          accountId: resolved.accountId,
+          vehicles,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("[marketplace:ml-compat] vehicles error:", msg);
+        return reply
+          .status(500)
+          .send({ error: "ML_COMPAT_VEHICLES_FAILED", message: msg });
       }
     },
   );
