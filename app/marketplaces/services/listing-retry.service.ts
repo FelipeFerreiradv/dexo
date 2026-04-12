@@ -109,62 +109,44 @@ const sanitizePackageDimensions = (input?: {
   return { height, width, length, weightKg };
 };
 
-const shouldIncludeFamilyName = (categoryId?: string) => {
-  const forceEnv = process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
-  const extra = (process.env.ML_FAMILY_NAME_ALLOWLIST || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const allow = new Set<string>([
-    "MLB193419",
-    "MLB101763",
-    "MLB458642",
-    "MLB1754",
-    "MLB22693",
-    "MLB191833",
-    "MLB193531",
-    "MLB116479",
-    "MLB193613",
-    "MLB188061",
-    ...extra,
-  ]);
-  return forceEnv || (categoryId ? allow.has(categoryId) : false);
-};
+// Pre-built sets from env (read once at module load, not per-call)
+const FAMILY_NAME_HARD_IDS = [
+  "MLB193419", "MLB101763", "MLB458642", "MLB1754", "MLB22693",
+  "MLB191833", "MLB193531", "MLB116479", "MLB193613", "MLB188061",
+];
 
-const noTitleWithFamily = (categoryId?: string) => {
-  const envList = (process.env.ML_NO_TITLE_WITH_FAMILY || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const hard = new Set<string>([
-    "MLB193419",
-    "MLB101763",
-    "MLB458642",
-    "MLB1754",
-    "MLB22693",
-    "MLB191833",
-    "MLB193531",
-    "MLB116479",
-    "MLB193613",
-    "MLB188061",
-    ...envList,
-  ]);
-  return categoryId ? hard.has(categoryId) : false;
-};
+const _familyAllowSet = new Set<string>([
+  ...FAMILY_NAME_HARD_IDS,
+  ...(process.env.ML_FAMILY_NAME_ALLOWLIST || "").split(",").map((s) => s.trim()).filter(Boolean),
+]);
+const _forceFamily = process.env.ML_FORCE_FAMILY_NAME?.toLowerCase() === "true";
 
-const categoryOverride = (categoryId?: string) => {
-  const env = process.env.ML_CATEGORY_OVERRIDE || "";
-  const map = new Map<string, string>();
-  env
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .forEach((pair) => {
-      const [from, to] = pair.split(":").map((s) => s.trim());
-      if (from && to) map.set(from, to);
-    });
-  return categoryId && map.has(categoryId) ? map.get(categoryId) : undefined;
-};
+const shouldIncludeFamilyName = (categoryId?: string) =>
+  _forceFamily || (categoryId ? _familyAllowSet.has(categoryId) : false);
+
+const _noTitleSet = new Set<string>([
+  ...FAMILY_NAME_HARD_IDS,
+  ...(process.env.ML_NO_TITLE_WITH_FAMILY || "").split(",").map((s) => s.trim()).filter(Boolean),
+]);
+
+const noTitleWithFamily = (categoryId?: string) =>
+  categoryId ? _noTitleSet.has(categoryId) : false;
+
+const _categoryOverrideMap = new Map<string, string>();
+(process.env.ML_CATEGORY_OVERRIDE || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .forEach((pair) => {
+    const [from, to] = pair.split(":").map((s) => s.trim());
+    if (from && to) _categoryOverrideMap.set(from, to);
+  });
+
+const categoryOverride = (categoryId?: string) =>
+  categoryId && _categoryOverrideMap.has(categoryId) ? _categoryOverrideMap.get(categoryId) : undefined;
+
+// Pre-compiled regex for Shopee terminal error detection
+const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida/i;
 
 export class ListingRetryService {
   private static running = false;
@@ -223,25 +205,38 @@ export class ListingRetryService {
                 `[ListingRetryService] Shopee retry succeeded for ${cand.id}: ${result.externalListingId}`,
               );
             } else {
+              // createShopeeListing already updates the listing placeholder in its
+              // own catch block (with terminal classification and attempt tracking).
+              // Log here for observability only.
               console.warn(
                 `[ListingRetryService] Shopee retry failed for ${cand.id}: ${result.error}`,
               );
             }
           } catch (shopeeErr) {
+            const msg = errMsg(shopeeErr);
             console.error(
               `[ListingRetryService] Shopee retry exception for ${cand.id}:`,
-              errMsg(shopeeErr),
+              msg,
             );
+            // Classify terminal Shopee errors that should stop retry
+            const isTerminal = SHOPEE_TERMINAL_RE.test(msg);
+
             const attempts = (cand.retryAttempts || 0) + 1;
+            const shouldRetry = !isTerminal && attempts < MAX_ATTEMPTS;
             const nextDelay =
               BACKOFF_SECONDS[
                 Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
               ];
             await ListingRepository.incrementRetryAttempts(cand.id, {
-              lastError: errMsg(shopeeErr),
-              nextRetryAt: new Date(Date.now() + nextDelay * 1000),
-              retryEnabled: attempts < MAX_ATTEMPTS,
+              lastError: (isTerminal ? "[TERMINAL] " : "") + msg.substring(0, 490),
+              nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+              retryEnabled: shouldRetry,
             });
+            if (isTerminal) {
+              console.warn(
+                `[ListingRetryService] Shopee terminal error for ${cand.id} — retry disabled`,
+              );
+            }
           }
           continue;
         }

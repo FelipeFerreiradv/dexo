@@ -892,6 +892,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           sourceVehicle,
           mlCategory,
           mlCategorySource,
+          shopeeCategory,
+          shopeeCategorySource,
 
           // Medidas / peso
           heightCm,
@@ -945,6 +947,27 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           resolvedMlCategoryChosenAt = new Date();
         }
 
+        // Resolver shopeeCategory se fornecida (paridade com fluxo de criação)
+        let resolvedShopeeCategoryId: string | undefined;
+        let resolvedShopeeCategorySource:
+          | "auto"
+          | "manual"
+          | "imported"
+          | undefined;
+        let resolvedShopeeCategoryChosenAt: Date | undefined;
+        if (shopeeCategory) {
+          const externalId = shopeeCategory.startsWith("SHP_")
+            ? shopeeCategory
+            : `SHP_${shopeeCategory}`;
+          const cat = await CategoryRepository.findByExternalId(externalId);
+          if (cat) {
+            resolvedShopeeCategoryId = externalId.replace("SHP_", "");
+            resolvedShopeeCategorySource =
+              (shopeeCategorySource as any) || "manual";
+            resolvedShopeeCategoryChosenAt = new Date();
+          }
+        }
+
         const result = await productUseCase.update(
           id,
           {
@@ -970,6 +993,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             mlCategoryId: resolvedMlCategoryId,
             mlCategorySource: resolvedMlCategorySource,
             mlCategoryChosenAt: resolvedMlCategoryChosenAt,
+            shopeeCategoryId: resolvedShopeeCategoryId,
+            shopeeCategorySource: resolvedShopeeCategorySource,
+            shopeeCategoryChosenAt: resolvedShopeeCategoryChosenAt,
 
             // Medidas / peso
             heightCm,

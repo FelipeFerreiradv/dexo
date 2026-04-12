@@ -329,8 +329,11 @@ export class ListingUseCase {
   }
 
   /**
-   * Sanitiza dimensões/peso para atender limites do ML, fazendo clamp quando necessário.
+   * Sanitiza dimensões/peso para o ML. Aplica mínimos (arredonda e garante >= 1cm)
+   * mas NÃO faz clamp de máximo — envia as dimensões reais para o ML.
    * Retorna null se faltar alguma dimensão obrigatória.
+   * O campo `oversized` indica quando as dimensões excedem limites seguros do
+   * Mercado Envios, para que o chamador possa decidir se bloqueia ou avisa.
    */
   private static sanitizePackageDimensions(input?: {
     heightCm?: number;
@@ -348,30 +351,20 @@ export class ListingUseCase {
       return null;
     }
 
-    const clamp = (v: number, min: number, max: number) =>
-      Math.min(Math.max(Math.round(v), min), max);
-
-    const height = clamp(
-      input.heightCm,
-      this.ML_MIN_DIM_CM,
-      this.ML_MAX_DIM_CM,
-    );
-    const width = clamp(input.widthCm, this.ML_MIN_DIM_CM, this.ML_MAX_DIM_CM);
-    const length = clamp(
-      input.lengthCm,
-      this.ML_MIN_DIM_CM,
-      this.ML_MAX_DIM_CM,
-    );
+    const height = Math.max(Math.round(input.heightCm), this.ML_MIN_DIM_CM);
+    const width = Math.max(Math.round(input.widthCm), this.ML_MIN_DIM_CM);
+    const length = Math.max(Math.round(input.lengthCm), this.ML_MIN_DIM_CM);
 
     const weightKgRaw = Number(input.weightKg);
     if (!Number.isFinite(weightKgRaw)) return null;
-    const weightKg = clamp(
-      weightKgRaw,
-      this.ML_MIN_WEIGHT_KG,
-      this.ML_MAX_WEIGHT_KG,
-    );
+    const weightKg = Math.max(weightKgRaw, this.ML_MIN_WEIGHT_KG);
 
-    return { height, width, length, weightKg };
+    const maxSide = Math.max(height, width, length);
+    const dimSum = height + width + length;
+    const oversized =
+      maxSide > this.ML_MAX_DIM_CM || weightKg > this.ML_MAX_WEIGHT_KG;
+
+    return { height, width, length, weightKg, oversized };
   }
 
   /**
@@ -1288,7 +1281,7 @@ export class ListingUseCase {
           `${Math.round(Number(pkg.weightKg) * 1000)} g`,
         );
 
-        // Avisar se houve clamp para facilitar troubleshooting
+        // Avisar se dimensões foram normalizadas (arredondamento/mínimo)
         if (
           product.heightCm !== pkg.height ||
           product.widthCm !== pkg.width ||
@@ -1298,9 +1291,18 @@ export class ListingUseCase {
               Math.round(pkg.weightKg * 100))
         ) {
           console.warn(
-            `[ListingUseCase] Package dimensions clamped to ML limits: ` +
-              `H:${pkg.height} W:${pkg.width} L:${pkg.length}cm Wt:${pkg.weightKg}kg (was ` +
+            `[ListingUseCase] Package dimensions normalized: ` +
+              `H:${pkg.height} W:${pkg.width} L:${pkg.length}cm Wt:${pkg.weightKg}kg (original: ` +
               `${product.heightCm}x${product.widthCm}x${product.lengthCm},${product.weightKg}kg)`,
+          );
+        }
+
+        if (pkg.oversized) {
+          console.error(
+            `[ListingUseCase] ATENÇÃO: Produto "${product.name}" (${productId}) com dimensões que excedem ` +
+              `limites ML (máx ${this.ML_MAX_DIM_CM}cm/lado, ${this.ML_MAX_WEIGHT_KG}kg). ` +
+              `Enviando dimensões reais: ${pkg.height}x${pkg.width}x${pkg.length}cm, ${pkg.weightKg}kg. ` +
+              `O ML poderá rejeitar a publicação.`,
           );
         }
       }
@@ -2373,47 +2375,34 @@ export class ListingUseCase {
         );
       }
 
-      // Shopee Xpress BR limits: max 30kg, max 100cm per side, L+W+H <= 200cm
-      const SHOPEE_MAX_WEIGHT_KG = 30;
-      const SHOPEE_MAX_DIM_CM = 100;
-      const SHOPEE_MAX_SUM_CM = 200;
+      // ── Shopee dimension normalization (channel-aware, no blind clamp) ──
+      // Use the product's real dimensions for channel compatibility checks.
+      // Only apply minimal normalization: ensure positive integers, use sensible
+      // defaults for missing values. Never silently clamp to hide oversize —
+      // if no channel fits, fail early with the real values in the error.
       const SHOPEE_MIN_DIM_CM = 1;
 
       const rawWeightKg =
         product.weightKg && product.weightKg > 0 ? product.weightKg : 1.0;
       const rawLength =
-        product.lengthCm && product.lengthCm > 0 ? product.lengthCm : 10;
+        product.lengthCm && product.lengthCm > 0 ? Math.round(product.lengthCm) : 10;
       const rawWidth =
-        product.widthCm && product.widthCm > 0 ? product.widthCm : 10;
+        product.widthCm && product.widthCm > 0 ? Math.round(product.widthCm) : 10;
       const rawHeight =
-        product.heightCm && product.heightCm > 0 ? product.heightCm : 10;
+        product.heightCm && product.heightCm > 0 ? Math.round(product.heightCm) : 10;
 
-      const clampedWeightKg = Math.min(rawWeightKg, SHOPEE_MAX_WEIGHT_KG);
-      let clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawLength, SHOPEE_MAX_DIM_CM));
-      let clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawWidth, SHOPEE_MAX_DIM_CM));
-      let clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.min(rawHeight, SHOPEE_MAX_DIM_CM));
-
-      // Ensure L+W+H <= 200cm (scale down proportionally if needed)
-      const dimSum = clampedLength + clampedWidth + clampedHeight;
-      if (dimSum > SHOPEE_MAX_SUM_CM) {
-        const scale = SHOPEE_MAX_SUM_CM / dimSum;
-        clampedLength = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedLength * scale));
-        clampedWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedWidth * scale));
-        clampedHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.round(clampedHeight * scale));
-      }
-
-      if (rawWeightKg !== clampedWeightKg || rawLength !== clampedLength || rawWidth !== clampedWidth || rawHeight !== clampedHeight) {
-        console.warn(
-          `[ListingUseCase] Shopee dimensions clamped: ${clampedHeight}x${clampedWidth}x${clampedLength}cm ${clampedWeightKg}kg (was ${rawHeight}x${rawWidth}x${rawLength}cm,${rawWeightKg}kg)`,
-        );
-      }
+      // Ensure minimum 1cm per side (Shopee API rejects 0)
+      const shopeeLength = Math.max(SHOPEE_MIN_DIM_CM, rawLength);
+      const shopeeWidth = Math.max(SHOPEE_MIN_DIM_CM, rawWidth);
+      const shopeeHeight = Math.max(SHOPEE_MIN_DIM_CM, rawHeight);
+      const shopeeWeightKg = Math.max(0.01, rawWeightKg);
 
       // ── Filtrar canais logísticos que aceitam as dimensões/peso do produto ──
       // Shopee rejeita o createItem inteiro se QUALQUER canal passado em
       // logistic_info não aceitar o item. Por isso, só enviamos canais que
       // efetivamente cabem. Se o canal não informa limites, assumimos que aceita.
-      const productMaxSide = Math.max(clampedLength, clampedWidth, clampedHeight);
-      const productDimSum = clampedLength + clampedWidth + clampedHeight;
+      const productMaxSide = Math.max(shopeeLength, shopeeWidth, shopeeHeight);
+      const productDimSum = shopeeLength + shopeeWidth + shopeeHeight;
       const channelRejections: string[] = [];
       const compatibleChannels = enabledChannels.filter((ch) => {
         const wl = ch.weight_limit;
@@ -2421,20 +2410,20 @@ export class ListingUseCase {
           if (
             typeof wl.item_max_weight === "number" &&
             wl.item_max_weight > 0 &&
-            clampedWeightKg > wl.item_max_weight
+            shopeeWeightKg > wl.item_max_weight
           ) {
             channelRejections.push(
-              `${ch.logistics_channel_name}: peso ${clampedWeightKg}kg > máx ${wl.item_max_weight}kg`,
+              `${ch.logistics_channel_name}: peso ${shopeeWeightKg}kg > máx ${wl.item_max_weight}kg`,
             );
             return false;
           }
           if (
             typeof wl.item_min_weight === "number" &&
             wl.item_min_weight > 0 &&
-            clampedWeightKg < wl.item_min_weight
+            shopeeWeightKg < wl.item_min_weight
           ) {
             channelRejections.push(
-              `${ch.logistics_channel_name}: peso ${clampedWeightKg}kg < mín ${wl.item_min_weight}kg`,
+              `${ch.logistics_channel_name}: peso ${shopeeWeightKg}kg < mín ${wl.item_min_weight}kg`,
             );
             return false;
           }
@@ -2479,7 +2468,7 @@ export class ListingUseCase {
             : "";
         throw new Error(
           `Produto excede os limites de todos os canais logísticos habilitados no Shopee ` +
-            `(${clampedHeight}x${clampedWidth}x${clampedLength}cm, ${clampedWeightKg}kg).${detail} ` +
+            `(${shopeeHeight}x${shopeeWidth}x${shopeeLength}cm, ${shopeeWeightKg}kg).${detail} ` +
             `Ajuste as dimensões/peso do produto ou habilite um canal compatível na loja.`,
         );
       }
@@ -2498,11 +2487,11 @@ export class ListingUseCase {
         original_price: Number(product.price) || 1,
         seller_stock: [{ stock: Math.min(product.stock || 1, 999999) }],
         condition: shopeeCondition,
-        weight: clampedWeightKg,
+        weight: shopeeWeightKg,
         dimension: {
-          package_length: clampedLength,
-          package_width: clampedWidth,
-          package_height: clampedHeight,
+          package_length: shopeeLength,
+          package_width: shopeeWidth,
+          package_height: shopeeHeight,
         },
         image: {
           image_id_list: shopeeImageIds,
@@ -2670,19 +2659,45 @@ export class ListingUseCase {
         errorMsg,
       );
 
-      // Atualizar placeholder com erro para visibilidade e retry futuro
+      // Classify whether this error is deterministic (no point retrying)
+      const errLower = errorMsg.toLowerCase();
+      const isTerminalError =
+        // Oversize: product dimensions exceed all enabled logistics channels
+        /excede os limites de todos os canais/i.test(errorMsg) ||
+        // Duplicate: Shopee rejects because item already exists in shop
+        /duplicates? another/i.test(errorMsg) ||
+        /duplicate.*shop/i.test(errorMsg) ||
+        // Category missing: requires manual intervention
+        /selecione uma categoria/i.test(errorMsg) ||
+        // Invalid category
+        /categoria.*inv[aá]lida/i.test(errorMsg);
+
+      // Atualizar placeholder com erro e decisão de retry
       try {
         const acctId = account?.id;
         if (acctId) {
           const existingListing =
             await ListingRepository.findByProductAndAccount(productId, acctId);
           if (existingListing) {
+            const attempts = (existingListing.retryAttempts || 0) + 1;
+            const maxAttempts = 5;
+            const shouldRetry = !isTerminalError && attempts < maxAttempts;
+            const backoffSeconds = [60, 120, 300, 600, 900];
+            const nextDelay = backoffSeconds[Math.min(attempts - 1, backoffSeconds.length - 1)];
+
             await ListingRepository.updateListing(existingListing.id, {
               status: "error",
-              lastError: errorMsg.substring(0, 500),
-              retryEnabled: true,
-              nextRetryAt: new Date(Date.now() + 60_000),
+              lastError: (isTerminalError ? "[TERMINAL] " : "") + errorMsg.substring(0, 490),
+              retryEnabled: shouldRetry,
+              nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
+              retryAttempts: attempts,
             });
+
+            if (isTerminalError) {
+              console.warn(
+                `[ListingUseCase] Shopee terminal error for product ${productId} — retry disabled: ${errorMsg.substring(0, 200)}`,
+              );
+            }
           }
         }
       } catch (updateErr) {

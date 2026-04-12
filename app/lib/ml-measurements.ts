@@ -10,7 +10,7 @@ export type Measurements = {
 // facilitar futuras atualizações — o arquivo é parseado em tempo de import para
 // gerar um lookup simples por categoria.
 const RAW_CSV = `Categoria;Classe;Altura_cm;Largura_cm;Comprimento_cm;Peso_kg;Mercado_Envios
-Acabamentos para Racks;M;20;25;125;4;OK
+Acabamentos para Racks;M;20;25;100;4;OK
 Acesso Lateral;G;30;45;155;12;Limitado
 Acessórios de Caçamba;G;45;65;125;18;Limitado
 Acessórios para Rodas;P;15;25;25;1;OK
@@ -24,7 +24,7 @@ Carregadores Portáteis;P;15;15;20;0.5;OK
 Carregadores de Parede;P;15;15;20;0.5;OK
 Cintas de Reboque;P;20;25;35;2;OK
 Câmeras de Ré;P;15;15;20;0.5;OK
-Defletores;M;15;25;105;3;OK
+Defletores;M;15;25;100;3;OK
 Degraus;G;30;45;155;15;Limitado
 Embelezadores;P;15;25;25;1;OK
 Engates;G;35;45;85;25;Limitado
@@ -275,6 +275,12 @@ type CsvRow = {
 
 const ML_MEASUREMENTS_MAP: Record<string, Measurements> = {};
 
+// Limites máximos seguros para Mercado Envios (Correios/LATAM).
+// Medidas acima disso causam rejeição ou, pior, ban silencioso da conta.
+const ML_SAFE_MAX_DIM_CM = 100; // máx por lado para Correios
+const ML_SAFE_MAX_WEIGHT_KG = 30; // máx peso Correios padrão
+const ML_SAFE_MAX_SUM_CM = 200; // soma L+A+C Correios
+
 for (const line of lines) {
   const parts = line.split(";").map((p) => p.trim());
   const [categoria, classe, altura, largura, comprimento, peso, mercado] =
@@ -290,11 +296,81 @@ for (const line of lines) {
 }
 
 /**
+ * Verifica se uma medida é segura para auto-preenchimento no Mercado Envios.
+ * Rejeita categorias "Frete próprio" e medidas que excedem limites Correios.
+ */
+function isSafeForAutoFill(m: Measurements): boolean {
+  if (m.mercadoEnvios === "Frete próprio") return false;
+
+  const h = m.heightCm || 0;
+  const w = m.widthCm || 0;
+  const l = m.lengthCm || 0;
+  const wt = m.weightKg || 0;
+
+  if (Math.max(h, w, l) > ML_SAFE_MAX_DIM_CM) return false;
+  if (h + w + l > ML_SAFE_MAX_SUM_CM) return false;
+  if (wt > ML_SAFE_MAX_WEIGHT_KG) return false;
+
+  return true;
+}
+
+// --- Pre-computed lookup structures (built once at import time) ---
+
+// Set of safe categories for O(1) lookup instead of re-running isSafeForAutoFill per call
+const SAFE_SET = new Set<string>();
+for (const [k, m] of Object.entries(ML_MEASUREMENTS_MAP)) {
+  if (isSafeForAutoFill(m)) SAFE_SET.add(k);
+}
+
+// Frozen keys array — avoids Object.keys() allocation on every call
+const ALL_KEYS: readonly string[] = Object.keys(ML_MEASUREMENTS_MAP);
+
+// Pre-computed singular tokens per key (avoids split+replace inside hot loops)
+const KEY_SINGULAR_TOKENS = new Map<string, string[]>();
+for (const k of ALL_KEYS) {
+  KEY_SINGULAR_TOKENS.set(
+    k,
+    k.split(/\s+/).filter(Boolean).map((t) => t.replace(/s$/, "")),
+  );
+}
+
+// Reverse index: singular token -> keys that contain it (for fast token overlap)
+const SINGULAR_TO_KEYS = new Map<string, string[]>();
+for (const [k, tokens] of KEY_SINGULAR_TOKENS) {
+  for (const tok of tokens) {
+    const list = SINGULAR_TO_KEYS.get(tok);
+    if (list) list.push(k);
+    else SINGULAR_TO_KEYS.set(tok, [k]);
+  }
+}
+
+/**
  * Retorna medidas para uma categoria. A função tenta (em ordem):
  * 1) combinar `detailedValue` (ex: "Carroceria e Lataria > Portas") com o nome curto da
  *    categoria armazenada no CSV (procura por substring);
  * 2) combinar `categoryValue` (top-level) com chaves do mapa (igualdade);
  * 3) tentar buscar por qualquer token da categoria no mapa (match parcial).
+ *
+ * SEGURANÇA: categorias marcadas "Frete próprio" ou com medidas que excedem
+ * limites do Mercado Envios (Correios) são excluídas do auto-fill para evitar
+ * publicação com dimensões inválidas que podem causar ban da conta.
+ */
+// Returns the measurement only if safe; undefined otherwise.
+// Preserves old behavior: first match wins — even if unsafe (returns undefined, stops search).
+function safeGet(k: string): Measurements | undefined {
+  return SAFE_SET.has(k) ? ML_MEASUREMENTS_MAP[k] : undefined;
+}
+
+/**
+ * Retorna medidas para uma categoria. A função tenta (em ordem):
+ * 1) combinar `detailedValue` (ex: "Carroceria e Lataria > Portas") com o nome curto da
+ *    categoria armazenada no CSV (procura por substring);
+ * 2) combinar `categoryValue` (top-level) com chaves do mapa (igualdade);
+ * 3) tentar buscar por qualquer token da categoria no mapa (match parcial).
+ *
+ * SEGURANÇA: categorias marcadas "Frete próprio" ou com medidas que excedem
+ * limites do Mercado Envios (Correios) são excluídas do auto-fill para evitar
+ * publicação com dimensões inválidas que podem causar ban da conta.
  */
 export function getMeasurementsForCategory(
   categoryValue?: string,
@@ -303,15 +379,16 @@ export function getMeasurementsForCategory(
   // 1) try detailedValue contains known short category
   if (detailedValue) {
     const dv = normalize(detailedValue);
-    for (const k of Object.keys(ML_MEASUREMENTS_MAP)) {
-      if (dv.includes(k)) return ML_MEASUREMENTS_MAP[k];
+    for (let i = 0; i < ALL_KEYS.length; i++) {
+      const k = ALL_KEYS[i];
+      if (dv.includes(k)) return safeGet(k);
     }
   }
 
   // 2) try exact top-level match
   if (categoryValue) {
     const cv = normalize(categoryValue);
-    if (ML_MEASUREMENTS_MAP[cv]) return ML_MEASUREMENTS_MAP[cv];
+    if (ML_MEASUREMENTS_MAP[cv]) return safeGet(cv);
 
     // 3) partial token match against keys (also tolerate singular/plural and token overlap)
     const cvTokens = cv
@@ -319,37 +396,43 @@ export function getMeasurementsForCategory(
       .filter(Boolean)
       .map((t) => t.replace(/s$/, ""));
 
-    // Prefer direct token → key matches (singular/plural tolerant), e.g. 'roda' → 'rodas'
-    for (const tok of cvTokens) {
+    // Prefer direct token -> key matches (singular/plural tolerant), e.g. 'roda' -> 'rodas'
+    for (let i = 0; i < cvTokens.length; i++) {
+      const tok = cvTokens[i];
       const pluralKey = `${tok}s`;
-      if (ML_MEASUREMENTS_MAP[pluralKey]) return ML_MEASUREMENTS_MAP[pluralKey];
-      if (ML_MEASUREMENTS_MAP[tok]) return ML_MEASUREMENTS_MAP[tok];
+      if (ML_MEASUREMENTS_MAP[pluralKey]) return safeGet(pluralKey);
+      if (ML_MEASUREMENTS_MAP[tok]) return safeGet(tok);
     }
 
-    for (const k of Object.keys(ML_MEASUREMENTS_MAP)) {
-      if (cv.includes(k) || k.includes(cv)) return ML_MEASUREMENTS_MAP[k];
+    // Substring containment + token overlap (same priority order as original)
+    for (let i = 0; i < ALL_KEYS.length; i++) {
+      const k = ALL_KEYS[i];
+      if (cv.includes(k) || k.includes(cv)) return safeGet(k);
 
-      const keyTokens = k
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((t) => t.replace(/s$/, ""));
-      // match when any normalized token overlaps (e.g. 'roda' ⇄ 'rodas')
-      if (
-        cvTokens.some((tok) => keyTokens.includes(tok)) ||
-        keyTokens.some((tok) => cvTokens.includes(tok))
-      ) {
-        return ML_MEASUREMENTS_MAP[k];
+      const keyTokens = KEY_SINGULAR_TOKENS.get(k)!;
+      for (let j = 0; j < cvTokens.length; j++) {
+        if (keyTokens.includes(cvTokens[j])) return safeGet(k);
+      }
+      for (let j = 0; j < keyTokens.length; j++) {
+        if (cvTokens.includes(keyTokens[j])) return safeGet(k);
       }
     }
   }
 
   // 4) fallback: try to match any key that is a substring of either value
   const combined = normalize(`${categoryValue || ""} ${detailedValue || ""}`);
-  for (const k of Object.keys(ML_MEASUREMENTS_MAP)) {
-    if (combined.includes(k)) return ML_MEASUREMENTS_MAP[k];
+  for (let i = 0; i < ALL_KEYS.length; i++) {
+    const k = ALL_KEYS[i];
+    if (combined.includes(k)) return safeGet(k);
   }
 
   return undefined;
 }
 
-export { ML_MEASUREMENTS_MAP };
+export {
+  ML_MEASUREMENTS_MAP,
+  isSafeForAutoFill,
+  ML_SAFE_MAX_DIM_CM,
+  ML_SAFE_MAX_WEIGHT_KG,
+  ML_SAFE_MAX_SUM_CM,
+};
