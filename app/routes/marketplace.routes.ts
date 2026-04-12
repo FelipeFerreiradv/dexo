@@ -920,6 +920,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           title,
           "SHP",
         );
+        if (suggestions.suggestions.length > 0) {
+          console.log(`[SHP suggest] "${title}" → ${suggestions.suggestions.length} results, top: ${suggestions.suggestions[0].categoryId} conf=${suggestions.suggestions[0].confidence?.toFixed(3)} path="${suggestions.suggestions[0].fullPath?.substring(0, 80)}"`);
+        } else {
+          console.log(`[SHP suggest] "${title}" → 0 results (tokens: ${suggestions.tokens.join(",")})`);
+        }
         return reply.send(suggestions);
       } catch (error) {
         return reply.status(500).send({

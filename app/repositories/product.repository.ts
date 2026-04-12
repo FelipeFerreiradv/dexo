@@ -1162,18 +1162,7 @@ class ProductRepositoryPrisma implements ProductRepository {
     userId?: string,
   ): Promise<Product> {
     try {
-      if (userId) {
-        const owner = await prisma.product.findFirst({
-          where: { id, userId },
-          select: { id: true },
-        });
-
-        if (!owner) {
-          throw new Error("Produto não encontrado para este usuário");
-        }
-      }
-
-      // Preparar compatibilidades se fornecidas
+      // Preparar compatibilidades se fornecidas (CPU-only, antes da transação)
       const compatInput =
         data.compatibilities !== undefined
           ? (Array.isArray(data.compatibilities)
@@ -1253,8 +1242,18 @@ class ProductRepositoryPrisma implements ProductRepository {
         ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
       };
 
-      // Transação atômica: produto + compatibilidades juntos
+      // Transação atômica: ownership check + produto + compatibilidades juntos
       const result = await prisma.$transaction(async (tx) => {
+        if (userId) {
+          const owner = await tx.product.findFirst({
+            where: { id, userId },
+            select: { id: true },
+          });
+          if (!owner) {
+            throw new Error("Produto não encontrado para este usuário");
+          }
+        }
+
         if (compatInput !== undefined) {
           await tx.productCompatibility.deleteMany({
             where: { productId: id },

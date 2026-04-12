@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -312,6 +312,16 @@ export function EditProductDialog({
   const watchMlCategory = watch("mlCategory");
   const watchDescription = watch("description") || "";
 
+  // Índices memoizados para lookups O(1) em mlOptions (evita find() em arrays grandes a cada render)
+  const mlOptionsById = useMemo(
+    () => new Map(mlOptions.map((c) => [c.id, c])),
+    [mlOptions],
+  );
+  const mlOptionsByValue = useMemo(
+    () => new Map(mlOptions.map((c) => [c.value, c])),
+    [mlOptions],
+  );
+
   // Lazy-load ML categories: chamado apenas quando o usuário abre o seletor ou ativa publicação ML
   const fetchMlCategories = useCallback(async () => {
     if (mlOptionsFetchedRef.current || mlOptionsFetchingRef.current) return;
@@ -471,66 +481,55 @@ export function EditProductDialog({
       mlOptionsFetchingRef.current = false;
       setMlOptions([]);
 
-      // Buscar localizações para o seletor
-      (async () => {
-        try {
-          const base = getApiBaseUrl();
-          const respLoc = await fetch(`${base}/locations/select`, {
-            headers: { email: session?.user?.email || "" },
-          });
-          if (respLoc.ok) {
-            const locJson = await respLoc.json();
+      // Disparar todos os fetches em paralelo para abrir o modal mais rápido
+      const email = session?.user?.email || "";
+      const base = getApiBaseUrl();
+      const headers = { email };
+
+      setCompatibilitiesLoading(true);
+
+      Promise.all([
+        // 1. Localizações
+        fetch(`${base}/locations/select`, { headers }).then((r) =>
+          r.ok ? r.json() : null,
+        ),
+        // 2. Contas ML
+        email
+          ? fetch(`${base}/marketplace/ml/accounts`, { headers }).then((r) =>
+              r.ok ? r.json() : null,
+            )
+          : null,
+        // 3. Contas Shopee
+        email
+          ? fetch(`${base}/marketplace/shopee/accounts`, { headers }).then(
+              (r) => (r.ok ? r.json() : null),
+            )
+          : null,
+        // 4. Compatibilidades
+        email && product.id
+          ? fetch(`${base}/products/${product.id}/compatibilities`, {
+              headers,
+            }).then((r) => (r.ok ? r.json() : null))
+          : null,
+        // 5. Descrição padrão do usuário
+        fetchDefaultDescription(),
+      ])
+        .then(([locJson, mlJson, shJson, compatJson]) => {
+          if (locJson)
             setLocationOptions(
               Array.isArray(locJson.locations) ? locJson.locations : [],
             );
-          }
-        } catch (err) {
-          console.error("Erro ao buscar localizações:", err);
-        }
-      })();
-
-      // buscar descrição padrão do usuário (se necessário)
-      void fetchDefaultDescription();
-
-      // Buscar contas ML / Shopee para seleção de multi-contas
-      (async () => {
-        if (!session?.user?.email) return;
-        try {
-          const headers = { email: session.user.email };
-          const base = getApiBaseUrl();
-          const [mlResp, shResp] = await Promise.all([
-            fetch(`${base}/marketplace/ml/accounts`, { headers }),
-            fetch(`${base}/marketplace/shopee/accounts`, { headers }),
-          ]);
-          if (mlResp.ok) {
-            const json = await mlResp.json();
-            setMlAccounts(Array.isArray(json.accounts) ? json.accounts : []);
-          }
-          if (shResp.ok) {
-            const json = await shResp.json();
-            setShopeeAccounts(
-              Array.isArray(json.accounts) ? json.accounts : [],
+          if (mlJson)
+            setMlAccounts(
+              Array.isArray(mlJson.accounts) ? mlJson.accounts : [],
             );
-          }
-        } catch (err) {
-          console.error("Erro ao buscar contas de marketplace:", err);
-        }
-      })();
-
-      // Buscar compatibilidades existentes do produto
-      (async () => {
-        if (!session?.user?.email || !product.id) return;
-        setCompatibilitiesLoading(true);
-        try {
-          const base = getApiBaseUrl();
-          const resp = await fetch(
-            `${base}/products/${product.id}/compatibilities`,
-            { headers: { email: session.user.email } },
-          );
-          if (resp.ok) {
-            const json = await resp.json();
+          if (shJson)
+            setShopeeAccounts(
+              Array.isArray(shJson.accounts) ? shJson.accounts : [],
+            );
+          if (compatJson) {
             const items: CompatibilityEntry[] = (
-              json.compatibilities || []
+              compatJson.compatibilities || []
             ).map(
               (c: {
                 id: string;
@@ -551,12 +550,13 @@ export function EditProductDialog({
             setCompatibilities(items);
             setShowCompatibilitySection(items.length > 0);
           }
-        } catch (err) {
-          console.error("Erro ao buscar compatibilidades:", err);
-        } finally {
+        })
+        .catch((err) => {
+          console.error("Erro ao carregar dados do modal:", err);
+        })
+        .finally(() => {
           setCompatibilitiesLoading(false);
-        }
-      })();
+        });
     }
   }, [
     open,
@@ -686,8 +686,8 @@ export function EditProductDialog({
 
         if (mapping.detailedId) {
           // try to resolve internal detailed id to an external id from mlOptions
-          const externalFromMlOptions = mlOptions.find(
-            (c) => c.value === mapping.detailedValue,
+          const externalFromMlOptions = mlOptionsByValue.get(
+            mapping.detailedValue || "",
           )?.id;
 
           // Only allow internal mapping.detailedId when we have NO synced mlOptions;
@@ -726,8 +726,10 @@ export function EditProductDialog({
       }
 
       // Measurements: try to auto-fill from category when available
+      // Single call — reused below to update autoDetectedRef
+      let measurements: ReturnType<typeof getMeasurementsForCategory> | undefined;
       try {
-        const measurements = getMeasurementsForCategory(
+        measurements = getMeasurementsForCategory(
           mapping.topLevel || detected.category,
           mapping.detailedValue,
         );
@@ -747,10 +749,6 @@ export function EditProductDialog({
       }
 
       // store detected (merge — preserve previously-detected values when parser returns undefined)
-      const measurements = getMeasurementsForCategory(
-        mapping.topLevel || detected.category,
-        mapping.detailedValue,
-      );
       autoDetectedRef.current = {
         brand: detected.brand ?? autoDetectedRef.current?.brand,
         model: detected.model ?? autoDetectedRef.current?.model,
@@ -760,7 +758,7 @@ export function EditProductDialog({
           detected.category ||
           autoDetectedRef.current?.category,
         mlCategory:
-          mlOptions.find((c) => c.value === mapping.detailedValue)?.id ??
+          mlOptionsByValue.get(mapping.detailedValue || "")?.id ??
           autoDetectedRef.current?.mlCategory,
         heightCm: measurements?.heightCm ?? autoDetectedRef.current?.heightCm,
         widthCm: measurements?.widthCm ?? autoDetectedRef.current?.widthCm,
@@ -777,9 +775,7 @@ export function EditProductDialog({
   // When category (top-level or mlCategory) changes, update measurements accordingly (same logic as create dialog).
   useEffect(() => {
     const category = watchCategory || undefined;
-    const detailedValue = mlOptions.find(
-      (c) => c.id === watchMlCategory,
-    )?.value;
+    const detailedValue = mlOptionsById.get(watchMlCategory || "")?.value;
     const prev = autoDetectedRef.current || ({} as any);
 
     try {
@@ -870,7 +866,7 @@ export function EditProductDialog({
     } catch (err) {
       /* ignore */
     }
-  }, [watchCategory, watchMlCategory, mlOptions, setValue, watch, trigger]);
+  }, [watchCategory, watchMlCategory, mlOptionsById, setValue, watch, trigger]);
 
   const onSubmit = async (data: ProductEditFormData) => {
     setIsSubmitting(true);
@@ -1428,12 +1424,12 @@ export function EditProductDialog({
                     render={({ field }) => {
                       // Prefer mlOptions fullPath when available. When multiple mlOptions
                       // share the same top-level, pick the most specific (longest) path.
-                      const mlById = mlOptions.find(
-                        (c) => c.id === watch("mlCategory"),
+                      const mlById = mlOptionsById.get(
+                        watch("mlCategory") || "",
                       )?.value;
 
-                      const mlByFull = mlOptions.find(
-                        (c) => c.value === watch("category"),
+                      const mlByFull = mlOptionsByValue.get(
+                        watch("category") || "",
                       )?.value;
 
                       const staticById = ML_CATEGORY_OPTIONS.find(
@@ -1451,7 +1447,7 @@ export function EditProductDialog({
                           onValueChange={(val) => {
                             field.onChange(val);
                             const match =
-                              mlOptions.find((c) => c.value === val) ||
+                              mlOptionsByValue.get(val) ||
                               ML_CATEGORY_OPTIONS.find((c) => c.value === val);
                             setValue("mlCategory", match?.id || "");
                           }}
@@ -1483,30 +1479,35 @@ export function EditProductDialog({
                       name="mlCategory"
                       control={control}
                       render={({ field }) => {
-                        const optionsSource =
-                          mlOptions && mlOptions.length > 0
-                            ? mlOptions
-                            : ML_CATEGORY_OPTIONS.map((c) => ({
-                                id: c.id,
-                                value: c.value,
-                              }));
+                        const hasMl = mlOptions.length > 0;
+                        const optionsSource = hasMl
+                          ? mlOptions
+                          : ML_CATEGORY_OPTIONS.map((c) => ({
+                              id: c.id,
+                              value: c.value,
+                            }));
 
                         // Pick selectedId: prefer explicit field value, otherwise match fullPath in category
-                        const candidateByFull = optionsSource.find(
-                          (o) => o.value === watch("category"),
-                        );
+                        const catVal = watch("category") || "";
+                        const candidateByFull = hasMl
+                          ? mlOptionsByValue.get(catVal)
+                          : optionsSource.find((o) => o.value === catVal);
                         const selectedId =
                           field.value || candidateByFull?.id || "";
 
-                        const selectedLabel =
-                          optionsSource.find((o) => o.id === field.value)
-                            ?.value ||
-                          candidateByFull?.value ||
-                          ML_CATEGORY_OPTIONS.find(
-                            (c) => c.value === watch("category"),
-                          )?.value ||
-                          watch("category") ||
-                          undefined;
+                        const selectedLabel = hasMl
+                          ? (mlOptionsById.get(field.value || "")?.value ||
+                            candidateByFull?.value ||
+                            catVal ||
+                            undefined)
+                          : (optionsSource.find((o) => o.id === field.value)
+                              ?.value ||
+                            candidateByFull?.value ||
+                            ML_CATEGORY_OPTIONS.find(
+                              (c) => c.value === catVal,
+                            )?.value ||
+                            catVal ||
+                            undefined);
 
                         return (
                           <Select
@@ -1515,9 +1516,9 @@ export function EditProductDialog({
                             }}
                             onValueChange={(val) => {
                               field.onChange(val);
-                              const sel = optionsSource.find(
-                                (o) => o.id === val,
-                              );
+                              const sel = hasMl
+                                ? mlOptionsById.get(val)
+                                : optionsSource.find((o) => o.id === val);
                               if (sel?.value) {
                                 setValue("category", sel.value);
                               }

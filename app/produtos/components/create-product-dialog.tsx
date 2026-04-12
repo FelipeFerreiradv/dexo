@@ -1550,9 +1550,21 @@ export function CreateProductDialog({
       const prev = autoDetectedRef.current || {};
 
       // --- Shopee category auto-detect ---
+      // Only consider suggestions with sufficient confidence to avoid absurd mismatches.
+      // Backend already applies domain blocking, IDF weighting, and min-2-token guard,
+      // so the confidence threshold here is the final safety net.
+      const SHOPEE_MIN_CONFIDENCE = 0.15;
       let shopeeValue: string | undefined;
       const shopeeBest = shopeeSuggestion?.suggestions?.[0];
-      if (shopeeBest) {
+      console.log("[SHP auto-detect]", {
+        total: shopeeSuggestion?.suggestions?.length ?? 0,
+        best: shopeeBest ? { id: shopeeBest.categoryId, conf: shopeeBest.confidence, path: shopeeBest.fullPath?.substring(0, 60) } : null,
+        optionsLoaded: shopeeOptions.length,
+      });
+      if (
+        shopeeBest &&
+        (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE
+      ) {
         const currentShopeeCategory = watch("shopeeCategory");
         shopeeValue =
           shopeeOptions.find(
@@ -1562,7 +1574,11 @@ export function CreateProductDialog({
         const isPrevAutoShopee =
           prev.shopeeCategory &&
           norm(prev.shopeeCategory) === norm(currentShopeeCategory || "");
-        if ((!currentShopeeCategory || isPrevAutoShopee) && shopeeValue) {
+        console.log("[SHP auto-detect] setValue?", { shopeeValue, currentShopeeCategory, isPrevAutoShopee });
+        if (
+          (!currentShopeeCategory || isPrevAutoShopee) &&
+          shopeeValue
+        ) {
           setValue("shopeeCategory", shopeeValue, { shouldDirty: true });
         }
       }
