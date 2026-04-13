@@ -358,74 +358,54 @@ describe("OrderUseCase.importRecentOrdersForAccount - Mercado Livre auth", () =>
   });
 });
 
-describe("OrderUseCase.deductStockForOrder - logging", () => {
+describe("OrderUseCase.deductStockForOrder - durable enqueue", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("registra warning agregado quando a sincronização cross-marketplace falha parcialmente", async () => {
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      {
-        id: "prod-1",
-        name: "Produto teste",
-        stock: 2,
+  it("enfileira StockSyncJob dentro da transação para cada listing do produto", async () => {
+    const mockTx = {
+      $queryRaw: vi.fn().mockResolvedValue([
+        { id: "prod-1", name: "Produto teste", stock: 2 },
+      ]),
+      product: { update: vi.fn().mockResolvedValue({}) },
+      stockLog: { create: vi.fn().mockResolvedValue({}) },
+      productListing: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "lst-ml", marketplaceAccount: { platform: "MERCADO_LIVRE" } },
+          { id: "lst-shp", marketplaceAccount: { platform: "SHOPEE" } },
+        ]),
       },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    vi.spyOn(SyncUseCase, "syncProductStock").mockResolvedValue([
-      {
-        success: false,
-        productId: "prod-1",
-        externalListingId: "ml-listing-1",
-        platform: "MERCADO_LIVRE",
-        error: "rate limit",
-      },
-      {
-        success: true,
-        productId: "prod-1",
-        externalListingId: "123:1",
-        platform: "SHOPEE",
-      },
-    ] as any);
-    const logWarningSpy = vi
-      .spyOn(SystemLogService, "logWarning")
-      .mockResolvedValue(undefined as any);
+      stockSyncJob: { upsert: vi.fn().mockResolvedValue({}) },
+    };
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
 
     await (OrderUseCase as any).deductStockForOrder(
       {
         id: "order-partial-1",
-        marketplaceAccountId: "acc-shp-1",
-        externalOrderId: "SHP-1",
-        status: "PAID",
-        totalAmount: 100,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        marketplaceAccount: {
-          id: "acc-shp-1",
-          platform: "SHOPEE",
-          accountName: "Shopee A",
-        },
+        marketplaceAccount: { platform: "SHOPEE" },
         items: [{ productId: "prod-1", quantity: 1, unitPrice: 100 }],
       },
       "Importação Shopee",
     );
 
-    expect(logWarningSpy).toHaveBeenCalledWith(
-      "SYNC_STOCK",
-      expect.stringContaining("falhas parciais"),
+    expect(mockTx.stockSyncJob.upsert).toHaveBeenCalledTimes(2);
+    expect(mockTx.stockSyncJob.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        resource: "Order",
-        resourceId: "order-partial-1",
-        details: expect.objectContaining({
+        where: {
+          listingId_status: { listingId: "lst-ml", status: "PENDING" },
+        },
+        create: expect.objectContaining({
+          productId: "prod-1",
+          targetStock: 1,
           orderId: "order-partial-1",
-          platform: "SHOPEE",
-          totalListings: 2,
-          successCount: 1,
-          failureCount: 1,
-          failedPlatforms: ["MERCADO_LIVRE"],
-          productIds: ["prod-1"],
+        }),
+        update: expect.objectContaining({
+          targetStock: 1,
+          attempts: 0,
+          lastError: null,
         }),
       }),
     );

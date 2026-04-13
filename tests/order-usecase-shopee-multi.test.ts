@@ -467,6 +467,34 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
   });
 });
 
+type MockTx = {
+  $queryRaw: ReturnType<typeof vi.fn>;
+  product: { update: ReturnType<typeof vi.fn> };
+  stockLog: { create: ReturnType<typeof vi.fn> };
+  productListing: { findMany: ReturnType<typeof vi.fn> };
+  stockSyncJob: { upsert: ReturnType<typeof vi.fn> };
+};
+
+const buildMockTx = (
+  products: Record<string, { id: string; name: string; stock: number }>,
+  listingsByProduct: Record<string, any[]> = {},
+): MockTx => ({
+  $queryRaw: vi.fn().mockImplementation((_strings: any, productId: string) => {
+    const p = products[productId];
+    return Promise.resolve(p ? [p] : []);
+  }),
+  product: { update: vi.fn().mockResolvedValue({}) },
+  stockLog: { create: vi.fn().mockResolvedValue({}) },
+  productListing: {
+    findMany: vi
+      .fn()
+      .mockImplementation(({ where }: any) =>
+        Promise.resolve(listingsByProduct[where.productId] ?? []),
+      ),
+  },
+  stockSyncJob: { upsert: vi.fn().mockResolvedValue({}) },
+});
+
 describe("OrderUseCase.deductStockForOrder", () => {
   beforeEach(() => {
     vi.spyOn(SystemLogService, "logInfo").mockResolvedValue(undefined as any);
@@ -477,56 +505,48 @@ describe("OrderUseCase.deductStockForOrder", () => {
     vi.restoreAllMocks();
   });
 
-  it("decrementa múltiplas unidades sem deixar estoque negativo", async () => {
+  it("decrementa múltiplas unidades sem deixar estoque negativo e registra oversell", async () => {
     const order = {
       id: "order-1",
-      items: [
-        {
-          productId: "prod-1",
-          quantity: 3,
-        },
-      ],
+      items: [{ productId: "prod-1", quantity: 3 }],
     };
 
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      {
-        id: "prod-1",
-        name: "Produto teste",
-        stock: 2,
-      },
-    ] as any);
-    const updateSpy = vi
-      .spyOn(prisma.product, "update")
-      .mockResolvedValue({} as any);
-    const stockLogSpy = vi
-      .spyOn(prisma.stockLog, "create")
-      .mockResolvedValue({} as any);
-    const txSpy = vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    const syncSpy = vi
-      .spyOn(SyncUseCase, "syncProductStock")
-      .mockResolvedValue([]);
+    const mockTx = buildMockTx({
+      "prod-1": { id: "prod-1", name: "Produto teste", stock: 2 },
+    });
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
+    const oversellLog = vi
+      .spyOn(SystemLogService, "logWarning")
+      .mockResolvedValue(undefined as any);
 
     const result = await (OrderUseCase as any).deductStockForOrder(
       order,
       "Importação Shopee",
     );
 
-    expect(updateSpy).toHaveBeenCalledWith({
+    expect(mockTx.product.update).toHaveBeenCalledWith({
       where: { id: "prod-1" },
-      data: { stock: { decrement: 2 } },
+      data: { stock: 0 },
     });
-    expect(stockLogSpy).toHaveBeenCalledWith({
+    expect(mockTx.stockLog.create).toHaveBeenCalledWith({
       data: {
         productId: "prod-1",
-        change: -3,
+        change: -2,
         reason: "Importação Shopee",
         previousStock: 2,
         newStock: 0,
       },
     });
-    expect(txSpy).toHaveBeenCalledTimes(1);
-    expect(syncSpy).toHaveBeenCalledTimes(1);
-    expect(syncSpy).toHaveBeenCalledWith("prod-1");
+    expect(oversellLog).toHaveBeenCalledWith(
+      "OVERSELL_DETECTED",
+      expect.stringContaining("order-1"),
+      expect.objectContaining({
+        resource: "Order",
+        resourceId: "order-1",
+      }),
+    );
     expect(result).toEqual([
       {
         productId: "prod-1",
@@ -538,129 +558,110 @@ describe("OrderUseCase.deductStockForOrder", () => {
     ]);
   });
 
-  it("sincroniza anúncios uma vez por productId após concluir a baixa local", async () => {
+  it("enfileira StockSyncJob para cada listing ativo do produto dentro da transação", async () => {
     const order = {
       id: "order-2",
       items: [
-        {
-          productId: "prod-1",
-          quantity: 1,
-        },
-        {
-          productId: "prod-1",
-          quantity: 1,
-        },
-        {
-          productId: "prod-2",
-          quantity: 1,
-        },
+        { productId: "prod-1", quantity: 1 },
+        { productId: "prod-2", quantity: 1 },
       ],
     };
 
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
+    const mockTx = buildMockTx(
       {
-        id: "prod-1",
-        name: "Produto 1",
-        stock: 5,
+        "prod-1": { id: "prod-1", name: "Produto 1", stock: 5 },
+        "prod-2": { id: "prod-2", name: "Produto 2", stock: 2 },
       },
       {
-        id: "prod-2",
-        name: "Produto 2",
-        stock: 2,
+        "prod-1": [
+          {
+            id: "lst-1",
+            marketplaceAccount: { platform: "MERCADO_LIVRE" },
+          },
+          {
+            id: "lst-2",
+            marketplaceAccount: { platform: "SHOPEE" },
+          },
+        ],
+        "prod-2": [
+          {
+            id: "lst-3",
+            marketplaceAccount: { platform: "SHOPEE" },
+          },
+        ],
       },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    const txSpy = vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    const syncSpy = vi
-      .spyOn(SyncUseCase, "syncProductStock")
-      .mockResolvedValue([]);
+    );
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
 
     await (OrderUseCase as any).deductStockForOrder(order, "Importação Shopee");
 
-    expect(txSpy).toHaveBeenCalledTimes(1);
-    expect(syncSpy).toHaveBeenCalledTimes(2);
-    expect(syncSpy).toHaveBeenCalledWith("prod-1");
-    expect(syncSpy).toHaveBeenCalledWith("prod-2");
-    expect(new Set(syncSpy.mock.calls.map(([productId]) => productId))).toEqual(
-      new Set(["prod-1", "prod-2"]),
+    expect(mockTx.stockSyncJob.upsert).toHaveBeenCalledTimes(3);
+    expect(mockTx.stockSyncJob.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          listingId_status: { listingId: "lst-1", status: "PENDING" },
+        },
+        create: expect.objectContaining({
+          productId: "prod-1",
+          listingId: "lst-1",
+          platform: "MERCADO_LIVRE",
+          targetStock: 4,
+          orderId: "order-2",
+        }),
+      }),
     );
-    expect(txSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      syncSpy.mock.invocationCallOrder[0],
+    expect(mockTx.stockSyncJob.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          listingId_status: { listingId: "lst-3", status: "PENDING" },
+        },
+        create: expect.objectContaining({
+          targetStock: 1,
+          platform: "SHOPEE",
+        }),
+      }),
     );
   });
 
-  it("não sincroniza anúncios quando a transação local de estoque falha", async () => {
+  it("não enfileira jobs quando a transação falha", async () => {
     const order = {
       id: "order-3",
-      items: [
-        {
-          productId: "prod-1",
-          quantity: 1,
-        },
-      ],
+      items: [{ productId: "prod-1", quantity: 1 }],
     };
 
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      {
-        id: "prod-1",
-        name: "Produto teste",
-        stock: 2,
-      },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
+    const upsertSpy = vi.fn().mockResolvedValue({});
     vi.spyOn(prisma, "$transaction").mockRejectedValue(new Error("tx failed"));
-    const syncSpy = vi.spyOn(SyncUseCase, "syncProductStock");
 
     const result = await (OrderUseCase as any).deductStockForOrder(
       order,
       "Importação Shopee",
     );
 
-    expect(syncSpy).not.toHaveBeenCalled();
-    expect(result).toEqual([
-      {
-        productId: "prod-1",
-        productName: "Produto teste",
-        previousStock: 2,
-        newStock: 1,
-        quantity: 1,
-      },
-    ]);
+    expect(upsertSpy).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
   });
 
-  it("mantém a baixa local mesmo quando a sincronização externa falha", async () => {
+  it("persiste a baixa local mesmo sem listings vinculados", async () => {
     const order = {
       id: "order-4",
-      items: [
-        {
-          productId: "prod-1",
-          quantity: 1,
-        },
-      ],
+      items: [{ productId: "prod-1", quantity: 1 }],
     };
 
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      {
-        id: "prod-1",
-        name: "Produto teste",
-        stock: 2,
-      },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    const syncSpy = vi
-      .spyOn(SyncUseCase, "syncProductStock")
-      .mockRejectedValue(new Error("sync failed"));
+    const mockTx = buildMockTx({
+      "prod-1": { id: "prod-1", name: "Produto teste", stock: 2 },
+    });
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
 
     const result = await (OrderUseCase as any).deductStockForOrder(
       order,
       "Importação Shopee",
     );
 
-    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(mockTx.stockSyncJob.upsert).not.toHaveBeenCalled();
     expect(result).toEqual([
       {
         productId: "prod-1",

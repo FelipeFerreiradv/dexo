@@ -17,7 +17,9 @@ export type LogAction =
   | "CONNECT_MARKETPLACE"
   | "DISCONNECT_MARKETPLACE"
   | "SYSTEM_ERROR"
-  | "USER_ACTIVITY";
+  | "USER_ACTIVITY"
+  | "OVERSELL_DETECTED"
+  | "STOCK_SYNC_FAILED";
 
 export interface SystemLog {
   id: string;

@@ -7,7 +7,35 @@ import { ShopeeApiService } from "@/app/marketplaces/services/shopee-api.service
 import { OrderUseCase } from "@/app/marketplaces/usecases/order.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 
-describe("OrderUseCase cross-marketplace stock sync", () => {
+type MockTx = {
+  $queryRaw: ReturnType<typeof vi.fn>;
+  product: { update: ReturnType<typeof vi.fn> };
+  stockLog: { create: ReturnType<typeof vi.fn> };
+  productListing: { findMany: ReturnType<typeof vi.fn> };
+  stockSyncJob: { upsert: ReturnType<typeof vi.fn> };
+};
+
+const buildTx = (
+  products: Record<string, { id: string; name: string; stock: number }>,
+  listingsByProduct: Record<string, any[]> = {},
+): MockTx => ({
+  $queryRaw: vi.fn().mockImplementation((_s: any, productId: string) => {
+    const p = products[productId];
+    return Promise.resolve(p ? [p] : []);
+  }),
+  product: { update: vi.fn().mockResolvedValue({}) },
+  stockLog: { create: vi.fn().mockResolvedValue({}) },
+  productListing: {
+    findMany: vi
+      .fn()
+      .mockImplementation(({ where }: any) =>
+        Promise.resolve(listingsByProduct[where.productId] ?? []),
+      ),
+  },
+  stockSyncJob: { upsert: vi.fn().mockResolvedValue({}) },
+});
+
+describe("OrderUseCase cross-marketplace stock sync (enqueue-based)", () => {
   beforeEach(() => {
     vi.spyOn(SystemLogService, "logInfo").mockResolvedValue(undefined as any);
     vi.spyOn(SystemLogService, "logWarning").mockResolvedValue(undefined as any);
@@ -18,243 +46,132 @@ describe("OrderUseCase cross-marketplace stock sync", () => {
     vi.restoreAllMocks();
   });
 
-  it("sincroniza Shopee e Mercado Livre apos pedido Shopee", async () => {
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      { id: "prod-1", name: "Produto 1", stock: 5 },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    vi.spyOn(prisma.product, "findUnique").mockResolvedValue({
-      id: "prod-1",
-      name: "Produto 1",
-      stock: 4,
-      listings: [
-        {
-          externalListingId: "ml-1",
-          marketplaceAccount: {
-            id: "acc-ml-1",
-            platform: "MERCADO_LIVRE",
-            accessToken: "ml-token",
-          },
-        },
-        {
-          externalListingId: "9001:1",
-          marketplaceAccount: {
-            id: "acc-shp-1",
-            platform: "SHOPEE",
-            accessToken: "shp-token",
-            refreshToken: "refresh",
-            shopId: 321,
-          },
-        },
-      ],
-    } as any);
-    const mlGetSpy = vi
-      .spyOn(MLApiService, "getItemDetails")
-      .mockResolvedValue({ available_quantity: 5 } as any);
-    const mlUpdateSpy = vi
-      .spyOn(MLApiService, "updateItemStock")
-      .mockResolvedValue(undefined as any);
-    vi.spyOn(ShopeeApiService, "getItemBaseInfo").mockResolvedValue({
-      stock_info_v2: {
-        summary_info: {
-          total_available_stock: 5,
-        },
+  it("enfileira jobs Shopee e Mercado Livre após pedido Shopee", async () => {
+    const tx = buildTx(
+      { "prod-1": { id: "prod-1", name: "Produto 1", stock: 5 } },
+      {
+        "prod-1": [
+          { id: "lst-ml-1", marketplaceAccount: { platform: "MERCADO_LIVRE" } },
+          { id: "lst-shp-1", marketplaceAccount: { platform: "SHOPEE" } },
+        ],
       },
-    } as any);
-    const shopeeUpdateSpy = vi
-      .spyOn(ShopeeApiService, "updateItemStock")
-      .mockResolvedValue(undefined as any);
+    );
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(tx),
+    );
 
     await (OrderUseCase as any).deductStockForOrder(
       {
         id: "order-shp-1",
-        marketplaceAccountId: "acc-shp-1",
-        externalOrderId: "SHP-1",
-        status: "PAID",
-        totalAmount: 100,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        marketplaceAccount: {
-          id: "acc-shp-1",
-          platform: "SHOPEE",
-          accountName: "Shopee",
-        },
+        marketplaceAccount: { platform: "SHOPEE" },
         items: [{ productId: "prod-1", quantity: 1, unitPrice: 100 }],
       },
       "Importação Shopee",
     );
 
-    expect(mlGetSpy).toHaveBeenCalledWith("ml-token", "ml-1");
-    expect(mlUpdateSpy).toHaveBeenCalledWith("ml-token", "ml-1", 4);
-    expect(shopeeUpdateSpy).toHaveBeenCalledWith("shp-token", 321, 9001, 4);
+    expect(tx.stockSyncJob.upsert).toHaveBeenCalledTimes(2);
+    const calls = tx.stockSyncJob.upsert.mock.calls.map(
+      (c: any[]) => c[0].create,
+    );
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          listingId: "lst-ml-1",
+          platform: "MERCADO_LIVRE",
+          targetStock: 4,
+          orderId: "order-shp-1",
+        }),
+        expect.objectContaining({
+          listingId: "lst-shp-1",
+          platform: "SHOPEE",
+          targetStock: 4,
+        }),
+      ]),
+    );
   });
 
-  it("sincroniza Shopee apos pedido Mercado Livre", async () => {
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      { id: "prod-2", name: "Produto 2", stock: 3 },
-    ] as any);
-    vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    vi.spyOn(prisma.product, "findUnique").mockResolvedValue({
-      id: "prod-2",
-      name: "Produto 2",
-      stock: 2,
-      listings: [
-        {
-          externalListingId: "ml-2",
-          marketplaceAccount: {
-            id: "acc-ml-2",
-            platform: "MERCADO_LIVRE",
-            accessToken: "ml-token-2",
-          },
-        },
-        {
-          externalListingId: "9100:1",
-          marketplaceAccount: {
-            id: "acc-shp-2",
-            platform: "SHOPEE",
-            accessToken: "shp-token-2",
-            refreshToken: "refresh-2",
-            shopId: 654,
-          },
-        },
-      ],
-    } as any);
-    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
-      available_quantity: 3,
-    } as any);
-    vi.spyOn(MLApiService, "updateItemStock").mockResolvedValue(undefined as any);
-    vi.spyOn(ShopeeApiService, "getItemBaseInfo").mockResolvedValue({
-      stock_info_v2: {
-        summary_info: {
-          total_available_stock: 3,
-        },
+  it("enfileira job Shopee após pedido Mercado Livre", async () => {
+    const tx = buildTx(
+      { "prod-2": { id: "prod-2", name: "Produto 2", stock: 3 } },
+      {
+        "prod-2": [
+          { id: "lst-shp-2", marketplaceAccount: { platform: "SHOPEE" } },
+        ],
       },
-    } as any);
-    const shopeeUpdateSpy = vi
-      .spyOn(ShopeeApiService, "updateItemStock")
-      .mockResolvedValue(undefined as any);
+    );
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(tx),
+    );
 
     await (OrderUseCase as any).deductStockForOrder(
       {
         id: "order-ml-2",
-        marketplaceAccountId: "acc-ml-2",
-        externalOrderId: "ML-2",
-        status: "PAID",
-        totalAmount: 100,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        marketplaceAccount: {
-          id: "acc-ml-2",
-          platform: "MERCADO_LIVRE",
-          accountName: "ML",
-        },
+        marketplaceAccount: { platform: "MERCADO_LIVRE" },
         items: [{ productId: "prod-2", quantity: 1, unitPrice: 100 }],
       },
       "Venda ML #2",
     );
 
-    expect(shopeeUpdateSpy).toHaveBeenCalledWith("shp-token-2", 654, 9100, 2);
+    expect(tx.stockSyncJob.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          listingId_status: { listingId: "lst-shp-2", status: "PENDING" },
+        },
+        create: expect.objectContaining({
+          platform: "SHOPEE",
+          targetStock: 2,
+        }),
+      }),
+    );
   });
 
-  it("mantem baixa local e registra warning agregado em falha parcial", async () => {
-    vi.spyOn(prisma.product, "findMany").mockResolvedValue([
-      { id: "prod-3", name: "Produto 3", stock: 2 },
-    ] as any);
-    const updateSpy = vi.spyOn(prisma.product, "update").mockResolvedValue({} as any);
-    vi.spyOn(prisma.stockLog, "create").mockResolvedValue({} as any);
-    vi.spyOn(prisma, "$transaction").mockResolvedValue([] as any);
-    vi.spyOn(prisma.product, "findUnique").mockResolvedValue({
-      id: "prod-3",
-      name: "Produto 3",
-      stock: 1,
-      listings: [
-        {
-          externalListingId: "ml-3",
-          marketplaceAccount: {
-            id: "acc-ml-3",
-            platform: "MERCADO_LIVRE",
-            accessToken: "ml-token-3",
-          },
-        },
-        {
-          externalListingId: "9200:1",
-          marketplaceAccount: {
-            id: "acc-shp-3",
-            platform: "SHOPEE",
-            accessToken: "shp-token-3",
-            refreshToken: "refresh-3",
-            shopId: 999,
-          },
-        },
-      ],
-    } as any);
-    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
-      available_quantity: 2,
-    } as any);
-    vi.spyOn(MLApiService, "updateItemStock").mockRejectedValue(
-      new Error("ml failure"),
-    );
-    vi.spyOn(ShopeeApiService, "getItemBaseInfo").mockResolvedValue({
-      stock_info_v2: {
-        summary_info: {
-          total_available_stock: 2,
-        },
+  it("registra oversell quando quantidade pedida excede estoque", async () => {
+    const tx = buildTx(
+      { "prod-3": { id: "prod-3", name: "Produto 3", stock: 1 } },
+      {
+        "prod-3": [
+          { id: "lst-3", marketplaceAccount: { platform: "SHOPEE" } },
+        ],
       },
-    } as any);
-    const shopeeUpdateSpy = vi
-      .spyOn(ShopeeApiService, "updateItemStock")
+    );
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(tx),
+    );
+    const oversellLog = vi
+      .spyOn(SystemLogService, "logWarning")
       .mockResolvedValue(undefined as any);
-    const logWarningSpy = vi.spyOn(SystemLogService, "logWarning");
 
     const deductions = await (OrderUseCase as any).deductStockForOrder(
       {
         id: "order-partial-3",
-        marketplaceAccountId: "acc-shp-3",
-        externalOrderId: "SHP-3",
-        status: "PAID",
-        totalAmount: 100,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        marketplaceAccount: {
-          id: "acc-shp-3",
-          platform: "SHOPEE",
-          accountName: "Shopee",
-        },
-        items: [{ productId: "prod-3", quantity: 1, unitPrice: 100 }],
+        marketplaceAccount: { platform: "SHOPEE" },
+        items: [{ productId: "prod-3", quantity: 3, unitPrice: 100 }],
       },
       "Importação Shopee",
     );
 
-    expect(updateSpy).toHaveBeenCalledWith({
+    expect(tx.product.update).toHaveBeenCalledWith({
       where: { id: "prod-3" },
-      data: { stock: { decrement: 1 } },
+      data: { stock: 0 },
     });
-    expect(shopeeUpdateSpy).toHaveBeenCalledWith("shp-token-3", 999, 9200, 1);
     expect(deductions).toEqual([
       {
         productId: "prod-3",
         productName: "Produto 3",
-        previousStock: 2,
-        newStock: 1,
-        quantity: 1,
+        previousStock: 1,
+        newStock: 0,
+        quantity: 3,
       },
     ]);
-    expect(logWarningSpy).toHaveBeenCalledWith(
-      "SYNC_STOCK",
-      expect.stringContaining("falhas parciais"),
+    expect(oversellLog).toHaveBeenCalledWith(
+      "OVERSELL_DETECTED",
+      expect.stringContaining("order-partial-3"),
       expect.objectContaining({
+        resource: "Order",
+        resourceId: "order-partial-3",
         details: expect.objectContaining({
           orderId: "order-partial-3",
           platform: "SHOPEE",
-          totalListings: 2,
-          successCount: 1,
-          failureCount: 1,
-          failedPlatforms: ["MERCADO_LIVRE"],
-          productIds: ["prod-3"],
         }),
       }),
     );

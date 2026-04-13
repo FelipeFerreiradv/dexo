@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
@@ -14,11 +14,26 @@ vi.mock("../app/marketplaces/usecases/order.usercase", () => ({
   },
 }));
 
+vi.mock("../app/lib/prisma", () => ({
+  default: {
+    webhookEventLog: {
+      create: vi.fn().mockResolvedValue({ id: "evt-1" }),
+    },
+  },
+}));
+
+import prisma from "../app/lib/prisma";
 import { MarketplaceRepository } from "../app/marketplaces/repositories/marketplace.repository";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
 import { WebhookUseCase } from "../app/marketplaces/usecases/webhook.usercase";
 
 describe("WebhookUseCase duplicate account guards", () => {
+  beforeEach(() => {
+    (prisma as any).webhookEventLog.create = vi
+      .fn()
+      .mockResolvedValue({ id: "evt-1" });
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -66,5 +81,111 @@ describe("WebhookUseCase duplicate account guards", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/múltiplas contas shopee ativas/i);
     expect(OrderUseCase.importRecentShopeeOrdersForAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("WebhookUseCase idempotency (claimWebhookEvent)", () => {
+  beforeEach(() => {
+    (prisma as any).webhookEventLog.create = vi
+      .fn()
+      .mockResolvedValue({ id: "evt-1" });
+    (MarketplaceRepository.findAllByExternalUserId as any).mockResolvedValue([
+      { id: "acc-1", userId: "u-1", status: "ACTIVE" },
+    ]);
+    (MarketplaceRepository.findAllShopeeByShopId as any).mockResolvedValue([
+      { id: "acc-2", userId: "u-2", status: "ACTIVE" },
+    ]);
+    (OrderUseCase.importRecentOrdersForAccount as any).mockResolvedValue({
+      imported: 1,
+      errors: 0,
+    });
+    (OrderUseCase.importRecentShopeeOrdersForAccount as any).mockResolvedValue({
+      imported: 1,
+      errors: 0,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ignora webhook ML duplicado (P2002) sem reimportar pedidos", async () => {
+    const p2002 = Object.assign(new Error("unique violation"), {
+      code: "P2002",
+    });
+    (prisma as any).webhookEventLog.create = vi.fn().mockRejectedValue(p2002);
+
+    const payload = {
+      resource: "/orders/999",
+      user_id: 42,
+      topic: "orders_v2",
+      application_id: 1,
+      attempts: 1,
+      sent: "2026-04-12T10:00:00Z",
+      received: "2026-04-12T10:00:01Z",
+    };
+
+    const result = await WebhookUseCase.processOrderWebhook(payload as any);
+
+    expect(result.success).toBe(true);
+    expect(result.action).toBe("duplicate_ignored");
+    expect(OrderUseCase.importRecentOrdersForAccount).not.toHaveBeenCalled();
+  });
+
+  it("ignora webhook Shopee duplicado (P2002) sem reimportar pedidos", async () => {
+    const p2002 = Object.assign(new Error("unique violation"), {
+      code: "P2002",
+    });
+    (prisma as any).webhookEventLog.create = vi.fn().mockRejectedValue(p2002);
+
+    const result = await WebhookUseCase.processShopeeOrderWebhook({
+      shop_id: 111,
+      code: 3,
+      timestamp: 1712750000,
+      data: { ordersn: "ORDER-DUPLICATE", status: "READY_TO_SHIP" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.action).toBe("duplicate_ignored");
+    expect(
+      OrderUseCase.importRecentShopeeOrdersForAccount,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("processa webhook ML novo quando claim sucede", async () => {
+    const payload = {
+      resource: "/orders/1001",
+      user_id: 42,
+      topic: "orders_v2",
+      application_id: 1,
+      attempts: 1,
+      sent: "2026-04-12T11:00:00Z",
+      received: "2026-04-12T11:00:01Z",
+    };
+
+    const result = await WebhookUseCase.processOrderWebhook(payload as any);
+
+    expect(result.success).toBe(true);
+    expect(result.orderId).toBe("1001");
+    expect(OrderUseCase.importRecentOrdersForAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("propaga erros não-P2002 do claim", async () => {
+    (prisma as any).webhookEventLog.create = vi
+      .fn()
+      .mockRejectedValue(new Error("db connection lost"));
+
+    const result = await WebhookUseCase.processOrderWebhook({
+      resource: "/orders/222",
+      user_id: 7,
+      topic: "orders_v2",
+      application_id: 1,
+      attempts: 1,
+      sent: "2026-04-12T12:00:00Z",
+      received: "2026-04-12T12:00:01Z",
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/db connection lost/);
   });
 });

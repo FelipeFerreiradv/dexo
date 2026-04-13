@@ -90,6 +90,8 @@ api.register(scrapRoutes, {
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry.service";
+import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
 
 const PORT = Number(process.env.PORT) || 3333;
 
@@ -102,6 +104,10 @@ try {
     .then(() => {
       // start background retry loop for placeholder listings
       ListingRetryService.start();
+      // start durable cross-marketplace stock sync worker
+      StockSyncRetryService.start();
+      // start periodic drift reconciliation (defense in depth)
+      StockReconciliationService.start();
     });
 } catch (err) {
   api.log.error(err);

@@ -259,6 +259,36 @@ model StockLog {
   @@index([productId, createdAt])
 }
 
+model StockSyncJob {
+  id           String   @id @default(cuid())
+  productId    String
+  listingId    String
+  platform     Platform
+  targetStock  Int
+  attempts     Int      @default(0)
+  nextRunAt    DateTime @default(now())
+  status       String   @default("PENDING")
+  lastError    String?
+  orderId      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([listingId, status])
+  @@index([status, nextRunAt])
+  @@index([productId])
+}
+
+model WebhookEventLog {
+  id          String   @id @default(cuid())
+  source      String
+  externalId  String
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  @@unique([source, externalId])
+  @@index([createdAt])
+}
+
 model SyncLog {
   id                   String             @id @default(cuid())
   marketplaceAccountId String

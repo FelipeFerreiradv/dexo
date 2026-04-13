@@ -1,7 +1,29 @@
 import { Platform } from "@prisma/client";
+import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { MLOrderWebhookPayload } from "../types/ml-order.types";
 import { OrderUseCase } from "./order.usercase";
+
+/**
+ * Tenta registrar o evento no WebhookEventLog para garantir idempotência.
+ * Retorna `true` se o evento é novo (deve ser processado),
+ * `false` se já foi processado anteriormente (P2002 na unique key).
+ */
+async function claimWebhookEvent(
+  source: string,
+  externalId: string,
+  payload: unknown,
+): Promise<boolean> {
+  try {
+    await (prisma as any).webhookEventLog.create({
+      data: { source, externalId, payload: payload as any },
+    });
+    return true;
+  } catch (err: any) {
+    if (err?.code === "P2002") return false;
+    throw err;
+  }
+}
 
 /**
  * Use Case para processar webhooks do Mercado Livre e Shopee
@@ -33,6 +55,18 @@ export class WebhookUseCase {
       }
 
       const mlOrderId = orderIdMatch[1];
+
+      // Idempotência: ignorar entregas duplicadas do mesmo evento ML.
+      // Chave = resource + user_id + sent (ML reentrega com mesmo sent em retries).
+      const dedupKey = `${payload.resource}:${payload.user_id}:${payload.sent}`;
+      const isNew = await claimWebhookEvent("ML", dedupKey, payload);
+      if (!isNew) {
+        return {
+          success: true,
+          orderId: mlOrderId,
+          action: "duplicate_ignored",
+        };
+      }
 
       const accounts = await MarketplaceRepository.findAllByExternalUserId(
         payload.user_id.toString(),
@@ -120,6 +154,14 @@ export class WebhookUseCase {
     error?: string;
   }> {
     try {
+      // Idempotência: chave = shop_id + code + ordersn + timestamp.
+      const ordersn = payload.data?.ordersn ?? "";
+      const dedupKey = `${payload.shop_id}:${payload.code}:${ordersn}:${payload.timestamp}`;
+      const isNew = await claimWebhookEvent("SHOPEE", dedupKey, payload);
+      if (!isNew) {
+        return { success: true, action: "duplicate_ignored" };
+      }
+
       const accounts = await MarketplaceRepository.findAllShopeeByShopId(
         payload.shop_id,
         true,

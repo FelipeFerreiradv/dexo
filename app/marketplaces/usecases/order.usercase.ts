@@ -172,7 +172,15 @@ export class OrderUseCase {
       results: [],
     };
 
-    const mlOrders = await this.getRecentMLOrdersWithRefresh(account, days);
+    const mlOrders = await this.getRecentMLOrdersWithRefresh(
+      {
+        id: account.id,
+        accessToken: account.accessToken,
+        refreshToken: account.refreshToken,
+        externalUserId: account.externalUserId,
+      },
+      days,
+    );
 
     result.totalOrders = mlOrders.length;
 
@@ -348,7 +356,12 @@ export class OrderUseCase {
     };
 
     const shopeeOrders = await this.getRecentShopeeOrdersWithRefresh(
-      account,
+      {
+        id: account.id,
+        accessToken: account.accessToken,
+        refreshToken: account.refreshToken,
+        shopId: account.shopId,
+      },
       days,
     );
 
@@ -949,7 +962,12 @@ export class OrderUseCase {
   }
 
   /**
-   * Desconta estoque dos produtos de um pedido
+   * Desconta estoque dos produtos de um pedido de forma atômica.
+   *
+   * Garante serialização via `SELECT ... FOR UPDATE` por produto, evitando
+   * TOCTOU entre webhooks concorrentes de marketplaces diferentes.
+   * Enfileira jobs duráveis de sincronização cross-marketplace dentro da
+   * mesma transação, garantindo que nenhum decremento fique sem propagação.
    */
   private static async deductStockForOrder(
     order: Order,
@@ -957,77 +975,145 @@ export class OrderUseCase {
   ): Promise<OrderStockDeduction[]> {
     const deductions: OrderStockDeduction[] = [];
 
-    if (!order.items || order.items.length === 0) return deductions;
+    const orderItems = order.items;
+    if (!orderItems || orderItems.length === 0) return deductions;
 
-    // Batch fetch all products in one query
-    const productIds = order.items.map((item) => item.productId);
-    const products = await prisma.product.findMany({
-      where: { id: { in: productIds } },
-      select: { id: true, name: true, stock: true },
-    });
-    const productMap = new Map(products.map((p) => [p.id, p]));
-    const syncedProductIds = new Set<string>();
+    const oversellAlerts: Array<{
+      productId: string;
+      productName: string;
+      requested: number;
+      available: number;
+    }> = [];
 
-    // Build transaction operations for all items at once
-    const txOps: Parameters<typeof prisma.$transaction>[0] = [];
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const item of orderItems) {
+          // Lock da linha do produto até o fim da transação.
+          const locked = await tx.$queryRaw<
+            { id: string; name: string; stock: number }[]
+          >`SELECT id, name, stock FROM "Product" WHERE id = ${item.productId} FOR UPDATE`;
 
-    for (const item of order.items) {
-      const product = productMap.get(item.productId);
-      if (!product) continue;
+          const product = locked[0];
+          if (!product) continue;
 
-      const previousStock = product.stock;
-      const newStock = Math.max(0, previousStock - item.quantity);
+          const previousStock = product.stock;
+          const decrementBy = Math.min(item.quantity, Math.max(0, previousStock));
+          const newStock = previousStock - decrementBy;
 
-      txOps.push(
-        prisma.product.update({
-          where: { id: item.productId },
-          data: { stock: { decrement: Math.min(item.quantity, previousStock) } },
-        }),
-      );
-      txOps.push(
-        prisma.stockLog.create({
-          data: {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stock: newStock },
+          });
+
+          await tx.stockLog.create({
+            data: {
+              productId: item.productId,
+              change: -decrementBy,
+              reason,
+              previousStock,
+              newStock,
+            },
+          });
+
+          deductions.push({
             productId: item.productId,
-            change: -item.quantity,
-            reason,
+            productName: product.name,
             previousStock,
             newStock,
-          },
-        }),
-      );
+            quantity: item.quantity,
+          });
 
-      deductions.push({
-        productId: item.productId,
-        productName: product.name,
-        previousStock,
-        newStock,
-        quantity: item.quantity,
+          if (decrementBy < item.quantity) {
+            oversellAlerts.push({
+              productId: item.productId,
+              productName: product.name,
+              requested: item.quantity,
+              available: previousStock,
+            });
+          }
+
+          console.log(
+            `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
+          );
+
+          // Enfileira sync durável para cada listing vinculado ao produto.
+          const listings = await tx.productListing.findMany({
+            where: { productId: item.productId },
+            include: { marketplaceAccount: { select: { platform: true } } },
+          });
+
+          for (const listing of listings) {
+            await tx.stockSyncJob.upsert({
+              where: {
+                listingId_status: {
+                  listingId: listing.id,
+                  status: "PENDING",
+                },
+              },
+              create: {
+                productId: item.productId,
+                listingId: listing.id,
+                platform: listing.marketplaceAccount.platform,
+                targetStock: newStock,
+                orderId: order.id,
+                status: "PENDING",
+              },
+              update: {
+                targetStock: newStock,
+                attempts: 0,
+                nextRunAt: new Date(),
+                lastError: null,
+                orderId: order.id,
+              },
+            });
+          }
+        }
       });
-      syncedProductIds.add(item.productId);
-
-      console.log(
-        `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
+    } catch (error) {
+      console.error(
+        `[OrderUseCase] Error in stock deduction transaction:`,
+        error,
       );
+      return deductions;
     }
 
-    let stockUpdated = false;
-    if (txOps.length > 0) {
+    // Dispara processamento imediato dos jobs recém-enfileirados (best-effort;
+    // se falhar, o interval do service pegará no próximo ciclo).
+    if (deductions.length > 0) {
+      setImmediate(() => {
+        void import("../services/stock-sync-retry.service")
+          .then(({ StockSyncRetryService }) => StockSyncRetryService.runOnce())
+          .catch((err) =>
+            console.error(
+              "[OrderUseCase] Falha ao disparar StockSyncRetryService.runOnce:",
+              err,
+            ),
+          );
+      });
+    }
+
+    if (oversellAlerts.length > 0) {
       try {
-        await prisma.$transaction(txOps);
-        stockUpdated = true;
-      } catch (error) {
+        await SystemLogService.logWarning(
+          "OVERSELL_DETECTED",
+          `Oversell detectado no pedido ${order.id}: ${oversellAlerts.length} item(ns) com quantidade maior que estoque disponível`,
+          {
+            resource: "Order",
+            resourceId: order.id,
+            details: {
+              orderId: order.id,
+              platform: order.marketplaceAccount?.platform ?? null,
+              items: oversellAlerts,
+              reason,
+            },
+          },
+        );
+      } catch (logError) {
         console.error(
-          `[OrderUseCase] Error in stock deduction transaction:`,
-          error,
+          "[OrderUseCase] Falha ao registrar OVERSELL_DETECTED:",
+          logError,
         );
       }
-    }
-
-    if (stockUpdated && syncedProductIds.size > 0) {
-      await this.syncMarketplaceStockForProducts([...syncedProductIds], {
-        orderId: order.id,
-        platform: order.marketplaceAccount?.platform ?? null,
-      });
     }
 
     return deductions;
