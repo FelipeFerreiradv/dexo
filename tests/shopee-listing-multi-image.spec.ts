@@ -176,6 +176,9 @@ describe("ListingUseCase.createShopeeListing multi-image", () => {
     } as any);
     vi.spyOn(ListingRepository, "updateListing").mockResolvedValue({} as any);
 
+    vi.spyOn(ShopeeApiService, "assertLeafCategory").mockResolvedValue(
+      undefined,
+    );
     vi.spyOn(ShopeeApiService, "getCategoryAttributes").mockResolvedValue({
       attribute_list: [],
     } as any);

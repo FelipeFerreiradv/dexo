@@ -10,6 +10,7 @@ import { MLItemCreatePayload } from "../types/ml-api.types";
 import { ShopeeItemCreatePayload } from "../types/shopee-api.types";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import { CategoryResolutionService } from "../services/category-resolution.service";
+import CategoryRepository from "../repositories/category.repository";
 import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
@@ -889,10 +890,52 @@ export class ListingUseCase {
         );
       }
 
+      // Se não veio categoryId explícito e o produto não tem categoria persistida,
+      // pedir sugestão ao ML via domain_discovery a partir do nome do produto.
+      // Isso evita bloquear a publicação quando o form do modal não envia mlCategory.
+      let effectiveCategoryId = categoryId;
+      if (!effectiveCategoryId && !(product as any).mlCategoryId) {
+        try {
+          const suggested = await MLApiService.suggestCategoryId(
+            "MLB",
+            product.name || "",
+          );
+          if (suggested) {
+            console.warn(
+              `[ListingUseCase] Nenhuma categoria informada; usando sugestão domain_discovery: ${suggested} (produto=${product.id})`,
+            );
+            effectiveCategoryId = suggested;
+            // Persistir para próximas publicações, se a sugestão existir localmente
+            try {
+              const localCat =
+                await CategoryRepository.findByExternalId(suggested);
+              if (localCat?.id) {
+                await this.productRepository.update(product.id, {
+                  mlCategoryId: localCat.id,
+                  mlCategorySource: "auto",
+                } as any);
+              }
+            } catch (persistErr) {
+              console.warn(
+                "[ListingUseCase] Falha ao persistir categoria sugerida:",
+                persistErr instanceof Error
+                  ? persistErr.message
+                  : String(persistErr),
+              );
+            }
+          }
+        } catch (suggErr) {
+          console.warn(
+            "[ListingUseCase] Falha ao sugerir categoria via domain_discovery:",
+            suggErr instanceof Error ? suggErr.message : String(suggErr),
+          );
+        }
+      }
+
       // Resolve categoryId determinístico: explícito -> categoria persistida -> erro
       const resolvedCategory =
         await CategoryResolutionService.resolveMLCategory({
-          explicitCategoryId: categoryId,
+          explicitCategoryId: effectiveCategoryId,
           product,
           validateWithMLAPI: false,
         });
@@ -1016,34 +1059,52 @@ export class ListingUseCase {
             }),
           );
 
-          // Upload sequencial ao ML (a API do ML pode ter rate-limit)
-          picturesArray = [];
-          for (let i = 0; i < bufferResults.length; i++) {
-            const result = bufferResults[i];
-            const rawUrl = allImageUrls[i];
+          // Upload paralelo ao ML preservando ordem. O endpoint /pictures aceita
+          // uploads concorrentes; 5 imagens em paralelo reduz o tempo em ~5x sem
+          // encostar em rate-limit (limite prático é dezenas/min por conta).
+          const uploadedPictures = await Promise.all(
+            bufferResults.map(async (result, i) => {
+              const rawUrl = allImageUrls[i];
+              const fallbackUrl = rawUrl.startsWith("http")
+                ? rawUrl.replace(
+                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
+                    backendBase,
+                  )
+                : `${backendBase}${rawUrl}`;
 
-            if (result.status === "fulfilled") {
+              if (result.status !== "fulfilled") {
+                console.warn(
+                  `[ListingUseCase] Falha ao preparar imagem ${rawUrl}:`,
+                  result.reason instanceof Error
+                    ? result.reason.message
+                    : String(result.reason),
+                );
+                try {
+                  const picResult = await MLApiService.uploadPictureFromUrl(
+                    acc.accessToken,
+                    fallbackUrl,
+                  );
+                  return { id: picResult.id } as { id: string };
+                } catch {
+                  return { source: fallbackUrl } as { source: string };
+                }
+              }
+
               const {
                 imageBuffer: imgBuf,
                 fileName: imgName,
                 publicUrl,
               } = result.value;
 
-              // Garantir dimensões mínimas exigidas pelo ML (500px após trim de bordas)
               const processedBuf = await ensureMLMinImageSize(imgBuf);
 
-              // Estratégia 1: Upload binário direto (form-data com getBuffer)
               try {
                 const picResult = await MLApiService.uploadPicture(
                   acc.accessToken,
                   processedBuf,
                   imgName,
                 );
-                console.log(
-                  `[ListingUseCase] Imagem enviada diretamente ao ML: pictureId=${picResult.id}`,
-                );
-                picturesArray.push({ id: picResult.id });
-                continue;
+                return { id: picResult.id } as { id: string };
               } catch (uploadErr) {
                 console.warn(
                   `[ListingUseCase] Upload binário falhou para ${rawUrl}:`,
@@ -1053,17 +1114,12 @@ export class ListingUseCase {
                 );
               }
 
-              // Estratégia 2: Upload via source URL síncrono (ML baixa e retorna picture ID)
               try {
                 const picResult = await MLApiService.uploadPictureFromUrl(
                   acc.accessToken,
                   publicUrl,
                 );
-                console.log(
-                  `[ListingUseCase] Imagem enviada via URL ao ML: pictureId=${picResult.id}`,
-                );
-                picturesArray.push({ id: picResult.id });
-                continue;
+                return { id: picResult.id } as { id: string };
               } catch (urlUploadErr) {
                 console.warn(
                   `[ListingUseCase] Upload via URL também falhou para ${rawUrl}:`,
@@ -1073,40 +1129,10 @@ export class ListingUseCase {
                 );
               }
 
-              // Estratégia 3: source URL no payload (assíncrono - menos confiável)
-              console.warn(
-                `[ListingUseCase] Usando source URL como fallback final: ${publicUrl}`,
-              );
-              picturesArray.push({ source: publicUrl });
-            } else {
-              console.warn(
-                `[ListingUseCase] Falha ao preparar imagem ${rawUrl}:`,
-                result.reason instanceof Error
-                  ? result.reason.message
-                  : String(result.reason),
-              );
-
-              // Mesmo sem buffer, tentar upload via URL
-              const fallbackUrl = rawUrl.startsWith("http")
-                ? rawUrl.replace(
-                    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i,
-                    backendBase,
-                  )
-                : `${backendBase}${rawUrl}`;
-              try {
-                const picResult = await MLApiService.uploadPictureFromUrl(
-                  acc.accessToken,
-                  fallbackUrl,
-                );
-                console.log(
-                  `[ListingUseCase] Imagem enviada via URL (após falha buffer) ao ML: pictureId=${picResult.id}`,
-                );
-                picturesArray.push({ id: picResult.id });
-              } catch {
-                picturesArray.push({ source: fallbackUrl });
-              }
-            }
-          }
+              return { source: publicUrl } as { source: string };
+            }),
+          );
+          picturesArray = uploadedPictures;
 
           if (picturesArray.length === 0) {
             picturesArray = [
@@ -1533,6 +1559,82 @@ export class ListingUseCase {
           }
         }
 
+        // Última tentativa: re-sugerir categoria via domain_discovery.
+        // Caso o produto tenha uma categoria persistida incompatível (ex: condition.invalid
+        // porque categoria só aceita "new", ou categoria de outra vertical), o ML nunca
+        // aceitará o payload. Pedimos uma sugestão fresca a partir do título e retentamos.
+        if (!mlItem) {
+          try {
+            const siteId = (categoryIdForML || "MLB").slice(0, 3);
+            const suggestedId = await MLApiService.suggestCategoryId(
+              siteId,
+              product.name || "",
+            );
+            if (suggestedId && suggestedId !== categoryIdForML) {
+              console.warn(
+                `[ListingUseCase] Retentando createItem com categoria sugerida por domain_discovery: ${suggestedId} (anterior: ${categoryIdForML})`,
+              );
+              const leafRetry =
+                await CategoryResolutionService.ensureLeafLocalOnly(
+                  suggestedId,
+                );
+              const newCategoryId = leafRetry?.externalId || suggestedId;
+              const normalizedNew =
+                this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
+
+              const retryPayload: MLItemCreatePayload = {
+                ...payload,
+                category_id: normalizedNew,
+              };
+              // restaurar title original caso algum fallback anterior o tenha removido
+              if (!(retryPayload as any).title && payload.title) {
+                (retryPayload as any).title = payload.title;
+              }
+
+              mlItem = await this.withTimeout(
+                MLApiService.createItem(acc.accessToken, retryPayload),
+                timeoutMs,
+                "ML createItem suggested category",
+              );
+
+              if (mlItem) {
+                resolvedCategoryId = normalizedNew;
+                categoryIdForML = normalizedNew;
+                console.warn(
+                  `[ListingUseCase] Retentativa com categoria sugerida ${normalizedNew} bem-sucedida`,
+                );
+
+                // Persistir categoria corrigida no produto para evitar repetir o erro
+                try {
+                  const localCat =
+                    await CategoryRepository.findByExternalId(normalizedNew);
+                  if (localCat?.id) {
+                    await this.productRepository.update(product.id, {
+                      mlCategoryId: localCat.id,
+                      mlCategorySource: "auto",
+                    } as any);
+                    console.warn(
+                      `[ListingUseCase] Categoria do produto ${product.id} atualizada para ${normalizedNew}`,
+                    );
+                  }
+                } catch (persistErr) {
+                  console.warn(
+                    "[ListingUseCase] Falha ao persistir categoria corrigida:",
+                    persistErr instanceof Error
+                      ? persistErr.message
+                      : String(persistErr),
+                  );
+                }
+              }
+            }
+          } catch (suggErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa com categoria sugerida falhou:",
+              suggErr instanceof Error ? suggErr.message : String(suggErr),
+            );
+          }
+        }
+
         if (!mlItem && isTitleInvalid) {
           const nextRetryMs = 60 * 1000;
           await ListingRepository.updateListing(listing.id, {
@@ -1767,65 +1869,81 @@ export class ListingUseCase {
           throw err;
         }
       }
-      // 4.1. Reforçar descrição após criação usando endpoint dedicado
-      try {
-        await this.withTimeout(
-          MLApiService.upsertDescription(
-            acc.accessToken,
-            mlItem.id,
-            descriptionText,
-          ),
-          timeoutMs,
-          "ML upsertDescription",
-        );
-        console.log(
-          "[ListingUseCase] ML item description updated via /description",
-        );
-      } catch (err) {
-        console.error(
-          "[ListingUseCase] Failed to update ML item description:",
-          err,
-        );
-      }
-
-      // 4.1.1 Atualizar family_name via PUT para que o título gerado pelo ML
-      // reflita o nome completo do produto (em categorias User Product o título
-      // visível é calculado a partir de family_name + atributos).
+      // 4.1. Pós-criação: reforçar descrição via /description e, se necessário,
+      // atualizar family_name. As duas chamadas são independentes, então rodam
+      // em paralelo. family_name é pulado quando o ML já retornou um valor que
+      // bate com o desejado — caso contrário o PUT falha com BODY_INVALID_FIELDS
+      // em categorias User Product (family_name fica travado após criação).
       const desiredFamilyName = this.buildMLTitle(product);
-      if (mlItem?.id && desiredFamilyName) {
-        const mlReturnedTitle = (mlItem.title || "").trim();
-        // Tentar atualizar family_name se o título retornado não contém o nome desejado
-        // ou se a categoria usa o fluxo User Product (family_name)
-        const titleMismatch =
-          mlReturnedTitle.toLowerCase() !== desiredFamilyName.toLowerCase() &&
-          !mlReturnedTitle
+      const mlReturnedFamilyName = ((mlItem as any)?.family_name || "")
+        .toString()
+        .trim();
+      const familyNameAlreadyOk =
+        !!mlReturnedFamilyName &&
+        (mlReturnedFamilyName.toLowerCase() ===
+          desiredFamilyName.toLowerCase() ||
+          mlReturnedFamilyName
             .toLowerCase()
-            .includes(desiredFamilyName.toLowerCase());
-        if (
-          titleMismatch ||
+            .includes(desiredFamilyName.toLowerCase()));
+
+      const mlReturnedTitle = (mlItem.title || "").trim();
+      const titleMismatch =
+        mlReturnedTitle.toLowerCase() !== desiredFamilyName.toLowerCase() &&
+        !mlReturnedTitle
+          .toLowerCase()
+          .includes(desiredFamilyName.toLowerCase());
+
+      const shouldUpdateFamilyName =
+        !!mlItem?.id &&
+        !!desiredFamilyName &&
+        !familyNameAlreadyOk &&
+        (titleMismatch ||
           includeFamilyName ||
-          (payload as any).family_name
-        ) {
-          try {
-            await this.withTimeout(
-              MLApiService.updateItem(acc.accessToken, mlItem.id, {
-                family_name: desiredFamilyName,
-              }),
-              timeoutMs,
-              "ML updateItem family_name",
-            );
-            console.log(
-              `[ListingUseCase] family_name updated to "${desiredFamilyName}" for ${mlItem.id}`,
-            );
-          } catch (fnErr) {
-            // Não é crítico — o anúncio já foi criado. Logar e seguir.
-            console.warn(
-              `[ListingUseCase] Failed to update family_name for ${mlItem.id}:`,
-              fnErr instanceof Error ? fnErr.message : String(fnErr),
-            );
-          }
-        }
-      }
+          !!(payload as any).family_name);
+
+      const descriptionPromise = this.withTimeout(
+        MLApiService.upsertDescription(
+          acc.accessToken,
+          mlItem.id,
+          descriptionText,
+        ),
+        timeoutMs,
+        "ML upsertDescription",
+      )
+        .then(() => {
+          console.log(
+            "[ListingUseCase] ML item description updated via /description",
+          );
+        })
+        .catch((err) => {
+          console.error(
+            "[ListingUseCase] Failed to update ML item description:",
+            err,
+          );
+        });
+
+      const familyNamePromise = shouldUpdateFamilyName
+        ? this.withTimeout(
+            MLApiService.updateItem(acc.accessToken, mlItem.id, {
+              family_name: desiredFamilyName,
+            }),
+            timeoutMs,
+            "ML updateItem family_name",
+          )
+            .then(() => {
+              console.log(
+                `[ListingUseCase] family_name updated to "${desiredFamilyName}" for ${mlItem.id}`,
+              );
+            })
+            .catch((fnErr) => {
+              console.warn(
+                `[ListingUseCase] Failed to update family_name for ${mlItem.id}:`,
+                fnErr instanceof Error ? fnErr.message : String(fnErr),
+              );
+            })
+        : Promise.resolve();
+
+      await Promise.all([descriptionPromise, familyNamePromise]);
 
       // 4.2 Verificar status real no ML e tentar reativar se possível
       let remoteStatus: "active" | "paused" | "closed" | "under_review" =
@@ -2139,6 +2257,16 @@ export class ListingUseCase {
           error: `Categoria do Shopee inválida: ${resolvedShopeeCategoryId}`,
         };
       }
+
+      // Valida leaf-category ANTES de upload de imagens/stages paralelos.
+      // Falha cedo com mensagem que o classificador de terminais (catch
+      // abaixo) reconhece, evitando gastar API calls em categorias que
+      // a Shopee vai rejeitar e marcando placeholders como [TERMINAL].
+      await ShopeeApiService.assertLeafCategory(
+        account.accessToken,
+        account.shopId,
+        numericCategoryId,
+      );
 
       // 3. Buscar atributos obrigatórios da categoria via API Shopee
       const attributeList: ShopeeItemCreatePayload["attribute_list"] = [];
@@ -2674,8 +2802,11 @@ export class ListingUseCase {
         /duplicate.*shop/i.test(errorMsg) ||
         // Category missing: requires manual intervention
         /selecione uma categoria/i.test(errorMsg) ||
-        // Invalid category
-        /categoria.*inv[aá]lida/i.test(errorMsg);
+        // Invalid category (pt + en) / non-leaf category
+        /categoria.*inv[aá]lida/i.test(errorMsg) ||
+        /invalid category/i.test(errorMsg) ||
+        /should use leaf category/i.test(errorMsg) ||
+        /leaf category/i.test(errorMsg);
 
       // Atualizar placeholder com erro e decisão de retry
       try {

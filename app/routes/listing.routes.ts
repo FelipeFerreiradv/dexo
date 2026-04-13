@@ -18,6 +18,7 @@ export async function listingRoutes(app: FastifyInstance) {
     "/ml",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const startedAt = Date.now();
       try {
         const userId = request.user!.id;
         const body = request.body as {
@@ -38,7 +39,6 @@ export async function listingRoutes(app: FastifyInstance) {
           body.accountId ||
           ((request.query as any)?.accountId as string | undefined) ||
           undefined;
-        const startedAt = Date.now();
 
         // Validações básicas
         if (!body.productId) {
@@ -53,12 +53,9 @@ export async function listingRoutes(app: FastifyInstance) {
             message: "accountId é obrigatório para criar anúncio ML",
           });
         }
-        if (!body.categoryId) {
-          return reply.status(400).send({
-            error: "Dados incompletos",
-            message: "categoryId é obrigatório para criar anúncio ML",
-          });
-        }
+        // categoryId é opcional aqui: se o frontend não enviar, o backend
+        // tenta resolver a partir de product.mlCategoryId e, como último recurso,
+        // pede uma sugestão ao ML via domain_discovery dentro do ListingUseCase.
 
         const result = await ListingUseCase.createMLListing(
           userId,

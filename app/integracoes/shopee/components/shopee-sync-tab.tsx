@@ -105,6 +105,7 @@ interface SyncResponse {
   successful: number;
   failed: number;
   results: SyncResult[];
+  message?: string;
 }
 
 export function ShopeeSyncTab() {
@@ -243,13 +244,27 @@ export function ShopeeSyncTab() {
         },
       });
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 202) {
         const data = await response.json();
         throw new Error(data.message || "Erro ao sincronizar estoque");
       }
 
-      const data: SyncResponse = await response.json();
-      setSyncResult(data);
+      const data = await response.json();
+
+      if (response.status === 202) {
+        setSyncResult({
+          success: true,
+          total: 0,
+          successful: 0,
+          failed: 0,
+          results: [],
+          message:
+            data.message ||
+            "Sincronização iniciada em segundo plano. Aguarde alguns instantes e recarregue a página.",
+        } as SyncResponse);
+      } else {
+        setSyncResult(data as SyncResponse);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao sincronizar");
     } finally {
@@ -571,9 +586,12 @@ export function ShopeeSyncTab() {
                 ) : (
                   <AlertTriangle className="h-5 w-5 text-yellow-500" />
                 )}
-                <span className="font-medium">Sincronização concluída</span>
+                <span className="font-medium">
+                  {syncResult.message || "Sincronização concluída"}
+                </span>
               </div>
 
+              {!syncResult.message && (
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="rounded-md bg-muted p-3">
                   <div className="text-2xl font-bold">{syncResult.total}</div>
@@ -594,9 +612,10 @@ export function ShopeeSyncTab() {
                   <div className="text-xs text-muted-foreground">Falharam</div>
                 </div>
               </div>
+              )}
 
               {/* Detalhes dos resultados */}
-              {syncResult.results.length > 0 && (
+              {!syncResult.message && syncResult.results.length > 0 && (
                 <Accordion type="single" collapsible>
                   <AccordionItem value="results">
                     <AccordionTrigger className="text-sm">

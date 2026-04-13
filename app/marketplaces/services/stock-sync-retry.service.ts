@@ -114,9 +114,8 @@ export class StockSyncRetryService {
           continue;
         }
         if (r.success) {
-          await (prisma as any).stockSyncJob.update({
+          await (prisma as any).stockSyncJob.delete({
             where: { id: job.id },
-            data: { status: "SUCCESS", lastError: null },
           });
         } else {
           await this.handleFailure(job, r.error ?? "Erro desconhecido");
@@ -157,12 +156,12 @@ export class StockSyncRetryService {
     job: { id: string; productId: string; listingId: string },
     message: string,
   ): Promise<void> {
-    await (prisma as any).stockSyncJob.update({
+    // Deleta o job em vez de transicionar status — o unique constraint
+    // @@unique([listingId, status]) em StockSyncJob impede manter linhas
+    // históricas FAILED/SUCCESS na mesma listing (colide com próximo enqueue).
+    // Histórico de falha terminal fica preservado em SystemLog (logError abaixo).
+    await (prisma as any).stockSyncJob.delete({
       where: { id: job.id },
-      data: {
-        status: "FAILED",
-        lastError: message.slice(0, 500),
-      },
     });
 
     try {

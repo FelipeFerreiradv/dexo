@@ -140,7 +140,10 @@ export class ListingRepository {
         AND: [
           {
             OR: [
-              { externalListingId: { startsWith: "PENDING_" } },
+              {
+                externalListingId: { startsWith: "PENDING_" },
+                retryEnabled: { not: false },
+              },
               { retryEnabled: true },
             ],
           },

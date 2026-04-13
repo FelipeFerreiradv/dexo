@@ -121,7 +121,7 @@ const productEditSchema = z.object({
     .optional()
     .nullable(),
 
-  imageUrl: z.string().url("URL da imagem inválida").optional().nullable(),
+  imageUrl: z.string().optional().nullable(),
 });
 
 type ProductEditFormData = z.infer<typeof productEditSchema>;
@@ -238,6 +238,7 @@ export function EditProductDialog({
   const originalModelRef = useRef(product.model || "");
   const originalYearRef = useRef(product.year || "");
   const originalCategoryRef = useRef(product.category || "");
+  const originalMlCategoryRef = useRef(product.mlCategory || "");
 
   // Auto-detection ref to track previously auto-detected fields (so we don't overwrite manual edits)
   const autoDetectedRef = useRef<{
@@ -440,6 +441,7 @@ export function EditProductDialog({
       originalModelRef.current = product.model || "";
       originalYearRef.current = product.year || "";
       originalCategoryRef.current = product.category || "";
+      originalMlCategoryRef.current = product.mlCategory || "";
 
       reset({
         name: product.name,
@@ -683,6 +685,8 @@ export function EditProductDialog({
         const prevMl = prev.mlCategory;
         const isPrevAutoMl =
           prevMl && norm(prevMl) === norm(currentMlCategory || "");
+        const isPristineMl =
+          currentMlCategory === originalMlCategoryRef.current;
 
         if (mapping.detailedId) {
           // try to resolve internal detailed id to an external id from mlOptions
@@ -696,7 +700,7 @@ export function EditProductDialog({
             externalFromMlOptions ??
             (mlOptions && mlOptions.length === 0 ? mapping.detailedId : "");
 
-          if (!currentMlCategory || isPrevAutoMl) {
+          if (!currentMlCategory || isPrevAutoMl || isPristineMl) {
             if (resolvedMlCategory) {
               setValue("mlCategory", resolvedMlCategory, {
                 shouldDirty: true,
@@ -881,17 +885,24 @@ export function EditProductDialog({
       }
       if (
         createMlListing &&
-        !(data.mlCategory || autoDetectedRef.current?.mlCategory)
+        !(
+          data.mlCategory ||
+          autoDetectedRef.current?.mlCategory ||
+          data.category ||
+          product.mlCategory ||
+          product.category
+        )
       ) {
         onToast(
-          "Selecione uma categoria do Mercado Livre antes de criar o anúncio.",
+          "Defina uma categoria (topo ou ML) antes de criar o anúncio.",
           "error",
         );
         setIsSubmitting(false);
         return;
       }
 
-      // Categoria não obrigatória no frontend; o backend resolve/normaliza.
+      // Categoria ML não obrigatória no frontend quando houver categoria de topo;
+      // o backend resolve/normaliza para uma folha válida.
 
       if (createShopeeListing && selectedShopeeAccounts.length === 0) {
         onToast(
@@ -1006,7 +1017,11 @@ export function EditProductDialog({
                   },
                   body: JSON.stringify({
                     productId: product.id,
-                    categoryId: data.mlCategory || undefined,
+                    categoryId:
+                      data.mlCategory ||
+                      autoDetectedRef.current?.mlCategory ||
+                      product.mlCategory ||
+                      undefined,
                     listingType: mlListingType,
                     hasWarranty: mlHasWarranty,
                     warrantyUnit: mlWarrantyUnit,
@@ -1018,7 +1033,7 @@ export function EditProductDialog({
                     manufacturingTime: mlManufacturingTime,
                   }),
                 },
-                15000,
+                60000,
               );
               body = await resp.json().catch(() => ({}));
             } catch (err) {
@@ -1114,7 +1129,21 @@ export function EditProductDialog({
             Atualize os dados do produto &quot;{product.name}&quot;
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form
+          onSubmit={handleSubmit(onSubmit, (formErrors) => {
+            const first = Object.values(formErrors)[0] as
+              | { message?: string }
+              | undefined;
+            const firstKey = Object.keys(formErrors)[0];
+            onToast(
+              first?.message
+                ? `${firstKey}: ${first.message}`
+                : "Corrija os campos destacados antes de atualizar.",
+              "error",
+            );
+          })}
+          className="space-y-4"
+        >
           {/* Seção: Dados Básicos */}
           <div className="space-y-4">
             <h3 className="text-sm font-medium text-muted-foreground">

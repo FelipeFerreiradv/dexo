@@ -608,31 +608,46 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         const accountId =
           accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        const result = await SyncUseCase.importMLItems(userId, accountId);
-
-        await SystemLogService.logSyncComplete(
-          userId,
-          "IMPORT",
-          "MercadoLivre",
-          {
-            totalItems: result.totalItems,
-            linkedItems: result.linkedItems,
-            unlinkedItems: result.unlinkedItems,
-            errors: result.errors.length,
-          },
-        );
-
-        return reply.send({
+        // Responder 202 imediatamente para evitar 504 do nginx em importações longas
+        reply.status(202).send({
           success: true,
-          totalItems: result.totalItems,
-          linkedItems: result.linkedItems,
-          unlinkedItems: result.unlinkedItems,
-          items: result.items,
-          errors: result.errors,
+          message: "Importação iniciada em segundo plano",
+          totalItems: 0,
+          linkedItems: 0,
+          unlinkedItems: 0,
+          items: [],
+          errors: [],
+        });
+
+        // Processar import em background (fire-and-forget)
+        setImmediate(async () => {
+          try {
+            const result = await SyncUseCase.importMLItems(userId, accountId);
+
+            await SystemLogService.logSyncComplete(
+              userId,
+              "IMPORT",
+              "MercadoLivre",
+              {
+                totalItems: result.totalItems,
+                linkedItems: result.linkedItems,
+                unlinkedItems: result.unlinkedItems,
+                errors: result.errors.length,
+              },
+            );
+            console.log(
+              `[ml/import] Background import complete: ${result.linkedItems}/${result.totalItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
+            );
+          } catch (bgErr) {
+            console.error(
+              `[ml/import] Background import error:`,
+              bgErr instanceof Error ? bgErr.message : bgErr,
+            );
+          }
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao importar itens do Mercado Livre",
+          error: "Erro ao iniciar importação do Mercado Livre",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -1162,7 +1177,6 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        // UsuÃ¡rio jÃ¡ validado pelo middleware
         const userId = request.user!.id;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
@@ -1170,29 +1184,48 @@ export async function marketplaceRoutes(app: FastifyInstance) {
             ? [(request.query as any).accountId as string]
             : undefined);
 
-        const result = await SyncUseCase.syncAllStock(
-          userId,
-          Platform.SHOPEE,
-          accountIds,
-        );
-
-        // Registrar log de sincronizaÃ§Ã£o completa
-        await SystemLogService.logSyncComplete(userId, "FULL_SYNC", "Shopee", {
-          total: result.total,
-          successful: result.successful,
-          failed: result.failed,
+        // Responder 202 imediatamente para evitar 504 do nginx
+        reply.status(202).send({
+          success: true,
+          message: "Sincronização iniciada em segundo plano",
+          total: 0,
+          successful: 0,
+          failed: 0,
+          results: [],
         });
 
-        return reply.send({
-          success: result.failed === 0,
-          total: result.total,
-          successful: result.successful,
-          failed: result.failed,
-          results: result.results,
+        // Processar sync em background (fire-and-forget)
+        setImmediate(async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.SHOPEE,
+              accountIds,
+            );
+
+            await SystemLogService.logSyncComplete(
+              userId,
+              "FULL_SYNC",
+              "Shopee",
+              {
+                total: result.total,
+                successful: result.successful,
+                failed: result.failed,
+              },
+            );
+            console.log(
+              `[shopee/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (bgErr) {
+            console.error(
+              `[shopee/sync] Background sync error:`,
+              bgErr instanceof Error ? bgErr.message : bgErr,
+            );
+          }
         });
       } catch (error) {
         return reply.status(500).send({
-          error: "Erro ao sincronizar estoque",
+          error: "Erro ao iniciar sincronização do Shopee",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

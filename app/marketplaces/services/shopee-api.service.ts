@@ -54,6 +54,52 @@ export class ShopeeApiService {
   >();
   private static readonly LOGISTICS_CACHE_TTL_MS = 15 * 60 * 1000;
 
+  private static categoryCache = new Map<
+    string,
+    { map: Map<number, { hasChildren: boolean; parentId: number; name: string }>; fetchedAt: number }
+  >();
+  private static readonly CATEGORY_CACHE_TTL_MS = 60 * 60 * 1000;
+
+  /**
+   * Verifica se um category_id é folha (não tem filhos). Shopee rejeita
+   * add_item em categorias não-folha com "Invalid category. : should use
+   * leaf category". Lança erro com essa mensagem para que o classificador
+   * de erros terminais (listing.usercase / listing-retry) reconheça.
+   */
+  static async assertLeafCategory(
+    accessToken: string,
+    shopId: number,
+    categoryId: number,
+    language = "pt-BR",
+  ): Promise<void> {
+    const cacheKey = `${shopId}:${language}`;
+    const cached = this.categoryCache.get(cacheKey);
+    let map = cached?.map;
+    if (!map || Date.now() - (cached?.fetchedAt ?? 0) > this.CATEGORY_CACHE_TTL_MS) {
+      const resp = await this.getCategories(accessToken, shopId, language);
+      map = new Map();
+      for (const c of resp.category_list ?? []) {
+        map.set(c.category_id, {
+          hasChildren: !!c.has_children,
+          parentId: c.parent_category_id,
+          name: c.category_name,
+        });
+      }
+      this.categoryCache.set(cacheKey, { map, fetchedAt: Date.now() });
+    }
+    const node = map.get(categoryId);
+    if (!node) {
+      throw new Error(
+        `Categoria Shopee ${categoryId} não encontrada — selecione uma categoria válida.`,
+      );
+    }
+    if (node.hasChildren) {
+      throw new Error(
+        `Invalid category: ${categoryId} (${node.name}) should use leaf category. Selecione uma subcategoria final.`,
+      );
+    }
+  }
+
   /**
    * Valida configuração antes de fazer requests
    */

@@ -86,6 +86,7 @@ import {
 } from "@/app/produtos/lib/product-filters";
 import { CreateProductDialog } from "./create-product-dialog";
 import { EditProductDialog } from "./edit-product-dialog";
+import { ImportExportProducts } from "./import-export-products";
 import { ProductSkeleton } from "./product-skeleton";
 
 type MarketplacePlatform = MarketplaceListingPlatform;
@@ -1186,14 +1187,25 @@ export function ProductsList() {
                 Gerencie o catálogo de produtos do seu estoque central
               </CardDescription>
             </div>
-            <CreateProductDialog
-              onProductCreated={() => {
-                fetchProducts(1, filters);
-                invalidateProductFilterOptionsCache(session?.user?.email);
-                fetchFilterOptions(true);
-              }}
-              onToast={showToast}
-            />
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <ImportExportProducts
+                email={session?.user?.email}
+                onProductsImported={() => {
+                  fetchProducts(1, filters);
+                  invalidateProductFilterOptionsCache(session?.user?.email);
+                  fetchFilterOptions(true);
+                }}
+                onToast={showToast}
+              />
+              <CreateProductDialog
+                onProductCreated={() => {
+                  fetchProducts(1, filters);
+                  invalidateProductFilterOptionsCache(session?.user?.email);
+                  fetchFilterOptions(true);
+                }}
+                onToast={showToast}
+              />
+            </div>
           </div>
         </CardHeader>
         <CardContent>

@@ -46,6 +46,7 @@ interface ImportResult {
   unlinkedItems: number;
   items: ImportItem[];
   errors: string[];
+  message?: string;
 }
 
 interface SyncResult {
@@ -98,13 +99,28 @@ export function MLSyncTab() {
         },
       });
 
-      if (!response.ok) {
+      if (!response.ok && response.status !== 202) {
         const data = await response.json();
         throw new Error(data.message || "Erro ao importar itens");
       }
 
-      const data: ImportResult = await response.json();
-      setImportResult(data);
+      const data = await response.json();
+
+      if (response.status === 202) {
+        setImportResult({
+          success: true,
+          totalItems: 0,
+          linkedItems: 0,
+          unlinkedItems: 0,
+          items: [],
+          errors: [],
+          message:
+            data.message ||
+            "Importação iniciada em segundo plano. Aguarde alguns instantes e recarregue a página.",
+        } as ImportResult);
+      } else {
+        setImportResult(data as ImportResult);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao importar");
     } finally {
@@ -264,9 +280,12 @@ export function MLSyncTab() {
             <div className="space-y-3 rounded-lg border p-4">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="h-5 w-5 text-green-500" />
-                <span className="font-medium">Importação concluída</span>
+                <span className="font-medium">
+                  {importResult.message || "Importação concluída"}
+                </span>
               </div>
 
+              {!importResult.message && (
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div className="rounded-md bg-muted p-3">
                   <div className="text-2xl font-bold">
@@ -293,9 +312,10 @@ export function MLSyncTab() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* Lista de itens importados */}
-              {importResult.items.length > 0 && (
+              {!importResult.message && importResult.items.length > 0 && (
                 <Accordion type="single" collapsible className="w-full">
                   <AccordionItem value="items">
                     <AccordionTrigger className="text-sm">

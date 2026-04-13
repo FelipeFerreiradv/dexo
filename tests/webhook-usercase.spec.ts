@@ -170,6 +170,40 @@ describe("WebhookUseCase idempotency (claimWebhookEvent)", () => {
     expect(OrderUseCase.importRecentOrdersForAccount).toHaveBeenCalledTimes(1);
   });
 
+  it("recusa webhook ML quando nenhuma conta ativa existe para o seller", async () => {
+    (MarketplaceRepository.findAllByExternalUserId as any).mockResolvedValue([]);
+
+    const result = await WebhookUseCase.processOrderWebhook({
+      resource: "/orders/777",
+      user_id: 99999,
+      topic: "orders_v2",
+      application_id: 1,
+      attempts: 1,
+      sent: "2026-04-12T13:00:00Z",
+      received: "2026-04-12T13:00:01Z",
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/conta do mercado livre não encontrada/i);
+    expect(OrderUseCase.importRecentOrdersForAccount).not.toHaveBeenCalled();
+  });
+
+  it("recusa webhook Shopee quando nenhuma conta ativa existe para o shop", async () => {
+    (MarketplaceRepository.findAllShopeeByShopId as any).mockResolvedValue([]);
+
+    const result = await WebhookUseCase.processShopeeOrderWebhook({
+      shop_id: 888,
+      code: 3,
+      timestamp: 1712750000,
+      data: { ordersn: "ORDER-NONE", status: "READY_TO_SHIP" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(
+      OrderUseCase.importRecentShopeeOrdersForAccount,
+    ).not.toHaveBeenCalled();
+  });
+
   it("propaga erros não-P2002 do claim", async () => {
     (prisma as any).webhookEventLog.create = vi
       .fn()

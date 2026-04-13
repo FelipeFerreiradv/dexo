@@ -673,3 +673,123 @@ describe("OrderUseCase.deductStockForOrder", () => {
     ]);
   });
 });
+
+describe("OrderUseCase.deductStockForOrder — edge cases", () => {
+  beforeEach(() => {
+    vi.spyOn(SystemLogService, "logInfo").mockResolvedValue(undefined as any);
+    vi.spyOn(SystemLogService, "logWarning").mockResolvedValue(undefined as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("ignora silenciosamente item cujo produto não existe (locked row vazia)", async () => {
+    const order = {
+      id: "order-ghost",
+      items: [
+        { productId: "prod-ghost", quantity: 1 },
+        { productId: "prod-real", quantity: 2 },
+      ],
+    };
+
+    const mockTx = buildMockTx({
+      "prod-real": { id: "prod-real", name: "Produto real", stock: 5 },
+    });
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
+
+    const result = await (OrderUseCase as any).deductStockForOrder(
+      order,
+      "Importação ML",
+    );
+
+    expect(mockTx.product.update).toHaveBeenCalledTimes(1);
+    expect(mockTx.product.update).toHaveBeenCalledWith({
+      where: { id: "prod-real" },
+      data: { stock: 3 },
+    });
+    expect(mockTx.stockLog.create).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([
+      {
+        productId: "prod-real",
+        productName: "Produto real",
+        previousStock: 5,
+        newStock: 3,
+        quantity: 2,
+      },
+    ]);
+  });
+
+  it("usa SELECT ... FOR UPDATE para lockar a linha do produto", async () => {
+    const order = {
+      id: "order-lock",
+      items: [{ productId: "prod-1", quantity: 1 }],
+    };
+
+    const mockTx = buildMockTx({
+      "prod-1": { id: "prod-1", name: "Produto teste", stock: 3 },
+    });
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
+
+    await (OrderUseCase as any).deductStockForOrder(order, "Importação");
+
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
+    const rawCallArgs = mockTx.$queryRaw.mock.calls[0];
+    const sqlParts = rawCallArgs[0] as unknown as TemplateStringsArray;
+    const sqlText = Array.isArray(sqlParts) ? sqlParts.join("?") : String(sqlParts);
+    expect(sqlText).toMatch(/FOR UPDATE/i);
+    expect(sqlText).toMatch(/"Product"/);
+  });
+
+  it("não propaga erro quando SystemLogService.logWarning falha no oversell", async () => {
+    const order = {
+      id: "order-oversell",
+      items: [{ productId: "prod-1", quantity: 5 }],
+    };
+
+    const mockTx = buildMockTx({
+      "prod-1": { id: "prod-1", name: "Produto teste", stock: 1 },
+    });
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (cb: any) =>
+      cb(mockTx),
+    );
+    vi.spyOn(SystemLogService, "logWarning").mockRejectedValue(
+      new Error("log db down"),
+    );
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      (OrderUseCase as any).deductStockForOrder(order, "Importação"),
+    ).resolves.toBeDefined();
+
+    expect(mockTx.product.update).toHaveBeenCalledWith({
+      where: { id: "prod-1" },
+      data: { stock: 0 },
+    });
+    expect(consoleErr).toHaveBeenCalledWith(
+      expect.stringContaining("OVERSELL_DETECTED"),
+      expect.any(Error),
+    );
+  });
+
+  it("retorna array vazio sem tocar prisma quando o pedido não tem items", async () => {
+    const txSpy = vi.spyOn(prisma, "$transaction");
+
+    const empty = await (OrderUseCase as any).deductStockForOrder(
+      { id: "order-empty", items: [] },
+      "Importação",
+    );
+    const nullItems = await (OrderUseCase as any).deductStockForOrder(
+      { id: "order-null", items: undefined },
+      "Importação",
+    );
+
+    expect(empty).toEqual([]);
+    expect(nullItems).toEqual([]);
+    expect(txSpy).not.toHaveBeenCalled();
+  });
+});

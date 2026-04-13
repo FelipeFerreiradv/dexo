@@ -18,10 +18,7 @@ export async function syncMercadoLivre() {
     const listings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
-        externalListingId: {
-          not: undefined,
-          not: { startsWith: "PENDING_" },
-        },
+        externalListingId: { not: { startsWith: "PENDING_" } },
       },
       select: { id: true, externalListingId: true },
     });
@@ -34,7 +31,7 @@ export async function syncMercadoLivre() {
     const ratingMap: Record<string, { reviews?: number; rating?: number }> = {};
 
     for (const id of ids) {
-      if (id.startsWith("LEGACY-")) continue; // não há visitas/reviews para placeholders
+      if (id.startsWith("LEGACY-")) continue; // nï¿½o hï¿½ visitas/reviews para placeholders
       try {
         const visits = await MLApiService.getItemsVisits(account.accessToken, [id]);
         Object.assign(visitsMap, visits);
@@ -50,7 +47,7 @@ export async function syncMercadoLivre() {
         };
       } catch (err) {
         console.warn(
-          `[sync] Reviews não disponíveis para ${id}`,
+          `[sync] Reviews nï¿½o disponï¿½veis para ${id}`,
           err instanceof Error ? err.message : err,
         );
       }
@@ -98,10 +95,7 @@ export async function syncShopee() {
     const listings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
-        externalListingId: {
-          not: undefined,
-          not: { startsWith: "PENDING_" },
-        },
+        externalListingId: { not: { startsWith: "PENDING_" } },
       },
       select: { id: true, externalListingId: true },
     });
@@ -111,7 +105,7 @@ export async function syncShopee() {
       const externalId = listing.externalListingId;
       if (!externalId || externalId.startsWith("LEGACY-")) continue;
       if (!/^[0-9]+$/.test(externalId)) {
-        console.warn(`[sync] Shopee listing ${externalId} não é numérico, pulando`);
+        console.warn(`[sync] Shopee listing ${externalId} nï¿½o ï¿½ numï¿½rico, pulando`);
         continue;
       }
 
@@ -144,7 +138,7 @@ export async function syncShopee() {
         updated++;
       } catch (err) {
         console.error(
-          `[sync] Falha ao buscar métricas Shopee para ${externalId}:`,
+          `[sync] Falha ao buscar mï¿½tricas Shopee para ${externalId}:`,
           err instanceof Error ? err.message : err,
         );
       }

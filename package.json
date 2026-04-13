@@ -19,7 +19,14 @@
     "backfill:listingIds": "tsx scripts/backfill-listing-ids.ts",
     "sync:listingMetrics": "tsx scripts/sync-listing-metrics.ts",
     "sync:listingMetrics:loop": "tsx scripts/sync-listing-metrics-loop.ts",
-    "sync:ordersAndMetrics:loop": "tsx scripts/sync-orders-and-metrics-loop.ts"
+    "sync:ordersAndMetrics:loop": "tsx scripts/sync-orders-and-metrics-loop.ts",
+    "audit:prod": "tsx scripts/prod-audit/run-all.ts",
+    "audit:stock": "tsx scripts/prod-audit/audit-stock-integrity.ts",
+    "audit:listings": "tsx scripts/prod-audit/audit-listings-health.ts",
+    "audit:orders": "tsx scripts/prod-audit/audit-orders-linkage.ts",
+    "audit:products": "tsx scripts/prod-audit/audit-products-integrity.ts",
+    "audit:tokens": "tsx scripts/prod-audit/audit-tokens.ts",
+    "audit:logs": "tsx scripts/prod-audit/audit-system-logs.ts"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",

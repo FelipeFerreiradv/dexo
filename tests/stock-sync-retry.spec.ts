@@ -5,6 +5,7 @@ vi.mock("@/app/lib/prisma", () => ({
     stockSyncJob: {
       findMany: vi.fn(),
       update: vi.fn(),
+      delete: vi.fn(),
     },
     productListing: {
       findMany: vi.fn(),
@@ -49,7 +50,7 @@ describe("StockSyncRetryService.runOnce", () => {
     vi.restoreAllMocks();
   });
 
-  it("marca o job como SUCCESS quando syncProductStock retorna success", async () => {
+  it("deleta o job quando syncProductStock retorna success", async () => {
     (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([
       { id: "lst-1", externalListingId: "ext-lst-1" },
@@ -65,10 +66,10 @@ describe("StockSyncRetryService.runOnce", () => {
 
     await StockSyncRetryService.runOnce();
 
-    expect((prisma as any).stockSyncJob.update).toHaveBeenCalledWith({
+    expect((prisma as any).stockSyncJob.delete).toHaveBeenCalledWith({
       where: { id: "job-1" },
-      data: { status: "SUCCESS", lastError: null },
     });
+    expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
   });
 
   it("incrementa attempts e aplica backoff em falha transitória", async () => {
@@ -97,7 +98,7 @@ describe("StockSyncRetryService.runOnce", () => {
     expect(call.data.nextRunAt).toBeInstanceOf(Date);
   });
 
-  it("marca como FAILED e dispara logError em erro terminal (token revoked)", async () => {
+  it("deleta o job e dispara logError em erro terminal (token revoked)", async () => {
     (prisma as any).stockSyncJob.findMany.mockResolvedValue([makeJob()]);
     (prisma as any).productListing.findMany.mockResolvedValue([
       { id: "lst-1", externalListingId: "ext-lst-1" },
@@ -114,8 +115,9 @@ describe("StockSyncRetryService.runOnce", () => {
 
     await StockSyncRetryService.runOnce();
 
-    const call = (prisma as any).stockSyncJob.update.mock.calls[0][0];
-    expect(call.data.status).toBe("FAILED");
+    expect((prisma as any).stockSyncJob.delete).toHaveBeenCalledWith({
+      where: { id: "job-1" },
+    });
     expect(SystemLogService.logError).toHaveBeenCalledWith(
       "STOCK_SYNC_FAILED",
       expect.stringContaining("lst-1"),

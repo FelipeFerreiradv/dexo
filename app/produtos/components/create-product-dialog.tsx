@@ -374,6 +374,7 @@ export function CreateProductDialog({
     formState: { errors },
     setValue,
     watch,
+    getValues,
     trigger,
   } = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
@@ -488,7 +489,7 @@ export function CreateProductDialog({
     accountId: string,
     checked: boolean,
   ) => {
-    const current = (watch(field) as string[] | undefined) ?? [];
+    const current = (getValues(field) as string[] | undefined) ?? [];
     const next = checked
       ? Array.from(new Set([...current, accountId]))
       : current.filter((id) => id !== accountId);
@@ -831,10 +832,10 @@ export function CreateProductDialog({
       (s || "").toString().trim().toLowerCase();
     const prev = compatAutofilledRef.current;
 
-    const currentBrand = watch("brand");
-    const currentModel = watch("model");
-    const currentYear = watch("year");
-    const currentVersion = watch("version");
+    const currentBrand = getValues("brand");
+    const currentModel = getValues("model");
+    const currentYear = getValues("year");
+    const currentVersion = getValues("version");
 
     // Marca
     const shouldUpdateBrand =
@@ -996,8 +997,8 @@ export function CreateProductDialog({
       }
 
       // Categoria: atualizar se vazio ou se o valor atual foi auto-detectado anteriormente
-      const currentCategory = watch("category");
-      const currentMlCategory = watch("mlCategory");
+      const currentCategory = getValues("category");
+      const currentMlCategory = getValues("mlCategory");
       const shouldUpdateCategory =
         !currentCategory || norm(prev.category) === norm(currentCategory);
 
@@ -1013,7 +1014,7 @@ export function CreateProductDialog({
               () =>
                 console.debug(
                   "[auto-fill] post-set category",
-                  watch("category"),
+                  getValues("category"),
                 ),
               0,
             );
@@ -1028,7 +1029,7 @@ export function CreateProductDialog({
               () =>
                 console.debug(
                   "[auto-fill] post-set category",
-                  watch("category"),
+                  getValues("category"),
                 ),
               0,
             );
@@ -1061,7 +1062,7 @@ export function CreateProductDialog({
               () =>
                 console.debug(
                   "[auto-fill] post-set mlCategory",
-                  watch("mlCategory"),
+                  getValues("mlCategory"),
                 ),
               0,
             );
@@ -1083,7 +1084,7 @@ export function CreateProductDialog({
               () =>
                 console.debug(
                   "[auto-fill] post-set category",
-                  watch("category"),
+                  getValues("category"),
                 ),
               0,
             );
@@ -1101,7 +1102,7 @@ export function CreateProductDialog({
               () =>
                 console.debug(
                   "[auto-fill] post-clear mlCategory",
-                  watch("mlCategory"),
+                  getValues("mlCategory"),
                 ),
               0,
             );
@@ -1110,7 +1111,7 @@ export function CreateProductDialog({
       }
 
       // Marca
-      const currentBrand = watch("brand");
+      const currentBrand = getValues("brand");
       const shouldUpdateBrand =
         !currentBrand || norm(prev.brand) === norm(currentBrand);
       if (
@@ -1136,7 +1137,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-set brand", watch("brand"));
+              console.debug("[auto-fill] post-set brand", getValues("brand"));
               console.debug(
                 "[auto-fill] dom brand after set",
                 (document.getElementById("brand") as HTMLInputElement | null)
@@ -1151,7 +1152,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-clear brand", watch("brand"));
+              console.debug("[auto-fill] post-clear brand", getValues("brand"));
               console.debug(
                 "[auto-fill] dom brand after clear",
                 (document.getElementById("brand") as HTMLInputElement | null)
@@ -1163,7 +1164,7 @@ export function CreateProductDialog({
       }
 
       // Modelo
-      const currentModel = watch("model");
+      const currentModel = getValues("model");
       const shouldUpdateModel =
         !currentModel || norm(prev.model) === norm(currentModel);
       if (
@@ -1189,7 +1190,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-set model", watch("model"));
+              console.debug("[auto-fill] post-set model", getValues("model"));
               console.debug(
                 "[auto-fill] dom model after set",
                 (document.getElementById("model") as HTMLInputElement | null)
@@ -1204,7 +1205,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-clear model", watch("model"));
+              console.debug("[auto-fill] post-clear model", getValues("model"));
               console.debug(
                 "[auto-fill] dom model after clear",
                 (document.getElementById("model") as HTMLInputElement | null)
@@ -1216,7 +1217,7 @@ export function CreateProductDialog({
       }
 
       // Ano
-      const currentYear = watch("year");
+      const currentYear = getValues("year");
       const shouldUpdateYear =
         !currentYear || norm(prev.year) === norm(currentYear);
       if (
@@ -1241,7 +1242,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-set year", watch("year"));
+              console.debug("[auto-fill] post-set year", getValues("year"));
               console.debug(
                 "[auto-fill] dom year after set",
                 (document.getElementById("year") as HTMLInputElement | null)
@@ -1256,7 +1257,7 @@ export function CreateProductDialog({
             window.location.hostname === "localhost"
           ) {
             setTimeout(() => {
-              console.debug("[auto-fill] post-clear year", watch("year"));
+              console.debug("[auto-fill] post-clear year", getValues("year"));
               console.debug(
                 "[auto-fill] dom year after clear",
                 (document.getElementById("year") as HTMLInputElement | null)
@@ -1275,7 +1276,7 @@ export function CreateProductDialog({
         );
 
         // height
-        const currentHeight = watch("heightCm");
+        const currentHeight = getValues("heightCm");
         const prevHeight = prev.heightCm;
         const shouldUpdateHeight =
           currentHeight === null ||
@@ -1290,7 +1291,7 @@ export function CreateProductDialog({
         }
 
         // width
-        const currentWidth = watch("widthCm");
+        const currentWidth = getValues("widthCm");
         const prevWidth = prev.widthCm;
         const shouldUpdateWidth =
           currentWidth === null ||
@@ -1305,7 +1306,7 @@ export function CreateProductDialog({
         }
 
         // length
-        const currentLength = watch("lengthCm");
+        const currentLength = getValues("lengthCm");
         const prevLength = prev.lengthCm;
         const shouldUpdateLength =
           currentLength === null ||
@@ -1320,7 +1321,7 @@ export function CreateProductDialog({
         }
 
         // weight
-        const currentWeight = watch("weightKg");
+        const currentWeight = getValues("weightKg");
         const prevWeight = prev.weightKg;
         const shouldUpdateWeight =
           currentWeight === null ||
@@ -1337,7 +1338,7 @@ export function CreateProductDialog({
         // If category wasn't detected earlier, try to suggest a category from
         // the input title or from the measurement key that matched (best-effort).
         try {
-          const currentCategory = watch("category");
+          const currentCategory = getValues("category");
           const shouldUpdateCategory =
             !currentCategory ||
             (autoDetectedRef.current?.category ?? "") === currentCategory;
@@ -1565,7 +1566,7 @@ export function CreateProductDialog({
         shopeeBest &&
         (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE
       ) {
-        const currentShopeeCategory = watch("shopeeCategory");
+        const currentShopeeCategory = getValues("shopeeCategory");
         shopeeValue =
           shopeeOptions.find(
             (c) =>
@@ -1605,12 +1606,12 @@ export function CreateProductDialog({
         return;
       }
 
-      const currentCategory = watch("category");
-      const currentMlCategory = watch("mlCategory");
-      const currentBrand = watch("brand");
-      const currentModel = watch("model");
-      const currentYear = watch("year");
-      const currentPartNumber = watch("partNumber");
+      const currentCategory = getValues("category");
+      const currentMlCategory = getValues("mlCategory");
+      const currentBrand = getValues("brand");
+      const currentModel = getValues("model");
+      const currentYear = getValues("year");
+      const currentPartNumber = getValues("partNumber");
 
       const shouldUpdateCategory =
         !currentCategory || norm(prev.category) === norm(currentCategory);
@@ -1659,10 +1660,10 @@ export function CreateProductDialog({
 
       const measurements = best.measurements;
       try {
-        const currentHeight = watch("heightCm");
-        const currentWidth = watch("widthCm");
-        const currentLength = watch("lengthCm");
-        const currentWeight = watch("weightKg");
+        const currentHeight = getValues("heightCm");
+        const currentWidth = getValues("widthCm");
+        const currentLength = getValues("lengthCm");
+        const currentWeight = getValues("weightKg");
 
         const shouldUpdateHeight =
           currentHeight === null ||
@@ -1774,10 +1775,10 @@ export function CreateProductDialog({
         current === null || current === undefined || prevAuto === current;
 
       if (measurements) {
-        const h = watch("heightCm");
-        const w = watch("widthCm");
-        const l = watch("lengthCm");
-        const wt = watch("weightKg");
+        const h = getValues("heightCm");
+        const w = getValues("widthCm");
+        const l = getValues("lengthCm");
+        const wt = getValues("weightKg");
 
         let changed = false;
         if (
@@ -2484,17 +2485,17 @@ export function CreateProductDialog({
                       if (v === "NONE") {
                         // Desvincular: limpar campos preenchidos pela sucata
                         const prev = scrapAutofilledRef.current;
-                        if (prev.brand && watch("brand") === prev.brand)
+                        if (prev.brand && getValues("brand") === prev.brand)
                           setValue("brand", "");
-                        if (prev.model && watch("model") === prev.model)
+                        if (prev.model && getValues("model") === prev.model)
                           setValue("model", "");
-                        if (prev.year && watch("year") === prev.year)
+                        if (prev.year && getValues("year") === prev.year)
                           setValue("year", "");
-                        if (prev.version && watch("version") === prev.version)
+                        if (prev.version && getValues("version") === prev.version)
                           setValue("version", "");
                         if (
                           prev.sourceVehicle &&
-                          watch("sourceVehicle") === prev.sourceVehicle
+                          getValues("sourceVehicle") === prev.sourceVehicle
                         )
                           setValue("sourceVehicle", "");
                         setSelectedScrap(null);
