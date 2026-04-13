@@ -1,0 +1,25 @@
+Contas: [ 'JOTABÊ AUTOPEÇAS/1289108824', 'JOTABEDESMONTE/2985478180' ]
+
+=== Conta JOTABÊ AUTOPEÇAS (1289108824) ===
+[JOTABÊ AUTOPEÇAS] 16867 item IDs
+[ML API] Processing 16867 items
+[ML API] Will make 844 requests for item details
+[ML API] Fetched 16867 item details
+[JOTABÊ AUTOPEÇAS] 16867 detalhes carregados
+
+=== Conta JOTABEDESMONTE (2985478180) ===
+[JOTABEDESMONTE] 188 item IDs
+[ML API] Processing 188 items
+[ML API] Will make 10 requests for item details
+[ML API] Fetched 188 item details
+[JOTABEDESMONTE] 188 detalhes carregados
+
+=== RESUMO ===
+{ total: 17055, ok: 0, warn: 0, block: 17055 }
+Por conta: {
+  'JOTABÊ AUTOPEÇAS': { total: 16867, block: 16867, warn: 0, ok: 0 },
+  JOTABEDESMONTE: { total: 188, block: 188, warn: 0, ok: 0 }
+}
+Por tipo de problema: { MISSING_DIMENSIONS: 12907, MISSING_ALL: 4148 }
+Detalhes salvos em scripts\out\ml-dims-audit.json
+CSV salvo em scripts\out\ml-dims-audit.csv

@@ -1,0 +1,13 @@
+{
+  "totalEnriched": 17054,
+  "strategy": {
+    "push-tier": 3639,
+    "skip-already-filled": 12906,
+    "push-with-catalog-floor": 509
+  },
+  "partialSellerPkg": 0,
+  "noSellerPkg": 4148,
+  "withCatalogProduct": 4618,
+  "catalogFetchErrors": 0,
+  "uniqueCatalogProducts": 3143
+}

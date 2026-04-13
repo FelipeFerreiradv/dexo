@@ -1,0 +1,94 @@
+[enrich] auditadas: 17054
+[enrich] BLOCK a enriquecer: 17054
+[enrich] JOTABÊ AUTOPEÇAS: fetching details para 16866 itens…
+[ML API] Processing 16866 items
+[ML API] Will make 844 requests for item details
+[ML API] Fetched 16866 item details
+[enrich] JOTABÊ AUTOPEÇAS: 16866 detalhes recebidos
+[enrich] JOTABEDESMONTE: fetching details para 188 itens…
+[ML API] Processing 188 items
+[ML API] Will make 10 requests for item details
+[ML API] Fetched 188 item details
+[enrich] JOTABEDESMONTE: 188 detalhes recebidos
+[enrich] catalog_product_ids únicos: 3142
+[enrich] catalog progress: 50/3142
+[enrich] catalog progress: 100/3142
+[enrich] catalog progress: 150/3142
+[enrich] catalog progress: 200/3142
+[enrich] catalog progress: 250/3142
+[enrich] catalog progress: 300/3142
+[enrich] catalog progress: 350/3142
+[enrich] catalog progress: 400/3142
+[enrich] catalog progress: 450/3142
+[enrich] catalog progress: 500/3142
+[enrich] catalog progress: 550/3142
+[enrich] catalog progress: 600/3142
+[enrich] catalog progress: 650/3142
+[enrich] catalog progress: 700/3142
+[enrich] catalog progress: 750/3142
+[enrich] catalog progress: 800/3142
+[enrich] catalog progress: 850/3142
+[enrich] catalog progress: 900/3142
+[enrich] catalog progress: 950/3142
+[enrich] catalog progress: 1000/3142
+[enrich] catalog progress: 1050/3142
+[enrich] catalog progress: 1100/3142
+[enrich] catalog progress: 1150/3142
+[enrich] catalog progress: 1200/3142
+[enrich] catalog progress: 1250/3142
+[enrich] catalog progress: 1300/3142
+[enrich] catalog progress: 1350/3142
+[enrich] catalog progress: 1400/3142
+[enrich] catalog progress: 1450/3142
+[enrich] catalog progress: 1500/3142
+[enrich] catalog progress: 1550/3142
+[enrich] catalog progress: 1600/3142
+[enrich] catalog progress: 1650/3142
+[enrich] catalog progress: 1700/3142
+[enrich] catalog progress: 1750/3142
+[enrich] catalog progress: 1800/3142
+[enrich] catalog progress: 1850/3142
+[enrich] catalog progress: 1900/3142
+[enrich] catalog progress: 1950/3142
+[enrich] catalog progress: 2000/3142
+[enrich] catalog progress: 2050/3142
+[enrich] catalog progress: 2100/3142
+[enrich] catalog progress: 2150/3142
+[enrich] catalog progress: 2200/3142
+[enrich] catalog progress: 2250/3142
+[enrich] catalog progress: 2300/3142
+[enrich] catalog progress: 2350/3142
+[enrich] catalog progress: 2400/3142
+[enrich] catalog progress: 2450/3142
+[enrich] catalog progress: 2500/3142
+[enrich] catalog progress: 2550/3142
+[enrich] catalog progress: 2600/3142
+[enrich] catalog progress: 2650/3142
+[enrich] catalog progress: 2700/3142
+[enrich] catalog progress: 2750/3142
+[enrich] catalog progress: 2800/3142
+[enrich] catalog progress: 2850/3142
+[enrich] catalog progress: 2900/3142
+[enrich] catalog progress: 2950/3142
+[enrich] catalog progress: 3000/3142
+[enrich] catalog progress: 3050/3142
+[enrich] catalog progress: 3100/3142
+[enrich] catalog cache pronto: 3142
+
+=== RESUMO ===
+{
+  totalEnriched: 17054,
+  strategy: {
+    'push-tier': 3640,
+    'skip-already-filled': 12906,
+    'push-with-catalog-floor': 508
+  },
+  partialSellerPkg: 0,
+  noSellerPkg: 4148,
+  withCatalogProduct: 4617,
+  catalogFetchErrors: 0,
+  uniqueCatalogProducts: 3142
+}
+
+Enriquecido: scripts\out\ml-dims-enriched.json
+Resumo:      scripts\out\ml-dims-enriched-summary.json

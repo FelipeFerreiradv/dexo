@@ -807,6 +807,21 @@ export class ListingUseCase {
         };
       }
 
+      // Dimensões obrigatórias: o ML usa para frete e bloqueia anúncios sem medidas confiáveis.
+      // Não enviamos mais fallback artificial (10x10x10/1kg) porque o ML detecta o padrão e suspende.
+      if (
+        product.heightCm == null ||
+        product.widthCm == null ||
+        product.lengthCm == null ||
+        product.weightKg == null
+      ) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter altura, largura, comprimento e peso preenchidos para criar anúncio no Mercado Livre",
+        };
+      }
+
       let descriptionSource: "product" | "user_default" | "fallback" =
         product.description ? "product" : "fallback";
 
@@ -1231,24 +1246,14 @@ export class ListingUseCase {
         });
       }
 
-      // Include shipping dimensions (ML exige string "HxWxL,weight") — clamp para limites aceitos
-      // Se o produto não tiver dimensões, usar valores padrão mínimos aceitos pelo ML
-      const rawDims = {
-        heightCm: product.heightCm,
-        widthCm: product.widthCm,
-        lengthCm: product.lengthCm,
-        weightKg: product.weightKg,
-      };
-      const hasDims =
-        rawDims.heightCm != null &&
-        rawDims.widthCm != null &&
-        rawDims.lengthCm != null &&
-        rawDims.weightKg != null;
-      const pkg = this.sanitizePackageDimensions(
-        hasDims
-          ? rawDims
-          : { heightCm: 10, widthCm: 10, lengthCm: 10, weightKg: 1 },
-      );
+      // Include shipping dimensions (ML exige string "HxWxL,weight") — clamp para limites aceitos.
+      // Dimensões obrigatórias já validadas no início de createMLListing.
+      const pkg = this.sanitizePackageDimensions({
+        heightCm: product.heightCm!,
+        widthCm: product.widthCm!,
+        lengthCm: product.lengthCm!,
+        weightKg: Number(product.weightKg),
+      });
 
       if (pkg) {
         const dims = `${pkg.height}x${pkg.width}x${pkg.length},${Number(
