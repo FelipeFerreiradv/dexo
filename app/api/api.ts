@@ -23,6 +23,8 @@ import { systemLogRoutes } from "../routes/system-log.routes";
 import { locationRoutes } from "../routes/location.routes";
 import { compatibilityRoutes } from "../routes/compatibility.routes";
 import { scrapRoutes } from "../routes/scrap.routes";
+import { customerRoutes } from "../routes/customer.routes";
+import { financeRoutes } from "../routes/finance.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
@@ -92,6 +94,14 @@ api.register(compatibilityRoutes, {
 
 api.register(scrapRoutes, {
   prefix: "/scraps",
+});
+
+api.register(customerRoutes, {
+  prefix: "/customers",
+});
+
+api.register(financeRoutes, {
+  prefix: "/finance",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
