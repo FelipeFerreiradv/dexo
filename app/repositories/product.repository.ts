@@ -1295,19 +1295,20 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async getMaxSkuNumber(userId?: string): Promise<number> {
     try {
-      const result = await prisma.product.findFirst({
-        where: {
-          sku: { startsWith: "PROD-" },
-          ...(userId ? { userId } : {}),
-        },
+      const rows = await prisma.product.findMany({
+        where: userId ? { userId } : {},
         select: { sku: true },
-        orderBy: { sku: "desc" },
       });
 
-      if (!result) return 0;
-
-      const match = result.sku.match(/PROD-(\d+)/);
-      return match ? parseInt(match[1], 10) : 0;
+      let max = 0;
+      for (const { sku } of rows) {
+        if (!sku) continue;
+        const match = sku.match(/^(?:PROD-)?(\d+)$/);
+        if (!match) continue;
+        const n = parseInt(match[1], 10);
+        if (Number.isFinite(n) && n > max) max = n;
+      }
+      return max;
     } catch {
       throw new Error("Erro ao buscar maior SKU");
     }

@@ -221,12 +221,12 @@ export class ProductUseCase {
 
   /**
    * Gera o próximo SKU disponível
-   * Formato: PROD-001, PROD-002, etc.
+   * Formato: 001, 002, etc. (continua a partir dos SKUs PROD-XXX legados)
    */
   async getNextSku(userId: string): Promise<string> {
     const maxNumber = await this.productRepository.getMaxSkuNumber(userId);
     const nextNumber = maxNumber + 1;
-    return `PROD-${nextNumber.toString().padStart(3, "0")}`;
+    return nextNumber.toString().padStart(3, "0");
   }
 
   /**

@@ -2206,7 +2206,7 @@ export function CreateProductDialog({
                   <Label htmlFor="sku">SKU (automático)</Label>
                   <Input
                     id="sku"
-                    placeholder={isLoadingSku ? "Carregando..." : "PROD-001"}
+                    placeholder={isLoadingSku ? "Carregando..." : "001"}
                     {...register("sku")}
                     readOnly
                     disabled={isLoadingSku}
