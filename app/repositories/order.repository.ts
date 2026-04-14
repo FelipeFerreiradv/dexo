@@ -219,7 +219,7 @@ class OrderRepositoryPrisma implements OrderRepository {
    */
   async findByExternalOrderId(externalOrderId: string): Promise<Order | null> {
     try {
-      const result = await prisma.order.findUnique({
+      const result = await prisma.order.findFirst({
         where: { externalOrderId },
         include: {
           items: {
@@ -487,21 +487,23 @@ class OrderRepositoryPrisma implements OrderRepository {
   }
 
   /**
-   * Verificar se pedido já existe por ID externo
-   * Uses findFirst + select for speed (stops at first match, no full count)
+   * Verificar se pedido já existe para (marketplaceAccountId, externalOrderId).
+   * Usa o unique composto do schema — externalOrderId sozinho NÃO é unique.
    */
-  async exists(externalOrderId: string): Promise<boolean> {
-    try {
-      const found = await prisma.order.findUnique({
-        where: { externalOrderId },
-        select: { id: true },
-      });
-      return !!found;
-    } catch (error) {
-      throw new Error(
-        error instanceof Error ? error.message : "Erro ao verificar pedido",
-      );
-    }
+  async exists(
+    marketplaceAccountId: string,
+    externalOrderId: string,
+  ): Promise<boolean> {
+    const found = await prisma.order.findUnique({
+      where: {
+        marketplaceAccountId_externalOrderId: {
+          marketplaceAccountId,
+          externalOrderId,
+        },
+      },
+      select: { id: true },
+    });
+    return found !== null;
   }
 }
 

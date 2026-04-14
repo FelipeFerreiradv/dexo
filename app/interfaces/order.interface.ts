@@ -125,6 +125,9 @@ export interface OrderRepository {
   // Contar pedidos
   count(marketplaceAccountId?: string): Promise<number>;
 
-  // Verificar se pedido já existe (por externalOrderId)
-  exists(externalOrderId: string): Promise<boolean>;
+  // Verificar se pedido já existe (por marketplaceAccountId + externalOrderId)
+  exists(
+    marketplaceAccountId: string,
+    externalOrderId: string,
+  ): Promise<boolean>;
 }

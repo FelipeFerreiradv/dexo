@@ -184,10 +184,14 @@ export class OrderUseCase {
 
     result.totalOrders = mlOrders.length;
 
-    // Batch check + prefetch (same optimization as importRecentOrders)
+    // Batch check + prefetch (same optimization as importRecentOrders).
+    // Escopado por marketplaceAccountId — o unique é composto, não global.
     const externalIds = mlOrders.map((o) => o.id.toString());
     const existingOrders = await prisma.order.findMany({
-      where: { externalOrderId: { in: externalIds } },
+      where: {
+        marketplaceAccountId: account.id,
+        externalOrderId: { in: externalIds },
+      },
       select: { externalOrderId: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
@@ -367,12 +371,16 @@ export class OrderUseCase {
 
     result.totalOrders = shopeeOrders.length;
 
-    // Batch check + prefetch (same optimization as ML imports)
+    // Batch check + prefetch (same optimization as ML imports).
+    // Escopado por marketplaceAccountId — o unique é composto, não global.
     const externalIds = (shopeeOrders as ShopeeOrderDetail[]).map(
       (o) => o.order_sn,
     );
     const existingOrders = await prisma.order.findMany({
-      where: { externalOrderId: { in: externalIds } },
+      where: {
+        marketplaceAccountId: account.id,
+        externalOrderId: { in: externalIds },
+      },
       select: { externalOrderId: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
@@ -533,7 +541,10 @@ export class OrderUseCase {
 
     try {
       // Verificar se pedido já foi importado (fallback for direct calls without batch check)
-      const exists = await orderRepository.exists(externalOrderId);
+      const exists = await orderRepository.exists(
+        marketplaceAccountId,
+        externalOrderId,
+      );
       if (exists) {
         return {
           success: true,
