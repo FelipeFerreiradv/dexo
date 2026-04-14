@@ -2114,15 +2114,9 @@ export function EditProductDialog({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="gold_special">
-                            Premium (gold_special)
-                          </SelectItem>
-                          <SelectItem value="gold_pro">
-                            Clássico (gold_pro)
-                          </SelectItem>
-                          <SelectItem value="bronze">
-                            Grátis (bronze)
-                          </SelectItem>
+                          <SelectItem value="gold_special">Premium</SelectItem>
+                          <SelectItem value="gold_pro">Clássico</SelectItem>
+                          <SelectItem value="bronze">Grátis</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
