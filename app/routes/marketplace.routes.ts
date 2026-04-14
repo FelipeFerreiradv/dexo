@@ -965,7 +965,33 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           userId,
           Platform.SHOPEE,
         );
-        return reply.send({ accounts });
+
+        const enriched = await Promise.all(
+          accounts.map(async (acc) => {
+            if (!acc.shopId || !acc.accessToken) return acc;
+            try {
+              const info: any = await ShopeeApiService.getShopInfo(
+                acc.accessToken,
+                acc.shopId,
+              );
+              const payload = info?.response ?? info;
+              const shopName =
+                payload?.shop_name || payload?.shopName || undefined;
+              const region = payload?.region || undefined;
+              const merchantName =
+                payload?.merchant_name || payload?.merchantName || undefined;
+              return { ...acc, shopName, region, merchantName };
+            } catch (err) {
+              request.log?.warn?.(
+                { err, accountId: acc.id },
+                "shopee get_shop_info falhou, usando fallback",
+              );
+              return acc;
+            }
+          }),
+        );
+
+        return reply.send({ accounts: enriched });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao listar contas Shopee",

@@ -459,6 +459,7 @@ export function ProductsList() {
   const filterOptionsRequestIdRef = useRef(0);
   const productsRequestIdRef = useRef(0);
   const productsAbortControllerRef = useRef<AbortController | null>(null);
+  const pageSizeRef = useRef(10);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -572,7 +573,7 @@ export function ProductsList() {
       try {
         const params = serializeProductFilters(activeFilters, {
           page,
-          limit: 10,
+          limit: pageSizeRef.current,
         });
         const response = await fetch(`${getApiBaseUrl()}/products?${params}`, {
           headers: { email },
@@ -701,6 +702,14 @@ export function ProductsList() {
   const handlePageChange = (newPage: number) => {
     setSelectedIds([]);
     fetchProducts(newPage, filters);
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    if (!Number.isFinite(newSize) || newSize <= 0) return;
+    pageSizeRef.current = newSize;
+    setPagination((prev) => ({ ...prev, limit: newSize, page: 1 }));
+    setSelectedIds([]);
+    fetchProducts(1, filters);
   };
 
   const handleDelete = async (id: string) => {
@@ -1533,35 +1542,63 @@ export function ProductsList() {
                       ))}
                     </div>
 
-                    {pagination.totalPages > 1 && (
-                      <div className="flex items-center justify-between pt-4">
-                        <p className="text-sm text-muted-foreground">
-                          Página {pagination.page} de {pagination.totalPages}
-                        </p>
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={pagination.page === 1}
-                            onClick={() =>
-                              handlePageChange(pagination.page - 1)
-                            }
-                          >
-                            <ChevronLeft className="size-4" />
-                            Anterior
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={pagination.page === pagination.totalPages}
-                            onClick={() =>
-                              handlePageChange(pagination.page + 1)
-                            }
-                          >
-                            Próxima
-                            <ChevronRight className="size-4" />
-                          </Button>
+                    {pagination.total > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
+                        <div className="flex items-center gap-3">
+                          <p className="text-sm text-muted-foreground">
+                            Página {pagination.page} de{" "}
+                            {Math.max(1, pagination.totalPages)}
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-muted-foreground">
+                              Itens por página
+                            </span>
+                            <Select
+                              value={String(pagination.limit)}
+                              onValueChange={(value) =>
+                                handlePageSizeChange(Number(value))
+                              }
+                            >
+                              <SelectTrigger className="h-8 w-20">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="10">10</SelectItem>
+                                <SelectItem value="20">20</SelectItem>
+                                <SelectItem value="50">50</SelectItem>
+                                <SelectItem value="100">100</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
+                        {pagination.totalPages > 1 && (
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={pagination.page === 1}
+                              onClick={() =>
+                                handlePageChange(pagination.page - 1)
+                              }
+                            >
+                              <ChevronLeft className="size-4" />
+                              Anterior
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                pagination.page === pagination.totalPages
+                              }
+                              onClick={() =>
+                                handlePageChange(pagination.page + 1)
+                              }
+                            >
+                              Próxima
+                              <ChevronRight className="size-4" />
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </>

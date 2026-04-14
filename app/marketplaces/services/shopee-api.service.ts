@@ -108,6 +108,28 @@ export class ShopeeApiService {
   }
 
   /**
+   * Retorna informações básicas da loja (nome, região, status).
+   * Usado apenas para enriquecer a listagem de contas conectadas.
+   */
+  static async getShopInfo(
+    accessToken: string,
+    shopId: number,
+  ): Promise<{
+    shop_name?: string;
+    region?: string;
+    status?: string;
+    shop_logo?: string;
+    merchant_name?: string;
+  }> {
+    return this.makeAuthenticatedRequest(
+      "GET",
+      "/api/v2/shop/get_shop_info",
+      accessToken,
+      shopId,
+    );
+  }
+
+  /**
    * Faz uma requisição autenticada para a API do Shopee
    */
   private static async makeAuthenticatedRequest<T>(

@@ -42,7 +42,16 @@ export function ShopeeConnectionTab() {
   const { data: session } = useSession();
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [accounts, setAccounts] = useState<
-    Array<{ id: string; accountName: string; status?: string; shopId?: number }>
+    Array<{
+      id: string;
+      accountName: string;
+      status?: string;
+      shopId?: number;
+      shopName?: string;
+      region?: string;
+      merchantName?: string;
+      externalUserId?: string | null;
+    }>
   >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -329,12 +338,30 @@ export function ShopeeConnectionTab() {
                       <div className="flex items-center gap-2">
                         <CheckCircle2 className="h-4 w-4 text-green-600" />
                         <span className="font-medium">
-                          {acc.accountName || "Conta Shopee"}
+                          {acc.shopName ||
+                            acc.accountName ||
+                            "Conta Shopee"}
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Status: {acc.status || status.status || "Ativo"}{" "}
-                        {acc.shopId ? `• Shop ${acc.shopId}` : ""}
+                        {(() => {
+                          const username =
+                            acc.merchantName ||
+                            acc.externalUserId ||
+                            (acc.shopId ? `Shop ${acc.shopId}` : null);
+                          const parts: string[] = [];
+                          if (username) parts.push(`@${username}`);
+                          if (
+                            acc.shopId &&
+                            username !== `Shop ${acc.shopId}`
+                          ) {
+                            parts.push(`Shop ${acc.shopId}`);
+                          }
+                          parts.push(
+                            `Status: ${acc.status || status.status || "Ativo"}`,
+                          );
+                          return parts.join(" • ");
+                        })()}
                       </p>
                     </div>
                     <Button
