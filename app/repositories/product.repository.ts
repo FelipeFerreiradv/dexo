@@ -163,6 +163,7 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     isTraceable: item.isTraceable ?? undefined,
     sourceVehicle: item.sourceVehicle ?? undefined,
     mlCategoryId: item.mlCategoryId ?? undefined,
+    mlCategory: (item as any).mlCategory?.externalId ?? undefined,
     mlCategorySource: (item as any).mlCategorySource ?? undefined,
     mlCategoryChosenAt: item.mlCategoryChosenAt ?? undefined,
     shopeeCategoryId: (item as any).shopeeCategoryId ?? undefined,
@@ -251,6 +252,9 @@ class ProductRepositoryPrisma implements ProductRepository {
       mlCategoryId: true,
       mlCategorySource: true,
       mlCategoryChosenAt: true,
+      mlCategory: {
+        select: { externalId: true, fullPath: true },
+      },
       shopeeCategoryId: true,
       shopeeCategorySource: true,
       shopeeCategoryChosenAt: true,
@@ -1078,6 +1082,9 @@ class ProductRepositoryPrisma implements ProductRepository {
         where: { id, userId },
         include: {
           compatibilities: true,
+          mlCategory: {
+            select: { externalId: true, fullPath: true },
+          },
           listings: {
             include: {
               marketplaceAccount: {

@@ -541,6 +541,56 @@ export class ListingUseCase {
     return hard.has(categoryId) || hard.has(normalized);
   }
 
+  /**
+   * Reconstrói os campos do payload ML que dependem da categoria (attributes,
+   * family_name, title / no-title) para uma nova categoria. Preserva todos os
+   * demais campos já montados (pictures, shipping, sale_terms, condition, etc).
+   * Usado em retries após sugestão de categoria via domain_discovery.
+   */
+  private static rebuildMLPayloadForCategory(
+    basePayload: MLItemCreatePayload,
+    product: any,
+    newCategoryId: string,
+  ): MLItemCreatePayload {
+    const normalized =
+      this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
+
+    const newAttributes = this.buildMLAttributes(product, normalized);
+    // Preservar atributos que não dependem da categoria (SELLER_PACKAGE_*, etc)
+    // mas foram adicionados dinamicamente no payload original após buildMLAttributes.
+    const baseAttrIds = new Set(newAttributes.map((a) => a.id));
+    const extraAttrs = (basePayload.attributes || []).filter(
+      (a) => !baseAttrIds.has(a.id) && a.id.startsWith("SELLER_PACKAGE_"),
+    );
+
+    const includeFamilyName = this.shouldIncludeFamilyName(normalized);
+    const noTitleFlow = this.noTitleWithFamilyName(normalized);
+    const familyNameValue = this.buildMLTitle(product);
+    const titleValue =
+      (basePayload as any).title || this.buildMLTitle(product);
+
+    const rebuilt: MLItemCreatePayload = {
+      ...basePayload,
+      category_id: normalized,
+      attributes: [...newAttributes, ...extraAttrs],
+    };
+
+    // title / family_name conforme a NOVA categoria
+    if (includeFamilyName) {
+      (rebuilt as any).family_name = familyNameValue;
+      if (noTitleFlow) {
+        delete (rebuilt as any).title;
+      } else {
+        (rebuilt as any).title = titleValue;
+      }
+    } else {
+      delete (rebuilt as any).family_name;
+      (rebuilt as any).title = titleValue;
+    }
+
+    return rebuilt;
+  }
+
   static async createMLListing(
     userId: string,
     productId: string,
@@ -1380,6 +1430,75 @@ export class ListingUseCase {
         const isCategoryInvalid = !!parsedMl?.cause?.some(
           (c: any) => c?.code === "item.category_id.invalid",
         );
+        // ML retorna "item.condition.invalid" quando a categoria persistida é de
+        // outra vertical (ex: Gin) e não aceita a condition escolhida. Isso é um
+        // sinal forte de "categoria errada no produto" — acionamos domain_discovery
+        // antes dos retries de título/family_name para evitar falsos positivos.
+        const isConditionInvalid = !!parsedMl?.cause?.some(
+          (c: any) => c?.code === "item.condition.invalid",
+        );
+
+        if (!mlItem && isConditionInvalid) {
+          try {
+            const siteId = (categoryIdForML || "MLB").slice(0, 3);
+            const suggestedId = await MLApiService.suggestCategoryId(
+              siteId,
+              product.name || "",
+            );
+            if (suggestedId && suggestedId !== categoryIdForML) {
+              console.warn(
+                `[ListingUseCase] condition.invalid detectada; trocando categoria ${categoryIdForML} por sugestão domain_discovery ${suggestedId}`,
+              );
+              const leafRetry =
+                await CategoryResolutionService.ensureLeafLocalOnly(
+                  suggestedId,
+                );
+              const newCategoryId = leafRetry?.externalId || suggestedId;
+              const normalizedNew =
+                this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
+
+              const retryPayload = this.rebuildMLPayloadForCategory(
+                payload,
+                product,
+                normalizedNew,
+              );
+
+              mlItem = await this.withTimeout(
+                MLApiService.createItem(acc.accessToken, retryPayload),
+                timeoutMs,
+                "ML createItem condition retry",
+              );
+
+              if (mlItem) {
+                resolvedCategoryId = normalizedNew;
+                categoryIdForML = normalizedNew;
+                // Persistir categoria corrigida
+                try {
+                  const localCat =
+                    await CategoryRepository.findByExternalId(normalizedNew);
+                  if (localCat?.id) {
+                    await this.productRepository.update(product.id, {
+                      mlCategoryId: localCat.id,
+                      mlCategorySource: "auto",
+                    } as any);
+                  }
+                } catch (persistErr) {
+                  console.warn(
+                    "[ListingUseCase] Falha ao persistir categoria após condition.invalid:",
+                    persistErr instanceof Error
+                      ? persistErr.message
+                      : String(persistErr),
+                  );
+                }
+              }
+            }
+          } catch (condErr) {
+            console.warn(
+              "[ListingUseCase] Retentativa após condition.invalid falhou:",
+              condErr instanceof Error ? condErr.message : String(condErr),
+            );
+          }
+        }
 
         // Se categoria for inválida, tentar resolver novamente para um leaf local e reenviar
         if (!mlItem && isCategoryInvalid) {
@@ -1562,7 +1681,9 @@ export class ListingUseCase {
         // Última tentativa: re-sugerir categoria via domain_discovery.
         // Caso o produto tenha uma categoria persistida incompatível (ex: condition.invalid
         // porque categoria só aceita "new", ou categoria de outra vertical), o ML nunca
-        // aceitará o payload. Pedimos uma sugestão fresca a partir do título e retentamos.
+        // aceitará o payload. Pedimos uma sugestão fresca a partir do título e retentamos
+        // reconstruindo os campos do payload que dependem da categoria (attributes,
+        // family_name, title/no-title).
         if (!mlItem) {
           try {
             const siteId = (categoryIdForML || "MLB").slice(0, 3);
@@ -1582,20 +1703,74 @@ export class ListingUseCase {
               const normalizedNew =
                 this.normalizeMLCategoryId(newCategoryId) || newCategoryId;
 
-              const retryPayload: MLItemCreatePayload = {
-                ...payload,
-                category_id: normalizedNew,
-              };
-              // restaurar title original caso algum fallback anterior o tenha removido
-              if (!(retryPayload as any).title && payload.title) {
-                (retryPayload as any).title = payload.title;
-              }
-
-              mlItem = await this.withTimeout(
-                MLApiService.createItem(acc.accessToken, retryPayload),
-                timeoutMs,
-                "ML createItem suggested category",
+              const retryPayload = this.rebuildMLPayloadForCategory(
+                payload,
+                product,
+                normalizedNew,
               );
+
+              try {
+                mlItem = await this.withTimeout(
+                  MLApiService.createItem(acc.accessToken, retryPayload),
+                  timeoutMs,
+                  "ML createItem suggested category",
+                );
+              } catch (innerErr: any) {
+                // Sugerida pode exigir family_name (fluxo User Product) mesmo
+                // sem estar no allowList. Se o erro indicar isso, retentamos
+                // adicionando family_name e removendo title.
+                const innerMl =
+                  innerErr && innerErr.mlError ? innerErr.mlError : null;
+                const innerMsg = JSON.stringify(innerMl || innerErr?.message || "")
+                  .toLowerCase();
+                const innerNeedsFamily =
+                  innerMsg.includes("family_name");
+                if (innerNeedsFamily) {
+                  const familyRetryPayload: MLItemCreatePayload = {
+                    ...retryPayload,
+                    family_name:
+                      (retryPayload as any).family_name ||
+                      this.buildMLTitle(product),
+                  } as any;
+                  delete (familyRetryPayload as any).title;
+                  try {
+                    mlItem = await this.withTimeout(
+                      MLApiService.createItem(
+                        acc.accessToken,
+                        familyRetryPayload,
+                      ),
+                      timeoutMs,
+                      "ML createItem suggested+family",
+                    );
+                  } catch (innerErr2: any) {
+                    const inner2Msg = JSON.stringify(
+                      (innerErr2 && innerErr2.mlError) || innerErr2?.message || "",
+                    ).toLowerCase();
+                    // Título rejeitado novamente → tentar apenas sem title
+                    if (inner2Msg.includes("title")) {
+                      const noTitleRetry: MLItemCreatePayload = {
+                        ...retryPayload,
+                        family_name:
+                          (retryPayload as any).family_name ||
+                          this.buildMLTitle(product),
+                      } as any;
+                      delete (noTitleRetry as any).title;
+                      mlItem = await this.withTimeout(
+                        MLApiService.createItem(
+                          acc.accessToken,
+                          noTitleRetry,
+                        ),
+                        timeoutMs,
+                        "ML createItem suggested+noTitle",
+                      );
+                    } else {
+                      throw innerErr2;
+                    }
+                  }
+                } else {
+                  throw innerErr;
+                }
+              }
 
               if (mlItem) {
                 resolvedCategoryId = normalizedNew;
@@ -2508,11 +2683,13 @@ export class ListingUseCase {
         );
       }
 
-      // ── Shopee dimension normalization (channel-aware, no blind clamp) ──
-      // Use the product's real dimensions for channel compatibility checks.
-      // Only apply minimal normalization: ensure positive integers, use sensible
-      // defaults for missing values. Never silently clamp to hide oversize —
-      // if no channel fits, fail early with the real values in the error.
+      // ── Shopee dimension normalization (channel-aware, clamp-to-envelope) ──
+      // Compute the most permissive envelope across enabled channels and clamp
+      // product dimensions/weight into it. Shopee rejects createItem if the
+      // declared package exceeds the logistic channel limits, so we fit the
+      // declaration to what the seller's channels actually accept. The physical
+      // item doesn't change — the seller can still ship it — but Shopee's
+      // shipping-fee estimate and channel selection use these values.
       const SHOPEE_MIN_DIM_CM = 1;
 
       const rawWeightKg =
@@ -2524,11 +2701,89 @@ export class ListingUseCase {
       const rawHeight =
         product.heightCm && product.heightCm > 0 ? Math.round(product.heightCm) : 10;
 
-      // Ensure minimum 1cm per side (Shopee API rejects 0)
-      const shopeeLength = Math.max(SHOPEE_MIN_DIM_CM, rawLength);
-      const shopeeWidth = Math.max(SHOPEE_MIN_DIM_CM, rawWidth);
-      const shopeeHeight = Math.max(SHOPEE_MIN_DIM_CM, rawHeight);
-      const shopeeWeightKg = Math.max(0.01, rawWeightKg);
+      // Envelope = most permissive per-axis limit across enabled channels.
+      // A value of 0/undefined means "no limit" → represented as Infinity.
+      const envelope = {
+        maxSide: 0,
+        maxDimSum: 0,
+        maxWeight: 0,
+        minWeight: Infinity,
+      };
+      for (const ch of enabledChannels) {
+        const md = ch.item_max_dimension;
+        if (md) {
+          const side = Math.max(md.length || 0, md.width || 0, md.height || 0);
+          if (side > envelope.maxSide) envelope.maxSide = side;
+          if ((md.dimension_sum || 0) > envelope.maxDimSum)
+            envelope.maxDimSum = md.dimension_sum || 0;
+        } else {
+          envelope.maxSide = Math.max(envelope.maxSide, 9999);
+          envelope.maxDimSum = Math.max(envelope.maxDimSum, 9999);
+        }
+        const wl = ch.weight_limit;
+        if (wl) {
+          if ((wl.item_max_weight || 0) > envelope.maxWeight)
+            envelope.maxWeight = wl.item_max_weight || 0;
+          if (
+            typeof wl.item_min_weight === "number" &&
+            wl.item_min_weight < envelope.minWeight
+          )
+            envelope.minWeight = wl.item_min_weight;
+        } else {
+          envelope.maxWeight = Math.max(envelope.maxWeight, 9999);
+          envelope.minWeight = Math.min(envelope.minWeight, 0);
+        }
+      }
+      if (envelope.minWeight === Infinity) envelope.minWeight = 0;
+      // Fallbacks when no channel info is available
+      if (enabledChannels.length === 0 || envelope.maxSide === 0)
+        envelope.maxSide = 9999;
+      if (enabledChannels.length === 0 || envelope.maxDimSum === 0)
+        envelope.maxDimSum = 9999;
+      if (enabledChannels.length === 0 || envelope.maxWeight === 0)
+        envelope.maxWeight = 9999;
+
+      // Clamp each side to envelope maxSide
+      let adjL = Math.min(rawLength, envelope.maxSide);
+      let adjW = Math.min(rawWidth, envelope.maxSide);
+      let adjH = Math.min(rawHeight, envelope.maxSide);
+      // Clamp the largest axis down until dimension sum fits envelope.maxDimSum
+      let sum = adjL + adjW + adjH;
+      let safety = 0;
+      while (sum > envelope.maxDimSum && safety < 10) {
+        if (adjL >= adjW && adjL >= adjH)
+          adjL = Math.max(SHOPEE_MIN_DIM_CM, adjL - (sum - envelope.maxDimSum));
+        else if (adjW >= adjH)
+          adjW = Math.max(SHOPEE_MIN_DIM_CM, adjW - (sum - envelope.maxDimSum));
+        else adjH = Math.max(SHOPEE_MIN_DIM_CM, adjH - (sum - envelope.maxDimSum));
+        sum = adjL + adjW + adjH;
+        safety++;
+      }
+
+      // Clamp weight to envelope range
+      let adjWeight = rawWeightKg;
+      if (adjWeight > envelope.maxWeight) adjWeight = envelope.maxWeight;
+      if (adjWeight < envelope.minWeight) adjWeight = envelope.minWeight;
+
+      const shopeeLength = Math.max(SHOPEE_MIN_DIM_CM, Math.round(adjL));
+      const shopeeWidth = Math.max(SHOPEE_MIN_DIM_CM, Math.round(adjW));
+      const shopeeHeight = Math.max(SHOPEE_MIN_DIM_CM, Math.round(adjH));
+      const shopeeWeightKg = Math.max(0.01, adjWeight);
+
+      const dimsChanged =
+        shopeeLength !== rawLength ||
+        shopeeWidth !== rawWidth ||
+        shopeeHeight !== rawHeight ||
+        Math.abs(shopeeWeightKg - rawWeightKg) > 0.001;
+      if (dimsChanged) {
+        console.warn(
+          `[ListingUseCase] Shopee dims adjusted to channel envelope: ` +
+            `${rawLength}x${rawWidth}x${rawHeight}cm/${rawWeightKg}kg → ` +
+            `${shopeeLength}x${shopeeWidth}x${shopeeHeight}cm/${shopeeWeightKg}kg ` +
+            `(envelope maxSide=${envelope.maxSide}cm, maxSum=${envelope.maxDimSum}cm, ` +
+            `weight=[${envelope.minWeight},${envelope.maxWeight}]kg)`,
+        );
+      }
 
       // ── Filtrar canais logísticos que aceitam as dimensões/peso do produto ──
       // Shopee rejeita o createItem inteiro se QUALQUER canal passado em

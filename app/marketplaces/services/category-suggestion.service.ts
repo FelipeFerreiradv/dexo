@@ -44,9 +44,30 @@ type CategoryEntry = Awaited<
 
 // Hoisted constants — avoids re-creating on every tokenize() call
 const STOPWORDS = new Set([
-  "de", "da", "do", "das", "dos", "para", "pra", "por", "com", "sem",
-  "na", "no", "nas", "nos", "em", "uma", "um", "e", "ou",
-  "peça", "peca", "kit", "autopecas", "autopeças",
+  "de",
+  "da",
+  "do",
+  "das",
+  "dos",
+  "para",
+  "pra",
+  "por",
+  "com",
+  "sem",
+  "na",
+  "no",
+  "nas",
+  "nos",
+  "em",
+  "uma",
+  "um",
+  "e",
+  "ou",
+  "peça",
+  "peca",
+  "kit",
+  "autopecas",
+  "autopeças",
 ]);
 
 const ABBREV: Record<string, string> = {
@@ -83,39 +104,262 @@ const COMPOUND_WORDS: [RegExp, string][] = [
 // ── Domain detection: automotive signals & incompatible domain tokens ──
 const AUTOMOTIVE_SIGNALS = new Set([
   // Peças de carroceria / lataria
-  "grade", "parachoque", "paralama", "retrovisor", "capô", "capo",
-  "porta", "vidro", "parabrisa", "lanterna", "farol", "macaneta",
-  "lataria", "carroceria", "spoiler", "defletor", "friso",
+  "grade",
+  "parachoque",
+  "paralama",
+  "retrovisor",
+  "capô",
+  "capo",
+  "porta",
+  "vidro",
+  "parabrisa",
+  "lanterna",
+  "farol",
+  "macaneta",
+  "lataria",
+  "carroceria",
+  "spoiler",
+  "defletor",
+  "friso",
   // Suspensão / direção
-  "amortecedor", "mola", "bandeja", "pivo", "bieleta", "batente",
-  "coifa", "bucha", "cubo", "rolamento", "terminal", "caixa direcao",
+  "amortecedor",
+  "mola",
+  "bandeja",
+  "pivo",
+  "bieleta",
+  "batente",
+  "coifa",
+  "bucha",
+  "cubo",
+  "rolamento",
+  "terminal",
+  "caixa direcao",
   // Motor / transmissão
-  "motor", "biela", "pistao", "virabrequim", "cabecote", "bloco",
-  "comando", "valvula", "junta", "carter", "coletor", "turbo",
-  "embreagem", "transmissao", "diferencial", "semieixo",
+  "motor",
+  "biela",
+  "pistao",
+  "virabrequim",
+  "cabecote",
+  "bloco",
+  "comando",
+  "valvula",
+  "junta",
+  "carter",
+  "coletor",
+  "turbo",
+  "embreagem",
+  "transmissao",
+  "diferencial",
+  "semieixo",
   // Freio
-  "freio", "disco", "pastilha", "pinca", "cilindro", "tambor",
-  "flexivel", "lonas",
+  "freio",
+  "disco",
+  "pastilha",
+  "pinca",
+  "cilindro",
+  "tambor",
+  "flexivel",
+  "lonas",
   // Elétrica
-  "alternador", "motor arranque", "bobina", "sensor", "modulo",
-  "vela", "chicote", "rele",
+  "alternador",
+  "motor arranque",
+  "bobina",
+  "sensor",
+  "modulo",
+  "vela",
+  "chicote",
+  "rele",
   // Arrefecimento / escapamento
-  "radiador", "ventoinha", "mangueira", "valvula termostatica",
-  "escapamento", "catalisador", "silencioso",
+  "radiador",
+  "ventoinha",
+  "mangueira",
+  "valvula termostatica",
+  "escapamento",
+  "catalisador",
+  "silencioso",
   // Filtros / fluidos
-  "filtro", "oleo",
+  "filtro",
+  "oleo",
   // Correia / tensor
-  "correia", "tensor", "bomba",
+  "correia",
+  "tensor",
+  "bomba",
   // Posicionais (fortes indicadores automotivos quando combinados)
-  "traseira", "traseiro", "dianteira", "dianteiro", "lateral",
+  "traseira",
+  "traseiro",
+  "dianteira",
+  "dianteiro",
+  "lateral",
   // Marcas automotivas (normalizadas)
-  "chevrolet", "volkswagen", "ford", "fiat", "renault", "hyundai",
-  "honda", "toyota", "nissan", "mitsubishi", "peugeot", "citroen",
-  "kia", "suzuki", "bmw", "mercedes",
+  "chevrolet",
+  "volkswagen",
+  "ford",
+  "fiat",
+  "renault",
+  "hyundai",
+  "honda",
+  "toyota",
+  "nissan",
+  "mitsubishi",
+  "peugeot",
+  "citroen",
+  "kia",
+  "suzuki",
+  "bmw",
+  "mercedes",
   // Modelos populares
-  "onix", "gol", "civic", "corolla", "hb20", "creta", "kicks",
-  "compass", "renegade", "tracker", "t-cross", "polo", "virtus",
-  "argo", "mobi", "toro", "hilux", "s10", "ranger", "amarok",
+  "onix",
+  "gol",
+  "civic",
+  "corolla",
+  "hb20",
+  "creta",
+  "kicks",
+  "compass",
+  "renegade",
+  "tracker",
+  "t-cross",
+  "polo",
+  "virtus",
+  "argo",
+  "mobi",
+  "toro",
+  "hilux",
+  "s10",
+  "ranger",
+  "amarok",
+  "palio",
+  "uno",
+  "siena",
+  "punto",
+  "idea",
+  "stilo",
+  "strada",
+  "linea",
+  "bravo",
+  "celta",
+  "corsa",
+  "astra",
+  "vectra",
+  "meriva",
+  "agile",
+  "prisma",
+  "cruze",
+  "spin",
+  "cobalt",
+  "montana",
+  "fiesta",
+  "ecosport",
+  "focus",
+  "ka",
+  "edge",
+  "fusion",
+  "saveiro",
+  "fox",
+  "crossfox",
+  "spacefox",
+  "voyage",
+  "parati",
+  "golf",
+  "jetta",
+  "passat",
+  "tiguan",
+  "up",
+  "nivus",
+  "taos",
+  "logan",
+  "sandero",
+  "duster",
+  "stepway",
+  "kwid",
+  "captur",
+  "oroch",
+  "clio",
+  "megane",
+  "scenic",
+  "tucson",
+  "ix35",
+  "santa fe",
+  "i30",
+  "azera",
+  "elantra",
+  "veloster",
+  "accent",
+  "hr-v",
+  "hrv",
+  "fit",
+  "city",
+  "wr-v",
+  "wrv",
+  "yaris",
+  "etios",
+  "rav4",
+  "sw4",
+  "tiida",
+  "march",
+  "versa",
+  "sentra",
+  "livina",
+  "frontier",
+  "pajero",
+  "asx",
+  "outlander",
+  "l200",
+  "lancer",
+  "208",
+  "2008",
+  "3008",
+  "308",
+  "408",
+  "partner",
+  "c3",
+  "c4",
+  "cactus",
+  "aircross",
+  "picanto",
+  "cerato",
+  "sportage",
+  "sorento",
+  "soul",
+  "jimny",
+  "vitara",
+  "gran vitara",
+  // Tipos de peças/acessórios comuns em anúncios
+  "teto",
+  "tejadilho",
+  "painel",
+  "banco",
+  "assento",
+  "encosto",
+  "cinto seguranca",
+  "cinto",
+  "volante",
+  "acabamento",
+  "moldura",
+  "luz",
+  "luzes",
+  "lampada",
+  "lampadas",
+  "iluminacao",
+  "interna",
+  "airbag",
+  "console",
+  "porta-luvas",
+  "tapete",
+  "protetor",
+  "soleira",
+  "maquina vidro",
+  "macaneta",
+  "puxador",
+  "emblema",
+  "logo",
+  "calota",
+  "roda",
+  "pneu",
+  "bagageiro",
+  "rack",
+  "engate",
+  "teto solar",
 ]);
 
 // Tokens que, quando encontrados no fullPath de uma categoria, indicam
@@ -123,35 +367,104 @@ const AUTOMOTIVE_SIGNALS = new Set([
 // Pre-computed as a frozen array to avoid Set→Array conversion on every call.
 const INCOMPATIBLE_WITH_AUTOMOTIVE: readonly string[] = Object.freeze([
   // Beleza / estética
-  "beleza", "beauty", "maquiagem", "cosmetico", "cabelo", "unha",
-  "perfume", "skincare", "capilar", "manicure", "estetica",
-  "shampoo", "condicionador", "creme", "hidratante",
+  "beleza",
+  "beauty",
+  "maquiagem",
+  "cosmetico",
+  "cabelo",
+  "unha",
+  "perfume",
+  "skincare",
+  "capilar",
+  "manicure",
+  "estetica",
+  "shampoo",
+  "condicionador",
+  "creme",
+  "hidratante",
   // Esporte / lazer
-  "esporte", "sport", "frisbee", "raquete", "bola", "tenis",
-  "futebol", "basquete", "natacao", "yoga", "fitness", "academia",
-  "camping", "pesca",
+  "esporte",
+  "sport",
+  "frisbee",
+  "raquete",
+  "bola",
+  "tenis",
+  "futebol",
+  "basquete",
+  "natacao",
+  "yoga",
+  "fitness",
+  "academia",
+  "camping",
+  "pesca",
+  "hobbies e colecoes",
   // Brinquedos / jogos
-  "brinquedo", "toy", "boneca", "jogos", "quebra-cabeca", "lego",
+  "brinquedo",
+  "toy",
+  "boneca",
+  "jogos",
+  "quebra-cabeca",
+  "lego",
   "pelucia",
   // Moda / vestuário
-  "roupa", "vestuario", "calcado", "sapato", "bolsa", "cinto",
-  "relogio", "oculos", "joias", "bijuteria", "chapeu", "bone",
+  "moda",
+  "roupa",
+  "vestuario",
+  "calcado",
+  "sapato",
+  "bolsa",
+  "cinto",
+  "relogio",
+  "oculos",
+  "joias",
+  "bijuteria",
+  "chapeu",
+  "bone",
+  "acessorios para moda",
+  "acessorio de moda",
   // Eletrônicos (não automotivos)
-  "smartphone", "tablet", "notebook", "fone", "caixa de som",
-  "videogame", "console",
+  "smartphone",
+  "tablet",
+  "notebook",
+  "fone",
+  "caixa de som",
+  "videogame",
+  "console",
   // Casa / cozinha
-  "panela", "prato", "talher", "copo", "jarra", "fogao",
-  "geladeira", "microondas", "liquidificador",
+  "panela",
+  "prato",
+  "talher",
+  "copo",
+  "jarra",
+  "fogao",
+  "geladeira",
+  "microondas",
+  "liquidificador",
   // Pet
-  "pet", "racao", "coleira", "aquario",
+  "pet",
+  "racao",
+  "coleira",
+  "aquario",
   // Alimentos
-  "alimento", "bebida", "cafe", "chocolate", "biscoito",
+  "alimento",
+  "bebida",
+  "cafe",
+  "chocolate",
+  "biscoito",
   // Papelaria / escritório
-  "papelaria", "caderno", "caneta", "mochila escolar",
+  "papelaria",
+  "caderno",
+  "caneta",
+  "mochila escolar",
   // Bebê
-  "bebe", "fralda", "mamadeira", "carrinho bebe",
+  "bebe",
+  "fralda",
+  "mamadeira",
+  "carrinho bebe",
   // Saúde
-  "medicamento", "vitamina", "suplemento",
+  "medicamento",
+  "vitamina",
+  "suplemento",
 ]);
 
 // Regex compiled once
@@ -170,7 +483,10 @@ export class CategorySuggestionService {
   >();
   private static parentMapCache = new Map<
     string,
-    { byExternal: Map<string, CategoryEntry>; byParent: Map<string, CategoryEntry[]> }
+    {
+      byExternal: Map<string, CategoryEntry>;
+      byParent: Map<string, CategoryEntry[]>;
+    }
   >();
   /** Per-siteId token → category-count map for IDF weighting */
   private static tokenFreqCache = new Map<
@@ -283,7 +599,9 @@ export class CategorySuggestionService {
     preNormalized = false,
   ): boolean {
     if (domain !== "automotive") return false;
-    const pathNorm = preNormalized ? categoryPath : this.normalize(categoryPath);
+    const pathNorm = preNormalized
+      ? categoryPath
+      : this.normalize(categoryPath);
     for (let i = 0; i < INCOMPATIBLE_WITH_AUTOMOTIVE.length; i++) {
       if (pathNorm.includes(INCOMPATIBLE_WITH_AUTOMOTIVE[i])) return true;
     }
@@ -301,7 +619,11 @@ export class CategorySuggestionService {
       const cat = categories[c];
       const catPath = cat.fullPath || cat.name || "";
       // Reuse getCatTokenized to avoid duplicate tokenization work
-      const { tokens: tokenArr } = this.getCatTokenized(siteId, cat.externalId, catPath);
+      const { tokens: tokenArr } = this.getCatTokenized(
+        siteId,
+        cat.externalId,
+        catPath,
+      );
       const seen = new Set<string>();
       for (let i = 0; i < tokenArr.length; i++) {
         if (!seen.has(tokenArr[i])) {
@@ -315,8 +637,14 @@ export class CategorySuggestionService {
     return entry;
   }
 
-  private static getTokenFrequency(siteId: string, categories: CategoryEntry[]) {
-    return this.tokenFreqCache.get(siteId) || this.buildTokenFrequency(siteId, categories);
+  private static getTokenFrequency(
+    siteId: string,
+    categories: CategoryEntry[],
+  ) {
+    return (
+      this.tokenFreqCache.get(siteId) ||
+      this.buildTokenFrequency(siteId, categories)
+    );
   }
 
   /** Returns cached { tokens, normalized } for a category path to avoid re-tokenizing */
@@ -387,13 +715,13 @@ export class CategorySuggestionService {
   ): CategoryEntry | null {
     const { byExternal, byParent } =
       prebuiltMaps || this.buildParentMaps(categories);
-    let current = byExternal.get(externalId);
+    let current: CategoryEntry | undefined = byExternal.get(externalId);
     if (!current) return null;
 
     while (byParent.has(current.externalId)) {
-      const children = byParent.get(current.externalId)!;
+      const children: CategoryEntry[] = byParent.get(current.externalId)!;
       if (!children.length) break;
-      let next = children[0];
+      let next: CategoryEntry = children[0];
       for (let i = 0; i < children.length; i++) {
         const path = children[i].fullPath || children[i].name;
         // Lowercase-only check avoids full normalize (NFD + regex) per child
@@ -404,7 +732,7 @@ export class CategorySuggestionService {
       }
       current = next;
     }
-    return current;
+    return current ?? null;
   }
 
   private static buildTitleSuggestion(
@@ -447,7 +775,8 @@ export class CategorySuggestionService {
     patterns: any;
     rawText: string;
   }) {
-    const { tokenSet, tokens, aliasTokens, synonymTokens, patterns, rawText } = opts;
+    const { tokenSet, tokens, aliasTokens, synonymTokens, patterns, rawText } =
+      opts;
     const norm = (s: string) => this.normalize(s);
     const intersect = aliasTokens.filter((t) => tokenSet.has(t));
     const synonymHits = synonymTokens.filter((t) => tokenSet.has(t));
@@ -558,7 +887,9 @@ export class CategorySuggestionService {
       const { aliasTokens, synonymTokens } = this.getParsedAliasTokens(alias);
       let patterns: any = null;
       if (alias.brandModelPatterns) {
-        try { patterns = JSON.parse(alias.brandModelPatterns); } catch {}
+        try {
+          patterns = JSON.parse(alias.brandModelPatterns);
+        } catch {}
       }
 
       const { score, attr, measurements, reasons, signalCount, pieceType } =
@@ -575,9 +906,13 @@ export class CategorySuggestionService {
 
       // Block cross-domain matches (e.g., automotive product → beauty category)
       if (detectedDomain === "automotive") {
-        const catPath = alias.marketplaceCategory.fullPath || alias.marketplaceCategory.name || "";
+        const catPath =
+          alias.marketplaceCategory.fullPath ||
+          alias.marketplaceCategory.name ||
+          "";
         const catPathNorm = this.normalize(catPath);
-        if (this.isDomainIncompatible(detectedDomain, catPathNorm, true)) continue;
+        if (this.isDomainIncompatible(detectedDomain, catPathNorm, true))
+          continue;
       }
 
       const leaf = this.ensureLeafLocal(
@@ -590,7 +925,8 @@ export class CategorySuggestionService {
       // Also check the resolved leaf path for domain incompatibility
       if (detectedDomain === "automotive") {
         const leafPathNorm = this.normalize(leaf.fullPath || leaf.name);
-        if (this.isDomainIncompatible(detectedDomain, leafPathNorm, true)) continue;
+        if (this.isDomainIncompatible(detectedDomain, leafPathNorm, true))
+          continue;
       }
 
       const mergedAttr: AttributeSuggestion = {
@@ -635,13 +971,17 @@ export class CategorySuggestionService {
     // Fallback: keywords on category fullPath (low confidence — single signal)
     // Uses IDF weighting and bigram boost to avoid single-token junk matches.
     if (suggestions.size === 0) {
-      const { totalCats, freq: tokenFreq } = this.getTokenFrequency(siteId, categories);
+      const { totalCats, freq: tokenFreq } = this.getTokenFrequency(
+        siteId,
+        categories,
+      );
       const HIGH_FREQ_THRESHOLD = 0.15; // token in >15% of categories → low weight
 
       // Pre-compute bigrams from the title for contiguous-match boost
-      const titleBigrams = tokens.length >= 2
-        ? tokens.slice(0, -1).map((t, i) => `${t} ${tokens[i + 1]}`)
-        : [];
+      const titleBigrams =
+        tokens.length >= 2
+          ? tokens.slice(0, -1).map((t, i) => `${t} ${tokens[i + 1]}`)
+          : [];
 
       const invTotalCats = 1 / Math.max(totalCats, 1);
 
@@ -663,14 +1003,24 @@ export class CategorySuggestionService {
           this.getCatTokenized(siteId, cat.externalId, catPath);
 
         // Block cross-domain matches (path already normalized)
-        if (this.isDomainIncompatible(detectedDomain, catPathNorm, true)) continue;
+        if (this.isDomainIncompatible(detectedDomain, catPathNorm, true))
+          continue;
 
-        // Domain boost: if the category is in the same domain tree, +1 implicit hit
+        // Domain hard filter for non-MLB: when an automotive product is detected,
+        // only categories within the automotive tree are eligible. Prevents
+        // cross-domain matches via incidental token overlap (e.g. "Bolsa Airbag"
+        // matching fashion "Bolsas" category).
         let domainBoost = 0;
         if (domainPathMarkers) {
+          let inDomain = false;
           for (let m = 0; m < domainPathMarkers.length; m++) {
-            if (catPathNorm.includes(domainPathMarkers[m])) { domainBoost = 1; break; }
+            if (catPathNorm.includes(domainPathMarkers[m])) {
+              inDomain = true;
+              break;
+            }
           }
+          if (!inDomain) continue;
+          domainBoost = 1;
         }
 
         // Fast count — bail early if < 2 hits (including domain boost)
@@ -696,8 +1046,13 @@ export class CategorySuggestionService {
         // Also check resolved leaf for domain incompatibility
         if (leaf.externalId !== cat.externalId) {
           const leafPath = leaf.fullPath || leaf.name;
-          const leafNorm = this.getCatTokenized(siteId, leaf.externalId, leafPath).normalized;
-          if (this.isDomainIncompatible(detectedDomain, leafNorm, true)) continue;
+          const leafNorm = this.getCatTokenized(
+            siteId,
+            leaf.externalId,
+            leafPath,
+          ).normalized;
+          if (this.isDomainIncompatible(detectedDomain, leafNorm, true))
+            continue;
         }
 
         // IDF-weighted score: discount tokens that appear in many categories
@@ -752,17 +1107,62 @@ export class CategorySuggestionService {
       }
     }
 
+    // ── Soft fallback for non-MLB automotive products with 0 matches ──
+    // When we detect automotive domain but the title's vocabulary doesn't
+    // overlap the marketplace's generic category names (common on Shopee —
+    // titles like "Luz Teto Palio 1996" have no tokens matching paths like
+    // "Peças e Acessórios para Veículos > Iluminação Interna"), return a
+    // curated set of leaf categories inside the automotive tree so the UI
+    // can offer them as searchable starting points instead of dumping all.
+    if (suggestions.size === 0 && detectedDomain === "automotive" && siteId !== "MLB") {
+      const fallbackMarkers = ["veiculos", "automoveis", "automotiv"];
+      let picked = 0;
+      for (const cat of categories) {
+        if (picked >= 20) break;
+        const { normalized: catPathNorm } = this.getCatTokenized(
+          siteId,
+          cat.externalId,
+          cat.fullPath || cat.name || "",
+        );
+        let inDomain = false;
+        for (let m = 0; m < fallbackMarkers.length; m++) {
+          if (catPathNorm.includes(fallbackMarkers[m])) {
+            inDomain = true;
+            break;
+          }
+        }
+        if (!inDomain) continue;
+        if (this.isDomainIncompatible("automotive", catPathNorm, true)) continue;
+        const leaf = this.ensureLeafLocal(cat.externalId, categories, parentMaps);
+        if (!leaf?.externalId) continue;
+        if (suggestions.has(leaf.externalId)) continue;
+        suggestions.set(leaf.externalId, {
+          categoryId: leaf.externalId,
+          fullPath: leaf.fullPath || leaf.name,
+          score: 0.1,
+          source: "keyword",
+          attributes: baseAttr,
+          confidence: 0.1,
+          autoApply: false,
+          reasons: ["fallback: árvore automotiva"],
+        });
+        picked++;
+      }
+    }
+
     // ── Sanity check: final validation pass ──
     const suggestionArr = Array.from(suggestions.values());
     const filtered: CategorySuggestion[] = [];
     for (let i = 0; i < suggestionArr.length; i++) {
       const s = suggestionArr[i];
       // Remove keyword-only suggestions below minimum confidence
-      if (s.source === "keyword" && (s.confidence ?? 0) < 0.10) continue;
+      if (s.source === "keyword" && (s.confidence ?? 0) < 0.1) continue;
       // Final domain cross-check — reuse cached normalized path when available
       if (detectedDomain === "automotive") {
         const cached = this.catTokenCache.get(siteId)?.get(s.categoryId);
-        const pathNorm = cached ? cached.normalized : this.normalize(s.fullPath);
+        const pathNorm = cached
+          ? cached.normalized
+          : this.normalize(s.fullPath);
         if (this.isDomainIncompatible(detectedDomain, pathNorm, true)) continue;
       }
       filtered.push(s);
