@@ -1125,17 +1125,28 @@ export class ListingUseCase {
       });
       attributes = preflight.enrichedAttributes;
       if (!preflight.ok) {
+        const preflightMode = (
+          process.env.LISTING_PREFLIGHT || "warn"
+        ).toLowerCase();
         console.warn(
-          `[ListingUseCase] preflight BLOCKED product=${product.id} category=${categoryIdForML}`,
-          {
+          JSON.stringify({
+            event: "listing.preflight.ml.blocked",
+            mode: preflightMode,
+            productId: product.id,
+            categoryId: categoryIdForML,
             missingRequired: preflight.missingRequired,
-            issues: preflight.issues,
-          },
+            issueCodes: preflight.issues.map((i) => i.code),
+          }),
         );
-        return {
-          success: false,
-          error: ListingPreflightService.formatBlockMessage(preflight),
-        };
+        if (preflightMode === "strict") {
+          return {
+            success: false,
+            error: ListingPreflightService.formatBlockMessage(preflight),
+          };
+        }
+        // Modo warn (default): loga divergência mas prossegue. A API do ML
+        // é a fonte de verdade final — se ela aceitar, a blocklist do
+        // preflight estava errada e precisa ser ajustada.
       }
 
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
@@ -2574,15 +2585,34 @@ export class ListingUseCase {
         ),
       );
 
-      const [categoryAttrsResult, imageUploadResult, logisticsResult] =
-        await Promise.allSettled([
-          // Stage 4: Category Attributes
-          ShopeeApiService.getCategoryAttributes(
+      // Stage 4 wrapper: single retry on 403 para absorver transientes.
+      // Shopee retorna 403 "permission denied" esporadicamente mesmo para
+      // contas ACTIVE com escopo correto; um retry curto costuma resolver.
+      const fetchCategoryAttrsWithRetry = async () => {
+        try {
+          return await ShopeeApiService.getCategoryAttributes(
             account.accessToken,
             account.shopId,
             numericCategoryId,
             "pt-BR",
-          ),
+          );
+        } catch (err) {
+          const status = (err as any)?.status;
+          if (status !== 403) throw err;
+          await new Promise((r) => setTimeout(r, 800));
+          return await ShopeeApiService.getCategoryAttributes(
+            account.accessToken,
+            account.shopId,
+            numericCategoryId,
+            "pt-BR",
+          );
+        }
+      };
+
+      const [categoryAttrsResult, imageUploadResult, logisticsResult] =
+        await Promise.allSettled([
+          // Stage 4: Category Attributes (com retry 403)
+          fetchCategoryAttrsWithRetry(),
           // Stage 5: Image Upload (multi-imagem em paralelo)
           imageUploadStage,
           // Stage 6: Logistics Channels

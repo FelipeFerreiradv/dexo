@@ -640,17 +640,22 @@ export class ListingRetryService {
           });
           payload.attributes = pf.enrichedAttributes as any;
           if (!pf.ok) {
+            const preflightMode = (
+              process.env.LISTING_PREFLIGHT || "warn"
+            ).toLowerCase();
             const msg = ListingPreflightService.formatBlockMessage(pf);
             console.warn(
-              `[ListingRetryService] preflight BLOCKED ${cand.id}: ${msg}`,
+              `[ListingRetryService] preflight ${preflightMode === "strict" ? "BLOCKED" : "warn"} ${cand.id}: ${msg}`,
             );
-            await ListingRepository.updateListing(cand.id, {
-              status: "error",
-              lastError: `[TERMINAL] ${msg}`,
-              retryEnabled: false,
-              nextRetryAt: null,
-            });
-            continue;
+            if (preflightMode === "strict") {
+              await ListingRepository.updateListing(cand.id, {
+                status: "error",
+                lastError: `[TERMINAL] ${msg}`,
+                retryEnabled: false,
+                nextRetryAt: null,
+              });
+              continue;
+            }
           }
         } catch (pfErr) {
           console.warn(
