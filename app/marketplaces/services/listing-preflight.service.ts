@@ -87,13 +87,184 @@ const KNOWN_BRANDS: Array<{ pattern: RegExp; canonical: string }> = [
 ];
 
 /**
+ * Modelos populares → marca. Usado quando o nome do produto cita só o
+ * modelo ("Farol Ecosport", "Fechadura Captiva") sem a marca. Ordem importa:
+ * multi-word antes de single-word (Grand Siena antes de Siena, Gol G5 antes
+ * de Gol, etc.) — o match é feito via word boundary case-insensitive.
+ *
+ * Por que existe: o dry-run do preflight mostrou ~800 produtos bloqueados
+ * por BRAND onde o nome só contém o modelo do veículo. Como o catálogo ML
+ * exige BRAND em muitas categorias automotivas, inferir via modelo
+ * desbloqueia o fluxo de publicação sem exigir curadoria manual.
+ */
+const MODEL_TO_BRAND: Array<{ pattern: RegExp; brand: string }> = [
+  { pattern: /\bgrand\s*siena\b/i, brand: "Fiat" },
+  { pattern: /\bgol\s*g[0-9]\b/i, brand: "Volkswagen" },
+  { pattern: /\bfox\b/i, brand: "Volkswagen" },
+  { pattern: /\bsaveiro\b/i, brand: "Volkswagen" },
+  { pattern: /\bvoyage\b/i, brand: "Volkswagen" },
+  { pattern: /\bpolo\b/i, brand: "Volkswagen" },
+  { pattern: /\btiguan\b/i, brand: "Volkswagen" },
+  { pattern: /\bamarok\b/i, brand: "Volkswagen" },
+  { pattern: /\bjetta\b/i, brand: "Volkswagen" },
+  { pattern: /\bgol\b/i, brand: "Volkswagen" },
+  { pattern: /\bup\b/i, brand: "Volkswagen" },
+  { pattern: /\becosport\b/i, brand: "Ford" },
+  { pattern: /\bka\b/i, brand: "Ford" },
+  { pattern: /\bfiesta\b/i, brand: "Ford" },
+  { pattern: /\bfocus\b/i, brand: "Ford" },
+  { pattern: /\branger\b/i, brand: "Ford" },
+  { pattern: /\bf-?(100|150|250|350|600|1000)\b/i, brand: "Ford" },
+  { pattern: /\bfusion\b/i, brand: "Ford" },
+  { pattern: /\bedge\b/i, brand: "Ford" },
+  { pattern: /\bcourier\b/i, brand: "Ford" },
+  { pattern: /\bescort\b/i, brand: "Ford" },
+  { pattern: /\bgrand\s*siena\b/i, brand: "Fiat" },
+  { pattern: /\bpalio\s*fire\b/i, brand: "Fiat" },
+  { pattern: /\bpalio\b/i, brand: "Fiat" },
+  { pattern: /\buno\b/i, brand: "Fiat" },
+  { pattern: /\bsiena\b/i, brand: "Fiat" },
+  { pattern: /\bstrada\b/i, brand: "Fiat" },
+  { pattern: /\btoro\b/i, brand: "Fiat" },
+  { pattern: /\bargo\b/i, brand: "Fiat" },
+  { pattern: /\bcronos\b/i, brand: "Fiat" },
+  { pattern: /\bmobi\b/i, brand: "Fiat" },
+  { pattern: /\bdoblo\b/i, brand: "Fiat" },
+  { pattern: /\bidea\b/i, brand: "Fiat" },
+  { pattern: /\bfiorino\b/i, brand: "Fiat" },
+  { pattern: /\bducato\b/i, brand: "Fiat" },
+  { pattern: /\bpunto\b/i, brand: "Fiat" },
+  { pattern: /\blinea\b/i, brand: "Fiat" },
+  { pattern: /\btempra\b/i, brand: "Fiat" },
+  { pattern: /\bstilo\b/i, brand: "Fiat" },
+  { pattern: /\bmarea\b/i, brand: "Fiat" },
+  { pattern: /\bbravo\b/i, brand: "Fiat" },
+  { pattern: /\bcaptiva\b/i, brand: "Chevrolet" },
+  { pattern: /\bonix\b/i, brand: "Chevrolet" },
+  { pattern: /\bprisma\b/i, brand: "Chevrolet" },
+  { pattern: /\bcobalt\b/i, brand: "Chevrolet" },
+  { pattern: /\bcruze\b/i, brand: "Chevrolet" },
+  { pattern: /\bspin\b/i, brand: "Chevrolet" },
+  { pattern: /\btracker\b/i, brand: "Chevrolet" },
+  { pattern: /\bs-?10\b/i, brand: "Chevrolet" },
+  { pattern: /\btrailblazer\b/i, brand: "Chevrolet" },
+  { pattern: /\bmontana\b/i, brand: "Chevrolet" },
+  { pattern: /\bagile\b/i, brand: "Chevrolet" },
+  { pattern: /\bcelta\b/i, brand: "Chevrolet" },
+  { pattern: /\bcorsa\b/i, brand: "Chevrolet" },
+  { pattern: /\bvectra\b/i, brand: "Chevrolet" },
+  { pattern: /\bastra\b/i, brand: "Chevrolet" },
+  { pattern: /\bzafira\b/i, brand: "Chevrolet" },
+  { pattern: /\bomega\b/i, brand: "Chevrolet" },
+  { pattern: /\bmeriva\b/i, brand: "Chevrolet" },
+  { pattern: /\bblazer\b/i, brand: "Chevrolet" },
+  { pattern: /\bkadett\b/i, brand: "Chevrolet" },
+  { pattern: /\bipanema\b/i, brand: "Chevrolet" },
+  { pattern: /\bmonza\b/i, brand: "Chevrolet" },
+  { pattern: /\bcorolla\b/i, brand: "Toyota" },
+  { pattern: /\betios\b/i, brand: "Toyota" },
+  { pattern: /\bhilux\b/i, brand: "Toyota" },
+  { pattern: /\bsw4\b/i, brand: "Toyota" },
+  { pattern: /\byaris\b/i, brand: "Toyota" },
+  { pattern: /\brav4\b/i, brand: "Toyota" },
+  { pattern: /\bcamry\b/i, brand: "Toyota" },
+  { pattern: /\bcivic\b/i, brand: "Honda" },
+  { pattern: /\bfit\b/i, brand: "Honda" },
+  { pattern: /\bcity\b/i, brand: "Honda" },
+  { pattern: /\bhr-?v\b/i, brand: "Honda" },
+  { pattern: /\bwr-?v\b/i, brand: "Honda" },
+  { pattern: /\bcr-?v\b/i, brand: "Honda" },
+  { pattern: /\baccord\b/i, brand: "Honda" },
+  { pattern: /\bsandero\b/i, brand: "Renault" },
+  { pattern: /\blogan\b/i, brand: "Renault" },
+  { pattern: /\bduster\b/i, brand: "Renault" },
+  { pattern: /\bcaptur\b/i, brand: "Renault" },
+  { pattern: /\bkwid\b/i, brand: "Renault" },
+  { pattern: /\boroch\b/i, brand: "Renault" },
+  { pattern: /\bmaster\b/i, brand: "Renault" },
+  { pattern: /\bkangoo\b/i, brand: "Renault" },
+  { pattern: /\bmegane\b/i, brand: "Renault" },
+  { pattern: /\bscenic\b/i, brand: "Renault" },
+  { pattern: /\bfluence\b/i, brand: "Renault" },
+  { pattern: /\bclio\b/i, brand: "Renault" },
+  { pattern: /\bhb20\b/i, brand: "Hyundai" },
+  { pattern: /\bcreta\b/i, brand: "Hyundai" },
+  { pattern: /\bix35\b/i, brand: "Hyundai" },
+  { pattern: /\btucson\b/i, brand: "Hyundai" },
+  { pattern: /\belantra\b/i, brand: "Hyundai" },
+  { pattern: /\bi30\b/i, brand: "Hyundai" },
+  { pattern: /\bazera\b/i, brand: "Hyundai" },
+  { pattern: /\bsonata\b/i, brand: "Hyundai" },
+  { pattern: /\bveloster\b/i, brand: "Hyundai" },
+  { pattern: /\bvera\s*cruz\b/i, brand: "Hyundai" },
+  { pattern: /\bkicks\b/i, brand: "Nissan" },
+  { pattern: /\bversa\b/i, brand: "Nissan" },
+  { pattern: /\bmarch\b/i, brand: "Nissan" },
+  { pattern: /\bsentra\b/i, brand: "Nissan" },
+  { pattern: /\bfrontier\b/i, brand: "Nissan" },
+  { pattern: /\blivina\b/i, brand: "Nissan" },
+  { pattern: /\btiida\b/i, brand: "Nissan" },
+  { pattern: /\bc3\b/i, brand: "Citroën" },
+  { pattern: /\bc4\b/i, brand: "Citroën" },
+  { pattern: /\bxsara\b/i, brand: "Citroën" },
+  { pattern: /\bpicasso\b/i, brand: "Citroën" },
+  { pattern: /\baircross\b/i, brand: "Citroën" },
+  { pattern: /\bjumper\b/i, brand: "Citroën" },
+  { pattern: /\bberlingo\b/i, brand: "Citroën" },
+  { pattern: /\b208\b/i, brand: "Peugeot" },
+  { pattern: /\b2008\b/i, brand: "Peugeot" },
+  { pattern: /\b3008\b/i, brand: "Peugeot" },
+  { pattern: /\b206\b/i, brand: "Peugeot" },
+  { pattern: /\b207\b/i, brand: "Peugeot" },
+  { pattern: /\b307\b/i, brand: "Peugeot" },
+  { pattern: /\b308\b/i, brand: "Peugeot" },
+  { pattern: /\b408\b/i, brand: "Peugeot" },
+  { pattern: /\bpartner\b/i, brand: "Peugeot" },
+  { pattern: /\bhoggar\b/i, brand: "Peugeot" },
+  { pattern: /\btiggo\b/i, brand: "Chery" },
+  { pattern: /\bqq\b/i, brand: "Chery" },
+  { pattern: /\bs10\b/i, brand: "Chevrolet" },
+  { pattern: /\bl200\b/i, brand: "Mitsubishi" },
+  { pattern: /\bpajero\b/i, brand: "Mitsubishi" },
+  { pattern: /\basx\b/i, brand: "Mitsubishi" },
+  { pattern: /\beclipse\b/i, brand: "Mitsubishi" },
+  { pattern: /\boutlander\b/i, brand: "Mitsubishi" },
+  { pattern: /\blancer\b/i, brand: "Mitsubishi" },
+  { pattern: /\brenegade\b/i, brand: "Jeep" },
+  { pattern: /\bcompass\b/i, brand: "Jeep" },
+  { pattern: /\bgrand\s*cherokee\b/i, brand: "Jeep" },
+  { pattern: /\bwrangler\b/i, brand: "Jeep" },
+];
+
+/**
  * Extrai marca do nome do produto quando o campo brand está vazio.
- * Retorna o canonical match ou undefined se nenhuma marca conhecida aparece.
+ * Tenta primeiro o match direto de marca, depois o mapa MODEL→BRAND
+ * para casos "Ecosport", "Captiva", "Palio" etc. sem marca explícita.
  */
 function extractBrandFromName(name?: string | null): string | undefined {
   if (!name) return undefined;
   for (const { pattern, canonical } of KNOWN_BRANDS) {
     if (pattern.test(name)) return canonical;
+  }
+  for (const { pattern, brand } of MODEL_TO_BRAND) {
+    if (pattern.test(name)) return brand;
+  }
+  return undefined;
+}
+
+/**
+ * Extrai o modelo do veículo a partir do nome do produto usando o mesmo
+ * vocabulário do mapa MODEL_TO_BRAND. Retorna o primeiro match.
+ */
+function extractModelFromName(name?: string | null): string | undefined {
+  if (!name) return undefined;
+  for (const { pattern } of MODEL_TO_BRAND) {
+    const m = name.match(pattern);
+    if (m) {
+      return m[0].replace(/\s+/g, " ").trim().replace(/\b\w/g, (c) =>
+        c.toUpperCase(),
+      );
+    }
   }
   return undefined;
 }
@@ -132,7 +303,7 @@ const ATTR_TO_FIELD: Record<string, (p: MLPreflightInput["product"]) => string |
   OEM: (p) => p.partNumber || extractPartNumberFromName(p.name) || undefined,
   GTIN: () => undefined,
   BRAND: (p) => p.brand || extractBrandFromName(p.name) || undefined,
-  MODEL: (p) => p.model || undefined,
+  MODEL: (p) => p.model || extractModelFromName(p.name) || undefined,
   YEAR: (p) => p.year || undefined,
   VEHICLE_YEAR: (p) => p.year || undefined,
   SELLER_SKU: (p) => p.sku || undefined,
