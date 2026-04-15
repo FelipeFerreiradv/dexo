@@ -285,6 +285,100 @@ export async function listingRoutes(app: FastifyInstance) {
   );
 
   /**
+   * GET /listings/status?productId=X
+   * Retorna o estado atual de todos os ProductListing associados a um
+   * produto. Usado pelo frontend para fazer polling após POST /listings/dispatch
+   * (fase 3 slice 2): o modal libera imediato e atualiza um badge quando
+   * o status muda.
+   *
+   * Shape da resposta:
+   *   { listings: [{ id, platform, accountId, accountName, status,
+   *                  externalListingId, permalink, lastError,
+   *                  retryAttempts, nextRetryAt, updatedAt }] }
+   */
+  app.get<{
+    Querystring: { productId?: string };
+  }>(
+    "/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const productId = (request.query as any)?.productId as
+          | string
+          | undefined;
+
+        if (!productId) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "productId é obrigatório",
+          });
+        }
+
+        const prismaMod = await import("@/app/lib/prisma");
+        const prisma = prismaMod.default;
+
+        const product = await (prisma as any).product.findFirst({
+          where: { id: productId, userId },
+          select: { id: true },
+        });
+        if (!product) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+          });
+        }
+
+        const listings = await (prisma as any).productListing.findMany({
+          where: { productId },
+          select: {
+            id: true,
+            status: true,
+            externalListingId: true,
+            permalink: true,
+            lastError: true,
+            retryAttempts: true,
+            retryEnabled: true,
+            nextRetryAt: true,
+            updatedAt: true,
+            marketplaceAccount: {
+              select: {
+                id: true,
+                accountName: true,
+                platform: true,
+              },
+            },
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+
+        return reply.status(200).send({
+          productId,
+          listings: listings.map((l: any) => ({
+            id: l.id,
+            platform: l.marketplaceAccount?.platform,
+            accountId: l.marketplaceAccount?.id,
+            accountName: l.marketplaceAccount?.accountName,
+            status: l.status,
+            externalListingId: l.externalListingId,
+            permalink: l.permalink,
+            lastError: l.lastError,
+            retryAttempts: l.retryAttempts,
+            retryEnabled: l.retryEnabled,
+            nextRetryAt: l.nextRetryAt,
+            updatedAt: l.updatedAt,
+          })),
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error fetching status:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
    * POST /listings/dispatch
    * Orquestrador único para criação assíncrona de anúncios em múltiplos
    * marketplaces e múltiplas contas. Substitui as chamadas fire-and-forget
