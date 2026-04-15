@@ -625,6 +625,40 @@ export class ListingRetryService {
           }
         }
 
+        // ─── Preflight: required attributes da categoria (ML API catalog) ──
+        // Auto-preenche attrs a partir de campos do produto e bloqueia retry
+        // se faltar algo crítico — evita desperdiçar budget de retry quando
+        // o problema é de dados e não de título.
+        try {
+          const { ListingPreflightService } = await import(
+            "./listing-preflight.service"
+          );
+          const pf = await ListingPreflightService.checkML({
+            product: product as any,
+            categoryId: resolvedCategoryId,
+            currentAttributes: payload.attributes as any,
+          });
+          payload.attributes = pf.enrichedAttributes as any;
+          if (!pf.ok) {
+            const msg = ListingPreflightService.formatBlockMessage(pf);
+            console.warn(
+              `[ListingRetryService] preflight BLOCKED ${cand.id}: ${msg}`,
+            );
+            await ListingRepository.updateListing(cand.id, {
+              status: "error",
+              lastError: `[TERMINAL] ${msg}`,
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+            continue;
+          }
+        } catch (pfErr) {
+          console.warn(
+            `[ListingRetryService] preflight failed (fail-open) for ${cand.id}:`,
+            pfErr instanceof Error ? pfErr.message : String(pfErr),
+          );
+        }
+
         let mlItem: any = null;
         try {
           console.log(
@@ -754,6 +788,35 @@ export class ListingRetryService {
           if (mlItem) {
             /* fall through to success section below */
           } else {
+            // Missing required attribute: terminal (user precisa corrigir produto).
+            // Ex: `item.attributes.missing_required references [item.attributes] [PART_NUMBER]`
+            if (
+              /missing_required/i.test(rawMsg) ||
+              /required for category/i.test(rawMsg)
+            ) {
+              const attrMatch = rawMsg.match(/\[([A-Z_]+)\]\s+required/i);
+              const missingAttr = attrMatch ? attrMatch[1] : "atributo obrigatório";
+              console.warn(
+                `[ListingRetryService] terminal missing_required for ${cand.id}: ${missingAttr}`,
+              );
+              await ListingRepository.updateListing(cand.id, {
+                status: "error",
+                lastError: `[TERMINAL] Categoria exige ${missingAttr} — corrija o produto antes de republicar`,
+                retryEnabled: false,
+                nextRetryAt: null,
+              });
+              await SystemLogService.logError(
+                "RETRY_LISTING" as any,
+                `createItem missing_required for placeholder ${cand.id}: ${missingAttr}`,
+                {
+                  resource: "ProductListing",
+                  resourceId: cand.id,
+                  details: { mlError: parsed || rawMsg, missingAttr },
+                },
+              );
+              continue;
+            }
+
             // If ML returned a policy restriction (e.g. restrictions_coliving) treat as non-retryable
             if (
               /restrictions_\w+/i.test(rawMsg) ||

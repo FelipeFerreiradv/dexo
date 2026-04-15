@@ -145,6 +145,54 @@ export class MLOAuthService {
   }
 
   /**
+   * Wrapper em cima de `refreshAccessToken` que, em caso de erro terminal
+   * (client_id_mismatch, invalid_grant), marca a conta como ERROR no banco
+   * para parar o loop de retry em webhooks/sync/listing. Use este método
+   * sempre que houver um `accountId` conhecido.
+   */
+  static async refreshAccessTokenForAccount(
+    accountId: string,
+    refreshToken: string,
+  ): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+  }> {
+    try {
+      return await this.refreshAccessToken(refreshToken);
+    } catch (err) {
+      const errorCode = (err as any)?.errorCode as string | undefined;
+      if (
+        errorCode === "client_id_mismatch" ||
+        errorCode === "invalid_grant"
+      ) {
+        try {
+          const prismaMod = await import("@/app/lib/prisma");
+          const prisma = prismaMod.default;
+          await (prisma as any).marketplaceAccount.update({
+            where: { id: accountId },
+            data: { status: "ERROR" },
+          });
+          console.warn(
+            JSON.stringify({
+              event: "ml.oauth.account.auto_deactivated",
+              accountId,
+              errorCode,
+              reason: "refresh terminal failure",
+            }),
+          );
+        } catch (dbErr) {
+          console.warn(
+            `[MLOAuthService] failed to auto-deactivate account ${accountId}:`,
+            dbErr instanceof Error ? dbErr.message : String(dbErr),
+          );
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Renova token expirado usando refresh_token
    * Chamada automática quando access_token expira
    */

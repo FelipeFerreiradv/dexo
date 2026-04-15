@@ -14,6 +14,7 @@ import CategoryRepository from "../repositories/category.repository";
 import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
+import { ListingPreflightService } from "../services/listing-preflight.service";
 
 export interface CreateListingResult {
   success: boolean;
@@ -991,15 +992,6 @@ export class ListingUseCase {
       let categoryIdForML =
         this.normalizeMLCategoryId(resolvedCategoryId) || resolvedCategoryId;
 
-      // Categoria MLB193419 (sugerida pelo domain_discovery para cubo de roda) exige PART_NUMBER
-      if (resolvedCategoryId === "MLB193419" && !product.partNumber) {
-        return {
-          success: false,
-          error:
-            "A categoria selecionada exige o atributo PART_NUMBER. Preencha o Part Number da peça antes de publicar.",
-        };
-      }
-
       // ─── Pré-flight: barreira de domínio (nicho de autopeças) ─────────────
       // Para produtos com sinais fortes de veículo (brand+model+year), a
       // categoria resolvida DEVE estar sob a raiz de Veículos (MLB1747).
@@ -1117,7 +1109,34 @@ export class ListingUseCase {
         );
       descriptionSource = derivedDescriptionSource;
 
-      const attributes = this.buildMLAttributes(product, resolvedCategoryId);
+      let attributes = this.buildMLAttributes(product, resolvedCategoryId);
+
+      // ─── Pré-flight: atributos obrigatórios da categoria ─────────────────
+      // Busca required attributes do catálogo ML (cache 24h) e verifica se
+      // todos estão preenchidos no payload. Auto-preenche a partir de campos
+      // do produto quando possível (PART_NUMBER←partNumber, etc). Bloqueia
+      // cedo com erro acionável se faltar algo crítico. Fail-open: se o
+      // catálogo estiver indisponível, segue o fluxo legado sem bloquear.
+      const preflight = await ListingPreflightService.checkML({
+        product: product as any,
+        categoryId: categoryIdForML,
+        currentAttributes: attributes,
+      });
+      attributes = preflight.enrichedAttributes;
+      if (!preflight.ok) {
+        console.warn(
+          `[ListingUseCase] preflight BLOCKED product=${product.id} category=${categoryIdForML}`,
+          {
+            missingRequired: preflight.missingRequired,
+            issues: preflight.issues,
+          },
+        );
+        return {
+          success: false,
+          error: ListingPreflightService.formatBlockMessage(preflight),
+        };
+      }
+
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
       // Nunca usar originalCategoryId pois pode ser ID sintético do catálogo estático.
       let includeFamilyName = this.shouldIncludeFamilyName(resolvedCategoryId);

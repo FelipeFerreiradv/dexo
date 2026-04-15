@@ -897,7 +897,8 @@ export class OrderUseCase {
         throw error;
       }
 
-      const refreshed = await MLOAuthService.refreshAccessToken(
+      const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+        account.id,
         account.refreshToken,
       );
 

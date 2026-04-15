@@ -540,6 +540,45 @@ export class MLApiService {
   }
 
   /**
+   * Busca atributos de uma categoria ML. Usado para descobrir campos obrigatórios
+   * antes de montar payload de criação (PART_NUMBER, MPN, family_name, etc).
+   */
+  static async getCategoryAttributes(categoryId: string): Promise<any[]> {
+    const url = `${ML_CONSTANTS.API_URL}/categories/${categoryId}/attributes`;
+    try {
+      const res = await axios.get(url, { timeout: 5000 });
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (error) {
+      if (
+        axios.isAxiosError(error) &&
+        (error.response?.status === 401 || error.response?.status === 403)
+      ) {
+        try {
+          const appToken = await this.getAppAccessToken();
+          if (appToken) {
+            const retry = await axios.get(url, {
+              headers: { Authorization: `Bearer ${appToken}` },
+              timeout: 5000,
+            });
+            return Array.isArray(retry.data) ? retry.data : [];
+          }
+        } catch (appErr) {
+          console.warn(
+            `[ML API] getCategoryAttributes fallback with app token failed for ${categoryId}:`,
+            appErr instanceof Error ? appErr.message : appErr,
+          );
+        }
+      }
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          `Erro ao obter atributos da categoria ${categoryId}: ${error.response?.data?.message || error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * ObtÃ©m visitas totais de uma lista de itens
    * Endpoint: /visits/items?ids={ids}
    */

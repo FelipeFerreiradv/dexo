@@ -1141,9 +1141,11 @@ export class SyncUseCase {
         // tenta refresh do token do seller antes do fallback local
         if (isAuthErr && account?.refreshToken) {
           try {
-            const refreshed = await MLOAuthService.refreshAccessToken(
-              account.refreshToken,
-            );
+            const refreshed =
+              await MLOAuthService.refreshAccessTokenForAccount(
+                account.id,
+                account.refreshToken,
+              );
             await MarketplaceRepository.updateTokens(account.id, {
               accessToken: refreshed.accessToken,
               refreshToken: refreshed.refreshToken,

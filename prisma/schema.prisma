@@ -281,6 +281,15 @@ model StockSyncJob {
   @@index([productId])
 }
 
+model MLCategoryAttributeCache {
+  categoryId    String   @id
+  attributes    Json
+  fetchedAt     DateTime @default(now())
+  ttlExpiresAt  DateTime
+
+  @@index([ttlExpiresAt])
+}
+
 model WebhookEventLog {
   id          String   @id @default(cuid())
   source      String
