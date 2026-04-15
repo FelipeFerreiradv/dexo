@@ -188,30 +188,38 @@ class ProductRepositoryPrisma implements ProductRepository {
     if (ProductRepositoryPrisma.extensionsReady) return;
 
     try {
-      await prisma.$executeRawUnsafe(`
-        CREATE EXTENSION IF NOT EXISTS pg_trgm;
-        CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
-        RETURNS text
-        LANGUAGE sql
-        IMMUTABLE
-        PARALLEL SAFE
-        AS $$
-          SELECT translate(
-            $1,
-            'ÁÀÂÃÄÅáàâãäåÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÕÖóòôõöÚÙÛÜúùûüÇçÑñÝýÿ',
-            'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCcNnYyy'
-          )
-        $$;
-        DO $$
-        BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_name_trgm_idx') THEN
-            EXECUTE 'CREATE INDEX product_name_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("name")) gin_trgm_ops)';
-          END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_sku_trgm_idx') THEN
-            EXECUTE 'CREATE INDEX product_sku_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("sku")) gin_trgm_ops)';
-          END IF;
-        END$$;
-      `);
+      // Prisma's $executeRawUnsafe wraps each call in a prepared statement,
+      // which Postgres refuses for multi-command strings ("cannot insert
+      // multiple commands into a prepared statement"). Split into one call
+      // per statement.
+      await prisma.$executeRawUnsafe(
+        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
+         RETURNS text
+         LANGUAGE sql
+         IMMUTABLE
+         PARALLEL SAFE
+         AS $$
+           SELECT translate(
+             $1,
+             'ÁÀÂÃÄÅáàâãäåÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÕÖóòôõöÚÙÛÜúùûüÇçÑñÝýÿ',
+             'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCcNnYyy'
+           )
+         $$`,
+      );
+      await prisma.$executeRawUnsafe(
+        `DO $outer$
+         BEGIN
+           IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_name_trgm_idx') THEN
+             EXECUTE 'CREATE INDEX product_name_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("name")) gin_trgm_ops)';
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_sku_trgm_idx') THEN
+             EXECUTE 'CREATE INDEX product_sku_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("sku")) gin_trgm_ops)';
+           END IF;
+         END$outer$`,
+      );
     } catch (error) {
       console.error(
         "[product-search] Falha ao garantir pg_trgm/unaccent; usando busca simples.",
