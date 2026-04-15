@@ -251,6 +251,7 @@ export function EditProductDialog({
   );
   const mlOptionsFetchedRef = useRef(false);
   const mlOptionsFetchingRef = useRef(false);
+  const [mlLeafSelectOpen, setMlLeafSelectOpen] = useState(false);
   const [mlCategoryWarning, setMlCategoryWarning] = useState<string | null>(
     null,
   );
@@ -1979,7 +1980,9 @@ export function EditProductDialog({
 
                         return (
                           <Select
+                            open={mlLeafSelectOpen}
                             onOpenChange={(isOpen) => {
+                              setMlLeafSelectOpen(isOpen);
                               if (isOpen) void fetchMlCategories();
                             }}
                             onValueChange={(val) => {
@@ -2000,14 +2003,15 @@ export function EditProductDialog({
                               </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
-                              {optionsSource.map((cat) => (
-                                <SelectItem
-                                  key={`${cat.id}-${cat.value}`}
-                                  value={cat.id}
-                                >
-                                  {cat.value.split(" > ").slice(-1)[0]}
-                                </SelectItem>
-                              ))}
+                              {mlLeafSelectOpen &&
+                                optionsSource.map((cat) => (
+                                  <SelectItem
+                                    key={`${cat.id}-${cat.value}`}
+                                    value={cat.id}
+                                  >
+                                    {cat.value.split(" > ").slice(-1)[0]}
+                                  </SelectItem>
+                                ))}
                             </SelectContent>
                           </Select>
                         );
