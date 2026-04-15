@@ -1417,132 +1417,93 @@ export function EditProductDialog({
       // Compatibilidades já foram salvas atomicamente no PUT acima
 
       const base = getApiBaseUrl();
-      const listingResults: string[] = [];
 
-      // Dispara ML e Shopee em paralelo (antes era sequencial: ML → Shopee).
-      // Mesmo payload, mesmas validações, mesmos toasts — só muda a concorrência.
-      const mlTask = async () => {
-        if (!(createMlListing && selectedMlAccounts.length > 0)) return null;
-        const mlResponses = await Promise.all(
-          selectedMlAccounts.map(async (accountId) => {
-            const url = new URL(`${base}/listings/ml`);
-            url.searchParams.set("accountId", accountId);
-            let resp: Response | null = null;
-            let body: any = {};
-            try {
-              resp = await fetchWithTimeout(
-                url.toString(),
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                    email: session?.user?.email || "",
-                  },
-                  body: JSON.stringify({
-                    productId: product.id,
-                    categoryId:
-                      data.mlCategory && data.mlCategory !== product.mlCategory
-                        ? data.mlCategory
-                        : autoDetectedRef.current?.mlCategory || undefined,
-                    listingType: mlListingType,
-                    hasWarranty: mlHasWarranty,
-                    warrantyUnit: mlWarrantyUnit,
-                    warrantyDuration: mlWarrantyDuration,
-                    itemCondition: mlItemCondition,
-                    shippingMode: mlShippingMode,
-                    freeShipping: mlFreeShipping,
-                    localPickup: mlLocalPickup,
-                    manufacturingTime: mlManufacturingTime,
-                  }),
-                },
-                60000,
-              );
-              body = await resp.json().catch(() => ({}));
-            } catch (err) {
-              return {
-                accountId,
-                ok: false,
-                message:
-                  (err as any)?.name === "AbortError"
-                    ? "Requisição expirou (timeout)"
-                    : (err as Error).message || "Erro ao criar anúncio",
-              };
-            }
-            return {
-              accountId,
-              ok: resp?.ok ?? false,
-              message: body.message || body.error || "",
-            };
-          }),
-        );
-        const ok = mlResponses.filter((r) => r.ok).length;
-        const failed = mlResponses.length - ok;
-        return { ok, failed };
-      };
+      // Monta um único POST /listings/dispatch com todas as plataformas e contas.
+      // O endpoint retorna 202 imediato (fire-and-forget) — sem timeout síncrono
+      // de 60s por conta. O status final aparece na aba Anúncios conforme os
+      // jobs terminam em background.
+      const dispatchRequests: Array<{
+        platform: "MERCADO_LIVRE" | "SHOPEE";
+        accountId?: string;
+        categoryId?: string;
+        mlSettings?: Record<string, unknown>;
+      }> = [];
 
-      const shopeeTask = async () => {
-        if (!(createShopeeListing && selectedShopeeAccounts.length > 0))
-          return null;
-        const shResponses = await Promise.all(
-          selectedShopeeAccounts.map(async (accountId) => {
-            const url = new URL(`${base}/listings/shopee`);
-            url.searchParams.set("accountId", accountId);
-            const resp = await fetch(url.toString(), {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                email: session?.user?.email || "",
-              },
-              body: JSON.stringify({
-                productId: product.id,
-                categoryId:
-                  data.shopeeCategory ||
-                  product.shopeeCategoryId ||
-                  undefined,
-              }),
-            });
-            const body = await resp.json().catch(() => ({}));
-            return {
-              accountId,
-              ok: resp.ok,
-              message: body.message || body.error || "",
-            };
-          }),
-        );
-        const ok = shResponses.filter((r) => r.ok).length;
-        const failed = shResponses.length - ok;
-        return { ok, failed };
-      };
-
-      const [mlResult, shResult] = await Promise.all([mlTask(), shopeeTask()]);
-
-      if (mlResult) {
-        listingResults.push(
-          `ML: ${mlResult.ok} criado(s)${mlResult.failed ? `, ${mlResult.failed} falhou(falharam)` : ""}`,
-        );
-        if (mlResult.failed > 0) {
-          onToast(
-            "Alguns anúncios ML não foram criados. Veja detalhes na aba Anúncios.",
-            "error",
-          );
+      if (createMlListing && selectedMlAccounts.length > 0) {
+        const mlCategoryId =
+          data.mlCategory && data.mlCategory !== product.mlCategory
+            ? data.mlCategory
+            : autoDetectedRef.current?.mlCategory || undefined;
+        for (const accountId of selectedMlAccounts) {
+          dispatchRequests.push({
+            platform: "MERCADO_LIVRE",
+            accountId,
+            categoryId: mlCategoryId,
+            mlSettings: {
+              listingType: mlListingType,
+              hasWarranty: mlHasWarranty,
+              warrantyUnit: mlWarrantyUnit,
+              warrantyDuration: mlWarrantyDuration,
+              itemCondition: mlItemCondition,
+              shippingMode: mlShippingMode,
+              freeShipping: mlFreeShipping,
+              localPickup: mlLocalPickup,
+              manufacturingTime: mlManufacturingTime,
+            },
+          });
         }
       }
 
-      if (shResult) {
-        listingResults.push(
-          `Shopee: ${shResult.ok} criado(s)${shResult.failed ? `, ${shResult.failed} falhou(falharam)` : ""}`,
-        );
-        if (shResult.failed > 0) {
+      if (createShopeeListing && selectedShopeeAccounts.length > 0) {
+        const shopeeCategoryId =
+          data.shopeeCategory || product.shopeeCategoryId || undefined;
+        for (const accountId of selectedShopeeAccounts) {
+          dispatchRequests.push({
+            platform: "SHOPEE",
+            accountId,
+            categoryId: shopeeCategoryId,
+          });
+        }
+      }
+
+      let dispatched = 0;
+      if (dispatchRequests.length > 0) {
+        try {
+          const resp = await fetch(`${base}/listings/dispatch`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              email: session?.user?.email || "",
+            },
+            body: JSON.stringify({
+              productId: product.id,
+              requests: dispatchRequests,
+            }),
+          });
+          const body = await resp.json().catch(() => ({}));
+          if (resp.ok && Array.isArray(body?.queued)) {
+            dispatched = body.queued.length;
+          } else {
+            onToast(
+              body?.message ||
+                body?.error ||
+                "Falha ao enfileirar anúncios. Confira a aba Anúncios.",
+              "error",
+            );
+          }
+        } catch (err) {
           onToast(
-            "Alguns anúncios Shopee não foram criados. Confira a aba Anúncios.",
+            err instanceof Error
+              ? `Erro ao enfileirar anúncios: ${err.message}`
+              : "Erro ao enfileirar anúncios",
             "error",
           );
         }
       }
 
       onToast(
-        listingResults.length > 0
-          ? `Produto atualizado. ${listingResults.join(" | ")}`
+        dispatched > 0
+          ? `Produto atualizado. ${dispatched} anúncio(s) em processamento — acompanhe na aba Anúncios.`
           : "Produto atualizado com sucesso!",
         "success",
       );
