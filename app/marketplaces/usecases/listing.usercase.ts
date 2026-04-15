@@ -1557,6 +1557,24 @@ export class ListingUseCase {
           err && (err as any).mlError ? (err as any).mlError : null;
         const errMsg = err instanceof Error ? err.message : String(err);
 
+        // Structured log — the axios-wrapped errMsg collapses cause[] into a
+        // string, making title-rejection diagnostics impossible from logs. Emit
+        // the parsed payload upfront so we can see ML's real complaint before
+        // the retry ladder mutates the payload.
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.failed",
+            productId: product.id,
+            categoryId: categoryIdForML,
+            status: parsedMl?.status || null,
+            mlMessage: parsedMl?.message || null,
+            mlError: parsedMl?.error || null,
+            cause: Array.isArray(parsedMl?.cause) ? parsedMl.cause : [],
+            hasFamilyName: !!(payload as any).family_name,
+            titleLength: (payload.title || "").length,
+          }),
+        );
+
         const isCategoryInvalid = !!parsedMl?.cause?.some(
           (c: any) => c?.code === "item.category_id.invalid",
         );
@@ -1687,12 +1705,19 @@ export class ListingUseCase {
               timeoutMs,
               "ML createItem family_name",
             );
-          } catch (famErr) {
+          } catch (famErr: any) {
             const famMsg =
               famErr instanceof Error ? famErr.message : String(famErr);
+            const famMl = famErr?.mlError || null;
             console.warn(
-              "[ListingUseCase] Retentativa com family_name falhou:",
-              famMsg,
+              JSON.stringify({
+                event: "ml.create_item.retry_failed",
+                step: "family_name",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                cause: Array.isArray(famMl?.cause) ? famMl.cause : [],
+                mlMessage: famMl?.message || famMsg,
+              }),
             );
             if (
               !isTitleInvalid &&
@@ -1757,12 +1782,21 @@ export class ListingUseCase {
               timeoutMs,
               "ML createItem safeTitle",
             );
-          } catch (retryTitleErr) {
+          } catch (retryTitleErr: any) {
+            const stMl = retryTitleErr?.mlError || null;
             console.warn(
-              "[ListingUseCase] Retentativa com título seguro falhou:",
-              retryTitleErr instanceof Error
-                ? retryTitleErr.message
-                : String(retryTitleErr),
+              JSON.stringify({
+                event: "ml.create_item.retry_failed",
+                step: "safe_title",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                cause: Array.isArray(stMl?.cause) ? stMl.cause : [],
+                mlMessage:
+                  stMl?.message ||
+                  (retryTitleErr instanceof Error
+                    ? retryTitleErr.message
+                    : String(retryTitleErr)),
+              }),
             );
           }
         }
@@ -1786,10 +1820,19 @@ export class ListingUseCase {
               timeoutMs,
               "ML createItem fallback noTitle",
             );
-          } catch (dynErr) {
+          } catch (dynErr: any) {
+            const dynMl = dynErr?.mlError || null;
             console.warn(
-              "[ListingUseCase] Fallback dinâmico sem title falhou:",
-              dynErr instanceof Error ? dynErr.message : String(dynErr),
+              JSON.stringify({
+                event: "ml.create_item.retry_failed",
+                step: "dynamic_no_title",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                cause: Array.isArray(dynMl?.cause) ? dynMl.cause : [],
+                mlMessage:
+                  dynMl?.message ||
+                  (dynErr instanceof Error ? dynErr.message : String(dynErr)),
+              }),
             );
           }
         }
