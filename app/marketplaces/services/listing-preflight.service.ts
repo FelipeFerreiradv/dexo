@@ -43,16 +43,95 @@ export interface MLPreflightResult {
 }
 
 /**
+ * Marcas automotivas reconhecidas pelo fallback de extração por nome.
+ * Ordem importa — marcas compostas antes das simples (Alfa Romeo antes de Alfa).
+ * Match é case-insensitive por word boundary.
+ */
+const KNOWN_BRANDS: Array<{ pattern: RegExp; canonical: string }> = [
+  { pattern: /\balfa\s*romeo\b/i, canonical: "Alfa Romeo" },
+  { pattern: /\bland\s*rover\b/i, canonical: "Land Rover" },
+  { pattern: /\bmercedes(\s*benz)?\b/i, canonical: "Mercedes-Benz" },
+  { pattern: /\bvolkswagen\b/i, canonical: "Volkswagen" },
+  { pattern: /\bchevrolet\b/i, canonical: "Chevrolet" },
+  { pattern: /\bmitsubishi\b/i, canonical: "Mitsubishi" },
+  { pattern: /\brenault\b/i, canonical: "Renault" },
+  { pattern: /\bpeugeot\b/i, canonical: "Peugeot" },
+  { pattern: /\bcitro[eë]n\b/i, canonical: "Citroën" },
+  { pattern: /\bhyundai\b/i, canonical: "Hyundai" },
+  { pattern: /\bnissan\b/i, canonical: "Nissan" },
+  { pattern: /\btoyota\b/i, canonical: "Toyota" },
+  { pattern: /\bhonda\b/i, canonical: "Honda" },
+  { pattern: /\bsuzuki\b/i, canonical: "Suzuki" },
+  { pattern: /\bporsche\b/i, canonical: "Porsche" },
+  { pattern: /\bferrari\b/i, canonical: "Ferrari" },
+  { pattern: /\bchrysler\b/i, canonical: "Chrysler" },
+  { pattern: /\bdodge\b/i, canonical: "Dodge" },
+  { pattern: /\bsubaru\b/i, canonical: "Subaru" },
+  { pattern: /\bvolvo\b/i, canonical: "Volvo" },
+  { pattern: /\bchery\b/i, canonical: "Chery" },
+  { pattern: /\bjac\b/i, canonical: "JAC" },
+  { pattern: /\bgeely\b/i, canonical: "Geely" },
+  { pattern: /\bjaguar\b/i, canonical: "Jaguar" },
+  { pattern: /\blexus\b/i, canonical: "Lexus" },
+  { pattern: /\btroller\b/i, canonical: "Troller" },
+  { pattern: /\bfiat\b/i, canonical: "Fiat" },
+  { pattern: /\bford\b/i, canonical: "Ford" },
+  { pattern: /\baudi\b/i, canonical: "Audi" },
+  { pattern: /\bbmw\b/i, canonical: "BMW" },
+  { pattern: /\bkia\b/i, canonical: "Kia" },
+  { pattern: /\bjeep\b/i, canonical: "Jeep" },
+  { pattern: /\bram\b/i, canonical: "RAM" },
+  { pattern: /\bmini\b/i, canonical: "MINI" },
+  { pattern: /\bgm\b/i, canonical: "Chevrolet" },
+  { pattern: /\bvw\b/i, canonical: "Volkswagen" },
+];
+
+/**
+ * Extrai marca do nome do produto quando o campo brand está vazio.
+ * Retorna o canonical match ou undefined se nenhuma marca conhecida aparece.
+ */
+function extractBrandFromName(name?: string | null): string | undefined {
+  if (!name) return undefined;
+  for (const { pattern, canonical } of KNOWN_BRANDS) {
+    if (pattern.test(name)) return canonical;
+  }
+  return undefined;
+}
+
+/**
+ * Extrai um part number plausível do nome do produto.
+ * Heurística: token alfanumérico de 6+ caracteres com pelo menos 3 dígitos,
+ * ou marcadores explícitos "cod:"/"cód:"/"código:" seguidos de token.
+ * Ignora anos (4 dígitos puros) e tokens de dimensão (ex: "16v", "1.6").
+ */
+function extractPartNumberFromName(name?: string | null): string | undefined {
+  if (!name) return undefined;
+  const codMatch = name.match(/(?:c[oó]d(?:igo)?\.?\s*:?\s*)([A-Za-z0-9\-]{5,})/i);
+  if (codMatch) return codMatch[1];
+  const tokens = name.split(/[\s,()/]+/);
+  for (const t of tokens) {
+    if (t.length < 6) continue;
+    if (/^\d{4}$/.test(t)) continue;
+    if (/^\d+\.\d+$/.test(t)) continue;
+    if (/^\d+v$/i.test(t)) continue;
+    const digits = (t.match(/\d/g) || []).length;
+    if (digits >= 3 && /^[A-Za-z0-9\-]+$/.test(t)) return t;
+  }
+  return undefined;
+}
+
+/**
  * Mapeamento best-effort de IDs de atributo ML para fields do produto.
  * Usado pelo enrichment para auto-preencher atributos obrigatórios a
  * partir dos campos do domínio, sem exigir mudança no schema do produto.
+ * Quando o field direto está vazio, tenta fallback por extração do nome.
  */
 const ATTR_TO_FIELD: Record<string, (p: MLPreflightInput["product"]) => string | undefined> = {
-  PART_NUMBER: (p) => p.partNumber || undefined,
-  MPN: (p) => p.partNumber || undefined,
-  OEM: (p) => p.partNumber || undefined,
+  PART_NUMBER: (p) => p.partNumber || extractPartNumberFromName(p.name) || undefined,
+  MPN: (p) => p.partNumber || extractPartNumberFromName(p.name) || undefined,
+  OEM: (p) => p.partNumber || extractPartNumberFromName(p.name) || undefined,
   GTIN: () => undefined,
-  BRAND: (p) => p.brand || undefined,
+  BRAND: (p) => p.brand || extractBrandFromName(p.name) || undefined,
   MODEL: (p) => p.model || undefined,
   YEAR: (p) => p.year || undefined,
   VEHICLE_YEAR: (p) => p.year || undefined,
