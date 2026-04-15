@@ -1433,6 +1433,10 @@ export class ListingUseCase {
       );
 
       if (!listing) {
+        // retryEnabled=false: o fluxo primário é responsável pelo próprio
+        // sucesso/erro. Só o catch habilita retry explicitamente se a
+        // chamada falhar. Evita race com ListingRetryService.runOnce
+        // rodando em paralelo ao fluxo de criação.
         listing = await ListingRepository.createListing({
           productId,
           marketplaceAccountId: acc.id,
@@ -1443,7 +1447,7 @@ export class ListingUseCase {
           retryAttempts: 0,
           nextRetryAt: null,
           lastError: null,
-          retryEnabled: true,
+          retryEnabled: false,
           requestedCategoryId: payload.category_id || null,
         });
       }
@@ -3020,6 +3024,11 @@ export class ListingUseCase {
         account.id,
       );
       if (!listing) {
+        // retryEnabled=false: o fluxo primário é responsável pelo próprio
+        // sucesso/erro. Só o catch abaixo habilita retry explicitamente se
+        // a chamada falhar. Isso evita que o ListingRetryService pegue o
+        // placeholder durante a janela entre criação e update final e
+        // dispare uma criação duplicada.
         listing = await ListingRepository.createListing({
           productId,
           marketplaceAccountId: account.id,
@@ -3030,7 +3039,7 @@ export class ListingUseCase {
           retryAttempts: 0,
           nextRetryAt: null,
           lastError: null,
-          retryEnabled: true,
+          retryEnabled: false,
           requestedCategoryId: String(numericCategoryId),
         });
         console.log(
