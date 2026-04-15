@@ -1,5 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import {
+  ListingDispatcher,
+  ListingDispatchRequest,
+} from "../marketplaces/services/listing-dispatcher.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
@@ -272,6 +276,75 @@ export async function listingRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         console.error("[Listing Routes] Error removing listing:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/dispatch
+   * Orquestrador único para criação assíncrona de anúncios em múltiplos
+   * marketplaces e múltiplas contas. Substitui as chamadas fire-and-forget
+   * duplicadas nos fluxos de criação (POST /products) e edição
+   * (PUT /products/:id) por um único endpoint.
+   *
+   * Comportamento: fire-and-forget — retorna imediatamente o snapshot do
+   * que foi enfileirado. Status final deve ser consultado via
+   * GET /listings/status?productId=X (próxima fase).
+   */
+  app.post<{
+    Body: {
+      productId: string;
+      requests: ListingDispatchRequest[];
+    };
+  }>(
+    "/dispatch",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const body = request.body as {
+          productId: string;
+          requests: ListingDispatchRequest[];
+        };
+
+        if (!body.productId) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "productId é obrigatório",
+          });
+        }
+        if (!Array.isArray(body.requests) || body.requests.length === 0) {
+          return reply.status(400).send({
+            error: "Dados incompletos",
+            message: "requests deve ser um array não-vazio",
+          });
+        }
+
+        for (const req of body.requests) {
+          if (req.platform !== "MERCADO_LIVRE" && req.platform !== "SHOPEE") {
+            return reply.status(400).send({
+              error: "Dados inválidos",
+              message: `platform desconhecido: ${req.platform}`,
+            });
+          }
+        }
+
+        const snapshot = ListingDispatcher.dispatch({
+          userId,
+          productId: body.productId,
+          requests: body.requests,
+        });
+
+        return reply.status(202).send({
+          success: true,
+          ...snapshot,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error dispatching listings:", error);
         return reply.status(500).send({
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",
