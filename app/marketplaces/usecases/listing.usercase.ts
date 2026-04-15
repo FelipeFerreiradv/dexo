@@ -1685,14 +1685,19 @@ export class ListingUseCase {
 
         if (!mlItem && missingFamilyName && !includeFamilyName) {
           try {
+            // Categories that demand family_name are User Product (UP) flow and
+            // reject title+family_name together. Drop title preemptively on the
+            // first retry — evidence: MLB438074, MLB191833, MLB193531, MLB116479
+            // all failed "body.invalid_fields [title]" when family_name was
+            // present. This turns a 3-retry ladder into 1 retry.
             console.warn(
-              `[ListingUseCase] ML solicitou family_name; retentando mantendo título informado`,
+              `[ListingUseCase] ML solicitou family_name; retentando sem title (UP flow)`,
             );
             const withFamily: MLItemCreatePayload = {
               ...payload,
               family_name: familyNameValue || this.buildMLTitle(product),
             };
-            if (noTitleFlow) delete (withFamily as any).title;
+            delete (withFamily as any).title;
 
             // Atualizar estado ANTES da chamada para que retries subsequentes tenham family_name
             includeFamilyName = includeFamilyName || !!withFamily.family_name;
@@ -1717,6 +1722,7 @@ export class ListingUseCase {
                 categoryId: categoryIdForML,
                 cause: Array.isArray(famMl?.cause) ? famMl.cause : [],
                 mlMessage: famMl?.message || famMsg,
+                mlError: famMl?.error || null,
               }),
             );
             if (
@@ -1796,6 +1802,7 @@ export class ListingUseCase {
                   (retryTitleErr instanceof Error
                     ? retryTitleErr.message
                     : String(retryTitleErr)),
+                mlError: stMl?.error || null,
               }),
             );
           }
@@ -1832,6 +1839,7 @@ export class ListingUseCase {
                 mlMessage:
                   dynMl?.message ||
                   (dynErr instanceof Error ? dynErr.message : String(dynErr)),
+                mlError: dynMl?.error || null,
               }),
             );
           }
