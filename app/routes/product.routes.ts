@@ -10,6 +10,10 @@ import {
   Quality,
 } from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import {
+  ListingDispatcher,
+  ListingDispatchRequest,
+} from "../marketplaces/services/listing-dispatcher.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
@@ -472,115 +476,58 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           (Array.isArray(listings) && listings.length > 0) ||
           (createListing && (!listings || listings.length === 0));
 
-        // Dispara criação de listings em background (sem await)
         if (wantsListing && user) {
           const bgListings = Array.isArray(listings) ? listings : [];
-          const bgCategoryId = createListingCategoryId;
-          const bgUserId = user.id as string;
-          const bgProductId = data.id as string;
-          const bgCreateListing = createListing;
+          const dispatchRequests: ListingDispatchRequest[] = [];
 
-          // fire-and-forget — erros são logados mas não bloqueiam a resposta
-          void (async () => {
-            try {
-              // Fluxo multi-contas
-              if (bgListings.length > 0) {
-                // OPT-2: Paralelizar criação de listings entre plataformas e contas
-                const listingPromises: Promise<void>[] = [];
-
-                for (const lst of bgListings) {
-                  if (lst.platform === "MERCADO_LIVRE") {
-                    const accounts = (lst.accountIds || []).length
-                      ? lst.accountIds
-                      : [undefined];
-                    for (const accId of accounts) {
-                      listingPromises.push(
-                        (async () => {
-                          try {
-                            const mlSettings =
-                              lst.platform === "MERCADO_LIVRE"
-                                ? {
-                                    listingType: lst.listingType,
-                                    hasWarranty: lst.hasWarranty,
-                                    warrantyUnit: lst.warrantyUnit,
-                                    warrantyDuration: lst.warrantyDuration,
-                                    itemCondition: lst.itemCondition,
-                                    shippingMode: lst.shippingMode,
-                                    freeShipping: lst.freeShipping,
-                                    localPickup: lst.localPickup,
-                                    manufacturingTime: lst.manufacturingTime,
-                                  }
-                                : undefined;
-                            await ListingUseCase.createMLListing(
-                              bgUserId,
-                              bgProductId,
-                              lst.categoryId || bgCategoryId,
-                              accId,
-                              mlSettings,
-                            );
-                          } catch (e) {
-                            console.error(
-                              "[product:bg-listing] ML error:",
-                              e instanceof Error ? e.message : e,
-                            );
-                          }
-                        })(),
-                      );
-                    }
-                  } else if (lst.platform === "SHOPEE") {
-                    const accounts = (lst.accountIds || []).length
-                      ? lst.accountIds
-                      : [undefined];
-                    for (const accId of accounts) {
-                      listingPromises.push(
-                        (async () => {
-                          try {
-                            const shopeeResult =
-                              await ListingUseCase.createShopeeListing(
-                                bgUserId,
-                                bgProductId,
-                                lst.categoryId,
-                                accId,
-                              );
-                            if (!shopeeResult.success) {
-                              console.error(
-                                `[product:bg-listing] Shopee listing failed: ${shopeeResult.error}`,
-                              );
-                            }
-                          } catch (e) {
-                            console.error(
-                              "[product:bg-listing] Shopee error:",
-                              e instanceof Error ? e.message : e,
-                            );
-                          }
-                        })(),
-                      );
-                    }
-                  }
-                }
-
-                await Promise.allSettled(listingPromises);
+          for (const lst of bgListings) {
+            const accounts = (lst.accountIds || []).length
+              ? (lst.accountIds as (string | undefined)[])
+              : [undefined];
+            if (lst.platform === "MERCADO_LIVRE") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "MERCADO_LIVRE",
+                  accountId: accId,
+                  categoryId: lst.categoryId || createListingCategoryId,
+                  mlSettings: {
+                    listingType: lst.listingType,
+                    hasWarranty: lst.hasWarranty,
+                    warrantyUnit: lst.warrantyUnit,
+                    warrantyDuration: lst.warrantyDuration,
+                    itemCondition: lst.itemCondition,
+                    shippingMode: lst.shippingMode,
+                    freeShipping: lst.freeShipping,
+                    localPickup: lst.localPickup,
+                    manufacturingTime: lst.manufacturingTime,
+                  },
+                });
               }
-
-              // Fluxo legado
-              if (bgCreateListing && bgListings.length === 0) {
-                try {
-                  await ListingUseCase.createMLListing(
-                    bgUserId,
-                    bgProductId,
-                    bgCategoryId,
-                  );
-                } catch (e) {
-                  console.error(
-                    "[product:bg-listing] legacy ML error:",
-                    e instanceof Error ? e.message : e,
-                  );
-                }
+            } else if (lst.platform === "SHOPEE") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "SHOPEE",
+                  accountId: accId,
+                  categoryId: lst.categoryId,
+                });
               }
-            } catch (bgErr) {
-              console.error("[product:bg-listing] unexpected error:", bgErr);
             }
-          })();
+          }
+
+          if (createListing && dispatchRequests.length === 0) {
+            dispatchRequests.push({
+              platform: "MERCADO_LIVRE",
+              categoryId: createListingCategoryId,
+            });
+          }
+
+          if (dispatchRequests.length > 0) {
+            ListingDispatcher.dispatch({
+              userId: user.id as string,
+              productId: data.id as string,
+              requests: dispatchRequests,
+            });
+          }
         }
 
         return reply.status(201).send({
