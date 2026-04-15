@@ -642,7 +642,8 @@ export class ListingUseCase {
           console.debug(
             `[ListingUseCase] ML token expired for account ${acc.id || "<no-account>"}, attempting refresh`,
           );
-          const refreshed = await MLOAuthService.refreshAccessToken(
+          const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+            acc.id,
             acc.refreshToken,
           );
 

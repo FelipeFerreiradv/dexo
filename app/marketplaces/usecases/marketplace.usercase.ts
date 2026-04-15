@@ -197,7 +197,8 @@ export class MarketplaceUseCase {
         );
         // Tentar renovar token automaticamente
         try {
-          const refreshed = await MLOAuthService.refreshAccessToken(
+          const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+            account.id,
             account.refreshToken,
           );
 

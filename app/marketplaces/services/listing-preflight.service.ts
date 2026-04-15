@@ -77,6 +77,39 @@ const SOFT_REQUIRED = new Set([
   "WEIGHT",
 ]);
 
+/**
+ * Para atributos enum (value_type=list) cujos obrigatórios não podem ser
+ * derivados do produto, tentamos casar um valor "padrão razoável" dentro
+ * da lista `allowedValues` retornada pelo catálogo ML. Para o domínio de
+ * autopeças do sistema, valores como VEHICLE_TYPE são quase sempre "Carro".
+ *
+ * Cada entrada é uma lista de regexes avaliadas em ordem contra os nomes
+ * dos allowedValues; o primeiro match vence.
+ */
+const ENUM_SMART_DEFAULTS: Record<string, RegExp[]> = {
+  VEHICLE_TYPE: [
+    /^carro/i,
+    /^autom[oó]vel/i,
+    /caminhonete/i,
+    /car$/i,
+  ],
+  ITEM_CONDITION: [/usad/i, /second/i, /^used$/i],
+};
+
+function pickSmartDefault(
+  attr: NormalizedMLAttribute,
+): { id: string; name: string } | undefined {
+  const patterns = ENUM_SMART_DEFAULTS[attr.id];
+  if (!patterns || !attr.allowedValues || attr.allowedValues.length === 0) {
+    return undefined;
+  }
+  for (const rx of patterns) {
+    const hit = attr.allowedValues.find((v) => rx.test(v.name));
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 export class ListingPreflightService {
   /**
    * Valida/enriquece payload ML antes de chamar a API. Retorna:
@@ -133,6 +166,14 @@ export class ListingPreflightService {
 
       if (fromProduct && fromProduct.trim().length > 0) {
         const newAttr = { id: attr.id, value_name: fromProduct.trim() };
+        enriched.push(newAttr);
+        byId.set(attr.id, newAttr);
+        continue;
+      }
+
+      const smart = pickSmartDefault(attr);
+      if (smart) {
+        const newAttr = { id: attr.id, value_name: smart.name };
         enriched.push(newAttr);
         byId.set(attr.id, newAttr);
         continue;

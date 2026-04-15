@@ -81,7 +81,8 @@ async function resolveMlAccountForCompat(
   let accessToken = account.accessToken;
   if (account.expiresAt && new Date(account.expiresAt) <= new Date()) {
     try {
-      const refreshed = await MLOAuthService.refreshAccessToken(
+      const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+        account.id,
         account.refreshToken,
       );
       const updated = await MarketplaceRepository.updateTokens(account.id, {
