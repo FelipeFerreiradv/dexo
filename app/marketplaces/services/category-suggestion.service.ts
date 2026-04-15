@@ -505,6 +505,21 @@ export class CategorySuggestionService {
   >();
   private static readonly CACHE_MS = 5 * 60 * 1000;
 
+  /** Per-title cached suggestion result (siteId + normalizedTitle → result, TTL 1h) */
+  private static suggestResultCache = new Map<
+    string,
+    {
+      cachedAt: number;
+      result: {
+        normalizedTitle: string;
+        tokens: string[];
+        suggestions: CategorySuggestion[];
+      };
+    }
+  >();
+  private static readonly SUGGEST_CACHE_TTL_MS = 60 * 60 * 1000;
+  private static readonly SUGGEST_CACHE_MAX_ENTRIES = 2000;
+
   private static normalize(text?: string): string {
     return (text || "")
       .toString()
@@ -571,6 +586,11 @@ export class CategorySuggestionService {
     this.parentMapCache.delete(siteId);
     this.tokenFreqCache.delete(siteId);
     this.catTokenCache.delete(siteId);
+    // Drop per-siteId suggestion cache entries (keys are "siteId::title")
+    const prefix = `${siteId}::`;
+    for (const key of this.suggestResultCache.keys()) {
+      if (key.startsWith(prefix)) this.suggestResultCache.delete(key);
+    }
     return items;
   }
 
@@ -863,6 +883,21 @@ export class CategorySuggestionService {
     // ── Guard: titles too short for keyword-only matching (SHP has no aliases) ──
     if (tokens.length < 2 && siteId !== "MLB") {
       return { normalizedTitle, tokens, suggestions: [] };
+    }
+
+    // ── Result cache (siteId + normalizedTitle) ──
+    // suggestFromTitle is pure relative to its caches (aliases/categories are
+    // invalidated via loadCategories/loadAliases when data changes), so the
+    // same title produces the same result until those caches flip. The log
+    // "suggestFromTitle lento: 3728ms" showed repeated calls for similar
+    // titles during modal interactions — caching here avoids recomputing.
+    const cacheKey = `${siteId}::${normalizedTitle}`;
+    const cached = this.suggestResultCache.get(cacheKey);
+    if (
+      cached &&
+      Date.now() - cached.cachedAt < this.SUGGEST_CACHE_TTL_MS
+    ) {
+      return cached.result;
     }
 
     const aliasEntries = await this.loadAliases(siteId);
@@ -1179,11 +1214,19 @@ export class CategorySuggestionService {
       );
     }
 
-    return {
+    const result = {
       normalizedTitle,
       tokens,
       suggestions: filtered.slice(0, 5),
     };
+
+    if (this.suggestResultCache.size >= this.SUGGEST_CACHE_MAX_ENTRIES) {
+      const firstKey = this.suggestResultCache.keys().next().value;
+      if (firstKey !== undefined) this.suggestResultCache.delete(firstKey);
+    }
+    this.suggestResultCache.set(cacheKey, { cachedAt: Date.now(), result });
+
+    return result;
   }
 }
 

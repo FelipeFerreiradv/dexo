@@ -2654,9 +2654,23 @@ export class ListingUseCase {
           }
         }
       } else {
+        const reason: any = categoryAttrsResult.reason;
+        const reasonMsg = reason?.message || String(reason || "unknown");
+        const is403 =
+          /403/.test(reasonMsg) || /permission denied/i.test(reasonMsg);
+        console.warn(
+          JSON.stringify({
+            event: "shopee.category_attrs.failed",
+            categoryId: numericCategoryId,
+            shopId: account.shopId,
+            status: is403 ? 403 : undefined,
+            errorCode: is403 ? "permission_denied" : "unknown",
+            message: reasonMsg,
+          }),
+        );
         console.warn(
           `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
-          categoryAttrsResult.reason?.message || categoryAttrsResult.reason,
+          reasonMsg,
         );
       }
 

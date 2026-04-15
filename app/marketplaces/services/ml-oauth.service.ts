@@ -181,9 +181,38 @@ export class MLOAuthService {
       };
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
-          `Erro ao renovar token: ${error.response?.data?.message || error.message}`,
+        const data: any = error.response?.data;
+        const apiMessage: string =
+          data?.message || data?.error_description || data?.error || "";
+        const rawMessage = apiMessage || error.message;
+
+        let errorCode: string = "unknown";
+        if (/client_id does not match/i.test(rawMessage)) {
+          errorCode = "client_id_mismatch";
+        } else if (
+          /invalid[_\s-]?grant/i.test(rawMessage) ||
+          /refresh[_\s-]?token/i.test(rawMessage)
+        ) {
+          errorCode = "invalid_grant";
+        } else if (error.response?.status === 401) {
+          errorCode = "unauthorized";
+        } else if (error.response?.status === 400) {
+          errorCode = "bad_request";
+        }
+
+        console.warn(
+          JSON.stringify({
+            event: "ml.oauth.refresh.failed",
+            errorCode,
+            status: error.response?.status,
+            message: rawMessage,
+          }),
         );
+
+        const wrapped = new Error(`Erro ao renovar token: ${rawMessage}`);
+        (wrapped as any).cause = error;
+        (wrapped as any).errorCode = errorCode;
+        throw wrapped;
       }
       throw error;
     }
