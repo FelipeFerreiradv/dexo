@@ -145,10 +145,21 @@ export class MLOAuthService {
   }
 
   /**
+   * Circuit breaker in-memory para accounts com erro terminal de OAuth.
+   * Evita loop de logs quando webhooks paralelos chegam antes do update
+   * DB para status=ERROR propagar: a primeira falha registra o accountId
+   * aqui, e as subsequentes falham cedo sem bater na API do ML.
+   */
+  private static trippedAccounts = new Map<
+    string,
+    { errorCode: string; trippedAt: number }
+  >();
+
+  /**
    * Wrapper em cima de `refreshAccessToken` que, em caso de erro terminal
    * (client_id_mismatch, invalid_grant), marca a conta como ERROR no banco
-   * para parar o loop de retry em webhooks/sync/listing. Use este método
-   * sempre que houver um `accountId` conhecido.
+   * e trip-a o circuit breaker em memória para parar loops de retry em
+   * webhooks/sync/listing. Use sempre que houver um `accountId` conhecido.
    */
   static async refreshAccessTokenForAccount(
     accountId: string,
@@ -158,6 +169,16 @@ export class MLOAuthService {
     refreshToken: string;
     expiresIn: number;
   }> {
+    const tripped = this.trippedAccounts.get(accountId);
+    if (tripped) {
+      const err = new Error(
+        `Erro ao renovar token: conta ${accountId} está em estado terminal (${tripped.errorCode})`,
+      );
+      (err as any).errorCode = tripped.errorCode;
+      (err as any).circuitBreaker = true;
+      throw err;
+    }
+
     try {
       return await this.refreshAccessToken(refreshToken);
     } catch (err) {
@@ -166,6 +187,10 @@ export class MLOAuthService {
         errorCode === "client_id_mismatch" ||
         errorCode === "invalid_grant"
       ) {
+        this.trippedAccounts.set(accountId, {
+          errorCode,
+          trippedAt: Date.now(),
+        });
         try {
           const prismaMod = await import("@/app/lib/prisma");
           const prisma = prismaMod.default;
@@ -190,6 +215,14 @@ export class MLOAuthService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Limpa o circuit breaker para um account. Deve ser chamado quando o
+   * usuário reconecta a conta (novo OAuth callback com tokens válidos).
+   */
+  static clearAccountCircuitBreaker(accountId: string): void {
+    this.trippedAccounts.delete(accountId);
   }
 
   /**

@@ -108,6 +108,9 @@ export class MarketplaceUseCase {
             AccountStatus.ACTIVE,
           );
         }
+
+        // Limpa circuit breaker in-memory após reconexão bem-sucedida
+        MLOAuthService.clearAccountCircuitBreaker(existingAccount.id);
       } else {
         console.log(
           `[handleOAuthCallback] Creating NEW account for userId=${userId} externalUserId=${tokenData.externalUserId}`,
