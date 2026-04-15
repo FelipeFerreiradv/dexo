@@ -9,6 +9,154 @@ export interface CategoryResolutionResult {
   source: CategoryResolutionSource;
 }
 
+export const ML_VEHICLE_ROOT_EXTERNAL_ID = "MLB5672";
+
+export interface DomainGuardResult {
+  ok: boolean;
+  rootExternalId?: string;
+  fullPath?: string;
+  reason?: "not_in_tree" | "outside_root";
+}
+
+export interface ConditionCoherenceResult {
+  ok: boolean;
+  allowedConditions?: string[];
+  reason?: "unknown" | "incompatible";
+}
+
+const conditionCache = new Map<
+  string,
+  { conditions: string[] | null; ts: number }
+>();
+const CONDITION_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const vehicleRootSetCache = new Map<
+  string,
+  { set: Set<string>; ts: number }
+>();
+const VEHICLE_ROOT_SET_TTL_MS = 10 * 60 * 1000;
+
+export function __resetCategoryGuardCacheForTests() {
+  conditionCache.clear();
+  vehicleRootSetCache.clear();
+}
+
+/**
+ * Carrega (e cacheia) o conjunto de externalIds que descendem da raiz
+ * veicular (MLB1747) usando a árvore local. Uma chamada, reaproveitada
+ * por todos os callers durante o TTL.
+ */
+async function loadVehicleRootSet(
+  siteId: string = "MLB",
+  rootExternalId: string = ML_VEHICLE_ROOT_EXTERNAL_ID,
+): Promise<Set<string>> {
+  const key = `${siteId}:${rootExternalId}`;
+  const now = Date.now();
+  const cached = vehicleRootSetCache.get(key);
+  if (cached && now - cached.ts < VEHICLE_ROOT_SET_TTL_MS) {
+    return cached.set;
+  }
+  const categories = await CategoryRepository.listWithParents(siteId);
+  const set = new Set<string>();
+  if (!categories.length) {
+    vehicleRootSetCache.set(key, { set, ts: now });
+    return set;
+  }
+  const byParent = new Map<string, string[]>();
+  for (const c of categories) {
+    const p = (c as any).parentExternalId as string | null;
+    if (!p) continue;
+    const arr = byParent.get(p) || [];
+    arr.push(c.externalId);
+    byParent.set(p, arr);
+  }
+  const queue: string[] = [rootExternalId];
+  set.add(rootExternalId);
+  while (queue.length) {
+    const id = queue.shift()!;
+    const children = byParent.get(id) || [];
+    for (const child of children) {
+      if (!set.has(child)) {
+        set.add(child);
+        queue.push(child);
+      }
+    }
+  }
+  vehicleRootSetCache.set(key, { set, ts: now });
+  return set;
+}
+
+/**
+ * Máscara de leitura: para produtos veiculares (brand+model+year) cuja
+ * `mlCategoryId` persistida caia fora do nicho veicular (MLB1747), zera
+ * os campos ML no objeto retornado. NÃO escreve no DB — apenas mascara
+ * na resposta. Falha-aberto: se a árvore não estiver sincronizada (set
+ * vazio), não mascara nada para não bloquear usuário por falta de dados.
+ */
+const VEHICLE_CATEGORY_KEYWORDS = [
+  "veícul",
+  "veicul",
+  "acessórios para ve",
+  "acessorios para ve",
+  "peças de carro",
+  "pecas de carro",
+  "motor",
+  "suspensão",
+  "suspensao",
+  "freio",
+  "carroceria",
+  "automotiv",
+  "auto peça",
+  "auto peca",
+  "autopeç",
+  "autopec",
+];
+
+function looksLikeVehicularCategoryString(value?: string | null): boolean {
+  if (!value) return false;
+  const v = value.toLowerCase();
+  return VEHICLE_CATEGORY_KEYWORDS.some((kw) => v.includes(kw));
+}
+
+export async function maskCorruptVehicleCategoriesInProducts<
+  T extends {
+    brand?: string | null;
+    model?: string | null;
+    year?: string | null;
+    category?: string | null;
+    mlCategory?: string | null;
+    mlCategoryId?: string | null;
+    mlCategorySource?: string | null;
+  },
+>(products: T[]): Promise<T[]> {
+  if (!products || products.length === 0) return products;
+  const hasVehicularCandidate = products.some(
+    (p) =>
+      !!(p.brand && p.model && p.year) &&
+      !!(p.mlCategory || p.mlCategoryId || p.category),
+  );
+  if (!hasVehicularCandidate) return products;
+  const set = await loadVehicleRootSet();
+  for (const p of products) {
+    if (!(p.brand && p.model && p.year)) continue;
+
+    if (set.size > 0) {
+      const candidate = (p.mlCategory || p.mlCategoryId || "") as string;
+      if (candidate && !set.has(candidate)) {
+        (p as any).mlCategory = null;
+        (p as any).mlCategoryId = null;
+        (p as any).mlCategorySource = null;
+        (p as any).mlCategoryChosenAt = null;
+      }
+    }
+
+    if (p.category && !looksLikeVehicularCategoryString(p.category)) {
+      (p as any).category = null;
+    }
+  }
+  return products;
+}
+
 /**
  * Resolvedor determinístico de categoria.
  * Regra: só aceita categoria já persistida ou explicitamente informada;
@@ -213,5 +361,109 @@ export class CategoryResolutionService {
     if (!leaf) return null;
 
     return { externalId: leaf.externalId, fullPath: leaf.fullPath };
+  }
+
+  /**
+   * Verifica se um externalId está sob a raiz de Veículos (MLB1747).
+   * Usa a árvore local sincronizada (CategoryRepository.listWithParents).
+   * Se a categoria não estiver na árvore (sincronização incompleta), retorna
+   * `ok: true` com `reason: "not_in_tree"` para fail-open — não queremos
+   * bloquear publicação por DB incompleto. Os chamadores podem usar o
+   * `reason` para logar um alerta.
+   */
+  static async assertWithinVehicleRoot(
+    externalId: string,
+    rootExternalId: string = ML_VEHICLE_ROOT_EXTERNAL_ID,
+  ): Promise<DomainGuardResult> {
+    if (!externalId) {
+      return { ok: false, reason: "not_in_tree" };
+    }
+    const siteId = externalId.slice(0, 3);
+    const categories = await CategoryRepository.listWithParents(siteId);
+    if (!categories.length) {
+      return { ok: true, reason: "not_in_tree" };
+    }
+    const byExternal = new Map(categories.map((c) => [c.externalId, c]));
+    const start = byExternal.get(externalId);
+    if (!start) {
+      return { ok: true, reason: "not_in_tree" };
+    }
+
+    let current: any = start;
+    const visited = new Set<string>();
+    while (current) {
+      if (visited.has(current.externalId)) break;
+      visited.add(current.externalId);
+      if (current.externalId === rootExternalId) {
+        return {
+          ok: true,
+          rootExternalId,
+          fullPath: start.fullPath || undefined,
+        };
+      }
+      if (!current.parentExternalId) break;
+      current = byExternal.get(current.parentExternalId);
+    }
+
+    return {
+      ok: false,
+      rootExternalId,
+      fullPath: start.fullPath || undefined,
+      reason: "outside_root",
+    };
+  }
+
+  /**
+   * Verifica coerência entre uma categoria ML e um valor de `condition`
+   * (ex: "new", "used"). Busca `settings.item_conditions` via
+   * `MLApiService.getCategory` com cache TTL. Fail-open em caso de erro
+   * de rede ou dados ausentes (retorna ok=true com reason="unknown").
+   */
+  static async assertConditionCoherent(
+    externalId: string,
+    condition: string,
+  ): Promise<ConditionCoherenceResult> {
+    if (!externalId || !condition) {
+      return { ok: true, reason: "unknown" };
+    }
+
+    const now = Date.now();
+    const cached = conditionCache.get(externalId);
+    let allowed: string[] | null = null;
+
+    if (cached && now - cached.ts < CONDITION_CACHE_TTL_MS) {
+      allowed = cached.conditions;
+    } else {
+      try {
+        const res: any = await MLApiService.getCategory(externalId);
+        if (res && !res.error) {
+          const raw = res?.settings?.item_conditions;
+          if (Array.isArray(raw) && raw.length > 0) {
+            allowed = raw.map((c: any) => String(c).toLowerCase());
+          } else {
+            allowed = null;
+          }
+        } else {
+          allowed = null;
+        }
+      } catch {
+        allowed = null;
+      }
+      conditionCache.set(externalId, { conditions: allowed, ts: now });
+    }
+
+    if (!allowed || allowed.length === 0) {
+      return { ok: true, reason: "unknown" };
+    }
+
+    if (allowed.includes(condition.toLowerCase())) {
+      return { ok: true, allowedConditions: allowed };
+    }
+
+    return {
+      ok: false,
+      allowedConditions: allowed,
+      reason: "incompatible",
+    };
   }
 }

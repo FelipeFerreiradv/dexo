@@ -954,25 +954,11 @@ export class ListingUseCase {
             console.warn(
               `[ListingUseCase] Nenhuma categoria informada; usando sugestão domain_discovery: ${suggested} (produto=${product.id})`,
             );
+            // Sugestão é usada apenas para a tentativa atual. Nunca persistimos
+            // categoria sugerida em product.mlCategoryId sem confirmação do usuário
+            // (fluxo consciente via PUT /products) — evita corrupção silenciosa
+            // quando o domain_discovery devolve algo fora do nicho.
             effectiveCategoryId = suggested;
-            // Persistir para próximas publicações, se a sugestão existir localmente
-            try {
-              const localCat =
-                await CategoryRepository.findByExternalId(suggested);
-              if (localCat?.id) {
-                await this.productRepository.update(product.id, {
-                  mlCategoryId: localCat.id,
-                  mlCategorySource: "auto",
-                } as any);
-              }
-            } catch (persistErr) {
-              console.warn(
-                "[ListingUseCase] Falha ao persistir categoria sugerida:",
-                persistErr instanceof Error
-                  ? persistErr.message
-                  : String(persistErr),
-              );
-            }
           }
         } catch (suggErr) {
           console.warn(
@@ -1012,6 +998,106 @@ export class ListingUseCase {
           error:
             "A categoria selecionada exige o atributo PART_NUMBER. Preencha o Part Number da peça antes de publicar.",
         };
+      }
+
+      // ─── Pré-flight: barreira de domínio (nicho de autopeças) ─────────────
+      // Para produtos com sinais fortes de veículo (brand+model+year), a
+      // categoria resolvida DEVE estar sob a raiz de Veículos (MLB1747).
+      // Isto bloqueia casos como "Mangueira Servo Freio Ka" com categoria
+      // residual "Bebidas > Gin" vinda de corrupção de dados anterior.
+      const isVehicularProduct = !!(
+        product.brand &&
+        product.model &&
+        product.year
+      );
+      const effectiveConditionForPreflight: string =
+        effectiveSettings.itemCondition ||
+        ListingUseCase.mapQualityToMLCondition(product.quality) ||
+        "new";
+
+      let guardWithinVehicleRoot: boolean | "unknown" = "unknown";
+      let guardConditionAllowed: boolean | "unknown" = "unknown";
+
+      if (isVehicularProduct) {
+        const domainCheck =
+          await CategoryResolutionService.assertWithinVehicleRoot(
+            categoryIdForML,
+          );
+        if (!domainCheck.ok && domainCheck.reason === "outside_root") {
+          guardWithinVehicleRoot = false;
+          console.warn(
+            `[ListingUseCase] category trace BLOCKED outside_root`,
+            {
+              productId: product.id,
+              productPersisted: (product as any).mlCategoryId,
+              requestedByClient: categoryId,
+              resolved: categoryIdForML,
+              source: resolvedCategory.source,
+              fullPath: resolvedCategory.fullPath,
+              withinVehicleRoot: false,
+            },
+          );
+          return {
+            success: false,
+            error: `Categoria '${resolvedCategory.fullPath || categoryIdForML}' está fora do nicho de autopeças. Edite o produto e escolha uma categoria sob 'Acessórios para Veículos'.`,
+          };
+        }
+        guardWithinVehicleRoot =
+          domainCheck.reason === "not_in_tree" ? "unknown" : true;
+        if (domainCheck.reason === "not_in_tree") {
+          console.warn(
+            `[ListingUseCase] category.root.unknown — categoria ${categoryIdForML} não está na árvore local sincronizada; pulando guarda de domínio`,
+          );
+        }
+      }
+
+      // ─── Pré-flight: coerência condition × category ──────────────────────
+      // Previne chamadas ao ML API quando sabemos que a categoria não aceita
+      // a `condition` do produto (ex: categoria só aceita [new] mas produto
+      // é usado). Fail-open em caso de erro de rede ou metadados ausentes.
+      const condCheck =
+        await CategoryResolutionService.assertConditionCoherent(
+          categoryIdForML,
+          effectiveConditionForPreflight,
+        );
+      let conditionForPayload: string = effectiveConditionForPreflight;
+      if (!condCheck.ok && condCheck.reason === "incompatible") {
+        const allowed = condCheck.allowedConditions || [];
+        // Categorias de autopeça frequentemente têm leaves com uma única
+        // condição permitida (ex: Servo Freio → ["new"]). Em vez de bloquear,
+        // publicamos com a única condição aceita — comportamento esperado
+        // para catálogos ML onde não há variante "used" da sub-categoria.
+        if (allowed.length === 1) {
+          console.warn(`[ListingUseCase] category trace OVERRIDE condition`, {
+            productId: product.id,
+            productPersisted: (product as any).mlCategoryId,
+            resolved: categoryIdForML,
+            fullPath: resolvedCategory.fullPath,
+            productCondition: effectiveConditionForPreflight,
+            overrideTo: allowed[0],
+          });
+          conditionForPayload = allowed[0];
+          guardConditionAllowed = true;
+        } else {
+          guardConditionAllowed = false;
+          console.warn(`[ListingUseCase] category trace BLOCKED condition`, {
+            productId: product.id,
+            productPersisted: (product as any).mlCategoryId,
+            requestedByClient: categoryId,
+            resolved: categoryIdForML,
+            source: resolvedCategory.source,
+            fullPath: resolvedCategory.fullPath,
+            condition: effectiveConditionForPreflight,
+            allowedConditions: allowed,
+          });
+          return {
+            success: false,
+            error: `Categoria '${resolvedCategory.fullPath || categoryIdForML}' aceita apenas ${JSON.stringify(allowed)} e o produto está marcado como '${effectiveConditionForPreflight}'. Escolha outra categoria ou ajuste a qualidade do produto.`,
+          };
+        }
+      } else {
+        guardConditionAllowed =
+          condCheck.reason === "unknown" ? "unknown" : true;
       }
 
       // 3. Preparar payload para criaÃ§Ã£o do anÃºncio
@@ -1222,10 +1308,7 @@ export class ListingUseCase {
         available_quantity: Math.min(product.stock, 999999),
         buying_mode: "buy_it_now",
         listing_type_id: effectiveSettings.listingType || "bronze",
-        condition:
-          effectiveSettings.itemCondition ||
-          this.mapQualityToMLCondition(product.quality) ||
-          "new",
+        condition: conditionForPayload,
         pictures: picturesArray,
         attributes,
         seller_custom_field: product.sku,
@@ -1297,6 +1380,18 @@ export class ListingUseCase {
           source: resolvedCategory.source,
         },
         attrs: attrSnapshot,
+      });
+      console.log("[ListingUseCase] category trace", {
+        productId: product.id,
+        requestedByClient: categoryId,
+        productPersisted: (product as any).mlCategoryId,
+        resolved: categoryIdForML,
+        source: resolvedCategory.source,
+        fullPath: resolvedCategory.fullPath,
+        condition: payload.condition,
+        withinVehicleRoot: guardWithinVehicleRoot,
+        conditionAllowed: guardConditionAllowed,
+        isVehicularProduct,
       });
 
       // 3.1 Criar (ou reutilizar) placeholder local antes de chamar o ML
@@ -1472,24 +1567,10 @@ export class ListingUseCase {
               if (mlItem) {
                 resolvedCategoryId = normalizedNew;
                 categoryIdForML = normalizedNew;
-                // Persistir categoria corrigida
-                try {
-                  const localCat =
-                    await CategoryRepository.findByExternalId(normalizedNew);
-                  if (localCat?.id) {
-                    await this.productRepository.update(product.id, {
-                      mlCategoryId: localCat.id,
-                      mlCategorySource: "auto",
-                    } as any);
-                  }
-                } catch (persistErr) {
-                  console.warn(
-                    "[ListingUseCase] Falha ao persistir categoria após condition.invalid:",
-                    persistErr instanceof Error
-                      ? persistErr.message
-                      : String(persistErr),
-                  );
-                }
+                // NÃO persistimos a categoria sugerida no produto. A correção
+                // da categoria deve passar pelo fluxo consciente (PUT /products
+                // com validação de domínio). Persistência cega aqui já corrompeu
+                // produtos no passado (ex: mangueira → Gin).
               }
             }
           } catch (condErr) {
@@ -1778,28 +1859,8 @@ export class ListingUseCase {
                 console.warn(
                   `[ListingUseCase] Retentativa com categoria sugerida ${normalizedNew} bem-sucedida`,
                 );
-
-                // Persistir categoria corrigida no produto para evitar repetir o erro
-                try {
-                  const localCat =
-                    await CategoryRepository.findByExternalId(normalizedNew);
-                  if (localCat?.id) {
-                    await this.productRepository.update(product.id, {
-                      mlCategoryId: localCat.id,
-                      mlCategorySource: "auto",
-                    } as any);
-                    console.warn(
-                      `[ListingUseCase] Categoria do produto ${product.id} atualizada para ${normalizedNew}`,
-                    );
-                  }
-                } catch (persistErr) {
-                  console.warn(
-                    "[ListingUseCase] Falha ao persistir categoria corrigida:",
-                    persistErr instanceof Error
-                      ? persistErr.message
-                      : String(persistErr),
-                  );
-                }
+                // NÃO persistimos automaticamente — ver comentário no retry
+                // de condition.invalid. Correção de categoria é fluxo consciente.
               }
             }
           } catch (suggErr) {

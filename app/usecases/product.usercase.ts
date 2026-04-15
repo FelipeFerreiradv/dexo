@@ -18,6 +18,7 @@ import {
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
+import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
 
 export class ProductUseCase {
   private productRepository: ProductRepository;
@@ -73,7 +74,11 @@ export class ProductUseCase {
 
   async getDetail(id: string, userId: string) {
     const repo = this.productRepository as ProductRepositoryPrisma;
-    return repo.findByIdDetailed(id, userId);
+    const result = await repo.findByIdDetailed(id, userId);
+    if (result) {
+      await maskCorruptVehicleCategoriesInProducts([result as any]);
+    }
+    return result;
   }
 
   async listProducts(
@@ -81,6 +86,7 @@ export class ProductUseCase {
   ): Promise<{ products: Product[]; total: number; totalPages: number }> {
     const { userId, ...rest } = options;
     const data = await this.productRepository.findAll(rest, userId);
+    await maskCorruptVehicleCategoriesInProducts(data.products as any);
     return {
       ...data,
       totalPages: Math.ceil(data.total / (options?.limit || 10)),

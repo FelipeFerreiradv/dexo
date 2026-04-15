@@ -10,7 +10,31 @@ export interface CategoryUpsertEntry {
   keywords?: string | null;
 }
 
+type FlattenedRow = {
+  id: string;
+  externalId: string;
+  fullPath: string | null;
+  name: string;
+};
+type WithParentsRow = FlattenedRow & { parentExternalId: string | null };
+
+const LIST_CACHE_TTL_MS = 15 * 60 * 1000;
+const flattenedCache = new Map<string, { data: FlattenedRow[]; ts: number }>();
+const withParentsCache = new Map<
+  string,
+  { data: WithParentsRow[]; ts: number }
+>();
+
+function invalidateListCaches() {
+  flattenedCache.clear();
+  withParentsCache.clear();
+}
+
 export class CategoryRepository {
+  static __invalidateListCachesForTests() {
+    invalidateListCaches();
+  }
+
   static async upsertMany(entries: CategoryUpsertEntry[]) {
     const chunkSize = 200;
     let processed = 0;
@@ -59,6 +83,7 @@ export class CategoryRepository {
         );
       }
     }
+    invalidateListCaches();
   }
 
   static async findByExternalId(externalId: string) {
@@ -70,17 +95,31 @@ export class CategoryRepository {
   }
 
   static async listFlattenedOptions(siteId?: string) {
+    const key = siteId || "__all__";
+    const now = Date.now();
+    const cached = flattenedCache.get(key);
+    if (cached && now - cached.ts < LIST_CACHE_TTL_MS) {
+      return cached.data;
+    }
     const where = siteId ? { siteId } : {};
-    return prisma.marketplaceCategory.findMany({
+    const data = (await prisma.marketplaceCategory.findMany({
       where,
       select: { id: true, externalId: true, fullPath: true, name: true },
       orderBy: { fullPath: "asc" },
-    });
+    })) as FlattenedRow[];
+    flattenedCache.set(key, { data, ts: now });
+    return data;
   }
 
   static async listWithParents(siteId?: string) {
+    const key = siteId || "__all__";
+    const now = Date.now();
+    const cached = withParentsCache.get(key);
+    if (cached && now - cached.ts < LIST_CACHE_TTL_MS) {
+      return cached.data;
+    }
     const where = siteId ? { siteId } : {};
-    return prisma.marketplaceCategory.findMany({
+    const data = (await prisma.marketplaceCategory.findMany({
       where,
       select: {
         id: true,
@@ -90,7 +129,9 @@ export class CategoryRepository {
         parentExternalId: true,
       },
       orderBy: { fullPath: "asc" },
-    });
+    })) as WithParentsRow[];
+    withParentsCache.set(key, { data, ts: now });
+    return data;
   }
 
   static async findChildren(parentExternalId: string) {

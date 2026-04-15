@@ -573,6 +573,58 @@ export class ListingRetryService {
           }
         }
 
+        // ─── Pré-flight de domínio/condição antes do createItem ──────────
+        // Evita bater no ML API quando sabemos que vai falhar (categoria
+        // fora do nicho veicular ou incompatível com a condition). Marca
+        // o listing como erro permanente para parar o loop de retry.
+        const isVehicularCandidate = !!(
+          product.brand &&
+          product.model &&
+          product.year
+        );
+        if (isVehicularCandidate) {
+          const domainCheck =
+            await CategoryResolutionService.assertWithinVehicleRoot(
+              resolvedCategoryId,
+            );
+          if (!domainCheck.ok && domainCheck.reason === "outside_root") {
+            const msg = `Categoria '${resolvedCategory.fullPath || resolvedCategoryId}' está fora do nicho de autopeças; retry bloqueado.`;
+            console.warn(`[ListingRetryService] ${msg} (listing=${cand.id})`);
+            await ListingRepository.updateListing(cand.id, {
+              status: "error",
+              lastError: msg,
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+            continue;
+          }
+        }
+        const condCheck =
+          await CategoryResolutionService.assertConditionCoherent(
+            resolvedCategoryId,
+            retryCondition,
+          );
+        if (!condCheck.ok && condCheck.reason === "incompatible") {
+          const allowed = condCheck.allowedConditions || [];
+          if (allowed.length === 1) {
+            // Override: leaf com única condição permitida (padrão em autopeças).
+            console.warn(
+              `[ListingRetryService] category trace OVERRIDE condition (listing=${cand.id}) productCondition=${retryCondition} overrideTo=${allowed[0]}`,
+            );
+            payload.condition = allowed[0];
+          } else {
+            const msg = `Categoria '${resolvedCategory.fullPath || resolvedCategoryId}' aceita apenas ${JSON.stringify(allowed)} mas produto está '${retryCondition}'; retry bloqueado.`;
+            console.warn(`[ListingRetryService] ${msg} (listing=${cand.id})`);
+            await ListingRepository.updateListing(cand.id, {
+              status: "error",
+              lastError: msg,
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+            continue;
+          }
+        }
+
         let mlItem: any = null;
         try {
           console.log(

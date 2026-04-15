@@ -382,6 +382,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           id: c.externalId || c.id,
           value: c.fullPath || c.name || c.externalId || c.id,
         }));
+        reply.header("Cache-Control", "private, max-age=600");
         return reply.send({ categories });
       } catch (error) {
         return reply.status(500).send({

@@ -22,6 +22,11 @@ import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
+import {
+  isProductVehicular,
+  isCategoryUnderVehicleRoot,
+  sanityCheckInitialMlCategory,
+} from "./edit-product-dialog.helpers";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Dialog,
@@ -198,7 +203,35 @@ const qualityOptions = [
 // Module-level caches: reaproveitam entre aberturas do modal (não alteram fluxo,
 // apenas evitam refetch das mesmas listas de categorias / sugestões).
 type CatOption = { id: string; value: string };
-const mlCategoriesCache: { data: CatOption[] | null } = { data: null };
+const ML_CATEGORIES_STORAGE_KEY = "edit-modal.mlCategoriesCache.v1";
+const ML_CATEGORIES_TTL_MS = 15 * 60 * 1000;
+function hydrateMlCategoriesCache(): CatOption[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(ML_CATEGORIES_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { ts: number; data: CatOption[] };
+    if (!parsed?.data || !Array.isArray(parsed.data)) return null;
+    if (Date.now() - (parsed.ts || 0) > ML_CATEGORIES_TTL_MS) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+function persistMlCategoriesCache(data: CatOption[]) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(
+      ML_CATEGORIES_STORAGE_KEY,
+      JSON.stringify({ ts: Date.now(), data }),
+    );
+  } catch {
+    // sessionStorage cheio ou bloqueado — ignora silenciosamente
+  }
+}
+const mlCategoriesCache: { data: CatOption[] | null } = {
+  data: hydrateMlCategoriesCache(),
+};
 const shopeeAllCategoriesCache: { data: CatOption[] | null } = { data: null };
 const shopeeSuggestCache = new Map<string, CatOption[]>();
 
@@ -218,6 +251,9 @@ export function EditProductDialog({
   );
   const mlOptionsFetchedRef = useRef(false);
   const mlOptionsFetchingRef = useRef(false);
+  const [mlCategoryWarning, setMlCategoryWarning] = useState<string | null>(
+    null,
+  );
   const [shopeeOptions, setShopeeOptions] = useState<
     { id: string; value: string }[]
   >([]);
@@ -385,6 +421,7 @@ export function EditProductDialog({
         const json = await resp.json();
         const cats = json.categories || [];
         mlCategoriesCache.data = cats;
+        persistMlCategoriesCache(cats);
         setMlOptions(cats);
         mlOptionsFetchedRef.current = true;
       }
@@ -601,8 +638,32 @@ export function EditProductDialog({
     }
   }, [product.description, session?.user?.email, setValue]);
 
+  const fetchDefaultDescriptionRef = useRef(fetchDefaultDescription);
+  useEffect(() => {
+    fetchDefaultDescriptionRef.current = fetchDefaultDescription;
+  }, [fetchDefaultDescription]);
+
+  const fetchMlCategoriesRef = useRef(fetchMlCategories);
+  useEffect(() => {
+    fetchMlCategoriesRef.current = fetchMlCategories;
+  }, [fetchMlCategories]);
+
+  // Guarda idempotência: evita que StrictMode (dev) ou re-renders causem
+  // múltiplas execuções do corpo do open-effect para o mesmo (productId).
+  const lastOpenKeyRef = useRef<string | null>(null);
+  // Guarda idempotência para o sanity-check/auto-suggest: aplica no máximo
+  // uma vez por (productId + mlOptions carregado).
+  const sanityAppliedRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (open) {
+      const openKey = product.id;
+      if (lastOpenKeyRef.current === openKey) {
+        return;
+      }
+      lastOpenKeyRef.current = openKey;
+      sanityAppliedRef.current = null;
+
       // Reset previous auto-detection when opening dialog so it's recalculated
       autoDetectedRef.current = null;
 
@@ -656,10 +717,12 @@ export function EditProductDialog({
       setSelectedMlAccounts([]);
       setSelectedShopeeAccounts([]);
 
-      // Resetar cache de categorias ML para lazy-load
-      mlOptionsFetchedRef.current = false;
-      mlOptionsFetchingRef.current = false;
-      setMlOptions([]);
+      setMlCategoryWarning(null);
+
+      // Pre-fetch ML categories (reusa cache de módulo se disponível).
+      // Necessário para o sanity-check/auto-suggest resolver o título
+      // contra uma lista real antes do usuário interagir.
+      void fetchMlCategoriesRef.current();
 
       // Disparar todos os fetches em paralelo para abrir o modal mais rápido
       const email = session?.user?.email || "";
@@ -692,7 +755,7 @@ export function EditProductDialog({
             }).then((r) => (r.ok ? r.json() : null))
           : null,
         // 5. Descrição padrão do usuário
-        fetchDefaultDescription(),
+        fetchDefaultDescriptionRef.current(),
       ])
         .then(([locJson, mlJson, shJson, compatJson]) => {
           if (locJson)
@@ -740,12 +803,156 @@ export function EditProductDialog({
     }
   }, [
     open,
-    product,
+    product.id,
     reset,
-    hasAutopartsData,
     session?.user?.email,
-    session?.user?.id,
-    fetchDefaultDescription,
+  ]);
+
+  // Ao fechar, libera a guarda para permitir reabrir e reexecutar o corpo.
+  useEffect(() => {
+    if (!open) {
+      lastOpenKeyRef.current = null;
+      sanityAppliedRef.current = null;
+    }
+  }, [open]);
+
+  // Sanity-check + auto-suggest de categoria ML.
+  // Executa no máximo uma vez por (open, productId, mlOptions-ready):
+  //  - Se categoria persistida cai fora do nicho veicular → limpa + avisa.
+  //  - Se categoria está vazia + produto veicular → tenta sugerir a partir
+  //    do título, SOMENTE entre categorias sob a raiz veicular.
+  useEffect(() => {
+    if (!open) return;
+    if (!mlOptions || mlOptions.length === 0) return;
+
+    const applyKey = `${product.id}|${mlOptions.length}`;
+    if (sanityAppliedRef.current === applyKey) return;
+    sanityAppliedRef.current = applyKey;
+
+    const vehicular = !!(product.brand && product.model && product.year);
+    const currentMlCategory = watch("mlCategory") || "";
+
+    if (currentMlCategory) {
+      const check = sanityCheckInitialMlCategory(
+        { brand: product.brand, model: product.model, year: product.year },
+        currentMlCategory,
+        mlOptions,
+      );
+      if (check.clear) {
+        setValue("mlCategory", "", { shouldDirty: false });
+        setValue("category", "", { shouldDirty: false });
+        setMlCategoryWarning(check.warning || null);
+      } else {
+        setMlCategoryWarning(null);
+        return;
+      }
+    }
+
+    if (!vehicular) return;
+
+    // Pool restrito a categorias sob o nicho veicular (só elas interessam
+    // para um produto com brand+model+year).
+    const vehiclePool = mlOptions.filter(
+      (c) =>
+        isCategoryUnderVehicleRoot(c.id, mlOptions) === true,
+    );
+
+    if (vehiclePool.length === 0) {
+      setMlCategoryWarning(
+        "Selecione manualmente uma categoria de autopeças antes de publicar.",
+      );
+      return;
+    }
+
+    // Tokens significativos do título (≥4 chars, exclui palavras do veículo)
+    const stop = new Set<string>([
+      (product.brand || "").toLowerCase(),
+      (product.model || "").toLowerCase(),
+      (product.year || "").toLowerCase(),
+      (product.version || "").toLowerCase(),
+      "para",
+      "com",
+      "sem",
+      "de",
+      "do",
+      "da",
+    ]);
+    const titleTokens = (product.name || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 4 && !stop.has(t));
+
+    const scoreOption = (value: string) => {
+      const leafRaw = value.split(" > ").slice(-1)[0] || "";
+      const pathNormalized = value
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+      const leafNormalized = leafRaw
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+      let score = 0;
+      for (const t of titleTokens) {
+        if (leafNormalized.includes(t)) score += 3;
+        else if (pathNormalized.includes(t)) score += 1;
+      }
+      return score;
+    };
+
+    let best: { id: string; value: string } | undefined;
+    let bestScore = 0;
+    for (const opt of vehiclePool) {
+      const s = scoreOption(opt.value);
+      if (s > bestScore) {
+        bestScore = s;
+        best = opt;
+      }
+    }
+
+    if (best && bestScore >= 3) {
+      console.info("[EditModalML] auto-suggest", {
+        productId: product.id,
+        title: product.name,
+        suggestedId: best.id,
+        suggestedValue: best.value,
+        score: bestScore,
+      });
+      setValue("mlCategory", best.id, {
+        shouldDirty: false,
+        shouldTouch: false,
+        shouldValidate: true,
+      });
+      setValue("category", best.value.split(" > ")[0].trim(), {
+        shouldDirty: false,
+      });
+      setMlCategoryWarning(
+        "Categoria sugerida automaticamente. Confirme antes de publicar.",
+      );
+    } else {
+      console.info("[EditModalML] auto-suggest miss", {
+        productId: product.id,
+        title: product.name,
+        poolSize: vehiclePool.length,
+        tokens: titleTokens,
+      });
+      setMlCategoryWarning(
+        "Selecione manualmente uma categoria de autopeças antes de publicar.",
+      );
+    }
+  }, [
+    open,
+    mlOptions,
+    product.id,
+    product.brand,
+    product.model,
+    product.year,
+    product.version,
+    product.name,
+    setValue,
+    watch,
   ]);
 
   // Aplicar descrição padrão quando carregada (se produto não tiver descrição)
@@ -1078,6 +1285,38 @@ export function EditProductDialog({
         setIsSubmitting(false);
         return;
       }
+
+      // Guard de domínio: produto veicular só pode criar anúncio ML com
+      // categoria sob o nicho de autopeças. Usa a lista mlOptions já
+      // carregada; se verdict for "unknown", confia no backend (fail-open).
+      if (createMlListing && isProductVehicular(data)) {
+        const candidateCategory =
+          data.mlCategory ||
+          autoDetectedRef.current?.mlCategory ||
+          product.mlCategory ||
+          "";
+        const verdict = isCategoryUnderVehicleRoot(
+          candidateCategory,
+          mlOptions,
+        );
+        if (verdict === false) {
+          onToast(
+            "Selecione uma categoria de autopeças antes de publicar no Mercado Livre.",
+            "error",
+          );
+          setMlCategoryWarning(
+            "Categoria fora do nicho de autopeças. Escolha uma categoria sob 'Acessórios para Veículos'.",
+          );
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      console.info("[EditModalML] submit", {
+        productId: product.id,
+        persisted: product.mlCategory,
+        sent: data.mlCategory,
+      });
 
       // Categoria ML não obrigatória no frontend quando houver categoria de topo;
       // o backend resolve/normaliza para uma folha válida.
@@ -1778,6 +2017,15 @@ export function EditProductDialog({
                   <p className="text-xs text-muted-foreground">
                     Sugerida ao editar nome
                   </p>
+                  {mlCategoryWarning && (
+                    <p
+                      className="text-xs text-destructive"
+                      role="alert"
+                      data-testid="ml-category-warning"
+                    >
+                      {mlCategoryWarning}
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">

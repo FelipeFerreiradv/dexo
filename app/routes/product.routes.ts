@@ -976,9 +976,30 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 "Categoria do Mercado Livre não está sincronizada. Escolha outra ou sincronize as categorias.",
             });
           }
+
+          // Barreira de domínio: produto veicular só pode receber categoria
+          // sob a raiz 'Acessórios para Veículos' (MLB1747). Impede que
+          // corrupções como mangueira → Gin voltem a ser persistidas.
+          const normalizedSource = (mlCategorySource as any) || "manual";
+          const hasVehicleSignals = !!(brand && model && year);
+          if (
+            hasVehicleSignals &&
+            normalizedSource !== "imported"
+          ) {
+            const domainCheck =
+              await CategoryResolutionService.assertWithinVehicleRoot(
+                cat.externalId,
+              );
+            if (!domainCheck.ok && domainCheck.reason === "outside_root") {
+              return reply.status(400).send({
+                error: `Categoria '${cat.fullPath || cat.externalId}' está fora do nicho de autopeças. Escolha uma categoria sob 'Acessórios para Veículos'.`,
+              });
+            }
+          }
+
           resolvedMlCategoryId = cat.id;
           resolvedMlCategoryPath = cat.fullPath || cat.name || category;
-          resolvedMlCategorySource = (mlCategorySource as any) || "manual";
+          resolvedMlCategorySource = normalizedSource;
           resolvedMlCategoryChosenAt = new Date();
         }
 
