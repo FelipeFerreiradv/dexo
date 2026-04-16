@@ -26,9 +26,6 @@ import { StepperFooter } from "@/components/stepper/stepper-footer";
 
 import {
   nfeDraftFormSchema,
-  stepInfoGeralSchema,
-  stepDestinatarioSchema,
-  stepProdutosSchema,
   type NfeDraftFormData,
 } from "../lib/nfe-form-schema";
 import { DEFAULT_NFE_DRAFT } from "../lib/nfe-defaults";
@@ -37,22 +34,26 @@ import { useNfeDraft } from "../hooks/use-nfe-draft";
 import { StepInformacoesGerais } from "./steps/step-informacoes-gerais";
 import { StepDestinatario } from "./steps/step-destinatario";
 import { StepProdutos } from "./steps/step-produtos";
+import { StepFrete } from "./steps/step-frete";
+import { StepVolumes } from "./steps/step-volumes";
+import { StepDuplicatas } from "./steps/step-duplicatas";
+import { StepPagamentos } from "./steps/step-pagamentos";
+import { StepImpostos } from "./steps/step-impostos";
+import { StepFinalizar } from "./steps/step-finalizar";
 
-// Steps 1-3 nesta fase; steps 4-9 serão adicionados em F4
 const STEPS: StepperStep[] = [
-  { id: 1, title: "Informações", description: "Dados gerais da NF-e", icon: FileText },
-  { id: 2, title: "Destinatário", description: "Dados do destinatário", icon: User },
+  { id: 1, title: "Informacoes", description: "Dados gerais da NF-e", icon: FileText },
+  { id: 2, title: "Destinatario", description: "Dados do destinatario", icon: User },
   { id: 3, title: "Produtos", description: "Itens da nota", icon: Package },
-  // F4 steps (placeholders — ficam disabled)
   { id: 4, title: "Frete", description: "Dados do frete", icon: Truck },
   { id: 5, title: "Volumes", description: "Volumes da nota", icon: Box },
-  { id: 6, title: "Duplicatas", description: "Cobrança", icon: Receipt },
+  { id: 6, title: "Duplicatas", description: "Cobranca", icon: Receipt },
   { id: 7, title: "Pagamentos", description: "Formas de pagamento", icon: CreditCard },
-  { id: 8, title: "Impostos", description: "Cálculos fiscais", icon: Calculator },
-  { id: 9, title: "Finalizar", description: "Revisão e emissão", icon: CheckCircle },
+  { id: 8, title: "Impostos", description: "Calculos fiscais", icon: Calculator },
+  { id: 9, title: "Finalizar", description: "Revisao e emissao", icon: CheckCircle },
 ];
 
-const MAX_STEP_F3 = 3; // limite desta fase
+const TOTAL_STEPS = 9;
 
 type ToastType = "success" | "error" | "warning" | "info";
 
@@ -101,7 +102,6 @@ export function NfeWizard() {
     const init = async () => {
       setIsLoading(true);
       try {
-        // Check for draftId in URL params
         const params = new URLSearchParams(window.location.search);
         const existingId = params.get("draft");
 
@@ -114,7 +114,6 @@ export function NfeWizard() {
           }
         }
 
-        // Create new draft
         const newId = await createDraft();
         if (newId) {
           setDraftId(newId);
@@ -136,7 +135,13 @@ export function NfeWizard() {
 
   const populateFormFromDraft = (draft: any) => {
     const dest = draft.destinatarioJson ?? {};
+    const transp = draft.transportadoraJson ?? {};
+    const volumes = draft.volumesJson ?? [];
+    const duplicatas = draft.duplicatasJson ?? [];
+    const pagamentos = draft.pagamentosJson ?? [{ meio: "DINHEIRO", valor: 0 }];
+
     reset({
+      // Step 1
       serie: draft.serie ?? 1,
       tipoOperacao: draft.tipoOperacao ?? "SAIDA",
       finalidade: draft.finalidade ?? "NORMAL",
@@ -151,6 +156,7 @@ export function NfeWizard() {
       dataSaida: draft.dataSaida
         ? new Date(draft.dataSaida).toISOString().slice(0, 16)
         : null,
+      // Step 2
       customerId: draft.customerId,
       destinatario: {
         tipoPessoa: dest.tipoPessoa ?? "PF",
@@ -170,6 +176,7 @@ export function NfeWizard() {
         codPais: dest.codPais ?? "1058",
         pais: dest.pais ?? "BRASIL",
       },
+      // Step 3
       itens: (draft.itens ?? []).map((item: any) => ({
         productId: item.productId,
         numero: item.numero,
@@ -186,10 +193,28 @@ export function NfeWizard() {
         desconto: item.desconto,
         observacoes: item.observacoes,
       })),
+      // Step 4
+      modalidadeFrete: draft.modalidadeFrete ?? "SEM_FRETE",
+      transportadora: {
+        cpfCnpj: transp.cpfCnpj ?? null,
+        nome: transp.nome ?? null,
+        inscricaoEstadual: transp.inscricaoEstadual ?? null,
+        endereco: transp.endereco ?? null,
+        municipio: transp.municipio ?? null,
+        uf: transp.uf ?? null,
+      },
+      // Step 5
+      volumes: Array.isArray(volumes) ? volumes : [],
+      // Step 6
+      duplicatas: Array.isArray(duplicatas) ? duplicatas : [],
+      // Step 7
+      pagamentos: Array.isArray(pagamentos) && pagamentos.length > 0
+        ? pagamentos
+        : [{ meio: "DINHEIRO", valor: 0 }],
     });
   };
 
-  // Step-level validation schemas
+  // Step-level validation
   const validateCurrentStep = async (): Promise<boolean> => {
     if (currentStep === 1) {
       return trigger([
@@ -207,6 +232,17 @@ export function NfeWizard() {
     if (currentStep === 3) {
       return trigger(["itens"]);
     }
+    if (currentStep === 4) {
+      return trigger(["modalidadeFrete"]);
+    }
+    // Steps 5 (volumes) and 6 (duplicatas) are optional — always valid
+    if (currentStep === 5 || currentStep === 6) {
+      return true;
+    }
+    if (currentStep === 7) {
+      return trigger(["pagamentos"]);
+    }
+    // Steps 8 (impostos) and 9 (finalizar) — read-only, always valid
     return true;
   };
 
@@ -236,24 +272,37 @@ export function NfeWizard() {
       saveDraft(draftId, {
         itens: data.itens,
       } as any);
+    } else if (currentStep === 4) {
+      saveDraft(draftId, {
+        modalidadeFrete: data.modalidadeFrete,
+        transportadora: data.transportadora,
+      } as any);
+    } else if (currentStep === 5) {
+      saveDraft(draftId, {
+        volumes: data.volumes,
+      } as any);
+    } else if (currentStep === 6) {
+      saveDraft(draftId, {
+        duplicatas: data.duplicatas,
+      } as any);
+    } else if (currentStep === 7) {
+      saveDraft(draftId, {
+        pagamentos: data.pagamentos,
+      } as any);
     }
+    // Steps 8 and 9 are read-only — no save needed
   }, [draftId, currentStep, getValues, saveDraft]);
 
   const handleNext = async () => {
     const ok = await validateCurrentStep();
     if (!ok) {
-      showToast("Corrija os campos obrigatórios antes de avançar", "warning");
+      showToast("Corrija os campos obrigatorios antes de avancar", "warning");
       return;
     }
     saveCurrentStep();
 
-    if (currentStep < MAX_STEP_F3) {
+    if (currentStep < TOTAL_STEPS) {
       setCurrentStep((s) => s + 1);
-    } else {
-      showToast(
-        "Etapas 4-9 serão implementadas na próxima fase",
-        "info",
-      );
     }
   };
 
@@ -269,6 +318,14 @@ export function NfeWizard() {
       saveCurrentStep();
       setCurrentStep(step);
     }
+  };
+
+  const handleEmitir = async () => {
+    // Save last step data then show info — actual emission is F5
+    showToast(
+      "Emissao sera habilitada na proxima fase (F5). Rascunho salvo.",
+      "info",
+    );
   };
 
   if (isLoading) {
@@ -290,7 +347,7 @@ export function NfeWizard() {
           href="/notas-fiscais/configuracao"
           className="mt-2 inline-block text-sm font-medium text-primary underline"
         >
-          Ir para configuração
+          Ir para configuracao
         </a>
       </div>
     );
@@ -325,6 +382,36 @@ export function NfeWizard() {
             email={email}
           />
         )}
+        {currentStep === 4 && (
+          <StepFrete control={control} errors={errors} />
+        )}
+        {currentStep === 5 && (
+          <StepVolumes control={control} errors={errors} />
+        )}
+        {currentStep === 6 && (
+          <StepDuplicatas
+            control={control}
+            errors={errors}
+            getValues={getValues}
+          />
+        )}
+        {currentStep === 7 && (
+          <StepPagamentos
+            control={control}
+            errors={errors}
+            getValues={getValues}
+          />
+        )}
+        {currentStep === 8 && draftId && (
+          <StepImpostos
+            getValues={getValues}
+            draftId={draftId}
+            email={email}
+          />
+        )}
+        {currentStep === 9 && (
+          <StepFinalizar getValues={getValues} />
+        )}
       </div>
 
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -344,11 +431,11 @@ export function NfeWizard() {
 
       <StepperFooter
         currentStep={currentStep}
-        totalSteps={MAX_STEP_F3}
+        totalSteps={TOTAL_STEPS}
         onBack={handleBack}
         onNext={handleNext}
-        onSubmit={handleNext}
-        submitLabel="Salvar e avançar"
+        onSubmit={handleEmitir}
+        submitLabel="Emitir NF-e"
       />
 
       {toast && (

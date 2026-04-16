@@ -71,6 +71,30 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
           delete body.destinatario;
         }
 
+        // Map transportadora → transportadoraJson
+        if ((payload as any).transportadora) {
+          body.transportadoraJson = (payload as any).transportadora;
+          delete body.transportadora;
+        }
+
+        // Map volumes → volumesJson
+        if ((payload as any).volumes) {
+          body.volumesJson = (payload as any).volumes;
+          delete body.volumes;
+        }
+
+        // Map duplicatas → duplicatasJson
+        if ((payload as any).duplicatas) {
+          body.duplicatasJson = (payload as any).duplicatas;
+          delete body.duplicatas;
+        }
+
+        // Map pagamentos → pagamentosJson
+        if ((payload as any).pagamentos) {
+          body.pagamentosJson = (payload as any).pagamentos;
+          delete body.pagamentos;
+        }
+
         const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft/${id}`, {
           method: "PUT",
           headers: headers(),
