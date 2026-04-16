@@ -28,7 +28,7 @@ async function run() {
   const orders = await prisma.order.findMany({
     where: {
       createdAt: { gte: dateFrom },
-      status: "COMPLETED",
+      status: "PAID",
       ...(userId
         ? { marketplaceAccount: { userId } }
         : {}),
