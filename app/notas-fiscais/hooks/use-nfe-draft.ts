@@ -31,10 +31,15 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
           headers: headers(),
           body: JSON.stringify({ orderId: orderId ?? null }),
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.error("[NfeDraft] createDraft failed:", res.status, err);
+          return null;
+        }
         const data = await res.json();
         return data.draft?.id ?? null;
-      } catch {
+      } catch (e) {
+        console.error("[NfeDraft] createDraft error:", e);
         return null;
       }
     },

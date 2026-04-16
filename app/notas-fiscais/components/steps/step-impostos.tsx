@@ -34,6 +34,7 @@ export function StepImpostos({
         {
           method: "POST",
           headers: { "Content-Type": "application/json", email },
+          body: "{}",
         },
       );
       if (!res.ok) {

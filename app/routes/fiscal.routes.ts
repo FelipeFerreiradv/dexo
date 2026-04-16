@@ -193,6 +193,21 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
         const regime = config.regimeTributario as RegimeTributario;
 
+        // Validate items have required fiscal fields
+        for (let i = 0; i < draft.itens.length; i++) {
+          const it = draft.itens[i];
+          if (!it.ncm || it.ncm.trim().length === 0) {
+            return reply.status(400).send({
+              error: `Item ${i + 1} ("${it.descricao}") esta sem NCM. Preencha o NCM antes de calcular.`,
+            });
+          }
+          if (!it.cfop || it.cfop.trim().length === 0) {
+            return reply.status(400).send({
+              error: `Item ${i + 1} ("${it.descricao}") esta sem CFOP. Preencha o CFOP antes de calcular.`,
+            });
+          }
+        }
+
         // Map draft items to calculator input
         const itensInput: NfeItemInput[] = draft.itens.map((item) => ({
           quantidade: Number(item.quantidade),
@@ -220,6 +235,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
         return reply.status(200).send({ totais: result.totais, itens: result.itens });
       } catch (error) {
+        console.error("[fiscal/calculate] Error:", error);
         const message =
           error instanceof Error ? error.message : "Erro ao calcular impostos";
         return reply.status(500).send({ error: message });

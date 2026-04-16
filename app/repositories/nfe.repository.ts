@@ -67,10 +67,26 @@ function toDraftResponse(row: any): NfeDraftResponse {
 }
 
 export class NfeRepository {
+  async findExistingDraft(
+    userId: string,
+  ): Promise<NfeDraftResponse | null> {
+    const row = await (prisma as any).nfeEmitida.findFirst({
+      where: { userId, status: "DRAFT" },
+      orderBy: { updatedAt: "desc" },
+      include: { itens: { orderBy: { numero: "asc" } } },
+    });
+    return row ? toDraftResponse(row) : null;
+  }
+
   async createDraft(
     userId: string,
     input: NfeDraftCreateInput,
   ): Promise<NfeDraftResponse> {
+    // Count existing drafts to generate a unique placeholder numero
+    const draftCount = await (prisma as any).nfeEmitida.count({
+      where: { userId, status: "DRAFT" },
+    });
+
     const row = await (prisma as any).nfeEmitida.create({
       data: {
         userId,
@@ -79,7 +95,7 @@ export class NfeRepository {
         ambiente: "HOMOLOGACAO",
         modelo: "55",
         serie: 1,
-        numero: 0, // será atribuído na emissão
+        numero: -(draftCount + 1), // placeholder negativo, será atribuído na emissão
         tipoOperacao: "SAIDA",
         finalidade: "NORMAL",
         destinoOperacao: "INTERNA",

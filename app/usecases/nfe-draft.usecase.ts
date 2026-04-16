@@ -29,6 +29,12 @@ export class NfeDraftUseCase {
       );
     }
 
+    // If no orderId specified, reuse the most recent existing draft
+    if (!input.orderId) {
+      const existing = await this.nfeRepo.findExistingDraft(userId);
+      if (existing) return existing;
+    }
+
     const draft = await this.nfeRepo.createDraft(userId, input);
 
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", {

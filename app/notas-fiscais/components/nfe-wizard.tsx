@@ -99,6 +99,7 @@ export function NfeWizard() {
   // Create or load draft on mount
   useEffect(() => {
     if (!email) return;
+    let cancelled = false;
 
     const init = async () => {
       setIsLoading(true);
@@ -108,6 +109,7 @@ export function NfeWizard() {
 
         if (existingId) {
           const draft = await loadDraft(existingId);
+          if (cancelled) return;
           if (draft) {
             setDraftId(existingId);
             populateFormFromDraft(draft);
@@ -116,6 +118,7 @@ export function NfeWizard() {
         }
 
         const newId = await createDraft();
+        if (cancelled) return;
         if (newId) {
           setDraftId(newId);
         } else {
@@ -125,12 +128,13 @@ export function NfeWizard() {
           );
         }
       } catch {
-        showToast("Erro ao inicializar rascunho", "error");
+        if (!cancelled) showToast("Erro ao inicializar rascunho", "error");
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
     init();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email]);
 
@@ -334,6 +338,7 @@ export function NfeWizard() {
       const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/${draftId}/issue`, {
         method: "POST",
         headers: { "Content-Type": "application/json", email },
+        body: "{}",
       });
 
       const data = await res.json();
