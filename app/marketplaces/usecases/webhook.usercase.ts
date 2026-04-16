@@ -3,6 +3,7 @@ import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { MLOrderWebhookPayload } from "../types/ml-order.types";
 import { OrderUseCase } from "./order.usercase";
+import { SystemLogService } from "@/app/services/system-log.service";
 
 /**
  * Tenta registrar o evento no WebhookEventLog para garantir idempotência.
@@ -75,6 +76,18 @@ export class WebhookUseCase {
       );
 
       if (accounts.length === 0) {
+        void SystemLogService.logWarning(
+          "WEBHOOK_ACCOUNT_NOT_FOUND",
+          `Webhook ML ignorado: conta não encontrada para user_id=${payload.user_id}. Pedidos podem estar sendo perdidos.`,
+          {
+            resource: "MarketplaceAccount",
+            details: {
+              externalUserId: payload.user_id.toString(),
+              platform: "MERCADO_LIVRE",
+              mlOrderId,
+            },
+          },
+        ).catch(() => {});
         return {
           success: false,
           error: `Conta do Mercado Livre não encontrada para user_id: ${payload.user_id}`,
@@ -168,6 +181,18 @@ export class WebhookUseCase {
       );
 
       if (accounts.length === 0) {
+        void SystemLogService.logWarning(
+          "WEBHOOK_ACCOUNT_NOT_FOUND",
+          `Webhook Shopee ignorado: conta não encontrada para shop_id=${payload.shop_id}. Pedidos podem estar sendo perdidos.`,
+          {
+            resource: "MarketplaceAccount",
+            details: {
+              shopId: payload.shop_id,
+              platform: "SHOPEE",
+              ordersn: payload.data?.ordersn,
+            },
+          },
+        ).catch(() => {});
         return {
           success: false,
           error: `Conta Shopee não encontrada para shop_id: ${payload.shop_id}`,

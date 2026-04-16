@@ -19,7 +19,8 @@ export type LogAction =
   | "SYSTEM_ERROR"
   | "USER_ACTIVITY"
   | "OVERSELL_DETECTED"
-  | "STOCK_SYNC_FAILED";
+  | "STOCK_SYNC_FAILED"
+  | "WEBHOOK_ACCOUNT_NOT_FOUND";
 
 export interface SystemLog {
   id: string;

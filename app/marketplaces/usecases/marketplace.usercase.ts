@@ -4,6 +4,7 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
+import { OrderUseCase } from "./order.usercase";
 import { Platform, AccountStatus } from "@prisma/client";
 
 /**
@@ -102,7 +103,8 @@ export class MarketplaceUseCase {
         });
 
         // Reativar se estava inativa
-        if (account.status !== AccountStatus.ACTIVE) {
+        const wasInactive = account.status !== AccountStatus.ACTIVE;
+        if (wasInactive) {
           account = await MarketplaceRepository.updateStatus(
             existingAccount.id,
             AccountStatus.ACTIVE,
@@ -111,6 +113,32 @@ export class MarketplaceUseCase {
 
         // Limpa circuit breaker in-memory após reconexão bem-sucedida
         MLOAuthService.clearAccountCircuitBreaker(existingAccount.id);
+
+        // Backfill de pedidos perdidos durante o período de inatividade
+        if (wasInactive) {
+          const backfillDays = parseInt(
+            process.env.RECONNECT_BACKFILL_DAYS ?? "14",
+            10,
+          );
+          setImmediate(() => {
+            void OrderUseCase.importRecentOrdersForAccount(
+              account.id,
+              backfillDays,
+              true,
+            )
+              .then((r) =>
+                console.log(
+                  `[handleOAuthCallback] Backfill ML account=${account.id}: imported=${r.imported}, stockDeductions=${r.stockDeductions}`,
+                ),
+              )
+              .catch((e) =>
+                console.error(
+                  `[handleOAuthCallback] Backfill ML failed for account=${account.id}:`,
+                  e,
+                ),
+              );
+          });
+        }
       } else {
         console.log(
           `[handleOAuthCallback] Creating NEW account for userId=${userId} externalUserId=${tokenData.externalUserId}`,
@@ -472,11 +500,38 @@ export class MarketplaceUseCase {
         }
 
         // Reativar se estava inativa
-        if (account.status !== AccountStatus.ACTIVE) {
+        const wasInactive = account.status !== AccountStatus.ACTIVE;
+        if (wasInactive) {
           account = await MarketplaceRepository.updateStatus(
             existingAccount.id,
             AccountStatus.ACTIVE,
           );
+        }
+
+        // Backfill de pedidos perdidos durante o período de inatividade
+        if (wasInactive) {
+          const backfillDays = parseInt(
+            process.env.RECONNECT_BACKFILL_DAYS ?? "14",
+            10,
+          );
+          setImmediate(() => {
+            void OrderUseCase.importRecentShopeeOrdersForAccount(
+              account.id,
+              Math.min(backfillDays, 15), // Shopee API limita a 15 dias
+              true,
+            )
+              .then((r) =>
+                console.log(
+                  `[handleShopeeOAuthCallback] Backfill Shopee account=${account.id}: imported=${r.imported}, stockDeductions=${r.stockDeductions}`,
+                ),
+              )
+              .catch((e) =>
+                console.error(
+                  `[handleShopeeOAuthCallback] Backfill Shopee failed for account=${account.id}:`,
+                  e,
+                ),
+              );
+          });
         }
       } else {
         // Criar nova conta

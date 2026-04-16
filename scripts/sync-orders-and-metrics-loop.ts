@@ -4,6 +4,7 @@ import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
 import { syncAllListingsMetrics } from "./sync-listing-metrics";
 
 const intervalMinutes = parseInt(process.env.SYNC_FULL_INTERVAL_MINUTES ?? "15", 10);
+const syncDays = parseInt(process.env.SYNC_LOOP_DAYS ?? "7", 10);
 
 async function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,9 +19,9 @@ async function runOnce() {
   for (const account of accounts) {
     try {
       if (account.platform === Platform.MERCADO_LIVRE) {
-        await OrderUseCase.importRecentOrdersForAccount(account.id, 2, true);
+        await OrderUseCase.importRecentOrdersForAccount(account.id, syncDays, true);
       } else if (account.platform === Platform.SHOPEE) {
-        await OrderUseCase.importRecentShopeeOrdersForAccount(account.id, 2, true);
+        await OrderUseCase.importRecentShopeeOrdersForAccount(account.id, Math.min(syncDays, 15), true);
       }
     } catch (err) {
       console.error(`[sync-loop] Falha ao importar pedidos para conta ${account.id}:`, err);
@@ -30,19 +31,19 @@ async function runOnce() {
   try {
     await syncAllListingsMetrics();
   } catch (err) {
-    console.error(`[sync-loop] Falha ao sincronizar métricas de anúncios:`, err);
+    console.error(`[sync-loop] Falha ao sincronizar mï¿½tricas de anï¿½ncios:`, err);
   }
 }
 
 async function main() {
-  console.log(`[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min`);
+  console.log(`[sync-loop] Iniciando loop completo (pedidos + mÃ©tricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`);
   while (true) {
     const started = Date.now();
     await runOnce();
     await prisma.$disconnect();
     const elapsed = Date.now() - started;
     const waitMs = Math.max(intervalMinutes * 60 * 1000 - elapsed, 5000);
-    console.log(`[sync-loop] Ciclo concluído em ${elapsed} ms. Próximo em ${waitMs} ms.`);
+    console.log(`[sync-loop] Ciclo concluï¿½do em ${elapsed} ms. Prï¿½ximo em ${waitMs} ms.`);
     await wait(waitMs);
   }
 }

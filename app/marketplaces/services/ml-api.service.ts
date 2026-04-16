@@ -1053,15 +1053,35 @@ export class MLApiService {
     const dateFrom = new Date();
     dateFrom.setDate(dateFrom.getDate() - days);
 
-    const response = await this.getSellerOrders(accessToken, {
-      seller: sellerId,
-      status,
-      dateCreatedFrom: dateFrom.toISOString(),
-      sort: "date_desc",
-      limit: 50,
-    });
+    const allOrders: MLOrderDetails[] = [];
+    let offset = 0;
+    const limit = 50;
+    const maxOrders = 500; // safety cap
 
-    return response.results;
+    while (allOrders.length < maxOrders) {
+      const response = await this.getSellerOrders(accessToken, {
+        seller: sellerId,
+        status,
+        dateCreatedFrom: dateFrom.toISOString(),
+        sort: "date_desc",
+        limit,
+        offset,
+      });
+
+      allOrders.push(...response.results);
+
+      if (
+        response.results.length < limit ||
+        allOrders.length >= response.paging.total
+      ) {
+        break;
+      }
+
+      offset += limit;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    return allOrders.slice(0, maxOrders);
   }
 
   /**
