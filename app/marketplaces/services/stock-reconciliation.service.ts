@@ -80,9 +80,7 @@ export class StockReconciliationService {
         // para evitar P2002 no upsert não-atômico do Prisma. Ambos lados
         // pegam o mesmo lock por listing antes do SELECT/INSERT.
         await prisma.$transaction(async (tx) => {
-          await tx.$queryRaw<
-            unknown[]
-          >`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + c.listingId}))`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + c.listingId}))`;
 
           await (tx as any).stockSyncJob.upsert({
             where: {

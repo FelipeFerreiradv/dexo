@@ -1058,9 +1058,7 @@ export class OrderUseCase {
             // Serializa com StockReconciliationService pelo mesmo listing para
             // evitar P2002 no upsert não-atômico do Prisma: ambos lados pegam
             // o mesmo advisory lock antes de SELECT/INSERT.
-            await tx.$queryRaw<
-              unknown[]
-            >`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + listing.id}))`;
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + listing.id}))`;
 
             await tx.stockSyncJob.upsert({
               where: {
