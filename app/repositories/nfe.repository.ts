@@ -6,6 +6,10 @@ import type {
   NfeDraftItem,
   CustomerLookup,
   ProductLookup,
+  NfeListQuery,
+  NfeListItem,
+  NfeListResponse,
+  NfeStats,
 } from "../interfaces/nfe.interface";
 
 function toDraftResponse(row: any): NfeDraftResponse {
@@ -269,5 +273,156 @@ export class NfeRepository {
       ...r,
       price: Number(r.price),
     }));
+  }
+
+  // ── Listagem de notas emitidas (F6) ──
+
+  async findEmitted(
+    userId: string,
+    query: NfeListQuery,
+  ): Promise<NfeListResponse> {
+    const where: any = {
+      userId,
+      status: { not: "DRAFT" },
+    };
+
+    if (query.status) {
+      where.status = query.status;
+    }
+    if (query.serie !== undefined) {
+      where.serie = query.serie;
+    }
+    if (query.ambiente) {
+      where.ambiente = query.ambiente;
+    }
+    if (query.dataInicio || query.dataFim) {
+      where.createdAt = {};
+      if (query.dataInicio) where.createdAt.gte = new Date(query.dataInicio);
+      if (query.dataFim) where.createdAt.lte = new Date(query.dataFim + "T23:59:59.999Z");
+    }
+    if (query.search && query.search.trim().length >= 2) {
+      const term = query.search.trim();
+      where.OR = [
+        { chaveAcesso: { contains: term } },
+        { naturezaOperacao: { contains: term, mode: "insensitive" } },
+        { protocoloAutorizacao: { contains: term } },
+        { numero: isNaN(Number(term)) ? undefined : Number(term) },
+      ].filter(Boolean);
+      // Also search destinatario name inside JSON — fallback via raw text match
+      // Prisma doesn't support JSON field search well, so we add a path-based filter
+    }
+
+    const [rows, total] = await Promise.all([
+      (prisma as any).nfeEmitida.findMany({
+        where,
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          orderId: true,
+          ambiente: true,
+          serie: true,
+          numero: true,
+          chaveAcesso: true,
+          tipoOperacao: true,
+          finalidade: true,
+          naturezaOperacao: true,
+          destinatarioJson: true,
+          totaisJson: true,
+          status: true,
+          protocoloAutorizacao: true,
+          dataEmissao: true,
+          dataAutorizacao: true,
+          createdAt: true,
+          xmlAutorizadoPath: true,
+          xmlOriginalPath: true,
+          danfePdfPath: true,
+        },
+      }),
+      (prisma as any).nfeEmitida.count({ where }),
+    ]);
+
+    const notas: NfeListItem[] = rows.map((r: any) => {
+      const dest = r.destinatarioJson as any;
+      const totais = r.totaisJson as any;
+      return {
+        id: r.id,
+        orderId: r.orderId,
+        ambiente: r.ambiente,
+        serie: r.serie,
+        numero: r.numero,
+        chaveAcesso: r.chaveAcesso,
+        tipoOperacao: r.tipoOperacao,
+        finalidade: r.finalidade,
+        naturezaOperacao: r.naturezaOperacao,
+        destinatarioNome: dest?.nome ?? "",
+        destinatarioCpfCnpj: dest?.cpfCnpj ?? "",
+        totalNota: totais?.totalNota ?? 0,
+        status: r.status,
+        protocoloAutorizacao: r.protocoloAutorizacao,
+        dataEmissao: r.dataEmissao?.toISOString() ?? null,
+        dataAutorizacao: r.dataAutorizacao?.toISOString() ?? null,
+        createdAt: r.createdAt.toISOString(),
+        hasXml: !!(r.xmlAutorizadoPath || r.xmlOriginalPath),
+        hasDanfe: !!r.danfePdfPath,
+      };
+    });
+
+    return {
+      notas,
+      page: query.page,
+      limit: query.limit,
+      total,
+      totalPages: Math.ceil(total / query.limit),
+    };
+  }
+
+  async getStats(userId: string): Promise<NfeStats> {
+    const baseWhere = { userId, status: { not: "DRAFT" } };
+
+    const [total, autorizadas, rejeitadas, canceladas, allAuthorized] =
+      await Promise.all([
+        (prisma as any).nfeEmitida.count({ where: baseWhere }),
+        (prisma as any).nfeEmitida.count({
+          where: { userId, status: "AUTHORIZED" },
+        }),
+        (prisma as any).nfeEmitida.count({
+          where: { userId, status: "REJECTED" },
+        }),
+        (prisma as any).nfeEmitida.count({
+          where: { userId, status: "CANCELLED" },
+        }),
+        (prisma as any).nfeEmitida.findMany({
+          where: { userId, status: "AUTHORIZED" },
+          select: { totaisJson: true },
+        }),
+      ]);
+
+    const valorTotal = allAuthorized.reduce((sum: number, r: any) => {
+      const totais = r.totaisJson as any;
+      return sum + (totais?.totalNota ?? 0);
+    }, 0);
+
+    return { total, autorizadas, rejeitadas, canceladas, valorTotal };
+  }
+
+  async findAllForExport(
+    userId: string,
+    filters: { status?: string; dataInicio?: string; dataFim?: string },
+  ): Promise<any[]> {
+    const where: any = { userId, status: { not: "DRAFT" } };
+    if (filters.status) where.status = filters.status;
+    if (filters.dataInicio || filters.dataFim) {
+      where.createdAt = {};
+      if (filters.dataInicio) where.createdAt.gte = new Date(filters.dataInicio);
+      if (filters.dataFim) where.createdAt.lte = new Date(filters.dataFim + "T23:59:59.999Z");
+    }
+
+    return (prisma as any).nfeEmitida.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: { itens: { orderBy: { numero: "asc" } } },
+    });
   }
 }

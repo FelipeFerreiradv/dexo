@@ -170,3 +170,57 @@ export interface ProductLookup {
   price: number;
   stock: number;
 }
+
+// ── Listagem de notas emitidas (F6) ──
+
+export interface NfeListFilters {
+  search?: string;
+  status?: NfeStatus;
+  serie?: number;
+  ambiente?: FiscalAmbiente;
+  dataInicio?: string;
+  dataFim?: string;
+}
+
+export interface NfeListQuery extends NfeListFilters {
+  page: number;
+  limit: number;
+}
+
+export interface NfeListItem {
+  id: string;
+  orderId: string | null;
+  ambiente: string;
+  serie: number;
+  numero: number;
+  chaveAcesso: string | null;
+  tipoOperacao: string;
+  finalidade: string;
+  naturezaOperacao: string;
+  destinatarioNome: string;
+  destinatarioCpfCnpj: string;
+  totalNota: number;
+  status: NfeStatus;
+  protocoloAutorizacao: string | null;
+  dataEmissao: string | null;
+  dataAutorizacao: string | null;
+  createdAt: string;
+  hasXml: boolean;
+  hasDanfe: boolean;
+}
+
+export interface NfeListResponse {
+  notas: NfeListItem[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface NfeStats {
+  total: number;
+  autorizadas: number;
+  rejeitadas: number;
+  canceladas: number;
+  valorTotal: number;
+}

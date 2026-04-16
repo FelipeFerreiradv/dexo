@@ -4,6 +4,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
 import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
+import { NfeListingUseCase } from "../usecases/nfe-listing.usecase";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
@@ -15,6 +16,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
   const nfeEmission = new NfeEmissionUseCase();
+  const nfeListing = new NfeListingUseCase();
   const calculator = new FiscalCalculatorService();
   const configRepo = new CompanyFiscalRepository();
   const nfeRepo = new NfeRepository();
@@ -300,6 +302,102 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
               ? 400
               : 500;
         return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── Listagem de notas emitidas (F6) ──
+
+  fastify.get(
+    "/nfe",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const q = request.query as any;
+        const result = await nfeListing.list(userId, {
+          page: Number(q.page) || 1,
+          limit: Number(q.limit) || 10,
+          search: q.search,
+          status: q.status,
+          serie: q.serie ? Number(q.serie) : undefined,
+          ambiente: q.ambiente,
+          dataInicio: q.dataInicio,
+          dataFim: q.dataFim,
+        });
+        return reply.status(200).send(result);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao listar notas fiscais",
+        });
+      }
+    },
+  );
+
+  fastify.get(
+    "/nfe/stats",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const stats = await nfeListing.stats(userId);
+        return reply.status(200).send({ stats });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar estatisticas",
+        });
+      }
+    },
+  );
+
+  fastify.get(
+    "/nfe/export",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const q = request.query as any;
+        const format = q.format === "pdf" ? "pdf" : "xlsx";
+        const buffer = await nfeListing.exportData(
+          userId,
+          {
+            status: q.status,
+            dataInicio: q.dataInicio,
+            dataFim: q.dataFim,
+          },
+          format as "xlsx" | "pdf",
+        );
+
+        if (format === "pdf") {
+          return reply
+            .header("Content-Type", "application/pdf")
+            .header(
+              "Content-Disposition",
+              'attachment; filename="notas-fiscais.pdf"',
+            )
+            .send(buffer);
+        }
+        return reply
+          .header(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          )
+          .header(
+            "Content-Disposition",
+            'attachment; filename="notas-fiscais.xlsx"',
+          )
+          .send(buffer);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro ao exportar dados",
+        });
       }
     },
   );

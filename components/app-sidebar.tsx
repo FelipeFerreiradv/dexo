@@ -23,6 +23,7 @@ import {
   Wallet,
   FileText,
   FilePlus2,
+  FileSignature,
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
@@ -136,6 +137,12 @@ const FISCAL_SECTION: NavSection = {
       label: "Emitir NF-e",
       href: "/notas-fiscais/nfe",
       icon: FilePlus2,
+    },
+    {
+      id: "nfe-emitidas",
+      label: "Notas Emitidas",
+      href: "/notas-fiscais/emitidas",
+      icon: FileSignature,
     },
     {
       id: "fiscal-config",
