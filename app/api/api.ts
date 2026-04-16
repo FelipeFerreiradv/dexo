@@ -25,6 +25,7 @@ import { compatibilityRoutes } from "../routes/compatibility.routes";
 import { scrapRoutes } from "../routes/scrap.routes";
 import { customerRoutes } from "../routes/customer.routes";
 import { financeRoutes } from "../routes/finance.routes";
+import { fiscalRoutes } from "../routes/fiscal.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
@@ -102,6 +103,10 @@ api.register(customerRoutes, {
 
 api.register(financeRoutes, {
   prefix: "/finance",
+});
+
+api.register(fiscalRoutes, {
+  prefix: "/fiscal",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

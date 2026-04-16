@@ -39,6 +39,8 @@ model User {
   customers                 Customer[]
   payables                  Payable[]
   receivables               Receivable[]
+  companyFiscalConfig       CompanyFiscalConfig?
+  nfesEmitidas              NfeEmitida[]
 }
 
 model Product {
@@ -87,6 +89,7 @@ model Product {
   scrap                  Scrap?               @relation(fields: [scrapId], references: [id], onDelete: SetNull)
   listings               ProductListing[]
   stockLogs              StockLog[]
+  nfeItens               NfeItem[]
 
   @@unique([userId, sku])
   @@index([userId, skuNormalized])
@@ -226,6 +229,7 @@ model Order {
   updatedAt            DateTime           @updatedAt
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
   items                OrderItem[]
+  nfesEmitidas         NfeEmitida[]
 
   @@index([marketplaceAccountId, createdAt])
   @@index([status, updatedAt])
@@ -445,6 +449,7 @@ model Customer {
   user           User         @relation(fields: [userId], references: [id])
   payables       Payable[]
   receivables    Receivable[]
+  nfesEmitidas   NfeEmitida[]
 
   @@unique([userId, cpf])
   @@index([userId, createdAt])
@@ -578,4 +583,188 @@ model Scrap {
   @@index([userId, status])
   @@index([plate])
   @@index([chassis])
+}
+
+// =====================================================================
+// Módulo Fiscal (NF-e)
+// Additive-only: nenhuma alteração destrutiva em models existentes.
+// =====================================================================
+
+model CompanyFiscalConfig {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+
+  cnpj                 String
+  razaoSocial          String
+  nomeFantasia         String?
+  inscricaoEstadual    String
+  inscricaoMunicipal   String?
+  regimeTributario     String   // SIMPLES | LUCRO_PRESUMIDO | LUCRO_REAL
+  cnae                 String?
+
+  ambiente             String   @default("HOMOLOGACAO") // HOMOLOGACAO | PRODUCAO
+
+  // Endereço fiscal
+  cep                  String?
+  logradouro           String?
+  numero               String?
+  complemento          String?
+  bairro               String?
+  municipio            String?
+  codMunicipio         String?
+  uf                   String?
+  codPais              String?  @default("1058")
+  pais                 String?  @default("BRASIL")
+
+  // Certificado A1
+  certificadoPath      String?
+  certificadoSenhaEnc  String?
+  certificadoValidoAte DateTime?
+
+  // Provedor fiscal
+  providerName         String?  // FOCUS_NFE | ...
+  providerToken        String?  // encriptado
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user                 User     @relation(fields: [userId], references: [id])
+}
+
+model NfeSequence {
+  id            String   @id @default(cuid())
+  userId        String
+  ambiente      String   // HOMOLOGACAO | PRODUCAO
+  serie         Int
+  proximoNumero Int      @default(1)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, ambiente, serie])
+  @@index([userId])
+}
+
+model NfeEmitida {
+  id                     String   @id @default(cuid())
+  userId                 String
+  orderId                String?
+  customerId             String?
+
+  // Identificação
+  ambiente               String   // HOMOLOGACAO | PRODUCAO
+  modelo                 String   @default("55")
+  serie                  Int
+  numero                 Int
+  chaveAcesso            String?  @unique
+  tipoOperacao           String   // ENTRADA | SAIDA
+  finalidade             String   // NORMAL | COMPLEMENTAR | AJUSTE | DEVOLUCAO
+  destinoOperacao        String   // INTERNA | INTERESTADUAL | EXTERIOR
+  naturezaOperacao       String
+  indPresenca            String   // 0..9
+  intermediador          String?
+  numeroPedido           String?
+  dataEmissao            DateTime?
+  dataSaida              DateTime?
+
+  // Snapshots imutáveis pós-emissão
+  destinatarioJson       Json
+  emitenteJson           Json?
+
+  // Frete
+  modalidadeFrete        String?
+  transportadoraJson     Json?
+
+  // Totalizadores e blocos
+  totaisJson             Json?
+  notasReferenciadasJson Json?
+  exportacaoJson         Json?
+  pagamentosJson         Json?
+  duplicatasJson         Json?
+  volumesJson            Json?
+
+  // Estado
+  status                 String   // DRAFT | VALIDATING | SIGNING | SENDING | AUTHORIZED | REJECTED | CANCELLED | INUTILIZED
+  protocoloAutorizacao   String?
+  dataAutorizacao        DateTime?
+  motivoRejeicao         String?
+
+  // Artefatos
+  xmlOriginalPath        String?
+  xmlAssinadoPath        String?
+  xmlAutorizadoPath      String?
+  danfePdfPath           String?
+
+  // Auditoria
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  emittedByUserId        String
+
+  // Relações
+  user                   User     @relation(fields: [userId], references: [id])
+  order                  Order?   @relation(fields: [orderId], references: [id])
+  customer               Customer? @relation(fields: [customerId], references: [id])
+  itens                  NfeItem[]
+  eventos                NfeAuditLog[]
+
+  @@unique([userId, ambiente, serie, numero])
+  @@index([userId, status])
+  @@index([userId, dataEmissao])
+  @@index([orderId])
+  @@index([customerId])
+}
+
+model NfeItem {
+  id            String   @id @default(cuid())
+  nfeId         String
+  productId     String?
+  numero        Int
+  codigo        String
+  descricao     String
+  ncm           String
+  cfop          String
+  cest          String?
+  origem        Int
+  unidade       String
+  quantidade    Decimal  @db.Decimal(15, 4)
+  valorUnitario Decimal  @db.Decimal(15, 4)
+  valorTotal    Decimal  @db.Decimal(15, 2)
+  desconto      Decimal? @db.Decimal(15, 2)
+  observacoes   String?
+  tributosJson  Json?
+
+  nfe     NfeEmitida @relation(fields: [nfeId], references: [id], onDelete: Cascade)
+  product Product?   @relation(fields: [productId], references: [id])
+
+  @@index([nfeId])
+  @@index([productId])
+}
+
+model NfeAuditLog {
+  id        String   @id @default(cuid())
+  nfeId     String
+  userId    String
+  evento    String   // CRIADA | EDITADA_DRAFT | VALIDADA | NUMERADA | ASSINADA | ENVIADA | AUTORIZADA | REJEITADA | CANCELADA | INUTILIZADA | XML_REENVIADO
+  detalhes  Json?
+  createdAt DateTime @default(now())
+
+  nfe NfeEmitida @relation(fields: [nfeId], references: [id], onDelete: Cascade)
+
+  @@index([nfeId])
+  @@index([userId])
+}
+
+model NfeInutilizacao {
+  id            String   @id @default(cuid())
+  userId        String
+  ambiente      String
+  serie         Int
+  numeroInicial Int
+  numeroFinal   Int
+  justificativa String
+  protocolo     String?
+  status        String   // PENDENTE | ACEITA | REJEITADA
+  respostaJson  Json?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, createdAt])
 }

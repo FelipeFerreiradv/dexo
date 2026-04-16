@@ -21,6 +21,8 @@ import {
   Car,
   Users,
   Wallet,
+  FileText,
+  FilePlus2,
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
@@ -125,6 +127,32 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+const FISCAL_SECTION: NavSection = {
+  id: "fiscal",
+  label: "Notas Fiscais",
+  items: [
+    {
+      id: "nfe",
+      label: "Emitir NF-e",
+      href: "/notas-fiscais/nfe",
+      icon: FilePlus2,
+    },
+    {
+      id: "fiscal-config",
+      label: "Configuração Fiscal",
+      href: "/notas-fiscais/configuracao",
+      icon: FileText,
+    },
+  ],
+};
+
+const FISCAL_MODULE_ENABLED =
+  process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED === "true";
+
+const VISIBLE_NAV_SECTIONS: NavSection[] = FISCAL_MODULE_ENABLED
+  ? [...NAV_SECTIONS, FISCAL_SECTION]
+  : NAV_SECTIONS;
+
 interface AppSidebarProps {
   session: Session | null;
 }
@@ -139,7 +167,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
   const [openSections, setOpenSections] = React.useState<
     Record<string, boolean>
   >(() =>
-    NAV_SECTIONS.reduce(
+    VISIBLE_NAV_SECTIONS.reduce(
       (acc, section) => {
         acc[section.id] = true;
         return acc;
@@ -203,7 +231,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
 
   const filteredSections = React.useMemo(() => {
     const term = query.trim().toLowerCase();
-    const withDynamicBadges = NAV_SECTIONS.map((section) => ({
+    const withDynamicBadges = VISIBLE_NAV_SECTIONS.map((section) => ({
       ...section,
       items: section.items.map((item) =>
         item.id === "pedidos" && ordersCount !== null
