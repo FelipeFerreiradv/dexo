@@ -16,6 +16,7 @@ import {
   Loader2,
   Save,
 } from "lucide-react";
+import { getApiBaseUrl } from "@/lib/api";
 import { useSession } from "next-auth/react";
 
 import {
@@ -320,12 +321,52 @@ export function NfeWizard() {
     }
   };
 
+  const [isEmitting, setIsEmitting] = useState(false);
+
   const handleEmitir = async () => {
-    // Save last step data then show info — actual emission is F5
-    showToast(
-      "Emissao sera habilitada na proxima fase (F5). Rascunho salvo.",
-      "info",
-    );
+    if (!draftId || isEmitting) return;
+
+    // Save current step data before emitting
+    saveCurrentStep();
+
+    setIsEmitting(true);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/${draftId}/issue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", email },
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        showToast(data.error || "Erro ao emitir NF-e", "error");
+        return;
+      }
+
+      if (data.success) {
+        if (data.status === "AUTHORIZED") {
+          showToast(
+            `NF-e ${data.numero} autorizada! Chave: ${data.chaveAcesso?.slice(0, 20)}...`,
+            "success",
+          );
+          // Redirect after short delay
+          setTimeout(() => {
+            window.location.href = "/notas-fiscais/nfe";
+          }, 2000);
+        } else {
+          showToast(data.mensagem || "NF-e enviada, aguardando SEFAZ", "info");
+        }
+      } else {
+        showToast(
+          data.mensagem || "NF-e rejeitada pela SEFAZ",
+          "error",
+        );
+      }
+    } catch {
+      showToast("Erro de conexao ao emitir NF-e", "error");
+    } finally {
+      setIsEmitting(false);
+    }
   };
 
   if (isLoading) {
@@ -435,7 +476,8 @@ export function NfeWizard() {
         onBack={handleBack}
         onNext={handleNext}
         onSubmit={handleEmitir}
-        submitLabel="Emitir NF-e"
+        submitLabel={isEmitting ? "Emitindo..." : "Emitir NF-e"}
+        isSubmitting={isEmitting}
       />
 
       {toast && (

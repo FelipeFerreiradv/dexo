@@ -1,18 +1,24 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
+import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
+import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
+import { createNfeProvider } from "../fiscal/providers/provider-factory";
 import type { NfeItemInput, RegimeTributario } from "../fiscal/domain/nfe.types";
 
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
+  const nfeEmission = new NfeEmissionUseCase();
   const calculator = new FiscalCalculatorService();
   const configRepo = new CompanyFiscalRepository();
   const nfeRepo = new NfeRepository();
+  const storage = new FiscalStorageService();
 
   // ── Configuração ──
 
@@ -258,6 +264,194 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao buscar produtos",
+        });
+      }
+    },
+  );
+
+  // ── Emissão ──
+
+  fastify.post(
+    "/nfe/:id/issue",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const result = await nfeEmission.emit(userId, id);
+        return reply.status(200).send(result);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao emitir NF-e";
+        const status =
+          message.includes("nao encontrad") ||
+          message.includes("não encontrad")
+            ? 404
+            : message.includes("incompleto") ||
+                message.includes("obrigat") ||
+                message.includes("invalid") ||
+                message.includes("sem NCM") ||
+                message.includes("sem CFOP") ||
+                message.includes("nao esta em rascunho") ||
+                message.includes("Token")
+              ? 400
+              : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── Consulta de NF-e (qualquer status) ──
+
+  fastify.get(
+    "/nfe/:id",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const row = await (prisma as any).nfeEmitida.findFirst({
+          where: { id, userId },
+          include: {
+            itens: { orderBy: { numero: "asc" } },
+            eventos: { orderBy: { createdAt: "desc" }, take: 20 },
+          },
+        });
+        if (!row) {
+          return reply.status(404).send({ error: "NF-e nao encontrada" });
+        }
+        return reply.status(200).send({ nfe: row });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar NF-e",
+        });
+      }
+    },
+  );
+
+  // ── Download XML autorizado ──
+
+  fastify.get(
+    "/nfe/:id/xml",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const row = await (prisma as any).nfeEmitida.findFirst({
+          where: { id, userId },
+          select: { xmlAutorizadoPath: true, xmlOriginalPath: true, numero: true, serie: true },
+        });
+        if (!row) {
+          return reply.status(404).send({ error: "NF-e nao encontrada" });
+        }
+        const filePath = row.xmlAutorizadoPath || row.xmlOriginalPath;
+        if (!filePath) {
+          return reply.status(404).send({ error: "XML nao disponivel" });
+        }
+        const content = await storage.readFile(filePath);
+        if (!content) {
+          return reply.status(404).send({ error: "Arquivo XML nao encontrado" });
+        }
+        return reply
+          .header("Content-Type", "application/xml")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="nfe-${row.serie}-${row.numero}.xml"`,
+          )
+          .send(content);
+      } catch (error) {
+        return reply.status(500).send({
+          error: error instanceof Error ? error.message : "Erro ao baixar XML",
+        });
+      }
+    },
+  );
+
+  // ── Download DANFE PDF ──
+
+  fastify.get(
+    "/nfe/:id/danfe",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const row = await (prisma as any).nfeEmitida.findFirst({
+          where: { id, userId },
+          select: { danfePdfPath: true, numero: true, serie: true },
+        });
+        if (!row) {
+          return reply.status(404).send({ error: "NF-e nao encontrada" });
+        }
+        if (!row.danfePdfPath) {
+          return reply.status(404).send({ error: "DANFE nao disponivel" });
+        }
+        const content = await storage.readFile(row.danfePdfPath);
+        if (!content) {
+          return reply.status(404).send({ error: "Arquivo DANFE nao encontrado" });
+        }
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="danfe-${row.serie}-${row.numero}.pdf"`,
+          )
+          .send(content);
+      } catch (error) {
+        return reply.status(500).send({
+          error: error instanceof Error ? error.message : "Erro ao baixar DANFE",
+        });
+      }
+    },
+  );
+
+  // ── Histórico de eventos ──
+
+  fastify.get(
+    "/nfe/:id/events",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        // Verify ownership
+        const nfe = await (prisma as any).nfeEmitida.findFirst({
+          where: { id, userId },
+          select: { id: true },
+        });
+        if (!nfe) {
+          return reply.status(404).send({ error: "NF-e nao encontrada" });
+        }
+        const events = await (prisma as any).nfeAuditLog.findMany({
+          where: { nfeId: id },
+          orderBy: { createdAt: "desc" },
+        });
+        return reply.status(200).send({ events });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar eventos",
         });
       }
     },
