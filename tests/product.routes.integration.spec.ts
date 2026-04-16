@@ -6,12 +6,16 @@ import { ProductRepositoryPrisma } from "../app/repositories/product.repository"
 import { ProductUseCase } from "../app/usecases/product.usercase";
 
 // Prevent heavy marketplace/usecase imports from pulling prisma alias in this test
+const removeListingMock = vi
+  .fn()
+  .mockResolvedValue({ success: true } as { success: boolean; error?: string });
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
   ListingUseCase: {
     createMLListing: async () => ({
       id: "MLB-TEST",
       permalink: "https://ml.test/MLB-TEST",
     }),
+    removeListing: (id: string) => removeListingMock(id),
   },
 }));
 
@@ -797,5 +801,89 @@ describe("POST /products (integration)", () => {
     expect(deleteSpy).toHaveBeenCalledWith("prod-123", "user-1");
     const body = JSON.parse(res.payload);
     expect(body).toHaveProperty("message");
+  });
+
+  it("cascades listing removal for ML and Shopee when deleting a product", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([
+      {
+        id: "listing-ml-1",
+        externalListingId: "MLB123",
+        marketplaceAccountId: "acc-ml",
+        marketplaceAccount: { id: "acc-ml", platform: "MERCADO_LIVRE" },
+      },
+      {
+        id: "listing-shopee-1",
+        externalListingId: "987654321",
+        marketplaceAccountId: "acc-shopee",
+        marketplaceAccount: { id: "acc-shopee", platform: "SHOPEE" },
+      },
+    ]);
+
+    const deleteSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "delete")
+      .mockResolvedValue(undefined as any);
+
+    removeListingMock.mockClear();
+    removeListingMock.mockResolvedValue({ success: true });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/products/prod-123",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(removeListingMock).toHaveBeenCalledTimes(2);
+    expect(removeListingMock).toHaveBeenCalledWith("listing-ml-1");
+    expect(removeListingMock).toHaveBeenCalledWith("listing-shopee-1");
+    expect(deleteSpy).toHaveBeenCalledWith("prod-123", "user-1");
+    const body = JSON.parse(res.payload);
+    expect(body.listingResults).toHaveLength(2);
+    expect(body.listingResults.every((r: any) => r.closed === true)).toBe(true);
+  });
+
+  it("still deletes the product locally when Shopee removal fails (best-effort)", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([
+      {
+        id: "listing-shopee-1",
+        externalListingId: "987654321",
+        marketplaceAccountId: "acc-shopee",
+        marketplaceAccount: { id: "acc-shopee", platform: "SHOPEE" },
+      },
+    ]);
+
+    const deleteSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "delete")
+      .mockResolvedValue(undefined as any);
+
+    removeListingMock.mockClear();
+    removeListingMock.mockResolvedValueOnce({
+      success: false,
+      error: "item still active",
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/products/prod-123",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(deleteSpy).toHaveBeenCalledWith("prod-123", "user-1");
+    const body = JSON.parse(res.payload);
+    expect(body.listingResults[0].closed).toBe(false);
+    expect(body.message).toMatch(/marketplace/);
   });
 });

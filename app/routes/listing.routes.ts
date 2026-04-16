@@ -261,7 +261,7 @@ export async function listingRoutes(app: FastifyInstance) {
       try {
         const { id } = request.params as { id: string };
 
-        const result = await ListingUseCase.removeMLListing(id);
+        const result = await ListingUseCase.removeListing(id);
 
         if (!result.success) {
           return reply.status(400).send({

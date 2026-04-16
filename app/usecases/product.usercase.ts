@@ -116,13 +116,13 @@ export class ProductUseCase {
     }>;
   }> {
     try {
-      // Before deleting the product, remove all associated ML listings
+      // Before deleting the product, remove all associated marketplace listings (ML + Shopee)
       const listings = await this.getProductListings(id);
 
       // Close all listings in parallel for speed
       const listingResults = await Promise.all(
         listings.map(async (listing) => {
-          const result = await ListingUseCase.removeMLListing(listing.id);
+          const result = await ListingUseCase.removeListing(listing.id);
           return {
             externalListingId: listing.externalListingId,
             closed: result.success,
@@ -137,7 +137,7 @@ export class ProductUseCase {
       if (failedClosures.length > 0) {
         return {
           success: true,
-          message: `Produto excluído. ${failedClosures.length} anúncio(s) não puderam ser fechados no ML devido a infrações.`,
+          message: `Produto excluído. ${failedClosures.length} anúncio(s) não puderam ser fechados no marketplace.`,
           listingResults,
         };
       }

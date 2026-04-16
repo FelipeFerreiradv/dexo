@@ -3442,4 +3442,99 @@ export class ListingUseCase {
       };
     }
   }
+
+  /**
+   * Remove um anÃºncio da Shopee (espelha removeMLListing: best-effort remoto + hard-delete local)
+   * @param listingId ID do vÃ­nculo local
+   */
+  static async removeShopeeListing(
+    listingId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+      }
+
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true };
+      }
+
+      const account = await MarketplaceRepository.findById(
+        listing.marketplaceAccountId,
+      );
+      if (!account || !account.accessToken || !account.shopId) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true };
+      }
+
+      const itemId = Number(listing.externalListingId);
+      if (!Number.isFinite(itemId)) {
+        console.warn(
+          `[ListingUseCase] Shopee externalListingId invÃ¡lido: ${listing.externalListingId}`,
+        );
+        await ListingRepository.deleteListing(listingId);
+        return { success: true };
+      }
+
+      try {
+        await ShopeeApiService.deleteItem(
+          account.accessToken,
+          account.shopId,
+          itemId,
+        );
+        console.log(
+          `[ListingUseCase] Shopee item ${itemId} deleted successfully`,
+        );
+      } catch (deleteError) {
+        console.warn(
+          `[ListingUseCase] Could not delete Shopee item ${itemId}:`,
+          deleteError,
+        );
+        // Mesmo que a API externa recuse, prossegue com remoÃ§Ã£o local - paridade com removeMLListing
+      }
+
+      await ListingRepository.deleteListing(listingId);
+
+      return { success: true };
+    } catch (error) {
+      console.error("[ListingUseCase] Error removing Shopee listing:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
+      };
+    }
+  }
+
+  /**
+   * Dispatcher: remove um anÃºncio escolhendo o fluxo correto pela plataforma da conta vinculada
+   * @param listingId ID do vÃ­nculo local
+   */
+  static async removeListing(
+    listingId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const listing = await ListingRepository.findById(listingId);
+    if (!listing) {
+      return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+    }
+
+    const platform = listing.marketplaceAccount?.platform;
+    if (platform === Platform.MERCADO_LIVRE) {
+      return ListingUseCase.removeMLListing(listingId);
+    }
+    if (platform === Platform.SHOPEE) {
+      return ListingUseCase.removeShopeeListing(listingId);
+    }
+
+    console.warn(
+      `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
+    );
+    await ListingRepository.deleteListing(listingId);
+    return { success: true };
+  }
 }
