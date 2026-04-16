@@ -1,0 +1,256 @@
+{
+  "total": 4374,
+  "ok": 542,
+  "blocked": 3832,
+  "okRate": 0.12391403749428441,
+  "byIssueCode": {
+    "missing_attribute": 3832,
+    "soft_missing_attribute": 3
+  },
+  "byMissingAttribute": {
+    "PART_NUMBER": 3705,
+    "MODEL": 46,
+    "VEHICLE_TYPE": 203,
+    "BRAND": 86,
+    "VEHICLE_PEDAL_TYPE": 16,
+    "IS_ORIGINAL": 16,
+    "IS_SPORTING": 16,
+    "VEHICLE_SPEAKER_WIDTH": 18,
+    "SPEAKERS_NUMBER": 18,
+    "COILS_NUMBER": 18,
+    "RMS_POWER": 18,
+    "SIDE": 5,
+    "RIM_DIAMETER": 4,
+    "FUEL_TYPE": 7,
+    "RECOMMENDED_INSTRUMENTS": 1,
+    "VEHICLE_BATTERY_VOLTAGE": 1,
+    "BATTERY_CAPACITY": 1,
+    "COLD_CRANKING": 1,
+    "PIECES_NUMBER": 1,
+    "IS_FACTORY_KIT": 5,
+    "MATERIAL": 21,
+    "ROOF_PANEL_SHAPE": 1,
+    "APPLICATION_METHOD": 2,
+    "MOUNTING_PLACES": 2,
+    "AUTOMOTIVE_PLACEMENT_TYPE": 20,
+    "CATALOG_TYPE": 5,
+    "SALES_UNIT": 5,
+    "YIELD_OF_SALES_UNIT": 5,
+    "MOUNT_TYPE": 36,
+    "STEREO_STANDARD_DIMENSIONS": 21,
+    "INPUT_CONNECTOR": 1,
+    "OUTPUT_CONNECTOR": 1,
+    "RACK_AND_PINION_TYPE": 4,
+    "MANUFACTURER": 1,
+    "POSITION": 4,
+    "AIR_FRESHENER_FORMAT": 1,
+    "AIRBAG_POSITION": 1,
+    "FIRE_EXTINGUISHER_TYPE": 5,
+    "EXTINGUISHING_AGENT": 5,
+    "ENGINE_VALVE_TYPE": 1,
+    "INPUTS_NUMBER": 1,
+    "OUTPUTS_NUMBER": 1,
+    "IS_NON_ALCOHOLIC_DRINK": 2,
+    "WEIGHT_CAPACITY": 1,
+    "SKIRT_POSITIONS": 2,
+    "IS_COMPLETE_SET": 2,
+    "CAR_LED_BULB_TYPE": 1,
+    "SCREW_TYPE": 1,
+    "PRODUCT_NAME": 1
+  },
+  "topBlockedCategories": [
+    {
+      "categoryId": "cmmwc3rfp06x0vsak3s2x0o8h",
+      "total": 184,
+      "blocked": 179,
+      "blockedRate": 0.9728260869565217,
+      "missingSample": [
+        "BRAND",
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc40oc074gvsak3q821qhi",
+      "total": 164,
+      "blocked": 140,
+      "blockedRate": 0.8536585365853658,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyu8402y4vsak8eajhedp",
+      "total": 113,
+      "blocked": 102,
+      "blockedRate": 0.9026548672566371,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc6i9y095mvsakw0o3wsah",
+      "total": 134,
+      "blocked": 98,
+      "blockedRate": 0.7313432835820896,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwc42u00763vsakunc8b6xt",
+      "total": 76,
+      "blocked": 70,
+      "blockedRate": 0.9210526315789473,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwc3qp206wbvsak8xk9mw49",
+      "total": 71,
+      "blocked": 66,
+      "blockedRate": 0.9295774647887324,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwbysao02wsvsakbsy97ixd",
+      "total": 61,
+      "blocked": 61,
+      "blockedRate": 1,
+      "missingSample": [
+        "PART_NUMBER",
+        "MODEL",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwc49hz07bmvsak0sxedl9t",
+      "total": 66,
+      "blocked": 55,
+      "blockedRate": 0.8333333333333334,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwbz0kd0338vsakfarrneid",
+      "total": 53,
+      "blocked": 51,
+      "blockedRate": 0.9622641509433962,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwc6amw08z6vsak6jxxbvke",
+      "total": 52,
+      "blocked": 45,
+      "blockedRate": 0.8653846153846154,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwbywfd0303vsak4zdag3wd",
+      "total": 47,
+      "blocked": 43,
+      "blockedRate": 0.9148936170212766,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyyqy0322vsak3d6uzij0",
+      "total": 41,
+      "blocked": 39,
+      "blockedRate": 0.9512195121951219,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc3qhy06w6vsakql7wx1bd",
+      "total": 38,
+      "blocked": 35,
+      "blockedRate": 0.9210526315789473,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc44yg077tvsak016yr2ip",
+      "total": 34,
+      "blocked": 34,
+      "blockedRate": 1,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc3pc406v6vsakd0ag74a2",
+      "total": 35,
+      "blocked": 32,
+      "blockedRate": 0.9142857142857143,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwc43dp076mvsakrdrgny2a",
+      "total": 32,
+      "blocked": 32,
+      "blockedRate": 1,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyyrk0323vsaky9sgkwkl",
+      "total": 32,
+      "blocked": 32,
+      "blockedRate": 1,
+      "missingSample": [
+        "PART_NUMBER",
+        "MODEL"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyyrk0324vsakomoh9hss",
+      "total": 32,
+      "blocked": 32,
+      "blockedRate": 1,
+      "missingSample": [
+        "PART_NUMBER",
+        "MOUNT_TYPE"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyhib02nvvsakniiyq37b",
+      "total": 32,
+      "blocked": 31,
+      "blockedRate": 0.96875,
+      "missingSample": [
+        "PART_NUMBER",
+        "BRAND"
+      ]
+    },
+    {
+      "categoryId": "cmmwbyxn90314vsaktx6r9e1u",
+      "total": 28,
+      "blocked": 27,
+      "blockedRate": 0.9642857142857143,
+      "missingSample": [
+        "PART_NUMBER"
+      ]
+    }
+  ]
+}
