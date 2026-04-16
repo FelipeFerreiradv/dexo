@@ -24,6 +24,8 @@ import {
   FileText,
   FilePlus2,
   FileSignature,
+  Send,
+  Ban,
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
@@ -145,8 +147,20 @@ const FISCAL_SECTION: NavSection = {
       icon: FileSignature,
     },
     {
+      id: "enviar-xml",
+      label: "Enviar XML",
+      href: "/notas-fiscais/enviar-xml",
+      icon: Send,
+    },
+    {
+      id: "inutilizar",
+      label: "Inutilizar Numero",
+      href: "/notas-fiscais/inutilizar-numero",
+      icon: Ban,
+    },
+    {
       id: "fiscal-config",
-      label: "Configuração Fiscal",
+      label: "Configuracao Fiscal",
       href: "/notas-fiscais/configuracao",
       icon: FileText,
     },

@@ -13,6 +13,8 @@ import {
   XCircle,
   Copy,
   CheckCircle2,
+  Ban,
+  Mail,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -49,6 +51,8 @@ import {
 import { getApiBaseUrl } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
 import { NfeDetailSheet } from "./nfe-detail-sheet";
+import { NfeCancelDialog } from "./nfe-cancel-dialog";
+import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
 
 interface NfeListItem {
   id: string;
@@ -120,6 +124,10 @@ export function NfeList() {
   const [selectedNfeId, setSelectedNfeId] = useState<string | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{ id: string; numero: number } | null>(null);
+  const [isCancelOpen, setIsCancelOpen] = useState(false);
+  const [emailTarget, setEmailTarget] = useState<{ id: string; numero: number } | null>(null);
+  const [isEmailOpen, setIsEmailOpen] = useState(false);
 
   // Debounce search
   useEffect(() => {
@@ -521,6 +529,32 @@ export function NfeList() {
                                 <Download className="size-4" />
                               </Button>
                             )}
+                            {(nota.status === "AUTHORIZED" || nota.status === "CANCELLED") && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-8"
+                                onClick={() => {
+                                  setEmailTarget({ id: nota.id, numero: nota.numero });
+                                  setIsEmailOpen(true);
+                                }}
+                              >
+                                <Mail className="size-4" />
+                              </Button>
+                            )}
+                            {nota.status === "AUTHORIZED" && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-8 text-destructive hover:text-destructive"
+                                onClick={() => {
+                                  setCancelTarget({ id: nota.id, numero: nota.numero });
+                                  setIsCancelOpen(true);
+                                }}
+                              >
+                                <Ban className="size-4" />
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -580,6 +614,32 @@ export function NfeList() {
         nfeId={selectedNfeId}
         open={isDetailOpen}
         onOpenChange={setIsDetailOpen}
+        onStatusChanged={() => {
+          fetchNotas();
+          fetchStats();
+        }}
+      />
+
+      {/* Cancel Dialog */}
+      <NfeCancelDialog
+        nfeId={cancelTarget?.id ?? null}
+        nfeNumero={cancelTarget?.numero ?? null}
+        open={isCancelOpen}
+        onOpenChange={setIsCancelOpen}
+        onCancelled={() => {
+          showToast("NF-e cancelada com sucesso", "success");
+          fetchNotas();
+          fetchStats();
+        }}
+      />
+
+      {/* Send Email Dialog */}
+      <NfeSendEmailDialog
+        nfeId={emailTarget?.id ?? null}
+        nfeNumero={emailTarget?.numero ?? null}
+        open={isEmailOpen}
+        onOpenChange={setIsEmailOpen}
+        onSent={() => showToast("E-mail enviado com sucesso", "success")}
       />
 
       {/* Toasts */}

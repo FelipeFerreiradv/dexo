@@ -5,6 +5,8 @@ import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
 import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
 import { NfeListingUseCase } from "../usecases/nfe-listing.usecase";
+import { NfeCancelamentoUseCase } from "../usecases/nfe-cancelamento.usecase";
+import { NfeInutilizacaoUseCase } from "../usecases/nfe-inutilizacao.usecase";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
@@ -17,6 +19,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const nfeDraft = new NfeDraftUseCase();
   const nfeEmission = new NfeEmissionUseCase();
   const nfeListing = new NfeListingUseCase();
+  const nfeCancelamento = new NfeCancelamentoUseCase();
+  const nfeInutilizacao = new NfeInutilizacaoUseCase();
   const calculator = new FiscalCalculatorService();
   const configRepo = new CompanyFiscalRepository();
   const nfeRepo = new NfeRepository();
@@ -550,6 +554,195 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao buscar eventos",
+        });
+      }
+    },
+  );
+
+  // ── Cancelamento de NF-e (F7a) ──
+
+  fastify.post(
+    "/nfe/:id/cancel",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const body = request.body as any;
+        const justificativa = body?.justificativa ?? "";
+        const result = await nfeCancelamento.cancel(userId, id, justificativa);
+        return reply.status(result.success ? 200 : 422).send(result);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao cancelar NF-e";
+        const status =
+          message.includes("nao encontrada")
+            ? 404
+            : message.includes("obrigat") ||
+                message.includes("autorizadas") ||
+                message.includes("expirado") ||
+                message.includes("sem chave") ||
+                message.includes("sem protocolo")
+              ? 400
+              : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── Inutilização de numeração (F7a) ──
+
+  fastify.post(
+    "/inutilizacao",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const body = request.body as any;
+        const result = await nfeInutilizacao.inutilizar(userId, {
+          serie: Number(body.serie),
+          numeroInicial: Number(body.numeroInicial),
+          numeroFinal: Number(body.numeroFinal),
+          justificativa: body.justificativa ?? "",
+        });
+        return reply.status(result.success ? 200 : 422).send(result);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao inutilizar numeracao";
+        const status =
+          message.includes("obrigat") ||
+          message.includes("maior que zero") ||
+          message.includes("menor ou igual")
+            ? 400
+            : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  fastify.get(
+    "/inutilizacao",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const items = await nfeInutilizacao.list(userId);
+        return reply.status(200).send({ items });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao listar inutilizacoes",
+        });
+      }
+    },
+  );
+
+  // ── Envio de XML por e-mail (F7b) ──
+
+  fastify.post(
+    "/nfe/:id/resend-email",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        if (process.env.EMAIL_ENABLED !== "true") {
+          return reply.status(501).send({
+            error: "Envio de e-mail desabilitado (EMAIL_ENABLED=false)",
+          });
+        }
+
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params;
+        const body = request.body as any;
+        const email = body?.email;
+
+        if (!email || typeof email !== "string" || !email.includes("@")) {
+          return reply
+            .status(400)
+            .send({ error: "E-mail de destino invalido" });
+        }
+
+        // Load NF-e
+        const nfe = await (prisma as any).nfeEmitida.findFirst({
+          where: { id, userId },
+          select: {
+            id: true,
+            numero: true,
+            serie: true,
+            status: true,
+            chaveAcesso: true,
+            xmlAutorizadoPath: true,
+            xmlOriginalPath: true,
+            danfePdfPath: true,
+          },
+        });
+
+        if (!nfe) {
+          return reply.status(404).send({ error: "NF-e nao encontrada" });
+        }
+        if (nfe.status !== "AUTHORIZED" && nfe.status !== "CANCELLED") {
+          return reply.status(400).send({
+            error: "Somente notas autorizadas ou canceladas podem ser enviadas por e-mail",
+          });
+        }
+
+        // Lazy-import email service
+        const { EmailService } = await import("../services/email.service");
+        const emailService = new EmailService();
+
+        // Build attachments
+        const attachments: Array<{ filename: string; content: Buffer }> = [];
+        const xmlPath = nfe.xmlAutorizadoPath || nfe.xmlOriginalPath;
+        if (xmlPath) {
+          const xmlContent = await storage.readFile(xmlPath);
+          if (xmlContent) {
+            attachments.push({
+              filename: `nfe-${nfe.serie}-${nfe.numero}.xml`,
+              content: typeof xmlContent === "string" ? Buffer.from(xmlContent) : xmlContent,
+            });
+          }
+        }
+        if (nfe.danfePdfPath) {
+          const pdfContent = await storage.readFile(nfe.danfePdfPath);
+          if (pdfContent) {
+            attachments.push({
+              filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
+              content: typeof pdfContent === "string" ? Buffer.from(pdfContent) : pdfContent,
+            });
+          }
+        }
+
+        await emailService.send({
+          to: email,
+          subject: `NF-e ${nfe.serie}/${nfe.numero} - ${nfe.chaveAcesso ?? ""}`,
+          text: `Segue em anexo a NF-e numero ${nfe.numero}, serie ${nfe.serie}.\n\nChave de acesso: ${nfe.chaveAcesso ?? "N/A"}`,
+          attachments,
+        });
+
+        await nfeRepo.addAuditLog(id, userId, "XML_REENVIADO", {
+          email,
+          attachmentCount: attachments.length,
+        });
+
+        return reply.status(200).send({
+          success: true,
+          mensagem: `E-mail enviado para ${email}`,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao enviar e-mail",
         });
       }
     },

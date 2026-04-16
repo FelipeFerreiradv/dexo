@@ -10,6 +10,8 @@ import {
   Hash,
   Shield,
   Clock,
+  Ban,
+  Mail,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -25,11 +27,14 @@ import {
 } from "@/components/ui/table";
 import { getApiBaseUrl } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
+import { NfeCancelDialog } from "./nfe-cancel-dialog";
+import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
 
 interface NfeDetailSheetProps {
   nfeId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onStatusChanged?: () => void;
 }
 
 const formatCurrency = (value: number) =>
@@ -50,11 +55,14 @@ export function NfeDetailSheet({
   nfeId,
   open,
   onOpenChange,
+  onStatusChanged,
 }: NfeDetailSheetProps) {
   const { data: session } = useSession();
   const [nfe, setNfe] = useState<any>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isCancelOpen, setIsCancelOpen] = useState(false);
+  const [isEmailOpen, setIsEmailOpen] = useState(false);
 
   const fetchNfe = useCallback(async () => {
     if (!nfeId || !session?.user?.email) return;
@@ -332,8 +340,8 @@ export function NfeDetailSheet({
               </div>
             )}
 
-            {/* Downloads */}
-            <div className="flex gap-2 pt-2 border-t">
+            {/* Actions */}
+            <div className="flex flex-wrap gap-2 pt-2 border-t">
               <Button
                 variant="outline"
                 size="sm"
@@ -352,6 +360,26 @@ export function NfeDetailSheet({
                 <Download className="size-4 mr-1" />
                 DANFE
               </Button>
+              {(nfe.status === "AUTHORIZED" || nfe.status === "CANCELLED") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEmailOpen(true)}
+                >
+                  <Mail className="size-4 mr-1" />
+                  Enviar e-mail
+                </Button>
+              )}
+              {nfe.status === "AUTHORIZED" && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setIsCancelOpen(true)}
+                >
+                  <Ban className="size-4 mr-1" />
+                  Cancelar NF-e
+                </Button>
+              )}
             </div>
 
             {/* Events Timeline */}
@@ -398,6 +426,25 @@ export function NfeDetailSheet({
           <p className="text-muted-foreground">NF-e nao encontrada.</p>
         )}
       </SheetContent>
+
+      <NfeCancelDialog
+        nfeId={nfeId}
+        nfeNumero={nfe?.numero ?? null}
+        open={isCancelOpen}
+        onOpenChange={setIsCancelOpen}
+        onCancelled={() => {
+          fetchNfe();
+          onStatusChanged?.();
+        }}
+      />
+
+      <NfeSendEmailDialog
+        nfeId={nfeId}
+        nfeNumero={nfe?.numero ?? null}
+        open={isEmailOpen}
+        onOpenChange={setIsEmailOpen}
+        onSent={() => {}}
+      />
     </Sheet>
   );
 }
