@@ -144,13 +144,13 @@ export class NfeXmlBuilderService {
     const pagamentos = draft.pagamentosJson as any[];
     if (pagamentos && pagamentos.length > 0) {
       payload.formas_pagamento = pagamentos.map((p: any) => ({
-        tipo_pagamento: MEIO_PAGAMENTO_COD[p.meio as MeioPagamento] ?? "99",
+        forma_pagamento: MEIO_PAGAMENTO_COD[p.meio as MeioPagamento] ?? "99",
         valor_pagamento: p.valor ? String(Number(p.valor).toFixed(2)) : "0.00",
       }));
     } else {
       // Default: sem pagamento
       payload.formas_pagamento = [
-        { tipo_pagamento: "90", valor_pagamento: "0.00" },
+        { forma_pagamento: "90", valor_pagamento: "0.00" },
       ];
     }
 

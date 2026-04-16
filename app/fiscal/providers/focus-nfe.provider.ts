@@ -59,8 +59,8 @@ export class FocusNfeProvider implements INfeProvider {
 
       const body = await res.json();
 
-      if (res.status === 200 || res.status === 201) {
-        // Focus returns 200 for sync authorization or 202 for async processing
+      if (res.status === 200 || res.status === 201 || res.status === 202) {
+        // Focus returns 200 for sync authorization, 202 for async processing
         return {
           success: true,
           chaveAcesso: body.chave_nfe ?? null,
