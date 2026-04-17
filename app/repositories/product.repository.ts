@@ -1322,10 +1322,11 @@ class ProductRepositoryPrisma implements ProductRepository {
       let max = 0;
       for (const { sku } of rows) {
         if (!sku) continue;
-        const match = sku.match(/^(?:PROD-)?(\d+)$/);
+        const match = sku.match(/^(?:PROD-)?(\d{1,9})$/);
         if (!match) continue;
         const n = parseInt(match[1], 10);
-        if (Number.isFinite(n) && n > max) max = n;
+        if (!Number.isSafeInteger(n)) continue;
+        if (n > max) max = n;
       }
       return max;
     } catch {
