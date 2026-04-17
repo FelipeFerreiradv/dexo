@@ -16,6 +16,7 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { SystemLogService } from "@/app/services/system-log.service";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
@@ -2351,5 +2352,84 @@ export class SyncUseCase {
         payload: payload as object | undefined,
       },
     });
+
+    if (status === SyncStatus.FAILURE) {
+      void this.checkAndAlertTokenHealth(marketplaceAccountId, message);
+    }
+  }
+
+  private static readonly TOKEN_ERROR_PATTERNS = [
+    /invalid[_\s-]?token/i,
+    /token[_\s-]?revoked/i,
+    /unauthorized/i,
+    /invalid access token/i,
+    /refresh[_\s-]?token[_\s-]?(?:expired|invalid)/i,
+    /401/,
+  ];
+
+  private static isTokenError(message: string): boolean {
+    if (!message) return false;
+    return this.TOKEN_ERROR_PATTERNS.some((re) => re.test(message));
+  }
+
+  /**
+   * Detecta falhas consecutivas por token expirado numa conta de marketplace
+   * e dispara alerta único (dedup 24h) em SystemLog para o usuário reconectar.
+   *
+   * Janela: 3 falhas-token em 30min. Evita spam com dedup baseado em
+   * SystemLog(action=TOKEN_EXPIRED_REPEATED, resourceId=accountId) nas últimas 24h.
+   */
+  private static async checkAndAlertTokenHealth(
+    marketplaceAccountId: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      if (!this.isTokenError(message)) return;
+
+      const windowStart = new Date(Date.now() - 30 * 60 * 1000);
+      const recentFailures = await prisma.syncLog.count({
+        where: {
+          marketplaceAccountId,
+          status: SyncStatus.FAILURE,
+          createdAt: { gte: windowStart },
+        },
+      });
+
+      if (recentFailures < 3) return;
+
+      const dedupeStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const existing = await prisma.systemLog.findFirst({
+        where: {
+          action: "TOKEN_EXPIRED_REPEATED",
+          resourceId: marketplaceAccountId,
+          createdAt: { gte: dedupeStart },
+        },
+        select: { id: true },
+      });
+      if (existing) return;
+
+      const account = await prisma.marketplaceAccount.findUnique({
+        where: { id: marketplaceAccountId },
+        select: { platform: true, accountName: true },
+      });
+
+      const label = `${account?.platform ?? "?"} "${account?.accountName ?? marketplaceAccountId}"`;
+      await SystemLogService.logError(
+        "TOKEN_EXPIRED_REPEATED",
+        `Token aparentemente expirado em ${label} — ${recentFailures} falhas nos últimos 30min. Reconecte em /integracoes.`,
+        {
+          resource: "MarketplaceAccount",
+          resourceId: marketplaceAccountId,
+          details: {
+            platform: account?.platform,
+            accountName: account?.accountName,
+            recentFailures,
+            lastError: message.slice(0, 500),
+          },
+        },
+      );
+    } catch (err) {
+      console.error("[checkAndAlertTokenHealth] falhou:", err);
+    }
   }
 }
