@@ -4,7 +4,7 @@
  * Script one-shot para re-processar desconto de estoque em pedidos que foram
  * importados mas cujo desconto falhou (ex: bug P2010 do pg_advisory_xact_lock).
  *
- * Identifica pedidos status=COMPLETED que NÃO possuem StockLog correspondente
+ * Identifica pedidos (PAID/SHIPPED/DELIVERED) que NÃO possuem StockLog correspondente
  * e re-executa o desconto de estoque + criação de StockSyncJob.
  *
  * Uso:
@@ -28,7 +28,7 @@ async function run() {
   const orders = await prisma.order.findMany({
     where: {
       createdAt: { gte: dateFrom },
-      status: "PAID",
+      status: { in: ["PAID", "SHIPPED", "DELIVERED"] },
       ...(userId
         ? { marketplaceAccount: { userId } }
         : {}),
@@ -49,16 +49,44 @@ async function run() {
   let errors = 0;
 
   for (const order of orders) {
-    const reason = order.marketplaceAccount.platform === "MERCADO_LIVRE"
+    // Reasons usados pelo import real:
+    //   ML:     "Venda ML #<orderId>"
+    //   Shopee: "Importação Shopee" (genérico, sem orderId)
+    const isML = order.marketplaceAccount.platform === "MERCADO_LIVRE";
+    const reason = isML
       ? `Venda ML #${order.externalOrderId}`
-      : `Venda Shopee #${order.externalOrderId}`;
+      : `Importação Shopee pedido #${order.externalOrderId}`;
 
-    // Verifica se já existe StockLog para este pedido
-    const existingLog = await prisma.stockLog.findFirst({
-      where: { reason },
-    });
+    // Verifica se já existe StockLog para este pedido.
+    // Para ML: busca pela reason exata (contém orderId).
+    // Para Shopee: busca por productId + reason contendo "Shopee" ou "Importação"
+    //   no intervalo de criação do pedido (±1min) para evitar false positives.
+    const itemProductIds = order.items
+      .filter((i) => i.productId)
+      .map((i) => i.productId!);
 
-    if (existingLog) {
+    let alreadyDeducted = false;
+    if (isML) {
+      const existingLog = await prisma.stockLog.findFirst({
+        where: { reason },
+      });
+      alreadyDeducted = !!existingLog;
+    } else if (itemProductIds.length > 0) {
+      // Shopee: verificar se algum item já tem StockLog com reason de Shopee
+      const orderDate = order.createdAt;
+      const windowStart = new Date(orderDate.getTime() - 60_000);
+      const windowEnd = new Date(orderDate.getTime() + 60_000);
+      const existingLog = await prisma.stockLog.findFirst({
+        where: {
+          productId: { in: itemProductIds },
+          reason: { contains: "Shopee" },
+          createdAt: { gte: windowStart, lte: windowEnd },
+        },
+      });
+      alreadyDeducted = !!existingLog;
+    }
+
+    if (alreadyDeducted) {
       skipped++;
       continue;
     }
