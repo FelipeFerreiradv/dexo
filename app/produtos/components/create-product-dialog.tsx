@@ -76,7 +76,7 @@ const productSchema = z.object({
   name: z
     .string()
     .min(3, "Nome deve ter pelo menos 3 caracteres")
-    .max(100, "Nome deve ter no máximo 100 caracteres"),
+    .max(60, "Nome deve ter no máximo 60 caracteres"),
   description: z
     .string()
     .max(4000, "Descrição deve ter no máximo 4000 caracteres")
@@ -2234,7 +2234,19 @@ export function CreateProductDialog({
                   placeholder="Nome do produto"
                   {...register("name")}
                   aria-invalid={!!errors.name}
+                  maxLength={60}
                 />
+                <div className="flex justify-end text-xs text-muted-foreground">
+                  <span
+                    className={
+                      (watchName?.length || 0) >= 60
+                        ? "text-destructive"
+                        : undefined
+                    }
+                  >
+                    {watchName?.length || 0}/60
+                  </span>
+                </div>
                 {titleSuggestion &&
                   titleSuggestion.toLowerCase() !==
                     watchName?.toLowerCase() && (
@@ -2248,7 +2260,7 @@ export function CreateProductDialog({
                         size="sm"
                         variant="secondary"
                         onClick={() =>
-                          setValue("name", titleSuggestion, {
+                          setValue("name", titleSuggestion.slice(0, 60), {
                             shouldDirty: true,
                           })
                         }
