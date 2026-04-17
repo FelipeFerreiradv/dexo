@@ -49,12 +49,33 @@ async function run() {
     console.log(`  [PRODUTO] nome="${product.name}"`);
     console.log(`  [PRODUTO] estoque atual=${product.stock}`);
 
-    // 2. Listar listings vinculados
+    // 2. Listar listings vinculados + último STOCK_UPDATE por listing
     console.log(`  [LISTINGS] ${product.listings.length} listing(s):`);
     for (const listing of product.listings) {
+      const ext = listing.externalListingId;
       console.log(
-        `    - ${listing.marketplaceAccount.platform} "${listing.marketplaceAccount.accountName}" | listingId=${listing.externalListingId} | id=${listing.id}`,
+        `    - ${listing.marketplaceAccount.platform} "${listing.marketplaceAccount.accountName}" | listingId=${ext} | id=${listing.id}`,
       );
+
+      const lastSync = await prisma.syncLog.findFirst({
+        where: {
+          marketplaceAccountId: listing.marketplaceAccount.id,
+          type: "STOCK_UPDATE",
+          payload: { path: ["externalListingId"], equals: ext },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (lastSync) {
+        const p = (lastSync.payload ?? {}) as Record<string, unknown>;
+        console.log(
+          `        ↳ último STOCK_UPDATE: ${lastSync.createdAt.toISOString()} | status=${lastSync.status} | previous=${p.previousStock ?? "?"} → desired=${p.desiredStock ?? p.newStock ?? "?"} | msg="${lastSync.message ?? ""}"`,
+        );
+      } else {
+        console.log(
+          `        ↳ ⚠ NENHUM STOCK_UPDATE registrado para este listing`,
+        );
+      }
     }
 
     // 3. Buscar StockLogs
