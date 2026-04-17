@@ -138,68 +138,6 @@ export class ListingUseCase {
   }
 
   /**
-   * Mapeia `product.compatibilities[]` para a forma consumida por
-   * `MLApiService.setItemCompatibilities` (uma lista de known_attributes
-   * por veículo). Envia os nomes (value_name) de BRAND/MODEL/VEHICLE_YEAR
-   * — o ML tenta resolver os value_ids na ingestão. Para ranges de ano,
-   * emite um veículo por ano (yearFrom..yearTo). Se os dados não forem
-   * suficientes (sem brand/model), o veículo é descartado silenciosamente.
-   */
-  private static buildCompatibilityVehicles(product: {
-    compatibilities?: Array<{
-      brand: string;
-      model: string;
-      yearFrom?: number | null;
-      yearTo?: number | null;
-      version?: string | null;
-    }> | null;
-  }): Array<Array<{ id: string; value_name: string }>> {
-    const list = Array.isArray(product.compatibilities)
-      ? product.compatibilities
-      : [];
-    const out: Array<Array<{ id: string; value_name: string }>> = [];
-    const seen = new Set<string>();
-    for (const compat of list) {
-      if (!compat) continue;
-      const brand = (compat.brand || "").trim();
-      const model = (compat.model || "").trim();
-      if (!brand || !model) continue;
-      const yFrom =
-        typeof compat.yearFrom === "number" && compat.yearFrom > 0
-          ? compat.yearFrom
-          : null;
-      const yTo =
-        typeof compat.yearTo === "number" && compat.yearTo > 0
-          ? compat.yearTo
-          : null;
-      const years: (number | null)[] = [];
-      if (yFrom && yTo) {
-        const lo = Math.min(yFrom, yTo);
-        const hi = Math.max(yFrom, yTo);
-        for (let y = lo; y <= hi; y++) years.push(y);
-      } else if (yFrom) {
-        years.push(yFrom);
-      } else if (yTo) {
-        years.push(yTo);
-      } else {
-        years.push(null);
-      }
-      for (const year of years) {
-        const attrs: Array<{ id: string; value_name: string }> = [
-          { id: "BRAND", value_name: brand },
-          { id: "MODEL", value_name: model },
-        ];
-        if (year) attrs.push({ id: "VEHICLE_YEAR", value_name: String(year) });
-        const key = `${brand}|${model}|${year ?? ""}`.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(attrs);
-      }
-    }
-    return out;
-  }
-
-  /**
    * Converte uma URL relativa (ex.: "/uploads/foo.jpg") em URL absoluta usando
    * APP_BACKEND_URL. URLs já absolutas são retornadas sem alteração.
    */
@@ -1544,16 +1482,21 @@ export class ListingUseCase {
         weightKg: Number(product.weightKg),
       });
 
+      // Shipping settings (mode/free_shipping/local_pick_up) são aplicadas
+      // sempre, independente de ter dimensões — frete grátis e retirada local
+      // precisam chegar ao ML mesmo quando o produto não tem pacote mensurável.
+      // Dimensões são adicionadas apenas quando pkg resolve.
+      payload.shipping = {
+        mode: effectiveSettings.shippingMode || undefined,
+        free_shipping: effectiveSettings.freeShipping || false,
+        local_pick_up: effectiveSettings.localPickup || false,
+      };
+
       if (pkg) {
         const dims = `${pkg.height}x${pkg.width}x${pkg.length},${Number(
           pkg.weightKg,
         )}`;
-        payload.shipping = {
-          dimensions: dims,
-          mode: effectiveSettings.shippingMode || undefined,
-          free_shipping: effectiveSettings.freeShipping || false,
-          local_pick_up: effectiveSettings.localPickup || false,
-        };
+        payload.shipping.dimensions = dims;
 
         // Algumas contas/políticas do ML exigem os atributos seller_package_* mesmo quando enviamos shipping.dimensions.
         const ensureAttr = (id: string, value: string | number) => {
@@ -2456,28 +2399,56 @@ export class ListingUseCase {
         finalListingId = created.id;
       }
 
-      // 6. Anexar compatibilidades estruturadas como atributo (ficha técnica).
-      // Não-bloqueante: falhas só geram warning. Descrição já contém as linhas
-      // formatadas via formatCompatibilityLines como fallback visual.
+      // 6. Anexar compatibilidades estruturadas (ficha técnica).
+      // O endpoint /items/{id}/compatibilities exige catalog product IDs
+      // (não aceita known_attributes). Resolvemos marca/modelo/ano textuais
+      // via searchCatalogCompatibilityChunks e enviamos `products: [{id}]`.
+      // Não-bloqueante: falhas só geram warning. A descrição já contém as
+      // linhas formatadas via formatCompatibilityLines como fallback visual.
       try {
-        const vehicles = this.buildCompatibilityVehicles(product);
+        const compatList = Array.isArray(product.compatibilities)
+          ? product.compatibilities
+          : [];
+        const vehicles = compatList
+          .filter((c): c is NonNullable<typeof c> => !!c)
+          .map((c) => ({
+            brand: c.brand,
+            model: c.model,
+            yearFrom: c.yearFrom ?? null,
+            yearTo: c.yearTo ?? null,
+          }));
         if (vehicles.length > 0) {
-          const compatResult = await MLApiService.setItemCompatibilities(
-            acc.accessToken,
-            mlItem.id,
-            vehicles,
-          );
-          if (compatResult.errors.length > 0) {
+          const resolved =
+            await MLApiService.resolveCompatibilityCatalogProducts(
+              acc.accessToken,
+              vehicles,
+            );
+          if (resolved.unresolved.length > 0) {
             console.warn(
-              `[ListingUseCase] Compatibilidades estruturadas parciais para ${mlItem.id}: ` +
-                `createdCount=${compatResult.createdCount} errors=${compatResult.errors.length} ` +
-                `firstError=${compatResult.errors[0]}`,
+              `[ListingUseCase] Compatibilidades não resolvidas (${mlItem.id}): ` +
+                `${resolved.unresolved.length} entrada(s) — ${JSON.stringify(
+                  resolved.unresolved.slice(0, 3),
+                )}`,
             );
-          } else if (compatResult.createdCount > 0) {
-            console.log(
-              `[ListingUseCase] Compatibilidades anexadas ao ML item ${mlItem.id}: ` +
-                `${compatResult.createdCount} veículo(s)`,
+          }
+          if (resolved.catalogProductIds.length > 0) {
+            const compatResult = await MLApiService.setItemCompatibilities(
+              acc.accessToken,
+              mlItem.id,
+              resolved.catalogProductIds,
             );
+            if (compatResult.errors.length > 0) {
+              console.warn(
+                `[ListingUseCase] Compatibilidades parciais em ${mlItem.id}: ` +
+                  `createdCount=${compatResult.createdCount} errors=${compatResult.errors.length} ` +
+                  `firstError=${compatResult.errors[0]}`,
+              );
+            } else if (compatResult.createdCount > 0) {
+              console.log(
+                `[ListingUseCase] Compatibilidades anexadas ao ML item ${mlItem.id}: ` +
+                  `${compatResult.createdCount} catalog product(s)`,
+              );
+            }
           }
         }
       } catch (compatErr) {

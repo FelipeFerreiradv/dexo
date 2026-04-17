@@ -1123,36 +1123,41 @@ export class MLApiService {
 
   /**
    * POST /items/{itemId}/compatibilities
-   * Anexa compatibilidades estruturadas (marca/modelo/ano) a um item já criado.
-   * Cada entrada de `vehicles` é um conjunto de known_attributes que descreve
-   * um veículo compatível. Faz uma chamada por veículo para maximizar a
-   * chance de sucesso parcial — um veículo inválido não derruba os outros.
+   * Anexa uma lista de catalog products (IDs já resolvidos) como compatibilidades
+   * do item — preenche a aba "Ficha técnica → Compatibilidades" no ML.
    *
-   * Não-bloqueante na perspectiva do caller: retorna success=true somente se
-   * todas as chamadas deram certo, mas nunca lança — erros são reportados
-   * no array `errors`.
+   * O endpoint exige `products: [{id: MLB...}]`; não aceita known_attributes.
+   * Faz uma chamada única com o batch inteiro; se falhar, cai para chamadas
+   * individuais para maximizar sucesso parcial (um ID ruim não derruba os outros).
+   *
+   * Nunca lança — erros são reportados via `errors`; o caller decide se é fatal.
    */
   static async setItemCompatibilities(
     accessToken: string,
     itemId: string,
-    vehicles: Array<
-      Array<{ id: string; value_id?: string; value_name?: string }>
-    >,
+    catalogProductIds: string[],
   ): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
     const errors: string[] = [];
     let createdCount = 0;
 
-    for (const knownAttributes of vehicles) {
-      if (!Array.isArray(knownAttributes) || knownAttributes.length === 0) {
-        continue;
-      }
+    const unique = Array.from(
+      new Set(
+        (catalogProductIds || []).filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        ),
+      ),
+    );
+    if (unique.length === 0) {
+      return { success: false, createdCount: 0, errors: [] };
+    }
+
+    const postProducts = async (
+      ids: string[],
+    ): Promise<{ ok: boolean; error?: string }> => {
       try {
         await axios.post(
           `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
-          {
-            domain_id: ML_COMPAT_DOMAIN_ID,
-            known_attributes: knownAttributes,
-          },
+          { products: ids.map((id) => ({ id })) },
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
@@ -1161,14 +1166,31 @@ export class MLApiService {
             timeout: 15000,
           },
         );
-        createdCount += 1;
+        return { ok: true };
       } catch (error) {
         const msg = axios.isAxiosError(error)
           ? `${error.response?.status ?? ""} ${JSON.stringify(error.response?.data ?? error.message)}`
           : error instanceof Error
             ? error.message
             : String(error);
-        errors.push(msg);
+        return { ok: false, error: msg };
+      }
+    };
+
+    // Tentativa 1: batch único.
+    const batch = await postProducts(unique);
+    if (batch.ok) {
+      return { success: true, createdCount: unique.length, errors: [] };
+    }
+
+    // Fallback: chamadas individuais — isola qual ID o ML rejeita sem perder
+    // os demais.
+    for (const id of unique) {
+      const single = await postProducts([id]);
+      if (single.ok) {
+        createdCount += 1;
+      } else if (single.error) {
+        errors.push(`${id}: ${single.error}`);
       }
     }
 
@@ -1176,6 +1198,214 @@ export class MLApiService {
       success: errors.length === 0 && createdCount > 0,
       createdCount,
       errors,
+    };
+  }
+
+  /**
+   * Dado nomes textuais de marca/modelo e (opcionalmente) um range de anos,
+   * resolve para catalog product IDs do domínio MLB-CARS_AND_VANS. Reutiliza
+   * os caches TTL de brands/models/chunks; o overhead marginal é mínimo em
+   * runs consecutivos do mesmo usuário.
+   *
+   * Retorna uma lista de IDs pronta para `setItemCompatibilities`, mais
+   * diagnósticos (marcas/modelos/anos não resolvidos) para logging.
+   */
+  static async resolveCompatibilityCatalogProducts(
+    accessToken: string,
+    vehicles: Array<{
+      brand: string;
+      model: string;
+      yearFrom?: number | null;
+      yearTo?: number | null;
+    }>,
+  ): Promise<{
+    catalogProductIds: string[];
+    unresolved: Array<{
+      brand: string;
+      model: string;
+      year?: number | null;
+      reason: string;
+    }>;
+  }> {
+    const catalogProductIds = new Set<string>();
+    const unresolved: Array<{
+      brand: string;
+      model: string;
+      year?: number | null;
+      reason: string;
+    }> = [];
+
+    // Cache leve por chamada para evitar refetch repetido do mesmo par marca/modelo.
+    const modelListCache = new Map<string, MLCompatibilityModelOption[]>();
+    let brandsCache: MLCompatibilityBrandOption[] | null = null;
+
+    const normalize = (s: string): string =>
+      (s || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+        .toLowerCase();
+
+    const findBrand = async (
+      name: string,
+    ): Promise<MLCompatibilityBrandOption | null> => {
+      if (!brandsCache) {
+        brandsCache = await this.listCompatibilityBrands(accessToken);
+      }
+      const n = normalize(name);
+      if (!n) return null;
+      return (
+        brandsCache.find((b) => normalize(b.name) === n) ??
+        brandsCache.find((b) => normalize(b.name).includes(n)) ??
+        null
+      );
+    };
+
+    const findModel = async (
+      brand: MLCompatibilityBrandOption,
+      name: string,
+    ): Promise<MLCompatibilityModelOption | null> => {
+      let models = modelListCache.get(brand.valueId);
+      if (!models) {
+        models = await this.listCompatibilityModels(accessToken, {
+          valueId: brand.valueId,
+          name: brand.name,
+        });
+        modelListCache.set(brand.valueId, models);
+      }
+      const n = normalize(name);
+      if (!n) return null;
+      return (
+        models.find((m) => normalize(m.name) === n) ??
+        models.find((m) => normalize(m.name).includes(n)) ??
+        null
+      );
+    };
+
+    for (const compat of vehicles) {
+      const brandName = (compat.brand || "").trim();
+      const modelName = (compat.model || "").trim();
+      if (!brandName || !modelName) {
+        unresolved.push({
+          brand: brandName,
+          model: modelName,
+          reason: "missing brand or model",
+        });
+        continue;
+      }
+
+      const brand = await findBrand(brandName);
+      if (!brand) {
+        unresolved.push({
+          brand: brandName,
+          model: modelName,
+          reason: "brand not found in ML catalog",
+        });
+        continue;
+      }
+      const model = await findModel(brand, modelName);
+      if (!model) {
+        unresolved.push({
+          brand: brandName,
+          model: modelName,
+          reason: "model not found for brand",
+        });
+        continue;
+      }
+
+      // Expande range de anos. Se nenhum ano for informado, busca todos os
+      // catalog products para o par marca+modelo (sem filtro de ano).
+      const yFrom =
+        typeof compat.yearFrom === "number" && compat.yearFrom > 0
+          ? compat.yearFrom
+          : null;
+      const yTo =
+        typeof compat.yearTo === "number" && compat.yearTo > 0
+          ? compat.yearTo
+          : null;
+      const years: Array<number | null> = [];
+      if (yFrom && yTo) {
+        const lo = Math.min(yFrom, yTo);
+        const hi = Math.max(yFrom, yTo);
+        for (let y = lo; y <= hi; y++) years.push(y);
+      } else if (yFrom) {
+        years.push(yFrom);
+      } else if (yTo) {
+        years.push(yTo);
+      } else {
+        years.push(null);
+      }
+
+      for (const year of years) {
+        const known: Array<{ id: string; value_id: string }> = [
+          { id: ML_ATTR.BRAND, value_id: brand.valueId },
+          { id: ML_ATTR.MODEL, value_id: model.valueId },
+        ];
+        try {
+          // Paginamos até esgotar para pegar todas as versões do modelo
+          // (um par marca/modelo pode ter várias linhas de versão/motorização).
+          const pageSize = 50;
+          const maxPages = 10;
+          let found = 0;
+          for (let page = 0; page < maxPages; page++) {
+            const chunk = await this.searchCatalogCompatibilityChunks(
+              accessToken,
+              {
+                knownAttributes: known,
+                limit: pageSize,
+                offset: page * pageSize,
+              },
+            );
+            const results = chunk.results ?? [];
+            if (results.length === 0) break;
+            for (const prod of results) {
+              if (!prod?.id) continue;
+              if (year != null) {
+                // Filtra por ano quando informado.
+                const yearAttr = prod.attributes?.find(
+                  (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
+                );
+                const y = parseYearFromAttr(
+                  yearAttr?.value_name ?? yearAttr?.values?.[0]?.name ?? null,
+                );
+                if (y !== year) continue;
+              }
+              catalogProductIds.add(prod.id);
+              found += 1;
+            }
+            const total = chunk.paging?.total;
+            if (typeof total === "number" && (page + 1) * pageSize >= total) {
+              break;
+            }
+            if (results.length < pageSize) break;
+          }
+          if (found === 0) {
+            unresolved.push({
+              brand: brandName,
+              model: modelName,
+              year,
+              reason: year
+                ? `no catalog products for ${year}`
+                : "no catalog products for brand+model",
+            });
+          }
+        } catch (err) {
+          unresolved.push({
+            brand: brandName,
+            model: modelName,
+            year,
+            reason:
+              err instanceof Error
+                ? `lookup failed: ${err.message}`
+                : "lookup failed",
+          });
+        }
+      }
+    }
+
+    return {
+      catalogProductIds: Array.from(catalogProductIds),
+      unresolved,
     };
   }
 
