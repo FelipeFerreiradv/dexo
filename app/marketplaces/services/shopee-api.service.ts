@@ -360,18 +360,47 @@ export class ShopeeApiService {
   }
 
   /**
-   * Atualiza apenas o estoque de um item
+   * Atualiza estoque de um item (ou modelo específico) via /api/v2/product/update_stock.
+   * update_item NÃO aceita seller_stock — aceita o request e descarta o campo.
    */
   static async updateItemStock(
     accessToken: string,
     shopId: number,
     itemId: number,
     stock: number,
-  ): Promise<{ item_id: number }> {
-    return this.updateItem(accessToken, shopId, {
+    modelId?: number,
+  ): Promise<void> {
+    const apiPath = "/api/v2/product/update_stock";
+    const sellerStock = [{ stock }];
+    const stockEntry = modelId
+      ? { model_id: modelId, seller_stock: sellerStock }
+      : { seller_stock: sellerStock };
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        result?: Array<{
+          model_id?: number;
+          location_id?: string;
+          failed_reason?: string;
+        }>;
+      }>
+    >("POST", apiPath, accessToken, shopId, {
       item_id: itemId,
-      seller_stock: [{ stock }],
+      stock_list: [stockEntry],
     });
+
+    if (response.error) {
+      throw new Error(
+        `Erro ao atualizar estoque: ${response.message ?? response.error}`,
+      );
+    }
+
+    const failed = response.response?.result?.find((r) => r.failed_reason);
+    if (failed) {
+      throw new Error(
+        `Shopee rejeitou update de estoque: ${failed.failed_reason}`,
+      );
+    }
   }
 
   /**

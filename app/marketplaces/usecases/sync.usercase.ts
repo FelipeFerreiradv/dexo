@@ -1818,6 +1818,12 @@ export class SyncUseCase {
 
     const parseItemId = (externalId: string) =>
       parseInt(externalId.split(":")[0], 10);
+    const parseModelId = (externalId: string): number | undefined => {
+      const parts = externalId.split(":");
+      if (parts.length < 2) return undefined;
+      const parsed = parseInt(parts[1], 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    };
     let accessToken = account.accessToken;
 
     const refreshIfNeeded = async (err: any) => {
@@ -1844,20 +1850,31 @@ export class SyncUseCase {
 
     try {
       // Buscar item atual no Shopee para log
+      const itemId = parseItemId(listing.externalListingId);
+      const listingModelId = parseModelId(listing.externalListingId);
       const currentItem = await ShopeeApiService.getItemBaseInfo(
         accessToken,
         account.shopId,
-        parseItemId(listing.externalListingId),
+        itemId,
       );
 
       const previousStock = this.getShopeeAvailableStock(currentItem);
 
-      // Atualizar estoque no Shopee
+      // Se o item tem variações mas o listing não referencia um model_id,
+      // update_stock a nível de item é ignorado pela Shopee.
+      if (currentItem.has_model && !listingModelId) {
+        throw new Error(
+          `Listing ${listing.externalListingId} aponta para item ${itemId} com variações (has_model=true) mas não inclui model_id no externalListingId — sync de estoque não aplicável sem o modelo.`,
+        );
+      }
+
+      // Atualizar estoque no Shopee (endpoint update_stock, não update_item)
       await ShopeeApiService.updateItemStock(
         accessToken,
         account.shopId,
-        parseItemId(listing.externalListingId),
+        itemId,
         product.stock,
+        listingModelId,
       );
 
       // Registrar log
