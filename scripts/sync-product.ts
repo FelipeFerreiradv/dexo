@@ -30,9 +30,14 @@ async function run() {
   console.log(`[sync-product] Sincronizando produto ${productId}...`);
   const results = await SyncUseCase.syncProductStock(productId);
   for (const r of results) {
-    const tag = r.success ? "✓" : "✗";
+    const tag = !r.success ? "✗" : r.skipped ? "⚠" : "✓";
+    const suffix = r.error
+      ? " ERROR=" + r.error
+      : r.skipped
+        ? ` SKIPPED (${r.skipReason ?? "unknown"}) — quantidade remota não tocada`
+        : "";
     console.log(
-      `  ${tag} [${r.platform ?? "?"}] listing=${r.externalListingId} ${r.previousStock ?? "?"} → ${r.newStock ?? "?"}${r.error ? " ERROR=" + r.error : ""}`,
+      `  ${tag} [${r.platform ?? "?"}] listing=${r.externalListingId} ${r.previousStock ?? "?"} → ${r.newStock ?? "?"}${suffix}`,
     );
   }
 }

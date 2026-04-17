@@ -104,6 +104,8 @@ export interface SyncResult {
   previousPrice?: number;
   newPrice?: number;
   error?: string;
+  skipped?: boolean;
+  skipReason?: string;
 }
 
 export interface SyncAllResult {
@@ -1581,6 +1583,7 @@ export class SyncUseCase {
     product: any,
     currentItem: MLItemDetails,
     message: string,
+    skipReason: string,
   ): Promise<SyncResult> {
     const previousStock = currentItem?.available_quantity ?? 0;
 
@@ -1596,6 +1599,7 @@ export class SyncUseCase {
         desiredStock: product.stock,
         remoteStatus: currentItem.status,
         remoteAvailableQuantity: previousStock,
+        skipReason,
       },
     );
 
@@ -1605,6 +1609,8 @@ export class SyncUseCase {
       externalListingId: listing.externalListingId,
       previousStock,
       newStock: previousStock,
+      skipped: true,
+      skipReason,
     };
   }
 
@@ -1672,10 +1678,55 @@ export class SyncUseCase {
           product,
           currentItem,
           `Anúncio ${listing.externalListingId} está fechado no Mercado Livre; sincronização de estoque ignorada.`,
+          "ml_status_closed",
         );
       }
 
       if (product.stock <= 0) {
+        if (currentStatus === "paused" && previousStock > 0) {
+          try {
+            await MLApiService.updateItemStock(
+              account.accessToken,
+              listing.externalListingId,
+              0,
+            );
+
+            await this.logSync(
+              account.id,
+              SyncType.STOCK_UPDATE,
+              SyncStatus.SUCCESS,
+              `Anúncio ${listing.externalListingId} está paused no Mercado Livre; quantidade remota zerada (${previousStock} → 0) para evitar oversell em reativação manual.`,
+              {
+                productId: product.id,
+                externalListingId: listing.externalListingId,
+                previousStock,
+                newStock: 0,
+                remoteStatus: currentStatus,
+                note: "paused_zeroed_preventively",
+              },
+            );
+
+            return {
+              success: true,
+              productId: product.id,
+              externalListingId: listing.externalListingId,
+              previousStock,
+              newStock: 0,
+            };
+          } catch (zeroErr) {
+            const zeroMsg =
+              zeroErr instanceof Error ? zeroErr.message : "erro desconhecido";
+            return this.logMLStockWarningAndReturn(
+              account.id,
+              listing,
+              product,
+              currentItem,
+              `Anúncio ${listing.externalListingId} paused; falha ao zerar quantidade remota (${previousStock}): ${zeroMsg}. Risco de oversell se reativar manualmente.`,
+              "ml_paused_zero_failed",
+            );
+          }
+        }
+
         if (
           currentStatus === "paused" ||
           currentStatus === "inactive" ||
@@ -1687,6 +1738,7 @@ export class SyncUseCase {
             product,
             currentItem,
             `Anúncio ${listing.externalListingId} já está ${currentStatus} no Mercado Livre; estoque local 0 não exige atualização de quantidade.`,
+            `ml_status_${currentStatus}`,
           );
         }
 
