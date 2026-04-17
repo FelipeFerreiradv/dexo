@@ -320,6 +320,31 @@ export class ListingRetryService {
           );
         }
 
+        // Precedência: ProductListing persistido > user defaults > hardcoded.
+        // Preserva a escolha original do usuário quando a primeira publicação
+        // falhou e o retry reconstrói o payload.
+        const persisted = cand as any;
+        const retrySettings = {
+          listingType:
+            persisted.listingType ?? userDefaults.listingType ?? "bronze",
+          itemCondition:
+            persisted.itemCondition ?? userDefaults.itemCondition,
+          hasWarranty:
+            persisted.hasWarranty ?? userDefaults.hasWarranty ?? false,
+          warrantyUnit:
+            persisted.warrantyUnit ?? userDefaults.warrantyUnit ?? "dias",
+          warrantyDuration:
+            persisted.warrantyDuration ?? userDefaults.warrantyDuration ?? 30,
+          shippingMode:
+            persisted.shippingMode ?? userDefaults.shippingMode ?? "me2",
+          freeShipping:
+            persisted.freeShipping ?? userDefaults.freeShipping ?? false,
+          localPickup:
+            persisted.localPickup ?? userDefaults.localPickup ?? false,
+          manufacturingTime:
+            persisted.manufacturingTime ?? userDefaults.manufacturingTime ?? 0,
+        };
+
         // Resolve categoria de forma determinística: explicit -> produto -> erro
         const resolvedCategory =
           await CategoryResolutionService.resolveMLCategory({
@@ -337,7 +362,7 @@ export class ListingRetryService {
         });
 
         const retryCondition =
-          userDefaults.itemCondition ||
+          retrySettings.itemCondition ||
           (product.quality === "NOVO" ? "new" : "used");
 
         const payload: any = {
@@ -347,7 +372,7 @@ export class ListingRetryService {
           currency_id: "BRL",
           available_quantity: product.stock || 1,
           buying_mode: "buy_it_now",
-          listing_type_id: userDefaults.listingType || "bronze",
+          listing_type_id: retrySettings.listingType || "bronze",
           condition: retryCondition,
           pictures: await (async () => {
             if (!product.imageUrl) return [];
@@ -504,39 +529,39 @@ export class ListingRetryService {
         // Shipping dimensions string se todos os campos existirem
         if (pkg) {
           payload.shipping = {
-            mode: userDefaults.shippingMode || "me2",
-            free_shipping: userDefaults.freeShipping || false,
-            local_pick_up: userDefaults.localPickup || false,
+            mode: retrySettings.shippingMode || "me2",
+            free_shipping: retrySettings.freeShipping || false,
+            local_pick_up: retrySettings.localPickup || false,
             dimensions: `${pkg.height}x${pkg.width}x${pkg.length},${Number(
               pkg.weightKg,
             )}`,
           };
         } else {
           payload.shipping = {
-            mode: userDefaults.shippingMode || "me2",
-            free_shipping: userDefaults.freeShipping || false,
-            local_pick_up: userDefaults.localPickup || false,
+            mode: retrySettings.shippingMode || "me2",
+            free_shipping: retrySettings.freeShipping || false,
+            local_pick_up: retrySettings.localPickup || false,
           };
         }
 
         // sale_terms: garantia e tempo de fabricação
         const saleTerms: Array<{ id: string; value_name: string }> = [];
-        if (userDefaults.hasWarranty) {
+        if (retrySettings.hasWarranty) {
           saleTerms.push({
             id: "WARRANTY_TYPE",
             value_name: "Garantia do vendedor",
           });
-          const dur = userDefaults.warrantyDuration || 30;
-          const unit = userDefaults.warrantyUnit || "dias";
+          const dur = retrySettings.warrantyDuration || 30;
+          const unit = retrySettings.warrantyUnit || "dias";
           saleTerms.push({ id: "WARRANTY_TIME", value_name: `${dur} ${unit}` });
         }
         if (
-          userDefaults.manufacturingTime &&
-          userDefaults.manufacturingTime > 0
+          retrySettings.manufacturingTime &&
+          retrySettings.manufacturingTime > 0
         ) {
           saleTerms.push({
             id: "MANUFACTURING_TIME",
-            value_name: `${userDefaults.manufacturingTime} dias`,
+            value_name: `${retrySettings.manufacturingTime} dias`,
           });
         }
         if (saleTerms.length > 0) {

@@ -177,6 +177,15 @@ model ProductListing {
   ratingAverage        Decimal?           @db.Decimal(3, 2)
   reviewsCount         Int                @default(0)
   viewsCount           Int                @default(0)
+  listingType          String?
+  itemCondition        String?
+  hasWarranty          Boolean?
+  warrantyUnit         String?
+  warrantyDuration     Int?
+  shippingMode         String?
+  freeShipping         Boolean?
+  localPickup          Boolean?
+  manufacturingTime    Int?
   orderItems           OrderItem[]
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
   product              Product            @relation(fields: [productId], references: [id])

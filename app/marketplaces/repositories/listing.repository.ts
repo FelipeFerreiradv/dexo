@@ -22,6 +22,16 @@ export class ListingRepository {
     retryEnabled?: boolean;
     // category that was requested when attempting the ML create (useful for retries)
     requestedCategoryId?: string | null;
+    // ML listing settings (persisted per-account; survives retries/edits)
+    listingType?: string | null;
+    itemCondition?: string | null;
+    hasWarranty?: boolean | null;
+    warrantyUnit?: string | null;
+    warrantyDuration?: number | null;
+    shippingMode?: string | null;
+    freeShipping?: boolean | null;
+    localPickup?: boolean | null;
+    manufacturingTime?: number | null;
   }) {
     try {
       const listing = await prisma.productListing.create({
@@ -37,6 +47,15 @@ export class ListingRepository {
           lastError: data.lastError ?? null,
           retryEnabled: data.retryEnabled ?? false,
           requestedCategoryId: data.requestedCategoryId ?? null,
+          listingType: data.listingType ?? null,
+          itemCondition: data.itemCondition ?? null,
+          hasWarranty: data.hasWarranty ?? null,
+          warrantyUnit: data.warrantyUnit ?? null,
+          warrantyDuration: data.warrantyDuration ?? null,
+          shippingMode: data.shippingMode ?? null,
+          freeShipping: data.freeShipping ?? null,
+          localPickup: data.localPickup ?? null,
+          manufacturingTime: data.manufacturingTime ?? null,
         },
       });
       return listing;
@@ -229,6 +248,16 @@ export class ListingRepository {
       retryEnabled?: boolean;
       // optionally update requestedCategoryId
       requestedCategoryId?: string | null;
+      // ML listing settings
+      listingType?: string | null;
+      itemCondition?: string | null;
+      hasWarranty?: boolean | null;
+      warrantyUnit?: string | null;
+      warrantyDuration?: number | null;
+      shippingMode?: string | null;
+      freeShipping?: boolean | null;
+      localPickup?: boolean | null;
+      manufacturingTime?: number | null;
     },
   ) {
     return prisma.productListing.update({
@@ -247,6 +276,28 @@ export class ListingRepository {
           data.requestedCategoryId === undefined
             ? undefined
             : data.requestedCategoryId,
+        listingType:
+          data.listingType === undefined ? undefined : data.listingType,
+        itemCondition:
+          data.itemCondition === undefined ? undefined : data.itemCondition,
+        hasWarranty:
+          data.hasWarranty === undefined ? undefined : data.hasWarranty,
+        warrantyUnit:
+          data.warrantyUnit === undefined ? undefined : data.warrantyUnit,
+        warrantyDuration:
+          data.warrantyDuration === undefined
+            ? undefined
+            : data.warrantyDuration,
+        shippingMode:
+          data.shippingMode === undefined ? undefined : data.shippingMode,
+        freeShipping:
+          data.freeShipping === undefined ? undefined : data.freeShipping,
+        localPickup:
+          data.localPickup === undefined ? undefined : data.localPickup,
+        manufacturingTime:
+          data.manufacturingTime === undefined
+            ? undefined
+            : data.manufacturingTime,
       },
     });
   }

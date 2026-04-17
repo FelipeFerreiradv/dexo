@@ -1122,6 +1122,64 @@ export class MLApiService {
   }
 
   /**
+   * POST /items/{itemId}/compatibilities
+   * Anexa compatibilidades estruturadas (marca/modelo/ano) a um item já criado.
+   * Cada entrada de `vehicles` é um conjunto de known_attributes que descreve
+   * um veículo compatível. Faz uma chamada por veículo para maximizar a
+   * chance de sucesso parcial — um veículo inválido não derruba os outros.
+   *
+   * Não-bloqueante na perspectiva do caller: retorna success=true somente se
+   * todas as chamadas deram certo, mas nunca lança — erros são reportados
+   * no array `errors`.
+   */
+  static async setItemCompatibilities(
+    accessToken: string,
+    itemId: string,
+    vehicles: Array<
+      Array<{ id: string; value_id?: string; value_name?: string }>
+    >,
+  ): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
+    const errors: string[] = [];
+    let createdCount = 0;
+
+    for (const knownAttributes of vehicles) {
+      if (!Array.isArray(knownAttributes) || knownAttributes.length === 0) {
+        continue;
+      }
+      try {
+        await axios.post(
+          `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+          {
+            domain_id: ML_COMPAT_DOMAIN_ID,
+            known_attributes: knownAttributes,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 15000,
+          },
+        );
+        createdCount += 1;
+      } catch (error) {
+        const msg = axios.isAxiosError(error)
+          ? `${error.response?.status ?? ""} ${JSON.stringify(error.response?.data ?? error.message)}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        errors.push(msg);
+      }
+    }
+
+    return {
+      success: errors.length === 0 && createdCount > 0,
+      createdCount,
+      errors,
+    };
+  }
+
+  /**
    * Detecta o content type real de uma imagem a partir dos magic bytes do buffer.
    * Fallback para extensão do arquivo se os bytes não forem reconhecidos.
    */

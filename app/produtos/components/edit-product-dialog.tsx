@@ -585,59 +585,118 @@ export function EditProductDialog({
   }, [createShopeeListing, shopeeAccounts]);
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
-  // e padrões de anúncio ML
+  // e padrões de anúncio ML. Em seguida, sobrepõe com settings já persistidos
+  // em ProductListing (se houver) — precedência: ProductListing > user.default*.
   const fetchDefaultDescription = useCallback(async () => {
     try {
-      if (session?.user?.email) {
-        const resp = await fetch(`${getApiBaseUrl()}/users/me`, {
-          headers: { email: session.user.email },
-        });
-        if (resp.ok) {
-          const user = await resp.json();
-          const desc = user.defaultProductDescription || "";
-          setDefaultDescription(desc);
-          if (!product.description && desc) setValue("description", desc);
+      if (!session?.user?.email) return;
 
-          // Carregar padrões de anúncio ML
-          if (user.defaultListingType)
-            setMlListingType(user.defaultListingType);
-          if (
-            user.defaultHasWarranty !== undefined &&
-            user.defaultHasWarranty !== null
-          )
-            setMlHasWarranty(user.defaultHasWarranty);
-          if (user.defaultWarrantyUnit)
-            setMlWarrantyUnit(user.defaultWarrantyUnit);
-          if (
-            user.defaultWarrantyDuration !== undefined &&
-            user.defaultWarrantyDuration !== null
-          )
-            setMlWarrantyDuration(user.defaultWarrantyDuration);
-          if (user.defaultItemCondition)
-            setMlItemCondition(user.defaultItemCondition);
-          if (user.defaultShippingMode)
-            setMlShippingMode(user.defaultShippingMode);
-          if (
-            user.defaultFreeShipping !== undefined &&
-            user.defaultFreeShipping !== null
-          )
-            setMlFreeShipping(user.defaultFreeShipping);
-          if (
-            user.defaultLocalPickup !== undefined &&
-            user.defaultLocalPickup !== null
-          )
-            setMlLocalPickup(user.defaultLocalPickup);
-          if (
-            user.defaultManufacturingTime !== undefined &&
-            user.defaultManufacturingTime !== null
-          )
-            setMlManufacturingTime(user.defaultManufacturingTime);
+      // Carregar em paralelo: defaults do usuário + detalhe do produto (com
+      // detailedListings que agora expõem os 9 campos de settings ML).
+      const [userResp, detailResp] = await Promise.all([
+        fetch(`${getApiBaseUrl()}/users/me`, {
+          headers: { email: session.user.email },
+        }),
+        product.id
+          ? fetch(`${getApiBaseUrl()}/products/${product.id}`, {
+              headers: { email: session.user.email },
+            })
+          : Promise.resolve(null as Response | null),
+      ]);
+
+      if (userResp && userResp.ok) {
+        const user = await userResp.json();
+        const desc = user.defaultProductDescription || "";
+        setDefaultDescription(desc);
+        if (!product.description && desc) setValue("description", desc);
+
+        if (user.defaultListingType) setMlListingType(user.defaultListingType);
+        if (
+          user.defaultHasWarranty !== undefined &&
+          user.defaultHasWarranty !== null
+        )
+          setMlHasWarranty(user.defaultHasWarranty);
+        if (user.defaultWarrantyUnit)
+          setMlWarrantyUnit(user.defaultWarrantyUnit);
+        if (
+          user.defaultWarrantyDuration !== undefined &&
+          user.defaultWarrantyDuration !== null
+        )
+          setMlWarrantyDuration(user.defaultWarrantyDuration);
+        if (user.defaultItemCondition)
+          setMlItemCondition(user.defaultItemCondition);
+        if (user.defaultShippingMode)
+          setMlShippingMode(user.defaultShippingMode);
+        if (
+          user.defaultFreeShipping !== undefined &&
+          user.defaultFreeShipping !== null
+        )
+          setMlFreeShipping(user.defaultFreeShipping);
+        if (
+          user.defaultLocalPickup !== undefined &&
+          user.defaultLocalPickup !== null
+        )
+          setMlLocalPickup(user.defaultLocalPickup);
+        if (
+          user.defaultManufacturingTime !== undefined &&
+          user.defaultManufacturingTime !== null
+        )
+          setMlManufacturingTime(user.defaultManufacturingTime);
+      }
+
+      // Sobrepõe com settings persistidos em ProductListing (primeiro listing ML
+      // com settings não-nulos). Respeita a regra: um produto pode ter várias
+      // contas ML, mas o edit modal atual só expõe um conjunto de controles —
+      // usa o primeiro como base para hidratação.
+      if (detailResp && detailResp.ok) {
+        try {
+          const detail = await detailResp.json();
+          const listings = Array.isArray(detail?.detailedListings)
+            ? detail.detailedListings
+            : [];
+          const mlListing = listings.find(
+            (l: any) =>
+              l?.platform === "MERCADO_LIVRE" &&
+              (l.listingType != null ||
+                l.itemCondition != null ||
+                l.hasWarranty != null ||
+                l.shippingMode != null ||
+                l.freeShipping != null ||
+                l.localPickup != null ||
+                l.manufacturingTime != null ||
+                l.warrantyUnit != null ||
+                l.warrantyDuration != null),
+          );
+          if (mlListing) {
+            if (mlListing.listingType) setMlListingType(mlListing.listingType);
+            if (mlListing.itemCondition)
+              setMlItemCondition(mlListing.itemCondition);
+            if (mlListing.hasWarranty != null)
+              setMlHasWarranty(!!mlListing.hasWarranty);
+            if (mlListing.warrantyUnit)
+              setMlWarrantyUnit(mlListing.warrantyUnit);
+            if (mlListing.warrantyDuration != null)
+              setMlWarrantyDuration(mlListing.warrantyDuration);
+            if (mlListing.shippingMode)
+              setMlShippingMode(mlListing.shippingMode);
+            if (mlListing.freeShipping != null)
+              setMlFreeShipping(!!mlListing.freeShipping);
+            if (mlListing.localPickup != null)
+              setMlLocalPickup(!!mlListing.localPickup);
+            if (mlListing.manufacturingTime != null)
+              setMlManufacturingTime(mlListing.manufacturingTime);
+          }
+        } catch (detailErr) {
+          console.warn(
+            "Erro ao ler detalhe do produto para hidratar settings ML:",
+            detailErr,
+          );
         }
       }
     } catch (err) {
       console.error("Erro ao buscar descrição padrão (edit dialog):", err);
     }
-  }, [product.description, session?.user?.email, setValue]);
+  }, [product.description, product.id, session?.user?.email, setValue]);
 
   const fetchDefaultDescriptionRef = useRef(fetchDefaultDescription);
   useEffect(() => {

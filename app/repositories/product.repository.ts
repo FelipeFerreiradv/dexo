@@ -1149,6 +1149,17 @@ class ProductRepositoryPrisma implements ProductRepository {
       shopId: listing.marketplaceAccount.shopId ?? undefined,
       createdAt: listing.createdAt,
       updatedAt: listing.updatedAt,
+      // Settings ML persistidos (permitem o edit modal hidratar do ProductListing
+      // antes de cair nos user.default*)
+      listingType: (listing as any).listingType ?? null,
+      itemCondition: (listing as any).itemCondition ?? null,
+      hasWarranty: (listing as any).hasWarranty ?? null,
+      warrantyUnit: (listing as any).warrantyUnit ?? null,
+      warrantyDuration: (listing as any).warrantyDuration ?? null,
+      shippingMode: (listing as any).shippingMode ?? null,
+      freeShipping: (listing as any).freeShipping ?? null,
+      localPickup: (listing as any).localPickup ?? null,
+      manufacturingTime: (listing as any).manufacturingTime ?? null,
     }));
 
     const scrapSummary = item.scrap
