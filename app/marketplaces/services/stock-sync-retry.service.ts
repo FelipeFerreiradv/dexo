@@ -46,8 +46,22 @@ type StockSyncJobRow = {
 export class StockSyncRetryService {
   private static running = false;
   private static intervalId: NodeJS.Timeout | null = null;
+  private static runInProgress = false;
 
   static async runOnce(): Promise<void> {
+    // Evita sobreposição entre ticks do setInterval (batches > intervalo).
+    // Dois workers pegariam o mesmo job e tentariam deletar em paralelo,
+    // causando P2025 e chamadas duplicadas às APIs dos marketplaces.
+    if (this.runInProgress) return;
+    this.runInProgress = true;
+    try {
+      await this.runOnceInner();
+    } finally {
+      this.runInProgress = false;
+    }
+  }
+
+  private static async runOnceInner(): Promise<void> {
     const now = new Date();
 
     const jobs: StockSyncJobRow[] = await (prisma as any).stockSyncJob.findMany({
@@ -114,7 +128,8 @@ export class StockSyncRetryService {
           continue;
         }
         if (r.success) {
-          await (prisma as any).stockSyncJob.delete({
+          // deleteMany é idempotente: não lança P2025 se outro tick já removeu o job.
+          await (prisma as any).stockSyncJob.deleteMany({
             where: { id: job.id },
           });
         } else {
@@ -160,7 +175,7 @@ export class StockSyncRetryService {
     // @@unique([listingId, status]) em StockSyncJob impede manter linhas
     // históricas FAILED/SUCCESS na mesma listing (colide com próximo enqueue).
     // Histórico de falha terminal fica preservado em SystemLog (logError abaixo).
-    await (prisma as any).stockSyncJob.delete({
+    await (prisma as any).stockSyncJob.deleteMany({
       where: { id: job.id },
     });
 
