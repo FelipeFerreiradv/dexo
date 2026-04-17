@@ -235,4 +235,32 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     expect(result.catalogProductIds).toContain("MLB_BMW_IX_2023");
     expect(result.unresolved).toEqual([]);
   });
+
+  it("envia site_id: MLB em todas as chamadas ao /catalog_compatibilities/products_search/chunks", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FORD", name: "Ford" }],
+          },
+        ],
+      },
+    });
+    (mockedAxios as any).post.mockResolvedValue({
+      data: { results: [], paging: { total: 0 } },
+    });
+
+    await MLApiService.resolveCompatibilityCatalogProducts("tok", [
+      { brand: "Ford", model: "Ka", yearFrom: 2020 },
+    ]);
+
+    const postCalls = (mockedAxios as any).post.mock.calls as unknown[][];
+    for (const call of postCalls) {
+      const [url, body] = call as [string, { site_id?: string }];
+      if (typeof url === "string" && url.includes("products_search/chunks")) {
+        expect(body.site_id).toBe("MLB");
+      }
+    }
+  });
 });

@@ -1611,6 +1611,7 @@ export class MLApiService {
     },
   ): Promise<MLCatalogCompatibilityChunkResponse> {
     const body: Record<string, unknown> = {
+      site_id: "MLB",
       domain_id: ML_COMPAT_DOMAIN_ID,
       limit: params.limit ?? 50,
       offset: params.offset ?? 0,
