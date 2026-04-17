@@ -1294,24 +1294,13 @@ export class MLApiService {
         continue;
       }
 
+      // Fast path: resolve BRAND/MODEL para value_id via cache do domínio.
+      // Fallback: quando a marca não está no catalog_domains (p.ex. BMW, que
+      // é truncada nesse endpoint), delegamos o matching por nome ao ML via
+      // `open_attributes` — mais resiliente a dialetos/acentos e não depende
+      // do endpoint de domínio retornar a marca.
       const brand = await findBrand(brandName);
-      if (!brand) {
-        unresolved.push({
-          brand: brandName,
-          model: modelName,
-          reason: "brand not found in ML catalog",
-        });
-        continue;
-      }
-      const model = await findModel(brand, modelName);
-      if (!model) {
-        unresolved.push({
-          brand: brandName,
-          model: modelName,
-          reason: "model not found for brand",
-        });
-        continue;
-      }
+      const model = brand ? await findModel(brand, modelName) : null;
 
       // Expande range de anos. Se nenhum ano for informado, busca todos os
       // catalog products para o par marca+modelo (sem filtro de ano).
@@ -1337,21 +1326,44 @@ export class MLApiService {
       }
 
       for (const year of years) {
-        const known: Array<{ id: string; value_id: string }> = [
-          { id: ML_ATTR.BRAND, value_id: brand.valueId },
-          { id: ML_ATTR.MODEL, value_id: model.valueId },
-        ];
+        const searchParams: {
+          knownAttributes?: Array<{ id: string; value_id: string }>;
+          openAttributes?: Array<{ id: string; value_name: string }>;
+          limit?: number;
+          offset?: number;
+        } = {};
+        if (brand && model) {
+          searchParams.knownAttributes = [
+            { id: ML_ATTR.BRAND, value_id: brand.valueId },
+            { id: ML_ATTR.MODEL, value_id: model.valueId },
+          ];
+        } else if (brand) {
+          searchParams.knownAttributes = [
+            { id: ML_ATTR.BRAND, value_id: brand.valueId },
+          ];
+          searchParams.openAttributes = [
+            { id: ML_ATTR.MODEL, value_name: modelName },
+          ];
+        } else {
+          searchParams.openAttributes = [
+            { id: ML_ATTR.BRAND, value_name: brandName },
+            { id: ML_ATTR.MODEL, value_name: modelName },
+          ];
+        }
+
         try {
           // Paginamos até esgotar para pegar todas as versões do modelo
           // (um par marca/modelo pode ter várias linhas de versão/motorização).
           const pageSize = 50;
           const maxPages = 10;
           let found = 0;
+          const normalizedBrand = normalize(brandName);
+          const normalizedModel = normalize(modelName);
           for (let page = 0; page < maxPages; page++) {
             const chunk = await this.searchCatalogCompatibilityChunks(
               accessToken,
               {
-                knownAttributes: known,
+                ...searchParams,
                 limit: pageSize,
                 offset: page * pageSize,
               },
@@ -1360,8 +1372,34 @@ export class MLApiService {
             if (results.length === 0) break;
             for (const prod of results) {
               if (!prod?.id) continue;
+              // Quando usamos open_attributes, o matching é por nome e o ML
+              // pode devolver resultados "próximos". Validamos localmente
+              // que marca/modelo batem para evitar falsos positivos.
+              if (!brand || !model) {
+                const brandAttr = prod.attributes?.find(
+                  (a) => a?.id === ML_ATTR.BRAND,
+                );
+                const modelAttr = prod.attributes?.find(
+                  (a) => a?.id === ML_ATTR.MODEL,
+                );
+                const prodBrand = normalize(
+                  brandAttr?.value_name ??
+                    brandAttr?.values?.[0]?.name ??
+                    "",
+                );
+                const prodModel = normalize(
+                  modelAttr?.value_name ??
+                    modelAttr?.values?.[0]?.name ??
+                    "",
+                );
+                if (!brand && prodBrand && prodBrand !== normalizedBrand) {
+                  continue;
+                }
+                if (!model && prodModel && prodModel !== normalizedModel) {
+                  continue;
+                }
+              }
               if (year != null) {
-                // Filtra por ano quando informado.
                 const yearAttr = prod.attributes?.find(
                   (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
                 );
@@ -1558,22 +1596,31 @@ export class MLApiService {
 
   /**
    * POST /catalog_compatibilities/products_search/chunks
-   * Retorna uma página de catalog products filtrada por known_attributes.
+   * Retorna uma página de catalog products filtrada por known_attributes
+   * (match por value_id, via cache de brands/models) e/ou open_attributes
+   * (match por value_name, delegando o matching ao próprio ML — necessário
+   * para marcas que o endpoint /catalog_domains retorna truncado, ex.: BMW).
    */
   static async searchCatalogCompatibilityChunks(
     accessToken: string,
     params: {
-      knownAttributes: Array<{ id: string; value_id: string }>;
+      knownAttributes?: Array<{ id: string; value_id: string }>;
+      openAttributes?: Array<{ id: string; value_name: string }>;
       limit?: number;
       offset?: number;
     },
   ): Promise<MLCatalogCompatibilityChunkResponse> {
-    const body = {
+    const body: Record<string, unknown> = {
       domain_id: ML_COMPAT_DOMAIN_ID,
-      known_attributes: params.knownAttributes,
       limit: params.limit ?? 50,
       offset: params.offset ?? 0,
     };
+    if (params.knownAttributes && params.knownAttributes.length > 0) {
+      body.known_attributes = params.knownAttributes;
+    }
+    if (params.openAttributes && params.openAttributes.length > 0) {
+      body.open_attributes = params.openAttributes;
+    }
     try {
       const response = await axios.post<MLCatalogCompatibilityChunkResponse>(
         `${ML_CONSTANTS.API_URL}/catalog_compatibilities/products_search/chunks`,

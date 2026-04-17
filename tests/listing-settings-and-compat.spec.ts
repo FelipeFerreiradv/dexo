@@ -164,7 +164,11 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     expect(result.unresolved).toEqual([]);
   });
 
-  it("reporta entradas não resolvidas (marca desconhecida) sem lançar", async () => {
+  it("reporta entradas não resolvidas quando fallback por nome também volta vazio", async () => {
+    // Quando a marca não está no cache do /catalog_domains, caímos para
+    // open_attributes (match por nome). Se o ML também não retornar nada,
+    // reportamos "no catalog products" — delegamos o matching ao ML e a
+    // ausência de resultados é o sinal final de falha.
     (mockedAxios as any).get.mockResolvedValueOnce({
       data: {
         attributes: [
@@ -184,6 +188,51 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
 
     expect(result.catalogProductIds).toEqual([]);
     expect(result.unresolved).toHaveLength(1);
-    expect(result.unresolved[0].reason).toMatch(/brand not found/i);
+    expect(result.unresolved[0].reason).toMatch(/no catalog products/i);
+  });
+
+  it("usa open_attributes como fallback quando marca não está no catalog_domains (ex.: BMW)", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FIAT", name: "Fiat" }],
+          },
+        ],
+      },
+    });
+    (mockedAxios as any).post.mockResolvedValueOnce({
+      data: {
+        results: [
+          {
+            id: "MLB_BMW_IX_2023",
+            attributes: [
+              { id: "BRAND", value_id: "BR_BMW", value_name: "BMW" },
+              { id: "MODEL", value_id: "MD_IX", value_name: "iX" },
+              { id: "VEHICLE_YEAR", value_name: "2023" },
+            ],
+          },
+        ],
+        paging: { total: 1 },
+      },
+    });
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "BMW", model: "iX", yearFrom: 2023, yearTo: 2023 }],
+    );
+
+    const postCalls = (mockedAxios as any).post.mock.calls as unknown[][];
+    const lastBody = postCalls[postCalls.length - 1]?.[1] as
+      | { open_attributes?: unknown; known_attributes?: unknown }
+      | undefined;
+    expect(lastBody?.open_attributes).toEqual([
+      { id: "BRAND", value_name: "BMW" },
+      { id: "MODEL", value_name: "iX" },
+    ]);
+    expect(lastBody?.known_attributes).toBeUndefined();
+    expect(result.catalogProductIds).toContain("MLB_BMW_IX_2023");
+    expect(result.unresolved).toEqual([]);
   });
 });
