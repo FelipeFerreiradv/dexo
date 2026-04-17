@@ -456,8 +456,12 @@ export class OrderUseCase {
         // getRecentOrders() já retorna apenas pedidos em estados pós-venda.
         // Não repetir a decisão de baixa com base no status local mapeado.
         if (deductStock) {
-          await this.deductStockForOrder(created, "Importação Shopee");
-          stockDeducted = true;
+          try {
+            await this.deductStockForOrder(created, `Venda Shopee #${externalOrderId}`);
+            stockDeducted = true;
+          } catch (err) {
+            console.error(`[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`, err);
+          }
         }
 
         result.imported++;
@@ -596,8 +600,12 @@ export class OrderUseCase {
       // Descontar estoque se solicitado e pedido está pago
       let stockDeducted = false;
       if (deductStock && mlOrder.status === "paid") {
-        await this.deductStockForOrder(order, `Venda ML #${externalOrderId}`);
-        stockDeducted = true;
+        try {
+          await this.deductStockForOrder(order, `Venda ML #${externalOrderId}`);
+          stockDeducted = true;
+        } catch (err) {
+          console.error(`[OrderUseCase] Falha ao descontar estoque para pedido ML #${externalOrderId} (order=${order.id}). Estoque NÃO foi descontado.`, err);
+        }
       }
 
       return {
@@ -1088,10 +1096,10 @@ export class OrderUseCase {
       });
     } catch (error) {
       console.error(
-        `[OrderUseCase] Error in stock deduction transaction:`,
+        `[OrderUseCase] Error in stock deduction transaction (order=${order.id}):`,
         error,
       );
-      return deductions;
+      throw error;
     }
 
     // Dispara processamento imediato dos jobs recém-enfileirados (best-effort;
