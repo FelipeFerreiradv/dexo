@@ -1684,47 +1684,20 @@ export class SyncUseCase {
 
       if (product.stock <= 0) {
         if (currentStatus === "paused" && previousStock > 0) {
-          try {
-            await MLApiService.updateItemStock(
-              account.accessToken,
-              listing.externalListingId,
-              0,
-            );
-
-            await this.logSync(
-              account.id,
-              SyncType.STOCK_UPDATE,
-              SyncStatus.SUCCESS,
-              `Anúncio ${listing.externalListingId} está paused no Mercado Livre; quantidade remota zerada (${previousStock} → 0) para evitar oversell em reativação manual.`,
-              {
-                productId: product.id,
-                externalListingId: listing.externalListingId,
-                previousStock,
-                newStock: 0,
-                remoteStatus: currentStatus,
-                note: "paused_zeroed_preventively",
-              },
-            );
-
-            return {
-              success: true,
-              productId: product.id,
-              externalListingId: listing.externalListingId,
-              previousStock,
-              newStock: 0,
-            };
-          } catch (zeroErr) {
-            const zeroMsg =
-              zeroErr instanceof Error ? zeroErr.message : "erro desconhecido";
-            return this.logMLStockWarningAndReturn(
-              account.id,
-              listing,
-              product,
-              currentItem,
-              `Anúncio ${listing.externalListingId} paused; falha ao zerar quantidade remota (${previousStock}): ${zeroMsg}. Risco de oversell se reativar manualmente.`,
-              "ml_paused_zero_failed",
-            );
-          }
+          await this.alertMLReactivationRisk(
+            account,
+            listing,
+            product,
+            previousStock,
+          );
+          return this.logMLStockWarningAndReturn(
+            account.id,
+            listing,
+            product,
+            currentItem,
+            `Anúncio ${listing.externalListingId} paused com quantidade remota=${previousStock} e estoque local=0. RISCO DE OVERSELL se reativar manualmente no ML — zere a quantidade no painel do ML antes de reativar.`,
+            "ml_paused_with_remote_qty",
+          );
         }
 
         if (
@@ -2482,6 +2455,58 @@ export class SyncUseCase {
       );
     } catch (err) {
       console.error("[checkAndAlertTokenHealth] falhou:", err);
+    }
+  }
+
+  /**
+   * Alerta persistente para anúncios ML em estado perigoso para reativação manual:
+   * paused + quantidade remota > 0 + estoque local = 0. Se o vendedor reativar
+   * pelo painel do ML sem antes zerar a quantidade, o anúncio volta vendável e
+   * pode gerar oversell. ML rejeita qty=0 via API, então não há correção
+   * automática — apenas alertamos.
+   *
+   * Dedup: 24h por listing (action=ML_REACTIVATION_RISK, resourceId=listing.id).
+   */
+  private static async alertMLReactivationRisk(
+    account: { id: string; platform: string; accountName: string },
+    listing: { id: string; externalListingId: string },
+    product: { id: string; sku: string | null; name: string },
+    remoteQuantity: number,
+  ): Promise<void> {
+    try {
+      const dedupeStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const existing = await prisma.systemLog.findFirst({
+        where: {
+          action: "ML_REACTIVATION_RISK",
+          resourceId: listing.id,
+          createdAt: { gte: dedupeStart },
+        },
+        select: { id: true },
+      });
+      if (existing) return;
+
+      const label = `${account.platform} "${account.accountName}"`;
+      await SystemLogService.logError(
+        "ML_REACTIVATION_RISK",
+        `Risco de oversell em ${label}: anúncio ${listing.externalListingId} (SKU ${product.sku ?? "?"} — ${product.name}) está paused com quantidade remota=${remoteQuantity} mas estoque local=0. Antes de reativar pelo painel do ML, zere a quantidade no próprio ML (API rejeita qty=0 remotamente).`,
+        {
+          resource: "Listing",
+          resourceId: listing.id,
+          details: {
+            platform: account.platform,
+            accountName: account.accountName,
+            accountId: account.id,
+            externalListingId: listing.externalListingId,
+            productId: product.id,
+            productSku: product.sku,
+            productName: product.name,
+            remoteQuantity,
+            localStock: 0,
+          },
+        },
+      );
+    } catch (err) {
+      console.error("[alertMLReactivationRisk] falhou:", err);
     }
   }
 }

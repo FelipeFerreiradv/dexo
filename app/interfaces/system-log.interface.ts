@@ -21,7 +21,8 @@ export type LogAction =
   | "OVERSELL_DETECTED"
   | "STOCK_SYNC_FAILED"
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
-  | "TOKEN_EXPIRED_REPEATED";
+  | "TOKEN_EXPIRED_REPEATED"
+  | "ML_REACTIVATION_RISK";
 
 export interface SystemLog {
   id: string;

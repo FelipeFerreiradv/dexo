@@ -30,12 +30,15 @@ async function run() {
   console.log(`[sync-product] Sincronizando produto ${productId}...`);
   const results = await SyncUseCase.syncProductStock(productId);
   for (const r of results) {
-    const tag = !r.success ? "✗" : r.skipped ? "⚠" : "✓";
+    const danger = r.skipped && r.skipReason === "ml_paused_with_remote_qty";
+    const tag = !r.success ? "✗" : danger ? "🔴" : r.skipped ? "⚠" : "✓";
     const suffix = r.error
       ? " ERROR=" + r.error
-      : r.skipped
-        ? ` SKIPPED (${r.skipReason ?? "unknown"}) — quantidade remota não tocada`
-        : "";
+      : danger
+        ? ` REATIVAÇÃO PERIGOSA — paused com qty remota=${r.previousStock ?? "?"} e local=0. Zere a quantidade no painel do ML antes de reativar (API rejeita qty=0).`
+        : r.skipped
+          ? ` SKIPPED (${r.skipReason ?? "unknown"}) — quantidade remota não tocada`
+          : "";
     console.log(
       `  ${tag} [${r.platform ?? "?"}] listing=${r.externalListingId} ${r.previousStock ?? "?"} → ${r.newStock ?? "?"}${suffix}`,
     );
