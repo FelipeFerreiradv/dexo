@@ -45,3 +45,6 @@ prisma/migrations/
 *.tsbuildinfo
 next-env.d.ts
 
+# fiscal runtime storage (XMLs assinados e DANFE PDFs)
+.fiscal-storage/
+

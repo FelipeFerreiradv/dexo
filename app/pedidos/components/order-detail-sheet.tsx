@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   Package,
@@ -9,10 +10,13 @@ import {
   DollarSign,
   Clock,
   Store,
+  FileText,
+  Loader2,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -31,6 +35,9 @@ import {
 
 import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
 import { getApiBaseUrl } from "@/lib/api";
+
+const isFiscalEnabled =
+  process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED === "true";
 
 interface OrderDetailSheetProps {
   order: Order | null;
@@ -68,7 +75,80 @@ export function OrderDetailSheet({
   onOrderUpdate,
 }: OrderDetailSheetProps) {
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isCreatingNfe, setIsCreatingNfe] = useState(false);
+  const [nfeError, setNfeError] = useState<string | null>(null);
   const { data: session } = useSession();
+  const router = useRouter();
+
+  // Warm up the NF-e wizard bundle while the user is still reading the sheet —
+  // clicking "Emitir NF-e" then lands on a pre-hydrated page.
+  useEffect(() => {
+    if (open && isFiscalEnabled) {
+      router.prefetch("/notas-fiscais/nfe");
+    }
+  }, [open, router]);
+
+  const handleEmitirNfe = async () => {
+    if (!order || !session?.user?.email || isCreatingNfe) return;
+
+    setIsCreatingNfe(true);
+    setNfeError(null);
+    try {
+      const apiBase = getApiBaseUrl();
+      const headers = {
+        "Content-Type": "application/json",
+        email: session.user.email,
+      };
+
+      const createRes = await fetch(`${apiBase}/fiscal/nfe/draft`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ orderId: order.id }),
+      });
+
+      if (!createRes.ok) {
+        const err = await createRes.json().catch(() => ({}));
+        setNfeError(
+          err?.error ||
+            "Não foi possível criar o rascunho. Verifique a configuração fiscal.",
+        );
+        return;
+      }
+
+      const { draft } = await createRes.json();
+      const draftId = draft?.id as string | undefined;
+      if (!draftId) {
+        setNfeError("Rascunho criado sem ID. Tente novamente.");
+        return;
+      }
+
+      const prefill: Record<string, unknown> = {
+        numeroPedido: order.externalOrderId,
+        destinatarioJson: {
+          tipoPessoa: "PF",
+          cpfCnpj: "",
+          nome: order.customerName ?? "",
+          email: order.customerEmail ?? null,
+          codPais: "1058",
+          pais: "BRASIL",
+        },
+      };
+
+      await fetch(`${apiBase}/fiscal/nfe/draft/${draftId}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(prefill),
+      }).catch(() => {
+        // best-effort prefill — wizard ainda abre com o rascunho em branco
+      });
+
+      router.push(`/notas-fiscais/nfe?draft=${draftId}`);
+    } catch {
+      setNfeError("Erro de conexão ao iniciar emissão de NF-e.");
+    } finally {
+      setIsCreatingNfe(false);
+    }
+  };
 
   const handleStatusUpdate = async (newStatus: OrderStatus) => {
     if (!order || !session?.user?.email) return;
@@ -176,7 +256,28 @@ export function OrderDetailSheet({
                       <SelectItem value="CANCELLED">CANCELLED</SelectItem>
                     </SelectContent>
                   </Select>
+                  {isFiscalEnabled && (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleEmitirNfe}
+                      disabled={isCreatingNfe}
+                      className="gap-1.5"
+                    >
+                      {isCreatingNfe ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <FileText className="size-4" />
+                      )}
+                      {isCreatingNfe ? "Preparando..." : "Emitir NF-e"}
+                    </Button>
+                  )}
                 </div>
+                {nfeError && (
+                  <p className="max-w-65 text-xs text-destructive">
+                    {nfeError}
+                  </p>
+                )}
                 <div>
                   <p className="text-xs uppercase tracking-[0.08em] text-muted-foreground">
                     Total do Pedido

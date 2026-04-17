@@ -192,8 +192,8 @@ export class FocusNfeProvider implements INfeProvider {
     input: NfeProviderCancelInput,
   ): Promise<NfeProviderCancelResult> {
     const baseUrl = getBaseUrl(this.ambiente);
-    // Focus uses the ref (chave_acesso) to cancel
-    const url = `${baseUrl}/v2/nfe/${encodeURIComponent(input.chaveAcesso)}`;
+    // Focus cancela pelo REF usado na emissão (não pela chave de acesso)
+    const url = `${baseUrl}/v2/nfe/${encodeURIComponent(input.ref)}`;
 
     try {
       const res = await fetch(url, {

@@ -43,6 +43,8 @@ export interface NfeProviderConsultaResult {
 }
 
 export interface NfeProviderCancelInput {
+  /** Referência interna usada na emissão (ex: id do NfeEmitida) — Focus cancela por ref, não por chave */
+  ref: string;
   chaveAcesso: string;
   protocolo: string;
   justificativa: string;

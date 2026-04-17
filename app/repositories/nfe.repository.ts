@@ -395,25 +395,31 @@ export class NfeRepository {
   }
 
   async getStats(userId: string): Promise<NfeStats> {
-    const baseWhere = { userId, status: { not: "DRAFT" } };
+    // Single groupBy replaces 4 count() queries — Postgres resolves it from the
+    // (userId, status) composite index in one pass.
+    const [groups, allAuthorized] = await Promise.all([
+      (prisma as any).nfeEmitida.groupBy({
+        by: ["status"],
+        where: { userId, status: { not: "DRAFT" } },
+        _count: { _all: true },
+      }),
+      (prisma as any).nfeEmitida.findMany({
+        where: { userId, status: "AUTHORIZED" },
+        select: { totaisJson: true },
+      }),
+    ]);
 
-    const [total, autorizadas, rejeitadas, canceladas, allAuthorized] =
-      await Promise.all([
-        (prisma as any).nfeEmitida.count({ where: baseWhere }),
-        (prisma as any).nfeEmitida.count({
-          where: { userId, status: "AUTHORIZED" },
-        }),
-        (prisma as any).nfeEmitida.count({
-          where: { userId, status: "REJECTED" },
-        }),
-        (prisma as any).nfeEmitida.count({
-          where: { userId, status: "CANCELLED" },
-        }),
-        (prisma as any).nfeEmitida.findMany({
-          where: { userId, status: "AUTHORIZED" },
-          select: { totaisJson: true },
-        }),
-      ]);
+    let total = 0;
+    let autorizadas = 0;
+    let rejeitadas = 0;
+    let canceladas = 0;
+    for (const g of groups as Array<{ status: string; _count: { _all: number } }>) {
+      const count = g._count._all;
+      total += count;
+      if (g.status === "AUTHORIZED") autorizadas = count;
+      else if (g.status === "REJECTED") rejeitadas = count;
+      else if (g.status === "CANCELLED") canceladas = count;
+    }
 
     const valorTotal = allAuthorized.reduce((sum: number, r: any) => {
       const totais = r.totaisJson as any;

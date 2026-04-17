@@ -89,6 +89,7 @@ export class NfeCancelamentoUseCase {
       config.ambiente as FiscalAmbiente,
     );
     const result = await provider.cancelar({
+      ref: nfeId,
       chaveAcesso: nfe.chaveAcesso,
       protocolo: nfe.protocoloAutorizacao,
       justificativa: justificativa.trim(),

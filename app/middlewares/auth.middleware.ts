@@ -12,12 +12,15 @@ export const authMiddleware = async (
   request: FastifyRequest,
   reply: FastifyReply,
 ) => {
-  const apiEmail = request.headers["email"];
+  const headerEmail = request.headers["email"] as string | undefined;
+  const queryEmail = (request.query as Record<string, unknown> | undefined)
+    ?.email as string | undefined;
+  const apiEmail = headerEmail ?? queryEmail;
   if (!apiEmail) {
     return reply.status(401).send({ message: "Email is required" });
   }
 
-  const email = apiEmail as string;
+  const email = apiEmail;
 
   // Check cache first
   const cached = userCache.get(email);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   Search,
@@ -102,6 +103,7 @@ const formatCurrency = (value: number) =>
 
 export function NfeList() {
   const { data: session, status: authStatus } = useSession();
+  const router = useRouter();
   const [notas, setNotas] = useState<NfeListItem[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
@@ -276,6 +278,12 @@ export function NfeList() {
       fetchNotas();
     }
   }, [fetchNotas, session, authStatus]);
+
+  // Prefetch wizard route once the list mounts — navigating to "Emitir NF-e"
+  // from any trigger becomes instant (page bundle + RSC already loaded).
+  useEffect(() => {
+    router.prefetch("/notas-fiscais/nfe");
+  }, [router]);
 
   if (authStatus === "loading") {
     return <NfeListSkeleton />;
