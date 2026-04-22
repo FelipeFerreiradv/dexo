@@ -288,6 +288,34 @@ export class ListingRetryService {
         // (we only need ml item creation; existing placeholder will be updated)
         // NOTE: reuse product data from cand.product
         const product = cand.product as any;
+
+        // Guard terminal: stock/price inválidos nunca serão aceitos pelo ML
+        // (item.stock.invalid / item.price.invalid). Sem o guard, o retry
+        // service entrava em loop infinito — capability check passa, payload
+        // é montado, createItem falha, volta para a fila, repete. Marcamos
+        // retryEnabled=false para o job sair da rotação até o usuário
+        // corrigir os dados do produto e recriar o anúncio.
+        const hasValidStock =
+          typeof product.stock === "number" && product.stock > 0;
+        const hasValidPrice =
+          typeof product.price === "number" && product.price > 0;
+        if (!hasValidStock || !hasValidPrice) {
+          const reason = !hasValidStock && !hasValidPrice
+            ? "sem estoque e sem preço"
+            : !hasValidStock
+              ? "sem estoque (stock=0)"
+              : "sem preço (price=0)";
+          console.warn(
+            `[ListingRetryService] skipping ${cand.id} permanently — produto ${reason}`,
+          );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            lastError: `[TERMINAL] Produto ${reason} — corrija no cadastro e recrie o anúncio`,
+            nextRetryAt: null,
+            retryEnabled: false,
+          });
+          continue;
+        }
+
         const retryTitle = sanitizeTitle(product.name || "", product, 60);
         const backendBase =
           process.env.APP_BACKEND_URL || "http://localhost:3333";
