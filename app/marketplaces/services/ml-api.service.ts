@@ -92,6 +92,24 @@ function parseYearFromAttr(name: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// ML frequentemente devolve VEHICLE_YEAR.value_name como range textual
+// ("2008-2013", "2008 a 2013") em vez de ano único. Extraímos todos os anos
+// de 4 dígitos e tratamos como intervalo [min, max]. Quando não há ano
+// parseável (ex.: "Todos", vazio) retornamos null — quem chama decide como
+// tratar (tipicamente aceita como compatível com qualquer ano).
+function parseYearRangeFromAttr(
+  name: string | null,
+): { from: number; to: number } | null {
+  if (!name) return null;
+  const matches = Array.from(name.matchAll(/\b(19|20)\d{2}\b/g));
+  if (matches.length === 0) return null;
+  const years = matches
+    .map((m) => parseInt(m[0], 10))
+    .filter((n) => Number.isFinite(n));
+  if (years.length === 0) return null;
+  return { from: Math.min(...years), to: Math.max(...years) };
+}
+
 /**
  * Converte um catalog product em uma opção normalizada de veículo.
  * Ausências são toleradas — retorna null quando faltam brand/model.
@@ -154,6 +172,11 @@ function compatCacheGet<T>(key: string): T | null {
 
 function compatCacheSet<T>(key: string, data: T): void {
   compatCache.set(key, { data, exp: Date.now() + COMPAT_CACHE_TTL_MS });
+}
+
+/** Test-only: limpa o cache global de compat (brands/models/vehicles). */
+export function __resetCompatCacheForTests(): void {
+  compatCache.clear();
 }
 
 /**
@@ -1403,10 +1426,15 @@ export class MLApiService {
                 const yearAttr = prod.attributes?.find(
                   (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
                 );
-                const y = parseYearFromAttr(
-                  yearAttr?.value_name ?? yearAttr?.values?.[0]?.name ?? null,
-                );
-                if (y !== year) continue;
+                const raw =
+                  yearAttr?.value_name ?? yearAttr?.values?.[0]?.name ?? null;
+                const range = parseYearRangeFromAttr(raw);
+                // Quando o produto traz um range parseável, exige containment.
+                // Sem atributo ou formato não-parseável ("Todos"): trata como
+                // compatível com qualquer ano — é o comportamento que o ML
+                // adota no dashboard deles e cobre o caso de produtos
+                // universais.
+                if (range && (year < range.from || year > range.to)) continue;
               }
               catalogProductIds.add(prod.id);
               found += 1;

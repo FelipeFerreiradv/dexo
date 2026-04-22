@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import axios from "axios";
-import { MLApiService } from "../app/marketplaces/services/ml-api.service";
+import {
+  MLApiService,
+  __resetCompatCacheForTests,
+} from "../app/marketplaces/services/ml-api.service";
 
 vi.mock("axios");
 const mockedAxios = axios as unknown as {
@@ -98,6 +101,7 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     (mockedAxios as any).post = vi.fn();
     (mockedAxios as any).get = vi.fn();
     (mockedAxios as any).isAxiosError = () => false;
+    __resetCompatCacheForTests();
   });
 
   afterEach(() => {
@@ -233,6 +237,158 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     ]);
     expect(lastBody?.known_attributes).toBeUndefined();
     expect(result.catalogProductIds).toContain("MLB_BMW_IX_2023");
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("aceita catalog product cujo VEHICLE_YEAR vem como range '2008-2013' quando ano pedido está dentro", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FIAT", name: "Fiat" }],
+          },
+        ],
+      },
+    });
+    (mockedAxios as any).post
+      // listCompatibilityModels
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_RANGE",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      })
+      // chunks search com marca+modelo — produto cobre range "2008-2013"
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_RANGE",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+                { id: "VEHICLE_YEAR", value_name: "2008-2013" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      });
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2010, yearTo: 2010 }],
+    );
+
+    expect(result.catalogProductIds).toContain("MLB_UNO_RANGE");
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it("descarta catalog product quando ano pedido está fora do range do VEHICLE_YEAR", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FIAT", name: "Fiat" }],
+          },
+        ],
+      },
+    });
+    (mockedAxios as any).post
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_OLD",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_OLD",
+              attributes: [
+                { id: "VEHICLE_YEAR", value_name: "1984-2013" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      });
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2024, yearTo: 2024 }],
+    );
+
+    expect(result.catalogProductIds).not.toContain("MLB_UNO_OLD");
+    expect(result.unresolved).toHaveLength(1);
+  });
+
+  it("inclui catalog product sem atributo VEHICLE_YEAR (tratado como compatível com qualquer ano)", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FIAT", name: "Fiat" }],
+          },
+        ],
+      },
+    });
+    (mockedAxios as any).post
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_ANY",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_ANY",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      });
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2002, yearTo: 2002 }],
+    );
+
+    expect(result.catalogProductIds).toContain("MLB_UNO_ANY");
     expect(result.unresolved).toEqual([]);
   });
 
