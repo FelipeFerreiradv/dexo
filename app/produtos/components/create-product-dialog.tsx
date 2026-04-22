@@ -3137,10 +3137,13 @@ export function CreateProductDialog({
                                 <SelectValue placeholder="Tipo de listagem" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="bronze">Clássico</SelectItem>
-                                <SelectItem value="gold_special">
+                                <SelectItem value="gold_premium">
                                   Premium
                                 </SelectItem>
+                                <SelectItem value="gold_special">
+                                  Clássico
+                                </SelectItem>
+                                <SelectItem value="bronze">Grátis</SelectItem>
                               </SelectContent>
                             </Select>
                           )}

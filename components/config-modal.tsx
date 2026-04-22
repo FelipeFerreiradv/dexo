@@ -625,8 +625,9 @@ function PreferencesSection(props: {
               <SelectValue placeholder="Selecione" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="gold_special">Premium</SelectItem>
-              <SelectItem value="bronze">Clássico</SelectItem>
+              <SelectItem value="gold_premium">Premium</SelectItem>
+              <SelectItem value="gold_special">Clássico</SelectItem>
+              <SelectItem value="bronze">Grátis</SelectItem>
             </SelectContent>
           </Select>
         </SettingRow>

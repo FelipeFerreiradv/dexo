@@ -28,7 +28,7 @@ export interface CreateListingResult {
 }
 
 export interface MLListingSettings {
-  listingType?: string; // "bronze" | "gold_special" | "gold_pro"
+  listingType?: string; // "bronze" (Grátis) | "gold_special" (Clássico) | "gold_premium" (Premium)
   hasWarranty?: boolean;
   warrantyUnit?: string; // "dias" | "meses"
   warrantyDuration?: number;
