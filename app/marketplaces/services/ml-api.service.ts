@@ -1410,26 +1410,31 @@ export class MLApiService {
         fetchErr = err;
       }
 
-      // Diagnóstico: distingue "ML não retornou produtos" de "ML retornou mas
-      // filtro local descartou todos". Também loga os year values crus para
-      // revelar o formato real de VEHICLE_YEAR.value_name quando o parser
-      // falhar (ex.: "Desde 2010", "2010 a 2015", "Todos").
+      // Diagnóstico: distingue "ML não retornou produtos", "retornou mas
+      // eram de outras marcas/modelos" e "bateu brand+model mas filtro de
+      // ano descartou todos". Também loga os year values crus para revelar
+      // o formato real de VEHICLE_YEAR.value_name (ex.: "Desde 2010",
+      // "2010 a 2015", "Todos").
       if (fetchErr === null) {
-        const yearSamples = Array.from(
-          new Set(
-            cachedProducts
-              .slice(0, 30)
-              .map((p) => {
-                const attr = p.attributes?.find(
-                  (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
-                );
-                return (
-                  attr?.value_name ?? attr?.values?.[0]?.name ?? null
-                );
-              })
-              .filter((v): v is string => typeof v === "string" && v.length > 0),
-          ),
-        ).slice(0, 10);
+        const samplePool = cachedProducts.slice(0, 30);
+        const attrSample = (id: string): string[] =>
+          Array.from(
+            new Set(
+              samplePool
+                .map((p) => {
+                  const attr = p.attributes?.find((a) => a?.id === id);
+                  return (
+                    attr?.value_name ?? attr?.values?.[0]?.name ?? null
+                  );
+                })
+                .filter(
+                  (v): v is string => typeof v === "string" && v.length > 0,
+                ),
+            ),
+          ).slice(0, 10);
+        const yearSamples = attrSample(ML_ATTR.VEHICLE_YEAR);
+        const brandSamples = attrSample(ML_ATTR.BRAND);
+        const modelSamples = attrSample(ML_ATTR.MODEL);
         const brandTag = brand
           ? `brand=${brand.valueId}`
           : `brand=fallback(${brandName})`;
@@ -1437,7 +1442,7 @@ export class MLApiService {
           ? `model=${model.valueId}`
           : `model=fallback(${modelName})`;
         console.info(
-          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); year samples: ${JSON.stringify(yearSamples)}`,
+          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); brand samples: ${JSON.stringify(brandSamples)}; model samples: ${JSON.stringify(modelSamples)}; year samples: ${JSON.stringify(yearSamples)}`,
         );
       }
 
@@ -1455,36 +1460,53 @@ export class MLApiService {
           continue;
         }
 
+        let matchedBrandModel = 0;
         let found = 0;
         for (const prod of cachedProducts) {
           if (!prod?.id) continue;
-          // Quando usamos open_attributes, o matching é por nome e o ML
-          // pode devolver resultados "próximos". Validamos localmente
-          // que marca/modelo batem para evitar falsos positivos.
-          if (!brand || !model) {
-            const brandAttr = prod.attributes?.find(
-              (a) => a?.id === ML_ATTR.BRAND,
-            );
-            const modelAttr = prod.attributes?.find(
-              (a) => a?.id === ML_ATTR.MODEL,
-            );
+          const brandAttr = prod.attributes?.find(
+            (a) => a?.id === ML_ATTR.BRAND,
+          );
+          const modelAttr = prod.attributes?.find(
+            (a) => a?.id === ML_ATTR.MODEL,
+          );
+          // Validação SEMPRE. O ML ignora (ou aplica parcialmente) o
+          // known_attributes em vários casos — o log de produção mostrou
+          // 500 produtos retornados para pares como "Dodge Ram 3500" e
+          // "Citroën Berlingo", que na prática têm poucas variações. O
+          // filtro por value_id (quando brand/model foram resolvidos via
+          // catalog_domains) é o único gate confiável; quando caímos no
+          // fallback open_attributes, comparamos por nome normalizado.
+          if (brand) {
+            const prodBrandValueId =
+              brandAttr?.value_id ?? brandAttr?.values?.[0]?.id ?? null;
+            if (prodBrandValueId && prodBrandValueId !== brand.valueId) {
+              continue;
+            }
+          } else {
             const prodBrand = normalize(
               brandAttr?.value_name ??
                 brandAttr?.values?.[0]?.name ??
                 "",
             );
+            if (prodBrand && prodBrand !== normalizedBrand) continue;
+          }
+          if (model) {
+            const prodModelValueId =
+              modelAttr?.value_id ?? modelAttr?.values?.[0]?.id ?? null;
+            if (prodModelValueId && prodModelValueId !== model.valueId) {
+              continue;
+            }
+          } else {
             const prodModel = normalize(
               modelAttr?.value_name ??
                 modelAttr?.values?.[0]?.name ??
                 "",
             );
-            if (!brand && prodBrand && prodBrand !== normalizedBrand) {
-              continue;
-            }
-            if (!model && prodModel && prodModel !== normalizedModel) {
-              continue;
-            }
+            if (prodModel && prodModel !== normalizedModel) continue;
           }
+          matchedBrandModel += 1;
+
           if (year != null) {
             const yearAttr = prod.attributes?.find(
               (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
@@ -1494,9 +1516,8 @@ export class MLApiService {
             const range = parseYearRangeFromAttr(raw);
             // Quando o produto traz um range parseável, exige containment.
             // Sem atributo ou formato não-parseável ("Todos"): trata como
-            // compatível com qualquer ano — é o comportamento que o ML
-            // adota no dashboard deles e cobre o caso de produtos
-            // universais.
+            // compatível com qualquer ano — alinha com o painel do ML para
+            // produtos universais.
             if (range && (year < range.from || year > range.to)) continue;
           }
           catalogProductIds.add(prod.id);
@@ -1505,9 +1526,11 @@ export class MLApiService {
 
         if (found === 0) {
           const fetched = cachedProducts.length;
-          // Distingue: (a) ML não tem nada para esse (brand, model), vs
-          // (b) ML retornou produtos mas nosso filtro de ano descartou todos.
-          // Reason informativo para o log de ListingUseCase.
+          // 3 cenários:
+          // (a) ML devolveu 0 produtos: par (brand, model) não existe.
+          // (b) Devolveu N mas 0 bateram brand+model: ML ignorou o filtro
+          //     e retornou lixo — o catálogo dele não cobre esse par.
+          // (c) Bateram brand+model mas ano específico não foi coberto.
           unresolved.push({
             brand: brandName,
             model: modelName,
@@ -1515,10 +1538,14 @@ export class MLApiService {
             reason: year
               ? fetched === 0
                 ? `no catalog products for ${year} (ML returned 0 for brand+model)`
-                : `no catalog products for ${year} (0 of ${fetched} matched year)`
+                : matchedBrandModel === 0
+                  ? `no catalog products for ${year} (0 of ${fetched} matched brand+model; ML ignored filter)`
+                  : `no catalog products for ${year} (0 of ${matchedBrandModel} matched year; ${fetched} total fetched)`
               : fetched === 0
                 ? "no catalog products for brand+model (ML returned 0)"
-                : `no catalog products for brand+model (0 of ${fetched} matched)`,
+                : matchedBrandModel === 0
+                  ? `no catalog products for brand+model (0 of ${fetched} matched; ML ignored filter)`
+                  : `no catalog products for brand+model (${matchedBrandModel} of ${fetched} matched)`,
           });
         }
       }
