@@ -1325,12 +1325,46 @@ export class MLApiService {
       return { domain_id: ML_COMPAT_DOMAIN_ID, attributes };
     };
 
-    const postProducts = async (
+    // Quando o item está vinculado a um User Product (modelo novo do ML
+    // para itens com family_name), o endpoint /items/.../compatibilities
+    // retorna 400 "This Item ... has User Product compatibilities. Use
+    // the corresponding User Product resources.". Precisamos resolver o
+    // user_product_id via GET /items/{id} e redirecionar o PUT para
+    // /user-products/{id}/compatibilities.
+    let resolvedUserProductId: string | null = null;
+    let userProductLookupAttempted = false;
+
+    const getUserProductId = async (): Promise<string | null> => {
+      if (userProductLookupAttempted) return resolvedUserProductId;
+      userProductLookupAttempted = true;
+      try {
+        const resp = await axios.get<{ user_product_id?: string | null }>(
+          `${ML_CONSTANTS.API_URL}/items/${itemId}`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            timeout: 15000,
+          },
+        );
+        const upId = resp.data?.user_product_id;
+        resolvedUserProductId =
+          typeof upId === "string" && upId.length > 0 ? upId : null;
+      } catch {
+        resolvedUserProductId = null;
+      }
+      return resolvedUserProductId;
+    };
+
+    const isUserProductHint = (msg: string): boolean =>
+      /User Product compatibilities/i.test(msg) ||
+      /use the corresponding user product resources/i.test(msg);
+
+    const putCompat = async (
+      url: string,
       batch: Tuple[],
     ): Promise<{ ok: boolean; error?: string }> => {
       try {
         await axios.put(
-          `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+          url,
           {
             create: {
               products_families: batch.map(toFamily),
@@ -1354,6 +1388,30 @@ export class MLApiService {
             : String(error);
         return { ok: false, error: msg };
       }
+    };
+
+    const postProducts = async (
+      batch: Tuple[],
+    ): Promise<{ ok: boolean; error?: string }> => {
+      // Caminho canônico: PUT /items/{id}/compatibilities.
+      const first = await putCompat(
+        `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+        batch,
+      );
+      if (first.ok) return first;
+
+      // Se o item tem User Product, o ML obriga a usar o endpoint
+      // /user-products/{user_product_id}/compatibilities.
+      if (first.error && isUserProductHint(first.error)) {
+        const upId = await getUserProductId();
+        if (upId) {
+          return putCompat(
+            `${ML_CONSTANTS.API_URL}/user-products/${upId}/compatibilities`,
+            batch,
+          );
+        }
+      }
+      return first;
     };
 
     const batch = await postProducts(tuples);

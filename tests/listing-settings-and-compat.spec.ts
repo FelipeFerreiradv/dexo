@@ -99,6 +99,8 @@ describe("MLApiService.setItemCompatibilities", () => {
 describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
   beforeEach(() => {
     (mockedAxios as any).post = vi.fn();
+    (mockedAxios as any).get = vi.fn();
+    (mockedAxios as any).put = vi.fn();
     (mockedAxios as any).isAxiosError = () => false;
   });
 
@@ -217,6 +219,73 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     const [, body] = (mockedAxios as any).put.mock.calls[0];
     expect(body.create.products_families).toHaveLength(1);
     expect(result.createdCount).toBe(1);
+  });
+
+  it("retry em /user-products/{id}/compatibilities quando /items/{id} retorna 'User Product compatibilities'", async () => {
+    const userProductErr = Object.assign(new Error("user product"), {
+      response: {
+        status: 400,
+        data: {
+          error: "bad_request",
+          message:
+            "This Item MLB1 has User Product compatibilities. Use the corresponding User Product resources.",
+          status: 400,
+        },
+      },
+      isAxiosError: true,
+    });
+    (mockedAxios as any).isAxiosError = (e: unknown) =>
+      Boolean((e as any)?.isAxiosError);
+    (mockedAxios as any).put = vi
+      .fn()
+      .mockRejectedValueOnce(userProductErr) // PUT /items/MLB1 falha
+      .mockResolvedValueOnce({ data: {} }); // PUT /user-products/UP-99 ok
+    (mockedAxios as any).get = vi.fn().mockResolvedValueOnce({
+      data: { user_product_id: "UP-99" },
+    });
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2010, yearTo: 2010 }],
+    );
+
+    expect((mockedAxios as any).put).toHaveBeenCalledTimes(2);
+    const urls = (mockedAxios as any).put.mock.calls.map(
+      (c: unknown[]) => c[0],
+    );
+    expect(urls[0]).toMatch(/\/items\/MLB1\/compatibilities$/);
+    expect(urls[1]).toMatch(/\/user-products\/UP-99\/compatibilities$/);
+    expect(result.success).toBe(true);
+    expect(result.createdCount).toBe(1);
+  });
+
+  it("reporta erro original quando não há user_product_id disponível no item", async () => {
+    const userProductErr = Object.assign(new Error("user product"), {
+      response: {
+        status: 400,
+        data: {
+          message: "This Item MLB1 has User Product compatibilities.",
+        },
+      },
+      isAxiosError: true,
+    });
+    (mockedAxios as any).isAxiosError = (e: unknown) =>
+      Boolean((e as any)?.isAxiosError);
+    // Batch + individual: ambos falham com o mesmo erro
+    (mockedAxios as any).put = vi.fn().mockRejectedValue(userProductErr);
+    (mockedAxios as any).get = vi
+      .fn()
+      .mockResolvedValueOnce({ data: {} }); // sem user_product_id
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2010, yearTo: 2010 }],
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("User Product compatibilities");
   });
 });
 
