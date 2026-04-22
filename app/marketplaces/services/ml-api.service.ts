@@ -1348,122 +1348,138 @@ export class MLApiService {
         years.push(null);
       }
 
-      for (const year of years) {
-        const searchParams: {
-          knownAttributes?: Array<{ id: string; value_id: string }>;
-          openAttributes?: Array<{ id: string; value_name: string }>;
-          limit?: number;
-          offset?: number;
-        } = {};
-        if (brand && model) {
-          searchParams.knownAttributes = [
-            { id: ML_ATTR.BRAND, value_id: brand.valueId },
-            { id: ML_ATTR.MODEL, value_id: model.valueId },
-          ];
-        } else if (brand) {
-          searchParams.knownAttributes = [
-            { id: ML_ATTR.BRAND, value_id: brand.valueId },
-          ];
-          searchParams.openAttributes = [
-            { id: ML_ATTR.MODEL, value_name: modelName },
-          ];
-        } else {
-          searchParams.openAttributes = [
-            { id: ML_ATTR.BRAND, value_name: brandName },
-            { id: ML_ATTR.MODEL, value_name: modelName },
-          ];
-        }
+      // A busca ao ML não filtra por ano — todos os anos no range retornam
+      // exatamente o mesmo conjunto de produtos para um dado (brand, model).
+      // Paginamos uma vez e aplicamos o filtro de ano localmente por
+      // iteração, o que transforma N chamadas idênticas em 1 (N = tamanho
+      // do range). Preserva a semântica de `unresolved` (1 entry por ano
+      // não coberto) e de erro de rede (1 entry por ano quando a busca
+      // falha).
+      const searchParams: {
+        knownAttributes?: Array<{ id: string; value_id: string }>;
+        openAttributes?: Array<{ id: string; value_name: string }>;
+        limit?: number;
+        offset?: number;
+      } = {};
+      if (brand && model) {
+        searchParams.knownAttributes = [
+          { id: ML_ATTR.BRAND, value_id: brand.valueId },
+          { id: ML_ATTR.MODEL, value_id: model.valueId },
+        ];
+      } else if (brand) {
+        searchParams.knownAttributes = [
+          { id: ML_ATTR.BRAND, value_id: brand.valueId },
+        ];
+        searchParams.openAttributes = [
+          { id: ML_ATTR.MODEL, value_name: modelName },
+        ];
+      } else {
+        searchParams.openAttributes = [
+          { id: ML_ATTR.BRAND, value_name: brandName },
+          { id: ML_ATTR.MODEL, value_name: modelName },
+        ];
+      }
 
-        try {
-          // Paginamos até esgotar para pegar todas as versões do modelo
-          // (um par marca/modelo pode ter várias linhas de versão/motorização).
-          const pageSize = 50;
-          const maxPages = 10;
-          let found = 0;
-          const normalizedBrand = normalize(brandName);
-          const normalizedModel = normalize(modelName);
-          for (let page = 0; page < maxPages; page++) {
-            const chunk = await this.searchCatalogCompatibilityChunks(
-              accessToken,
-              {
-                ...searchParams,
-                limit: pageSize,
-                offset: page * pageSize,
-              },
-            );
-            const results = chunk.results ?? [];
-            if (results.length === 0) break;
-            for (const prod of results) {
-              if (!prod?.id) continue;
-              // Quando usamos open_attributes, o matching é por nome e o ML
-              // pode devolver resultados "próximos". Validamos localmente
-              // que marca/modelo batem para evitar falsos positivos.
-              if (!brand || !model) {
-                const brandAttr = prod.attributes?.find(
-                  (a) => a?.id === ML_ATTR.BRAND,
-                );
-                const modelAttr = prod.attributes?.find(
-                  (a) => a?.id === ML_ATTR.MODEL,
-                );
-                const prodBrand = normalize(
-                  brandAttr?.value_name ??
-                    brandAttr?.values?.[0]?.name ??
-                    "",
-                );
-                const prodModel = normalize(
-                  modelAttr?.value_name ??
-                    modelAttr?.values?.[0]?.name ??
-                    "",
-                );
-                if (!brand && prodBrand && prodBrand !== normalizedBrand) {
-                  continue;
-                }
-                if (!model && prodModel && prodModel !== normalizedModel) {
-                  continue;
-                }
-              }
-              if (year != null) {
-                const yearAttr = prod.attributes?.find(
-                  (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
-                );
-                const raw =
-                  yearAttr?.value_name ?? yearAttr?.values?.[0]?.name ?? null;
-                const range = parseYearRangeFromAttr(raw);
-                // Quando o produto traz um range parseável, exige containment.
-                // Sem atributo ou formato não-parseável ("Todos"): trata como
-                // compatível com qualquer ano — é o comportamento que o ML
-                // adota no dashboard deles e cobre o caso de produtos
-                // universais.
-                if (range && (year < range.from || year > range.to)) continue;
-              }
-              catalogProductIds.add(prod.id);
-              found += 1;
-            }
-            const total = chunk.paging?.total;
-            if (typeof total === "number" && (page + 1) * pageSize >= total) {
-              break;
-            }
-            if (results.length < pageSize) break;
+      const pageSize = 50;
+      const maxPages = 10;
+      const normalizedBrand = normalize(brandName);
+      const normalizedModel = normalize(modelName);
+
+      const cachedProducts: MLCatalogCompatibilityProduct[] = [];
+      let fetchErr: unknown = null;
+      try {
+        for (let page = 0; page < maxPages; page++) {
+          const chunk = await this.searchCatalogCompatibilityChunks(
+            accessToken,
+            {
+              ...searchParams,
+              limit: pageSize,
+              offset: page * pageSize,
+            },
+          );
+          const results = chunk.results ?? [];
+          if (results.length === 0) break;
+          cachedProducts.push(...results);
+          const total = chunk.paging?.total;
+          if (typeof total === "number" && (page + 1) * pageSize >= total) {
+            break;
           }
-          if (found === 0) {
-            unresolved.push({
-              brand: brandName,
-              model: modelName,
-              year,
-              reason: year
-                ? `no catalog products for ${year}`
-                : "no catalog products for brand+model",
-            });
-          }
-        } catch (err) {
+          if (results.length < pageSize) break;
+        }
+      } catch (err) {
+        fetchErr = err;
+      }
+
+      for (const year of years) {
+        if (fetchErr !== null) {
           unresolved.push({
             brand: brandName,
             model: modelName,
             year,
             reason:
-              err instanceof Error
-                ? `lookup failed: ${err.message}`
+              fetchErr instanceof Error
+                ? `lookup failed: ${fetchErr.message}`
                 : "lookup failed",
+          });
+          continue;
+        }
+
+        let found = 0;
+        for (const prod of cachedProducts) {
+          if (!prod?.id) continue;
+          // Quando usamos open_attributes, o matching é por nome e o ML
+          // pode devolver resultados "próximos". Validamos localmente
+          // que marca/modelo batem para evitar falsos positivos.
+          if (!brand || !model) {
+            const brandAttr = prod.attributes?.find(
+              (a) => a?.id === ML_ATTR.BRAND,
+            );
+            const modelAttr = prod.attributes?.find(
+              (a) => a?.id === ML_ATTR.MODEL,
+            );
+            const prodBrand = normalize(
+              brandAttr?.value_name ??
+                brandAttr?.values?.[0]?.name ??
+                "",
+            );
+            const prodModel = normalize(
+              modelAttr?.value_name ??
+                modelAttr?.values?.[0]?.name ??
+                "",
+            );
+            if (!brand && prodBrand && prodBrand !== normalizedBrand) {
+              continue;
+            }
+            if (!model && prodModel && prodModel !== normalizedModel) {
+              continue;
+            }
+          }
+          if (year != null) {
+            const yearAttr = prod.attributes?.find(
+              (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
+            );
+            const raw =
+              yearAttr?.value_name ?? yearAttr?.values?.[0]?.name ?? null;
+            const range = parseYearRangeFromAttr(raw);
+            // Quando o produto traz um range parseável, exige containment.
+            // Sem atributo ou formato não-parseável ("Todos"): trata como
+            // compatível com qualquer ano — é o comportamento que o ML
+            // adota no dashboard deles e cobre o caso de produtos
+            // universais.
+            if (range && (year < range.from || year > range.to)) continue;
+          }
+          catalogProductIds.add(prod.id);
+          found += 1;
+        }
+
+        if (found === 0) {
+          unresolved.push({
+            brand: brandName,
+            model: modelName,
+            year,
+            reason: year
+              ? `no catalog products for ${year}`
+              : "no catalog products for brand+model",
           });
         }
       }

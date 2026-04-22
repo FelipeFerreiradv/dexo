@@ -419,4 +419,71 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
       }
     }
   });
+
+  it("range multi-ano faz 1 única busca ao chunks por (brand, model), não N buscas idênticas", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          {
+            id: "BRAND",
+            values: [{ id: "BR_FIAT", name: "Fiat" }],
+          },
+        ],
+      },
+    });
+    // 1x listCompatibilityModels + 1x chunks search deveriam bastar para
+    // cobrir um range de 2008..2013 (6 anos). A paginação é encerrada pelo
+    // `paging.total`. Se houver chamada extra, a fixture de erro dispara.
+    (mockedAxios as any).post
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_RANGE",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          results: [
+            {
+              id: "MLB_UNO_RANGE",
+              attributes: [
+                { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                { id: "MODEL", value_id: "MD_UNO", value_name: "Uno" },
+                { id: "VEHICLE_YEAR", value_name: "2008-2013" },
+              ],
+            },
+          ],
+          paging: { total: 1 },
+        },
+      })
+      .mockRejectedValue(
+        new Error("regressão: fetch duplicado por ano no range"),
+      );
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "Fiat", model: "Uno", yearFrom: 2008, yearTo: 2013 }],
+    );
+
+    // 2 chamadas esperadas: 1 para listCompatibilityModels + 1 para a busca
+    // única de catalog products (que agora cobre o range inteiro de 6 anos).
+    // Antes da otimização eram 7 (1 + 6 iterações idênticas).
+    const chunkCalls = (
+      (mockedAxios as any).post.mock.calls as unknown[][]
+    ).filter((call) => {
+      const url = call[0];
+      return typeof url === "string" && url.includes("products_search/chunks");
+    });
+    expect(chunkCalls).toHaveLength(2);
+    expect(result.catalogProductIds).toContain("MLB_UNO_RANGE");
+    expect(result.unresolved).toEqual([]);
+  });
 });
