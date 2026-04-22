@@ -1309,6 +1309,7 @@ export class MLApiService {
 
     const toFamily = (
       t: Tuple,
+      domainId: string,
     ): {
       domain_id: string;
       attributes: Array<{ id: string; value_name: string }>;
@@ -1322,8 +1323,21 @@ export class MLApiService {
         // VEHICLE_YEAR usado em catalog products).
         attributes.push({ id: "YEAR", value_name: String(t.year) });
       }
-      return { domain_id: ML_COMPAT_DOMAIN_ID, attributes };
+      return { domain_id: domainId, attributes };
     };
+
+    // O ML aceita dois domain_ids para compat em sites MLB dependendo da
+    // categoria/seller: "MLB-CARS_AND_VANS" (doc canônica) e
+    // "MLB-CARS_AND_VANS_FOR_COMPATIBILITIES" (variante que aparece em
+    // exemplos da doc para outros sites e em User Products novos). Quando o
+    // primeiro retorna "invalid domain id", tentamos o segundo antes de
+    // considerar falha.
+    const DOMAIN_IDS_TO_TRY = [
+      ML_COMPAT_DOMAIN_ID,
+      `${ML_COMPAT_DOMAIN_ID}_FOR_COMPATIBILITIES`,
+    ];
+    const isInvalidDomainHint = (msg: string): boolean =>
+      /invalid domain id/i.test(msg) || /domain_id/i.test(msg);
 
     // Quando o item está vinculado a um User Product (modelo novo do ML
     // para itens com family_name), o endpoint /items/.../compatibilities
@@ -1358,16 +1372,17 @@ export class MLApiService {
       /User Product compatibilities/i.test(msg) ||
       /use the corresponding user product resources/i.test(msg);
 
-    const putCompat = async (
+    const putCompatWithDomain = async (
       url: string,
       batch: Tuple[],
+      domainId: string,
     ): Promise<{ ok: boolean; error?: string }> => {
       try {
         await axios.put(
           url,
           {
             create: {
-              products_families: batch.map(toFamily),
+              products_families: batch.map((t) => toFamily(t, domainId)),
               universal: false,
             },
           },
@@ -1388,6 +1403,24 @@ export class MLApiService {
             : String(error);
         return { ok: false, error: msg };
       }
+    };
+
+    const putCompat = async (
+      url: string,
+      batch: Tuple[],
+    ): Promise<{ ok: boolean; error?: string }> => {
+      let lastError: string | undefined;
+      for (const domainId of DOMAIN_IDS_TO_TRY) {
+        const res = await putCompatWithDomain(url, batch, domainId);
+        if (res.ok) return res;
+        lastError = res.error;
+        // Só faz retry com outro domain_id se o erro foi exatamente sobre
+        // domain_id. Para outros erros (stock, auth, etc.), parar aqui.
+        if (!res.error || !isInvalidDomainHint(res.error)) {
+          return res;
+        }
+      }
+      return { ok: false, error: lastError };
     };
 
     const postProducts = async (
