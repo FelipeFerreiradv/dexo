@@ -1372,32 +1372,57 @@ export class MLApiService {
       /User Product compatibilities/i.test(msg) ||
       /use the corresponding user product resources/i.test(msg);
 
+    // Diagnóstico: logar apenas a 1ª tentativa do batch inicial para não
+    // poluir o pm2 log quando vierem dezenas de veículos. Um log por call.
+    let diagLogged = false;
+
     const putCompatWithDomain = async (
       url: string,
       batch: Tuple[],
       domainId: string,
     ): Promise<{ ok: boolean; error?: string }> => {
+      const body = {
+        create: {
+          products_families: batch.map((t) => toFamily(t, domainId)),
+          universal: false,
+        },
+      };
       try {
-        await axios.put(
-          url,
-          {
-            create: {
-              products_families: batch.map((t) => toFamily(t, domainId)),
-              universal: false,
-            },
+        await axios.put(url, body, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
           },
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 15000,
-          },
-        );
+          timeout: 15000,
+        });
+        if (!diagLogged) {
+          console.warn(
+            `[ML Compat] PUT ${url} OK — domain=${domainId}, families=${body.create.products_families.length}`,
+          );
+          diagLogged = true;
+        }
         return { ok: true };
       } catch (error) {
+        const status = axios.isAxiosError(error)
+          ? error.response?.status
+          : undefined;
+        const responseData = axios.isAxiosError(error)
+          ? error.response?.data
+          : undefined;
+        if (!diagLogged) {
+          // Mostra o body exato enviado e a resposta crua do ML. Isso tem
+          // sido a única forma de decifrar "Invalid arguments..." quando a
+          // mensagem do ML é enganosa (ex.: "invalid domain id" quando o
+          // problema real é outro campo).
+          console.warn(
+            `[ML Compat] PUT ${url} FAIL — status=${status} domain=${domainId}` +
+              ` body=${JSON.stringify(body)}` +
+              ` response=${JSON.stringify(responseData)}`,
+          );
+          diagLogged = true;
+        }
         const msg = axios.isAxiosError(error)
-          ? `${error.response?.status ?? ""} ${JSON.stringify(error.response?.data ?? error.message)}`
+          ? `${status ?? ""} ${JSON.stringify(responseData ?? error.message)}`
           : error instanceof Error
             ? error.message
             : String(error);
