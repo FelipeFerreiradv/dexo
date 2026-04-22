@@ -1393,25 +1393,50 @@ export class MLApiService {
     const postProducts = async (
       batch: Tuple[],
     ): Promise<{ ok: boolean; error?: string }> => {
-      // Caminho canônico: PUT /items/{id}/compatibilities.
-      const first = await putCompat(
+      // Hoje quase todo item novo de auto-peça é publicado como User Product
+      // (quando o ML exige family_name). O endpoint /items/{id}/compatibilities
+      // rejeita products_families para esses casos — às vezes com mensagem
+      // clara ("has User Product compatibilities"), às vezes com mensagens
+      // genéricas ("domain_id: invalid domain id"). Em vez de tentar /items
+      // primeiro e fazer retry condicional, resolvemos user_product_id upfront
+      // e usamos /user-products direto quando ele existe.
+      const upId = await getUserProductId();
+      if (upId) {
+        const viaUp = await putCompat(
+          `${ML_CONSTANTS.API_URL}/user-products/${upId}/compatibilities`,
+          batch,
+        );
+        if (viaUp.ok) return viaUp;
+        // Se /user-products falhar, ainda tenta /items — útil para o caso
+        // raro onde o item tem user_product_id mas aceita compat no endpoint
+        // antigo. Se falhar, a mensagem mais específica prevalece.
+        const viaItem = await putCompat(
+          `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+          batch,
+        );
+        return viaItem.ok ? viaItem : viaUp;
+      }
+
+      // Item sem User Product (caso raro, sem family_name): caminho legado.
+      const viaItem = await putCompat(
         `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
         batch,
       );
-      if (first.ok) return first;
+      if (viaItem.ok) return viaItem;
 
-      // Se o item tem User Product, o ML obriga a usar o endpoint
-      // /user-products/{user_product_id}/compatibilities.
-      if (first.error && isUserProductHint(first.error)) {
-        const upId = await getUserProductId();
-        if (upId) {
+      // Fallback tardio: se a mensagem explicitamente sugere User Product,
+      // refaz lookup (caso tenha sido criado entre o GET inicial e este PUT).
+      if (viaItem.error && isUserProductHint(viaItem.error)) {
+        userProductLookupAttempted = false;
+        const lateUp = await getUserProductId();
+        if (lateUp) {
           return putCompat(
-            `${ML_CONSTANTS.API_URL}/user-products/${upId}/compatibilities`,
+            `${ML_CONSTANTS.API_URL}/user-products/${lateUp}/compatibilities`,
             batch,
           );
         }
       }
-      return first;
+      return viaItem;
     };
 
     const batch = await postProducts(tuples);
@@ -1474,6 +1499,19 @@ export class MLApiService {
     // Cache leve por chamada para evitar refetch repetido do mesmo par marca/modelo.
     const modelListCache = new Map<string, MLCompatibilityModelOption[]>();
     let brandsCache: MLCompatibilityBrandOption[] | null = null;
+
+    // Cache dos resultados do /products_search/chunks por (brand, model).
+    // Um mesmo item pode ter dezenas de linhas de compat com o mesmo par
+    // marca+modelo (ex.: 74 "Ford Ka" com versões/anos diferentes). Sem esse
+    // cache, cada linha disparava uma busca idêntica ao ML — 10 páginas ×
+    // 50 produtos = 500 requests repetidos por iteração. O cache dedupe.
+    const productsByBrandModel = new Map<
+      string,
+      {
+        products: MLCatalogCompatibilityProduct[];
+        fetchErr: unknown;
+      }
+    >();
 
     const normalize = (s: string): string =>
       (s || "")
@@ -1598,29 +1636,45 @@ export class MLApiService {
       const normalizedBrand = normalize(brandName);
       const normalizedModel = normalize(modelName);
 
-      const cachedProducts: MLCatalogCompatibilityProduct[] = [];
-      let fetchErr: unknown = null;
-      try {
-        for (let page = 0; page < maxPages; page++) {
-          const chunk = await this.searchCatalogCompatibilityChunks(
-            accessToken,
-            {
-              ...searchParams,
-              limit: pageSize,
-              offset: page * pageSize,
-            },
-          );
-          const results = chunk.results ?? [];
-          if (results.length === 0) break;
-          cachedProducts.push(...results);
-          const total = chunk.paging?.total;
-          if (typeof total === "number" && (page + 1) * pageSize >= total) {
-            break;
+      // Cache por (brand, model): se já buscamos esse par nesta chamada,
+      // reusa os produtos — compat tem muitas linhas do mesmo veículo em
+      // versões/anos diferentes, todas renderizavam o mesmo search.
+      const bmKey = `${normalizedBrand}|${normalizedModel}`;
+      let cachedProducts: MLCatalogCompatibilityProduct[];
+      let fetchErr: unknown;
+      const cached = productsByBrandModel.get(bmKey);
+      if (cached) {
+        cachedProducts = cached.products;
+        fetchErr = cached.fetchErr;
+      } else {
+        cachedProducts = [];
+        fetchErr = null;
+        try {
+          for (let page = 0; page < maxPages; page++) {
+            const chunk = await this.searchCatalogCompatibilityChunks(
+              accessToken,
+              {
+                ...searchParams,
+                limit: pageSize,
+                offset: page * pageSize,
+              },
+            );
+            const results = chunk.results ?? [];
+            if (results.length === 0) break;
+            cachedProducts.push(...results);
+            const total = chunk.paging?.total;
+            if (typeof total === "number" && (page + 1) * pageSize >= total) {
+              break;
+            }
+            if (results.length < pageSize) break;
           }
-          if (results.length < pageSize) break;
+        } catch (err) {
+          fetchErr = err;
         }
-      } catch (err) {
-        fetchErr = err;
+        productsByBrandModel.set(bmKey, {
+          products: cachedProducts,
+          fetchErr,
+        });
       }
 
       // Diagnóstico: distingue "ML não retornou produtos", "retornou mas
