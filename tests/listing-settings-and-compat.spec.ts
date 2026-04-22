@@ -106,8 +106,8 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     vi.restoreAllMocks();
   });
 
-  it("envia 1 POST com products[{attributes}] (BRAND/MODEL/VEHICLE_YEAR por nome) por veículo com yearFrom=yearTo", async () => {
-    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+  it("envia PUT com create.products_families (BRAND/MODEL/YEAR por nome) por veículo com yearFrom=yearTo", async () => {
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
 
     const result = await MLApiService.setItemCompatibilitiesByAttributes(
       "tok",
@@ -115,26 +115,30 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
       [{ brand: "Chevrolet", model: "Camaro", yearFrom: 2010, yearTo: 2010 }],
     );
 
-    expect((mockedAxios as any).post).toHaveBeenCalledTimes(1);
-    const [url, body] = (mockedAxios as any).post.mock.calls[0];
+    expect((mockedAxios as any).put).toHaveBeenCalledTimes(1);
+    const [url, body] = (mockedAxios as any).put.mock.calls[0];
     expect(url).toMatch(/\/items\/MLB123\/compatibilities$/);
     expect(body).toEqual({
-      products: [
-        {
-          attributes: [
-            { id: "BRAND", value_name: "Chevrolet" },
-            { id: "MODEL", value_name: "Camaro" },
-            { id: "VEHICLE_YEAR", value_name: "2010" },
-          ],
-        },
-      ],
+      create: {
+        products_families: [
+          {
+            domain_id: "MLB-CARS_AND_VANS",
+            attributes: [
+              { id: "BRAND", value_name: "Chevrolet" },
+              { id: "MODEL", value_name: "Camaro" },
+              { id: "YEAR", value_name: "2010" },
+            ],
+          },
+        ],
+        universal: false,
+      },
     });
     expect(result.success).toBe(true);
     expect(result.createdCount).toBe(1);
   });
 
   it("expande range de anos e dedupa tuplos (brand, model, year)", async () => {
-    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
 
     const result = await MLApiService.setItemCompatibilitiesByAttributes(
       "tok",
@@ -145,27 +149,28 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
       ],
     );
 
-    const [, body] = (mockedAxios as any).post.mock.calls[0];
-    expect(body.products).toHaveLength(3);
+    const [, body] = (mockedAxios as any).put.mock.calls[0];
+    expect(body.create.products_families).toHaveLength(3);
     expect(result.createdCount).toBe(3);
   });
 
-  it("omite VEHICLE_YEAR quando não há ano informado", async () => {
-    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+  it("omite YEAR quando não há ano informado", async () => {
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
 
     await MLApiService.setItemCompatibilitiesByAttributes("tok", "MLB1", [
       { brand: "Fiat", model: "Uno" },
     ]);
 
-    const [, body] = (mockedAxios as any).post.mock.calls[0];
-    expect(body.products[0].attributes).toEqual([
+    const [, body] = (mockedAxios as any).put.mock.calls[0];
+    expect(body.create.products_families[0].attributes).toEqual([
       { id: "BRAND", value_name: "Fiat" },
       { id: "MODEL", value_name: "Uno" },
     ]);
   });
 
   it("cai para chamadas individuais quando batch falha, isolando veículos ruins", async () => {
-    (mockedAxios as any).post
+    (mockedAxios as any).put = vi
+      .fn()
       .mockRejectedValueOnce(new Error("batch 400"))
       .mockResolvedValueOnce({ data: {} })
       .mockRejectedValueOnce(new Error("400 invalid model"));
@@ -179,24 +184,25 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
       ],
     );
 
-    expect((mockedAxios as any).post).toHaveBeenCalledTimes(3);
+    expect((mockedAxios as any).put).toHaveBeenCalledTimes(3);
     expect(result.createdCount).toBe(1);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("Fake/Nada/1800");
   });
 
   it("retorna vazio sem chamar API quando lista é vazia", async () => {
+    (mockedAxios as any).put = vi.fn();
     const result = await MLApiService.setItemCompatibilitiesByAttributes(
       "tok",
       "MLB1",
       [],
     );
-    expect((mockedAxios as any).post).not.toHaveBeenCalled();
+    expect((mockedAxios as any).put).not.toHaveBeenCalled();
     expect(result.createdCount).toBe(0);
   });
 
   it("ignora entradas sem brand ou model", async () => {
-    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
 
     const result = await MLApiService.setItemCompatibilitiesByAttributes(
       "tok",
@@ -208,8 +214,8 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
       ],
     );
 
-    const [, body] = (mockedAxios as any).post.mock.calls[0];
-    expect(body.products).toHaveLength(1);
+    const [, body] = (mockedAxios as any).put.mock.calls[0];
+    expect(body.create.products_families).toHaveLength(1);
     expect(result.createdCount).toBe(1);
   });
 });

@@ -1225,16 +1225,37 @@ export class MLApiService {
   }
 
   /**
-   * Fallback: envia compatibilidades por atributos crus (BRAND/MODEL/
-   * VEHICLE_YEAR por nome) quando o `/catalog_compatibilities/products_search`
-   * não resolve o par marca+modelo em catalog product IDs. O ML aceita
-   * `{ products: [{ attributes: [...] }] }` em `POST /items/{id}/compatibilities`
-   * e usa esse caminho no próprio dashboard para veículos fora do catálogo
-   * restrito (Chevrolet, Dodge, CAOA Chery, etc., que não aparecem em
-   * /catalog_domains).
+   * Fallback: envia compatibilidades por atributos crus (BRAND/MODEL/YEAR
+   * por nome) quando o `/catalog_compatibilities/products_search` não
+   * resolve o par marca+modelo em catalog product IDs. Usa o shape oficial
+   * documentado do endpoint:
+   *
+   *   PUT /items/{id}/compatibilities
+   *   {
+   *     "create": {
+   *       "products_families": [
+   *         {
+   *           "domain_id": "MLB-CARS_AND_VANS",
+   *           "attributes": [
+   *             { "id": "BRAND", "value_name": "Chevrolet" },
+   *             { "id": "MODEL", "value_name": "Camaro" },
+   *             { "id": "YEAR",  "value_name": "2010" }
+   *           ]
+   *         }
+   *       ],
+   *       "universal": false
+   *     }
+   *   }
+   *
+   * Notas:
+   * - Método é PUT, não POST (ver docs oficiais).
+   * - Atributo é `YEAR` (não `VEHICLE_YEAR`, que é o nome usado em catalog
+   *   products e no search).
+   * - `products_families` vs `products`: families aceita attributes por
+   *   nome; products exige catalog product id.
    *
    * Expande range de anos igual a resolveCompatibilityCatalogProducts.
-   * Dedupa (brand, model, year) tuplos. Batch-first + fallback individual
+   * Dedupa tuplos (brand, model, year). Batch-first + fallback individual
    * segue o mesmo padrão de setItemCompatibilities.
    *
    * Nunca lança — erros reportados via `errors`.
@@ -1286,24 +1307,36 @@ export class MLApiService {
       return { success: false, createdCount: 0, errors: [] };
     }
 
-    const toAttrs = (t: Tuple): Array<{ id: string; value_name: string }> => {
-      const attrs: Array<{ id: string; value_name: string }> = [
+    const toFamily = (
+      t: Tuple,
+    ): {
+      domain_id: string;
+      attributes: Array<{ id: string; value_name: string }>;
+    } => {
+      const attributes: Array<{ id: string; value_name: string }> = [
         { id: ML_ATTR.BRAND, value_name: t.brand },
         { id: ML_ATTR.MODEL, value_name: t.model },
       ];
       if (t.year != null) {
-        attrs.push({ id: ML_ATTR.VEHICLE_YEAR, value_name: String(t.year) });
+        // O atributo é "YEAR" no endpoint de compat (difere de
+        // VEHICLE_YEAR usado em catalog products).
+        attributes.push({ id: "YEAR", value_name: String(t.year) });
       }
-      return attrs;
+      return { domain_id: ML_COMPAT_DOMAIN_ID, attributes };
     };
 
     const postProducts = async (
       batch: Tuple[],
     ): Promise<{ ok: boolean; error?: string }> => {
       try {
-        await axios.post(
+        await axios.put(
           `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
-          { products: batch.map((t) => ({ attributes: toAttrs(t) })) },
+          {
+            create: {
+              products_families: batch.map(toFamily),
+              universal: false,
+            },
+          },
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
