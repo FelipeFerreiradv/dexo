@@ -1417,7 +1417,7 @@ export class MLApiService {
       // "2010 a 2015", "Todos").
       if (fetchErr === null) {
         const samplePool = cachedProducts.slice(0, 30);
-        const attrSample = (id: string): string[] =>
+        const nameSample = (id: string): string[] =>
           Array.from(
             new Set(
               samplePool
@@ -1432,17 +1432,36 @@ export class MLApiService {
                 ),
             ),
           ).slice(0, 10);
-        const yearSamples = attrSample(ML_ATTR.VEHICLE_YEAR);
-        const brandSamples = attrSample(ML_ATTR.BRAND);
-        const modelSamples = attrSample(ML_ATTR.MODEL);
+        const idSample = (id: string): string[] =>
+          Array.from(
+            new Set(
+              samplePool
+                .map((p) => {
+                  const attr = p.attributes?.find((a) => a?.id === id);
+                  return (
+                    attr?.value_id ?? attr?.values?.[0]?.id ?? null
+                  );
+                })
+                .filter(
+                  (v): v is string => typeof v === "string" && v.length > 0,
+                ),
+            ),
+          ).slice(0, 10);
+        const yearSamples = nameSample(ML_ATTR.VEHICLE_YEAR);
+        const brandNameSamples = nameSample(ML_ATTR.BRAND);
+        const modelNameSamples = nameSample(ML_ATTR.MODEL);
+        const brandIdSamples = idSample(ML_ATTR.BRAND);
+        const modelIdSamples = idSample(ML_ATTR.MODEL);
         const brandTag = brand
           ? `brand=${brand.valueId}`
           : `brand=fallback(${brandName})`;
         const modelTag = model
           ? `model=${model.valueId}`
           : `model=fallback(${modelName})`;
-        console.info(
-          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); brand samples: ${JSON.stringify(brandSamples)}; model samples: ${JSON.stringify(modelSamples)}; year samples: ${JSON.stringify(yearSamples)}`,
+        // Usa console.warn pois este ambiente filtra console.info do pm2
+        // stdout; o objetivo do log é aparecer junto com os "não resolvidas".
+        console.warn(
+          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); brand names: ${JSON.stringify(brandNameSamples)}; brand ids: ${JSON.stringify(brandIdSamples)}; model names: ${JSON.stringify(modelNameSamples)}; model ids: ${JSON.stringify(modelIdSamples)}; year samples: ${JSON.stringify(yearSamples)}`,
         );
       }
 
