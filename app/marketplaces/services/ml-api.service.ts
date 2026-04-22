@@ -1410,6 +1410,37 @@ export class MLApiService {
         fetchErr = err;
       }
 
+      // Diagnóstico: distingue "ML não retornou produtos" de "ML retornou mas
+      // filtro local descartou todos". Também loga os year values crus para
+      // revelar o formato real de VEHICLE_YEAR.value_name quando o parser
+      // falhar (ex.: "Desde 2010", "2010 a 2015", "Todos").
+      if (fetchErr === null) {
+        const yearSamples = Array.from(
+          new Set(
+            cachedProducts
+              .slice(0, 30)
+              .map((p) => {
+                const attr = p.attributes?.find(
+                  (a) => a?.id === ML_ATTR.VEHICLE_YEAR,
+                );
+                return (
+                  attr?.value_name ?? attr?.values?.[0]?.name ?? null
+                );
+              })
+              .filter((v): v is string => typeof v === "string" && v.length > 0),
+          ),
+        ).slice(0, 10);
+        const brandTag = brand
+          ? `brand=${brand.valueId}`
+          : `brand=fallback(${brandName})`;
+        const modelTag = model
+          ? `model=${model.valueId}`
+          : `model=fallback(${modelName})`;
+        console.info(
+          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); year samples: ${JSON.stringify(yearSamples)}`,
+        );
+      }
+
       for (const year of years) {
         if (fetchErr !== null) {
           unresolved.push({
@@ -1473,13 +1504,21 @@ export class MLApiService {
         }
 
         if (found === 0) {
+          const fetched = cachedProducts.length;
+          // Distingue: (a) ML não tem nada para esse (brand, model), vs
+          // (b) ML retornou produtos mas nosso filtro de ano descartou todos.
+          // Reason informativo para o log de ListingUseCase.
           unresolved.push({
             brand: brandName,
             model: modelName,
             year,
             reason: year
-              ? `no catalog products for ${year}`
-              : "no catalog products for brand+model",
+              ? fetched === 0
+                ? `no catalog products for ${year} (ML returned 0 for brand+model)`
+                : `no catalog products for ${year} (0 of ${fetched} matched year)`
+              : fetched === 0
+                ? "no catalog products for brand+model (ML returned 0)"
+                : `no catalog products for brand+model (0 of ${fetched} matched)`,
           });
         }
       }
