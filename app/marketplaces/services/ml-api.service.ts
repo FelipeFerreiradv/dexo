@@ -1225,6 +1225,128 @@ export class MLApiService {
   }
 
   /**
+   * Fallback: envia compatibilidades por atributos crus (BRAND/MODEL/
+   * VEHICLE_YEAR por nome) quando o `/catalog_compatibilities/products_search`
+   * não resolve o par marca+modelo em catalog product IDs. O ML aceita
+   * `{ products: [{ attributes: [...] }] }` em `POST /items/{id}/compatibilities`
+   * e usa esse caminho no próprio dashboard para veículos fora do catálogo
+   * restrito (Chevrolet, Dodge, CAOA Chery, etc., que não aparecem em
+   * /catalog_domains).
+   *
+   * Expande range de anos igual a resolveCompatibilityCatalogProducts.
+   * Dedupa (brand, model, year) tuplos. Batch-first + fallback individual
+   * segue o mesmo padrão de setItemCompatibilities.
+   *
+   * Nunca lança — erros reportados via `errors`.
+   */
+  static async setItemCompatibilitiesByAttributes(
+    accessToken: string,
+    itemId: string,
+    vehicles: Array<{
+      brand: string;
+      model: string;
+      yearFrom?: number | null;
+      yearTo?: number | null;
+    }>,
+  ): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
+    const errors: string[] = [];
+    let createdCount = 0;
+
+    type Tuple = { brand: string; model: string; year: number | null };
+    const tuples: Tuple[] = [];
+    const seen = new Set<string>();
+    for (const v of vehicles || []) {
+      const brand = (v?.brand || "").trim();
+      const model = (v?.model || "").trim();
+      if (!brand || !model) continue;
+      const yFrom =
+        typeof v.yearFrom === "number" && v.yearFrom > 0 ? v.yearFrom : null;
+      const yTo =
+        typeof v.yearTo === "number" && v.yearTo > 0 ? v.yearTo : null;
+      const years: Array<number | null> = [];
+      if (yFrom && yTo) {
+        const lo = Math.min(yFrom, yTo);
+        const hi = Math.max(yFrom, yTo);
+        for (let y = lo; y <= hi; y++) years.push(y);
+      } else if (yFrom) {
+        years.push(yFrom);
+      } else if (yTo) {
+        years.push(yTo);
+      } else {
+        years.push(null);
+      }
+      for (const year of years) {
+        const key = `${brand.toLowerCase()}|${model.toLowerCase()}|${year ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        tuples.push({ brand, model, year });
+      }
+    }
+    if (tuples.length === 0) {
+      return { success: false, createdCount: 0, errors: [] };
+    }
+
+    const toAttrs = (t: Tuple): Array<{ id: string; value_name: string }> => {
+      const attrs: Array<{ id: string; value_name: string }> = [
+        { id: ML_ATTR.BRAND, value_name: t.brand },
+        { id: ML_ATTR.MODEL, value_name: t.model },
+      ];
+      if (t.year != null) {
+        attrs.push({ id: ML_ATTR.VEHICLE_YEAR, value_name: String(t.year) });
+      }
+      return attrs;
+    };
+
+    const postProducts = async (
+      batch: Tuple[],
+    ): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        await axios.post(
+          `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+          { products: batch.map((t) => ({ attributes: toAttrs(t) })) },
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 15000,
+          },
+        );
+        return { ok: true };
+      } catch (error) {
+        const msg = axios.isAxiosError(error)
+          ? `${error.response?.status ?? ""} ${JSON.stringify(error.response?.data ?? error.message)}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        return { ok: false, error: msg };
+      }
+    };
+
+    const batch = await postProducts(tuples);
+    if (batch.ok) {
+      return { success: true, createdCount: tuples.length, errors: [] };
+    }
+
+    for (const t of tuples) {
+      const single = await postProducts([t]);
+      if (single.ok) {
+        createdCount += 1;
+      } else if (single.error) {
+        errors.push(
+          `${t.brand}/${t.model}${t.year ? `/${t.year}` : ""}: ${single.error}`,
+        );
+      }
+    }
+
+    return {
+      success: errors.length === 0 && createdCount > 0,
+      createdCount,
+      errors,
+    };
+  }
+
+  /**
    * Dado nomes textuais de marca/modelo e (opcionalmente) um range de anos,
    * resolve para catalog product IDs do domínio MLB-CARS_AND_VANS. Reutiliza
    * os caches TTL de brands/models/chunks; o overhead marginal é mínimo em

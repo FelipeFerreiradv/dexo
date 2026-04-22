@@ -2450,6 +2450,43 @@ export class ListingUseCase {
               );
             }
           }
+          // Fallback por atributos crus: marcas como Chevrolet, Dodge, CAOA
+          // Chery não aparecem no /catalog_domains (endpoint truncado) e a
+          // busca por chunks retorna lixo genérico. O ML aceita compat via
+          // `products: [{ attributes: [BRAND/MODEL/YEAR por nome] }]` — é o
+          // caminho que o próprio dashboard deles usa para adicionar veículos
+          // fora do catálogo restrito.
+          if (resolved.unresolved.length > 0) {
+            const unresolvedVehicles = vehicles.filter((v) => {
+              const b = (v.brand || "").trim().toLowerCase();
+              const m = (v.model || "").trim().toLowerCase();
+              return resolved.unresolved.some(
+                (u) =>
+                  (u.brand || "").trim().toLowerCase() === b &&
+                  (u.model || "").trim().toLowerCase() === m,
+              );
+            });
+            if (unresolvedVehicles.length > 0) {
+              const attrResult =
+                await MLApiService.setItemCompatibilitiesByAttributes(
+                  acc.accessToken,
+                  mlItem.id,
+                  unresolvedVehicles,
+                );
+              if (attrResult.errors.length > 0) {
+                console.warn(
+                  `[ListingUseCase] Compat por atributos parcial em ${mlItem.id}: ` +
+                    `createdCount=${attrResult.createdCount} errors=${attrResult.errors.length} ` +
+                    `firstError=${attrResult.errors[0]}`,
+                );
+              } else if (attrResult.createdCount > 0) {
+                console.log(
+                  `[ListingUseCase] Compat por atributos anexada ao ML item ${mlItem.id}: ` +
+                    `${attrResult.createdCount} veículo(s)`,
+                );
+              }
+            }
+          }
         }
       } catch (compatErr) {
         console.warn(

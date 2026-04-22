@@ -96,6 +96,124 @@ describe("MLApiService.setItemCompatibilities", () => {
   });
 });
 
+describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
+  beforeEach(() => {
+    (mockedAxios as any).post = vi.fn();
+    (mockedAxios as any).isAxiosError = () => false;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("envia 1 POST com products[{attributes}] (BRAND/MODEL/VEHICLE_YEAR por nome) por veículo com yearFrom=yearTo", async () => {
+    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB123",
+      [{ brand: "Chevrolet", model: "Camaro", yearFrom: 2010, yearTo: 2010 }],
+    );
+
+    expect((mockedAxios as any).post).toHaveBeenCalledTimes(1);
+    const [url, body] = (mockedAxios as any).post.mock.calls[0];
+    expect(url).toMatch(/\/items\/MLB123\/compatibilities$/);
+    expect(body).toEqual({
+      products: [
+        {
+          attributes: [
+            { id: "BRAND", value_name: "Chevrolet" },
+            { id: "MODEL", value_name: "Camaro" },
+            { id: "VEHICLE_YEAR", value_name: "2010" },
+          ],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    expect(result.createdCount).toBe(1);
+  });
+
+  it("expande range de anos e dedupa tuplos (brand, model, year)", async () => {
+    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [
+        { brand: "Fiat", model: "Uno", yearFrom: 2008, yearTo: 2010 },
+        { brand: "Fiat", model: "Uno", yearFrom: 2009, yearTo: 2009 },
+      ],
+    );
+
+    const [, body] = (mockedAxios as any).post.mock.calls[0];
+    expect(body.products).toHaveLength(3);
+    expect(result.createdCount).toBe(3);
+  });
+
+  it("omite VEHICLE_YEAR quando não há ano informado", async () => {
+    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+
+    await MLApiService.setItemCompatibilitiesByAttributes("tok", "MLB1", [
+      { brand: "Fiat", model: "Uno" },
+    ]);
+
+    const [, body] = (mockedAxios as any).post.mock.calls[0];
+    expect(body.products[0].attributes).toEqual([
+      { id: "BRAND", value_name: "Fiat" },
+      { id: "MODEL", value_name: "Uno" },
+    ]);
+  });
+
+  it("cai para chamadas individuais quando batch falha, isolando veículos ruins", async () => {
+    (mockedAxios as any).post
+      .mockRejectedValueOnce(new Error("batch 400"))
+      .mockResolvedValueOnce({ data: {} })
+      .mockRejectedValueOnce(new Error("400 invalid model"));
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [
+        { brand: "Chevrolet", model: "Camaro", yearFrom: 2010, yearTo: 2010 },
+        { brand: "Fake", model: "Nada", yearFrom: 1800, yearTo: 1800 },
+      ],
+    );
+
+    expect((mockedAxios as any).post).toHaveBeenCalledTimes(3);
+    expect(result.createdCount).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("Fake/Nada/1800");
+  });
+
+  it("retorna vazio sem chamar API quando lista é vazia", async () => {
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [],
+    );
+    expect((mockedAxios as any).post).not.toHaveBeenCalled();
+    expect(result.createdCount).toBe(0);
+  });
+
+  it("ignora entradas sem brand ou model", async () => {
+    (mockedAxios as any).post.mockResolvedValue({ data: {} });
+
+    const result = await MLApiService.setItemCompatibilitiesByAttributes(
+      "tok",
+      "MLB1",
+      [
+        { brand: "", model: "Uno", yearFrom: 2010 },
+        { brand: "Fiat", model: "", yearFrom: 2010 },
+        { brand: "Fiat", model: "Uno", yearFrom: 2010 },
+      ],
+    );
+
+    const [, body] = (mockedAxios as any).post.mock.calls[0];
+    expect(body.products).toHaveLength(1);
+    expect(result.createdCount).toBe(1);
+  });
+});
+
 describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
   beforeEach(() => {
     (mockedAxios as any).post = vi.fn();
