@@ -875,6 +875,24 @@ export class ListingUseCase {
         };
       }
 
+      // Estoque e preço são exigidos pelo ML (item.stock.invalid / item.price.invalid).
+      // Valida antes de montar payload — evita gastar uma chamada ao ML e um ciclo
+      // inteiro de retries do ListingRetryService para falhar no mesmo motivo.
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio no Mercado Livre",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio no Mercado Livre",
+        };
+      }
+
       let descriptionSource: "product" | "user_default" | "fallback" =
         product.description ? "product" : "fallback";
 
@@ -2695,6 +2713,23 @@ export class ListingUseCase {
         return {
           success: false,
           error: "Produto não encontrado",
+        };
+      }
+
+      // Estoque e preço são exigidos pela Shopee também — fail-fast antes de
+      // montar payload evita chamadas desperdiçadas e loop de retry.
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio na Shopee",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio na Shopee",
         };
       }
 
