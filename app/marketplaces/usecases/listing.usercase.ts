@@ -371,9 +371,17 @@ export class ListingUseCase {
 
   /**
    * Constrói atributos estruturados sem sobrescrever com inferências fracas.
+   *
+   * Após os atributos fixos (BRAND, MODEL, YEAR, POSITION, SELLER_SKU,
+   * PART_NUMBER), faz merge com `product.attributes` — o mapa preenchido
+   * pela UI dinâmica de ficha técnica secundária (oficial, vinda de
+   * GET /categories/{id}/attributes). Ids já incluídos pelos campos
+   * fixos NÃO são sobrescritos para preservar a higiene atual de marca/
+   * modelo/ano e a integração com `setItemCompatibilities`.
    */
   private static buildMLAttributes(product: any, resolvedCategoryId?: string) {
-    const attrs: Array<{ id: string; value_name: string }> = [];
+    const attrs: Array<{ id: string; value_id?: string; value_name?: string }> =
+      [];
     const brand = this.cleanBrand(product.brand);
     const model = this.cleanModel(product.model, product.year);
     const year = this.cleanYear(product.year);
@@ -397,6 +405,36 @@ export class ListingUseCase {
     attrs.push({ id: "SELLER_SKU", value_name: product.sku });
     if (product.partNumber) {
       attrs.push({ id: "PART_NUMBER", value_name: product.partNumber });
+    }
+
+    // Ficha técnica secundária — preenchida no modal a partir de
+    // GET /categories/{id}/attributes. Mapa { [id]: { value_id?, value_name? } }.
+    const seen = new Set(attrs.map((a) => a.id));
+    const extras = product.attributes;
+    if (extras && typeof extras === "object" && !Array.isArray(extras)) {
+      for (const [id, raw] of Object.entries(
+        extras as Record<string, unknown>,
+      )) {
+        if (!id || seen.has(id)) continue;
+        if (!raw || typeof raw !== "object") continue;
+        const v = raw as { value_id?: string; value_name?: string };
+        const valueId =
+          typeof v.value_id === "string" && v.value_id.trim().length > 0
+            ? v.value_id.trim()
+            : undefined;
+        const valueName =
+          typeof v.value_name === "string" && v.value_name.trim().length > 0
+            ? v.value_name.trim()
+            : undefined;
+        if (!valueId && !valueName) continue;
+        const entry: { id: string; value_id?: string; value_name?: string } = {
+          id,
+        };
+        if (valueId) entry.value_id = valueId;
+        if (valueName) entry.value_name = valueName;
+        attrs.push(entry);
+        seen.add(id);
+      }
     }
 
     return attrs;

@@ -94,6 +94,11 @@ export interface Product {
   imageUrl?: string;
   imageUrls?: string[];
 
+  // Ficha técnica secundária por categoria (Mercado Livre).
+  // Mapa { [attributeId]: { value_id?, value_name? } } — preenchido pela UI dinâmica
+  // a partir de GET /categories/{id}/attributes do ML.
+  attributes?: Record<string, { value_id?: string; value_name?: string }>;
+
   scrapId?: string;
   listings?: ProductListingSummary[];
   compatibilities?: Array<{
@@ -143,6 +148,9 @@ export interface ProductCreate {
 
   imageUrl: string;
   imageUrls?: string[];
+
+  // Ficha técnica secundária por categoria (ML)
+  attributes?: Record<string, { value_id?: string; value_name?: string }>;
 
   scrapId?: string;
 
@@ -209,6 +217,9 @@ export interface ProductUpdate {
 
   imageUrl?: string;
   imageUrls?: string[];
+
+  // Ficha técnica secundária por categoria (ML)
+  attributes?: Record<string, { value_id?: string; value_name?: string }>;
 
   compatibilities?: Array<{
     brand: string;

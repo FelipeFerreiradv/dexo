@@ -175,6 +175,11 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     weightKg: item.weightKg?.toNumber() ?? undefined,
     imageUrl: item.imageUrl ?? undefined,
     imageUrls: (item as any).imageUrls ?? [],
+    attributes:
+      ((item as any).attributes as
+        | Record<string, { value_id?: string; value_name?: string }>
+        | null
+        | undefined) ?? undefined,
     scrapId: (item as any).scrapId ?? undefined,
     listings,
     compatibilities: mapPrismaCompatibilities(item),
@@ -270,6 +275,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       widthCm: true,
       lengthCm: true,
       weightKg: true,
+      attributes: true,
       scrapId: true,
       listings: {
         select: {
@@ -761,6 +767,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           weightKg: data.weightKg ?? null,
           imageUrl: data.imageUrl,
           imageUrls: data.imageUrls ?? [],
+          attributes: data.attributes ?? Prisma.DbNull,
           scrapId: data.scrapId ?? null,
           ...(compatInput.length > 0
             ? { compatibilities: { create: compatInput } }
@@ -820,7 +827,9 @@ class ProductRepositoryPrisma implements ProductRepository {
       ]);
 
       return {
-        products: items.map(mapPrismaToProduct),
+        products: items.map((it) =>
+          mapPrismaToProduct(it as unknown as PrismaProduct),
+        ),
         total,
       };
     }
@@ -913,7 +922,9 @@ class ProductRepositoryPrisma implements ProductRepository {
       ]);
 
       return {
-        products: items.map(mapPrismaToProduct),
+        products: items.map((it) =>
+          mapPrismaToProduct(it as unknown as PrismaProduct),
+        ),
         total,
       };
     } catch (error) {
@@ -1266,6 +1277,12 @@ class ProductRepositoryPrisma implements ProductRepository {
         ...(data.weightKg !== undefined && { weightKg: data.weightKg }),
         ...(data.imageUrl !== undefined && { imageUrl: data.imageUrl }),
         ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
+        ...(data.attributes !== undefined && {
+          attributes:
+            data.attributes === null
+              ? Prisma.DbNull
+              : (data.attributes as Prisma.InputJsonValue),
+        }),
       };
 
       // Transação atômica: ownership check + produto + compatibilidades juntos

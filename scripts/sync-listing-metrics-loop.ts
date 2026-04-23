@@ -8,20 +8,20 @@ async function wait(ms: number) {
 }
 
 async function runLoop() {
-  console.log(`[loop] Iniciando loop de métricas. Intervalo: ${intervalMinutes} min`);
+  console.log(`[loop] Iniciando loop de mÃ©tricas. Intervalo: ${intervalMinutes} min`);
   while (true) {
     const started = new Date();
-    console.log(`[loop] Sync iniciado às ${started.toISOString()}`);
+    console.log(`[loop] Sync iniciado Ã s ${started.toISOString()}`);
     try {
       await syncAllListingsMetrics();
     } catch (err) {
-      console.error(`[loop] Falha na execução do sync`, err);
+      console.error(`[loop] Falha na execuÃ§Ã£o do sync`, err);
     }
     await prisma.$disconnect();
 
     const elapsed = Date.now() - started.getTime();
     const nextWait = Math.max(intervalMinutes * 60 * 1000 - elapsed, 5000);
-    console.log(`[loop] Sync concluído em ${elapsed} ms. Aguardando ${nextWait} ms para próxima execução.`);
+    console.log(`[loop] Sync concluÃ­do em ${elapsed} ms. Aguardando ${nextWait} ms para prÃ³xima execuÃ§Ã£o.`);
     await wait(nextWait);
   }
 }

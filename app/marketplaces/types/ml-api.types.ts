@@ -69,6 +69,13 @@ export interface MLItemUpdatePayload {
   }>;
   category_id?: string;
   description?: string;
+  // Atributos da ficha técnica. ML aceita PUT em parte deles (ignora os
+  // imutáveis em catálogo). Caller deve filtrar BRAND/MODEL/YEAR antes de enviar.
+  attributes?: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
 }
 
 // Payload para criar item

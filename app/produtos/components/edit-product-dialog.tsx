@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
+import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import {
   isProductVehicular,
   isCategoryUnderVehicleRoot,
@@ -143,6 +144,16 @@ const productEditSchema = z.object({
 
   imageUrl: z.string().optional().nullable(),
   imageUrls: z.array(z.string()).optional(),
+
+  // Ficha técnica secundária (atributos por categoria do ML)
+  attributes: z
+    .record(
+      z.object({
+        value_id: z.string().optional(),
+        value_name: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
 type ProductEditFormData = z.infer<typeof productEditSchema>;
@@ -183,6 +194,10 @@ interface Product {
   weightKg?: number | null;
   imageUrl?: string | null;
   imageUrls?: string[] | null;
+  attributes?: Record<
+    string,
+    { value_id?: string; value_name?: string }
+  > | null;
 }
 
 interface EditProductDialogProps {
@@ -382,6 +397,7 @@ export function EditProductDialog({
           : product.imageUrl
             ? [product.imageUrl]
             : [],
+      attributes: product.attributes || {},
     },
   });
 
@@ -2062,6 +2078,19 @@ export function EditProductDialog({
                       {mlCategoryWarning}
                     </p>
                   )}
+
+                  <Controller
+                    name="attributes"
+                    control={control}
+                    render={({ field }) => (
+                      <MLDynamicAttributesSection
+                        categoryId={watchMlCategory || ""}
+                        value={(field.value as any) || {}}
+                        onChange={(next) => field.onChange(next as any)}
+                        email={session?.user?.email || undefined}
+                      />
+                    )}
+                  />
                 </div>
 
                 <div className="space-y-2">

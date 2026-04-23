@@ -2240,15 +2240,91 @@ export class SyncUseCase {
         );
       }
 
+      // Sincronizar ficha técnica secundária — só os atributos que não são
+      // imutáveis no ML após criação. BRAND/MODEL/YEAR/PART_NUMBER/MPN/OEM
+      // costumam ser fixados no momento da criação; tentar atualizá-los
+      // gera body.invalid_attribute. Enviamos apenas o resto.
+      const extras = (product as any).attributes;
+      // currentItem.status === "closed" já saiu via early return acima.
+      if (extras && typeof extras === "object" && !Array.isArray(extras)) {
+        const IMMUTABLE_ATTRS = new Set([
+          "BRAND",
+          "MODEL",
+          "YEAR",
+          "VEHICLE_YEAR",
+          "PART_NUMBER",
+          "MPN",
+          "OEM",
+          "SELLER_SKU",
+        ]);
+        const list: Array<{
+          id: string;
+          value_id?: string;
+          value_name?: string;
+        }> = [];
+        for (const [id, raw] of Object.entries(
+          extras as Record<string, unknown>,
+        )) {
+          if (!id || IMMUTABLE_ATTRS.has(id)) continue;
+          if (!raw || typeof raw !== "object") continue;
+          const v = raw as { value_id?: string; value_name?: string };
+          const valueId =
+            typeof v.value_id === "string" && v.value_id.trim().length > 0
+              ? v.value_id.trim()
+              : undefined;
+          const valueName =
+            typeof v.value_name === "string" && v.value_name.trim().length > 0
+              ? v.value_name.trim()
+              : undefined;
+          if (!valueId && !valueName) continue;
+          const entry: { id: string; value_id?: string; value_name?: string } =
+            { id };
+          if (valueId) entry.value_id = valueId;
+          if (valueName) entry.value_name = valueName;
+          list.push(entry);
+        }
+        if (list.length > 0) {
+          updateData.attributes = list;
+        }
+      }
+
       console.log(`[SYNC] Dados a serem enviados para ML:`, updateData);
 
       // SÃ³ fazer a atualizaÃ§Ã£o se houver dados para atualizar
       if (Object.keys(updateData).length > 0) {
-        const updatedItem = await MLApiService.updateItem(
-          account.accessToken,
-          externalListingId,
-          updateData,
-        );
+        let updatedItem;
+        try {
+          updatedItem = await MLApiService.updateItem(
+            account.accessToken,
+            externalListingId,
+            updateData,
+          );
+        } catch (err: any) {
+          // Se o ML rejeitar o PUT por causa dos attributes (ex.: catálogo
+          // bloqueia algum), retentamos o update SEM attributes para não
+          // perder a sincronização de preço/estoque.
+          const cause = err?.response?.data;
+          const causeStr =
+            typeof cause === "string" ? cause : JSON.stringify(cause || "");
+          const looksLikeAttrError =
+            updateData.attributes &&
+            (causeStr.toLowerCase().includes("attribute") ||
+              err?.response?.status === 400);
+          if (looksLikeAttrError) {
+            console.warn(
+              `[SYNC] PUT com attributes rejeitado pelo ML (${err?.response?.status}). Re-tentando sem attributes:`,
+              causeStr.slice(0, 500),
+            );
+            const { attributes: _drop, ...withoutAttrs } = updateData;
+            updatedItem = await MLApiService.updateItem(
+              account.accessToken,
+              externalListingId,
+              withoutAttrs,
+            );
+          } else {
+            throw err;
+          }
+        }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
 
         result.success = true;

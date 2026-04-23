@@ -104,6 +104,41 @@ function parseEnumValue<T extends string>(
   return value as T;
 }
 
+/**
+ * Sanitiza o mapa de ficha técnica secundária recebido do cliente.
+ * Aceita: { [attributeId]: { value_id?: string; value_name?: string } }.
+ * Descarta entradas onde tanto `value_id` quanto `value_name` estão vazios,
+ * para não persistir lixo. Retorna `undefined` se nada útil sobrar
+ * (caller decide entre "não mexer" vs "limpar tudo").
+ */
+function sanitizeProductAttributes(
+  raw: unknown,
+):
+  | Record<string, { value_id?: string; value_name?: string }>
+  | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, { value_id?: string; value_name?: string }> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!id || typeof id !== "string") continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const v = value as { value_id?: unknown; value_name?: unknown };
+    const valueId =
+      typeof v.value_id === "string" && v.value_id.trim().length > 0
+        ? v.value_id.trim()
+        : undefined;
+    const valueName =
+      typeof v.value_name === "string" && v.value_name.trim().length > 0
+        ? v.value_name.trim()
+        : undefined;
+    if (!valueId && !valueName) continue;
+    const entry: { value_id?: string; value_name?: string } = {};
+    if (valueId) entry.value_id = valueId;
+    if (valueName) entry.value_name = valueName;
+    out[id] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export const productRoutes = async (fastify: FastifyInstance) => {
   const productUseCase = new ProductUseCase();
 
@@ -187,6 +222,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
         imageUrl,
         imageUrls,
+        // Ficha técnica secundária (atributos por categoria do ML)
+        attributes,
         // Sucata vinculada
         scrapId,
         // Opção para criar anúncio
@@ -240,6 +277,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         imageUrls: Array.isArray(imageUrls)
           ? imageUrls.filter((u: any) => typeof u === "string" && u.trim())
           : [],
+        attributes: sanitizeProductAttributes(attributes),
         mlCategoryExternal: mlCategory ?? createListingCategoryId ?? undefined,
         mlCategorySource: mlCategorySource ?? undefined,
         shopeeCategory: shopeeCategory ?? undefined,
@@ -452,6 +490,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           imageUrl: sanitized.imageUrl,
           imageUrls: sanitized.imageUrls,
+
+          // Ficha técnica secundária por categoria (ML)
+          attributes: sanitized.attributes,
 
           // Sucata vinculada
           scrapId: sanitized.scrapId,
@@ -883,6 +924,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           imageUrl,
           imageUrls,
 
+          // Ficha técnica secundária (atributos por categoria do ML)
+          attributes,
+
           // Compatibilidades veiculares
           compatibilities,
         } = request.body as any;
@@ -1008,6 +1052,13 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
             imageUrl,
             imageUrls: Array.isArray(imageUrls) ? imageUrls : undefined,
+
+            // Ficha técnica secundária por categoria (ML).
+            // Sanitiza só quando o cliente envia o campo — undefined = não atualiza.
+            attributes:
+              attributes === undefined
+                ? undefined
+                : sanitizeProductAttributes(attributes),
 
             // Compatibilidades veiculares (persistidas atomicamente pelo repositório)
             compatibilities: Array.isArray(compatibilities)

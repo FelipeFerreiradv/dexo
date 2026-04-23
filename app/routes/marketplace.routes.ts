@@ -10,6 +10,7 @@ import { Platform } from "@prisma/client";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
+import { MLAttributeCatalogService } from "../marketplaces/services/ml-attribute-catalog.service";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
@@ -390,6 +391,34 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           error: "Erro ao listar categorias",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/categories/:categoryId/attributes
+   * Devolve a ficha técnica oficial da categoria (GET /categories/{id}/attributes
+   * do ML) já normalizada. Service é fail-open: erros viram [].
+   */
+  app.get(
+    "/ml/categories/:categoryId/attributes",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { categoryId } = request.params as { categoryId?: string };
+      if (!categoryId || !categoryId.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'categoryId' é obrigatório" });
+      }
+      try {
+        const attributes = await MLAttributeCatalogService.getAll(
+          categoryId.trim(),
+        );
+        reply.header("Cache-Control", "private, max-age=600");
+        return reply.send({ attributes });
+      } catch (error) {
+        // Service já é fail-open, mas garantimos contrato 200/{attributes:[]}
+        return reply.send({ attributes: [] });
       }
     },
   );

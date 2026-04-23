@@ -82,6 +82,7 @@ model Product {
   shopeeCategoryChosenAt DateTime?
   locationId             String?
   scrapId                String?
+  attributes             Json?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])

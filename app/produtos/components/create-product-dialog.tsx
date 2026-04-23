@@ -58,6 +58,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
+import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 
 // NextAuth
 import { useSession } from "next-auth/react";
@@ -97,6 +98,16 @@ const productSchema = z.object({
   createMLListing: z.boolean().optional(),
   mlCategory: z.string().optional(),
   mlAccountIds: z.array(z.string()).optional(),
+
+  // Ficha técnica secundária (atributos por categoria do ML)
+  attributes: z
+    .record(
+      z.object({
+        value_id: z.string().optional(),
+        value_name: z.string().optional(),
+      }),
+    )
+    .optional(),
 
   // Configurações de anúncio ML
   mlListingType: z.string().optional(),
@@ -388,6 +399,7 @@ export function CreateProductDialog({
       createMLListing: false,
       mlCategory: "",
       mlAccountIds: [],
+      attributes: {},
       mlListingType: "bronze",
       mlHasWarranty: false,
       mlWarrantyUnit: "dias",
@@ -3066,6 +3078,21 @@ export function CreateProductDialog({
                     <p className="text-xs text-muted-foreground">
                       Categoria sugerida: {watch("category") || "Nenhuma"}
                     </p>
+
+                    <Controller
+                      name="attributes"
+                      control={control}
+                      render={({ field }) => (
+                        <MLDynamicAttributesSection
+                          categoryId={watchMlCategory || ""}
+                          value={(field.value as any) || {}}
+                          onChange={(next) =>
+                            field.onChange(next as any)
+                          }
+                          email={session?.user?.email || undefined}
+                        />
+                      )}
+                    />
                   </div>
                 )}
 

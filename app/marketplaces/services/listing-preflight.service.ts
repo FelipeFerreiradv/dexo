@@ -30,14 +30,22 @@ export interface MLPreflightInput {
     quality?: string | null;
   };
   categoryId: string;
-  currentAttributes: Array<{ id: string; value_name: string }>;
+  currentAttributes: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
 }
 
 export interface MLPreflightResult {
   ok: boolean;
   issues: PreflightIssue[];
   /** Atributos adicionados automaticamente a partir dos campos do produto. */
-  enrichedAttributes: Array<{ id: string; value_name: string }>;
+  enrichedAttributes: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
   /** Ids obrigatórios que nem o produto nem o enrichment conseguiram satisfazer. */
   missingRequired: string[];
 }
@@ -407,8 +415,10 @@ export class ListingPreflightService {
       const existing = byId.get(attr.id);
       const hasValue =
         existing &&
-        typeof existing.value_name === "string" &&
-        existing.value_name.trim().length > 0;
+        ((typeof existing.value_name === "string" &&
+          existing.value_name.trim().length > 0) ||
+          (typeof existing.value_id === "string" &&
+            existing.value_id.trim().length > 0));
       if (hasValue) continue;
 
       const filler = ATTR_TO_FIELD[attr.id];

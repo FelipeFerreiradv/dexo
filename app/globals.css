@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Excluir handoffs do Claude Code (caminhos com backslash em hex que quebram
+   o decoder de escape CSS do Tailwind v4 oxide com "Invalid code point"). */
+@source not "../HANDOFF*.md";
+@source not "../*.md";
+
 /* @tailwind base;
 @tailwind components;
 @tailwind utilities; */
