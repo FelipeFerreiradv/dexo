@@ -2200,33 +2200,49 @@ export class MLApiService {
     attributeId: string,
     knownAttributes?: Array<{ id: string; value_id: string }>,
   ): Promise<Array<{ id: string; name: string }>> {
+    const url = `${ML_CONSTANTS.API_URL}/catalog_domains/${ML_COMPAT_DOMAIN_ID}/attributes/${attributeId}/top_values`;
     const body: Record<string, unknown> = {};
     if (knownAttributes && knownAttributes.length > 0) {
       body.known_attributes = knownAttributes;
     }
     try {
-      const response = await axios.post<{
-        values?: Array<{ id?: string; name?: string }>;
-      }>(
-        `${ML_CONSTANTS.API_URL}/catalog_domains/${ML_COMPAT_DOMAIN_ID}/attributes/${attributeId}/top_values`,
-        body,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 15000,
+      const response = await axios.post<
+        | { values?: Array<{ id?: string; name?: string }> }
+        | Array<{ id?: string; name?: string }>
+      >(url, body, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
-      );
-      const values = response.data?.values ?? [];
-      return values
+        timeout: 15000,
+      });
+      // Doc mostra response com { values: [...] }, mas algumas rotas do ML
+      // retornam o array diretamente. Normaliza os dois formatos.
+      const raw = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.values ?? []);
+      const values = raw
         .filter(
           (v): v is { id: string; name: string } =>
             typeof v?.id === "string" && typeof v?.name === "string",
         )
         .map((v) => ({ id: v.id, name: v.name }));
-    } catch {
-      // Não bloqueia o fluxo — o caller fará fallback para value_name.
+      // Log único por chamada para diagnóstico — mostra quantos vieram e os
+      // primeiros nomes (para sabermos se Ford/Audi estão presentes).
+      console.warn(
+        `[ML Compat] top_values ${attributeId}${knownAttributes ? ` (filtered ${knownAttributes.length})` : ""}: got ${values.length} values; first=${JSON.stringify(values.slice(0, 8).map((v) => v.name))}`,
+      );
+      return values;
+    } catch (error) {
+      const status = axios.isAxiosError(error)
+        ? error.response?.status
+        : undefined;
+      const data = axios.isAxiosError(error)
+        ? error.response?.data
+        : undefined;
+      console.warn(
+        `[ML Compat] top_values ${attributeId} FAILED status=${status ?? "?"} response=${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`,
+      );
       return [];
     }
   }
