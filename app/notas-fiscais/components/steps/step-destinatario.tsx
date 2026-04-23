@@ -7,7 +7,7 @@ import {
   FieldErrors,
   UseFormSetValue,
 } from "react-hook-form";
-import { Search, User, Building2, Globe, Loader2 } from "lucide-react";
+import { Search, User, Building2, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -16,8 +16,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
 import { getApiBaseUrl } from "@/lib/api";
+import { fetchAddressByCep } from "@/app/lib/cep-service";
+import { maskCep, onlyDigits } from "@/app/lib/masks";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import type { CustomerLookup } from "@/app/interfaces/nfe.interface";
 
@@ -39,8 +40,30 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<CustomerLookup[]>([]);
   const [showResults, setShowResults] = useState(false);
+  const [loadingCep, setLoadingCep] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const handleCepLookup = useCallback(
+    async (raw: string) => {
+      const clean = onlyDigits(raw);
+      if (clean.length !== 8) return;
+      setLoadingCep(true);
+      try {
+        const addr = await fetchAddressByCep(clean);
+        if (addr) {
+          setValue("destinatario.logradouro", addr.street, { shouldDirty: true });
+          setValue("destinatario.bairro", addr.neighborhood, { shouldDirty: true });
+          setValue("destinatario.municipio", addr.city, { shouldDirty: true });
+          setValue("destinatario.uf", addr.state, { shouldDirty: true });
+          setValue("destinatario.codMunicipio", addr.ibge, { shouldDirty: true });
+        }
+      } finally {
+        setLoadingCep(false);
+      }
+    },
+    [setValue],
+  );
 
   const searchCustomers = useCallback(
     async (q: string) => {
@@ -290,18 +313,35 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-1">
             <label className="text-sm font-medium">CEP</label>
-            <Controller
-              control={control}
-              name="destinatario.cep"
-              render={({ field }) => (
-                <Input
-                  {...field}
-                  value={field.value ?? ""}
-                  onChange={(e) => field.onChange(e.target.value || null)}
-                  placeholder="00000-000"
-                />
+            <div className="relative">
+              <Controller
+                control={control}
+                name="destinatario.cep"
+                render={({ field }) => (
+                  <Input
+                    {...field}
+                    value={maskCep(field.value ?? "")}
+                    onChange={(e) => {
+                      const masked = maskCep(e.target.value);
+                      field.onChange(masked || null);
+                      // Quando completar 8 dígitos, busca o endereço sem esperar o blur
+                      if (onlyDigits(masked).length === 8) {
+                        handleCepLookup(masked);
+                      }
+                    }}
+                    onBlur={(e) => {
+                      field.onBlur();
+                      handleCepLookup(e.target.value);
+                    }}
+                    placeholder="00000-000"
+                    inputMode="numeric"
+                  />
+                )}
+              />
+              {loadingCep && (
+                <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
               )}
-            />
+            </div>
           </div>
 
           <div className="md:col-span-2 space-y-1">
