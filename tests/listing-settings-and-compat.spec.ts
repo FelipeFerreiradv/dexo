@@ -433,7 +433,7 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     expect(result.unresolved[0].reason).toMatch(/no catalog products/i);
   });
 
-  it("usa open_attributes como fallback quando marca não está no catalog_domains (ex.: BMW)", async () => {
+  it("usa open_attributes como fallback quando marca não está no catalog_domains nem em top_values (ex.: BMW)", async () => {
     (mockedAxios as any).get.mockResolvedValueOnce({
       data: {
         attributes: [
@@ -443,6 +443,12 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
           },
         ],
       },
+    });
+    // Fallback via top_values (BRAND): também não tem BMW — simula o
+    // cenário real onde nem o GET /catalog_domains nem o POST .../top_values
+    // retornam a marca. Só aí o código recorre a open_attributes.
+    (mockedAxios as any).post.mockResolvedValueOnce({
+      data: { values: [] },
     });
     (mockedAxios as any).post.mockResolvedValueOnce({
       data: {

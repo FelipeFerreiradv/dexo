@@ -1153,13 +1153,15 @@ export class MLApiService {
   }
 
   /**
-   * POST /items/{itemId}/compatibilities
    * Anexa uma lista de catalog products (IDs já resolvidos) como compatibilidades
    * do item — preenche a aba "Ficha técnica → Compatibilidades" no ML.
    *
-   * O endpoint exige `products: [{id: MLB...}]`; não aceita known_attributes.
-   * Faz uma chamada única com o batch inteiro; se falhar, cai para chamadas
-   * individuais para maximizar sucesso parcial (um ID ruim não derruba os outros).
+   * Roteamento:
+   * - User Product (item com family_name): PUT /user-products/{up_id}/compatibilities
+   *   com body { domain_id, category_id, create: { products_families: [{ domain_id, ids }], universal: false } }.
+   *   /items/{id}/compatibilities é bloqueado nesses casos ("use user product resources").
+   * - Item legado (sem family_name): POST /items/{id}/compatibilities com
+   *   { products: [{id}] }.
    *
    * Nunca lança — erros são reportados via `errors`; o caller decide se é fatal.
    */
@@ -1182,7 +1184,69 @@ export class MLApiService {
       return { success: false, createdCount: 0, errors: [] };
     }
 
-    const postProducts = async (
+    // Resolve user_product_id e category_id uma vez (mesma lógica de
+    // setItemCompatibilitiesByAttributes). Para itens user-product o PUT
+    // precisa de category_id no root do body.
+    let userProductId: string | null = null;
+    let categoryId: string | null = null;
+    try {
+      const resp = await axios.get<{
+        user_product_id?: string | null;
+        category_id?: string | null;
+      }>(`${ML_CONSTANTS.API_URL}/items/${itemId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 15000,
+      });
+      const upId = resp.data?.user_product_id;
+      const catId = resp.data?.category_id;
+      userProductId =
+        typeof upId === "string" && upId.length > 0 ? upId : null;
+      categoryId = typeof catId === "string" && catId.length > 0 ? catId : null;
+    } catch {
+      /* mantém null — caímos no caminho legacy com items */
+    }
+
+    const putUserProduct = async (
+      ids: string[],
+    ): Promise<{ ok: boolean; error?: string }> => {
+      if (!userProductId) return { ok: false, error: "no user_product_id" };
+      const body: Record<string, unknown> = {
+        domain_id: ML_COMPAT_DOMAIN_ID,
+        create: {
+          products_families: [{ domain_id: ML_COMPAT_DOMAIN_ID, ids }],
+          universal: false,
+        },
+      };
+      if (categoryId) body.category_id = categoryId;
+      const url = `${ML_CONSTANTS.API_URL}/user-products/${userProductId}/compatibilities`;
+      try {
+        const response = await axios.put(url, body, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15000,
+        });
+        console.warn(
+          `[ML Compat] PUT ${url} (ids) OK — category=${categoryId ?? "null"}, ids=${ids.length}, response=${JSON.stringify(response.data ?? {})}`,
+        );
+        return { ok: true };
+      } catch (error) {
+        const status = axios.isAxiosError(error)
+          ? error.response?.status
+          : undefined;
+        const data = axios.isAxiosError(error)
+          ? error.response?.data
+          : undefined;
+        const msg = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
+        console.warn(
+          `[ML Compat] PUT ${url} (ids) FAIL — status=${status} ids=${ids.length} response=${JSON.stringify(data)}`,
+        );
+        return { ok: false, error: msg };
+      }
+    };
+
+    const postItem = async (
       ids: string[],
     ): Promise<{ ok: boolean; error?: string }> => {
       try {
@@ -1208,8 +1272,24 @@ export class MLApiService {
       }
     };
 
+    // Para itens user-product, /items/.../compatibilities retorna 400
+    // ("has User Product compatibilities, use the corresponding user
+    // product resources"). Então preferimos user-products quando
+    // disponível; só caímos para /items como fallback.
+    const postBatch = async (
+      ids: string[],
+    ): Promise<{ ok: boolean; error?: string }> => {
+      if (userProductId) {
+        const viaUp = await putUserProduct(ids);
+        if (viaUp.ok) return viaUp;
+        const viaItem = await postItem(ids);
+        return viaItem.ok ? viaItem : viaUp;
+      }
+      return postItem(ids);
+    };
+
     // Tentativa 1: batch único.
-    const batch = await postProducts(unique);
+    const batch = await postBatch(unique);
     if (batch.ok) {
       return { success: true, createdCount: unique.length, errors: [] };
     }
@@ -1217,7 +1297,7 @@ export class MLApiService {
     // Fallback: chamadas individuais — isola qual ID o ML rejeita sem perder
     // os demais.
     for (const id of unique) {
-      const single = await postProducts([id]);
+      const single = await postBatch([id]);
       if (single.ok) {
         createdCount += 1;
       } else if (single.error) {
@@ -1782,11 +1862,31 @@ export class MLApiService {
       }
       const n = normalize(name);
       if (!n) return null;
-      return (
+      let match: MLCompatibilityBrandOption | null =
         brandsCache.find((b) => normalize(b.name) === n) ??
         brandsCache.find((b) => normalize(b.name).includes(n)) ??
-        null
-      );
+        null;
+      if (!match) {
+        // Fallback via top_values (endpoint não truncado): o
+        // GET /catalog_domains devolve uma lista incompleta em algumas
+        // contas (ex.: Ford pode não aparecer); POST /attributes/BRAND/top_values
+        // traz os 100+ valores reais. Sem esse fallback, marcas comuns
+        // caíam como "unresolved" e o item ia só com compat por atributos
+        // (que o ML aceita mas não persiste).
+        const topValues = await this.getCompatAttributeTopValues(
+          accessToken,
+          ML_ATTR.BRAND,
+        );
+        const tv =
+          topValues.find((v) => normalize(v.name) === n) ??
+          topValues.find((v) => normalize(v.name).includes(n)) ??
+          null;
+        if (tv) {
+          match = { valueId: tv.id, name: tv.name };
+          brandsCache.push(match);
+        }
+      }
+      return match;
     };
 
     const findModel = async (
@@ -1803,11 +1903,32 @@ export class MLApiService {
       }
       const n = normalize(name);
       if (!n) return null;
-      return (
+      let match: MLCompatibilityModelOption | null =
         models.find((m) => normalize(m.name) === n) ??
         models.find((m) => normalize(m.name).includes(n)) ??
-        null
-      );
+        null;
+      if (!match) {
+        // Mesmo fallback de brand: top_values filtrado por BRAND.value_id.
+        const topValues = await this.getCompatAttributeTopValues(
+          accessToken,
+          ML_ATTR.MODEL,
+          [{ id: ML_ATTR.BRAND, value_id: brand.valueId }],
+        );
+        const tv =
+          topValues.find((v) => normalize(v.name) === n) ??
+          topValues.find((v) => normalize(v.name).includes(n)) ??
+          null;
+        if (tv) {
+          match = {
+            valueId: tv.id,
+            name: tv.name,
+            brandValueId: brand.valueId,
+            brandName: brand.name,
+          };
+          models.push(match);
+        }
+      }
+      return match;
     };
 
     for (const compat of vehicles) {
