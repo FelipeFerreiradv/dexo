@@ -1908,10 +1908,21 @@ export class MLApiService {
     ): Promise<MLCompatibilityModelOption | null> => {
       let models = modelListCache.get(brand.valueId);
       if (!models) {
-        models = await this.listCompatibilityModels(accessToken, {
-          valueId: brand.valueId,
-          name: brand.name,
-        });
+        // listCompatibilityModels usa chunks search, que em algumas contas
+        // falha com "Invalid arguments" quando BRAND.value_id vem de
+        // top_values (espaço de IDs diferente). Se falhar, seguimos com
+        // lista vazia — a fallback via top_values logo abaixo resolve.
+        try {
+          models = await this.listCompatibilityModels(accessToken, {
+            valueId: brand.valueId,
+            name: brand.name,
+          });
+        } catch (err) {
+          console.warn(
+            `[ML Compat] listCompatibilityModels(${brand.valueId}) falhou: ${err instanceof Error ? err.message : String(err)} — caindo em top_values direto`,
+          );
+          models = [];
+        }
         modelListCache.set(brand.valueId, models);
       }
       const n = normalize(name);
@@ -2486,6 +2497,15 @@ export class MLApiService {
       );
       return response.data ?? {};
     } catch (error) {
+      // Diagnóstico: body + status + response crua. "Invalid arguments" do ML
+      // é um erro genérico que esconde o campo realmente problemático.
+      const status = axios.isAxiosError(error)
+        ? error.response?.status
+        : undefined;
+      const data = axios.isAxiosError(error) ? error.response?.data : undefined;
+      console.warn(
+        `[ML Compat] chunks FAIL — status=${status ?? "?"} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+      );
       throw new Error(
         this.formatAxiosError(
           "[ML Compat] Falha ao consultar products_search/chunks",
