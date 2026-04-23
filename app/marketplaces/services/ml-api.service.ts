@@ -2478,7 +2478,14 @@ export class MLApiService {
       offset: params.offset ?? 0,
     };
     if (params.knownAttributes && params.knownAttributes.length > 0) {
-      body.known_attributes = params.knownAttributes;
+      // O endpoint chunks espera `value_ids: [string]` (plural, array),
+      // diferente do endpoint top_values que usa `value_id: string`
+      // (singular). Confirmado em prod 23/04 via detalhe do 400:
+      // "known_attributes[0].value_ids: must not be empty".
+      body.known_attributes = params.knownAttributes.map((attr) => ({
+        id: attr.id,
+        value_ids: [attr.value_id],
+      }));
     }
     if (params.openAttributes && params.openAttributes.length > 0) {
       body.open_attributes = params.openAttributes;
