@@ -1206,52 +1206,121 @@ export class MLApiService {
       /* mantém null — caímos no caminho legacy com items */
     }
 
+    // O shape exato do body do PUT /user-products/{up}/compatibilities com
+    // catalog product IDs não está documentado de forma consistente. Testamos
+    // 3 variantes em ordem; a 1ª que não retornar 400 vence. Cada tentativa
+    // usa cache local por chamada para não repetir shapes falhos.
+    const bodyVariants: Array<{
+      label: string;
+      build: (ids: string[]) => Record<string, unknown>;
+    }> = [
+      // V1: products dentro de products_families (estilo /items)
+      {
+        label: "products_families.products",
+        build: (ids) => {
+          const body: Record<string, unknown> = {
+            domain_id: ML_COMPAT_DOMAIN_ID,
+            create: {
+              products_families: [
+                {
+                  domain_id: ML_COMPAT_DOMAIN_ID,
+                  products: ids.map((id) => ({ id })),
+                },
+              ],
+              universal: false,
+            },
+          };
+          if (categoryId) body.category_id = categoryId;
+          return body;
+        },
+      },
+      // V2: ids dentro de products_families (nosso shape original, já falhou)
+      {
+        label: "products_families.ids",
+        build: (ids) => {
+          const body: Record<string, unknown> = {
+            domain_id: ML_COMPAT_DOMAIN_ID,
+            create: {
+              products_families: [
+                { domain_id: ML_COMPAT_DOMAIN_ID, ids },
+              ],
+              universal: false,
+            },
+          };
+          if (categoryId) body.category_id = categoryId;
+          return body;
+        },
+      },
+      // V3: products no root de create (sem products_families wrapper)
+      {
+        label: "create.products",
+        build: (ids) => {
+          const body: Record<string, unknown> = {
+            domain_id: ML_COMPAT_DOMAIN_ID,
+            create: {
+              products: ids.map((id) => ({ id })),
+              universal: false,
+            },
+          };
+          if (categoryId) body.category_id = categoryId;
+          return body;
+        },
+      },
+    ];
+    let workingVariantIndex = -1;
+
     const putUserProduct = async (
       ids: string[],
     ): Promise<{ ok: boolean; error?: string }> => {
       if (!userProductId) return { ok: false, error: "no user_product_id" };
-      const body: Record<string, unknown> = {
-        domain_id: ML_COMPAT_DOMAIN_ID,
-        create: {
-          products_families: [{ domain_id: ML_COMPAT_DOMAIN_ID, ids }],
-          universal: false,
-        },
-      };
-      if (categoryId) body.category_id = categoryId;
       const url = `${ML_CONSTANTS.API_URL}/user-products/${userProductId}/compatibilities`;
-      try {
-        const response = await axios.put(url, body, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 15000,
-        });
-        console.warn(
-          `[ML Compat] PUT ${url} (ids) OK — category=${categoryId ?? "null"}, ids=${ids.length}, response=${JSON.stringify(response.data ?? {})}`,
-        );
-        return { ok: true };
-      } catch (error) {
-        const status = axios.isAxiosError(error)
-          ? error.response?.status
-          : undefined;
-        const data = axios.isAxiosError(error)
-          ? error.response?.data
-          : undefined;
-        const msg = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
-        console.warn(
-          `[ML Compat] PUT ${url} (ids) FAIL — status=${status} ids=${ids.length} response=${JSON.stringify(data)}`,
-        );
-        return { ok: false, error: msg };
+      const order =
+        workingVariantIndex >= 0
+          ? [workingVariantIndex]
+          : bodyVariants.map((_, i) => i);
+      let lastErr: string | undefined;
+      for (const idx of order) {
+        const variant = bodyVariants[idx];
+        const body = variant.build(ids);
+        try {
+          const response = await axios.put(url, body, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 15000,
+          });
+          console.warn(
+            `[ML Compat] PUT ${url} (${variant.label}) OK — ids=${ids.length}, response=${JSON.stringify(response.data ?? {})}`,
+          );
+          workingVariantIndex = idx;
+          return { ok: true };
+        } catch (error) {
+          const status = axios.isAxiosError(error)
+            ? error.response?.status
+            : undefined;
+          const data = axios.isAxiosError(error)
+            ? error.response?.data
+            : undefined;
+          console.warn(
+            `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+          );
+          lastErr = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
+          // Só tenta próximas variantes se foi 400 (body mal formado).
+          // Para 401/403/404/5xx, é problema distinto — para de tentar.
+          if (status !== 400) break;
+        }
       }
+      return { ok: false, error: lastErr };
     };
 
     const postItem = async (
       ids: string[],
     ): Promise<{ ok: boolean; error?: string }> => {
+      const url = `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`;
       try {
         await axios.post(
-          `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+          url,
           { products: ids.map((id) => ({ id })) },
           {
             headers: {
@@ -1261,13 +1330,21 @@ export class MLApiService {
             timeout: 15000,
           },
         );
+        console.warn(
+          `[ML Compat] POST ${url} OK — ids=${ids.length}`,
+        );
         return { ok: true };
       } catch (error) {
-        const msg = axios.isAxiosError(error)
-          ? `${error.response?.status ?? ""} ${JSON.stringify(error.response?.data ?? error.message)}`
-          : error instanceof Error
-            ? error.message
-            : String(error);
+        const status = axios.isAxiosError(error)
+          ? error.response?.status
+          : undefined;
+        const data = axios.isAxiosError(error)
+          ? error.response?.data
+          : undefined;
+        console.warn(
+          `[ML Compat] POST ${url} FAIL — status=${status} ids=${ids.length} response=${JSON.stringify(data)}`,
+        );
+        const msg = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
         return { ok: false, error: msg };
       }
     };
