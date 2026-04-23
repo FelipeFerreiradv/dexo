@@ -1328,6 +1328,7 @@ export class MLApiService {
         .toLowerCase();
     const brandValueIdCache = new Map<string, string | null>();
     const modelValueIdCache = new Map<string, string | null>();
+    const yearValueIdCache = new Map<string, string | null>();
 
     const resolveBrandValueId = async (
       brandName: string,
@@ -1369,6 +1370,35 @@ export class MLApiService {
       return valueId;
     };
 
+    // YEAR no endpoint de compat usa value_id numérico (e não o ano
+    // literal). Sem esse mapeamento o PUT retorna ids:[] mesmo com
+    // BRAND/MODEL resolvidos — o ML não consegue amarrar à família de
+    // produto real. Resolvido via top_values filtrado por BRAND+MODEL.
+    const resolveYearValueId = async (
+      brandValueId: string,
+      modelValueId: string,
+      year: number,
+    ): Promise<string | null> => {
+      const key = `${brandValueId}|${modelValueId}|${year}`;
+      if (yearValueIdCache.has(key)) return yearValueIdCache.get(key) ?? null;
+      const values = await this.getCompatAttributeTopValues(
+        accessToken,
+        "YEAR",
+        [
+          { id: ML_ATTR.BRAND, value_id: brandValueId },
+          { id: ML_ATTR.MODEL, value_id: modelValueId },
+        ],
+      );
+      const target = String(year);
+      const match =
+        values.find((v) => v.name === target) ??
+        values.find((v) => v.name.includes(target)) ??
+        null;
+      const valueId = match ? match.id : null;
+      yearValueIdCache.set(key, valueId);
+      return valueId;
+    };
+
     // Pré-resolve todos os (brand, model) únicos antes do PUT. Uma chamada
     // por brand + uma chamada por (brand, model) — muito mais barato que
     // não persistir e obrigar o vendedor a corrigir manualmente.
@@ -1393,6 +1423,30 @@ export class MLApiService {
     ).length;
     console.warn(
       `[ML Compat] value_id resolved: ${resolvedCount}/${uniquePairs.size} pairs (faltam ficam como value_name)`,
+    );
+
+    // Resolve YEAR value_id por tuple. Só tenta se brand+model foram
+    // resolvidos (sem eles o top_values de YEAR não tem como filtrar).
+    const resolvedYears = new Map<string, string | null>();
+    for (const t of tuples) {
+      if (t.year == null) continue;
+      const pairKey = `${normalize(t.brand)}|${normalize(t.model)}`;
+      const pair = resolvedIds.get(pairKey);
+      if (!pair?.brandId || !pair?.modelId) continue;
+      const tupleKey = `${pairKey}|${t.year}`;
+      if (resolvedYears.has(tupleKey)) continue;
+      const yearId = await resolveYearValueId(
+        pair.brandId,
+        pair.modelId,
+        t.year,
+      );
+      resolvedYears.set(tupleKey, yearId);
+    }
+    const yearResolvedCount = Array.from(resolvedYears.values()).filter(
+      (v) => v,
+    ).length;
+    console.warn(
+      `[ML Compat] YEAR value_id resolved: ${yearResolvedCount}/${resolvedYears.size} tuples`,
     );
 
     const toFamily = (
@@ -1424,9 +1478,17 @@ export class MLApiService {
           : { id: ML_ATTR.MODEL, value_name: t.model },
       );
       if (t.year != null) {
-        // YEAR é texto livre no endpoint de compat (nome difere de
-        // VEHICLE_YEAR usado em catalog products). Enviamos só value_name.
-        attributes.push({ id: "YEAR", value_name: String(t.year) });
+        // YEAR precisa de value_id para o ML amarrar à família real de
+        // produtos (brand+model+year). Sem ele o PUT retorna ids:[]
+        // mesmo com BRAND/MODEL resolvidos. Nome do atributo é `YEAR`
+        // (diferente de VEHICLE_YEAR usado em catalog products).
+        const tupleKey = `${pairKey}|${t.year}`;
+        const yearId = resolvedYears.get(tupleKey) ?? null;
+        attributes.push(
+          yearId
+            ? { id: "YEAR", value_id: yearId, value_name: String(t.year) }
+            : { id: "YEAR", value_name: String(t.year) },
+        );
       }
       return { domain_id: domainId, attributes };
     };
