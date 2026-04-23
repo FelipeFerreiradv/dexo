@@ -1346,26 +1346,41 @@ export class MLApiService {
     // user_product_id via GET /items/{id} e redirecionar o PUT para
     // /user-products/{id}/compatibilities.
     let resolvedUserProductId: string | null = null;
-    let userProductLookupAttempted = false;
+    let resolvedCategoryId: string | null = null;
+    let itemMetaLookupAttempted = false;
 
-    const getUserProductId = async (): Promise<string | null> => {
-      if (userProductLookupAttempted) return resolvedUserProductId;
-      userProductLookupAttempted = true;
+    // GET /items/{id} serve dois propósitos: (1) achar user_product_id para
+    // rotear o PUT para /user-products, e (2) achar category_id, que o suporte
+    // do ML confirmou ser obrigatório no nível raiz do body de compat.
+    const loadItemMeta = async (): Promise<void> => {
+      if (itemMetaLookupAttempted) return;
+      itemMetaLookupAttempted = true;
       try {
-        const resp = await axios.get<{ user_product_id?: string | null }>(
-          `${ML_CONSTANTS.API_URL}/items/${itemId}`,
-          {
-            headers: { Authorization: `Bearer ${accessToken}` },
-            timeout: 15000,
-          },
-        );
+        const resp = await axios.get<{
+          user_product_id?: string | null;
+          category_id?: string | null;
+        }>(`${ML_CONSTANTS.API_URL}/items/${itemId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 15000,
+        });
         const upId = resp.data?.user_product_id;
+        const catId = resp.data?.category_id;
         resolvedUserProductId =
           typeof upId === "string" && upId.length > 0 ? upId : null;
+        resolvedCategoryId =
+          typeof catId === "string" && catId.length > 0 ? catId : null;
       } catch {
-        resolvedUserProductId = null;
+        /* mantém null */
       }
+    };
+
+    const getUserProductId = async (): Promise<string | null> => {
+      await loadItemMeta();
       return resolvedUserProductId;
+    };
+    const getCategoryId = async (): Promise<string | null> => {
+      await loadItemMeta();
+      return resolvedCategoryId;
     };
 
     const isUserProductHint = (msg: string): boolean =>
@@ -1381,12 +1396,21 @@ export class MLApiService {
       batch: Tuple[],
       domainId: string,
     ): Promise<{ ok: boolean; error?: string }> => {
-      const body = {
+      // Shape confirmado pelo suporte do ML: domain_id e category_id são
+      // obrigatórios no nível raiz do body, não apenas dentro de
+      // products_families. Sem eles, a API responde 400 com mensagem
+      // enganosa "domain_id: invalid domain id".
+      const categoryId = await getCategoryId();
+      const body: Record<string, unknown> = {
+        domain_id: domainId,
         create: {
           products_families: batch.map((t) => toFamily(t, domainId)),
           universal: false,
         },
       };
+      if (categoryId) {
+        body.category_id = categoryId;
+      }
       try {
         await axios.put(url, body, {
           headers: {
@@ -1397,7 +1421,7 @@ export class MLApiService {
         });
         if (!diagLogged) {
           console.warn(
-            `[ML Compat] PUT ${url} OK — domain=${domainId}, families=${body.create.products_families.length}`,
+            `[ML Compat] PUT ${url} OK — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}`,
           );
           diagLogged = true;
         }

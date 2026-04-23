@@ -108,8 +108,11 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     vi.restoreAllMocks();
   });
 
-  it("envia PUT com create.products_families (BRAND/MODEL/YEAR por nome) por veículo com yearFrom=yearTo", async () => {
+  it("envia PUT com domain_id + category_id no root e products_families dentro de create", async () => {
     (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
+    (mockedAxios as any).get = vi.fn().mockResolvedValue({
+      data: { category_id: "MLB438074" },
+    });
 
     const result = await MLApiService.setItemCompatibilitiesByAttributes(
       "tok",
@@ -121,6 +124,8 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     const [url, body] = (mockedAxios as any).put.mock.calls[0];
     expect(url).toMatch(/\/items\/MLB123\/compatibilities$/);
     expect(body).toEqual({
+      domain_id: "MLB-CARS_AND_VANS",
+      category_id: "MLB438074",
       create: {
         products_families: [
           {
@@ -137,6 +142,19 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     });
     expect(result.success).toBe(true);
     expect(result.createdCount).toBe(1);
+  });
+
+  it("omite category_id do body quando GET /items não devolve", async () => {
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
+    (mockedAxios as any).get = vi.fn().mockResolvedValue({ data: {} });
+
+    await MLApiService.setItemCompatibilitiesByAttributes("tok", "MLB123", [
+      { brand: "Chevrolet", model: "Camaro", yearFrom: 2010, yearTo: 2010 },
+    ]);
+
+    const [, body] = (mockedAxios as any).put.mock.calls[0];
+    expect(body).not.toHaveProperty("category_id");
+    expect(body.domain_id).toBe("MLB-CARS_AND_VANS");
   });
 
   it("expande range de anos e dedupa tuplos (brand, model, year)", async () => {
