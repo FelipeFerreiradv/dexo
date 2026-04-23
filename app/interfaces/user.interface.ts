@@ -9,6 +9,7 @@ export interface User {
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
+  defaultStock?: number | null;
 
   // Padrões de anúncio ML
   defaultListingType?: string | null;
@@ -41,6 +42,7 @@ export interface UserUpdate {
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
+  defaultStock?: number | null;
 
   // Padrões de anúncio ML
   defaultListingType?: string | null;

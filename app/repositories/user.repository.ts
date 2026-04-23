@@ -18,6 +18,7 @@ class UserRepositoryPrisma implements UserRepository {
       avatarUrl: u.avatarUrl ?? null,
       defaultProductDescription: u.defaultProductDescription ?? null,
       defaultCostPrice: u.defaultCostPrice ? Number(u.defaultCostPrice) : null,
+      defaultStock: u.defaultStock ?? null,
 
       // Padrões de anúncio ML
       defaultListingType: u.defaultListingType ?? null,
@@ -96,6 +97,11 @@ class UserRepositoryPrisma implements UserRepository {
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
           defaultCostPrice: data.defaultCostPrice,
+
+          // defaultStock: somente se fornecido (não sobrescrever com undefined)
+          ...(data.defaultStock !== undefined && {
+            defaultStock: data.defaultStock,
+          }),
 
           // Padrões de anúncio ML (somente se fornecidos, não sobrescrever com undefined)
           ...(data.defaultListingType !== undefined && {

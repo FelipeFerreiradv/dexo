@@ -49,6 +49,7 @@ export default function ConfigModal({
   const [avatarUrl, setAvatarUrl] = useState("");
   const [defaultDescription, setDefaultDescription] = useState("");
   const [defaultCostPrice, setDefaultCostPrice] = useState<string>("");
+  const [defaultStock, setDefaultStock] = useState<string>("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -87,6 +88,9 @@ export default function ConfigModal({
       setDefaultDescription(user.defaultProductDescription ?? "");
       setDefaultCostPrice(
         user.defaultCostPrice != null ? String(user.defaultCostPrice) : "",
+      );
+      setDefaultStock(
+        user.defaultStock != null ? String(user.defaultStock) : "",
       );
 
       // Padrões de anúncio ML
@@ -167,6 +171,7 @@ export default function ConfigModal({
         body: JSON.stringify({
           defaultProductDescription: defaultDescription,
           defaultCostPrice: defaultCostPrice ? Number(defaultCostPrice) : null,
+          defaultStock: defaultStock !== "" ? Number(defaultStock) : null,
 
           // Padrões de anúncio ML
           defaultListingType: defaultListingType || "bronze",
@@ -292,6 +297,8 @@ export default function ConfigModal({
                   onDescriptionChange={setDefaultDescription}
                   defaultCostPrice={defaultCostPrice}
                   onCostPriceChange={setDefaultCostPrice}
+                  defaultStock={defaultStock}
+                  onStockChange={setDefaultStock}
                   defaultListingType={defaultListingType}
                   onListingTypeChange={setDefaultListingType}
                   defaultHasWarranty={defaultHasWarranty}
@@ -518,6 +525,8 @@ function PreferencesSection(props: {
   onDescriptionChange: (value: string) => void;
   defaultCostPrice: string;
   onCostPriceChange: (value: string) => void;
+  defaultStock: string;
+  onStockChange: (value: string) => void;
   defaultListingType: string;
   onListingTypeChange: (value: string) => void;
   defaultHasWarranty: boolean;
@@ -544,6 +553,8 @@ function PreferencesSection(props: {
     onDescriptionChange,
     defaultCostPrice,
     onCostPriceChange,
+    defaultStock,
+    onStockChange,
     defaultListingType,
     onListingTypeChange,
     defaultHasWarranty,
@@ -604,6 +615,25 @@ function PreferencesSection(props: {
               placeholder="0,00"
               value={defaultCostPrice}
               onChange={(e) => onCostPriceChange(e.target.value)}
+            />
+          </div>
+        </SettingRow>
+        <SettingRow
+          title="Quantidade padrão em estoque"
+          description="Pré-preenche o campo de estoque ao criar um novo produto. Deixe em branco para começar em 0."
+        >
+          <div className="space-y-1">
+            <Label htmlFor="cfgDefaultStock" className="sr-only">
+              Quantidade padrão em estoque
+            </Label>
+            <Input
+              id="cfgDefaultStock"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="0"
+              value={defaultStock}
+              onChange={(e) => onStockChange(e.target.value)}
             />
           </div>
         </SettingRow>

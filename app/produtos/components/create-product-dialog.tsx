@@ -568,6 +568,10 @@ export function CreateProductDialog({
             setValue("costPrice", costPriceDefault);
           }
 
+          if (user.defaultStock != null) {
+            setValue("stock", Number(user.defaultStock));
+          }
+
           // Pré-preencher padrões de anúncio ML do usuário
           if (user.defaultListingType)
             setValue("mlListingType", user.defaultListingType);

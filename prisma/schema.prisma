@@ -19,6 +19,7 @@ model User {
   updatedAt                 DateTime             @updatedAt
   defaultProductDescription String?
   defaultCostPrice          Decimal?             @db.Decimal(10, 2)
+  defaultStock              Int?                 @default(0)
 
   // Padrões de anúncio ML (preferências do usuário)
   defaultListingType        String?              // "bronze" | "gold_special" | "gold_pro"
