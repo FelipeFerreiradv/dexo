@@ -2149,7 +2149,7 @@ export function CreateProductDialog({
           Novo Produto
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-187.5">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
           <DialogDescription>
