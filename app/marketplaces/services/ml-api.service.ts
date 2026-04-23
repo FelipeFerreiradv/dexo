@@ -1859,6 +1859,9 @@ export class MLApiService {
     ): Promise<MLCompatibilityBrandOption | null> => {
       if (!brandsCache) {
         brandsCache = await this.listCompatibilityBrands(accessToken);
+        console.warn(
+          `[ML Compat] brandsCache loaded: ${brandsCache.length} brands from catalog_domains; first=${JSON.stringify(brandsCache.slice(0, 10).map((b) => b.name))}`,
+        );
       }
       const n = normalize(name);
       if (!n) return null;
@@ -1873,6 +1876,9 @@ export class MLApiService {
         // traz os 100+ valores reais. Sem esse fallback, marcas comuns
         // caíam como "unresolved" e o item ia só com compat por atributos
         // (que o ML aceita mas não persiste).
+        console.warn(
+          `[ML Compat] brand "${name}" not in catalog_domains (${brandsCache.length} brands); tentando top_values`,
+        );
         const topValues = await this.getCompatAttributeTopValues(
           accessToken,
           ML_ATTR.BRAND,
@@ -1884,6 +1890,13 @@ export class MLApiService {
         if (tv) {
           match = { valueId: tv.id, name: tv.name };
           brandsCache.push(match);
+          console.warn(
+            `[ML Compat] brand "${name}" resolvido via top_values: value_id=${tv.id} name=${tv.name}`,
+          );
+        } else {
+          console.warn(
+            `[ML Compat] brand "${name}" NÃO encontrada nem em top_values (${topValues.length} valores) — cai para open_attributes`,
+          );
         }
       }
       return match;
@@ -2018,6 +2031,7 @@ export class MLApiService {
       let cachedProducts: MLCatalogCompatibilityProduct[];
       let fetchErr: unknown;
       const cached = productsByBrandModel.get(bmKey);
+      let loggedThisIteration = false;
       if (cached) {
         cachedProducts = cached.products;
         fetchErr = cached.fetchErr;
@@ -2050,14 +2064,14 @@ export class MLApiService {
           products: cachedProducts,
           fetchErr,
         });
+        loggedThisIteration = true;
       }
 
-      // Diagnóstico: distingue "ML não retornou produtos", "retornou mas
-      // eram de outras marcas/modelos" e "bateu brand+model mas filtro de
-      // ano descartou todos". Também loga os year values crus para revelar
-      // o formato real de VEHICLE_YEAR.value_name (ex.: "Desde 2010",
-      // "2010 a 2015", "Todos").
-      if (fetchErr === null) {
+      // Diagnóstico: só loga na 1ª vez que esse par brand+model é buscado.
+      // Sem essa guarda, 50 veículos do mesmo Ford/Ka em anos diferentes
+      // produzem 50 linhas idênticas no pm2, que escondem os logs das outras
+      // marcas e estouram o buffer do grep.
+      if (fetchErr === null && loggedThisIteration) {
         const samplePool = cachedProducts.slice(0, 30);
         const nameSample = (id: string): string[] =>
           Array.from(
