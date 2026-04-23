@@ -1116,6 +1116,14 @@ export class MLApiService {
     accessToken: string,
     payload: MLItemCreatePayload,
   ): Promise<MLItemDetails> {
+    // Diagnóstico: loga os campos que costumamos errar (listing_type_id,
+    // category, preço, estoque). Útil para confirmar que o valor que
+    // chega ao ML é exatamente o que o usuário selecionou no frontend —
+    // já tivemos bug de dropdown cacheado enviando `gold_special` em
+    // vez de `gold_premium`.
+    console.warn(
+      `[ML CreateItem] listing_type_id=${payload.listing_type_id} category=${payload.category_id} price=${payload.price} qty=${payload.available_quantity}`,
+    );
     try {
       const response = await axios.post<MLItemDetails>(
         `${ML_CONSTANTS.API_URL}/items`,
@@ -1412,7 +1420,7 @@ export class MLApiService {
         body.category_id = categoryId;
       }
       try {
-        await axios.put(url, body, {
+        const response = await axios.put(url, body, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
@@ -1420,8 +1428,13 @@ export class MLApiService {
           timeout: 15000,
         });
         if (!diagLogged) {
+          // Incluímos o response.data completo aqui porque o ML retorna
+          // HTTP 200 mesmo quando não persiste nenhum vínculo (o body pode
+          // trazer `created_count: 0` ou semelhante quando os atributos não
+          // batem em nenhum veículo conhecido). Precisamos distinguir
+          // "aceito e salvo" de "aceito e ignorado".
           console.warn(
-            `[ML Compat] PUT ${url} OK — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}`,
+            `[ML Compat] PUT ${url} OK — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}, response=${JSON.stringify(response.data ?? {})}`,
           );
           diagLogged = true;
         }
