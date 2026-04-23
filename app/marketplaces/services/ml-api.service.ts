@@ -1206,15 +1206,32 @@ export class MLApiService {
       /* mantém null — caímos no caminho legacy com items */
     }
 
-    // O shape exato do body do PUT /user-products/{up}/compatibilities com
-    // catalog product IDs não está documentado de forma consistente. Testamos
-    // 3 variantes em ordem; a 1ª que não retornar 400 vence. Cada tentativa
-    // usa cache local por chamada para não repetir shapes falhos.
+    // Shape do PUT /user-products/{up}/compatibilities com catalog product
+    // IDs — confirmado em prod 23/04: o ML aceita `create.products: [{id}]`
+    // direto, sem products_families wrapper (shape validado com response
+    // 200 + product_type:PRODUCT para cada id). Mantemos shapes alternativos
+    // como fallback defensivo, mas `create.products` é tentado primeiro.
     const bodyVariants: Array<{
       label: string;
       build: (ids: string[]) => Record<string, unknown>;
     }> = [
-      // V1: products dentro de products_families (estilo /items)
+      // V1 (vencedor em prod): products no root de create.
+      {
+        label: "create.products",
+        build: (ids) => {
+          const body: Record<string, unknown> = {
+            domain_id: ML_COMPAT_DOMAIN_ID,
+            create: {
+              products: ids.map((id) => ({ id })),
+              universal: false,
+            },
+          };
+          if (categoryId) body.category_id = categoryId;
+          return body;
+        },
+      },
+      // V2: products dentro de products_families (em prod o ML exigiu
+      // attributes nesse shape — não funciona com ids puros).
       {
         label: "products_families.products",
         build: (ids) => {
@@ -1234,7 +1251,8 @@ export class MLApiService {
           return body;
         },
       },
-      // V2: ids dentro de products_families (nosso shape original, já falhou)
+      // V3: ids dentro de products_families (rejeitado em prod como
+      // 'Invalid request body' — mantido só como último recurso).
       {
         label: "products_families.ids",
         build: (ids) => {
@@ -1244,21 +1262,6 @@ export class MLApiService {
               products_families: [
                 { domain_id: ML_COMPAT_DOMAIN_ID, ids },
               ],
-              universal: false,
-            },
-          };
-          if (categoryId) body.category_id = categoryId;
-          return body;
-        },
-      },
-      // V3: products no root de create (sem products_families wrapper)
-      {
-        label: "create.products",
-        build: (ids) => {
-          const body: Record<string, unknown> = {
-            domain_id: ML_COMPAT_DOMAIN_ID,
-            create: {
-              products: ids.map((id) => ({ id })),
               universal: false,
             },
           };
