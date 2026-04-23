@@ -108,6 +108,34 @@ describe("MLApiService.setItemCompatibilitiesByAttributes", () => {
     vi.restoreAllMocks();
   });
 
+  it("envia PUT com value_id resolvido via top_values quando brand/model estão no catálogo", async () => {
+    (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
+    (mockedAxios as any).get = vi.fn().mockResolvedValue({
+      data: { category_id: "MLB438074" },
+    });
+    (mockedAxios as any).post = vi
+      .fn()
+      // top_values BRAND retorna Ford
+      .mockResolvedValueOnce({
+        data: { values: [{ id: "66432", name: "Ford" }] },
+      })
+      // top_values MODEL com BRAND=Ford retorna Ka
+      .mockResolvedValueOnce({
+        data: { values: [{ id: "889", name: "Ka" }] },
+      });
+
+    await MLApiService.setItemCompatibilitiesByAttributes("tok", "MLB123", [
+      { brand: "Ford", model: "Ka", yearFrom: 2018, yearTo: 2018 },
+    ]);
+
+    const [, body] = (mockedAxios as any).put.mock.calls[0];
+    expect(body.create.products_families[0].attributes).toEqual([
+      { id: "BRAND", value_id: "66432", value_name: "Ford" },
+      { id: "MODEL", value_id: "889", value_name: "Ka" },
+      { id: "YEAR", value_name: "2018" },
+    ]);
+  });
+
   it("envia PUT com domain_id + category_id no root e products_families dentro de create", async () => {
     (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
     (mockedAxios as any).get = vi.fn().mockResolvedValue({

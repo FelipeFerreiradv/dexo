@@ -1315,20 +1315,117 @@ export class MLApiService {
       return { success: false, createdCount: 0, errors: [] };
     }
 
+    // Resolução de value_id. O PUT aceita value_name mas retorna ids: []
+    // (vínculo fantasma, aparece no painel do ML como vazio) quando não
+    // consegue mapear o nome em um veículo real. Chamadas ao endpoint
+    // top_values (antes do PUT) casam brand/model textual → value_id
+    // numérico, tornando o vínculo persistente.
+    const normalize = (s: string): string =>
+      (s || "")
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .trim()
+        .toLowerCase();
+    const brandValueIdCache = new Map<string, string | null>();
+    const modelValueIdCache = new Map<string, string | null>();
+
+    const resolveBrandValueId = async (
+      brandName: string,
+    ): Promise<string | null> => {
+      const key = normalize(brandName);
+      if (!key) return null;
+      if (brandValueIdCache.has(key)) return brandValueIdCache.get(key) ?? null;
+      const values = await this.getCompatAttributeTopValues(
+        accessToken,
+        ML_ATTR.BRAND,
+      );
+      const match =
+        values.find((v) => normalize(v.name) === key) ??
+        values.find((v) => normalize(v.name).includes(key)) ??
+        null;
+      const valueId = match ? match.id : null;
+      brandValueIdCache.set(key, valueId);
+      return valueId;
+    };
+
+    const resolveModelValueId = async (
+      brandValueId: string,
+      modelName: string,
+    ): Promise<string | null> => {
+      const key = `${brandValueId}|${normalize(modelName)}`;
+      if (modelValueIdCache.has(key)) return modelValueIdCache.get(key) ?? null;
+      const values = await this.getCompatAttributeTopValues(
+        accessToken,
+        ML_ATTR.MODEL,
+        [{ id: ML_ATTR.BRAND, value_id: brandValueId }],
+      );
+      const modelKey = normalize(modelName);
+      const match =
+        values.find((v) => normalize(v.name) === modelKey) ??
+        values.find((v) => normalize(v.name).includes(modelKey)) ??
+        null;
+      const valueId = match ? match.id : null;
+      modelValueIdCache.set(key, valueId);
+      return valueId;
+    };
+
+    // Pré-resolve todos os (brand, model) únicos antes do PUT. Uma chamada
+    // por brand + uma chamada por (brand, model) — muito mais barato que
+    // não persistir e obrigar o vendedor a corrigir manualmente.
+    const resolvedIds = new Map<
+      string,
+      { brandId: string | null; modelId: string | null }
+    >();
+    const uniquePairs = new Map<string, Tuple>();
+    for (const t of tuples) {
+      const k = `${normalize(t.brand)}|${normalize(t.model)}`;
+      if (!uniquePairs.has(k)) uniquePairs.set(k, t);
+    }
+    for (const [pairKey, t] of uniquePairs) {
+      const brandId = await resolveBrandValueId(t.brand);
+      const modelId = brandId
+        ? await resolveModelValueId(brandId, t.model)
+        : null;
+      resolvedIds.set(pairKey, { brandId, modelId });
+    }
+    const resolvedCount = Array.from(resolvedIds.values()).filter(
+      (r) => r.brandId && r.modelId,
+    ).length;
+    console.warn(
+      `[ML Compat] value_id resolved: ${resolvedCount}/${uniquePairs.size} pairs (faltam ficam como value_name)`,
+    );
+
     const toFamily = (
       t: Tuple,
       domainId: string,
     ): {
       domain_id: string;
-      attributes: Array<{ id: string; value_name: string }>;
+      attributes: Array<{
+        id: string;
+        value_id?: string;
+        value_name?: string;
+      }>;
     } => {
-      const attributes: Array<{ id: string; value_name: string }> = [
-        { id: ML_ATTR.BRAND, value_name: t.brand },
-        { id: ML_ATTR.MODEL, value_name: t.model },
-      ];
+      const pairKey = `${normalize(t.brand)}|${normalize(t.model)}`;
+      const ids = resolvedIds.get(pairKey);
+      const attributes: Array<{
+        id: string;
+        value_id?: string;
+        value_name?: string;
+      }> = [];
+      attributes.push(
+        ids?.brandId
+          ? { id: ML_ATTR.BRAND, value_id: ids.brandId, value_name: t.brand }
+          : { id: ML_ATTR.BRAND, value_name: t.brand },
+      );
+      attributes.push(
+        ids?.modelId
+          ? { id: ML_ATTR.MODEL, value_id: ids.modelId, value_name: t.model }
+          : { id: ML_ATTR.MODEL, value_name: t.model },
+      );
       if (t.year != null) {
-        // O atributo é "YEAR" no endpoint de compat (difere de
-        // VEHICLE_YEAR usado em catalog products).
+        // YEAR é texto livre no endpoint de compat (nome difere de
+        // VEHICLE_YEAR usado em catalog products). Enviamos só value_name.
         attributes.push({ id: "YEAR", value_name: String(t.year) });
       }
       return { domain_id: domainId, attributes };
@@ -2082,6 +2179,55 @@ export class MLApiService {
           error,
         ),
       );
+    }
+  }
+
+  /**
+   * POST /catalog_domains/{DOMAIN_ID}/attributes/{ATTRIBUTE_ID}/top_values
+   * Retorna lista completa de valores de um atributo no domínio (BRAND retorna
+   * Ford value_id=66432, etc.). Difere do GET /catalog_domains que é truncado
+   * a ~10 top brands. Aceita `known_attributes` para filtrar — por exemplo,
+   * buscar models de uma brand específica: POST .../attributes/MODEL/top_values
+   * com body { known_attributes: [{id: "BRAND", value_id: "66432"}] }.
+   *
+   * Uso crítico: o PUT /user-products/.../compatibilities aceita attributes
+   * por value_name mas retorna `ids: []` quando não consegue resolver os
+   * nomes em veículos reais. Precisamos enviar value_id para o compat
+   * persistir de fato.
+   */
+  static async getCompatAttributeTopValues(
+    accessToken: string,
+    attributeId: string,
+    knownAttributes?: Array<{ id: string; value_id: string }>,
+  ): Promise<Array<{ id: string; name: string }>> {
+    const body: Record<string, unknown> = {};
+    if (knownAttributes && knownAttributes.length > 0) {
+      body.known_attributes = knownAttributes;
+    }
+    try {
+      const response = await axios.post<{
+        values?: Array<{ id?: string; name?: string }>;
+      }>(
+        `${ML_CONSTANTS.API_URL}/catalog_domains/${ML_COMPAT_DOMAIN_ID}/attributes/${attributeId}/top_values`,
+        body,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 15000,
+        },
+      );
+      const values = response.data?.values ?? [];
+      return values
+        .filter(
+          (v): v is { id: string; name: string } =>
+            typeof v?.id === "string" && typeof v?.name === "string",
+        )
+        .map((v) => ({ id: v.id, name: v.name }));
+    } catch {
+      // Não bloqueia o fluxo — o caller fará fallback para value_name.
+      return [];
     }
   }
 
