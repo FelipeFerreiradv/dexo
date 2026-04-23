@@ -70,6 +70,7 @@ export interface NfeDraftItem {
 export interface NfeDraftCreateInput {
   orderId?: string | null;
   customerId?: string | null;
+  ambiente?: "HOMOLOGACAO" | "PRODUCAO";
 }
 
 export interface NfeDraftUpdateInput {

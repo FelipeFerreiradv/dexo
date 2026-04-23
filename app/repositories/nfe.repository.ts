@@ -92,7 +92,7 @@ export class NfeRepository {
         userId,
         orderId: input.orderId ?? null,
         customerId: input.customerId ?? null,
-        ambiente: "HOMOLOGACAO",
+        ambiente: input.ambiente ?? "HOMOLOGACAO",
         modelo: "55",
         serie: 1,
         numero: -(draftCount + 1), // placeholder negativo, será atribuído na emissão

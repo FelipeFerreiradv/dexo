@@ -35,7 +35,10 @@ export class NfeDraftUseCase {
       if (existing) return existing;
     }
 
-    const draft = await this.nfeRepo.createDraft(userId, input);
+    const draft = await this.nfeRepo.createDraft(userId, {
+      ...input,
+      ambiente: (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO",
+    });
 
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", {
       orderId: input.orderId ?? null,

@@ -123,11 +123,17 @@ export class NfeEmissionUseCase {
         draft.serie,
       );
 
-      // Update numero on the NFe
+      // Update numero on the NFe. The draft row was created with an initial
+      // ambiente (hardcoded HOMOLOGACAO historically), but the user may have
+      // switched the fiscal config to PRODUCAO in the meantime. Align the row's
+      // ambiente with the sequence we just reserved the number from — otherwise
+      // the unique index (userId, ambiente, serie, numero) collides with rows
+      // emitted in the other ambiente.
       await (prisma as any).nfeEmitida.update({
         where: { id: nfeId },
         data: {
           numero,
+          ambiente,
           dataEmissao: new Date(),
           emitenteJson: this.buildEmitenteSnapshot(config),
         },
