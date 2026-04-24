@@ -80,11 +80,15 @@ export class NfeXmlBuilderService {
     };
     payload.regime_tributario_emitente = regimeMap[config.regimeTributario] ?? "3";
 
+    // SEFAZ XSD regra: CNAE só pode aparecer se IM (Inscrição Municipal) for
+    // informada — CNAE vem logo após IM na sequência obrigatória do <emit>.
+    // Sem IM, incluir CNAE causa rejeição "Element CNAE: This element is not
+    // expected. Expected is one of IEST, IM, CRT".
     if (config.inscricaoMunicipal) {
       payload.inscricao_municipal_emitente = config.inscricaoMunicipal;
-    }
-    if (config.cnae) {
-      payload.cnae_fiscal_emitente = config.cnae;
+      if (config.cnae) {
+        payload.cnae_fiscal_emitente = config.cnae;
+      }
     }
 
     // ── Destinatário ──
