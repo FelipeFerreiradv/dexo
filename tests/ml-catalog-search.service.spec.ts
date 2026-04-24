@@ -148,4 +148,47 @@ describe("MLCatalogSearchService.getCatalogProduct", () => {
     await MLCatalogSearchService.getCatalogProduct("MLB1");
     expect((mockedAxios as any).get).toHaveBeenCalledTimes(1);
   });
+
+  it("hidrata detail cache a partir dos hits de search — getCatalogProduct não refaz GET", async () => {
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        results: [
+          {
+            id: "MLBPREWARM",
+            name: "Produto A",
+            category_id: "MLB1",
+            attributes: [{ id: "BRAND", value_name: "Ford" }],
+          },
+          { id: "MLB2", name: "Produto B" },
+        ],
+      },
+    });
+
+    await MLCatalogSearchService.searchCatalogSuggestions("amortecedor");
+    // 1 chamada GET até aqui: o /products/search.
+    expect((mockedAxios as any).get).toHaveBeenCalledTimes(1);
+
+    // Imediatamente depois, buscar detalhes de um dos hits: deve vir do cache
+    // pré-aquecido, SEM novo GET.
+    const detail =
+      await MLCatalogSearchService.getCatalogProduct("MLBPREWARM");
+    expect(detail?.id).toBe("MLBPREWARM");
+    expect(detail?.category_id).toBe("MLB1");
+    expect((mockedAxios as any).get).toHaveBeenCalledTimes(1);
+  });
+
+  it("token OAuth é cacheado: várias chamadas não repetem POST /oauth/token", async () => {
+    (mockedAxios as any).get.mockResolvedValue({
+      data: { results: [{ id: "MLB1", name: "x" }] },
+    });
+
+    await MLCatalogSearchService.searchCatalogSuggestions("peça a");
+    await MLCatalogSearchService.searchCatalogSuggestions("peça b");
+    await MLCatalogSearchService.searchCatalogSuggestions("peça c");
+
+    // POST /oauth/token roda só uma vez para as 3 requests.
+    expect((mockedAxios as any).post).toHaveBeenCalledTimes(1);
+    const postCall = (mockedAxios as any).post.mock.calls[0];
+    expect(postCall[0]).toContain("/oauth/token");
+  });
 });

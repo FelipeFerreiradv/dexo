@@ -58,6 +58,10 @@ export function MLCatalogSuggestionPicker({
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  // Set de catalogProductIds já pré-buscados. Evita N fetches extras quando o
+  // usuário passa o mouse por cima do mesmo botão várias vezes. Ref ao invés de
+  // state para não disparar re-render.
+  const prefetchedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const q = (title ?? "").trim();
@@ -108,6 +112,29 @@ export function MLCatalogSuggestionPicker({
     },
     [],
   );
+
+  // Nova lista de sugestões → reset do conjunto de IDs já prefetched, pois os
+  // IDs anteriores podem nem aparecer mais. O cache backend continua válido.
+  useEffect(() => {
+    prefetchedRef.current = new Set();
+  }, [suggestions]);
+
+  // Prefetch do detail quando o usuário passa o mouse sobre o botão.
+  // A resposta é descartada (o backend popula seu próprio cache), então o click
+  // subsequente vira cache hit instantâneo. Erros são silenciosos — o click
+  // real refaz a chamada e mostra feedback adequado.
+  const handlePrefetch = (catalogProductId: string) => {
+    if (disabled) return;
+    if (prefetchedRef.current.has(catalogProductId)) return;
+    prefetchedRef.current.add(catalogProductId);
+    fetch(buildDetailUrl(catalogProductId), {
+      credentials: "include",
+      headers: email ? { email } : {},
+    }).catch(() => {
+      // Falha silenciosa: próximo click (se ocorrer) tenta novamente.
+      prefetchedRef.current.delete(catalogProductId);
+    });
+  };
 
   const handleSelect = async (catalogProductId: string) => {
     if (disabled) return;
@@ -207,6 +234,8 @@ export function MLCatalogSuggestionPicker({
                   size="sm"
                   variant={isSelected ? "secondary" : "default"}
                   disabled={disabled || isLoadingThis}
+                  onMouseEnter={() => handlePrefetch(s.catalogProductId)}
+                  onFocus={() => handlePrefetch(s.catalogProductId)}
                   onClick={() => handleSelect(s.catalogProductId)}
                 >
                   {isLoadingThis ? (

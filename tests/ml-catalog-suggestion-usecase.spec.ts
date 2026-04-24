@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { __testables } from "../app/marketplaces/usecases/ml-catalog-suggestion.usecase";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  __testables,
+  MLCatalogSuggestionUseCase,
+  __resetDomainDiscoveryCacheForTests,
+} from "../app/marketplaces/usecases/ml-catalog-suggestion.usecase";
+import { MLCatalogSearchService } from "../app/marketplaces/services/ml-catalog-search.service";
+import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 
 const { normalizeSuggestion, normalizeDetail, extractCompatibilities, parseYearRange } =
   __testables;
@@ -135,6 +141,60 @@ describe("normalizeDetail", () => {
       attributes: [{ id: "MATERIAL", value_name: "Aço" }],
     } as any);
     expect(result.partNumber).toBeNull();
+  });
+});
+
+describe("MLCatalogSuggestionUseCase.getProductDetail — cache domain_discovery", () => {
+  beforeEach(() => {
+    __resetDomainDiscoveryCacheForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reusa resolução de category_id para nomes idênticos (1 call ao domain_discovery)", async () => {
+    const getCatalog = vi
+      .spyOn(MLCatalogSearchService, "getCatalogProduct")
+      .mockResolvedValue({
+        id: "MLBX",
+        name: "Reservatorio Agua Radiador Ford Ka",
+        domain_id: "MLB-VEHICLE_COOLANT_RESERVOIRS",
+        category_id: null,
+        site_id: "MLB",
+      } as any);
+    const suggest = vi
+      .spyOn(MLApiService, "suggestCategoryId")
+      .mockResolvedValue("MLB193531");
+
+    const first = await MLCatalogSuggestionUseCase.getProductDetail("MLBX");
+    const second = await MLCatalogSuggestionUseCase.getProductDetail("MLBX");
+
+    expect(first?.categoryId).toBe("MLB193531");
+    expect(second?.categoryId).toBe("MLB193531");
+    expect(getCatalog).toHaveBeenCalledTimes(2);
+    // domain_discovery roda só 1x: na 2ª chamada cache em memória foi usado.
+    expect(suggest).toHaveBeenCalledTimes(1);
+  });
+
+  it("não cacheia falha do domain_discovery (permite retry)", async () => {
+    vi.spyOn(MLCatalogSearchService, "getCatalogProduct").mockResolvedValue({
+      id: "MLBY",
+      name: "Tampa",
+      domain_id: "MLB-X",
+      category_id: null,
+    } as any);
+    const suggest = vi
+      .spyOn(MLApiService, "suggestCategoryId")
+      .mockRejectedValueOnce(new Error("timeout"))
+      .mockResolvedValueOnce("MLB999");
+
+    const first = await MLCatalogSuggestionUseCase.getProductDetail("MLBY");
+    const second = await MLCatalogSuggestionUseCase.getProductDetail("MLBY");
+
+    expect(first?.categoryId).toBeNull();
+    expect(second?.categoryId).toBe("MLB999");
+    expect(suggest).toHaveBeenCalledTimes(2);
   });
 });
 

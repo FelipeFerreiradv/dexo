@@ -24,9 +24,21 @@ const SEARCH_TIMEOUT_MS = 6000;
 const DETAIL_TIMEOUT_MS = 7000;
 
 type CacheEntry<T> = { data: T; exp: number };
-const TTL_MS = 5 * 60 * 1000;
+// TTL estendido de 5min → 15min. Catalog products são dados públicos que
+// raramente mudam; 15min equilibra frescor com economia de round-trips.
+const TTL_MS = 15 * 60 * 1000;
 const searchCache = new Map<string, CacheEntry<MLProductSearchHit[]>>();
 const detailCache = new Map<string, CacheEntry<MLProductDetails>>();
+
+// Cache do app access token (client_credentials). Sem ele, cada call a
+// /catalog/suggestions ou /catalog/products/:id disparava um POST /oauth/token
+// extra de ~300-500ms. O token do ML tem validade de 1800s (30min).
+let appTokenCache: { token: string; exp: number } | null = null;
+
+/** Test-only: limpa o cache de token OAuth. */
+export function __resetCatalogAppTokenForTests(): void {
+  appTokenCache = null;
+}
 
 function now(): number {
   return Date.now();
@@ -50,6 +62,7 @@ function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, data: T): voi
 export function __resetCatalogSearchCacheForTests(): void {
   searchCache.clear();
   detailCache.clear();
+  appTokenCache = null;
 }
 
 function normalizeQuery(q: string): string {
@@ -73,6 +86,11 @@ function buildSearchCacheKey(opts: {
 }
 
 async function getAppAccessToken(): Promise<string | null> {
+  const t = now();
+  // Margem de 10s para evitar usar token que expira durante a request em trânsito.
+  if (appTokenCache && appTokenCache.exp > t + 10_000) {
+    return appTokenCache.token;
+  }
   const clientId = process.env.ML_CLIENT_ID;
   const clientSecret = process.env.ML_CLIENT_SECRET;
   if (!clientId || !clientSecret) return null;
@@ -87,7 +105,12 @@ async function getAppAccessToken(): Promise<string | null> {
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
     );
     const token = resp.data?.access_token as string | undefined;
-    return token ?? null;
+    if (token) {
+      const expiresInMs = Number(resp.data?.expires_in || 1800) * 1000;
+      appTokenCache = { token, exp: t + expiresInMs };
+      return token;
+    }
+    return null;
   } catch (err) {
     console.warn(
       "[ML Catalog] Não foi possível obter app access token:",
@@ -159,6 +182,20 @@ export class MLCatalogSearchService {
         : [];
 
       cacheSet(searchCache, cacheKey, results);
+
+      // Pré-aquece o cache de detail com os hits. O endpoint /products/search
+      // devolve `attributes`, `pictures`, `domain_id`, `category_id`, `name`
+      // e demais campos relevantes — shape quase idêntico a /products/{id}.
+      // Quando o usuário clicar em "Usar este catálogo", getCatalogProduct
+      // devolve cache hit instantâneo, eliminando ~500-900ms de round-trip.
+      // Não sobrescrevemos entradas já populadas (que podem ter sido buscadas
+      // via /products/{id} completo, com family_name/settings).
+      for (const hit of results) {
+        if (!cacheGet(detailCache, hit.id)) {
+          cacheSet(detailCache, hit.id, hit as unknown as MLProductDetails);
+        }
+      }
+
       return results;
     } catch (err) {
       console.warn(

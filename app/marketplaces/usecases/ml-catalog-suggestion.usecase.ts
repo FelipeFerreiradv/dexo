@@ -209,6 +209,25 @@ export interface ListSuggestionsOptions {
   siteId?: string;
 }
 
+// Cache para o fallback domain_discovery. Muitos catalog products do ML não
+// devolvem `category_id`; consultamos o discovery por nome. Como usuários
+// exploram vários catálogos similares na mesma sessão (ex.: 3 variantes de
+// reservatório), cachear a resolução economiza round-trips.
+const DOMAIN_DISCOVERY_TTL_MS = 15 * 60 * 1000;
+const domainDiscoveryCache = new Map<
+  string,
+  { categoryId: string | null; exp: number }
+>();
+
+function domainDiscoveryCacheKey(siteId: string, name: string): string {
+  return `${siteId}|${name.trim().toLowerCase().replace(/\s+/g, " ")}`;
+}
+
+/** Test-only: limpa o cache do domain_discovery. */
+export function __resetDomainDiscoveryCacheForTests(): void {
+  domainDiscoveryCache.clear();
+}
+
 export class MLCatalogSuggestionUseCase {
   static async listSuggestions(
     q: string,
@@ -235,18 +254,29 @@ export class MLCatalogSuggestionUseCase {
     // GET /products/{id} — só `domain_id`. Nesses casos, fazemos uma
     // chamada auxiliar a domain_discovery pelo nome do catálogo para
     // ter um category_id aproveitável no form. Falha é silenciosa.
+    // Cache em memória (15min) poupa requests quando o usuário explora
+    // vários catálogos com nomes similares na mesma sessão.
     if (!normalized.categoryId && normalized.name) {
-      try {
-        const siteId = (normalized.siteId || "MLB").slice(0, 3);
-        const suggested = await MLApiService.suggestCategoryId(
-          siteId,
-          normalized.name,
-        );
-        if (suggested) {
-          normalized.categoryId = suggested;
+      const siteId = (normalized.siteId || "MLB").slice(0, 3);
+      const cacheKey = domainDiscoveryCacheKey(siteId, normalized.name);
+      const cached = domainDiscoveryCache.get(cacheKey);
+      const now = Date.now();
+      if (cached && cached.exp > now) {
+        if (cached.categoryId) normalized.categoryId = cached.categoryId;
+      } else {
+        try {
+          const suggested = await MLApiService.suggestCategoryId(
+            siteId,
+            normalized.name,
+          );
+          domainDiscoveryCache.set(cacheKey, {
+            categoryId: suggested ?? null,
+            exp: now + DOMAIN_DISCOVERY_TTL_MS,
+          });
+          if (suggested) normalized.categoryId = suggested;
+        } catch {
+          // fail-open: não cacheamos erro para permitir retry na próxima chamada.
         }
-      } catch {
-        // fail-open
       }
     }
 
