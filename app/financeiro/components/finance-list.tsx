@@ -9,6 +9,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Receipt,
   Search,
   Trash2,
 } from "lucide-react";
@@ -45,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
+import { downloadReceipt } from "../lib/download-receipt";
 
 interface FinanceRow {
   id: string;
@@ -172,6 +174,20 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
     }
   };
 
+  const handleDownloadReceipt = async (r: FinanceRow) => {
+    const email = session?.user?.email;
+    if (!email) return;
+    try {
+      await downloadReceipt(r.id, email);
+      onToast("Cupom sem validade fiscal emitido", "success");
+    } catch (e) {
+      onToast(
+        e instanceof Error ? e.message : "Erro ao emitir cupom",
+        "error",
+      );
+    }
+  };
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     const email = session?.user?.email;
@@ -282,6 +298,16 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
                             onClick={() => handleMarkPaid(r)}
                           >
                             <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          </Button>
+                        )}
+                        {kind === "receivable" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Baixar cupom sem validade fiscal"
+                            onClick={() => handleDownloadReceipt(r)}
+                          >
+                            <Receipt className="h-4 w-4" />
                           </Button>
                         )}
                         <Button

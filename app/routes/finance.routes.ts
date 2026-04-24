@@ -2,9 +2,15 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { FinanceUseCase } from "../usecases/finance.usecase";
 import { FinanceKind, FinanceStatus } from "../interfaces/finance.interface";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { FinanceRepository } from "../repositories/finance.repository";
+import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { ReceiptPdfService } from "../financeiro/generators/receipt-pdf.service";
 
 export const financeRoutes = async (fastify: FastifyInstance) => {
   const useCase = new FinanceUseCase();
+  const financeRepo = new FinanceRepository();
+  const companyFiscalRepo = new CompanyFiscalRepository();
+  const receiptPdf = new ReceiptPdfService();
 
   fastify.get(
     "/summary",
@@ -157,6 +163,50 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/receivables/:id",
     { preHandler: [authMiddleware] },
     buildDeleteHandler("receivable"),
+  );
+
+  // ── Cupom sem validade fiscal (apenas Receivable) ──
+  fastify.get(
+    "/receivables/:id/receipt",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.id as string;
+        const { id } = request.params as { id: string };
+
+        // Queries independentes em paralelo — entry (com customer) e
+        // company fiscal config são consultas desacopladas.
+        const [entry, company] = await Promise.all([
+          financeRepo.findById("receivable", id, userId),
+          companyFiscalRepo.findByUserId(userId),
+        ]);
+
+        if (!entry) {
+          return reply
+            .status(404)
+            .send({ error: "Conta a receber não encontrada" });
+        }
+
+        const pdfBytes = await receiptPdf.generate(entry, company);
+        const buffer = Buffer.from(pdfBytes);
+
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="cupom-${id}.pdf"`,
+          )
+          .header("Cache-Control", "private, no-store")
+          .send(buffer);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao emitir cupom sem validade fiscal",
+        });
+      }
+    },
   );
 
   // Payables
