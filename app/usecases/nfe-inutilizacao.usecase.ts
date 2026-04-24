@@ -2,6 +2,7 @@ import prisma from "../lib/prisma";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { createNfeProvider } from "../fiscal/providers/provider-factory";
+import { NfeSequenceService } from "../fiscal/sequence/nfe-sequence.service";
 import type { FiscalAmbiente } from "../fiscal/domain/nfe.types";
 
 export interface InutilizacaoInput {
@@ -42,10 +43,12 @@ export interface InutilizacaoListItem {
 export class NfeInutilizacaoUseCase {
   private configRepo: CompanyFiscalRepository;
   private nfeRepo: NfeRepository;
+  private sequenceService: NfeSequenceService;
 
   constructor() {
     this.configRepo = new CompanyFiscalRepository();
     this.nfeRepo = new NfeRepository();
+    this.sequenceService = new NfeSequenceService();
   }
 
   async inutilizar(
@@ -120,6 +123,25 @@ export class NfeInutilizacaoUseCase {
         },
       },
     });
+
+    // ── 6. Advance sequencer past the inutilized range ──
+    // Sem isto, a próxima emissão reserva um número dentro da faixa já
+    // inutilizada na SEFAZ e leva rejeição "NF-e ja esta inutilizada".
+    if (result.success) {
+      const atual = await this.sequenceService.consultarProximoNumero(
+        userId,
+        config.ambiente as FiscalAmbiente,
+        input.serie,
+      );
+      if (atual <= input.numeroFinal) {
+        await this.sequenceService.ajustarProximoNumero(
+          userId,
+          config.ambiente as FiscalAmbiente,
+          input.serie,
+          input.numeroFinal + 1,
+        );
+      }
+    }
 
     return {
       success: result.success,
