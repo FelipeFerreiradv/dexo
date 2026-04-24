@@ -1623,16 +1623,76 @@ export class ListingUseCase {
       // Envolver createItem para tratar erros especÃ­ficos do ML (ex: seller.unable_to_list)
       let mlItem: any;
       const timeoutMs = Number(process.env.ML_API_TIMEOUT_MS || 15000);
+
+      // --- Tentativa de publicação via catalog listing (opt-in por flag) ---
+      // Quando o produto tem `mlCatalogProductId` (vindo da sugestão de catálogo
+      // no modal) e ML_CATALOG_LISTING_ENABLED=true, tentamos primeiro publicar
+      // como catalog listing: payload reduzido com `catalog_product_id` +
+      // `catalog_listing: true`. Se o ML rejeitar, logamos e caímos no shape
+      // tradicional sem interromper o fluxo — o try/catch abaixo permanece
+      // intocado e só faz sua chamada se `mlItem` ainda não estiver populado.
+      const catalogProductIdForListing = (
+        (product as any).mlCatalogProductId || ""
+      ).trim();
+      const catalogListingEnabled =
+        process.env.ML_CATALOG_LISTING_ENABLED === "true";
+      if (catalogListingEnabled && catalogProductIdForListing) {
+        const catalogPayload: MLItemCreatePayload = {
+          category_id: categoryIdForML,
+          catalog_product_id: catalogProductIdForListing,
+          catalog_listing: true,
+          price: payload.price,
+          currency_id: payload.currency_id,
+          available_quantity: payload.available_quantity,
+          buying_mode: payload.buying_mode,
+          listing_type_id: payload.listing_type_id,
+          condition: payload.condition,
+          pictures: payload.pictures,
+          ...(payload.seller_custom_field
+            ? { seller_custom_field: payload.seller_custom_field }
+            : {}),
+          ...(payload.sale_terms ? { sale_terms: payload.sale_terms } : {}),
+          ...(payload.shipping ? { shipping: payload.shipping } : {}),
+        };
+        try {
+          mlItem = await this.withTimeout(
+            MLApiService.createItem(acc.accessToken, catalogPayload),
+            timeoutMs,
+            "ML createItem catalog",
+          );
+          console.log(
+            JSON.stringify({
+              event: "ml.catalog_listing.succeeded",
+              productId: product.id,
+              catalogProductId: catalogProductIdForListing,
+              mlItemId: mlItem?.id ?? null,
+            }),
+          );
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              event: "ml.catalog_listing.fallback",
+              productId: product.id,
+              catalogProductId: catalogProductIdForListing,
+              message: err instanceof Error ? err.message : String(err),
+            }),
+          );
+          // mlItem continua undefined — fluxo tradicional abaixo assume.
+        }
+      }
+
       try {
-        mlItem = await this.withTimeout(
-          MLApiService.createItem(acc.accessToken, payload),
-          timeoutMs,
-          "ML createItem",
-        );
-        console.log(
-          `[ListingUseCase] ML response:`,
-          JSON.stringify(mlItem, null, 2),
-        );
+        if (!mlItem) {
+          mlItem = await this.withTimeout(
+            MLApiService.createItem(acc.accessToken, payload),
+            timeoutMs,
+            "ML createItem",
+          );
+          console.log(
+            `[ListingUseCase] ML response:`,
+            JSON.stringify(mlItem, null, 2),
+          );
+        }
       } catch (err: any) {
         // capture raw mlError object attached by MLApiService
         const parsedMl =
