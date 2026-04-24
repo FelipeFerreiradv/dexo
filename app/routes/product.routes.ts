@@ -232,6 +232,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         listings,
         // Compatibilidades veiculares
         compatibilities,
+        // Vínculo opcional a catalog product do Mercado Livre
+        mlCatalogProductId,
       } = request.body as any;
 
       const user = (request as any).user;
@@ -499,6 +501,13 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           // Compatibilidades veiculares (persistidas transacionalmente pelo repositório)
           compatibilities: sanitized.compatibilities,
+
+          // Vínculo com catalog product do ML (opcional)
+          mlCatalogProductId:
+            typeof mlCatalogProductId === "string" &&
+            mlCatalogProductId.trim().length > 0
+              ? mlCatalogProductId.trim()
+              : null,
         });
 
         // Registrar log de criação do produto (fire-and-forget, non-blocking)

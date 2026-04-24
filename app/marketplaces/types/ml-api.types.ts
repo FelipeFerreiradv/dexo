@@ -127,6 +127,15 @@ export interface MLItemCreatePayload {
     id: string;
     value_name?: string;
   }>;
+
+  // --- Catalog listing ---
+  // Quando o vendedor deseja publicar usando um catalog product do ML em vez
+  // de montar atributos manuais, envia o id do catalog product + flag
+  // `catalog_listing: true`. Ficha técnica é herdada automaticamente pelo ML.
+  // Somente preço, estoque, condição, listing_type, shipping, sale_terms e
+  // pictures são enviados pelo seller.
+  catalog_product_id?: string;
+  catalog_listing?: boolean;
 }
 
 // =========================================================================
@@ -200,4 +209,62 @@ export interface MLCompatibilityVehicleOption {
   version: string;
   /** Rótulo completo usado na UI: `${year} ${version}` ou apenas year/version. */
   label: string;
+}
+
+// =========================================================================
+// Catálogo público de produtos (GET /products/search, GET /products/{id})
+// Tipos mínimos, permissivos (campos desconhecidos toleramos como unknown).
+// =========================================================================
+
+export interface MLProductPicture {
+  id?: string | null;
+  url?: string | null;
+  secure_url?: string | null;
+  max_width?: number | null;
+  max_height?: number | null;
+}
+
+export interface MLProductAttribute {
+  id: string;
+  name?: string | null;
+  value_id?: string | null;
+  value_name?: string | null;
+  values?: Array<{ id?: string | null; name?: string | null }> | null;
+}
+
+export interface MLProductSearchHit {
+  id: string;
+  name?: string | null;
+  status?: string | null;
+  domain_id?: string | null;
+  category_id?: string | null;
+  site_id?: string | null;
+  permalink?: string | null;
+  pictures?: MLProductPicture[] | null;
+  attributes?: MLProductAttribute[] | null;
+  main_features?: Array<{ text?: string | null; type?: string | null }> | null;
+}
+
+export interface MLProductSearchResponse {
+  paging?: { total?: number; offset?: number; limit?: number };
+  keywords?: string | null;
+  used_attributes?: MLProductAttribute[] | null;
+  results?: MLProductSearchHit[] | null;
+}
+
+export interface MLProductDetails {
+  id: string;
+  catalog_product_id?: string | null;
+  status?: string | null;
+  domain_id?: string | null;
+  name?: string | null;
+  family_name?: string | null;
+  category_id?: string | null;
+  site_id?: string | null;
+  type?: string | null;
+  permalink?: string | null;
+  pictures?: MLProductPicture[] | null;
+  attributes?: MLProductAttribute[] | null;
+  main_features?: Array<{ text?: string | null; type?: string | null }> | null;
+  settings?: Record<string, unknown> | null;
 }

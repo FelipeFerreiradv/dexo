@@ -59,6 +59,12 @@ import { Separator } from "@/components/ui/separator";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
+import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
+import {
+  applyMlCatalogSuggestion,
+  type CatalogApplyFormValues,
+} from "../lib/apply-ml-catalog-suggestion";
+import type { CatalogProductDetail } from "../../marketplaces/usecases/ml-catalog-suggestion.usecase";
 
 // NextAuth
 import { useSession } from "next-auth/react";
@@ -98,6 +104,9 @@ const productSchema = z.object({
   createMLListing: z.boolean().optional(),
   mlCategory: z.string().optional(),
   mlAccountIds: z.array(z.string()).optional(),
+
+  // Vínculo opcional a catalog product do ML (preenchido pela sugestão de catálogo).
+  mlCatalogProductId: z.string().optional().nullable(),
 
   // Ficha técnica secundária (atributos por categoria do ML)
   attributes: z
@@ -399,6 +408,7 @@ export function CreateProductDialog({
       createMLListing: false,
       mlCategory: "",
       mlAccountIds: [],
+      mlCatalogProductId: null,
       attributes: {},
       mlListingType: "bronze",
       mlHasWarranty: false,
@@ -913,6 +923,101 @@ export function CreateProductDialog({
     weightKg?: number;
     titleSuggestion?: string;
   } | null>(null);
+
+  // Aplica uma sugestão de catálogo do Mercado Livre aos valores do form.
+  // Merge não-destrutivo: só preenche campos vazios (regra confirmada com
+  // o usuário). Campos com valor digitado ficam intocados — conflitos viram
+  // toast informativo em vez de sobrescrita.
+  const handleCatalogSuggestionAccepted = useCallback(
+    (detail: CatalogProductDetail) => {
+      const current = getValues();
+      const formView: CatalogApplyFormValues = {
+        name: current.name || undefined,
+        brand: current.brand || undefined,
+        model: current.model || undefined,
+        year: current.year || undefined,
+        category: current.category || undefined,
+        partNumber: current.partNumber || undefined,
+        // O form do modal guarda o ID da categoria ML em `mlCategory`.
+        // Passamos o mesmo valor como `mlCategoryId` para o helper.
+        mlCategory: current.mlCategory || undefined,
+        mlCategoryId: current.mlCategory || null,
+        mlCategorySource: null,
+        mlCatalogProductId: current.mlCatalogProductId ?? null,
+        attributes: current.attributes || {},
+        compatibilities: compatibilities.map((c) => ({
+          brand: c.brand,
+          model: c.model,
+          yearFrom: c.yearFrom ?? null,
+          yearTo: c.yearTo ?? null,
+          version: c.version ?? null,
+        })),
+      };
+
+      const { next, applied, conflicts } = applyMlCatalogSuggestion(
+        formView,
+        detail,
+      );
+
+      const setOpts = {
+        shouldDirty: true,
+        shouldValidate: true,
+        shouldTouch: true,
+      } as const;
+      if (applied.includes("name") && next.name)
+        setValue("name", next.name.slice(0, 60), setOpts);
+      if (applied.includes("brand") && next.brand)
+        setValue("brand", next.brand, setOpts);
+      if (applied.includes("model") && next.model)
+        setValue("model", next.model, setOpts);
+      if (applied.includes("year") && next.year)
+        setValue("year", next.year, setOpts);
+      if (applied.includes("partNumber") && next.partNumber)
+        setValue("partNumber", next.partNumber, setOpts);
+      if (applied.includes("attributes") && next.attributes)
+        setValue("attributes", next.attributes, setOpts);
+      if (applied.includes("mlCategoryId") && next.mlCategoryId) {
+        setValue("mlCategory", next.mlCategoryId, setOpts);
+        // Marca como auto-detectado para o submit classificar mlCategorySource.
+        autoDetectedRef.current = {
+          ...(autoDetectedRef.current || {}),
+          mlCategory: next.mlCategoryId,
+        };
+      }
+      if (applied.includes("compatibilities") && next.compatibilities) {
+        setCompatibilities(
+          next.compatibilities.map((c, i) => ({
+            _localId: `compat-catalog-${Date.now()}-${i}`,
+            brand: c.brand,
+            model: c.model,
+            yearFrom: c.yearFrom ?? null,
+            yearTo: c.yearTo ?? null,
+            version: c.version ?? null,
+          })),
+        );
+      }
+      setValue("mlCatalogProductId", detail.catalogProductId, setOpts);
+
+      const appliedFields = applied.filter((f) => f !== "mlCatalogProductId");
+      if (appliedFields.length === 0 && conflicts.length === 0) {
+        onToast(
+          "Catálogo vinculado — todos os campos já estavam preenchidos",
+          "success",
+        );
+      } else if (conflicts.length > 0) {
+        onToast(
+          `Catálogo aplicado (${appliedFields.length} campo(s)). ${conflicts.length} já preenchido(s) foram mantidos`,
+          "warning",
+        );
+      } else {
+        onToast(
+          `Catálogo aplicado: ${appliedFields.length} campo(s) preenchidos`,
+          "success",
+        );
+      }
+    },
+    [compatibilities, getValues, onToast, setValue],
+  );
 
   // Debounced auto-fill: wait a short time after typing stops to apply detection (avoids transient partial parses blocking updates)
   const autoFillTimerRef = useRef<number | null>(null);
@@ -1996,6 +2101,10 @@ export function CreateProductDialog({
           yearTo: c.yearTo ?? null,
           version: c.version ?? null,
         })),
+
+        // Vínculo com catalog product do Mercado Livre (quando o usuário
+        // aceitou uma sugestão de catálogo no Step 1).
+        mlCatalogProductId: data.mlCatalogProductId || undefined,
       };
 
       // Criar produto primeiro
@@ -2290,6 +2399,13 @@ export function CreateProductDialog({
                     {errors.name.message}
                   </p>
                 )}
+                <MLCatalogSuggestionPicker
+                  title={watchName || ""}
+                  selectedId={watch("mlCatalogProductId")}
+                  onAccept={handleCatalogSuggestionAccepted}
+                  disabled={isSubmitting}
+                  email={session?.user?.email}
+                />
               </div>
 
               <div className="space-y-2">

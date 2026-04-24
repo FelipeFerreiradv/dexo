@@ -99,6 +99,11 @@ export interface Product {
   // a partir de GET /categories/{id}/attributes do ML.
   attributes?: Record<string, { value_id?: string; value_name?: string }>;
 
+  // Vínculo opcional ao catálogo do Mercado Livre (ex.: "MLB19765739").
+  // Quando presente, indica que o produto foi originado de uma sugestão de catálogo.
+  mlCatalogProductId?: string | null;
+  mlCatalogSnapshot?: Record<string, unknown> | null;
+
   scrapId?: string;
   listings?: ProductListingSummary[];
   compatibilities?: Array<{
@@ -151,6 +156,10 @@ export interface ProductCreate {
 
   // Ficha técnica secundária por categoria (ML)
   attributes?: Record<string, { value_id?: string; value_name?: string }>;
+
+  // Vínculo opcional ao catálogo do Mercado Livre
+  mlCatalogProductId?: string | null;
+  mlCatalogSnapshot?: Record<string, unknown> | null;
 
   scrapId?: string;
 
@@ -220,6 +229,10 @@ export interface ProductUpdate {
 
   // Ficha técnica secundária por categoria (ML)
   attributes?: Record<string, { value_id?: string; value_name?: string }>;
+
+  // Vínculo opcional ao catálogo do Mercado Livre
+  mlCatalogProductId?: string | null;
+  mlCatalogSnapshot?: Record<string, unknown> | null;
 
   compatibilities?: Array<{
     brand: string;

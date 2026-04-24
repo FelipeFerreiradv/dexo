@@ -12,6 +12,7 @@ import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import { MLAttributeCatalogService } from "../marketplaces/services/ml-attribute-catalog.service";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
+import { MLCatalogSuggestionUseCase } from "../marketplaces/usecases/ml-catalog-suggestion.usecase";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
@@ -445,6 +446,98 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sugerir categorias",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/catalog/suggestions?q=...&category_id=...&limit=5
+   * Sugere catalog products do Mercado Livre a partir do título do produto.
+   * Fail-open: erros de API viram 200/{suggestions:[]}.
+   */
+  app.get(
+    "/ml/catalog/suggestions",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const q = (request.query as any)?.q as string | undefined;
+      const categoryId = (request.query as any)?.category_id as
+        | string
+        | undefined;
+      const limitRaw = (request.query as any)?.limit as string | undefined;
+      const limit = limitRaw ? Number(limitRaw) : undefined;
+
+      if (!q || q.trim().length < 3) {
+        return reply.send({ suggestions: [] });
+      }
+
+      try {
+        const suggestions = await MLCatalogSuggestionUseCase.listSuggestions(
+          q.trim(),
+          {
+            categoryId: categoryId?.trim() || undefined,
+            limit: Number.isFinite(limit) ? (limit as number) : undefined,
+          },
+        );
+        console.log(
+          JSON.stringify({
+            event: "ml.catalog.suggestions.served",
+            qLength: q.trim().length,
+            count: suggestions.length,
+            hasCategoryFilter: !!categoryId,
+          }),
+        );
+        reply.header("Cache-Control", "private, max-age=120");
+        return reply.send({ suggestions });
+      } catch {
+        return reply.send({ suggestions: [] });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/catalog/products/:catalogProductId
+   * Retorna detalhes normalizados de um catalog product do ML.
+   * 404 quando o id não existe ou a API falhar.
+   */
+  app.get(
+    "/ml/catalog/products/:catalogProductId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { catalogProductId } = request.params as {
+        catalogProductId?: string;
+      };
+      if (!catalogProductId || !catalogProductId.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'catalogProductId' é obrigatório" });
+      }
+
+      try {
+        const detail = await MLCatalogSuggestionUseCase.getProductDetail(
+          catalogProductId.trim(),
+        );
+        if (!detail) {
+          return reply
+            .status(404)
+            .send({ error: "catalog product não encontrado" });
+        }
+        console.log(
+          JSON.stringify({
+            event: "ml.catalog.product.fetched",
+            catalogProductId: detail.catalogProductId,
+            categoryId: detail.categoryId,
+            domainId: detail.domainId,
+            attributesCount: Object.keys(detail.attributes || {}).length,
+            compatCount: detail.compatibilities.length,
+          }),
+        );
+        reply.header("Cache-Control", "private, max-age=300");
+        return reply.send({ product: detail });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar catalog product",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

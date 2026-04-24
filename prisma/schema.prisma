@@ -83,6 +83,8 @@ model Product {
   locationId             String?
   scrapId                String?
   attributes             Json?
+  mlCatalogProductId     String?
+  mlCatalogSnapshot      Json?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
@@ -100,6 +102,7 @@ model Product {
   @@index([sku])
   @@index([locationId])
   @@index([scrapId])
+  @@index([mlCatalogProductId])
 }
 
 model ProductCompatibility {

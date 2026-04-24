@@ -180,6 +180,12 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
         | Record<string, { value_id?: string; value_name?: string }>
         | null
         | undefined) ?? undefined,
+    mlCatalogProductId: (item as any).mlCatalogProductId ?? undefined,
+    mlCatalogSnapshot:
+      ((item as any).mlCatalogSnapshot as
+        | Record<string, unknown>
+        | null
+        | undefined) ?? undefined,
     scrapId: (item as any).scrapId ?? undefined,
     listings,
     compatibilities: mapPrismaCompatibilities(item),
@@ -276,6 +282,8 @@ class ProductRepositoryPrisma implements ProductRepository {
       lengthCm: true,
       weightKg: true,
       attributes: true,
+      mlCatalogProductId: true,
+      mlCatalogSnapshot: true,
       scrapId: true,
       listings: {
         select: {
@@ -768,6 +776,11 @@ class ProductRepositoryPrisma implements ProductRepository {
           imageUrl: data.imageUrl,
           imageUrls: data.imageUrls ?? [],
           attributes: data.attributes ?? Prisma.DbNull,
+          mlCatalogProductId: data.mlCatalogProductId ?? null,
+          mlCatalogSnapshot:
+            data.mlCatalogSnapshot == null
+              ? Prisma.DbNull
+              : (data.mlCatalogSnapshot as Prisma.InputJsonValue),
           scrapId: data.scrapId ?? null,
           ...(compatInput.length > 0
             ? { compatibilities: { create: compatInput } }
@@ -1282,6 +1295,15 @@ class ProductRepositoryPrisma implements ProductRepository {
             data.attributes === null
               ? Prisma.DbNull
               : (data.attributes as Prisma.InputJsonValue),
+        }),
+        ...(data.mlCatalogProductId !== undefined && {
+          mlCatalogProductId: data.mlCatalogProductId,
+        }),
+        ...(data.mlCatalogSnapshot !== undefined && {
+          mlCatalogSnapshot:
+            data.mlCatalogSnapshot === null
+              ? Prisma.DbNull
+              : (data.mlCatalogSnapshot as Prisma.InputJsonValue),
         }),
       };
 

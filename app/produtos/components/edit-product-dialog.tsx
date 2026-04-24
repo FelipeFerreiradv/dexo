@@ -198,6 +198,7 @@ interface Product {
     string,
     { value_id?: string; value_name?: string }
   > | null;
+  mlCatalogProductId?: string | null;
 }
 
 interface EditProductDialogProps {
@@ -1672,6 +1673,26 @@ export function EditProductDialog({
                 <p className="text-sm text-destructive">
                   {errors.name.message}
                 </p>
+              )}
+              {product?.mlCatalogProductId && (
+                <div className="flex items-center justify-between rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs text-muted-foreground">
+                  <span>
+                    Vinculado ao catálogo Mercado Livre:{" "}
+                    <span className="font-medium">
+                      {product.mlCatalogProductId}
+                    </span>
+                  </span>
+                  <a
+                    href={`https://www.mercadolivre.com.br/p/${encodeURIComponent(
+                      product.mlCatalogProductId,
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-primary"
+                  >
+                    Ver no ML
+                  </a>
+                </div>
               )}
             </div>
 
