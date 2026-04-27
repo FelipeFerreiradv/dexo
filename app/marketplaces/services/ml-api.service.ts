@@ -198,13 +198,24 @@ export class MLApiService {
     const responseData = error.response?.data as
       | {
           message?: string;
-          cause?: Array<{ code?: string; message?: string }>;
+          // Em alguns endpoints (PUT /items) o ML usa `error` em vez de
+          // `cause` para descrever o motivo. Ex.: BODY_INVALID_FIELDS +
+          // error: "You cannot modify the title if the item has a family_name".
+          error?: string;
+          cause?:
+            | string
+            | Array<{ code?: string; message?: string } | string>;
         }
       | undefined;
     const baseMessage = responseData?.message || error.message;
+    const errorDetail =
+      typeof responseData?.error === "string" && responseData.error.trim()
+        ? responseData.error.trim()
+        : "";
     const causeMessage = Array.isArray(responseData?.cause)
       ? responseData.cause
           .map((cause) => {
+            if (typeof cause === "string") return cause.trim();
             const code = cause?.code?.trim();
             const message = cause?.message?.trim();
             if (code && message) return `${code}: ${message}`;
@@ -212,10 +223,13 @@ export class MLApiService {
           })
           .filter(Boolean)
           .join(" | ")
-      : "";
+      : typeof responseData?.cause === "string"
+        ? responseData.cause
+        : "";
 
-    return causeMessage
-      ? `${prefix}: ${baseMessage} (${causeMessage})`
+    const detail = [errorDetail, causeMessage].filter(Boolean).join(" | ");
+    return detail
+      ? `${prefix}: ${baseMessage} (${detail})`
       : `${prefix}: ${baseMessage}`;
   }
 
@@ -776,6 +790,26 @@ export class MLApiService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
+        // Log detalhado do payload e response do ML para diagnóstico de
+        // BODY_INVALID_FIELDS e outros erros de validação.
+        try {
+          console.error(
+            "[MLApiService.updateItem] payload rejected by ML",
+            JSON.stringify(
+              {
+                itemId,
+                payloadKeys: Object.keys(data),
+                payload: data,
+                status: error.response?.status,
+                response: error.response?.data,
+              },
+              null,
+              2,
+            ),
+          );
+        } catch {
+          /* ignore log errors */
+        }
         throw new Error(this.formatAxiosError("Erro ao atualizar item", error));
       }
       throw error;
@@ -810,6 +844,43 @@ export class MLApiService {
     price: number,
   ): Promise<MLItemDetails> {
     return this.updateItem(accessToken, itemId, { price });
+  }
+
+  /**
+   * Altera o tipo de listagem (listing_type_id) de um item via endpoint
+   * dedicado. Não é possível alterar listing_type via PUT /items/{id} —
+   * o ML retorna `field_not_updatable: listing_type_id is not modifiable`.
+   *
+   * Endpoint: POST /items/{itemId}/listing_type
+   * Body: { id: "bronze" | "gold_special" | "gold_premium" }
+   *
+   * IMPORTANTE: o ML costuma permitir apenas upgrades (bronze → gold_special →
+   * gold_premium). Tentativas de downgrade podem retornar erro do próprio ML.
+   */
+  static async changeListingType(
+    accessToken: string,
+    itemId: string,
+    newListingTypeId: string,
+  ): Promise<void> {
+    try {
+      await axios.post(
+        `${ML_CONSTANTS.API_URL}/items/${itemId}/listing_type`,
+        { id: newListingTypeId },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        throw new Error(
+          this.formatAxiosError("Erro ao alterar tipo de anúncio", error),
+        );
+      }
+      throw error;
+    }
   }
 
   /**

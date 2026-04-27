@@ -59,13 +59,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   MARKETPLACE_LISTING_PLATFORMS,
-  pickPreferredListingsByPlatform,
+  resolveMarketplaceListingLinkState,
   type MarketplaceListingLinkInput,
   type MarketplaceListingPlatform,
 } from "@/app/lib/marketplace-listing-links";
@@ -85,8 +80,12 @@ import {
   serializeProductFilters,
 } from "@/app/produtos/lib/product-filters";
 import { CreateProductDialog } from "./create-product-dialog";
-import { EditProductDialog } from "./edit-product-dialog";
+import {
+  EditProductDialog,
+  type EditProductDialogListingContext,
+} from "./edit-product-dialog";
 import { ImportExportProducts } from "./import-export-products";
+import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
 import { ProductSkeleton } from "./product-skeleton";
 
 type MarketplacePlatform = MarketplaceListingPlatform;
@@ -356,73 +355,85 @@ async function loadProductFilterOptions(email: string, force = false) {
 function MarketplaceBadges({
   listings,
   size = "md",
+  onOpenListings,
 }: {
   listings?: Product["listings"];
   size?: "sm" | "md";
+  onOpenListings?: (platform: MarketplacePlatform) => void;
 }) {
-  const preferredListings = useMemo(
-    () =>
-      pickPreferredListingsByPlatform(listings, MARKETPLACE_LISTING_PLATFORMS),
-    [listings],
-  );
+  const groupedByPlatform = useMemo(() => {
+    const map = new Map<
+      MarketplacePlatform,
+      { count: number; anyOpenable: boolean }
+    >();
 
-  if (preferredListings.length === 0) return null;
+    for (const listing of listings ?? []) {
+      if (!listing) continue;
+      const platform = listing.platform as MarketplacePlatform | undefined;
+      if (!platform || !MARKETPLACE_LISTING_PLATFORMS.includes(platform)) {
+        continue;
+      }
+      const current = map.get(platform) ?? { count: 0, anyOpenable: false };
+      current.count += 1;
+      if (
+        !current.anyOpenable &&
+        resolveMarketplaceListingLinkState(listing).isOpenable
+      ) {
+        current.anyOpenable = true;
+      }
+      map.set(platform, current);
+    }
+
+    return MARKETPLACE_LISTING_PLATFORMS.flatMap((platform) => {
+      const entry = map.get(platform);
+      return entry ? [{ platform, ...entry }] : [];
+    });
+  }, [listings]);
+
+  if (groupedByPlatform.length === 0) return null;
 
   const imgClass = size === "sm" ? "h-4 w-auto" : "h-5 w-auto";
   const chipClass =
     size === "sm"
       ? "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-[2px]"
       : "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1";
-  const linkClass =
+  const interactiveClass =
     "transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
-  const disabledClass = "cursor-not-allowed opacity-60";
+  const dimmedClass = "opacity-60";
 
   return (
     <div className="flex items-center gap-2">
-      {preferredListings.map(({ platform, linkState }) => {
+      {groupedByPlatform.map(({ platform, count, anyOpenable }) => {
         const icon = MARKETPLACE_ICONS[platform];
-        const reason =
-          linkState.disabledReason ||
-          `Anuncio publicado no ${icon.label}, mas ainda indisponivel para abertura.`;
-        const badgeContent = (
-          <>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={icon.src} alt={icon.label} className={imgClass} />
-            <span className="sr-only">{icon.label}</span>
-          </>
-        );
-
-        if (linkState.isOpenable && linkState.href) {
-          return (
-            <a
-              key={platform}
-              href={linkState.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`${chipClass} ${linkClass}`}
-              title={`Abrir anuncio no ${icon.label}`}
-              aria-label={`Abrir anuncio no ${icon.label}`}
-            >
-              {badgeContent}
-            </a>
-          );
-        }
+        const title =
+          count > 1
+            ? `${count} anúncios publicados no ${icon.label}`
+            : `Anúncio publicado no ${icon.label}`;
 
         return (
-          <Tooltip key={platform}>
-            <TooltipTrigger asChild>
-              <span
-                className={`${chipClass} ${disabledClass}`}
-                tabIndex={0}
-                aria-label={reason}
-                title={`Anúncio publicado no ${icon.label}`}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={icon.src} alt={icon.label} className={imgClass} />
+          <button
+            key={platform}
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenListings?.(platform);
+            }}
+            className={`${chipClass} ${interactiveClass} ${
+              anyOpenable ? "" : dimmedClass
+            }`}
+            title={title}
+            aria-label={title}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={icon.src} alt={icon.label} className={imgClass} />
+            {count > 1 && (
+              <span className="text-xs font-medium leading-none text-muted-foreground">
+                {count}
               </span>
-            </TooltipTrigger>
-            <TooltipContent sideOffset={6}>{reason}</TooltipContent>
-          </Tooltip>
+            )}
+            <span className="sr-only">{icon.label}</span>
+          </button>
         );
       })}
     </div>
@@ -455,6 +466,12 @@ export function ProductsList() {
   const [isGeneratingLabels, setIsGeneratingLabels] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [editingListingContext, setEditingListingContext] =
+    useState<EditProductDialogListingContext | null>(null);
+  const [listingsDialog, setListingsDialog] = useState<{
+    product: Product;
+    platform: MarketplaceListingPlatform;
+  } | null>(null);
   const locationOptionsRequestIdRef = useRef(0);
   const filterOptionsRequestIdRef = useRef(0);
   const productsRequestIdRef = useRef(0);
@@ -1357,6 +1374,9 @@ export function ProductsList() {
                               <TableCell className="hidden md:table-cell">
                                 <MarketplaceBadges
                                   listings={product.listings}
+                                  onOpenListings={(platform) =>
+                                    setListingsDialog({ product, platform })
+                                  }
                                 />
                               </TableCell>
                               <TableCell className="hidden md:table-cell">
@@ -1470,6 +1490,9 @@ export function ProductsList() {
                                   <MarketplaceBadges
                                     listings={product.listings}
                                     size="sm"
+                                    onOpenListings={(platform) =>
+                                      setListingsDialog({ product, platform })
+                                    }
                                   />
                                   {product.location && (
                                     <p className="text-xs text-muted-foreground">
@@ -1636,6 +1659,7 @@ export function ProductsList() {
             setIsEditDialogOpen(open);
             if (!open) {
               setEditingProduct(null);
+              setEditingListingContext(null);
             }
           }}
           onProductUpdated={() => {
@@ -1644,8 +1668,33 @@ export function ProductsList() {
             fetchFilterOptions(true);
           }}
           onToast={showToast}
+          listingContext={editingListingContext}
         />
       )}
+
+      <MarketplaceListingsDialog
+        open={!!listingsDialog}
+        onOpenChange={(open) => {
+          if (!open) setListingsDialog(null);
+        }}
+        product={listingsDialog?.product ?? null}
+        platform={listingsDialog?.platform ?? null}
+        onEditProduct={() => {
+          if (listingsDialog?.product) {
+            setEditingListingContext(null);
+            handleEditClick(listingsDialog.product);
+            setListingsDialog(null);
+          }
+        }}
+        onEditListing={(ctx) => {
+          if (listingsDialog?.product) {
+            setEditingListingContext(ctx);
+            handleEditClick(listingsDialog.product);
+            setListingsDialog(null);
+          }
+        }}
+        onToast={showToast}
+      />
     </div>
   );
 }

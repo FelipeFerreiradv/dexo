@@ -2099,17 +2099,38 @@ export class SyncUseCase {
         );
       }
 
+      // 2.1 Buscar listing especifico desta conta para aplicar overrides
+      // antes de enviar para o marketplace. Quando o anuncio tem campos
+      // personalizados (titleOverride, priceOverride, etc.), precisamos
+      // RESPEITAR esses overrides no re-sync — caso contrario, editar o
+      // produto sobrescreveria a personalizacao do anuncio.
+      const listingForOverrides = await prisma.productListing.findUnique({
+        where: {
+          marketplaceAccountId_externalListingId: {
+            marketplaceAccountId,
+            externalListingId,
+          },
+        },
+      });
+      const { applyOverridesToProduct } = await import(
+        "../services/listing-overrides.service"
+      );
+      const effectiveProduct = applyOverridesToProduct(
+        product,
+        listingForOverrides,
+      );
+
       // 3. Roteamento baseado na plataforma
       switch (account.platform) {
         case Platform.MERCADO_LIVRE:
           return await this.syncMLProductData(
-            product,
+            effectiveProduct,
             externalListingId,
             account,
           );
         case Platform.SHOPEE:
           return await this.syncShopeeProductData(
-            product,
+            effectiveProduct,
             externalListingId,
             account,
           );

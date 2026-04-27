@@ -76,6 +76,23 @@ export interface MLItemUpdatePayload {
     value_id?: string;
     value_name?: string;
   }>;
+  // Campos editáveis adicionais aceitos pelo PUT /items/{id}
+  listing_type_id?: string;
+  condition?: string;
+  warranty?: string;
+  seller_custom_field?: string;
+  shipping?: {
+    mode?: string;
+    free_shipping?: boolean;
+    local_pick_up?: boolean;
+    methods?: Array<{ id: number; cost?: number }>;
+    tags?: string[];
+  };
+  sale_terms?: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
 }
 
 // Payload para criar item

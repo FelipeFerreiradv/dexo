@@ -191,6 +191,32 @@ model ProductListing {
   freeShipping         Boolean?
   localPickup          Boolean?
   manufacturingTime    Int?
+
+  // Override fields: quando preenchidos, sobrescrevem o valor do produto
+  // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
+  // Estoque NÃO tem override por design (evita oversell — unidade física é
+  // do produto e é replicada para todos os anúncios pelo SyncService).
+  titleOverride            String?
+  descriptionOverride      String?
+  priceOverride            Decimal?  @db.Decimal(10, 2)
+  brandOverride            String?
+  modelOverride            String?
+  yearOverride             String?
+  versionOverride          String?
+  categoryOverride         String?
+  mlCategoryOverride       String?
+  shopeeCategoryOverride   String?
+  partNumberOverride       String?
+  qualityOverride          String?
+  heightCmOverride         Int?
+  widthCmOverride          Int?
+  lengthCmOverride         Int?
+  weightKgOverride         Float?
+  imageUrlsOverride        Json?
+  attributesOverride       Json?
+  compatibilitiesOverride  Json?
+  sourceVehicleOverride    String?
+
   orderItems           OrderItem[]
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
   product              Product            @relation(fields: [productId], references: [id])

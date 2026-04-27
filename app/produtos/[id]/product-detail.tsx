@@ -30,6 +30,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  LISTING_PLATFORM_LABELS,
+  LISTING_STATUS_LABELS,
+  formatListingDateTime,
+} from "@/app/produtos/lib/listing-status-labels";
 
 interface DetailedListing {
   id: string;
@@ -117,25 +122,9 @@ const QUALITY_LABELS: Record<string, string> = {
   RECONDICIONADO: "Recondicionado",
 };
 
-const STATUS_LABELS: Record<string, { label: string; variant: "success" | "warning" | "destructive" | "secondary" }> = {
-  active: { label: "Ativo", variant: "success" },
-  normal: { label: "Ativo", variant: "success" },
-  paused: { label: "Pausado", variant: "warning" },
-  unlist: { label: "Pausado", variant: "warning" },
-  pending: { label: "Pendente", variant: "secondary" },
-  reviewing: { label: "Em revisão", variant: "secondary" },
-  closed: { label: "Fechado", variant: "destructive" },
-  deleted: { label: "Excluído", variant: "destructive" },
-  seller_deleted: { label: "Excluído", variant: "destructive" },
-  inactive: { label: "Inativo", variant: "destructive" },
-  error: { label: "Erro", variant: "destructive" },
-  banned: { label: "Banido", variant: "destructive" },
-};
+const STATUS_LABELS = LISTING_STATUS_LABELS;
 
-const PLATFORM_LABELS: Record<string, string> = {
-  MERCADO_LIVRE: "Mercado Livre",
-  SHOPEE: "Shopee",
-};
+const PLATFORM_LABELS: Record<string, string> = LISTING_PLATFORM_LABELS;
 
 const priceFormatter = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -148,14 +137,6 @@ const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
   year: "numeric",
 });
 
-const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
-  day: "2-digit",
-  month: "2-digit",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
 function formatPrice(price: number) {
   return priceFormatter.format(price);
 }
@@ -165,7 +146,7 @@ function formatDate(dateString: string) {
 }
 
 function formatDateTime(dateString: string) {
-  return dateTimeFormatter.format(new Date(dateString));
+  return formatListingDateTime(dateString);
 }
 
 function getStockBadgeVariant(stock: number) {

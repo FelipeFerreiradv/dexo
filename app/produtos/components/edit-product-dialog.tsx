@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
+import { invalidateListingsStatusCache } from "./marketplace-listings-dialog";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import {
   isProductVehicular,
@@ -201,12 +202,39 @@ interface Product {
   mlCatalogProductId?: string | null;
 }
 
+/**
+ * Quando o modal é aberto a partir do clique em "Editar anúncio" de uma conta
+ * específica, recebemos esse contexto. Sem ele, o componente comporta-se
+ * exatamente como antes (edição apenas do produto compartilhado).
+ *
+ * Com listingContext:
+ *  - título e subtítulo mudam para refletir que está editando um anúncio
+ *    específico daquela conta;
+ *  - settings ML (listingType/garantia/frete/...) são pré-populados a partir
+ *    do listing escolhido (não do "primeiro qualquer");
+ *  - a seção "Publicar anúncios" (criar em outras contas) é escondida —
+ *    estamos editando um existente;
+ *  - ao salvar, faz PUT /listings/:listingId além do PUT /products/:id, sem
+ *    disparar o dispatcher de criação de novos anúncios.
+ */
+export interface EditProductDialogListingContext {
+  listingId: string;
+  accountName: string;
+  platform: "MERCADO_LIVRE" | "SHOPEE";
+  externalListingId: string | null;
+  status: string;
+}
+
 interface EditProductDialogProps {
   product: Product;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onProductUpdated: () => void;
-  onToast: (message: string, type: "success" | "error") => void;
+  onToast: (
+    message: string,
+    type: "success" | "error" | "warning",
+  ) => void;
+  listingContext?: EditProductDialogListingContext | null;
 }
 
 const qualityOptions = [
@@ -257,7 +285,16 @@ export function EditProductDialog({
   onOpenChange,
   onProductUpdated,
   onToast,
+  listingContext = null,
 }: EditProductDialogProps) {
+  // Ref usada dentro de callbacks (fetchDefaultDescription) para evitar
+  // recriar o useCallback quando listingContext mudar.
+  const listingContextRef = useRef<EditProductDialogListingContext | null>(
+    listingContext,
+  );
+  useEffect(() => {
+    listingContextRef.current = listingContext;
+  }, [listingContext]);
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [defaultDescription, setDefaultDescription] = useState("");
@@ -661,29 +698,37 @@ export function EditProductDialog({
           setMlManufacturingTime(user.defaultManufacturingTime);
       }
 
-      // Sobrepõe com settings persistidos em ProductListing (primeiro listing ML
-      // com settings não-nulos). Respeita a regra: um produto pode ter várias
-      // contas ML, mas o edit modal atual só expõe um conjunto de controles —
-      // usa o primeiro como base para hidratação.
+      // Sobrepõe com settings persistidos em ProductListing.
+      // - Modo "editar anúncio" (listingContext presente): usa exatamente o
+      //   listing daquela conta (lookup por id) para hidratar os settings.
+      // - Modo "editar produto" (sem listingContext): usa o primeiro listing
+      //   ML com settings não-nulos como base — comportamento original
+      //   preservado para zero regressão.
       if (detailResp && detailResp.ok) {
         try {
           const detail = await detailResp.json();
           const listings = Array.isArray(detail?.detailedListings)
             ? detail.detailedListings
             : [];
-          const mlListing = listings.find(
-            (l: any) =>
-              l?.platform === "MERCADO_LIVRE" &&
-              (l.listingType != null ||
-                l.itemCondition != null ||
-                l.hasWarranty != null ||
-                l.shippingMode != null ||
-                l.freeShipping != null ||
-                l.localPickup != null ||
-                l.manufacturingTime != null ||
-                l.warrantyUnit != null ||
-                l.warrantyDuration != null),
-          );
+          const ctx = listingContextRef.current;
+          const mlListing = ctx
+            ? listings.find(
+                (l: any) =>
+                  l?.id === ctx.listingId && l?.platform === "MERCADO_LIVRE",
+              )
+            : listings.find(
+                (l: any) =>
+                  l?.platform === "MERCADO_LIVRE" &&
+                  (l.listingType != null ||
+                    l.itemCondition != null ||
+                    l.hasWarranty != null ||
+                    l.shippingMode != null ||
+                    l.freeShipping != null ||
+                    l.localPickup != null ||
+                    l.manufacturingTime != null ||
+                    l.warrantyUnit != null ||
+                    l.warrantyDuration != null),
+              );
           if (mlListing) {
             if (mlListing.listingType) setMlListingType(mlListing.listingType);
             if (mlListing.itemCondition)
@@ -892,6 +937,128 @@ export function EditProductDialog({
       sanityAppliedRef.current = null;
     }
   }, [open]);
+
+  // Modo "editar anúncio": pré-popula os campos do form com os overrides
+  // existentes daquele listing específico. Quando o override é null o campo
+  // mantém o valor do produto que já foi populado pelo reset acima.
+  useEffect(() => {
+    const email = session?.user?.email;
+    if (!open || !listingContext || !email) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/listings/${listingContext.listingId}`,
+          {
+            headers: { email },
+            signal: controller.signal,
+          },
+        );
+        if (!resp.ok) return;
+        const json = (await resp.json()) as {
+          listing?: {
+            titleOverride: string | null;
+            descriptionOverride: string | null;
+            priceOverride: number | null;
+            brandOverride: string | null;
+            modelOverride: string | null;
+            yearOverride: string | null;
+            versionOverride: string | null;
+            categoryOverride: string | null;
+            mlCategoryOverride: string | null;
+            shopeeCategoryOverride: string | null;
+            partNumberOverride: string | null;
+            qualityOverride: string | null;
+            heightCmOverride: number | null;
+            widthCmOverride: number | null;
+            lengthCmOverride: number | null;
+            weightKgOverride: number | null;
+            imageUrlsOverride: string[] | null;
+            attributesOverride: Record<
+              string,
+              { value_id?: string; value_name?: string }
+            > | null;
+            compatibilitiesOverride: Array<{
+              brand: string;
+              model: string;
+              yearFrom?: number | null;
+              yearTo?: number | null;
+              version?: string | null;
+            }> | null;
+            sourceVehicleOverride: string | null;
+          };
+        };
+        if (cancelled || !json?.listing) return;
+        const l = json.listing;
+
+        if (l.titleOverride !== null) setValue("name", l.titleOverride);
+        if (l.descriptionOverride !== null)
+          setValue("description", l.descriptionOverride);
+        if (l.priceOverride !== null) setValue("price", l.priceOverride);
+        if (l.brandOverride !== null) setValue("brand", l.brandOverride);
+        if (l.modelOverride !== null) setValue("model", l.modelOverride);
+        if (l.yearOverride !== null) setValue("year", l.yearOverride);
+        if (l.versionOverride !== null) setValue("version", l.versionOverride);
+        if (l.categoryOverride !== null) setValue("category", l.categoryOverride);
+        if (l.mlCategoryOverride !== null)
+          setValue("mlCategory", l.mlCategoryOverride);
+        if (l.shopeeCategoryOverride !== null)
+          setValue("shopeeCategory", l.shopeeCategoryOverride);
+        if (l.partNumberOverride !== null)
+          setValue("partNumber", l.partNumberOverride);
+        if (l.qualityOverride !== null)
+          setValue(
+            "quality",
+            l.qualityOverride as
+              | "SUCATA"
+              | "SEMINOVO"
+              | "NOVO"
+              | "RECONDICIONADO",
+          );
+        if (l.heightCmOverride !== null)
+          setValue("heightCm", l.heightCmOverride);
+        if (l.widthCmOverride !== null) setValue("widthCm", l.widthCmOverride);
+        if (l.lengthCmOverride !== null)
+          setValue("lengthCm", l.lengthCmOverride);
+        if (l.weightKgOverride !== null)
+          setValue("weightKg", l.weightKgOverride);
+        if (Array.isArray(l.imageUrlsOverride)) {
+          setValue("imageUrls", l.imageUrlsOverride);
+          if (l.imageUrlsOverride[0]) setValue("imageUrl", l.imageUrlsOverride[0]);
+        }
+        if (l.attributesOverride && typeof l.attributesOverride === "object") {
+          setValue("attributes", l.attributesOverride);
+        }
+        if (l.sourceVehicleOverride !== null)
+          setValue("sourceVehicle", l.sourceVehicleOverride);
+
+        if (Array.isArray(l.compatibilitiesOverride)) {
+          const items: CompatibilityEntry[] = l.compatibilitiesOverride.map(
+            (c, idx) => ({
+              _localId: `override-${idx}-${Date.now()}`,
+              brand: c.brand,
+              model: c.model,
+              yearFrom: c.yearFrom ?? undefined,
+              yearTo: c.yearTo ?? undefined,
+              version: c.version ?? undefined,
+            }),
+          );
+          setCompatibilities(items);
+          setShowCompatibilitySection(items.length > 0);
+        }
+      } catch {
+        /* aborted ou network — silencioso */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [open, listingContext, session?.user?.email, setValue]);
 
   // Sanity-check + auto-suggest de categoria ML.
   // Executa no máximo uma vez por (open, productId, mlOptions-ready):
@@ -1472,6 +1639,165 @@ export function EditProductDialog({
         }
       };
 
+      const base = getApiBaseUrl();
+
+      // Modo "editar anúncio" (listingContext presente): TODO o save vai como
+      // overrides em PUT /listings/:id. NÃO chama PUT /products/:id — assim
+      // alterações neste anúncio NÃO afetam os anúncios de outras contas nem
+      // o produto compartilhado. Cada campo do form vira um override naquele
+      // listing específico.
+      if (listingContext) {
+        // Para cada campo, só enviamos como override quando o valor difere
+        // do produto. Caso contrário enviamos `null` (limpa override e o
+        // anúncio volta a herdar do produto). Isso evita enviar `title`,
+        // `attributes` etc. para o ML em anúncios que não permitem alterar
+        // esses campos via PUT (autopeças/catálogo) — caso clássico de
+        // BODY_INVALID_FIELDS.
+        const diffStr = (
+          newVal: string | null | undefined,
+          productVal: string | null | undefined,
+        ): string | null => {
+          const a = newVal == null || newVal === "" ? null : String(newVal);
+          const b = productVal == null || productVal === "" ? null : String(productVal);
+          return a === b ? null : a;
+        };
+        const diffNum = (
+          newVal: number | null | undefined,
+          productVal: number | null | undefined,
+        ): number | null => {
+          const a = newVal == null ? null : Number(newVal);
+          const b = productVal == null ? null : Number(productVal);
+          return a === b ? null : a;
+        };
+        const diffJson = (newVal: unknown, productVal: unknown): unknown => {
+          try {
+            return JSON.stringify(newVal ?? null) ===
+              JSON.stringify(productVal ?? null)
+              ? null
+              : newVal ?? null;
+          } catch {
+            return newVal ?? null;
+          }
+        };
+
+        const productImages: string[] = Array.isArray(product.imageUrls)
+          ? product.imageUrls
+          : product.imageUrl
+            ? [product.imageUrl]
+            : [];
+        const formImages: string[] = Array.isArray(data.imageUrls)
+          ? data.imageUrls
+          : [];
+
+        const productCompatList = cleanData.compatibilities ?? [];
+
+        const overridesPayload: Record<string, unknown> = {
+          // Campos do produto que viram overrides — apenas quando diferentes
+          titleOverride: diffStr(data.name, product.name),
+          descriptionOverride: diffStr(data.description, product.description),
+          priceOverride: diffNum(data.price, product.price),
+          brandOverride: diffStr(cleanData.brand, product.brand),
+          modelOverride: diffStr(cleanData.model, product.model),
+          yearOverride: diffStr(cleanData.year, product.year),
+          versionOverride: diffStr(cleanData.version, product.version),
+          categoryOverride: diffStr(cleanData.category, product.category),
+          mlCategoryOverride: diffStr(
+            cleanData.mlCategory,
+            product.mlCategory ?? product.mlCategoryId,
+          ),
+          shopeeCategoryOverride: diffStr(
+            data.shopeeCategory,
+            product.shopeeCategoryId,
+          ),
+          partNumberOverride: diffStr(cleanData.partNumber, product.partNumber),
+          qualityOverride: diffStr(cleanData.quality, product.quality),
+          heightCmOverride: diffNum(data.heightCm, product.heightCm),
+          widthCmOverride: diffNum(data.widthCm, product.widthCm),
+          lengthCmOverride: diffNum(data.lengthCm, product.lengthCm),
+          weightKgOverride: diffNum(data.weightKg, product.weightKg),
+          imageUrlsOverride: diffJson(formImages, productImages),
+          attributesOverride: diffJson(data.attributes, product.attributes),
+          compatibilitiesOverride: productCompatList,
+          sourceVehicleOverride: diffStr(
+            cleanData.sourceVehicle,
+            product.sourceVehicle,
+          ),
+          // Settings ML específicos do anúncio (sempre por listing,
+          // não comparam com produto)
+          listingType: mlListingType,
+          itemCondition: mlItemCondition,
+          hasWarranty: mlHasWarranty,
+          warrantyUnit: mlWarrantyUnit,
+          warrantyDuration: mlWarrantyDuration,
+          shippingMode: mlShippingMode,
+          freeShipping: mlFreeShipping,
+          localPickup: mlLocalPickup,
+          manufacturingTime: mlManufacturingTime,
+        };
+
+        try {
+          const respListing = await fetch(
+            `${base}/listings/${listingContext.listingId}`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                email: session?.user?.email || "",
+              },
+              body: JSON.stringify(overridesPayload),
+            },
+          );
+          const listingBody = await respListing.json().catch(() => ({}));
+          if (!respListing.ok) {
+            onToast(
+              listingBody?.message ||
+                listingBody?.error ||
+                "Falha ao atualizar este anúncio.",
+              "error",
+            );
+            onOpenChange(false);
+            return;
+          }
+
+          // Backend pode retornar 200 com warning (ex.: ML bloqueou title
+          // por family_name). O save foi bem-sucedido — alguns campos
+          // foram aplicados no ML, outros ficaram só locais como override.
+          if (listingBody?.warning) {
+            invalidateListingsStatusCache(product.id);
+            onToast(
+              `Anúncio atualizado. ${listingBody.warning}`,
+              "warning",
+            );
+            onProductUpdated();
+            onOpenChange(false);
+            return;
+          }
+        } catch (err) {
+          onToast(
+            err instanceof Error
+              ? `Erro ao atualizar este anúncio: ${err.message}`
+              : "Erro ao atualizar este anúncio.",
+            "error",
+          );
+          onOpenChange(false);
+          return;
+        }
+
+        onToast(
+          "Anúncio atualizado com sucesso (apenas esta conta foi afetada).",
+          "success",
+        );
+        // Invalida cache do modal de listings — overrides mudaram.
+        invalidateListingsStatusCache(product.id);
+        // onProductUpdated dispara refresh da lista de produtos (que precisa
+        // refletir overrides — embora o produto em si não tenha mudado).
+        onProductUpdated();
+        onOpenChange(false);
+        return;
+      }
+
+      // Modo "editar produto" (sem listingContext): fluxo original — PUT no
+      // produto + dispatcher. Aqui é onde editar produto afeta TODOS os anúncios.
       const response = await fetch(
         `${getApiBaseUrl()}/products/${product.id}`,
         {
@@ -1491,8 +1817,6 @@ export function EditProductDialog({
       }
 
       // Compatibilidades já foram salvas atomicamente no PUT acima
-
-      const base = getApiBaseUrl();
 
       // Monta um único POST /listings/dispatch com todas as plataformas e contas.
       // O endpoint retorna 202 imediato (fire-and-forget) — sem timeout síncrono
@@ -1583,6 +1907,8 @@ export function EditProductDialog({
           : "Produto atualizado com sucesso!",
         "success",
       );
+      // Invalida cache de listings — re-sync vai atualizar status/permalinks.
+      invalidateListingsStatusCache(product.id);
       onProductUpdated();
       onOpenChange(false);
     } catch (error) {
@@ -1599,11 +1925,35 @@ export function EditProductDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle>Editar Produto</DialogTitle>
+          <DialogTitle>
+            {listingContext
+              ? `Editar anúncio · ${
+                  listingContext.platform === "MERCADO_LIVRE"
+                    ? "Mercado Livre"
+                    : "Shopee"
+                }`
+              : "Editar Produto"}
+          </DialogTitle>
           <DialogDescription>
-            Atualize os dados do produto &quot;{product.name}&quot;
+            {listingContext
+              ? `Conta ${listingContext.accountName}${
+                  listingContext.externalListingId
+                    ? ` · ${listingContext.externalListingId}`
+                    : ""
+                } — Produto "${product.name}"`
+              : `Atualize os dados do produto "${product.name}"`}
           </DialogDescription>
         </DialogHeader>
+        {listingContext && (
+          <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+            <strong>Edição isolada por conta.</strong> Tudo o que você alterar
+            aqui vai afetar <em>apenas este anúncio</em> da conta{" "}
+            <strong>{listingContext.accountName}</strong>. O produto compartilhado
+            e os anúncios de outras contas continuam intactos. Para limpar uma
+            personalização e voltar a herdar do produto, deixe o campo igual ao
+            valor original do produto.
+          </div>
+        )}
         <form
           onSubmit={handleSubmit(onSubmit, (formErrors) => {
             const first = Object.values(formErrors)[0] as
@@ -2374,33 +2724,43 @@ export function EditProductDialog({
             </CollapsibleContent>
           </Collapsible>
 
-          {/* PublicaÃ§Ã£o de anÃºncios multi-contas */}
+          {/* PublicaÃ§Ã£o de anÃºncios multi-contas (escondida no modo "editar anúncio") */}
           <div className="space-y-4 rounded-lg border p-4">
             <div className="space-y-1">
-              <p className="text-sm font-medium">Publicar anúncios</p>
+              <p className="text-sm font-medium">
+                {listingContext
+                  ? "Configurações deste anúncio"
+                  : "Publicar anúncios"}
+              </p>
               <p className="text-xs text-muted-foreground">
-                Crie anúncios nas contas selecionadas (Mercado Livre e Shopee).
+                {listingContext
+                  ? listingContext.platform === "MERCADO_LIVRE"
+                    ? "Os ajustes abaixo serão aplicados apenas neste anúncio do Mercado Livre."
+                    : "Os ajustes abaixo serão aplicados apenas neste anúncio da Shopee."
+                  : "Crie anúncios nas contas selecionadas (Mercado Livre e Shopee)."}
               </p>
             </div>
 
             <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Switch
-                  id="edit-create-ml-listing"
-                  checked={createMlListing}
-                  onCheckedChange={setCreateMlListing}
-                />
-                <Label
-                  htmlFor="edit-create-ml-listing"
-                  className="cursor-pointer"
-                >
-                  Criar anúncio no Mercado Livre
-                </Label>
-                <span className="text-xs text-muted-foreground">
-                  Usa a categoria ML selecionada acima (se informada).
-                </span>
-              </div>
-              {createMlListing && (
+              {!listingContext && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    id="edit-create-ml-listing"
+                    checked={createMlListing}
+                    onCheckedChange={setCreateMlListing}
+                  />
+                  <Label
+                    htmlFor="edit-create-ml-listing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio no Mercado Livre
+                  </Label>
+                  <span className="text-xs text-muted-foreground">
+                    Usa a categoria ML selecionada acima (se informada).
+                  </span>
+                </div>
+              )}
+              {!listingContext && createMlListing && (
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {mlAccounts.length === 0 ? (
                     <p className="text-xs text-muted-foreground">
@@ -2430,7 +2790,9 @@ export function EditProductDialog({
               )}
 
               {/* Configurações do Anúncio ML */}
-              {createMlListing && (
+              {(createMlListing ||
+                (listingContext &&
+                  listingContext.platform === "MERCADO_LIVRE")) && (
                 <div className="space-y-3 rounded-md border p-3">
                   <p className="text-xs font-medium text-muted-foreground">
                     Configurações do Anúncio
@@ -2598,6 +2960,7 @@ export function EditProductDialog({
               )}
             </div>
 
+            {!listingContext && (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Switch
@@ -2766,6 +3129,7 @@ export function EditProductDialog({
                 </>
               )}
             </div>
+            )}
           </div>
 
           <DialogFooter>

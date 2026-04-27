@@ -39,6 +39,48 @@ export interface MLListingSettings {
   manufacturingTime?: number; // dias de disponibilidade
 }
 
+/**
+ * Input completo para edição de UM anúncio específico, isolado das outras
+ * contas. Estende MLListingSettings com os campos override do produto que
+ * passam a viver no ProductListing (titleOverride, priceOverride, etc.).
+ *
+ * Convenção de tristate:
+ *  - undefined = "não tocar este campo"
+ *  - null = "remover override (volta a herdar do produto)"
+ *  - valor = "aplicar este valor como override"
+ */
+export interface ListingFullEditInput extends MLListingSettings {
+  titleOverride?: string | null;
+  descriptionOverride?: string | null;
+  priceOverride?: number | null;
+  brandOverride?: string | null;
+  modelOverride?: string | null;
+  yearOverride?: string | null;
+  versionOverride?: string | null;
+  categoryOverride?: string | null;
+  mlCategoryOverride?: string | null;
+  shopeeCategoryOverride?: string | null;
+  partNumberOverride?: string | null;
+  qualityOverride?: string | null;
+  heightCmOverride?: number | null;
+  widthCmOverride?: number | null;
+  lengthCmOverride?: number | null;
+  weightKgOverride?: number | null;
+  imageUrlsOverride?: string[] | null;
+  attributesOverride?: Record<
+    string,
+    { value_id?: string; value_name?: string }
+  > | null;
+  compatibilitiesOverride?: Array<{
+    brand?: string;
+    model?: string;
+    yearFrom?: number | null;
+    yearTo?: number | null;
+    version?: string | null;
+  }> | null;
+  sourceVehicleOverride?: string | null;
+}
+
 export class ListingUseCase {
   private static productRepository = new ProductRepositoryPrisma();
   private static userRepository = new UserRepositoryPrisma();
@@ -3810,4 +3852,703 @@ export class ListingUseCase {
     await ListingRepository.deleteListing(listingId);
     return { success: true };
   }
+
+  /**
+   * Atualiza campos editáveis específicos de um anúncio publicado.
+   *
+   * Escopo intencionalmente reduzido para evitar conflito com o re-sync
+   * disparado por `PUT /products/:id` (ListingDispatcher). Campos compartilhados
+   * com o produto (título/descrição/preço/estoque/dimensões) NÃO são editados
+   * aqui — esses devem ser ajustados pelo EditProductDialog.
+   *
+   * Mercado Livre: aceita listingType, itemCondition, garantia, frete, tempo de fabricação.
+   * Shopee: por enquanto apenas persistência local (extensão futura).
+   *
+   * Faz validação de ownership: o anúncio deve pertencer ao userId informado.
+   */
+  static async updateListingFields(
+    listingId: string,
+    userId: string,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return { success: false, error: "Anúncio não encontrado" };
+      }
+      if (listing.product?.userId !== userId) {
+        return { success: false, error: "Acesso negado a este anúncio" };
+      }
+
+      const platform = listing.marketplaceAccount?.platform;
+
+      if (platform === Platform.MERCADO_LIVRE) {
+        return await ListingUseCase.updateMLListingFields(listing, fields);
+      }
+
+      if (platform === Platform.SHOPEE) {
+        return await ListingUseCase.updateShopeeListingFields(listing, fields);
+      }
+
+      return {
+        success: false,
+        error: `Plataforma ${platform} não suportada para edição`,
+      };
+    } catch (error) {
+      console.error("[ListingUseCase] Error updating listing fields:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro ao atualizar anúncio",
+      };
+    }
+  }
+
+  /**
+   * Pausa ou reativa um anúncio publicado.
+   * Aceita "active" ou "paused". Para encerrar definitivamente, usar removeListing.
+   *
+   * Mercado Livre: chama PUT /items/{id} com `status` mudando.
+   * Shopee: ainda não suportado (apenas persistência local) — extensão futura
+   * deve usar `unlist_item` quando disponível.
+   *
+   * Faz validação de ownership.
+   */
+  static async updateListingStatus(
+    listingId: string,
+    userId: string,
+    status: "active" | "paused",
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return { success: false, error: "Anúncio não encontrado" };
+      }
+      if (listing.product?.userId !== userId) {
+        return { success: false, error: "Acesso negado a este anúncio" };
+      }
+
+      const platform = listing.marketplaceAccount?.platform;
+
+      if (platform === Platform.MERCADO_LIVRE) {
+        // Reusa account incluído no findById (sem 2ª query ao banco).
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken) {
+          return { success: false, error: "Conta sem credenciais válidas" };
+        }
+
+        if (
+          !listing.externalListingId ||
+          listing.externalListingId.startsWith("PENDING_")
+        ) {
+          return {
+            success: false,
+            error: "Anúncio ainda não foi publicado no marketplace",
+          };
+        }
+
+        await MLApiService.updateItem(
+          account.accessToken,
+          listing.externalListingId,
+          { status },
+        );
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
+      }
+
+      if (platform === Platform.SHOPEE) {
+        return {
+          success: false,
+          error:
+            "Pausar/reativar anúncios da Shopee ainda não está disponível. Use o painel da Shopee.",
+        };
+      }
+
+      return {
+        success: false,
+        error: `Plataforma ${platform} não suportada`,
+      };
+    } catch (error) {
+      console.error("[ListingUseCase] Error updating listing status:", error);
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro ao alterar status",
+      };
+    }
+  }
+
+  /**
+   * Aplica edição de campos específicos no Mercado Livre.
+   * Mapeia os campos do MLListingSettings para o payload aceito pelo
+   * PUT /items/{id}, faz a chamada externa e persiste localmente.
+   */
+  private static async updateMLListingFields(
+    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    // Reusa o marketplaceAccount já incluído no findById (evita 2ª query
+    // ao banco). O include traz a entidade completa, com accessToken.
+    const account = listing.marketplaceAccount;
+    if (!account || !account.accessToken) {
+      return { success: false, error: "Conta sem credenciais válidas" };
+    }
+
+    if (
+      !listing.externalListingId ||
+      listing.externalListingId.startsWith("PENDING_")
+    ) {
+      return {
+        success: false,
+        error: "Anúncio ainda não foi publicado no Mercado Livre",
+      };
+    }
+
+    // listing_type_id NÃO é modificável via PUT /items/{id} — o ML retorna
+    // `field_not_updatable`. Mudança de tipo de anúncio usa endpoint dedicado
+    // (POST /items/{id}/listing_type) e é tratada separadamente abaixo.
+    const payload: import("../types/ml-api.types").MLItemUpdatePayload = {};
+
+    // Overrides do produto: title, description, price, pictures
+    if (fields.titleOverride !== undefined && fields.titleOverride !== null) {
+      payload.title = fields.titleOverride;
+    }
+    if (
+      fields.descriptionOverride !== undefined &&
+      fields.descriptionOverride !== null
+    ) {
+      // descriçao tem endpoint dedicado, usado depois do PUT principal
+    }
+    if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
+      payload.price = fields.priceOverride;
+    }
+    if (
+      Array.isArray(fields.imageUrlsOverride) &&
+      fields.imageUrlsOverride.length > 0
+    ) {
+      payload.pictures = fields.imageUrlsOverride.map((url) => ({
+        source: url,
+      }));
+    }
+    // Atributos override: respeita lista de imutáveis do ML após criação
+    if (fields.attributesOverride && typeof fields.attributesOverride === "object") {
+      const IMMUTABLE_ATTRS = new Set([
+        "BRAND",
+        "MODEL",
+        "YEAR",
+        "VEHICLE_YEAR",
+        "PART_NUMBER",
+        "MPN",
+        "OEM",
+        "SELLER_SKU",
+      ]);
+      const list: Array<{
+        id: string;
+        value_id?: string;
+        value_name?: string;
+      }> = [];
+      for (const [id, raw] of Object.entries(fields.attributesOverride)) {
+        if (!id || IMMUTABLE_ATTRS.has(id)) continue;
+        if (!raw || typeof raw !== "object") continue;
+        const v = raw as { value_id?: string; value_name?: string };
+        const valueId =
+          typeof v.value_id === "string" && v.value_id.trim().length > 0
+            ? v.value_id.trim()
+            : undefined;
+        const valueName =
+          typeof v.value_name === "string" && v.value_name.trim().length > 0
+            ? v.value_name.trim()
+            : undefined;
+        if (!valueId && !valueName) continue;
+        const entry: { id: string; value_id?: string; value_name?: string } = {
+          id,
+        };
+        if (valueId) entry.value_id = valueId;
+        if (valueName) entry.value_name = valueName;
+        list.push(entry);
+      }
+      if (list.length > 0) {
+        payload.attributes = list;
+      }
+    }
+
+    if (
+      fields.itemCondition !== undefined &&
+      fields.itemCondition !== null &&
+      fields.itemCondition !== listing.itemCondition
+    ) {
+      payload.condition = fields.itemCondition;
+    }
+    if (
+      fields.hasWarranty !== undefined ||
+      fields.warrantyDuration !== undefined ||
+      fields.warrantyUnit !== undefined
+    ) {
+      if (fields.hasWarranty === false) {
+        payload.warranty = "Sem garantia";
+      } else if (
+        fields.hasWarranty === true &&
+        fields.warrantyDuration &&
+        fields.warrantyUnit
+      ) {
+        payload.warranty = `Garantia do vendedor: ${fields.warrantyDuration} ${fields.warrantyUnit}`;
+      }
+    }
+    if (
+      fields.shippingMode !== undefined ||
+      fields.freeShipping !== undefined ||
+      fields.localPickup !== undefined
+    ) {
+      payload.shipping = {
+        ...(fields.shippingMode ? { mode: fields.shippingMode } : {}),
+        ...(fields.freeShipping !== undefined
+          ? { free_shipping: fields.freeShipping }
+          : {}),
+        ...(fields.localPickup !== undefined
+          ? { local_pick_up: fields.localPickup }
+          : {}),
+      };
+    }
+    if (fields.manufacturingTime !== undefined) {
+      const value = fields.manufacturingTime;
+      // ML rejeita "0 dias" ao tentar deletar/setar manufacturing_time:
+      //   "Invalid value '0 dias', it should be between 1 and 60 days"
+      // Só enviamos sale_terms quando o valor está dentro do range válido.
+      // Para "limpar" o tempo de envio, o ML exige um value_id especial
+      // que não temos genérico — então simplesmente não tocamos no campo
+      // quando o usuário deixa 0.
+      if (value !== null && value !== undefined && value >= 1 && value <= 60) {
+        payload.sale_terms = [
+          {
+            id: "MANUFACTURING_TIME",
+            value_name: `${value} ${value === 1 ? "dia" : "dias"}`,
+          },
+        ];
+      }
+    }
+
+    const listingTypeChanged =
+      fields.listingType !== undefined &&
+      fields.listingType !== null &&
+      fields.listingType !== listing.listingType;
+
+    const descriptionChanged =
+      fields.descriptionOverride !== undefined &&
+      fields.descriptionOverride !== null;
+
+    // Nada para enviar — apenas persistir caso só listingType foi enviado e
+    // já é igual ao atual (no-op).
+    if (
+      Object.keys(payload).length === 0 &&
+      !listingTypeChanged &&
+      !descriptionChanged
+    ) {
+      // Persistir os overrides mesmo sem chamada externa (ex.: usuário só
+      // mudou um campo que não vai para a API mas deve ficar gravado).
+      await ListingRepository.updateListing(
+        listing.id,
+        buildListingPersistData(fields),
+      );
+      return { success: true };
+    }
+
+    const skippedByMl: string[] = [];
+
+    if (Object.keys(payload).length > 0) {
+      const tryPut = async (
+        p: import("../types/ml-api.types").MLItemUpdatePayload,
+      ) =>
+        MLApiService.updateItem(
+          account.accessToken,
+          listing.externalListingId,
+          p,
+        );
+
+      // Loop de retry: cada iteração detecta campos bloqueados pelo ML e os
+      // remove do payload. Para até passar OU não ter mais o que retirar.
+      let currentPayload: import("../types/ml-api.types").MLItemUpdatePayload =
+        { ...payload };
+      let succeeded = false;
+      const MAX_ATTEMPTS = 4;
+
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        try {
+          await tryPut(currentPayload);
+          succeeded = true;
+          break;
+        } catch (error) {
+          const rawMessage =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          console.error(
+            `[ListingUseCase] ML updateItem attempt ${attempt + 1} failed:`,
+            rawMessage,
+          );
+
+          const lower = rawMessage.toLowerCase();
+          const blockedThisRound: Array<keyof typeof currentPayload> = [];
+          const labelThisRound: string[] = [];
+
+          if (
+            lower.includes("cannot modify the title") ||
+            lower.includes("family_name")
+          ) {
+            if ("title" in currentPayload) {
+              blockedThisRound.push("title");
+              labelThisRound.push("título (anúncio com family_name)");
+            }
+          }
+          if (
+            lower.includes("warranty") &&
+            (lower.includes("deprecated") || lower.includes("not_updatable"))
+          ) {
+            if ("warranty" in currentPayload) {
+              blockedThisRound.push("warranty");
+              labelThisRound.push(
+                "garantia (campo deprecado pelo ML; mude via atributos da ficha técnica)",
+              );
+            }
+          }
+          if (
+            lower.includes("condition") &&
+            (lower.includes("not modifiable") || lower.includes("not_updatable"))
+          ) {
+            if ("condition" in currentPayload) {
+              blockedThisRound.push("condition");
+              labelThisRound.push("condição (anúncio com vendas/ofertas)");
+            }
+          }
+          if (lower.includes("attribute") && lower.includes("invalid")) {
+            if ("attributes" in currentPayload) {
+              blockedThisRound.push("attributes");
+              labelThisRound.push("atributos imutáveis");
+            }
+          }
+          if (
+            lower.includes("manufacturing_time") ||
+            lower.includes("sale_terms.manufacturing")
+          ) {
+            if ("sale_terms" in currentPayload) {
+              blockedThisRound.push("sale_terms");
+              labelThisRound.push(
+                "tempo de envio (valor inválido para o ML — use entre 1 e 60 dias)",
+              );
+            }
+          }
+
+          if (blockedThisRound.length === 0) {
+            // Erro não conhecido — propaga.
+            return {
+              success: false,
+              error: humanizeMLUpdateError(rawMessage),
+            };
+          }
+
+          // Remove campos bloqueados e tenta de novo.
+          const next: import("../types/ml-api.types").MLItemUpdatePayload =
+            { ...currentPayload };
+          for (const key of blockedThisRound) {
+            delete next[key];
+          }
+          currentPayload = next;
+          skippedByMl.push(...labelThisRound);
+
+          if (Object.keys(currentPayload).length === 0) {
+            // Nada sobrou — sair do loop. Os overrides ainda são persistidos.
+            console.warn(
+              "[ListingUseCase] All fields blocked by ML; nothing to send remotely.",
+            );
+            succeeded = true;
+            break;
+          }
+        }
+      }
+
+      if (!succeeded) {
+        return {
+          success: false,
+          error:
+            "Não foi possível atualizar o anúncio no Mercado Livre após várias tentativas.",
+        };
+      }
+    }
+
+    if (descriptionChanged && fields.descriptionOverride) {
+      try {
+        await MLApiService.upsertDescription(
+          account.accessToken,
+          listing.externalListingId,
+          fields.descriptionOverride,
+        );
+      } catch (error) {
+        const rawMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        console.error("[ListingUseCase] ML upsertDescription failed:", rawMessage);
+        return {
+          success: false,
+          error: `Falha ao atualizar descrição: ${rawMessage}`,
+        };
+      }
+    }
+
+    if (listingTypeChanged && fields.listingType) {
+      try {
+        await MLApiService.changeListingType(
+          account.accessToken,
+          listing.externalListingId,
+          fields.listingType,
+        );
+      } catch (error) {
+        const rawMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        console.error(
+          "[ListingUseCase] ML changeListingType failed:",
+          rawMessage,
+        );
+        // Os outros campos (PUT) já foram aplicados — persistir o que deu
+        // certo no banco e reportar erro específico do tipo de anúncio.
+        await ListingRepository.updateListing(listing.id, {
+          ...buildListingPersistData(fields),
+          listingType: undefined, // não persiste o listingType porque mudança falhou
+        });
+        return {
+          success: false,
+          error: `Demais campos foram salvos, mas não foi possível alterar o tipo do anúncio: ${humanizeMLListingTypeError(rawMessage)}`,
+        };
+      }
+    }
+
+    await ListingRepository.updateListing(
+      listing.id,
+      buildListingPersistData(fields),
+    );
+
+    // Deduplica labels (mesmo campo pode aparecer em rounds diferentes
+    // do retry).
+    const skipped = Array.from(new Set(skippedByMl));
+
+    if (skipped.length > 0) {
+      try {
+        await SystemLogService.logWarning(
+          "UPDATE_LISTING",
+          `Anúncio ML ${listing.externalListingId}: campos bloqueados pelo ML: ${skipped.join(", ")}`,
+          {
+            userId: listing.product.userId ?? undefined,
+            resource: "listing",
+            resourceId: listing.id,
+            details: { skipped },
+          },
+        );
+      } catch {
+        /* ignore */
+      }
+      return {
+        success: true,
+        error: `O Mercado Livre não permitiu alterar: ${skipped.join(", ")}. Esses valores ficaram salvos localmente, mas o anúncio público não foi alterado nesses campos (regra do próprio ML).`,
+      };
+    }
+
+    try {
+      await SystemLogService.logInfo(
+        "UPDATE_LISTING",
+        `Anúncio ML ${listing.externalListingId} atualizado pelo usuário`,
+        {
+          userId: listing.product.userId ?? undefined,
+          resource: "listing",
+          resourceId: listing.id,
+          details: { fields: Object.keys(payload) },
+        },
+      );
+    } catch (logError) {
+      console.warn("[ListingUseCase] Falha ao registrar log:", logError);
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Atualiza campos de um anúncio Shopee aplicando overrides.
+   * Persiste localmente + faz POST /api/v2/product/update_item com title,
+   * description, price, dimensões, peso. Categoria é tratada separadamente
+   * pois a Shopee só aceita mudança via update_item.
+   */
+  private static async updateShopeeListingFields(
+    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    // Reusa marketplaceAccount já incluído no findById.
+    const account = listing.marketplaceAccount;
+    if (!account || !account.accessToken || !account.shopId) {
+      return { success: false, error: "Conta Shopee sem credenciais válidas" };
+    }
+
+    if (
+      !listing.externalListingId ||
+      listing.externalListingId.startsWith("PENDING_")
+    ) {
+      return {
+        success: false,
+        error: "Anúncio ainda não foi publicado na Shopee",
+      };
+    }
+
+    const itemId = Number(listing.externalListingId);
+    if (!Number.isFinite(itemId)) {
+      return {
+        success: false,
+        error: "ID externo do anúncio Shopee é inválido",
+      };
+    }
+
+    type ShopeeUpdate = import("../types/shopee-api.types").ShopeeItemUpdatePayload;
+    const payload: ShopeeUpdate = { item_id: itemId };
+    let hasField = false;
+
+    if (fields.titleOverride !== undefined && fields.titleOverride !== null) {
+      payload.item_name = fields.titleOverride;
+      hasField = true;
+    }
+    if (
+      fields.descriptionOverride !== undefined &&
+      fields.descriptionOverride !== null
+    ) {
+      payload.description = fields.descriptionOverride;
+      hasField = true;
+    }
+    if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
+      payload.original_price = fields.priceOverride;
+      hasField = true;
+    }
+    if (fields.weightKgOverride !== undefined && fields.weightKgOverride !== null) {
+      payload.weight = fields.weightKgOverride;
+      hasField = true;
+    }
+    if (
+      fields.heightCmOverride !== undefined &&
+      fields.widthCmOverride !== undefined &&
+      fields.lengthCmOverride !== undefined &&
+      fields.heightCmOverride !== null &&
+      fields.widthCmOverride !== null &&
+      fields.lengthCmOverride !== null
+    ) {
+      payload.dimension = {
+        package_height: fields.heightCmOverride,
+        package_width: fields.widthCmOverride,
+        package_length: fields.lengthCmOverride,
+      };
+      hasField = true;
+    }
+
+    if (hasField) {
+      try {
+        await ShopeeApiService.updateItem(
+          account.accessToken,
+          account.shopId,
+          payload,
+        );
+      } catch (error) {
+        const rawMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        console.error(
+          "[ListingUseCase] Shopee updateItem failed:",
+          rawMessage,
+        );
+        return { success: false, error: rawMessage };
+      }
+    }
+
+    await ListingRepository.updateListing(
+      listing.id,
+      buildListingPersistData(fields),
+    );
+
+    try {
+      await SystemLogService.logInfo(
+        "UPDATE_LISTING",
+        `Anúncio Shopee ${listing.externalListingId} atualizado pelo usuário`,
+        {
+          userId: listing.product.userId ?? undefined,
+          resource: "listing",
+          resourceId: listing.id,
+          details: { fields: Object.keys(payload) },
+        },
+      );
+    } catch (logError) {
+      console.warn("[ListingUseCase] Falha ao registrar log:", logError);
+    }
+
+    return { success: true };
+  }
+}
+
+/**
+ * Constrói o objeto de update para `ListingRepository.updateListing` a partir
+ * do `ListingFullEditInput`. Preserva a convenção tristate: undefined = não
+ * tocar; null = limpar override; valor = aplicar.
+ */
+function buildListingPersistData(fields: ListingFullEditInput) {
+  return {
+    listingType: fields.listingType,
+    itemCondition: fields.itemCondition,
+    hasWarranty: fields.hasWarranty,
+    warrantyUnit: fields.warrantyUnit,
+    warrantyDuration: fields.warrantyDuration,
+    shippingMode: fields.shippingMode,
+    freeShipping: fields.freeShipping,
+    localPickup: fields.localPickup,
+    manufacturingTime: fields.manufacturingTime,
+    titleOverride: fields.titleOverride,
+    descriptionOverride: fields.descriptionOverride,
+    priceOverride: fields.priceOverride,
+    brandOverride: fields.brandOverride,
+    modelOverride: fields.modelOverride,
+    yearOverride: fields.yearOverride,
+    versionOverride: fields.versionOverride,
+    categoryOverride: fields.categoryOverride,
+    mlCategoryOverride: fields.mlCategoryOverride,
+    shopeeCategoryOverride: fields.shopeeCategoryOverride,
+    partNumberOverride: fields.partNumberOverride,
+    qualityOverride: fields.qualityOverride,
+    heightCmOverride: fields.heightCmOverride,
+    widthCmOverride: fields.widthCmOverride,
+    lengthCmOverride: fields.lengthCmOverride,
+    weightKgOverride: fields.weightKgOverride,
+    imageUrlsOverride: fields.imageUrlsOverride,
+    attributesOverride: fields.attributesOverride,
+    compatibilitiesOverride: fields.compatibilitiesOverride,
+    sourceVehicleOverride: fields.sourceVehicleOverride,
+  };
+}
+
+/**
+ * Traduz erros do PUT /items do ML em mensagens amigáveis ao usuário.
+ * Captura padrões `field_not_updatable: <campo> is not modifiable.` e os
+ * reescreve em português, sem expor o JSON cru do ML.
+ */
+function humanizeMLUpdateError(rawMessage: string): string {
+  const fieldNotUpdatableMatch = rawMessage.match(
+    /field_not_updatable:\s*(\w+)\s+is not modifiable/i,
+  );
+  if (fieldNotUpdatableMatch) {
+    const field = fieldNotUpdatableMatch[1];
+    const friendly: Record<string, string> = {
+      condition: "condição (novo/usado)",
+      listing_type_id: "tipo de anúncio",
+      category_id: "categoria",
+      currency_id: "moeda",
+    };
+    const label = friendly[field] ?? field;
+    return `O Mercado Livre não permite alterar ${label} para este anúncio. Geralmente esse campo só pode ser ajustado em anúncios sem vendas/ofertas.`;
+  }
+  return rawMessage;
+}
+
+/**
+ * Mensagem específica para falhas em POST /items/{id}/listing_type.
+ * O caso mais comum é tentar fazer downgrade (ex.: gold_premium → bronze).
+ */
+function humanizeMLListingTypeError(rawMessage: string): string {
+  if (/forbidden|not.+allowed|invalid.+listing_type/i.test(rawMessage)) {
+    return "o Mercado Livre não permitiu essa mudança (geralmente downgrades de tipo de anúncio são bloqueados pelo próprio ML).";
+  }
+  return rawMessage;
 }

@@ -258,6 +258,27 @@ export class ListingRepository {
       freeShipping?: boolean | null;
       localPickup?: boolean | null;
       manufacturingTime?: number | null;
+      // Override fields per-listing (NULL = herda do produto)
+      titleOverride?: string | null;
+      descriptionOverride?: string | null;
+      priceOverride?: number | null;
+      brandOverride?: string | null;
+      modelOverride?: string | null;
+      yearOverride?: string | null;
+      versionOverride?: string | null;
+      categoryOverride?: string | null;
+      mlCategoryOverride?: string | null;
+      shopeeCategoryOverride?: string | null;
+      partNumberOverride?: string | null;
+      qualityOverride?: string | null;
+      heightCmOverride?: number | null;
+      widthCmOverride?: number | null;
+      lengthCmOverride?: number | null;
+      weightKgOverride?: number | null;
+      imageUrlsOverride?: unknown;
+      attributesOverride?: unknown;
+      compatibilitiesOverride?: unknown;
+      sourceVehicleOverride?: string | null;
     },
   ) {
     return prisma.productListing.update({
@@ -298,6 +319,70 @@ export class ListingRepository {
           data.manufacturingTime === undefined
             ? undefined
             : data.manufacturingTime,
+        titleOverride:
+          data.titleOverride === undefined ? undefined : data.titleOverride,
+        descriptionOverride:
+          data.descriptionOverride === undefined
+            ? undefined
+            : data.descriptionOverride,
+        priceOverride:
+          data.priceOverride === undefined ? undefined : data.priceOverride,
+        brandOverride:
+          data.brandOverride === undefined ? undefined : data.brandOverride,
+        modelOverride:
+          data.modelOverride === undefined ? undefined : data.modelOverride,
+        yearOverride:
+          data.yearOverride === undefined ? undefined : data.yearOverride,
+        versionOverride:
+          data.versionOverride === undefined ? undefined : data.versionOverride,
+        categoryOverride:
+          data.categoryOverride === undefined
+            ? undefined
+            : data.categoryOverride,
+        mlCategoryOverride:
+          data.mlCategoryOverride === undefined
+            ? undefined
+            : data.mlCategoryOverride,
+        shopeeCategoryOverride:
+          data.shopeeCategoryOverride === undefined
+            ? undefined
+            : data.shopeeCategoryOverride,
+        partNumberOverride:
+          data.partNumberOverride === undefined
+            ? undefined
+            : data.partNumberOverride,
+        qualityOverride:
+          data.qualityOverride === undefined ? undefined : data.qualityOverride,
+        heightCmOverride:
+          data.heightCmOverride === undefined
+            ? undefined
+            : data.heightCmOverride,
+        widthCmOverride:
+          data.widthCmOverride === undefined ? undefined : data.widthCmOverride,
+        lengthCmOverride:
+          data.lengthCmOverride === undefined
+            ? undefined
+            : data.lengthCmOverride,
+        weightKgOverride:
+          data.weightKgOverride === undefined
+            ? undefined
+            : data.weightKgOverride,
+        imageUrlsOverride:
+          data.imageUrlsOverride === undefined
+            ? undefined
+            : (data.imageUrlsOverride as never),
+        attributesOverride:
+          data.attributesOverride === undefined
+            ? undefined
+            : (data.attributesOverride as never),
+        compatibilitiesOverride:
+          data.compatibilitiesOverride === undefined
+            ? undefined
+            : (data.compatibilitiesOverride as never),
+        sourceVehicleOverride:
+          data.sourceVehicleOverride === undefined
+            ? undefined
+            : data.sourceVehicleOverride,
       },
     });
   }

@@ -249,6 +249,323 @@ export async function listingRoutes(app: FastifyInstance) {
   );
 
   /**
+   * GET /listings/:id
+   * Retorna os dados completos de um anúncio (incluindo campos editáveis:
+   * listingType, condition, warranty, shipping, manufacturing time).
+   * Valida ownership.
+   */
+  app.get<{ Params: { id: string } }>(
+    "/:id",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { id } = request.params as { id: string };
+
+        const prismaMod = await import("@/app/lib/prisma");
+        const prisma = prismaMod.default;
+
+        // Otimização: carrega listing + compatibilidades em paralelo. As
+        // compatibilidades só são úteis se o listing existir e for do user,
+        // mas o custo de uma 2ª query rápida vale para reduzir RTT.
+        const [listing, productCompatibilitiesPreload] = await Promise.all([
+          prisma.productListing.findUnique({
+            where: { id },
+            include: {
+              product: true,
+              marketplaceAccount: {
+                select: { id: true, accountName: true, platform: true },
+              },
+            },
+          }),
+          // Lookup pelo listingId via subquery — não precisa esperar o produto.
+          (prisma as any).productCompatibility
+            .findMany({
+              where: { product: { listings: { some: { id } } } },
+              orderBy: { createdAt: "asc" },
+            })
+            .catch(() => [] as unknown[]),
+        ]);
+
+        if (!listing) {
+          return reply.status(404).send({ error: "Anúncio não encontrado" });
+        }
+
+        if (listing.product?.userId !== userId) {
+          return reply.status(403).send({ error: "Acesso negado" });
+        }
+
+        const productCompatibilities = productCompatibilitiesPreload;
+
+        return reply.status(200).send({
+          listing: {
+            id: listing.id,
+            externalListingId: listing.externalListingId,
+            externalSku: listing.externalSku,
+            permalink: listing.permalink,
+            status: listing.status,
+            listingType: listing.listingType,
+            itemCondition: listing.itemCondition,
+            hasWarranty: listing.hasWarranty,
+            warrantyUnit: listing.warrantyUnit,
+            warrantyDuration: listing.warrantyDuration,
+            shippingMode: listing.shippingMode,
+            freeShipping: listing.freeShipping,
+            localPickup: listing.localPickup,
+            manufacturingTime: listing.manufacturingTime,
+            updatedAt: listing.updatedAt,
+            // Override fields: NULL = herda do produto, valor = personalizado
+            titleOverride: listing.titleOverride ?? null,
+            descriptionOverride: listing.descriptionOverride ?? null,
+            priceOverride: listing.priceOverride
+              ? Number(listing.priceOverride)
+              : null,
+            brandOverride: listing.brandOverride ?? null,
+            modelOverride: listing.modelOverride ?? null,
+            yearOverride: listing.yearOverride ?? null,
+            versionOverride: listing.versionOverride ?? null,
+            categoryOverride: listing.categoryOverride ?? null,
+            mlCategoryOverride: listing.mlCategoryOverride ?? null,
+            shopeeCategoryOverride: listing.shopeeCategoryOverride ?? null,
+            partNumberOverride: listing.partNumberOverride ?? null,
+            qualityOverride: listing.qualityOverride ?? null,
+            heightCmOverride: listing.heightCmOverride ?? null,
+            widthCmOverride: listing.widthCmOverride ?? null,
+            lengthCmOverride: listing.lengthCmOverride ?? null,
+            weightKgOverride: listing.weightKgOverride ?? null,
+            imageUrlsOverride: listing.imageUrlsOverride ?? null,
+            attributesOverride: listing.attributesOverride ?? null,
+            compatibilitiesOverride: listing.compatibilitiesOverride ?? null,
+            sourceVehicleOverride: listing.sourceVehicleOverride ?? null,
+            // Snapshot do produto para o frontend pré-popular sem 2nd request
+            product: {
+              id: listing.product.id,
+              name: listing.product.name,
+              sku: listing.product.sku,
+              description: listing.product.description ?? null,
+              price: Number(listing.product.price ?? 0),
+              brand: listing.product.brand ?? null,
+              model: listing.product.model ?? null,
+              year: listing.product.year ?? null,
+              version: listing.product.version ?? null,
+              category: listing.product.category ?? null,
+              mlCategory:
+                (listing.product as { mlCategory?: string | null })
+                  .mlCategory ?? listing.product.mlCategoryId ?? null,
+              shopeeCategoryId:
+                (listing.product as { shopeeCategoryId?: string | null })
+                  .shopeeCategoryId ?? null,
+              partNumber: listing.product.partNumber ?? null,
+              quality: listing.product.quality ?? null,
+              heightCm: listing.product.heightCm ?? null,
+              widthCm: listing.product.widthCm ?? null,
+              lengthCm: listing.product.lengthCm ?? null,
+              weightKg: listing.product.weightKg ?? null,
+              imageUrl: listing.product.imageUrl ?? null,
+              imageUrls: Array.isArray(listing.product.imageUrls)
+                ? listing.product.imageUrls
+                : [],
+              attributes: listing.product.attributes ?? null,
+              sourceVehicle: listing.product.sourceVehicle ?? null,
+              compatibilities: productCompatibilities,
+            },
+            account: {
+              id: listing.marketplaceAccount.id,
+              accountName: listing.marketplaceAccount.accountName,
+              platform: listing.marketplaceAccount.platform,
+            },
+          },
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error fetching listing:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * PUT /listings/:id
+   * Atualiza UM anúncio específico. Aceita:
+   *  - Settings ML existentes (listingType, itemCondition, garantia, frete...)
+   *  - Overrides do produto (titleOverride, priceOverride, brandOverride...)
+   *
+   * Convenção:
+   *  - undefined / chave ausente = não tocar
+   *  - null = limpar override (anúncio volta a herdar do produto)
+   *  - valor = aplicar
+   */
+  app.put<{
+    Params: { id: string };
+    Body: Record<string, unknown>;
+  }>(
+    "/:id",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as Record<string, unknown>;
+
+        // Helpers:
+        // - pickOverride: aceita null (que significa "remover override").
+        // - pickSetting: para campos do MLListingSettings, que não usam null.
+        //   Converte null → undefined silenciosamente.
+        const pickOverride = <T>(key: string): T | undefined =>
+          key in body ? (body[key] as T) : undefined;
+        const pickSetting = <T>(key: string): T | undefined => {
+          if (!(key in body)) return undefined;
+          const v = body[key];
+          if (v === null) return undefined;
+          return v as T;
+        };
+
+        const fields = {
+          // ML settings (não aceitam null no MLListingSettings)
+          listingType: pickSetting<string>("listingType"),
+          itemCondition: pickSetting<string>("itemCondition"),
+          hasWarranty: pickSetting<boolean>("hasWarranty"),
+          warrantyUnit: pickSetting<string>("warrantyUnit"),
+          warrantyDuration: pickSetting<number>("warrantyDuration"),
+          shippingMode: pickSetting<string>("shippingMode"),
+          freeShipping: pickSetting<boolean>("freeShipping"),
+          localPickup: pickSetting<boolean>("localPickup"),
+          manufacturingTime: pickSetting<number>("manufacturingTime"),
+          // Product overrides (null = limpar override)
+          titleOverride: pickOverride<string | null>("titleOverride"),
+          descriptionOverride: pickOverride<string | null>("descriptionOverride"),
+          priceOverride: pickOverride<number | null>("priceOverride"),
+          brandOverride: pickOverride<string | null>("brandOverride"),
+          modelOverride: pickOverride<string | null>("modelOverride"),
+          yearOverride: pickOverride<string | null>("yearOverride"),
+          versionOverride: pickOverride<string | null>("versionOverride"),
+          categoryOverride: pickOverride<string | null>("categoryOverride"),
+          mlCategoryOverride: pickOverride<string | null>("mlCategoryOverride"),
+          shopeeCategoryOverride: pickOverride<string | null>(
+            "shopeeCategoryOverride",
+          ),
+          partNumberOverride: pickOverride<string | null>("partNumberOverride"),
+          qualityOverride: pickOverride<string | null>("qualityOverride"),
+          heightCmOverride: pickOverride<number | null>("heightCmOverride"),
+          widthCmOverride: pickOverride<number | null>("widthCmOverride"),
+          lengthCmOverride: pickOverride<number | null>("lengthCmOverride"),
+          weightKgOverride: pickOverride<number | null>("weightKgOverride"),
+          imageUrlsOverride: pickOverride<string[] | null>("imageUrlsOverride"),
+          attributesOverride: pickOverride<
+            Record<string, { value_id?: string; value_name?: string }> | null
+          >("attributesOverride"),
+          compatibilitiesOverride: pickOverride<
+            | Array<{
+                brand?: string;
+                model?: string;
+                yearFrom?: number | null;
+                yearTo?: number | null;
+                version?: string | null;
+              }>
+            | null
+          >("compatibilitiesOverride"),
+          sourceVehicleOverride: pickOverride<string | null>(
+            "sourceVehicleOverride",
+          ),
+        };
+
+        const result = await ListingUseCase.updateListingFields(
+          id,
+          userId,
+          fields,
+        );
+
+        if (!result.success) {
+          const status = result.error?.includes("Acesso negado")
+            ? 403
+            : result.error?.includes("não encontrado")
+              ? 404
+              : 400;
+          return reply.status(status).send({
+            error: "Erro ao atualizar anúncio",
+            message: result.error,
+          });
+        }
+
+        return reply.status(200).send({
+          success: true,
+          message: result.error
+            ? result.error
+            : "Anúncio atualizado com sucesso",
+          warning: result.error || undefined,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error updating listing:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * PATCH /listings/:id/status
+   * Pausa ou reativa um anúncio publicado.
+   * Body: { status: "active" | "paused" }.
+   */
+  app.patch<{
+    Params: { id: string };
+    Body: { status: "active" | "paused" };
+  }>(
+    "/:id/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { id } = request.params as { id: string };
+        const { status } = request.body as { status?: string };
+
+        if (status !== "active" && status !== "paused") {
+          return reply.status(400).send({
+            error: "Status inválido",
+            message: 'Use "active" ou "paused"',
+          });
+        }
+
+        const result = await ListingUseCase.updateListingStatus(
+          id,
+          userId,
+          status,
+        );
+
+        if (!result.success) {
+          const httpStatus = result.error?.includes("Acesso negado")
+            ? 403
+            : result.error?.includes("não encontrado")
+              ? 404
+              : 400;
+          return reply.status(httpStatus).send({
+            error: "Erro ao alterar status",
+            message: result.error,
+          });
+        }
+
+        return reply.status(200).send({
+          success: true,
+          message:
+            status === "paused"
+              ? "Anúncio pausado com sucesso"
+              : "Anúncio reativado com sucesso",
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error patching status:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
    * DELETE /listings/:id
    * Remove um anúncio do ML
    */
