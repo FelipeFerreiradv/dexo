@@ -1,0 +1,1198 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  Megaphone,
+  Settings2,
+  ListChecks,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  RotateCw,
+} from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  StepperHeader,
+  type StepperStep,
+} from "@/components/stepper/stepper-header";
+import { StepperFooter } from "@/components/stepper/stepper-footer";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { getApiBaseUrl } from "@/lib/api";
+import {
+  applyRules,
+  computeBulkPrice,
+  previewWarnings,
+} from "@/app/marketplaces/services/bulk-listing-rules.service";
+import { useBulkListingJob } from "../hooks/use-bulk-listing-job";
+
+type Platform = "MERCADO_LIVRE" | "SHOPEE";
+
+interface MarketplaceAccountLite {
+  id: string;
+  accountName: string;
+  status?: string;
+}
+
+export interface BulkListingProduct {
+  id: string;
+  sku: string;
+  name: string;
+  price: number;
+  costPrice?: number | null;
+  imageUrl?: string | null;
+  imageUrls?: string[] | null;
+  mlCategoryId?: string | null;
+  shopeeCategoryId?: string | null;
+  compatibilitiesCount?: number | null;
+}
+
+export interface BulkListingWizardProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  selectedProducts: BulkListingProduct[];
+  email: string;
+  onJobStarted?: (jobId: string) => void;
+  onJobFinished?: (summary: {
+    success: number;
+    failed: number;
+  }) => void;
+  onShowToast?: (msg: string, type: "success" | "warning" | "error") => void;
+}
+
+type PriceRuleType = "keep" | "fixed" | "markup_pct" | "delta_pct";
+
+interface RulesForm {
+  priceRuleType: PriceRuleType;
+  priceRuleValue: number;
+  titleSuffix: string;
+  mlCategoryStrategy: "auto" | "from_product";
+  mlListingType: string;
+  mlItemCondition: string;
+  mlFreeShipping: boolean;
+}
+
+const DEFAULT_RULES: RulesForm = {
+  priceRuleType: "keep",
+  priceRuleValue: 0,
+  titleSuffix: "",
+  mlCategoryStrategy: "auto",
+  mlListingType: "gold_special",
+  mlItemCondition: "used",
+  mlFreeShipping: false,
+};
+
+const STEPS: StepperStep[] = [
+  {
+    id: 1,
+    title: "Marketplaces",
+    description: "Selecione contas",
+    icon: Megaphone,
+  },
+  {
+    id: 2,
+    title: "Regras",
+    description: "Preço e estoque",
+    icon: Settings2,
+  },
+  {
+    id: 3,
+    title: "Revisão",
+    description: "Conferir antes",
+    icon: ListChecks,
+  },
+  {
+    id: 4,
+    title: "Progresso",
+    description: "Acompanhar criação",
+    icon: Activity,
+  },
+];
+
+export function BulkListingWizard({
+  open,
+  onOpenChange,
+  selectedProducts,
+  email,
+  onJobStarted,
+  onJobFinished,
+  onShowToast,
+}: BulkListingWizardProps) {
+  const [step, setStep] = useState(1);
+  const [mlAccounts, setMlAccounts] = useState<MarketplaceAccountLite[]>([]);
+  const [shopeeAccounts, setShopeeAccounts] = useState<MarketplaceAccountLite[]>(
+    [],
+  );
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [selectedMlIds, setSelectedMlIds] = useState<Set<string>>(new Set());
+  const [selectedShopeeIds, setSelectedShopeeIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [rules, setRules] = useState<RulesForm>(DEFAULT_RULES);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [parentJobIdForRetry, setParentJobIdForRetry] = useState<string | null>(
+    null,
+  );
+  const [retrying, setRetrying] = useState(false);
+  const [finishedNotified, setFinishedNotified] = useState(false);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightIssues, setPreflightIssues] = useState<
+    Array<{
+      productId: string;
+      code: "shopee_category_missing" | "shopee_category_not_leaf";
+      message: string;
+    }>
+  >([]);
+
+  // Reset wizard state when reopened
+  useEffect(() => {
+    if (open) {
+      setStep(1);
+      setRules(DEFAULT_RULES);
+      setSelectedMlIds(new Set());
+      setSelectedShopeeIds(new Set());
+      setSubmitError(null);
+      setJobId(null);
+      setParentJobIdForRetry(null);
+      setFinishedNotified(false);
+      setPreflightIssues([]);
+    }
+  }, [open]);
+
+  // Fetch marketplace accounts on mount of step 1
+  useEffect(() => {
+    if (!open || step !== 1 || !email) return;
+    let cancelled = false;
+    setAccountsLoading(true);
+    Promise.all([
+      fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
+        headers: { email },
+      })
+        .then((r) => r.json())
+        .catch(() => ({ accounts: [] })),
+      fetch(`${getApiBaseUrl()}/marketplace/shopee/accounts`, {
+        headers: { email },
+      })
+        .then((r) => r.json())
+        .catch(() => ({ accounts: [] })),
+    ])
+      .then(([ml, sh]) => {
+        if (cancelled) return;
+        const mlAccs = Array.isArray(ml?.accounts)
+          ? (ml.accounts as MarketplaceAccountLite[])
+          : [];
+        const shAccs = Array.isArray(sh?.accounts)
+          ? (sh.accounts as MarketplaceAccountLite[])
+          : [];
+        setMlAccounts(mlAccs.filter((a) => a.status !== "INACTIVE"));
+        setShopeeAccounts(shAccs.filter((a) => a.status !== "INACTIVE"));
+      })
+      .finally(() => {
+        if (!cancelled) setAccountsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, step, email]);
+
+  const totalAccountsSelected =
+    selectedMlIds.size + selectedShopeeIds.size;
+  const totalListings =
+    selectedProducts.length * Math.max(1, totalAccountsSelected);
+
+  const buildRequests = (): Array<{
+    platform: Platform;
+    accountId: string;
+    mlSettings?: Record<string, unknown>;
+  }> => {
+    const out: Array<{
+      platform: Platform;
+      accountId: string;
+      mlSettings?: Record<string, unknown>;
+    }> = [];
+    for (const id of selectedMlIds) {
+      out.push({
+        platform: "MERCADO_LIVRE",
+        accountId: id,
+        mlSettings: {
+          listingType: rules.mlListingType,
+          itemCondition: rules.mlItemCondition,
+          freeShipping: rules.mlFreeShipping,
+        },
+      });
+    }
+    for (const id of selectedShopeeIds) {
+      out.push({ platform: "SHOPEE", accountId: id });
+    }
+    return out;
+  };
+
+  const buildOverrideTemplate = () => {
+    const t: Record<string, unknown> = {};
+    if (rules.priceRuleType !== "keep") {
+      t.priceRule = {
+        type: rules.priceRuleType,
+        value: rules.priceRuleValue,
+      };
+    }
+    if (rules.titleSuffix.trim()) {
+      t.titleSuffix = rules.titleSuffix.trim();
+    }
+    t.mlCategoryStrategy = rules.mlCategoryStrategy;
+    return Object.keys(t).length > 1 ? t : null;
+  };
+
+  const runPreflight = async () => {
+    if (selectedShopeeIds.size === 0) {
+      setPreflightIssues([]);
+      return;
+    }
+    setPreflightLoading(true);
+    try {
+      const firstShopee = selectedShopeeIds.values().next().value as
+        | string
+        | undefined;
+      const res = await fetch(`${getApiBaseUrl()}/listings/bulk/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", email },
+        body: JSON.stringify({
+          shopeeAccountId: firstShopee,
+          productIds: selectedProducts.map((p) => p.id),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.message || data?.error || "Falha no preflight");
+      }
+      setPreflightIssues(Array.isArray(data?.issues) ? data.issues : []);
+    } catch (e) {
+      setPreflightIssues([]);
+      setSubmitError(
+        e instanceof Error
+          ? `Preflight falhou: ${e.message}`
+          : "Preflight falhou.",
+      );
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
+  const handleNext = async () => {
+    if (step === 1) {
+      if (totalAccountsSelected === 0) {
+        setSubmitError("Selecione ao menos uma conta de marketplace.");
+        return;
+      }
+      setSubmitError(null);
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      if (
+        rules.priceRuleType === "fixed" &&
+        (!rules.priceRuleValue || rules.priceRuleValue <= 0)
+      ) {
+        setSubmitError("Preço fixo deve ser maior que zero.");
+        return;
+      }
+      setSubmitError(null);
+      setStep(3);
+      // Roda preflight ao entrar na revisão (categorias Shopee, etc.).
+      void runPreflight();
+      return;
+    }
+    if (step === 3) {
+      const allShopeeBlocked =
+        selectedShopeeIds.size > 0 &&
+        preflightIssues.length > 0 &&
+        preflightIssues.length === selectedProducts.length &&
+        selectedMlIds.size === 0;
+      if (allShopeeBlocked) {
+        setSubmitError(
+          "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
+        );
+        return;
+      }
+      setConfirmOpen(true);
+    }
+  };
+
+  const handleBack = () => {
+    if (step <= 1) return;
+    setStep(step - 1);
+  };
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/listings/bulk`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          email,
+        },
+        body: JSON.stringify({
+          productIds: selectedProducts.map((p) => p.id),
+          requests: buildRequests(),
+          overrideTemplate: buildOverrideTemplate(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.jobId) {
+        throw new Error(
+          data?.message || data?.error || "Falha ao iniciar o job",
+        );
+      }
+      setJobId(data.jobId as string);
+      setParentJobIdForRetry(null);
+      setStep(4);
+      onJobStarted?.(data.jobId as string);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "Erro ao iniciar job");
+    } finally {
+      setSubmitting(false);
+      setConfirmOpen(false);
+    }
+  };
+
+  const { snapshot, error: pollError, isPolling } = useBulkListingJob(
+    jobId,
+    email,
+  );
+
+  const isTerminal =
+    !!snapshot &&
+    (snapshot.status === "COMPLETED" ||
+      snapshot.status === "FAILED_PARTIAL" ||
+      snapshot.status === "FAILED");
+
+  // Notify finished once
+  useEffect(() => {
+    if (!snapshot || !isTerminal || finishedNotified) return;
+    setFinishedNotified(true);
+    onJobFinished?.({
+      success: snapshot.successItems,
+      failed: snapshot.failedItems,
+    });
+    if (onShowToast) {
+      if (snapshot.failedItems === 0) {
+        onShowToast(
+          `${snapshot.successItems} anúncio(s) criado(s) com sucesso!`,
+          "success",
+        );
+      } else if (snapshot.successItems === 0) {
+        onShowToast(
+          `Falha ao criar anúncios: ${snapshot.failedItems} erro(s).`,
+          "error",
+        );
+      } else {
+        onShowToast(
+          `${snapshot.successItems} criado(s), ${snapshot.failedItems} falharam.`,
+          "warning",
+        );
+      }
+    }
+  }, [snapshot, isTerminal, finishedNotified, onJobFinished, onShowToast]);
+
+  const handleRetryFailed = async () => {
+    if (!jobId) return;
+    setRetrying(true);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/listings/bulk/${jobId}/retry-failed`,
+        {
+          method: "POST",
+          headers: { email },
+        },
+      );
+      const data = await res.json();
+      if (!res.ok || !data?.jobId) {
+        throw new Error(
+          data?.message || data?.error || "Falha ao reprocessar",
+        );
+      }
+      setParentJobIdForRetry(jobId);
+      setJobId(data.jobId as string);
+      setFinishedNotified(false);
+      onJobStarted?.(data.jobId as string);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "Erro ao reprocessar");
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const handleClose = () => {
+    if (jobId && !isTerminal) {
+      const ok = window.confirm(
+        "O job ainda está em execução no servidor. Fechar agora não cancela o processamento. Continuar?",
+      );
+      if (!ok) return;
+    }
+    onOpenChange(false);
+  };
+
+  const productById = useMemo(() => {
+    const m = new Map<string, BulkListingProduct>();
+    for (const p of selectedProducts) m.set(p.id, p);
+    return m;
+  }, [selectedProducts]);
+
+  return (
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          if (!o) handleClose();
+          else onOpenChange(true);
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Megaphone className="size-5" />
+              Anunciar em massa
+            </DialogTitle>
+            <DialogDescription>
+              {selectedProducts.length} produto(s) selecionado(s).
+            </DialogDescription>
+          </DialogHeader>
+
+          <StepperHeader
+            steps={STEPS}
+            currentStep={step}
+            onGoToStep={(s) => {
+              if (jobId) return; // não permite voltar depois de disparar
+              if (s < step) setStep(s);
+            }}
+          />
+
+          {submitError && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              <AlertTriangle className="inline size-4 mr-1" />
+              {submitError}
+            </div>
+          )}
+
+          <div className="min-h-[280px]">
+            {step === 1 && (
+              <StepAccounts
+                loading={accountsLoading}
+                mlAccounts={mlAccounts}
+                shopeeAccounts={shopeeAccounts}
+                selectedMlIds={selectedMlIds}
+                selectedShopeeIds={selectedShopeeIds}
+                onToggleMl={(id, checked) => {
+                  setSelectedMlIds((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
+                onToggleShopee={(id, checked) => {
+                  setSelectedShopeeIds((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
+              />
+            )}
+
+            {step === 2 && <StepRules rules={rules} setRules={setRules} />}
+
+            {step === 3 && (
+              <StepReview
+                products={selectedProducts}
+                rules={rules}
+                totalListings={totalListings}
+                accountsCount={totalAccountsSelected}
+                hasMl={selectedMlIds.size > 0}
+                hasShopee={selectedShopeeIds.size > 0}
+                preflightLoading={preflightLoading}
+                preflightIssues={preflightIssues}
+              />
+            )}
+
+            {step === 4 && (
+              <StepProgress
+                snapshot={snapshot}
+                pollError={pollError}
+                isPolling={isPolling}
+                productById={productById}
+                parentJobIdForRetry={parentJobIdForRetry}
+                retrying={retrying}
+                onRetry={handleRetryFailed}
+              />
+            )}
+          </div>
+
+          {step < 4 && (
+            <StepperFooter
+              currentStep={step}
+              totalSteps={3}
+              isSubmitting={submitting}
+              onBack={handleBack}
+              onNext={handleNext}
+              onSubmit={handleNext}
+              submitLabel="Confirmar e criar"
+            />
+          )}
+
+          {step === 4 && (
+            <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-4">
+              <div className="text-xs text-muted-foreground">
+                {isPolling && (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 className="size-3 animate-spin" />
+                    Atualizando...
+                  </span>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleClose}
+                disabled={!isTerminal && !!jobId}
+              >
+                {isTerminal ? "Fechar" : "Aguarde..."}
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Criar {totalListings} anúncio(s)?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedProducts.length} produto(s) × {totalAccountsSelected}{" "}
+              conta(s). Esta ação envia requisições reais aos marketplaces e
+              não pode ser desfeita em massa. Verifique as regras antes de
+              continuar.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={submitting}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {submitting && <Loader2 className="size-4 animate-spin mr-1" />}
+              Criar {totalListings}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+/* ------------------------------ Step 1 ------------------------------ */
+function StepAccounts({
+  loading,
+  mlAccounts,
+  shopeeAccounts,
+  selectedMlIds,
+  selectedShopeeIds,
+  onToggleMl,
+  onToggleShopee,
+}: {
+  loading: boolean;
+  mlAccounts: MarketplaceAccountLite[];
+  shopeeAccounts: MarketplaceAccountLite[];
+  selectedMlIds: Set<string>;
+  selectedShopeeIds: Set<string>;
+  onToggleMl: (id: string, checked: boolean) => void;
+  onToggleShopee: (id: string, checked: boolean) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+        <Loader2 className="size-4 animate-spin mr-2" />
+        Carregando contas conectadas...
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <AccountSection
+        title="Mercado Livre"
+        accounts={mlAccounts}
+        selected={selectedMlIds}
+        onToggle={onToggleMl}
+        emptyHint="Nenhuma conta ML conectada. Conecte em Integrações."
+      />
+      <Separator />
+      <AccountSection
+        title="Shopee"
+        accounts={shopeeAccounts}
+        selected={selectedShopeeIds}
+        onToggle={onToggleShopee}
+        emptyHint="Nenhuma conta Shopee conectada. Conecte em Integrações."
+      />
+    </div>
+  );
+}
+
+function AccountSection({
+  title,
+  accounts,
+  selected,
+  onToggle,
+  emptyHint,
+}: {
+  title: string;
+  accounts: MarketplaceAccountLite[];
+  selected: Set<string>;
+  onToggle: (id: string, checked: boolean) => void;
+  emptyHint: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">{title}</h3>
+        {selected.size > 0 && (
+          <Badge variant="outline" className="font-normal">
+            {selected.size} selecionada(s)
+          </Badge>
+        )}
+      </div>
+      {accounts.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{emptyHint}</p>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {accounts.map((acc) => (
+            <label
+              key={acc.id}
+              className="flex cursor-pointer items-center gap-2 rounded-lg border bg-card px-3 py-2 hover:bg-muted/50"
+            >
+              <Checkbox
+                checked={selected.has(acc.id)}
+                onCheckedChange={(c) => onToggle(acc.id, !!c)}
+              />
+              <span className="text-sm">{acc.accountName}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ Step 2 ------------------------------ */
+function StepRules({
+  rules,
+  setRules,
+}: {
+  rules: RulesForm;
+  setRules: React.Dispatch<React.SetStateAction<RulesForm>>;
+}) {
+  return (
+    <div className="grid gap-5 sm:grid-cols-2">
+      {/* Preço */}
+      <div className="space-y-2">
+        <Label>Regra de preço</Label>
+        <Select
+          value={rules.priceRuleType}
+          onValueChange={(v) =>
+            setRules((r) => ({ ...r, priceRuleType: v as PriceRuleType }))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="keep">Manter preço do produto</SelectItem>
+            <SelectItem value="fixed">Preço fixo (R$)</SelectItem>
+            <SelectItem value="markup_pct">
+              Markup sobre custo (%)
+            </SelectItem>
+            <SelectItem value="delta_pct">
+              Delta sobre preço atual (%)
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        {rules.priceRuleType !== "keep" && (
+          <Input
+            type="number"
+            step={rules.priceRuleType === "fixed" ? "0.01" : "1"}
+            value={rules.priceRuleValue || ""}
+            onChange={(e) =>
+              setRules((r) => ({
+                ...r,
+                priceRuleValue: Number(e.target.value) || 0,
+              }))
+            }
+            placeholder={
+              rules.priceRuleType === "fixed"
+                ? "Ex.: 199.90"
+                : "Ex.: 30 (significa 30%)"
+            }
+          />
+        )}
+      </div>
+
+      {/* Estoque (somente leitura — explicação) */}
+      <div className="space-y-2">
+        <Label className="text-muted-foreground">Estoque</Label>
+        <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          O estoque é compartilhado entre todos os anúncios do produto e
+          replicado pelo Sync — não é configurável por anúncio (evita oversell).
+        </div>
+      </div>
+
+      {/* Sufixo no título */}
+      <div className="space-y-2">
+        <Label>Sufixo no título (opcional)</Label>
+        <Input
+          value={rules.titleSuffix}
+          onChange={(e) =>
+            setRules((r) => ({ ...r, titleSuffix: e.target.value }))
+          }
+          placeholder="Ex.: Original, Frete Grátis"
+          maxLength={30}
+        />
+      </div>
+
+      {/* Categoria ML */}
+      <div className="space-y-2">
+        <Label>Categoria Mercado Livre</Label>
+        <Select
+          value={rules.mlCategoryStrategy}
+          onValueChange={(v) =>
+            setRules((r) => ({
+              ...r,
+              mlCategoryStrategy: v as RulesForm["mlCategoryStrategy"],
+            }))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">Resolver automaticamente</SelectItem>
+            <SelectItem value="from_product">
+              Usar mlCategoryId do produto
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* mlSettings inline */}
+      <div className="space-y-2">
+        <Label>Tipo de anúncio (ML)</Label>
+        <Select
+          value={rules.mlListingType}
+          onValueChange={(v) =>
+            setRules((r) => ({ ...r, mlListingType: v }))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="bronze">Grátis (bronze)</SelectItem>
+            <SelectItem value="gold_special">Clássico (gold_special)</SelectItem>
+            <SelectItem value="gold_premium">Premium (gold_premium)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Condição (ML)</Label>
+        <Select
+          value={rules.mlItemCondition}
+          onValueChange={(v) =>
+            setRules((r) => ({ ...r, mlItemCondition: v }))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="new">Novo</SelectItem>
+            <SelectItem value="used">Usado</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex items-center gap-2 pt-6">
+        <Checkbox
+          id="freeshipping"
+          checked={rules.mlFreeShipping}
+          onCheckedChange={(c) =>
+            setRules((r) => ({ ...r, mlFreeShipping: !!c }))
+          }
+        />
+        <Label htmlFor="freeshipping" className="cursor-pointer">
+          Frete grátis (ML)
+        </Label>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ Step 3 ------------------------------ */
+function StepReview({
+  products,
+  rules,
+  totalListings,
+  accountsCount,
+  hasMl,
+  hasShopee,
+  preflightLoading,
+  preflightIssues,
+}: {
+  products: BulkListingProduct[];
+  rules: RulesForm;
+  totalListings: number;
+  accountsCount: number;
+  hasMl: boolean;
+  hasShopee: boolean;
+  preflightLoading: boolean;
+  preflightIssues: Array<{
+    productId: string;
+    code: "shopee_category_missing" | "shopee_category_not_leaf";
+    message: string;
+  }>;
+}) {
+  const issueByProduct = new Map(preflightIssues.map((i) => [i.productId, i]));
+  const template = {
+    priceRule:
+      rules.priceRuleType === "keep"
+        ? undefined
+        : ({
+            type: rules.priceRuleType,
+            value: rules.priceRuleValue,
+          } as const),
+    titleSuffix: rules.titleSuffix.trim() || undefined,
+  };
+
+  const issueCount = issueByProduct.size;
+  const allBlocked = hasShopee && issueCount > 0 && issueCount === products.length;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+        Serão criados <strong>{totalListings}</strong> anúncio(s) —{" "}
+        {products.length} produto(s) × {accountsCount} conta(s).
+      </div>
+
+      {hasShopee && preflightLoading && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" />
+          Validando categorias Shopee...
+        </div>
+      )}
+
+      {!preflightLoading && issueCount > 0 && (
+        <div
+          className={`rounded-md border px-3 py-2 text-xs ${
+            allBlocked
+              ? "border-destructive/40 bg-destructive/5 text-destructive"
+              : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+          }`}
+        >
+          <AlertTriangle className="inline size-3.5 mr-1" />
+          <strong>
+            {issueCount} produto(s) com categoria Shopee inválida.
+          </strong>{" "}
+          {allBlocked
+            ? "Não há produtos válidos para Shopee — corrija a categoria ou remova as contas Shopee."
+            : "Esses produtos vão falhar na criação Shopee. Corrija a categoria do produto antes ou prossiga e eles aparecerão como erro no relatório."}
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2">SKU</th>
+              <th className="px-3 py-2">Nome</th>
+              <th className="px-3 py-2 text-right">Preço atual</th>
+              <th className="px-3 py-2 text-right">Preço final</th>
+              <th className="px-3 py-2">Avisos</th>
+            </tr>
+          </thead>
+          <tbody>
+            {products.map((p) => {
+              const newPrice = computeBulkPrice(
+                {
+                  id: p.id,
+                  name: p.name,
+                  price: p.price,
+                  costPrice: p.costPrice,
+                },
+                template.priceRule,
+              );
+              const warnings = previewWarnings(
+                {
+                  id: p.id,
+                  name: p.name,
+                  price: p.price,
+                  costPrice: p.costPrice,
+                  imageUrl: p.imageUrl,
+                  imageUrls: p.imageUrls,
+                  mlCategoryId: p.mlCategoryId,
+                  shopeeCategoryId: p.shopeeCategoryId,
+                  compatibilitiesCount: p.compatibilitiesCount,
+                },
+                {
+                  priceRule: template.priceRule,
+                  titleSuffix: template.titleSuffix,
+                },
+                { hasMl, hasShopee },
+              );
+              const issue = issueByProduct.get(p.id);
+              const rowClass = issue
+                ? "border-t bg-destructive/5"
+                : "border-t";
+              return (
+                <tr key={p.id} className={rowClass}>
+                  <td className="px-3 py-2 font-mono text-xs">{p.sku}</td>
+                  <td className="px-3 py-2 max-w-[280px] truncate">
+                    {p.name}
+                  </td>
+                  <td className="px-3 py-2 text-right text-muted-foreground">
+                    {formatCurrency(p.price)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-medium">
+                    {newPrice !== null
+                      ? formatCurrency(newPrice)
+                      : formatCurrency(p.price)}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {warnings.length === 0 && !issue ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <ul className="space-y-0.5">
+                        {issue && (
+                          <li className="text-destructive font-medium">
+                            <XCircle className="inline size-3 mr-1" />
+                            {issue.message}
+                          </li>
+                        )}
+                        {warnings.map((w, i) => (
+                          <li
+                            key={i}
+                            className="text-amber-700 dark:text-amber-400"
+                          >
+                            <AlertTriangle className="inline size-3 mr-1" />
+                            {w}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ Step 4 ------------------------------ */
+function StepProgress({
+  snapshot,
+  pollError,
+  isPolling,
+  productById,
+  parentJobIdForRetry,
+  retrying,
+  onRetry,
+}: {
+  snapshot: ReturnType<typeof useBulkListingJob>["snapshot"];
+  pollError: string | null;
+  isPolling: boolean;
+  productById: Map<string, BulkListingProduct>;
+  parentJobIdForRetry: string | null;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  if (!snapshot) {
+    return (
+      <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin mr-2" />
+        Iniciando job...
+        {pollError && (
+          <span className="ml-2 text-destructive">{pollError}</span>
+        )}
+      </div>
+    );
+  }
+
+  const pct =
+    snapshot.totalItems > 0
+      ? (snapshot.doneItems / snapshot.totalItems) * 100
+      : 0;
+  const isTerminal =
+    snapshot.status === "COMPLETED" ||
+    snapshot.status === "FAILED_PARTIAL" ||
+    snapshot.status === "FAILED";
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-sm">
+          <span className="font-medium">
+            {snapshot.doneItems} / {snapshot.totalItems} processados
+          </span>
+          <span className="text-muted-foreground">
+            <CheckCircle2 className="inline size-3.5 mr-1 text-emerald-600" />
+            {snapshot.successItems}{" "}
+            <XCircle className="inline size-3.5 ml-2 mr-1 text-destructive" />
+            {snapshot.failedItems}
+          </span>
+        </div>
+        <Progress value={pct} className="h-2" />
+      </div>
+
+      {parentJobIdForRetry && (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          Reprocessando itens do job anterior {parentJobIdForRetry.slice(0, 8)}…
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border max-h-[260px] overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground sticky top-0">
+            <tr>
+              <th className="px-3 py-2">Produto</th>
+              <th className="px-3 py-2">Plataforma</th>
+              <th className="px-3 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {snapshot.results.map((r, i) => {
+              const p = productById.get(r.productId);
+              return (
+                <tr key={`${r.productId}-${r.platform}-${r.accountId}-${i}`} className="border-t">
+                  <td className="px-3 py-2 max-w-[280px] truncate">
+                    <span className="font-mono text-xs text-muted-foreground mr-1">
+                      {p?.sku ?? r.productId.slice(0, 6)}
+                    </span>
+                    {p?.name ?? r.productId}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <Badge variant="outline" className="font-normal">
+                      {r.platform === "MERCADO_LIVRE" ? "ML" : "Shopee"}
+                    </Badge>
+                  </td>
+                  <td className="px-3 py-2">
+                    {r.success ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                        <CheckCircle2 className="size-3.5" />
+                        Sucesso
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex items-center gap-1 text-destructive"
+                        title={r.error}
+                      >
+                        <XCircle className="size-3.5" />
+                        {r.error
+                          ? r.error.length > 40
+                            ? `${r.error.slice(0, 40)}…`
+                            : r.error
+                          : "Falhou"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {snapshot.results.length === 0 && (
+              <tr>
+                <td
+                  colSpan={3}
+                  className="px-3 py-6 text-center text-sm text-muted-foreground"
+                >
+                  {isPolling
+                    ? "Aguardando primeiros resultados..."
+                    : "Nenhum resultado registrado."}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {isTerminal && snapshot.failedItems > 0 && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onRetry}
+            disabled={retrying}
+            className="gap-2"
+          >
+            {retrying ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <RotateCw className="size-4" />
+            )}
+            Tentar novamente os falhos
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ helpers ------------------------------ */
+function formatCurrency(v: number): string {
+  return v.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+// silence unused import in some build modes
+void applyRules;

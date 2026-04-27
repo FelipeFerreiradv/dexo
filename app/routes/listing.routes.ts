@@ -4,6 +4,15 @@ import {
   ListingDispatcher,
   ListingDispatchRequest,
 } from "../marketplaces/services/listing-dispatcher.service";
+import {
+  BulkListingJobRepository,
+  type BulkListingPlatform,
+  type BulkListingRequestSpec,
+  type BulkOverrideTemplate,
+} from "../marketplaces/repositories/bulk-listing-job.repository";
+import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
+import { ProductRepositoryPrisma } from "../repositories/product.repository";
+import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
@@ -756,6 +765,413 @@ export async function listingRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         console.error("[Listing Routes] Error dispatching listings:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/bulk/preflight
+   * Valida produtos antes do submit do bulk. Hoje cobre apenas o caso mais
+   * frequente de falha: produto com shopeeCategoryId que NÃO é categoria
+   * folha (Shopee rejeita add_item nesse caso). Reusa o cache de 1h em
+   * `ShopeeApiService.assertLeafCategory` então é barato mesmo com N produtos.
+   *
+   * Body: { shopeeAccountId?: string; productIds: string[] }
+   * Response: { issues: Array<{ productId, code, message }> }
+   *   code = "shopee_category_missing" | "shopee_category_not_leaf"
+   */
+  app.post(
+    "/bulk/preflight",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const body = request.body as {
+          shopeeAccountId?: string;
+          productIds?: string[];
+        };
+        if (
+          !Array.isArray(body.productIds) ||
+          body.productIds.length === 0 ||
+          body.productIds.some((id) => typeof id !== "string" || !id)
+        ) {
+          return reply.status(400).send({
+            error: "Dados inválidos",
+            message: "productIds deve ser um array não-vazio de strings",
+          });
+        }
+
+        const issues: Array<{
+          productId: string;
+          code: "shopee_category_missing" | "shopee_category_not_leaf";
+          message: string;
+        }> = [];
+
+        if (body.shopeeAccountId) {
+          const account = await MarketplaceRepository.findByIdAndUser(
+            body.shopeeAccountId,
+            userId,
+          );
+          if (!account || !account.accessToken || !account.shopId) {
+            return reply.status(400).send({
+              error: "Conta Shopee inválida",
+              message:
+                "Conta Shopee não encontrada ou sem credenciais para preflight",
+            });
+          }
+
+          const productRepo = new ProductRepositoryPrisma();
+          const products = await Promise.all(
+            body.productIds.map((id) => productRepo.findById(id, userId)),
+          );
+
+          for (let i = 0; i < products.length; i++) {
+            const p = products[i];
+            const id = body.productIds![i];
+            if (!p) continue; // produto sumiu — quem chamar `dispatchBatch` reporta
+            const shopeeId = (p as any).shopeeCategoryId;
+            if (!shopeeId) {
+              issues.push({
+                productId: id,
+                code: "shopee_category_missing",
+                message:
+                  "Produto sem categoria Shopee — Shopee exige uma subcategoria final.",
+              });
+              continue;
+            }
+            const numId = Number(shopeeId);
+            if (!Number.isFinite(numId)) {
+              issues.push({
+                productId: id,
+                code: "shopee_category_not_leaf",
+                message: `Categoria Shopee ${shopeeId} inválida.`,
+              });
+              continue;
+            }
+            try {
+              await ShopeeApiService.assertLeafCategory(
+                account.accessToken,
+                account.shopId,
+                numId,
+              );
+            } catch (e) {
+              const msg =
+                e instanceof Error ? e.message : "categoria inválida";
+              issues.push({
+                productId: id,
+                code: "shopee_category_not_leaf",
+                message: msg,
+              });
+            }
+          }
+        }
+
+        return reply.send({ issues });
+      } catch (error) {
+        console.error("[Listing Routes] Bulk preflight error:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/bulk
+   * Cria um BulkListingJob e dispara processamento em background.
+   * Retorna { jobId } imediatamente; cliente faz polling em GET /listings/bulk/:jobId.
+   */
+  app.post(
+    "/bulk",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const body = request.body as {
+          productIds?: string[];
+          requests?: Array<{
+            platform: BulkListingPlatform;
+            accountId: string;
+            categoryId?: string;
+            mlSettings?: Record<string, unknown>;
+          }>;
+          overrideTemplate?: BulkOverrideTemplate | null;
+        };
+
+        if (
+          !Array.isArray(body.productIds) ||
+          body.productIds.length === 0 ||
+          body.productIds.some((id) => typeof id !== "string" || !id)
+        ) {
+          return reply.status(400).send({
+            error: "Dados inválidos",
+            message: "productIds deve ser um array não-vazio de strings",
+          });
+        }
+        if (
+          !Array.isArray(body.requests) ||
+          body.requests.length === 0 ||
+          body.requests.some(
+            (r) =>
+              !r ||
+              (r.platform !== "MERCADO_LIVRE" && r.platform !== "SHOPEE") ||
+              typeof r.accountId !== "string" ||
+              !r.accountId,
+          )
+        ) {
+          return reply.status(400).send({
+            error: "Dados inválidos",
+            message: "requests deve conter ao menos um par platform+accountId válido",
+          });
+        }
+        if (body.productIds.length * body.requests.length > 2000) {
+          return reply.status(400).send({
+            error: "Limite excedido",
+            message:
+              "Operação muito grande. Máximo de 2000 anúncios por job (produtos × contas).",
+          });
+        }
+
+        const job = await BulkListingJobRepository.create({
+          userId,
+          productIds: body.productIds,
+          requests: body.requests as BulkListingRequestSpec[],
+          overrideTemplate: body.overrideTemplate ?? null,
+        });
+
+        // Disparo fire-and-forget. O cliente faz polling pelo jobId.
+        void (async () => {
+          try {
+            await BulkListingJobRepository.markRunning(job.id);
+            const summary = await ListingDispatcher.dispatchBatch({
+              userId,
+              productIds: body.productIds!,
+              requests: body.requests!.map((r) => ({
+                platform: r.platform,
+                accountId: r.accountId,
+                categoryId: r.categoryId,
+                mlSettings: r.mlSettings as
+                  | BulkListingRequestSpec["mlSettings"]
+                  | undefined,
+              })),
+              overrideTemplate: body.overrideTemplate ?? null,
+              onItemDone: async (item) => {
+                try {
+                  await BulkListingJobRepository.appendResult(job.id, item);
+                } catch (e) {
+                  console.error(
+                    `[Listing Routes] appendResult failed (job=${job.id}):`,
+                    e instanceof Error ? e.message : e,
+                  );
+                }
+              },
+            });
+            await BulkListingJobRepository.markFinal(job.id, summary);
+            console.log(
+              JSON.stringify({
+                event: "listing.bulk.finished",
+                jobId: job.id,
+                userId,
+                ...summary,
+              }),
+            );
+          } catch (e) {
+            console.error(
+              `[Listing Routes] bulk job crashed (job=${job.id}):`,
+              e instanceof Error ? e.message : e,
+            );
+            try {
+              await BulkListingJobRepository.markFinal(job.id, {
+                success: 0,
+                failed: 0,
+                lastError: e instanceof Error ? e.message : "crash",
+              });
+            } catch {
+              // ignore
+            }
+          }
+        })();
+
+        return reply.status(202).send({
+          success: true,
+          jobId: job.id,
+          totalItems: job.totalItems,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error creating bulk job:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /listings/bulk/:jobId
+   * Retorna o estado completo de um BulkListingJob para polling.
+   */
+  app.get<{ Params: { jobId: string } }>(
+    "/bulk/:jobId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { jobId } = request.params as { jobId: string };
+
+        const job = await BulkListingJobRepository.findByIdAndUser(
+          jobId,
+          userId,
+        );
+        if (!job) {
+          return reply.status(404).send({
+            error: "Job não encontrado",
+            message: `BulkListingJob ${jobId} não pertence ao usuário`,
+          });
+        }
+
+        return reply.send({
+          id: job.id,
+          status: job.status,
+          totalItems: job.totalItems,
+          doneItems: job.doneItems,
+          successItems: job.successItems,
+          failedItems: job.failedItems,
+          results: job.results,
+          lastError: job.lastError,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        });
+      } catch (error) {
+        console.error("[Listing Routes] Error fetching bulk job:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /listings/bulk/:jobId/retry-failed
+   * Re-enfileira apenas os itens com success=false do job original em um
+   * NOVO job, sem mexer no histórico do job anterior.
+   */
+  app.post<{ Params: { jobId: string } }>(
+    "/bulk/:jobId/retry-failed",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.id;
+        const { jobId } = request.params as { jobId: string };
+
+        const job = await BulkListingJobRepository.findByIdAndUser(
+          jobId,
+          userId,
+        );
+        if (!job) {
+          return reply.status(404).send({
+            error: "Job não encontrado",
+            message: `BulkListingJob ${jobId} não pertence ao usuário`,
+          });
+        }
+
+        const results = Array.isArray(job.results)
+          ? (job.results as unknown as Array<{
+              productId: string;
+              platform: BulkListingPlatform;
+              accountId: string;
+              success: boolean;
+            }>)
+          : [];
+        const failed = results.filter((r) => !r.success);
+        if (failed.length === 0) {
+          return reply.status(400).send({
+            error: "Nada para reprocessar",
+            message: "Não há itens falhos neste job",
+          });
+        }
+
+        // Reconstrói requests a partir das tuplas falhas. Mantém categoryId/
+        // mlSettings do request original quando o accountId bate.
+        const originalRequests = (job.requests as unknown as BulkListingRequestSpec[]) || [];
+        const findOriginal = (platform: string, accountId: string) =>
+          originalRequests.find(
+            (r) => r.platform === platform && r.accountId === accountId,
+          );
+
+        const productIdsSet = new Set<string>();
+        const requestsKey = new Map<string, BulkListingRequestSpec>();
+        for (const f of failed) {
+          productIdsSet.add(f.productId);
+          const key = `${f.platform}:${f.accountId}`;
+          if (!requestsKey.has(key)) {
+            const orig = findOriginal(f.platform, f.accountId);
+            requestsKey.set(key, {
+              platform: f.platform,
+              accountId: f.accountId,
+              categoryId: orig?.categoryId,
+              mlSettings: orig?.mlSettings,
+            });
+          }
+        }
+
+        const newJob = await BulkListingJobRepository.create({
+          userId,
+          productIds: Array.from(productIdsSet),
+          requests: Array.from(requestsKey.values()),
+          overrideTemplate:
+            (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
+            null,
+        });
+
+        void (async () => {
+          try {
+            await BulkListingJobRepository.markRunning(newJob.id);
+            const summary = await ListingDispatcher.dispatchBatch({
+              userId,
+              productIds: Array.from(productIdsSet),
+              requests: Array.from(requestsKey.values()),
+              overrideTemplate:
+                (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
+                null,
+              onItemDone: async (item) => {
+                try {
+                  await BulkListingJobRepository.appendResult(newJob.id, item);
+                } catch (e) {
+                  console.error(
+                    `[Listing Routes] appendResult retry failed (job=${newJob.id}):`,
+                    e instanceof Error ? e.message : e,
+                  );
+                }
+              },
+            });
+            await BulkListingJobRepository.markFinal(newJob.id, summary);
+          } catch (e) {
+            await BulkListingJobRepository.markFinal(newJob.id, {
+              success: 0,
+              failed: 0,
+              lastError: e instanceof Error ? e.message : "crash",
+            });
+          }
+        })();
+
+        return reply.status(202).send({
+          success: true,
+          jobId: newJob.id,
+          totalItems: newJob.totalItems,
+          parentJobId: jobId,
+        });
+      } catch (error) {
+        console.error(
+          "[Listing Routes] Error retrying failed bulk items:",
+          error,
+        );
         return reply.status(500).send({
           error: "Erro interno do servidor",
           message: error instanceof Error ? error.message : "Erro desconhecido",

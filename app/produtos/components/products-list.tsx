@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Filter,
   Loader2,
+  Megaphone,
   Package,
   Pencil,
   QrCode,
@@ -79,6 +80,10 @@ import {
   hasActiveProductFilters,
   serializeProductFilters,
 } from "@/app/produtos/lib/product-filters";
+import {
+  BulkListingWizard,
+  type BulkListingProduct,
+} from "./bulk-listing-wizard";
 import { CreateProductDialog } from "./create-product-dialog";
 import {
   EditProductDialog,
@@ -119,6 +124,9 @@ interface Product {
   isTraceable?: boolean;
   sourceVehicle?: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[] | null;
+  mlCategoryId?: string | null;
+  shopeeCategoryId?: string | null;
   listings?: ProductListing[];
 }
 
@@ -469,6 +477,8 @@ export function ProductsList() {
     done: number;
     total: number;
   } | null>(null);
+  const [bulkListingOpen, setBulkListingOpen] = useState(false);
+  const [isBulkListing, setIsBulkListing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingListingContext, setEditingListingContext] =
@@ -989,8 +999,47 @@ export function ProductsList() {
     ? "Nenhum produto corresponde aos filtros aplicados. Ajuste os critérios ou limpe os filtros para ampliar o catálogo."
     : "Comece adicionando seu primeiro produto ao catálogo.";
 
+  const bulkListingProducts: BulkListingProduct[] = useMemo(
+    () =>
+      products
+        .filter((p) => selectedIds.includes(p.id))
+        .map((p) => ({
+          id: p.id,
+          sku: p.sku,
+          name: p.name,
+          price: typeof p.price === "number" ? p.price : Number(p.price) || 0,
+          costPrice:
+            typeof p.costPrice === "number"
+              ? p.costPrice
+              : p.costPrice
+                ? Number(p.costPrice)
+                : null,
+          imageUrl: p.imageUrl ?? null,
+          imageUrls: Array.isArray(p.imageUrls) ? p.imageUrls : null,
+          mlCategoryId: p.mlCategoryId ?? null,
+          shopeeCategoryId: p.shopeeCategoryId ?? null,
+          compatibilitiesCount: null,
+        })),
+    [products, selectedIds],
+  );
+
   return (
     <div className="space-y-6">
+      <BulkListingWizard
+        open={bulkListingOpen}
+        onOpenChange={(o) => {
+          setBulkListingOpen(o);
+          if (!o) setIsBulkListing(false);
+        }}
+        selectedProducts={bulkListingProducts}
+        email={session?.user?.email ?? ""}
+        onJobStarted={() => setIsBulkListing(true)}
+        onJobFinished={() => {
+          setIsBulkListing(false);
+        }}
+        onShowToast={showToast}
+      />
+
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map((toast) => (
           <div
@@ -1391,12 +1440,29 @@ export function ProductsList() {
                     disabled={
                       selectionCount === 0 ||
                       isGeneratingLabels ||
-                      isBulkDeleting
+                      isBulkDeleting ||
+                      isBulkListing
                     }
                     className="gap-2"
                   >
                     <QrCode className="size-4" />
                     {isGeneratingLabels ? "Gerando..." : "Gerar etiquetas"}
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setBulkListingOpen(true)}
+                    disabled={
+                      selectionCount === 0 ||
+                      isGeneratingLabels ||
+                      isBulkDeleting ||
+                      isBulkListing
+                    }
+                    className="gap-2"
+                  >
+                    <Megaphone className="size-4" />
+                    {isBulkListing ? "Anunciando..." : "Anunciar em massa"}
                   </Button>
 
                   <AlertDialog>
@@ -1407,7 +1473,8 @@ export function ProductsList() {
                         disabled={
                           selectionCount === 0 ||
                           isBulkDeleting ||
-                          isGeneratingLabels
+                          isGeneratingLabels ||
+                          isBulkListing
                         }
                         className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       >

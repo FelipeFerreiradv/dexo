@@ -42,6 +42,7 @@ model User {
   receivables         Receivable[]
   companyFiscalConfig CompanyFiscalConfig?
   nfesEmitidas        NfeEmitida[]
+  bulkListingJobs     BulkListingJob[]
 }
 
 model Product {
@@ -327,6 +328,27 @@ model StockSyncJob {
   @@index([productId])
 }
 
+model BulkListingJob {
+  id               String        @id @default(cuid())
+  userId           String
+  status           BulkJobStatus @default(QUEUED)
+  totalItems       Int
+  doneItems        Int           @default(0)
+  successItems     Int           @default(0)
+  failedItems      Int           @default(0)
+  productIds       String[]
+  requests         Json
+  overrideTemplate Json?
+  results          Json          @default("[]")
+  lastError        String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  user             User          @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+}
+
 model MLCategoryAttributeCache {
   categoryId   String   @id
   attributes   Json
@@ -426,6 +448,14 @@ enum LogLevel {
   INFO
   WARNING
   ERROR
+}
+
+enum BulkJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED_PARTIAL
+  FAILED
 }
 
 enum ScrapStatus {
