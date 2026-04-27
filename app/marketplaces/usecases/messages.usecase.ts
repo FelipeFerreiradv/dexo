@@ -185,6 +185,17 @@ export class MessagesUseCase {
       });
     }
 
+    // Resolve a productListingId UMA vez (todas as perguntas referenciam o mesmo
+    // item) — evita N lookups idênticos em upsertFromMl.
+    const productListingId = await QuestionRepository.resolveListingId(
+      accountId,
+      externalItemId,
+    );
+
+    // Concorrência limitada: upserts paralelos por chunk para acelerar sem
+    // saturar o pool do Postgres (cada upsert custa até 4 roundtrips).
+    const UPSERT_CONCURRENCY = 8;
+
     let offset = 0;
     let total = 0;
     let synced = 0;
@@ -196,10 +207,17 @@ export class MessagesUseCase {
         { offset, limit: 50 },
       );
       total = page.total;
-      for (const q of page.questions) {
-        await QuestionRepository.upsertFromMl(accountId, q);
-        synced += 1;
+
+      for (let i = 0; i < page.questions.length; i += UPSERT_CONCURRENCY) {
+        const chunk = page.questions.slice(i, i + UPSERT_CONCURRENCY);
+        await Promise.all(
+          chunk.map((q) =>
+            QuestionRepository.upsertFromMl(accountId, q, { productListingId }),
+          ),
+        );
+        synced += chunk.length;
       }
+
       if (page.questions.length < 50) break;
       offset += 50;
       if (offset >= page.total) break;

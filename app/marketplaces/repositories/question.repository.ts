@@ -36,25 +36,55 @@ export interface ConversationListParams {
  */
 export class QuestionRepository {
   /**
-   * Upsert idempotente de pergunta + (opcional) resposta vinda do ML.
-   * Resolve a productListingId pelo par (accountId, externalItemId).
+   * Resolve o productListing local correspondente ao item_id do ML.
+   * Pública para permitir que callers que processam várias perguntas do mesmo
+   * item (ex: pullConversation) resolvam UMA vez e reaproveitem.
    */
-  static async upsertFromMl(
+  static async resolveListingId(
     marketplaceAccountId: string,
-    mlQuestion: MLQuestion,
-  ): Promise<{ id: string; isNew: boolean }> {
+    externalItemId: string,
+  ): Promise<string | null> {
     const listing = await prisma.productListing.findUnique({
       where: {
         marketplaceAccountId_externalListingId: {
           marketplaceAccountId,
-          externalListingId: mlQuestion.item_id,
+          externalListingId: externalItemId,
         },
       },
       select: { id: true },
     });
+    return listing?.id ?? null;
+  }
 
+  /**
+   * Upsert idempotente de pergunta + (opcional) resposta vinda do ML.
+   *
+   * Otimizações:
+   *   - `productListingId` opcional: se o caller já resolveu, evita 1 SELECT.
+   *   - findUnique (isNew) + resolveListingId rodam em PARALELO quando precisa.
+   */
+  static async upsertFromMl(
+    marketplaceAccountId: string,
+    mlQuestion: MLQuestion,
+    options: { productListingId?: string | null } = {},
+  ): Promise<{ id: string; isNew: boolean }> {
     const externalQuestionId = String(mlQuestion.id);
-    const dateCreated = new Date(mlQuestion.date_created);
+    const needsListingLookup = options.productListingId === undefined;
+
+    const [existing, resolvedListingId] = await Promise.all([
+      prisma.marketplaceQuestion.findUnique({
+        where: {
+          marketplaceAccountId_externalQuestionId: {
+            marketplaceAccountId,
+            externalQuestionId,
+          },
+        },
+        select: { id: true },
+      }),
+      needsListingLookup
+        ? this.resolveListingId(marketplaceAccountId, mlQuestion.item_id)
+        : Promise.resolve(options.productListingId ?? null),
+    ]);
 
     const baseData = {
       marketplaceAccountId,
@@ -64,19 +94,9 @@ export class QuestionRepository {
       buyerNickname: mlQuestion.from?.nickname ?? null,
       text: mlQuestion.text,
       status: mlQuestion.status,
-      dateCreated,
-      productListingId: listing?.id ?? null,
+      dateCreated: new Date(mlQuestion.date_created),
+      productListingId: resolvedListingId,
     };
-
-    const existing = await prisma.marketplaceQuestion.findUnique({
-      where: {
-        marketplaceAccountId_externalQuestionId: {
-          marketplaceAccountId,
-          externalQuestionId,
-        },
-      },
-      select: { id: true },
-    });
 
     const upserted = await prisma.marketplaceQuestion.upsert({
       where: {
@@ -156,9 +176,9 @@ export class QuestionRepository {
       ];
     }
 
-    // Agrega por externalItemId pegando a data mais recente. Total = quantidade de
-    // grupos (rodada separada para o counter — Prisma não devolve total no groupBy).
-    const [grouped, totalGroups] = await Promise.all([
+    // Fase 1 (paralelo): paginação por externalItemId + total de grupos.
+    // Total via groupBy sem agregação — devolve só a chave de agrupamento.
+    const [grouped, allGroups] = await Promise.all([
       prisma.marketplaceQuestion.groupBy({
         by: ["externalItemId"],
         where,
@@ -167,52 +187,72 @@ export class QuestionRepository {
         take: limit,
         skip: offset,
       }),
-      prisma.marketplaceQuestion
-        .findMany({
-          where,
-          select: { externalItemId: true },
-          distinct: ["externalItemId"],
-        })
-        .then((rows) => rows.length),
+      prisma.marketplaceQuestion.groupBy({
+        by: ["externalItemId"],
+        where,
+      }),
     ]);
 
+    const totalGroups = allGroups.length;
     const itemIds = grouped.map((g) => g.externalItemId);
     if (itemIds.length === 0) {
       return { items: [], total: totalGroups };
     }
 
-    // Pega TODAS as perguntas dos items selecionados para calcular last/unread.
-    const allForItems = await prisma.marketplaceQuestion.findMany({
-      where: {
-        marketplaceAccountId: params.marketplaceAccountId,
-        externalItemId: { in: itemIds },
-      },
-      orderBy: { dateCreated: "desc" },
-      include: {
-        answer: true,
-        productListing: {
-          select: {
-            id: true,
-            permalink: true,
-            titleOverride: true,
-            product: { select: { name: true, sku: true, imageUrl: true } },
+    // Fase 2 (paralelo, 3 queries leves):
+    //   a) latestPerItem: 1 row por item (a pergunta mais recente) com listing/produto
+    //   b) unreadByItem:  groupBy filtrado por readAt IS NULL (counts)
+    //   c) unansweredByItem: groupBy filtrado por status='UNANSWERED' (presença)
+    //
+    // Usa `distinct: ["externalItemId"]` + orderBy desc para pegar a primeira
+    // (latest) por item — evita carregar TODAS as perguntas dos itens só para
+    // calcular preview/counts (era O(N_questions); agora O(N_items)).
+    const inSelected: Prisma.MarketplaceQuestionWhereInput = {
+      marketplaceAccountId: params.marketplaceAccountId,
+      externalItemId: { in: itemIds },
+    };
+
+    const [latestPerItem, unreadCounts, unansweredCounts] = await Promise.all([
+      prisma.marketplaceQuestion.findMany({
+        where: inSelected,
+        orderBy: { dateCreated: "desc" },
+        distinct: ["externalItemId"],
+        include: {
+          answer: true,
+          productListing: {
+            select: {
+              id: true,
+              permalink: true,
+              titleOverride: true,
+              product: { select: { name: true, sku: true, imageUrl: true } },
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.marketplaceQuestion.groupBy({
+        by: ["externalItemId"],
+        where: { ...inSelected, readAt: null },
+        _count: { _all: true },
+      }),
+      prisma.marketplaceQuestion.groupBy({
+        by: ["externalItemId"],
+        where: { ...inSelected, status: "UNANSWERED" },
+        _count: { _all: true },
+      }),
+    ]);
 
-    const byItem = new Map<string, (typeof allForItems)[number][]>();
-    for (const q of allForItems) {
-      const arr = byItem.get(q.externalItemId) ?? [];
-      arr.push(q);
-      byItem.set(q.externalItemId, arr);
-    }
+    const latestByItem = new Map(
+      latestPerItem.map((q) => [q.externalItemId, q]),
+    );
+    const unreadByItem = new Map(
+      unreadCounts.map((c) => [c.externalItemId, c._count._all]),
+    );
+    const unansweredByItem = new Set(
+      unansweredCounts.map((c) => c.externalItemId),
+    );
 
     const items: ConversationSummary[] = itemIds.map((itemId) => {
-      const all = byItem.get(itemId) ?? [];
-      const latest = all[0];
-      const unread = all.filter((q) => q.readAt === null).length;
-      const hasUnanswered = all.some((q) => q.status === "UNANSWERED");
+      const latest = latestByItem.get(itemId);
       const listing = latest?.productListing;
       return {
         externalItemId: itemId,
@@ -226,8 +266,8 @@ export class QuestionRepository {
         lastQuestionAt: latest?.dateCreated ?? new Date(0),
         lastAnswerText: latest?.answer?.text ?? null,
         lastAnswerAt: latest?.answer?.dateCreated ?? null,
-        unreadCount: unread,
-        hasUnanswered,
+        unreadCount: unreadByItem.get(itemId) ?? 0,
+        hasUnanswered: unansweredByItem.has(itemId),
       };
     });
 

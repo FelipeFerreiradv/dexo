@@ -71,33 +71,42 @@ export function ChatPane({
 
   const itemId = conversation?.externalItemId ?? null;
 
-  const loadConversation = React.useCallback(async () => {
-    if (!accountId || !itemId) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}?accountId=${accountId}`,
-        { headers },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as {
-        questions: QuestionDto[];
-        listing: ListingDto | null;
-      };
-      setData(json);
-      setError(null);
-    } catch (err) {
-      console.error("chat: failed to load", err);
-      setError("Não foi possível carregar a conversa.");
-    } finally {
-      setLoading(false);
-    }
-  }, [accountId, apiBase, headers, itemId]);
+  const loadConversation = React.useCallback(
+    async (signal?: AbortSignal) => {
+      if (!accountId || !itemId) return;
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}?accountId=${accountId}`,
+          { headers, signal },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = (await res.json()) as {
+          questions: QuestionDto[];
+          listing: ListingDto | null;
+        };
+        setData(json);
+        setError(null);
+      } catch (err) {
+        if ((err as { name?: string })?.name === "AbortError") return;
+        console.error("chat: failed to load", err);
+        setError("Não foi possível carregar a conversa.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [accountId, apiBase, headers, itemId],
+  );
 
+  // Aborta request anterior se trocar rapidamente entre conversas — evita pintar
+  // dados de outra thread em cima da conversa atual.
   React.useEffect(() => {
     setData(null);
     setError(null);
-    if (itemId) void loadConversation();
+    if (!itemId) return;
+    const controller = new AbortController();
+    void loadConversation(controller.signal);
+    return () => controller.abort();
   }, [itemId, loadConversation]);
 
   // marca como lida automaticamente ao abrir
@@ -150,8 +159,10 @@ export function ChatPane({
       const err = await res.json().catch(() => ({}));
       throw new Error(err?.error ?? "Erro ao enviar resposta");
     }
-    await loadConversation();
+    // Dispara o refresh da lista em paralelo com o reload do chat — não há
+    // dependência entre eles, esperar sequencialmente é desperdício.
     onAfterAnswer();
+    await loadConversation();
   };
 
   if (!conversation || !itemId) {

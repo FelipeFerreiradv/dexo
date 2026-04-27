@@ -60,68 +60,84 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   const [accountId, setAccountId] = React.useState<string>("");
   const [filter, setFilter] = React.useState<ConversationFilter>("all");
   const [search, setSearch] = React.useState("");
+  // debouncedSearch isola digitação: só dispara fetch 250ms após parar de digitar.
+  const [debouncedSearch, setDebouncedSearch] = React.useState("");
   const [conversations, setConversations] = React.useState<
     ConversationSummary[] | null
   >(null);
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [convError, setConvError] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(id);
+  }, [search]);
+
   // Carrega contas
   React.useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/messages/accounts`, { headers });
+        const res = await fetch(`${apiBase}/messages/accounts`, {
+          headers,
+          signal: controller.signal,
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { accounts: AccountSummary[] };
-        if (cancelled) return;
         const active = data.accounts.filter((a) => a.status === "ACTIVE");
         setAccounts(data.accounts);
         if (active.length > 0) setAccountId(active[0].id);
         else if (data.accounts.length > 0) setAccountId(data.accounts[0].id);
       } catch (err) {
-        if (!cancelled) {
-          console.error("messages: failed to load accounts", err);
-          setAccounts([]);
-        }
+        if ((err as { name?: string })?.name === "AbortError") return;
+        console.error("messages: failed to load accounts", err);
+        setAccounts([]);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [apiBase, headers]);
 
-  const loadConversations = React.useCallback(async () => {
-    if (!accountId) return;
-    try {
-      const params = new URLSearchParams({
-        accountId,
-        status: filter,
-        ...(search.trim() ? { search: search.trim() } : {}),
-        limit: "50",
-      });
-      const res = await fetch(
-        `${apiBase}/messages/conversations?${params.toString()}`,
-        { headers },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as {
-        items: ConversationSummary[];
-        total: number;
-      };
-      setConversations(data.items);
-      setConvError(null);
-    } catch (err) {
-      console.error("messages: failed to load conversations", err);
-      setConvError("Não foi possível carregar as conversas. Tente novamente.");
-      setConversations([]);
-    }
-  }, [accountId, apiBase, filter, headers, search]);
+  const loadConversations = React.useCallback(
+    async (signal?: AbortSignal) => {
+      if (!accountId) return;
+      try {
+        const params = new URLSearchParams({
+          accountId,
+          status: filter,
+          ...(debouncedSearch ? { search: debouncedSearch } : {}),
+          limit: "50",
+        });
+        const res = await fetch(
+          `${apiBase}/messages/conversations?${params.toString()}`,
+          { headers, signal },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as {
+          items: ConversationSummary[];
+          total: number;
+        };
+        setConversations(data.items);
+        setConvError(null);
+      } catch (err) {
+        if ((err as { name?: string })?.name === "AbortError") return;
+        console.error("messages: failed to load conversations", err);
+        setConvError("Não foi possível carregar as conversas. Tente novamente.");
+        setConversations([]);
+      }
+    },
+    [accountId, apiBase, filter, headers, debouncedSearch],
+  );
 
-  // Carrega conversas + polling
+  // Skeleton (null) só em mudança "dura" — evita flicker em re-fetch por busca/poll.
   React.useEffect(() => {
     setConversations(null);
-    void loadConversations();
+  }, [accountId, filter]);
+
+  // Carrega conversas + cancela request anterior se inputs mudarem em sequência rápida.
+  React.useEffect(() => {
+    const controller = new AbortController();
+    void loadConversations(controller.signal);
+    return () => controller.abort();
   }, [loadConversations]);
 
   React.useEffect(() => {
