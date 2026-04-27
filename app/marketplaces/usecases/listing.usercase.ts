@@ -2712,6 +2712,11 @@ export class ListingUseCase {
   /**
    * ConstrÃ³i uma descriÃ§Ã£o para o anÃºncio do Shopee
    */
+  // Shopee aceita descrição entre 10 e 5000 chars. Margem de 100 chars para
+  // o sufixo de truncamento e variação de encoding.
+  private static readonly SHOPEE_MAX_DESCRIPTION = 5000;
+  private static readonly SHOPEE_DESC_SAFE_LIMIT = 4900;
+
   private static buildShopeeDescription(product: any): string {
     const parts: string[] = [];
 
@@ -2736,22 +2741,66 @@ export class ListingUseCase {
       parts.push(details.join("\n"));
     }
 
-    // Compatibilidades — o Shopee não tem endpoint/atributo dedicado para isso
-    // no fluxo de peças automotivas, então expomos via descrição (visível ao
-    // comprador e indexável pela busca do próprio Shopee).
+    // SKU primeiro para garantir que cabe mesmo se compat for truncada.
+    const skuLine = `SKU: ${product.sku}`;
+
+    // Compatibilidades — Shopee não tem campo dedicado. Vão na descrição.
     const compatLines = this.formatCompatibilityLines(product);
     const descriptionAlreadyHasCompat =
       typeof product.description === "string" &&
       /compat[ií]vel com/i.test(product.description);
+
+    // Calcula orçamento para compat: tamanho atual (parts + sku) + duas seções
+    // de compat (header "Compatível com:" + corpo). Se estourar, trunca a
+    // lista por linhas (mantendo as N primeiras compatibilidades cabíveis).
     if (compatLines.length > 0 && !descriptionAlreadyHasCompat) {
-      parts.push("Compatível com:");
-      parts.push(compatLines.map((l) => `- ${l}`).join("\n"));
+      const baseLen = parts.join("\n\n").length;
+      // "\n\n" + "Compatível com:" + "\n\n" + body + "\n\n" + sku
+      const overheadCompat = 2 + "Compatível com:".length + 2;
+      const overheadSku = 2 + skuLine.length;
+      const budget =
+        ListingUseCase.SHOPEE_DESC_SAFE_LIMIT -
+        baseLen -
+        overheadCompat -
+        overheadSku;
+
+      const fittedLines: string[] = [];
+      let used = 0;
+      for (const line of compatLines) {
+        const formatted = `- ${line}`;
+        const cost = (fittedLines.length === 0 ? 0 : 1) + formatted.length;
+        if (used + cost > budget) break;
+        fittedLines.push(formatted);
+        used += cost;
+      }
+
+      if (fittedLines.length > 0) {
+        parts.push("Compatível com:");
+        const truncated = fittedLines.length < compatLines.length;
+        const body = truncated
+          ? `${fittedLines.join("\n")}\n- (+${compatLines.length - fittedLines.length} versões)`
+          : fittedLines.join("\n");
+        parts.push(body);
+      }
     }
 
-    // SKU para referência
-    parts.push(`SKU: ${product.sku}`);
+    parts.push(skuLine);
 
-    return parts.join("\n\n");
+    let result = parts.join("\n\n");
+
+    // Salvaguarda final: se algum dos campos individuais (e.g. descrição do
+    // produto) já era enorme, trunca o todo preservando o sufixo SKU para
+    // continuar minimamente útil.
+    if (result.length > ListingUseCase.SHOPEE_MAX_DESCRIPTION) {
+      const tail = `\n\n${skuLine}`;
+      const head = result.slice(
+        0,
+        ListingUseCase.SHOPEE_MAX_DESCRIPTION - tail.length - 4,
+      );
+      result = `${head}…${tail}`;
+    }
+
+    return result;
   }
 
   /**
