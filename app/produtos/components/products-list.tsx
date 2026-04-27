@@ -464,6 +464,11 @@ export function ProductsList() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isGeneratingLabels, setIsGeneratingLabels] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingListingContext, setEditingListingContext] =
@@ -762,6 +767,123 @@ export function ProductsList() {
         "error",
       );
     }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) {
+      showToast(
+        "Selecione pelo menos um produto para excluir.",
+        "warning",
+      );
+      return;
+    }
+
+    const ids = [...selectedIds];
+    const nameById = new Map(products.map((p) => [p.id, p.name]));
+    const email = session?.user?.email || "";
+    const pageProductsCount = products.length;
+
+    setIsBulkDeleting(true);
+    setBulkDeleteProgress({ done: 0, total: ids.length });
+
+    const succeeded: string[] = [];
+    const failed: { id: string; name: string; message: string }[] = [];
+
+    const concurrency = Math.min(4, ids.length);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= ids.length) return;
+        const id = ids[index];
+        try {
+          const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
+            method: "DELETE",
+            headers: { email },
+          });
+          if (!response.ok) {
+            let message = "Erro ao excluir produto";
+            try {
+              const data = await response.json();
+              message = data?.message || data?.error || message;
+            } catch {
+              // ignore JSON parse errors
+            }
+            failed.push({
+              id,
+              name: nameById.get(id) ?? id,
+              message,
+            });
+          } else {
+            succeeded.push(id);
+          }
+        } catch (error) {
+          failed.push({
+            id,
+            name: nameById.get(id) ?? id,
+            message:
+              error instanceof Error ? error.message : "Erro ao excluir produto",
+          });
+        } finally {
+          setBulkDeleteProgress((prev) =>
+            prev ? { ...prev, done: prev.done + 1 } : prev,
+          );
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: concurrency }, () => worker()),
+    );
+
+    if (succeeded.length > 0) {
+      const succeededSet = new Set(succeeded);
+      setProducts((prev) =>
+        prev.filter((product) => !succeededSet.has(product.id)),
+      );
+      setPagination((prev) => ({
+        ...prev,
+        total: Math.max(0, prev.total - succeeded.length),
+      }));
+      setSelectedIds((prev) => prev.filter((id) => !succeededSet.has(id)));
+      invalidateProductFilterOptionsCache(session?.user?.email);
+      fetchFilterOptions(true);
+      if (
+        succeeded.length === pageProductsCount &&
+        pagination.page > 1
+      ) {
+        fetchProducts(pagination.page - 1, filters);
+      }
+    }
+
+    if (failed.length === 0) {
+      showToast(
+        `${succeeded.length} produto(s) excluído(s) com sucesso!`,
+        "success",
+      );
+    } else if (succeeded.length === 0) {
+      showToast(
+        failed[0]?.message
+          ? `Erro ao excluir produtos: ${failed[0].message}`
+          : "Erro ao excluir produtos",
+        "error",
+      );
+    } else {
+      showToast(
+        `${succeeded.length} excluído(s), ${failed.length} falharam.`,
+        "warning",
+      );
+      if (failed[0]?.message) {
+        showToast(
+          `"${failed[0].name}": ${failed[0].message}`,
+          "error",
+        );
+      }
+    }
+
+    setIsBulkDeleting(false);
+    setBulkDeleteProgress(null);
   };
 
   const handleEditClick = (product: Product) => {
@@ -1251,6 +1373,7 @@ export function ProductsList() {
                           : false
                     }
                     onCheckedChange={toggleSelectAll}
+                    disabled={isBulkDeleting}
                   />
                   <span className="whitespace-nowrap">Selecionar todos</span>
                   {selectionCount > 0 && (
@@ -1260,16 +1383,65 @@ export function ProductsList() {
                   )}
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleGenerateLabels}
-                  disabled={selectionCount === 0 || isGeneratingLabels}
-                  className="gap-2"
-                >
-                  <QrCode className="size-4" />
-                  {isGeneratingLabels ? "Gerando..." : "Gerar etiquetas"}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGenerateLabels}
+                    disabled={
+                      selectionCount === 0 ||
+                      isGeneratingLabels ||
+                      isBulkDeleting
+                    }
+                    className="gap-2"
+                  >
+                    <QrCode className="size-4" />
+                    {isGeneratingLabels ? "Gerando..." : "Gerar etiquetas"}
+                  </Button>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          selectionCount === 0 ||
+                          isBulkDeleting ||
+                          isGeneratingLabels
+                        }
+                        className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="size-4" />
+                        {isBulkDeleting
+                          ? `Excluindo... ${bulkDeleteProgress?.done ?? 0}/${
+                              bulkDeleteProgress?.total ?? 0
+                            }`
+                          : "Excluir selecionados"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {`Excluir ${selectionCount} produto(s)?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Esta ação é irreversível. Os anúncios associados em
+                          marketplaces serão fechados quando possível. Produtos
+                          com pedidos vinculados não serão excluídos.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={handleBulkDelete}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          {`Excluir ${selectionCount}`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
               </div>
 
               <div
@@ -1294,6 +1466,7 @@ export function ProductsList() {
                                       : false
                                 }
                                 onCheckedChange={toggleSelectAll}
+                                disabled={isBulkDeleting}
                               />
                             </TableHead>
                             <TableHead>Imagem</TableHead>
@@ -1333,6 +1506,7 @@ export function ProductsList() {
                                   onCheckedChange={(checked) =>
                                     toggleSelectOne(product.id, checked)
                                   }
+                                  disabled={isBulkDeleting}
                                 />
                               </TableCell>
                               <TableCell>
@@ -1462,6 +1636,7 @@ export function ProductsList() {
                               onCheckedChange={(checked) =>
                                 toggleSelectOne(product.id, checked)
                               }
+                              disabled={isBulkDeleting}
                             />
                             {product.imageUrl ? (
                               // eslint-disable-next-line @next/next/no-img-element
