@@ -2,7 +2,9 @@ import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { MLOrderWebhookPayload } from "../types/ml-order.types";
+import { MLQuestionWebhookPayload } from "../types/ml-questions.types";
 import { OrderUseCase } from "./order.usercase";
+import { MessagesUseCase } from "./messages.usecase";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 /**
@@ -247,6 +249,39 @@ export class WebhookUseCase {
             : "Erro desconhecido no processamento do webhook Shopee",
       };
     }
+  }
+
+  /**
+   * Processa webhook de pergunta (topic="questions") do Mercado Livre.
+   * Delegamos para MessagesUseCase para manter este arquivo focado em roteamento.
+   */
+  static async processQuestionWebhook(payload: MLQuestionWebhookPayload) {
+    return MessagesUseCase.syncQuestionFromWebhook(payload);
+  }
+
+  /**
+   * Valida payload de webhook de pergunta. Aceita topic="questions" e
+   * resource no formato "/questions/{id}". Mantido separado de
+   * validateWebhookPayload (orders) para não alterar comportamento existente.
+   */
+  static validateQuestionWebhookPayload(
+    payload: any,
+  ): payload is MLQuestionWebhookPayload {
+    if (!payload || typeof payload !== "object") return false;
+    if (
+      !payload.resource ||
+      !payload.user_id ||
+      !payload.topic ||
+      !payload.application_id ||
+      typeof payload.attempts !== "number" ||
+      !payload.sent ||
+      !payload.received
+    ) {
+      return false;
+    }
+    if (payload.topic !== "questions") return false;
+    if (!/^\/questions\/\d+$/.test(payload.resource)) return false;
+    return true;
   }
 
   /**

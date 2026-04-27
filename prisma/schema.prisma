@@ -9,53 +9,53 @@ datasource db {
 }
 
 model User {
-  id                        String               @id @default(cuid())
+  id                        String   @id @default(cuid())
   name                      String?
-  email                     String               @unique
+  email                     String   @unique
   password                  String
   avatarUrl                 String?
-  role                      Role                 @default(USER)
-  createdAt                 DateTime             @default(now())
-  updatedAt                 DateTime             @updatedAt
+  role                      Role     @default(USER)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
   defaultProductDescription String?
-  defaultCostPrice          Decimal?             @db.Decimal(10, 2)
-  defaultStock              Int?                 @default(0)
+  defaultCostPrice          Decimal? @db.Decimal(10, 2)
+  defaultStock              Int?     @default(0)
 
   // Padrões de anúncio ML (preferências do usuário)
-  defaultListingType        String?              // "bronze" | "gold_special" | "gold_pro"
-  defaultHasWarranty        Boolean?             @default(false)
-  defaultWarrantyUnit       String?              // "dias" | "meses"
-  defaultWarrantyDuration   Int?
-  defaultItemCondition      String?              // "new" | "used"
-  defaultShippingMode       String?              // "me2" | "me1" | "custom" | "not_specified"
-  defaultFreeShipping       Boolean?             @default(false)
-  defaultLocalPickup        Boolean?             @default(false)
-  defaultManufacturingTime  Int?                 @default(0)
+  defaultListingType       String? // "bronze" | "gold_special" | "gold_pro"
+  defaultHasWarranty       Boolean? @default(false)
+  defaultWarrantyUnit      String? // "dias" | "meses"
+  defaultWarrantyDuration  Int?
+  defaultItemCondition     String? // "new" | "used"
+  defaultShippingMode      String? // "me2" | "me1" | "custom" | "not_specified"
+  defaultFreeShipping      Boolean? @default(false)
+  defaultLocalPickup       Boolean? @default(false)
+  defaultManufacturingTime Int?     @default(0)
 
-  accounts                  MarketplaceAccount[]
-  products                  Product[]
-  systemLogs                SystemLog[]
-  locations                 Location[]
-  scraps                    Scrap[]
-  customers                 Customer[]
-  payables                  Payable[]
-  receivables               Receivable[]
-  companyFiscalConfig       CompanyFiscalConfig?
-  nfesEmitidas              NfeEmitida[]
+  accounts            MarketplaceAccount[]
+  products            Product[]
+  systemLogs          SystemLog[]
+  locations           Location[]
+  scraps              Scrap[]
+  customers           Customer[]
+  payables            Payable[]
+  receivables         Receivable[]
+  companyFiscalConfig CompanyFiscalConfig?
+  nfesEmitidas        NfeEmitida[]
 }
 
 model Product {
-  id                     String               @id @default(cuid())
+  id                     String                 @id @default(cuid())
   sku                    String
   skuNormalized          String?
   name                   String
   description            String?
-  price                  Decimal              @db.Decimal(10, 2)
-  stock                  Int                  @default(0)
-  createdAt              DateTime             @default(now())
-  updatedAt              DateTime             @updatedAt
-  costPrice              Decimal?             @db.Decimal(10, 2)
-  markup                 Decimal?             @db.Decimal(10, 2)
+  price                  Decimal                @db.Decimal(10, 2)
+  stock                  Int                    @default(0)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  costPrice              Decimal?               @db.Decimal(10, 2)
+  markup                 Decimal?               @db.Decimal(10, 2)
   brand                  String?
   model                  String?
   year                   String?
@@ -64,15 +64,15 @@ model Product {
   location               String?
   partNumber             String?
   quality                Quality?
-  isSecurityItem         Boolean              @default(false)
-  isTraceable            Boolean              @default(false)
+  isSecurityItem         Boolean                @default(false)
+  isTraceable            Boolean                @default(false)
   sourceVehicle          String?
   imageUrl               String?
-  imageUrls              String[]             @default([])
+  imageUrls              String[]               @default([])
   mlCategoryId           String?
   heightCm               Int?
   lengthCm               Int?
-  weightKg               Decimal?             @db.Decimal(6, 2)
+  weightKg               Decimal?               @db.Decimal(6, 2)
   widthCm                Int?
   userId                 String?
   mlCategorySource       String?
@@ -87,10 +87,10 @@ model Product {
   mlCatalogSnapshot      Json?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
-  mlCategory             MarketplaceCategory? @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
-  user                   User?                @relation(fields: [userId], references: [id])
-  productLocation        Location?            @relation(fields: [locationId], references: [id])
-  scrap                  Scrap?               @relation(fields: [scrapId], references: [id], onDelete: SetNull)
+  mlCategory             MarketplaceCategory?   @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
+  user                   User?                  @relation(fields: [userId], references: [id])
+  productLocation        Location?              @relation(fields: [locationId], references: [id])
+  scrap                  Scrap?                 @relation(fields: [scrapId], references: [id], onDelete: SetNull)
   listings               ProductListing[]
   stockLogs              StockLog[]
   nfeItens               NfeItem[]
@@ -141,7 +141,7 @@ model Location {
 }
 
 model MarketplaceAccount {
-  id             String           @id @default(cuid())
+  id             String                @id @default(cuid())
   userId         String
   platform       Platform
   accountName    String
@@ -149,14 +149,15 @@ model MarketplaceAccount {
   refreshToken   String
   expiresAt      DateTime
   externalUserId String?
-  status         AccountStatus    @default(ACTIVE)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  status         AccountStatus         @default(ACTIVE)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
   shopId         Int?
-  user           User             @relation(fields: [userId], references: [id])
+  user           User                  @relation(fields: [userId], references: [id])
   orders         Order[]
   listings       ProductListing[]
   syncLogs       SyncLog[]
+  questions      MarketplaceQuestion[]
 
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
@@ -164,24 +165,24 @@ model MarketplaceAccount {
 }
 
 model ProductListing {
-  id                   String             @id @default(cuid())
+  id                   String    @id @default(cuid())
   productId            String
   marketplaceAccountId String
   externalListingId    String
   externalSku          String?
   status               String
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
   permalink            String?
   lastError            String?
   nextRetryAt          DateTime?
-  retryAttempts        Int                @default(0)
-  retryEnabled         Boolean            @default(false)
+  retryAttempts        Int       @default(0)
+  retryEnabled         Boolean   @default(false)
   requestedCategoryId  String?
   metricsUpdatedAt     DateTime?
-  ratingAverage        Decimal?           @db.Decimal(3, 2)
-  reviewsCount         Int                @default(0)
-  viewsCount           Int                @default(0)
+  ratingAverage        Decimal?  @db.Decimal(3, 2)
+  reviewsCount         Int       @default(0)
+  viewsCount           Int       @default(0)
   listingType          String?
   itemCondition        String?
   hasWarranty          Boolean?
@@ -196,30 +197,31 @@ model ProductListing {
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
   // do produto e é replicada para todos os anúncios pelo SyncService).
-  titleOverride            String?
-  descriptionOverride      String?
-  priceOverride            Decimal?  @db.Decimal(10, 2)
-  brandOverride            String?
-  modelOverride            String?
-  yearOverride             String?
-  versionOverride          String?
-  categoryOverride         String?
-  mlCategoryOverride       String?
-  shopeeCategoryOverride   String?
-  partNumberOverride       String?
-  qualityOverride          String?
-  heightCmOverride         Int?
-  widthCmOverride          Int?
-  lengthCmOverride         Int?
-  weightKgOverride         Float?
-  imageUrlsOverride        Json?
-  attributesOverride       Json?
-  compatibilitiesOverride  Json?
-  sourceVehicleOverride    String?
+  titleOverride           String?
+  descriptionOverride     String?
+  priceOverride           Decimal? @db.Decimal(10, 2)
+  brandOverride           String?
+  modelOverride           String?
+  yearOverride            String?
+  versionOverride         String?
+  categoryOverride        String?
+  mlCategoryOverride      String?
+  shopeeCategoryOverride  String?
+  partNumberOverride      String?
+  qualityOverride         String?
+  heightCmOverride        Int?
+  widthCmOverride         Int?
+  lengthCmOverride        Int?
+  weightKgOverride        Float?
+  imageUrlsOverride       Json?
+  attributesOverride      Json?
+  compatibilitiesOverride Json?
+  sourceVehicleOverride   String?
 
-  orderItems           OrderItem[]
-  marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
-  product              Product            @relation(fields: [productId], references: [id])
+  orderItems         OrderItem[]
+  marketplaceAccount MarketplaceAccount    @relation(fields: [marketplaceAccountId], references: [id])
+  product            Product               @relation(fields: [productId], references: [id])
+  questions          MarketplaceQuestion[]
 
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
@@ -271,9 +273,9 @@ model Order {
   items                OrderItem[]
   nfesEmitidas         NfeEmitida[]
 
+  @@unique([marketplaceAccountId, externalOrderId])
   @@index([marketplaceAccountId, createdAt])
   @@index([status, updatedAt])
-  @@unique([marketplaceAccountId, externalOrderId])
 }
 
 model OrderItem {
@@ -307,18 +309,18 @@ model StockLog {
 }
 
 model StockSyncJob {
-  id           String   @id @default(cuid())
-  productId    String
-  listingId    String
-  platform     Platform
-  targetStock  Int
-  attempts     Int      @default(0)
-  nextRunAt    DateTime @default(now())
-  status       String   @default("PENDING")
-  lastError    String?
-  orderId      String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String   @id @default(cuid())
+  productId   String
+  listingId   String
+  platform    Platform
+  targetStock Int
+  attempts    Int      @default(0)
+  nextRunAt   DateTime @default(now())
+  status      String   @default("PENDING")
+  lastError   String?
+  orderId     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([listingId, status])
   @@index([status, nextRunAt])
@@ -326,20 +328,20 @@ model StockSyncJob {
 }
 
 model MLCategoryAttributeCache {
-  categoryId    String   @id
-  attributes    Json
-  fetchedAt     DateTime @default(now())
-  ttlExpiresAt  DateTime
+  categoryId   String   @id
+  attributes   Json
+  fetchedAt    DateTime @default(now())
+  ttlExpiresAt DateTime
 
   @@index([ttlExpiresAt])
 }
 
 model WebhookEventLog {
-  id          String   @id @default(cuid())
-  source      String
-  externalId  String
-  payload     Json?
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  source     String
+  externalId String
+  payload    Json?
+  createdAt  DateTime @default(now())
 
   @@unique([source, externalId])
   @@index([createdAt])
@@ -441,30 +443,30 @@ enum FinanceStatus {
 }
 
 model Customer {
-  id             String    @id @default(cuid())
-  userId         String
+  id     String @id @default(cuid())
+  userId String
 
   // Identificação PF
-  name           String
-  cpf            String?
-  rg             String?
-  birthDate      DateTime?
-  gender         String?
-  maritalStatus  String?
-  email          String?
-  phone          String?
-  mobile         String?
+  name          String
+  cpf           String?
+  rg            String?
+  birthDate     DateTime?
+  gender        String?
+  maritalStatus String?
+  email         String?
+  phone         String?
+  mobile        String?
 
   // Endereço principal
-  cep            String?
-  street         String?
-  number         String?
-  complement     String?
-  neighborhood   String?
-  city           String?
-  state          String?
-  ibge           String?
-  reference      String?
+  cep          String?
+  street       String?
+  number       String?
+  complement   String?
+  neighborhood String?
+  city         String?
+  state        String?
+  ibge         String?
+  reference    String?
 
   // Dados adicionais / entrega (PJ ou 2º endereço)
   deliveryName          String?
@@ -481,15 +483,15 @@ model Customer {
   deliveryComplement    String?
   deliveryNumber        String?
 
-  notes          String?
+  notes String?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user           User         @relation(fields: [userId], references: [id])
-  payables       Payable[]
-  receivables    Receivable[]
-  nfesEmitidas   NfeEmitida[]
+  user         User         @relation(fields: [userId], references: [id])
+  payables     Payable[]
+  receivables  Receivable[]
+  nfesEmitidas NfeEmitida[]
 
   @@unique([userId, cpf])
   @@index([userId, createdAt])
@@ -497,32 +499,32 @@ model Customer {
 }
 
 model Receivable {
-  id              String        @id @default(cuid())
-  userId          String
-  customerId      String
+  id         String @id @default(cuid())
+  userId     String
+  customerId String
 
-  document        String?
-  reason          String?
-  debtDetails     String?
-  totalAmount     Decimal       @db.Decimal(12, 2)
+  document    String?
+  reason      String?
+  debtDetails String?
+  totalAmount Decimal @db.Decimal(12, 2)
 
-  fineAmount      Decimal?      @db.Decimal(12, 2)
-  finePercent     Decimal?      @db.Decimal(5, 2)
-  interestPercent Decimal?      @db.Decimal(5, 2)
+  fineAmount      Decimal? @db.Decimal(12, 2)
+  finePercent     Decimal? @db.Decimal(5, 2)
+  interestPercent Decimal? @db.Decimal(5, 2)
   toleranceDays   Int?
 
-  installments    Int           @default(1)
-  periodDays      Int?
-  dueDate         DateTime
+  installments Int      @default(1)
+  periodDays   Int?
+  dueDate      DateTime
 
-  status          FinanceStatus @default(PENDENTE)
-  paidAt          DateTime?
+  status FinanceStatus @default(PENDENTE)
+  paidAt DateTime?
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user            User     @relation(fields: [userId], references: [id])
-  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  user     User     @relation(fields: [userId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
   @@index([userId, dueDate])
   @@index([userId, status])
@@ -531,32 +533,32 @@ model Receivable {
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
 model Payable {
-  id              String        @id @default(cuid())
-  userId          String
-  customerId      String
+  id         String @id @default(cuid())
+  userId     String
+  customerId String
 
-  document        String?
-  reason          String?
-  debtDetails     String?
-  totalAmount     Decimal       @db.Decimal(12, 2)
+  document    String?
+  reason      String?
+  debtDetails String?
+  totalAmount Decimal @db.Decimal(12, 2)
 
-  fineAmount      Decimal?      @db.Decimal(12, 2)
-  finePercent     Decimal?      @db.Decimal(5, 2)
-  interestPercent Decimal?      @db.Decimal(5, 2)
+  fineAmount      Decimal? @db.Decimal(12, 2)
+  finePercent     Decimal? @db.Decimal(5, 2)
+  interestPercent Decimal? @db.Decimal(5, 2)
   toleranceDays   Int?
 
-  installments    Int           @default(1)
-  periodDays      Int?
-  dueDate         DateTime
+  installments Int      @default(1)
+  periodDays   Int?
+  dueDate      DateTime
 
-  status          FinanceStatus @default(PENDENTE)
-  paidAt          DateTime?
+  status FinanceStatus @default(PENDENTE)
+  paidAt DateTime?
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user            User     @relation(fields: [userId], references: [id])
-  customer        Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  user     User     @relation(fields: [userId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
   @@index([userId, dueDate])
   @@index([userId, status])
@@ -564,8 +566,8 @@ model Payable {
 }
 
 model Scrap {
-  id                 String      @id @default(cuid())
-  userId             String
+  id     String @id @default(cuid())
+  userId String
 
   // Dados do veículo
   brand              String
@@ -581,43 +583,43 @@ model Scrap {
   deregistrationCert String?
 
   // Custo e pagamento
-  cost               Decimal?    @db.Decimal(10, 2)
-  paymentMethod      String?
+  cost          Decimal? @db.Decimal(10, 2)
+  paymentMethod String?
 
   // Localização (referência à entidade Location existente)
-  locationId         String?
-  location           Location?   @relation(fields: [locationId], references: [id])
+  locationId String?
+  location   Location? @relation(fields: [locationId], references: [id])
 
   // Dados fiscais / NF-e
-  ncm                String?
-  supplierCnpj       String?
-  accessKey          String?
-  issueDate          DateTime?
-  entryDate          DateTime?
-  nfeNumber          String?
-  nfeProtocol        String?
-  operationNature    String?
-  nfeSeries          String?
-  fiscalModel        String?
-  icmsValue          Decimal?    @db.Decimal(10, 2)
-  icmsCtValue        Decimal?    @db.Decimal(10, 2)
-  freightMode        String?
-  issuePurpose       String?
+  ncm             String?
+  supplierCnpj    String?
+  accessKey       String?
+  issueDate       DateTime?
+  entryDate       DateTime?
+  nfeNumber       String?
+  nfeProtocol     String?
+  operationNature String?
+  nfeSeries       String?
+  fiscalModel     String?
+  icmsValue       Decimal?  @db.Decimal(10, 2)
+  icmsCtValue     Decimal?  @db.Decimal(10, 2)
+  freightMode     String?
+  issuePurpose    String?
 
   // Imagens/Anexos
-  imageUrls          String[]    @default([])
+  imageUrls String[] @default([])
 
   // Status e controle
-  status             ScrapStatus @default(AVAILABLE)
-  notes              String?
+  status ScrapStatus @default(AVAILABLE)
+  notes  String?
 
   // Timestamps
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relacionamentos
-  user               User        @relation(fields: [userId], references: [id])
-  products           Product[]
+  user     User      @relation(fields: [userId], references: [id])
+  products Product[]
 
   @@index([userId, createdAt])
   @@index([userId, status])
@@ -631,30 +633,30 @@ model Scrap {
 // =====================================================================
 
 model CompanyFiscalConfig {
-  id                   String   @id @default(cuid())
-  userId               String   @unique
+  id     String @id @default(cuid())
+  userId String @unique
 
-  cnpj                 String
-  razaoSocial          String
-  nomeFantasia         String?
-  inscricaoEstadual    String
-  inscricaoMunicipal   String?
-  regimeTributario     String   // SIMPLES | LUCRO_PRESUMIDO | LUCRO_REAL
-  cnae                 String?
+  cnpj               String
+  razaoSocial        String
+  nomeFantasia       String?
+  inscricaoEstadual  String
+  inscricaoMunicipal String?
+  regimeTributario   String // SIMPLES | LUCRO_PRESUMIDO | LUCRO_REAL
+  cnae               String?
 
-  ambiente             String   @default("HOMOLOGACAO") // HOMOLOGACAO | PRODUCAO
+  ambiente String @default("HOMOLOGACAO") // HOMOLOGACAO | PRODUCAO
 
   // Endereço fiscal
-  cep                  String?
-  logradouro           String?
-  numero               String?
-  complemento          String?
-  bairro               String?
-  municipio            String?
-  codMunicipio         String?
-  uf                   String?
-  codPais              String?  @default("1058")
-  pais                 String?  @default("BRASIL")
+  cep          String?
+  logradouro   String?
+  numero       String?
+  complemento  String?
+  bairro       String?
+  municipio    String?
+  codMunicipio String?
+  uf           String?
+  codPais      String? @default("1058")
+  pais         String? @default("BRASIL")
 
   // Certificado A1
   certificadoPath      String?
@@ -662,19 +664,19 @@ model CompanyFiscalConfig {
   certificadoValidoAte DateTime?
 
   // Provedor fiscal
-  providerName         String?  // FOCUS_NFE | ...
-  providerToken        String?  // encriptado
+  providerName  String? // FOCUS_NFE | ...
+  providerToken String? // encriptado
 
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user                 User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 }
 
 model NfeSequence {
   id            String   @id @default(cuid())
   userId        String
-  ambiente      String   // HOMOLOGACAO | PRODUCAO
+  ambiente      String // HOMOLOGACAO | PRODUCAO
   serie         Int
   proximoNumero Int      @default(1)
   updatedAt     DateTime @updatedAt
@@ -684,34 +686,34 @@ model NfeSequence {
 }
 
 model NfeEmitida {
-  id                     String   @id @default(cuid())
-  userId                 String
-  orderId                String?
-  customerId             String?
+  id         String  @id @default(cuid())
+  userId     String
+  orderId    String?
+  customerId String?
 
   // Identificação
-  ambiente               String   // HOMOLOGACAO | PRODUCAO
-  modelo                 String   @default("55")
-  serie                  Int
-  numero                 Int
-  chaveAcesso            String?  @unique
-  tipoOperacao           String   // ENTRADA | SAIDA
-  finalidade             String   // NORMAL | COMPLEMENTAR | AJUSTE | DEVOLUCAO
-  destinoOperacao        String   // INTERNA | INTERESTADUAL | EXTERIOR
-  naturezaOperacao       String
-  indPresenca            String   // 0..9
-  intermediador          String?
-  numeroPedido           String?
-  dataEmissao            DateTime?
-  dataSaida              DateTime?
+  ambiente         String // HOMOLOGACAO | PRODUCAO
+  modelo           String    @default("55")
+  serie            Int
+  numero           Int
+  chaveAcesso      String?   @unique
+  tipoOperacao     String // ENTRADA | SAIDA
+  finalidade       String // NORMAL | COMPLEMENTAR | AJUSTE | DEVOLUCAO
+  destinoOperacao  String // INTERNA | INTERESTADUAL | EXTERIOR
+  naturezaOperacao String
+  indPresenca      String // 0..9
+  intermediador    String?
+  numeroPedido     String?
+  dataEmissao      DateTime?
+  dataSaida        DateTime?
 
   // Snapshots imutáveis pós-emissão
-  destinatarioJson       Json
-  emitenteJson           Json?
+  destinatarioJson Json
+  emitenteJson     Json?
 
   // Frete
-  modalidadeFrete        String?
-  transportadoraJson     Json?
+  modalidadeFrete    String?
+  transportadoraJson Json?
 
   // Totalizadores e blocos
   totaisJson             Json?
@@ -722,28 +724,28 @@ model NfeEmitida {
   volumesJson            Json?
 
   // Estado
-  status                 String   // DRAFT | VALIDATING | SIGNING | SENDING | AUTHORIZED | REJECTED | CANCELLED | INUTILIZED
-  protocoloAutorizacao   String?
-  dataAutorizacao        DateTime?
-  motivoRejeicao         String?
+  status               String // DRAFT | VALIDATING | SIGNING | SENDING | AUTHORIZED | REJECTED | CANCELLED | INUTILIZED
+  protocoloAutorizacao String?
+  dataAutorizacao      DateTime?
+  motivoRejeicao       String?
 
   // Artefatos
-  xmlOriginalPath        String?
-  xmlAssinadoPath        String?
-  xmlAutorizadoPath      String?
-  danfePdfPath           String?
+  xmlOriginalPath   String?
+  xmlAssinadoPath   String?
+  xmlAutorizadoPath String?
+  danfePdfPath      String?
 
   // Auditoria
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  emittedByUserId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  emittedByUserId String
 
   // Relações
-  user                   User     @relation(fields: [userId], references: [id])
-  order                  Order?   @relation(fields: [orderId], references: [id])
-  customer               Customer? @relation(fields: [customerId], references: [id])
-  itens                  NfeItem[]
-  eventos                NfeAuditLog[]
+  user     User          @relation(fields: [userId], references: [id])
+  order    Order?        @relation(fields: [orderId], references: [id])
+  customer Customer?     @relation(fields: [customerId], references: [id])
+  itens    NfeItem[]
+  eventos  NfeAuditLog[]
 
   @@unique([userId, ambiente, serie, numero])
   @@index([userId, status])
@@ -782,7 +784,7 @@ model NfeAuditLog {
   id        String   @id @default(cuid())
   nfeId     String
   userId    String
-  evento    String   // CRIADA | EDITADA_DRAFT | VALIDADA | NUMERADA | ASSINADA | ENVIADA | AUTORIZADA | REJEITADA | CANCELADA | INUTILIZADA | XML_REENVIADO
+  evento    String // CRIADA | EDITADA_DRAFT | VALIDADA | NUMERADA | ASSINADA | ENVIADA | AUTORIZADA | REJEITADA | CANCELADA | INUTILIZADA | XML_REENVIADO
   detalhes  Json?
   createdAt DateTime @default(now())
 
@@ -801,10 +803,52 @@ model NfeInutilizacao {
   numeroFinal   Int
   justificativa String
   protocolo     String?
-  status        String   // PENDENTE | ACEITA | REJEITADA
+  status        String // PENDENTE | ACEITA | REJEITADA
   respostaJson  Json?
   createdAt     DateTime @default(now())
 
   @@index([userId])
   @@index([userId, createdAt])
+}
+
+// =============================================================================
+// Caixa de mensagens (perguntas pré-venda do Mercado Livre).
+// Snapshot local alimentado por webhook (topic="questions") e pull on-demand.
+// Isolado dos fluxos de listing/order — apenas FK opcional para ProductListing
+// para enriquecer a UI (nada quebra se a listing local não existir).
+// =============================================================================
+
+model MarketplaceQuestion {
+  id                   String    @id @default(cuid())
+  marketplaceAccountId String
+  productListingId     String?
+  externalQuestionId   String
+  externalItemId       String
+  externalBuyerId      String
+  buyerNickname        String?
+  text                 String    @db.Text
+  status               String // UNANSWERED | ANSWERED | CLOSED_UNANSWERED | UNDER_REVIEW | BANNED | DELETED
+  dateCreated          DateTime
+  lastSyncedAt         DateTime  @default(now())
+  readAt               DateTime?
+
+  answer             MarketplaceAnswer?
+  marketplaceAccount MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  productListing     ProductListing?    @relation(fields: [productListingId], references: [id])
+
+  @@unique([marketplaceAccountId, externalQuestionId])
+  @@index([marketplaceAccountId, status, dateCreated])
+  @@index([marketplaceAccountId, externalItemId, dateCreated])
+  @@index([marketplaceAccountId, readAt])
+  @@index([productListingId])
+}
+
+model MarketplaceAnswer {
+  id          String   @id @default(cuid())
+  questionId  String   @unique
+  text        String   @db.Text
+  dateCreated DateTime
+  status      String // ACTIVE | DELETED | DISABLED
+
+  question MarketplaceQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
 }

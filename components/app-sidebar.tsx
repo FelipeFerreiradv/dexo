@@ -11,6 +11,7 @@ import {
   LineChart,
   Link2,
   MapPin,
+  MessageCircle,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -95,6 +96,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Financeiro",
         href: "/financeiro",
         icon: Wallet,
+      },
+      {
+        id: "mensagens",
+        label: "Mensagens",
+        href: "/mensagens",
+        icon: MessageCircle,
       },
     ],
   },
@@ -203,6 +210,9 @@ export function AppSidebar({ session }: AppSidebarProps) {
   }>({ products: [], orders: [], listings: [] });
   const [searchLoading, setSearchLoading] = React.useState(false);
   const [ordersCount, setOrdersCount] = React.useState<number | null>(null);
+  const [messagesUnreadCount, setMessagesUnreadCount] = React.useState<
+    number | null
+  >(null);
 
   React.useEffect(() => {
     if (!session) {
@@ -236,6 +246,43 @@ export function AppSidebar({ session }: AppSidebarProps) {
   }, [session?.user?.email]);
 
   React.useEffect(() => {
+    const email = session?.user?.email;
+    if (!email) return;
+
+    const apiBase = getApiBaseUrl();
+    let cancelled = false;
+
+    const loadUnread = async () => {
+      try {
+        const res = await fetch(`${apiBase}/messages/unread-count`, {
+          headers: { email },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const count = Number(data?.count ?? 0);
+        setMessagesUnreadCount(Number.isFinite(count) ? count : 0);
+      } catch (error) {
+        console.error("Sidebar messages unread error", error);
+      }
+    };
+
+    loadUnread();
+    const id = setInterval(() => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        loadUnread();
+      }
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [session?.user?.email]);
+
+  React.useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -254,11 +301,19 @@ export function AppSidebar({ session }: AppSidebarProps) {
     const term = query.trim().toLowerCase();
     const withDynamicBadges = VISIBLE_NAV_SECTIONS.map((section) => ({
       ...section,
-      items: section.items.map((item) =>
-        item.id === "pedidos" && ordersCount !== null
-          ? { ...item, badge: ordersCount }
-          : item,
-      ),
+      items: section.items.map((item) => {
+        if (item.id === "pedidos" && ordersCount !== null) {
+          return { ...item, badge: ordersCount };
+        }
+        if (
+          item.id === "mensagens" &&
+          messagesUnreadCount !== null &&
+          messagesUnreadCount > 0
+        ) {
+          return { ...item, badge: messagesUnreadCount };
+        }
+        return item;
+      }),
     }));
     if (!term) return withDynamicBadges;
     return withDynamicBadges
@@ -269,7 +324,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
         ),
       }))
       .filter((section) => section.items.length > 0);
-  }, [ordersCount, query]);
+  }, [messagesUnreadCount, ordersCount, query]);
 
   // Busca unificada
   React.useEffect(() => {

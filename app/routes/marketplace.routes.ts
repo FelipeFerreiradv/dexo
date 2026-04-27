@@ -247,7 +247,22 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         // Processar webhook em background (fire-and-forget)
         setImmediate(async () => {
           try {
-            if (WebhookUseCase.validateWebhookPayload(body)) {
+            if (
+              body.topic === "questions" &&
+              WebhookUseCase.validateQuestionWebhookPayload(body)
+            ) {
+              const result =
+                await WebhookUseCase.processQuestionWebhook(body);
+              if (result.success) {
+                console.log(
+                  `[ML Webhook] Pergunta processada: ${result.action} (question: ${result.questionId ?? "?"})`,
+                );
+              } else {
+                console.warn(
+                  `[ML Webhook] Falha em pergunta: ${result.error}`,
+                );
+              }
+            } else if (WebhookUseCase.validateWebhookPayload(body)) {
               const result =
                 await WebhookUseCase.processOrderWebhook(body);
               if (result.success) {
