@@ -1,0 +1,1940 @@
+openapi: 3.0.3
+
+info:
+  title: GHD Platform API — Product & Listing Creation
+  version: 1.0.0
+  license:
+    name: Proprietary
+    url: https://usedexo.com.br/
+  description: |
+    > Contrato dos fluxos de criação de produto e anúncio (Mercado Livre + Shopee).
+
+
+    Especificação OpenAPI 3.0 dos endpoints da plataforma GHD relacionados à
+    **criação de produtos internos** e à **publicação de anúncios** em Mercado Livre
+    e Shopee, mais os endpoints auxiliares necessários para esse fluxo (upload de
+    imagem, sugestão de categoria, ficha técnica, compatibilidade veicular, contas
+    conectadas, autenticação OAuth dos marketplaces).
+
+    Esta documentação tem como público-alvo principal **sistemas externos integradores**,
+    em particular o **Desmont Hub**. Para o passo-a-passo recomendado de integração,
+    veja o documento [`INTEGRATION-GUIDE.md`](./INTEGRATION-GUIDE.md).
+
+    ## Escopo desta spec
+
+    - **Inclui**: criação de produto (`POST /products`), criação de anúncio unitário
+      (ML/Shopee), criação em massa (bulk), dispatch assíncrono, polling de status,
+      preflight de validação, retry de itens falhos, e todos os endpoints auxiliares
+      consumidos no caminho feliz desses fluxos.
+    - **Não inclui**: gestão de pedidos, financeiro, fiscal/NF-e, mensagens,
+      dashboard, sucata e demais domínios — esses módulos não estão no contrato
+      público desta versão e podem mudar sem aviso.
+
+    ## Stack & convenções
+
+    - Servidor: **Fastify 5** standalone (porta `3333`).
+    - Banco de dados: PostgreSQL via Prisma.
+    - Autenticação da API: header `email` (ver `securitySchemes.EmailAuth`).
+    - Autenticação dos marketplaces: OAuth 2.0 (configurado **uma vez por usuário** —
+      ver tag `Authentication & Accounts`).
+    - Datas: ISO-8601 UTC.
+    - IDs: strings (cuid/uuid; não assumir formato).
+    - Idempotência: SKU é único por usuário; `POST /products` repetido com mesmo SKU
+      retorna `409 Conflict`.
+
+    ## Versionamento
+
+    Este contrato segue versionamento semântico no campo `info.version`. Mudanças
+    breaking incrementam o major. O changelog vive em `docs/api/README.md`.
+  contact:
+    name: GHD Platform — equipe de produto
+    email: fefelbf@gmail.com
+
+servers:
+  - url: https://api.usedexo.com.br
+    description: |
+      Produção (`https://usedexo.com.br/` é o frontend que consome esta API).
+  - url: http://localhost:3333
+    description: |
+      Desenvolvimento local (`npm run api`). Também é o ambiente de "staging"
+      hoje — não há staging dedicado.
+
+tags:
+  - name: Authentication & Accounts
+    description: |
+      Autenticação interna (header `email`) e fluxo OAuth para conectar contas
+      Mercado Livre e Shopee. **Pré-requisito de configuração** antes de qualquer
+      criação de anúncio.
+  - name: Products
+    description: Criação, listagem e leitura de produtos internos.
+  - name: Listings — single
+    description: |
+      Criação unitária de anúncios em ML/Shopee, dispatch multi-marketplace
+      assíncrono e polling de status.
+  - name: Listings — bulk
+    description: |
+      Criação em massa (até 2000 anúncios por job), preflight de validação,
+      consulta de progresso e retry de itens falhos.
+  - name: Marketplace — Categories & Catalog
+    description: |
+      Categorias ML/Shopee, atributos (ficha técnica), sugestões e detalhes do
+      catálogo do Mercado Livre.
+  - name: Compatibilities
+    description: Compatibilidade veicular dos produtos (CRUD).
+  - name: Uploads
+    description: Upload de imagens (pré-requisito antes de criar produto).
+
+security:
+  - EmailAuth: []
+
+paths:
+  # ──────────────────────────────────────────────────────────────────
+  # Authentication & Accounts
+  # ──────────────────────────────────────────────────────────────────
+
+  /marketplace/ml/auth:
+    post:
+      tags: [Authentication & Accounts]
+      operationId: initiateMLOAuth
+      summary: Inicia o fluxo OAuth do Mercado Livre
+      description: |
+        Gera uma URL de autorização do Mercado Livre (com PKCE) que o **usuário final**
+        deve abrir no navegador. Após autorizar, o ML redireciona para
+        `/marketplace/ml/callback` e a conta fica registrada como `MarketplaceAccount`
+        ativa para esse `userId`.
+
+        **Quando usar**: uma única vez por usuário (ou para reconectar uma conta
+        revogada). Não é parte do fluxo de criação de produto/anúncio.
+      responses:
+        "200":
+          description: URL de autorização gerada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authUrl, state]
+                properties:
+                  authUrl:
+                    type: string
+                    format: uri
+                    description: URL para redirecionar o navegador do usuário
+                  state:
+                    type: string
+                    description: Token CSRF/PKCE (TTL ~10 min)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/ml/callback:
+    get:
+      tags: [Authentication & Accounts]
+      operationId: completeMLOAuth
+      summary: Callback OAuth do Mercado Livre
+      description: |
+        Endpoint chamado **pelo navegador do usuário** após autorização no ML.
+        Troca `code` por tokens, persiste a `MarketplaceAccount` e redireciona
+        para `/integracoes/mercado-livre/callback?result=success`.
+
+        **Não é chamado por sistemas externos.** Documentado apenas para visibilidade.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "302":
+          description: Redirect para a página de callback do frontend
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /marketplace/shopee/auth:
+    post:
+      tags: [Authentication & Accounts]
+      operationId: initiateShopeeOAuth
+      summary: Inicia o fluxo OAuth do Shopee
+      description: |
+        Análogo a `/marketplace/ml/auth`. Usa assinatura HMAC-SHA256 do Shopee.
+      responses:
+        "200":
+          description: URL de autorização gerada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authUrl, state]
+                properties:
+                  authUrl: { type: string, format: uri }
+                  state: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/ml/status:
+    get:
+      tags: [Authentication & Accounts]
+      operationId: getMLStatus
+      summary: Verifica status da conta Mercado Livre conectada
+      description: |
+        Use **antes de criar anúncios ML** para garantir que existe ao menos uma
+        conta ativa. Se `connected=false`, direcione o usuário ao fluxo OAuth.
+      responses:
+        "200":
+          description: Status retornado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MarketplaceStatus" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/shopee/status:
+    get:
+      tags: [Authentication & Accounts]
+      operationId: getShopeeStatus
+      summary: Verifica status da conta Shopee conectada
+      responses:
+        "200":
+          description: Status retornado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MarketplaceStatus" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/ml/accounts:
+    get:
+      tags: [Authentication & Accounts]
+      operationId: listMLAccounts
+      summary: Lista contas Mercado Livre conectadas
+      description: |
+        Retorna todas as contas ML do usuário autenticado. Use para popular
+        o campo `accountId` ao criar anúncios.
+      responses:
+        "200":
+          description: Lista de contas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/shopee/accounts:
+    get:
+      tags: [Authentication & Accounts]
+      operationId: listShopeeAccounts
+      summary: Lista contas Shopee conectadas
+      description: |
+        Retorna todas as contas Shopee. Cada conta é enriquecida com `shopId`,
+        `shopName` e `region` via chamada ao `ShopeeApiService.getShopInfo()`.
+      responses:
+        "200":
+          description: Lista de contas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Products
+  # ──────────────────────────────────────────────────────────────────
+
+  /products:
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Cria um novo produto interno (e opcionalmente dispara anúncios)
+      description: |
+        Endpoint **central** do fluxo. Cria o produto no banco interno e, se
+        `listings[]` ou `createListing=true` forem informados, dispara em background
+        (`fire-and-forget`) a criação dos anúncios em ML e/ou Shopee via
+        `ListingDispatcher.dispatch()`.
+
+        ## Quando usar
+        - **Use este endpoint** quando você quer cadastrar um produto novo —
+          mesmo que não vá publicar anúncio agora (basta omitir `listings`).
+        - Para publicar anúncios para um produto **que já existe**, use
+          `POST /listings/dispatch` ou `POST /listings/ml` / `POST /listings/shopee`.
+
+        ## Pré-condições
+        1. Header `email` válido (usuário existente).
+        2. Imagem já enviada via `POST /upload/image` (você precisa do `imageUrl`).
+        3. Para criar anúncio **ML**: categoria ML resolvida (campo `mlCategory`
+           ou `listings[].categoryId`); a categoria precisa estar **sincronizada**
+           no banco local (caso contrário, retorna `400`).
+        4. Para criar anúncio **Shopee**: categoria Shopee informada e que seja
+           **categoria folha** (não-pai) — recomendamos rodar
+           `POST /listings/bulk/preflight` antes em caso de dúvida.
+        5. Para anúncios em **qualquer marketplace**: ao menos uma conta ativa
+           desse marketplace conectada (ver `GET /marketplace/{ml|shopee}/status`).
+
+        ## Resposta assíncrona
+        A resposta `201` retorna **antes** dos anúncios serem efetivamente publicados.
+        O campo `listing.pending = true` indica que há anúncio sendo criado em
+        background. Use `GET /listings/status?productId=...` para fazer polling
+        do resultado real.
+
+        ## Validação
+        - `sku`: obrigatório, string, único por usuário (caso já exista → `409`).
+        - `name`: obrigatório, string.
+        - `price`: obrigatório, número >= 0.
+        - `stock`: obrigatório, inteiro >= 0.
+        - `imageUrl`: obrigatório, URL válida (use `POST /upload/image`).
+        - `compatibilities[]`: cada item exige `brand` e `model`; `yearFrom/yearTo`
+          aceitam `null`.
+        - `attributes`: mapa `{ [attributeId]: { value_id?, value_name? } }`;
+          entradas vazias são descartadas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductCreate" }
+            examples:
+              minimo:
+                summary: Produto mínimo, sem anunciar
+                value:
+                  sku: GHD-00001
+                  name: Mangueira de radiador Gol G5 1.0
+                  price: 89.9
+                  stock: 3
+                  imageUrl: http://localhost:3333/uploads/abc.jpg
+              completoComAnuncios:
+                summary: Produto autopeças completo, com anúncios em ML e Shopee
+                value:
+                  sku: GHD-00042
+                  name: "Mangueira radiador Gol G5 1.0 8V 2008-2014"
+                  description: "Mangueira superior do radiador, original/usada em bom estado."
+                  price: 89.9
+                  costPrice: 35.0
+                  markup: 1.57
+                  stock: 2
+                  brand: Volkswagen
+                  model: Gol
+                  year: "2010"
+                  version: "1.0 8V"
+                  partNumber: "5U0121049"
+                  quality: SEMINOVO
+                  isSecurityItem: false
+                  isTraceable: false
+                  sourceVehicle: "Gol G5 2010 sucateado em 2026-04"
+                  heightCm: 12
+                  widthCm: 8
+                  lengthCm: 45
+                  weightKg: 0.4
+                  imageUrl: http://localhost:3333/uploads/abc.jpg
+                  imageUrls:
+                    - http://localhost:3333/uploads/abc.jpg
+                    - http://localhost:3333/uploads/def.jpg
+                  mlCategory: MLB252712
+                  shopeeCategory: "100018"
+                  attributes:
+                    BRAND: { value_id: "9344", value_name: "Volkswagen" }
+                    PART_NUMBER: { value_name: "5U0121049" }
+                  compatibilities:
+                    - { brand: Volkswagen, model: Gol, yearFrom: 2008, yearTo: 2014, version: "1.0 8V" }
+                  listings:
+                    - platform: MERCADO_LIVRE
+                      categoryId: MLB252712
+                      accountIds: ["acc_ml_01"]
+                      listingType: gold_special
+                      itemCondition: used
+                      hasWarranty: true
+                      warrantyUnit: dias
+                      warrantyDuration: 30
+                      shippingMode: me2
+                      freeShipping: false
+                      manufacturingTime: 1
+                    - platform: SHOPEE
+                      categoryId: "100018"
+                      accountIds: ["acc_shopee_01"]
+      responses:
+        "201":
+          description: Produto criado. Anúncios (se solicitados) estão sendo criados em background.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductCreateResponse" }
+        "400":
+          description: Validação cliente (SKU/nome/preço/estoque/imagem inválidos ou categoria inexistente)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                semCategoriaML:
+                  value:
+                    error: "Produto não possui categoria do Mercado Livre. Selecione uma categoria antes de criar o anúncio."
+                semImagem:
+                  value: { error: "Imagem do produto é obrigatória" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: SKU já existe para este usuário
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                error: "Produto com esse sku já existe"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/next-sku:
+    get:
+      tags: [Products]
+      operationId: getNextSku
+      summary: Retorna o próximo SKU sequencial sugerido
+      description: |
+        Útil para pré-popular o campo `sku` em formulários ou para integração
+        Desmont Hub que não controla a numeração. SKUs aceitam o regex
+        `^[A-Za-z0-9-_]+$` (max 50 chars), mas você pode usar um padrão próprio
+        do Desmont (ex.: `DESMONT-{externalId}`) — o ideal é manter
+        rastreabilidade reversa.
+      responses:
+        "200":
+          description: SKU sugerido
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sku]
+                properties:
+                  sku: { type: string, example: "GHD-00043" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/filter-options:
+    get:
+      tags: [Products]
+      operationId: getProductFilterOptions
+      summary: Opções para popular formulário (marcas e categorias publicadas)
+      responses:
+        "200":
+          description: Opções
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brands:
+                    type: array
+                    items: { type: string }
+                  publishedCategories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        value: { type: string }
+                        label: { type: string }
+                        platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+                        categoryId: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Listings — single
+  # ──────────────────────────────────────────────────────────────────
+
+  /listings/ml:
+    post:
+      tags: [Listings — single]
+      operationId: createMLListing
+      summary: Cria um anúncio unitário no Mercado Livre
+      description: |
+        Cria um anúncio para um produto **já existente** em uma conta ML específica.
+
+        ## Quando usar
+        - Quando o produto já foi criado via `POST /products` mas **sem** anunciar.
+        - Para anunciar em conta adicional após o cadastro.
+        - Para anunciar uma única plataforma — para multi-marketplace, prefira
+          `POST /listings/dispatch` (assíncrono e atômico no contrato).
+
+        ## Pré-condições
+        - Produto existe no banco interno (`productId`).
+        - Conta ML ativa (`accountId` obrigatório aqui).
+        - Categoria pode ser omitida se o produto já tem `mlCategoryId` resolvido;
+          caso contrário, é tentada uma sugestão automática via `domain_discovery`
+          dentro do `ListingUseCase`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMLListingRequest" }
+            examples:
+              tipico:
+                value:
+                  productId: prod_abc123
+                  accountId: acc_ml_01
+                  categoryId: MLB252712
+                  listingType: gold_special
+                  itemCondition: used
+                  hasWarranty: true
+                  warrantyUnit: dias
+                  warrantyDuration: 30
+                  shippingMode: me2
+                  freeShipping: false
+                  manufacturingTime: 1
+              minimo:
+                value:
+                  productId: prod_abc123
+                  accountId: acc_ml_01
+      responses:
+        "201":
+          description: Anúncio criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateListingResponse" }
+        "400":
+          description: Falha de validação ou erro reportado pelo Mercado Livre
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /listings/shopee:
+    post:
+      tags: [Listings — single]
+      operationId: createShopeeListing
+      summary: Cria um anúncio unitário na Shopee
+      description: |
+        Análogo a `/listings/ml`, mas para Shopee. **Importante**: a categoria
+        Shopee precisa ser **categoria folha** (não-pai), caso contrário a Shopee
+        rejeita o `add_item`. Use `POST /listings/bulk/preflight` para validar antes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateShopeeListingRequest" }
+            examples:
+              tipico:
+                value:
+                  productId: prod_abc123
+                  accountId: acc_shopee_01
+                  categoryId: "100018"
+      responses:
+        "201":
+          description: Anúncio criado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateListingResponse" }
+        "400":
+          description: "Falha de validação ou erro reportado pela Shopee (ex.: categoria não-folha)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /listings/dispatch:
+    post:
+      tags: [Listings — single]
+      operationId: dispatchListings
+      summary: Dispara criação assíncrona multi-marketplace para 1 produto
+      description: |
+        Orquestrador único: enfileira a criação de N anúncios (combinações
+        marketplace × conta × categoria) para um único produto e retorna
+        **imediatamente** com o snapshot do que foi enfileirado.
+
+        ## Quando usar
+        - Multi-marketplace ao mesmo tempo (ML + Shopee).
+        - Múltiplas contas do mesmo marketplace.
+        - Quando você não pode bloquear seu cliente esperando o ML/Shopee
+          responder (10–30s típico).
+
+        Para acompanhar o resultado, use `GET /listings/status?productId=...`.
+
+        ## Diferença de `/listings/bulk`
+        - `/listings/dispatch` = **1 produto, N anúncios** (rápido, sem job persistido).
+        - `/listings/bulk` = **N produtos, M anúncios cada** (cria `BulkListingJob`
+          rastreável, retentável).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DispatchListingsRequest" }
+            examples:
+              mlEShopee:
+                value:
+                  productId: prod_abc123
+                  requests:
+                    - platform: MERCADO_LIVRE
+                      accountId: acc_ml_01
+                      categoryId: MLB252712
+                      mlSettings:
+                        listingType: gold_special
+                        itemCondition: used
+                        hasWarranty: true
+                        warrantyUnit: dias
+                        warrantyDuration: 30
+                        shippingMode: me2
+                    - platform: SHOPEE
+                      accountId: acc_shopee_01
+                      categoryId: "100018"
+      responses:
+        "202":
+          description: Enfileirado. Resultado virá via polling.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  queued:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+                        accountId: { type: string, nullable: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /listings/status:
+    get:
+      tags: [Listings — single]
+      operationId: getListingsStatus
+      summary: Estado atual dos anúncios de um produto (para polling)
+      description: |
+        Retorna o snapshot dos `ProductListing` desse produto, incluindo `status`,
+        `permalink`, `lastError`, `retryAttempts` e `nextRetryAt` (se aplicável).
+
+        Recomendado: polling com backoff exponencial (1s → 2s → 5s → 10s) por até
+        ~60s após `POST /products` ou `POST /listings/dispatch`. Após esse tempo,
+        anúncios em estado `PENDING` continuam sendo retentados por
+        `ListingRetryService` automaticamente.
+      parameters:
+        - name: productId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Status retornado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ListingsStatusResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Produto não encontrado para este usuário
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Listings — bulk
+  # ──────────────────────────────────────────────────────────────────
+
+  /listings/bulk/preflight:
+    post:
+      tags: [Listings — bulk]
+      operationId: preflightBulkListings
+      summary: Valida produtos antes do envio em massa (Shopee category leaf)
+      description: |
+        Verifica os principais motivos de rejeição da Shopee **antes** de criar o
+        job de bulk:
+
+        - `shopee_category_missing`: produto não tem `shopeeCategoryId`.
+        - `shopee_category_not_leaf`: a categoria informada é categoria-pai
+          (Shopee só aceita categoria folha em `add_item`).
+
+        Se você não vai publicar na Shopee, omita `shopeeAccountId` e o preflight
+        retorna `issues: []` direto (Shopee não é validada).
+
+        **Reusa cache de 1h em `ShopeeApiService.assertLeafCategory`** — barato
+        mesmo com centenas de produtos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productIds]
+              properties:
+                shopeeAccountId:
+                  type: string
+                  description: Conta Shopee usada para validar a árvore de categorias
+                productIds:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+            example:
+              shopeeAccountId: acc_shopee_01
+              productIds: [prod_a, prod_b, prod_c]
+      responses:
+        "200":
+          description: Lista de problemas encontrados (vazia = tudo OK)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issues:
+                    type: array
+                    items:
+                      type: object
+                      required: [productId, code, message]
+                      properties:
+                        productId: { type: string }
+                        code:
+                          type: string
+                          enum: [shopee_category_missing, shopee_category_not_leaf]
+                        message: { type: string }
+        "400":
+          description: Conta Shopee inválida ou productIds malformados
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /listings/bulk:
+    post:
+      tags: [Listings — bulk]
+      operationId: createBulkListings
+      summary: Cria job de criação em massa de anúncios
+      description: |
+        Cria um `BulkListingJob` e dispara processamento em background.
+        Retorna `202` com `jobId` imediatamente. O cliente acompanha via
+        `GET /listings/bulk/{jobId}`.
+
+        ## Limite
+
+        `productIds.length × requests.length <= 2000`. Lotes maiores precisam ser
+        particionados pelo cliente.
+
+        ## Override template
+
+        Permite aplicar transformações em todos os produtos do lote (ex.:
+        sufixar título, multiplicar preço, etc.) — útil para criar anúncios em
+        marketplace adicional reaproveitando o mesmo produto interno com pequenas
+        adaptações.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBulkListingsRequest" }
+            examples:
+              tipico:
+                value:
+                  productIds: [prod_a, prod_b, prod_c]
+                  requests:
+                    - platform: MERCADO_LIVRE
+                      accountId: acc_ml_01
+                      mlSettings:
+                        listingType: gold_special
+                        itemCondition: used
+                    - platform: SHOPEE
+                      accountId: acc_shopee_01
+              comOverride:
+                value:
+                  productIds: [prod_a, prod_b]
+                  requests:
+                    - platform: MERCADO_LIVRE
+                      accountId: acc_ml_02
+                  overrideTemplate:
+                    titleSuffix: " - Loja Premium"
+                    priceFactor: 1.10
+      responses:
+        "202":
+          description: Job criado e iniciado em background
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, jobId, totalItems]
+                properties:
+                  success: { type: boolean }
+                  jobId: { type: string }
+                  totalItems: { type: integer, example: 6 }
+        "400":
+          description: Validação (productIds vazio, requests inválido, limite excedido)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /listings/bulk/{jobId}:
+    get:
+      tags: [Listings — bulk]
+      operationId: getBulkListingJob
+      summary: Estado completo de um job de bulk listing
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Estado do job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkListingJob" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Job não encontrado para este usuário
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /listings/bulk/{jobId}/retry-failed:
+    post:
+      tags: [Listings — bulk]
+      operationId: retryFailedBulkListings
+      summary: Re-enfileira itens com falha em um NOVO job
+      description: |
+        Cria um job filho contendo apenas os itens com `success=false` do job
+        original. Mantém o `overrideTemplate` original. O job pai não é alterado.
+
+        Use após corrigir o problema raiz (ex.: ajustar `shopeeCategoryId`,
+        sincronizar categoria ML, completar OAuth de uma conta) — caso contrário
+        o retry vai falhar pelos mesmos motivos.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "202":
+          description: Novo job criado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, jobId, totalItems, parentJobId]
+                properties:
+                  success: { type: boolean }
+                  jobId: { type: string, description: ID do NOVO job }
+                  totalItems: { type: integer }
+                  parentJobId: { type: string, description: ID do job original }
+        "400":
+          description: Não há itens falhos para reprocessar
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Job pai não encontrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Marketplace — Categories & Catalog
+  # ──────────────────────────────────────────────────────────────────
+
+  /marketplace/ml/categories:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: listMLCategories
+      summary: Lista categorias do Mercado Livre (cache 600s)
+      description: |
+        Retorna o universo de categorias ML (já flatten) sincronizadas no banco
+        local. Use para popular um seletor.
+
+        Cache: `Cache-Control: private, max-age=600`.
+      responses:
+        "200":
+          description: Lista de categorias
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "private, max-age=600" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: MLB252712, description: external ID do ML }
+                        value: { type: string, description: fullPath legível }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/ml/categories/{categoryId}/attributes:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: getMLCategoryAttributes
+      summary: Ficha técnica (atributos) de uma categoria ML
+      description: |
+        Retorna a lista de atributos oficial do ML para a categoria. Use para
+        montar um formulário dinâmico de ficha técnica antes de criar produto/anúncio.
+
+        Endpoint **fail-open**: erros viram `200 { attributes: [] }`.
+
+        Cache: `Cache-Control: private, max-age=600`.
+      parameters:
+        - name: categoryId
+          in: path
+          required: true
+          schema: { type: string }
+          example: MLB252712
+      responses:
+        "200":
+          description: Lista de atributos (pode estar vazia em fail-open)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attributes:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/ml/category-suggest:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: suggestMLCategory
+      summary: Sugere categorias ML pelo título do produto
+      description: |
+        Usa um catálogo sincronizado de categorias e o título normalizado para
+        retornar até N sugestões com `confidence`. **Heurístico** — não substitui
+        validação humana ou busca pelo `category_predictor` oficial do ML.
+      parameters:
+        - name: title
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+          example: Mangueira radiador Gol G5
+      responses:
+        "200":
+          description: Sugestões
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items: { $ref: "#/components/schemas/CategorySuggestion" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/ml/catalog/suggestions:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: suggestMLCatalogProducts
+      summary: Sugere catalog products do ML (fail-open)
+      description: |
+        Retorna catalog products do Mercado Livre que casam com a query informada.
+        Útil para pré-popular ficha técnica e compatibilidades a partir do catálogo
+        oficial do ML.
+
+        - `q` é truncada e exige no mínimo 3 chars (abaixo disso, retorna
+          `{ suggestions: [] }`).
+        - **Fail-open**: erros de API viram `200 { suggestions: [] }`.
+
+        Cache: `Cache-Control: private, max-age=120`.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 3 }
+        - name: category_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Sugestões (pode estar vazia)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items: { $ref: "#/components/schemas/MLCatalogProduct" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/ml/catalog/products/{catalogProductId}:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: getMLCatalogProduct
+      summary: Detalhes normalizados de um catalog product do ML
+      description: |
+        Retorna o catalog product com `attributes` e `compatibilities` normalizados.
+        Cache: `Cache-Control: private, max-age=300`.
+      parameters:
+        - name: catalogProductId
+          in: path
+          required: true
+          schema: { type: string }
+          example: MLB19765739
+      responses:
+        "200":
+          description: Detalhes do produto
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  product: { $ref: "#/components/schemas/MLCatalogProduct" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Catalog product não encontrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /marketplace/ml/compatibility/brands:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: listMLCompatibilityBrands
+      summary: Marcas para o seletor guiado de compatibilidade veicular
+      description: |
+        Retorna marcas oficiais do domínio de carros do ML, para que o usuário
+        selecione `value_id`/`value_name` corretos (em vez de digitar texto livre,
+        que é frequentemente recusado pelo ML).
+      parameters:
+        - name: accountId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista de marcas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { type: string }
+                  brands:
+                    type: array
+                    items: { $ref: "#/components/schemas/CompatibilityValue" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "412":
+          description: Sem conta ML ativa para resolver o domínio
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/ml/compatibility/models:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: listMLCompatibilityModels
+      summary: Modelos de uma marca (compatibilidade veicular)
+      parameters:
+        - name: brandValueId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: brandName
+          in: query
+          required: false
+          schema: { type: string }
+        - name: accountId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista de modelos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { type: string }
+                  models:
+                    type: array
+                    items: { $ref: "#/components/schemas/CompatibilityValue" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "412":
+          description: Sem conta ML ativa
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/ml/compatibility/vehicles:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: listMLCompatibilityVehicles
+      summary: Veículos de uma marca + modelo (compatibilidade veicular)
+      parameters:
+        - name: brandValueId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: modelValueId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: accountId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista de veículos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { type: string }
+                  vehicles:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/CompatibilityValue"
+                        - type: object
+                          properties:
+                            yearFrom: { type: integer, nullable: true }
+                            yearTo: { type: integer, nullable: true }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "412":
+          description: Sem conta ML ativa
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /marketplace/shopee/categories:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: listShopeeCategories
+      summary: Lista categorias da Shopee
+      responses:
+        "200":
+          description: Lista de categorias
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        value: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /marketplace/shopee/category-suggest:
+    get:
+      tags: [Marketplace — Categories & Catalog]
+      operationId: suggestShopeeCategory
+      summary: Sugere categorias Shopee pelo título do produto
+      parameters:
+        - name: title
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Sugestões
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items: { $ref: "#/components/schemas/CategorySuggestion" }
+                  tokens:
+                    type: array
+                    items: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Compatibilities (CRUD pós-criação)
+  # ──────────────────────────────────────────────────────────────────
+
+  /products/{productId}/compatibilities:
+    get:
+      tags: [Compatibilities]
+      operationId: listProductCompatibilities
+      summary: Lista compatibilidades veiculares do produto
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Lista
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compatibilities:
+                    type: array
+                    items: { $ref: "#/components/schemas/Compatibility" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Compatibilities]
+      operationId: addProductCompatibility
+      summary: Adiciona uma compatibilidade
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompatibilityCreate" }
+      responses:
+        "201":
+          description: Criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Compatibility" }
+        "400":
+          description: brand/model faltando
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Compatibilities]
+      operationId: replaceProductCompatibilities
+      summary: Substitui TODAS as compatibilidades do produto
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items: { $ref: "#/components/schemas/CompatibilityCreate" }
+      responses:
+        "200":
+          description: Lista resultante
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compatibilities:
+                    type: array
+                    items: { $ref: "#/components/schemas/Compatibility" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [Compatibilities]
+      operationId: removeAllProductCompatibilities
+      summary: Remove TODAS as compatibilidades do produto
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Removidas
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /products/{productId}/compatibilities/batch:
+    post:
+      tags: [Compatibilities]
+      operationId: addProductCompatibilitiesBatch
+      summary: Adiciona várias compatibilidades em uma chamada
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  items: { $ref: "#/components/schemas/CompatibilityCreate" }
+      responses:
+        "201":
+          description: Criadas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  compatibilities:
+                    type: array
+                    items: { $ref: "#/components/schemas/Compatibility" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Uploads
+  # ──────────────────────────────────────────────────────────────────
+
+  /upload/image:
+    post:
+      tags: [Uploads]
+      operationId: uploadProductImage
+      summary: Faz upload de imagem (multipart)
+      description: |
+        Pré-requisito antes de criar produto. Aceita JPEG/PNG/WebP, até **5 MB**.
+
+        ## Auth
+
+        ⚠️ Este endpoint **não exige** o header `email` no Fastify atual
+        (não tem `authMiddleware`). Recomendamos enviar mesmo assim para
+        coerência futura.
+
+        ## Resposta
+
+        Retorna `imageUrl` absoluta — use exatamente esse valor em `imageUrl`
+        e `imageUrls[]` ao chamar `POST /products`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Imagem (JPEG/PNG/WebP, até 5MB). O nome do campo é flexível.
+      responses:
+        "200":
+          description: Upload concluído
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, imageUrl, fileName]
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  imageUrl:
+                    type: string
+                    format: uri
+                    example: http://localhost:3333/uploads/9f1b2a-...jpg
+                  fileName: { type: string }
+        "400":
+          description: Arquivo inválido (tipo, tamanho ou ausente)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+# ────────────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    EmailAuth:
+      type: apiKey
+      in: header
+      name: email
+      description: |
+        Autenticação interna da API Fastify: o cliente envia o e-mail do
+        usuário cadastrado no header `email`. O middleware
+        [`auth.middleware.ts`](../../app/middlewares/auth.middleware.ts)
+        valida o e-mail no banco (com cache in-memory de 60s) e anexa o `User`
+        à requisição. Fallback aceito: query param `?email=`.
+
+        > **Nota para Desmont Hub**: este é o mecanismo atual; pode evoluir
+        > para JWT Bearer em versões futuras. Encapsule a leitura/envio em
+        > seu cliente para minimizar acoplamento.
+
+  responses:
+    BadRequest:
+      description: Requisição malformada
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+    Unauthorized:
+      description: Header `email` ausente ou usuário inexistente
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Email is required"
+    InternalError:
+      description: Erro interno do servidor
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponseWithMessage" }
+
+  schemas:
+
+    # ──── Generic ────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Mensagem curta de erro
+
+    ErrorResponseWithMessage:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Categoria do erro (ex.- "Dados incompletos")
+        message:
+          type: string
+          description: Detalhe legível para humanos
+
+    # ──── Auth & Accounts ────────────────────────────────────────
+    MarketplaceStatus:
+      type: object
+      required: [connected, platform, message]
+      properties:
+        connected: { type: boolean }
+        platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+        status:
+          type: string
+          description: Status interno da conta (ACTIVE/REVOKED/...) quando conectada
+        restricted:
+          type: boolean
+          description: Conta com restrições aplicadas pelo marketplace
+        shopId:
+          type: integer
+          description: shopId do Shopee (apenas plataforma SHOPEE)
+        message: { type: string }
+
+    Account:
+      type: object
+      properties:
+        id: { type: string }
+        accountName: { type: string }
+        platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+        status: { type: string }
+        shopId: { type: integer, nullable: true }
+        shopName: { type: string, nullable: true }
+        region: { type: string, nullable: true }
+        merchantName: { type: string, nullable: true }
+
+    # ──── Products ───────────────────────────────────────────────
+    Quality:
+      type: string
+      enum: [SUCATA, SEMINOVO, NOVO, RECONDICIONADO]
+
+    CategorySource:
+      type: string
+      enum: [auto, manual, imported]
+      description: Origem da escolha de categoria
+
+    ProductAttributes:
+      type: object
+      description: |
+        Mapa `{ [attributeId]: { value_id?, value_name? } }`. `attributeId` é
+        o ID do atributo no ML (ex.- `BRAND`, `MODEL`, `PART_NUMBER`).
+        Entradas com ambos `value_id` e `value_name` vazios são descartadas.
+      additionalProperties:
+        type: object
+        properties:
+          value_id: { type: string }
+          value_name: { type: string }
+      example:
+        BRAND: { value_id: "9344", value_name: "Volkswagen" }
+        PART_NUMBER: { value_name: "5U0121049" }
+
+    Compatibility:
+      type: object
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        brand: { type: string }
+        model: { type: string }
+        yearFrom: { type: integer, nullable: true }
+        yearTo: { type: integer, nullable: true }
+        version: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    CompatibilityCreate:
+      type: object
+      required: [brand, model]
+      properties:
+        brand: { type: string }
+        model: { type: string }
+        yearFrom: { type: integer, nullable: true }
+        yearTo: { type: integer, nullable: true }
+        version: { type: string, nullable: true }
+
+    ProductCreateListingItem:
+      type: object
+      required: [platform]
+      description: |
+        Configuração de UM anúncio a ser criado em background junto com o produto.
+        Cada item gera N anúncios — um por `accountId` em `accountIds`.
+      properties:
+        platform:
+          type: string
+          enum: [MERCADO_LIVRE, SHOPEE]
+        categoryId:
+          type: string
+          description: |
+            categoryId no marketplace. Se omitido para ML, o sistema tenta resolver
+            a partir de `mlCategory` do produto.
+        accountIds:
+          type: array
+          items: { type: string }
+          description: |
+            Lista de `MarketplaceAccount.id`. Se vazio, o sistema usa a primeira
+            conta ativa do marketplace.
+        listingType:
+          type: string
+          example: gold_special
+          description: "Apenas ML. Valores típicos: bronze, gold_special, gold_premium"
+        hasWarranty: { type: boolean }
+        warrantyUnit: { type: string, example: dias }
+        warrantyDuration: { type: integer, example: 30 }
+        itemCondition: { type: string, enum: [new, used] }
+        shippingMode:
+          type: string
+          example: me2
+          description: "Apenas ML. Valores: me2, me1, custom, not_specified"
+        freeShipping: { type: boolean }
+        localPickup: { type: boolean }
+        manufacturingTime: { type: integer, description: dias para fabricar/preparar }
+
+    ProductCreate:
+      type: object
+      required: [sku, name, price, stock, imageUrl]
+      properties:
+        sku:
+          type: string
+          maxLength: 50
+          pattern: "^[A-Za-z0-9-_]+$"
+          description: Único por usuário
+          example: GHD-00042
+        name:
+          type: string
+          minLength: 3
+          maxLength: 60
+        description: { type: string, maxLength: 4000 }
+        stock: { type: integer, minimum: 0 }
+        price: { type: number, minimum: 0 }
+        costPrice: { type: number, minimum: 0 }
+        markup: { type: number, minimum: 0 }
+        brand: { type: string }
+        model: { type: string }
+        year: { type: string, example: "2010" }
+        version: { type: string }
+        category: { type: string, description: "categoria interna (path legível)" }
+        location: { type: string }
+        locationId: { type: string }
+        partNumber: { type: string }
+        quality: { $ref: "#/components/schemas/Quality" }
+        isSecurityItem: { type: boolean }
+        isTraceable: { type: boolean }
+        sourceVehicle: { type: string }
+        mlCategory:
+          type: string
+          description: external category ID do ML (ex.- MLB252712)
+        mlCategorySource: { $ref: "#/components/schemas/CategorySource" }
+        shopeeCategory:
+          type: string
+          description: category_id do Shopee (numérico em string)
+        shopeeCategorySource: { $ref: "#/components/schemas/CategorySource" }
+        heightCm: { type: number, minimum: 0 }
+        widthCm: { type: number, minimum: 0 }
+        lengthCm: { type: number, minimum: 0 }
+        weightKg: { type: number, minimum: 0 }
+        imageUrl:
+          type: string
+          format: uri
+          description: |
+            URL retornada por `POST /upload/image`. Obrigatória.
+        imageUrls:
+          type: array
+          items: { type: string, format: uri }
+          description: Galeria de imagens adicionais
+        attributes: { $ref: "#/components/schemas/ProductAttributes" }
+        scrapId: { type: string, description: vínculo com sucata }
+        mlCatalogProductId:
+          type: string
+          nullable: true
+          description: catalog product ID do ML (ex.- MLB19765739)
+        createListing:
+          type: boolean
+          description: |
+            Atalho legado- cria 1 anúncio no ML usando `createListingCategoryId`.
+            Prefira o array `listings` para multi-marketplace.
+        createListingCategoryId: { type: string }
+        listings:
+          type: array
+          items: { $ref: "#/components/schemas/ProductCreateListingItem" }
+        compatibilities:
+          type: array
+          items: { $ref: "#/components/schemas/CompatibilityCreate" }
+
+    Product:
+      type: object
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        sku: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        stock: { type: integer }
+        price: { type: number }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        costPrice: { type: number }
+        markup: { type: number }
+        brand: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        year: { type: string, nullable: true }
+        version: { type: string, nullable: true }
+        category: { type: string, nullable: true }
+        partNumber: { type: string, nullable: true }
+        quality: { $ref: "#/components/schemas/Quality" }
+        isSecurityItem: { type: boolean }
+        isTraceable: { type: boolean }
+        sourceVehicle: { type: string, nullable: true }
+        mlCategory: { type: string, nullable: true }
+        mlCategoryId: { type: string, nullable: true }
+        mlCategorySource: { $ref: "#/components/schemas/CategorySource" }
+        mlCategoryChosenAt: { type: string, format: date-time, nullable: true }
+        shopeeCategoryId: { type: string, nullable: true }
+        shopeeCategorySource: { $ref: "#/components/schemas/CategorySource" }
+        shopeeCategoryChosenAt: { type: string, format: date-time, nullable: true }
+        heightCm: { type: number, nullable: true }
+        widthCm: { type: number, nullable: true }
+        lengthCm: { type: number, nullable: true }
+        weightKg: { type: number, nullable: true }
+        imageUrl: { type: string, format: uri, nullable: true }
+        imageUrls:
+          type: array
+          items: { type: string, format: uri }
+        attributes: { $ref: "#/components/schemas/ProductAttributes" }
+        mlCatalogProductId: { type: string, nullable: true }
+        scrapId: { type: string, nullable: true }
+        compatibilities:
+          type: array
+          items: { $ref: "#/components/schemas/Compatibility" }
+
+    ProductCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/Product"
+        - type: object
+          properties:
+            listing:
+              type: object
+              nullable: true
+              description: |
+                Snapshot do dispatch de anúncios. `null` se nenhum anúncio foi
+                solicitado. `pending=true` indica que a criação está em background.
+              properties:
+                success: { type: boolean }
+                pending: { type: boolean }
+                message: { type: string }
+            listingsResults:
+              type: array
+              description: |
+                Resultados síncronos. Hoje **sempre vazio** porque a criação é
+                fire-and-forget. Use `GET /listings/status` para acompanhar.
+              items: { type: object }
+
+    # ──── Listings ───────────────────────────────────────────────
+    CreateMLListingRequest:
+      type: object
+      required: [productId, accountId]
+      properties:
+        productId: { type: string }
+        accountId:
+          type: string
+          description: ID da MarketplaceAccount ML. Pode vir como query param `?accountId=` também.
+        categoryId:
+          type: string
+          description: |
+            Opcional. Se omitido, o sistema usa `product.mlCategoryId` ou pede sugestão ao ML.
+        listingType: { type: string, example: gold_special }
+        hasWarranty: { type: boolean }
+        warrantyUnit: { type: string, example: dias }
+        warrantyDuration: { type: integer }
+        itemCondition: { type: string, enum: [new, used] }
+        shippingMode: { type: string, example: me2 }
+        freeShipping: { type: boolean }
+        localPickup: { type: boolean }
+        manufacturingTime: { type: integer }
+
+    CreateShopeeListingRequest:
+      type: object
+      required: [productId]
+      properties:
+        productId: { type: string }
+        accountId: { type: string, description: ID da MarketplaceAccount Shopee }
+        categoryId:
+          type: string
+          description: |
+            Categoria Shopee (numérica, em string). Deve ser **categoria folha**.
+
+    CreateListingResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        listingId:
+          type: string
+          description: ID interno do `ProductListing`
+        externalListingId:
+          type: string
+          description: ID atribuído pelo marketplace (MLB#### ou item_id Shopee)
+
+    DispatchListingsRequest:
+      type: object
+      required: [productId, requests]
+      properties:
+        productId: { type: string }
+        requests:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [platform]
+            properties:
+              platform:
+                type: string
+                enum: [MERCADO_LIVRE, SHOPEE]
+              accountId: { type: string, nullable: true }
+              categoryId: { type: string }
+              mlSettings:
+                type: object
+                description: Apenas para platform=MERCADO_LIVRE
+                properties:
+                  listingType: { type: string }
+                  hasWarranty: { type: boolean }
+                  warrantyUnit: { type: string }
+                  warrantyDuration: { type: integer }
+                  itemCondition: { type: string }
+                  shippingMode: { type: string }
+                  freeShipping: { type: boolean }
+                  localPickup: { type: boolean }
+                  manufacturingTime: { type: integer }
+
+    ListingsStatusResponse:
+      type: object
+      properties:
+        productId: { type: string }
+        listings:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+              accountId: { type: string }
+              accountName: { type: string }
+              status:
+                type: string
+                description: |
+                  Status interno do `ProductListing`. Valores típicos- ACTIVE,
+                  PAUSED, PENDING (criação em andamento ou retry agendado),
+                  ERROR, CLOSED.
+              externalListingId: { type: string, nullable: true }
+              permalink: { type: string, format: uri, nullable: true }
+              lastError: { type: string, nullable: true }
+              retryAttempts: { type: integer }
+              retryEnabled: { type: boolean }
+              nextRetryAt: { type: string, format: date-time, nullable: true }
+              updatedAt: { type: string, format: date-time }
+
+    # ──── Bulk listings ──────────────────────────────────────────
+    BulkOverrideTemplate:
+      type: object
+      nullable: true
+      description: |
+        Aplicado a TODOS os produtos do lote. Permite ajustes mecânicos sem
+        editar produtos individualmente. Pode ser `null` (não aplicar override).
+      properties:
+        titleSuffix: { type: string }
+        priceFactor:
+          type: number
+          description: "Multiplicador aplicado ao preço (ex.- 1.10 = +10%)"
+        stockFactor: { type: number }
+      additionalProperties: true
+
+    CreateBulkListingsRequest:
+      type: object
+      required: [productIds, requests]
+      properties:
+        productIds:
+          type: array
+          minItems: 1
+          items: { type: string }
+        requests:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [platform, accountId]
+            properties:
+              platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+              accountId: { type: string }
+              categoryId: { type: string }
+              mlSettings: { type: object, additionalProperties: true }
+        overrideTemplate:
+          $ref: "#/components/schemas/BulkOverrideTemplate"
+
+    BulkListingResultItem:
+      type: object
+      properties:
+        productId: { type: string }
+        platform: { type: string, enum: [MERCADO_LIVRE, SHOPEE] }
+        accountId: { type: string }
+        success: { type: boolean }
+        listingId: { type: string }
+        externalListingId: { type: string }
+        error: { type: string }
+
+    BulkListingJob:
+      type: object
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          description: "Estados típicos- PENDING, RUNNING, FINISHED, CRASHED"
+        totalItems: { type: integer }
+        doneItems: { type: integer }
+        successItems: { type: integer }
+        failedItems: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/BulkListingResultItem" }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    # ──── Categories & Catalog ───────────────────────────────────
+    CategorySuggestion:
+      type: object
+      properties:
+        categoryId: { type: string }
+        categoryName: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        fullPath: { type: string }
+
+    MLCatalogProduct:
+      type: object
+      properties:
+        catalogProductId: { type: string }
+        title: { type: string }
+        categoryId: { type: string }
+        domainId: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+        compatibilities:
+          type: array
+          items:
+            type: object
+            properties:
+              brand: { type: string }
+              model: { type: string }
+              yearFrom: { type: integer, nullable: true }
+              yearTo: { type: integer, nullable: true }
+              version: { type: string, nullable: true }
+
+    CompatibilityValue:
+      type: object
+      properties:
+        valueId: { type: string }
+        valueName: { type: string }
+
+externalDocs:
+  description: |
+    Guia de integração end-to-end para o Desmont Hub (passo-a-passo, exemplos
+    cURL e Node.js, idempotência, webhooks, checklist de produção).
+  url: ./INTEGRATION-GUIDE.md
