@@ -1937,4 +1937,4 @@ externalDocs:
   description: |
     Guia de integração end-to-end para o Desmont Hub (passo-a-passo, exemplos
     cURL e Node.js, idempotência, webhooks, checklist de produção).
-  url: ./INTEGRATION-GUIDE.md
+  url: ./guide.html
