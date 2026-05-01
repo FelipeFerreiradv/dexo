@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cliente Node.js end-to-end de integração com a GHD Platform API.
+ * Cliente Node.js end-to-end de integração com a Dexo API.
  *
  * Uso:
  *   API_BASE=http://localhost:3333 \

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 
 info:
-  title: GHD Platform API — Product & Listing Creation
+  title: Dexo API — Product & Listing Creation
   version: 1.0.0
   license:
     name: Proprietary
@@ -10,7 +10,7 @@ info:
     > Contrato dos fluxos de criação de produto e anúncio (Mercado Livre + Shopee).
 
 
-    Especificação OpenAPI 3.0 dos endpoints da plataforma GHD relacionados à
+    Especificação OpenAPI 3.0 dos endpoints do Dexo relacionados à
     **criação de produtos internos** e à **publicação de anúncios** em Mercado Livre
     e Shopee, mais os endpoints auxiliares necessários para esse fluxo (upload de
     imagem, sugestão de categoria, ficha técnica, compatibilidade veicular, contas
@@ -47,7 +47,7 @@ info:
     Este contrato segue versionamento semântico no campo `info.version`. Mudanças
     breaking incrementam o major. O changelog vive em `docs/api/README.md`.
   contact:
-    name: GHD Platform — equipe de produto
+    name: Dexo — equipe de produto
     email: fefelbf@gmail.com
 
 servers:
@@ -309,7 +309,7 @@ paths:
               minimo:
                 summary: Produto mínimo, sem anunciar
                 value:
-                  sku: GHD-00001
+                  sku: DEXO-00001
                   name: Mangueira de radiador Gol G5 1.0
                   price: 89.9
                   stock: 3
@@ -317,7 +317,7 @@ paths:
               completoComAnuncios:
                 summary: Produto autopeças completo, com anúncios em ML e Shopee
                 value:
-                  sku: GHD-00042
+                  sku: DEXO-00042
                   name: "Mangueira radiador Gol G5 1.0 8V 2008-2014"
                   description: "Mangueira superior do radiador, original/usada em bom estado."
                   price: 89.9
@@ -412,7 +412,7 @@ paths:
                 type: object
                 required: [sku]
                 properties:
-                  sku: { type: string, example: "GHD-00043" }
+                  sku: { type: string, example: "DEXO-00043" }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1596,7 +1596,7 @@ components:
           maxLength: 50
           pattern: "^[A-Za-z0-9-_]+$"
           description: Único por usuário
-          example: GHD-00042
+          example: DEXO-00042
         name:
           type: string
           minLength: 3

@@ -1,4 +1,4 @@
-# GHD Platform — API Documentation
+# Dexo — API Documentation
 
 Documentação OpenAPI 3.0.3 dos fluxos de **criação de produto** e **criação de
 anúncio** (Mercado Livre + Shopee). Foi escrita pensando no consumo por sistemas

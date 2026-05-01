@@ -1,8 +1,7 @@
-# Guia de integração — GHD Platform API
+# Guia de integração — Dexo API
 
 Este guia foi escrito pensando no **Desmont Hub** e em outros sistemas externos
-que precisam consumir os fluxos de criação de produto e anúncio da plataforma
-GHD. Ele complementa a [especificação OpenAPI](./openapi.yaml) com o
+que precisam consumir os fluxos de criação de produto e anúncio do Dexo. Ele complementa a [especificação OpenAPI](./openapi.yaml) com o
 passo-a-passo, exemplos prontos e checklist de produção.
 
 ---
@@ -25,7 +24,7 @@ passo-a-passo, exemplos prontos e checklist de produção.
 
 ## 1. Visão geral
 
-A GHD Platform expõe uma API HTTP/REST para que sistemas externos possam:
+O Dexo expõe uma API HTTP/REST para que sistemas externos possam:
 
 - **Cadastrar produtos** internos (com SKU, categoria, atributos, compatibilidades
   veiculares, ficha técnica, dimensões, imagens).
@@ -40,16 +39,16 @@ para compatibilidade veicular, ficha técnica do Mercado Livre e categoria-folha
 da Shopee.
 
 > **Stack server-side:** Fastify 5 + Prisma + PostgreSQL.
-> **Auth interna:** header `email` (ver [§2.1](#21-credenciais-internas-para-a-api-da-ghd)).
+> **Auth interna:** header `email` (ver [§2.1](#21-credenciais-internas-para-a-api-do-dexo)).
 > **OAuth dos marketplaces:** configurado uma vez por usuário (ver §2.2/§2.3).
 
 ---
 
 ## 2. Setup inicial (uma vez por usuário)
 
-### 2.1. Credenciais internas para a API da GHD
+### 2.1. Credenciais internas para a API do Dexo
 
-A API da GHD autentica cada requisição pelo **e-mail** do usuário cadastrado,
+A API do Dexo autentica cada requisição pelo **e-mail** do usuário cadastrado,
 enviado no header `email`:
 
 ```
@@ -147,7 +146,7 @@ Guarde `imageUrl`.
 curl 'http://localhost:3333/products/next-sku' -H "email: $EMAIL"
 ```
 
-→ `{ "sku": "GHD-00043" }`. **Recomendamos** que o Desmont Hub use seu próprio
+→ `{ "sku": "DEXO-00043" }`. **Recomendamos** que o Desmont Hub use seu próprio
 padrão (ex.: `DESMONT-{externalId}`) para manter rastreabilidade reversa — assim
 o SKU funciona como chave idempotente natural (ver [§4](#4-idempotência)).
 
@@ -256,7 +255,7 @@ você pode interromper o polling e checar mais tarde.
 
 ## 4. Idempotência
 
-A GHD **não suporta** o header `Idempotency-Key`. Use o **SKU como chave de
+O Dexo **não suporta** o header `Idempotency-Key`. Use o **SKU como chave de
 deduplicação natural**:
 
 | Caso | O que acontece | Como o cliente deve reagir |
@@ -277,7 +276,7 @@ Onde `externalId` é o ID interno do Desmont Hub. Isso dá:
 - **Determinismo**: a mesma peça gera sempre o mesmo SKU.
 - **Idempotência natural**: se você reenviar por timeout, o segundo `POST`
   retorna `409` com mensagem clara.
-- **Rastreabilidade reversa**: olhando o SKU na GHD você consegue voltar ao
+- **Rastreabilidade reversa**: olhando o SKU no Dexo você consegue voltar ao
   registro do Desmont.
 
 ---
@@ -309,7 +308,7 @@ internos que afetam a frequência ideal de chamada do cliente:
 
 ## 6. Webhooks (somente para conhecimento)
 
-A GHD **recebe** webhooks dos marketplaces, mas **não dispara** webhooks para
+O Dexo **recebe** webhooks dos marketplaces, mas **não dispara** webhooks para
 sistemas externos hoje:
 
 | Endpoint | Quem chama | Para quê |
@@ -372,7 +371,7 @@ categoria (`tags.required`) precisam estar presentes no `attributes` do produto.
   como `imageUrls[]`.
 - Limite: **5 MB por arquivo**, formatos: `image/jpeg`, `image/png`, `image/webp`.
 - Se você está migrando do Desmont Hub que já tem imagens em CDN próprio,
-  baixe-e-reupload — a GHD **só aceita** URLs servidas por ela própria.
+  baixe-e-reupload — o Dexo **só aceita** URLs servidas por ele próprio.
 
 ### Bulk vs single
 
@@ -465,7 +464,7 @@ A spec lista 2 servers:
 | **Dev local** | `http://localhost:3333` | `npm run api` — também usado como "staging" pela equipe interna |
 
 **Não há ambiente de staging dedicado hoje.** Se você (Desmont Hub) precisar
-testar antes de produção, alinhe com a equipe GHD para subir um banco/usuário
+testar antes de produção, alinhe com a equipe Dexo para subir um banco/usuário
 de teste em produção, ou rodar localmente apontando para um banco isolado.
 
 ### Regional Shopee
