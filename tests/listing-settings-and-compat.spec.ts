@@ -730,4 +730,85 @@ describe("MLApiService.resolveCompatibilityCatalogProducts", () => {
     expect(result.catalogProductIds).toContain("MLB_UNO_RANGE");
     expect(result.unresolved).toEqual([]);
   });
+
+  it("pagina alem de 500 produtos para alcancar anos antigos em modelos populares", async () => {
+    // Modelos como Civic/Palio/Gol tem >1500 catalog products no ML.
+    // Antes da expansao de maxPages=10 -> 30, o produto cobrindo o ano
+    // pedido (Polo 2014, Honda Civic 2008, etc.) podia estar nas paginas
+    // 11+ e nunca era buscado, fazendo o filtro de ano descartar tudo
+    // -> compat zero. Garante que o loop continua alem de 500.
+    (mockedAxios as any).get.mockResolvedValueOnce({
+      data: {
+        attributes: [
+          { id: "BRAND", values: [{ id: "BR_FIAT", name: "Fiat" }] },
+        ],
+      },
+    });
+
+    const makeProduct = (id: string, year: string) => ({
+      id,
+      attributes: [
+        { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+        { id: "MODEL", value_id: "MD_PALIO", value_name: "Palio" },
+        { id: "VEHICLE_YEAR", value_name: year },
+      ],
+    });
+
+    const PAGE_SIZE = 50;
+    // Pagina 0 (listCompatibilityModels): 1 modelo "Palio".
+    (mockedAxios as any).post.mockImplementation((url: string, body: any) => {
+      if (typeof url !== "string" || !url.includes("products_search/chunks")) {
+        return Promise.resolve({ data: { results: [] } });
+      }
+      const offset = body?.offset ?? 0;
+      // Primeira chamada apos listCompatibilityModels eh o models search
+      // (sem MODEL no known_attributes do request). Devolvemos o "modelo"
+      // dummy que lista usa pra navegar.
+      const hasModelInKnown = (body?.known_attributes ?? []).some(
+        (a: any) => a?.id === "MODEL",
+      );
+      if (!hasModelInKnown) {
+        return Promise.resolve({
+          data: {
+            results: [
+              {
+                id: "MLB_PALIO_DUMMY",
+                attributes: [
+                  { id: "BRAND", value_id: "BR_FIAT", value_name: "Fiat" },
+                  { id: "MODEL", value_id: "MD_PALIO", value_name: "Palio" },
+                ],
+              },
+            ],
+            paging: { total: 1 },
+          },
+        });
+      }
+
+      // Busca real com brand+model. Simulamos 1500 produtos:
+      // paginas 0..9 (offset 0..450): VEHICLE_YEAR = "2025" (irrelevante)
+      // pagina 11 (offset 550): VEHICLE_YEAR = "2010" (o que queremos)
+      const page = Math.floor(offset / PAGE_SIZE);
+      if (page < 30) {
+        const year = page === 11 ? "2010" : "2025";
+        const results = Array.from({ length: PAGE_SIZE }, (_, i) =>
+          makeProduct(`MLB_PALIO_p${page}_${i}_${year}`, year),
+        );
+        return Promise.resolve({ data: { results } });
+      }
+      return Promise.resolve({ data: { results: [] } });
+    });
+
+    const result = await MLApiService.resolveCompatibilityCatalogProducts(
+      "tok",
+      [{ brand: "Fiat", model: "Palio", yearFrom: 2010, yearTo: 2010 }],
+    );
+
+    // Algum produto da pagina 11 (que cobre 2010) precisa estar resolvido
+    // — sinaliza que paginei alem do limite antigo de 500.
+    const has2010 = result.catalogProductIds.some((id) =>
+      id.startsWith("MLB_PALIO_p11_"),
+    );
+    expect(has2010).toBe(true);
+    expect(result.unresolved).toEqual([]);
+  });
 });

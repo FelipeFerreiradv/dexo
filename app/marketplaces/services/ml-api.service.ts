@@ -2182,7 +2182,13 @@ export class MLApiService {
       }
 
       const pageSize = 50;
-      const maxPages = 10;
+      // Modelos populares (Civic, Palio, Gol, Polo) tem >1500 catalog products
+      // no ML; com maxPages=10 (=500 produtos) anos antigos costumam ficar
+      // de fora do batch e o filtro de ano descarta tudo. 30 paginas (=1500)
+      // cobrem o cenario observado em prod sem explodir custo de chamada
+      // — searchCatalogCompatibilityChunks ainda corta cedo via paging.total
+      // ou results.length<pageSize quando o catalogo eh menor.
+      const maxPages = 30;
       const normalizedBrand = normalize(brandName);
       const normalizedModel = normalize(modelName);
 
