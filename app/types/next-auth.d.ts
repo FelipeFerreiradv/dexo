@@ -6,12 +6,16 @@ declare module "next-auth" {
   interface User {
     id: string;
     image?: string | null;
+    parentUserId?: string | null;
+    role?: string | null;
   }
 
   interface Session {
     user: User & {
       id: string;
       image?: string | null;
+      parentUserId?: string | null;
+      role?: string | null;
     };
   }
 }
@@ -20,5 +24,7 @@ declare module "next-auth/jwt" {
   interface JWT {
     id?: string;
     image?: string | null;
+    parentUserId?: string | null;
+    role?: string | null;
   }
 }

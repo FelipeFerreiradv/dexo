@@ -6,6 +6,7 @@ import { ListingRepository } from "../marketplaces/repositories/listing.reposito
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
 import { Platform } from "@prisma/client";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
@@ -125,11 +126,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     Reply: { authUrl: string; state: string };
   }>(
     "/ml/auth",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, blockCollaborator] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // userId vem da sessÃ£o (garantido pelo authMiddleware)
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -190,7 +191,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 
       // userId pode vir da sessÃ£o atual OU do state armazenado
       // O state jÃ¡ contÃ©m o userId de quando o OAuth foi iniciado
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
 
       // Processar callback OAuth (userId serÃ¡ recuperado do state se nÃ£o existir aqui)
       const account = await MarketplaceUseCase.handleOAuthCallback({
@@ -306,7 +307,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
           });
         }
 
-        const userId = request.user?.id;
+        const userId = request.user?.dataOwnerId;
 
         const account = await MarketplaceUseCase.handleOAuthCallback({
           code,
@@ -352,7 +353,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -587,7 +588,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -662,7 +663,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
           userId,
           Platform.MERCADO_LIVRE,
@@ -683,10 +684,10 @@ export async function marketplaceRoutes(app: FastifyInstance) {
    */
   app.delete<{ Reply: { success: boolean; message: string } }>(
     "/ml",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, blockCollaborator] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -738,7 +739,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -803,7 +804,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -879,7 +880,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { productId } = request.params as { productId: string };
 
         const result = await SyncUseCase.syncProductStock(productId);
@@ -939,7 +940,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
 
         // Buscar uma conta Shopee conectada para usar nas chamadas da API
         const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
@@ -1099,7 +1100,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
           userId,
           Platform.SHOPEE,
@@ -1153,7 +1154,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1190,7 +1191,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { importId } = request.params as { importId: string };
         const status = await SyncUseCase.getShopeeImportJobStatus(
           userId,
@@ -1242,7 +1243,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1342,7 +1343,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1420,7 +1421,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1538,11 +1539,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     Reply: { authUrl: string; state: string };
   }>(
     "/shopee/auth",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, blockCollaborator] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // userId vem da sessÃ£o (garantido pelo authMiddleware)
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1619,9 +1620,12 @@ export async function marketplaceRoutes(app: FastifyInstance) {
         }
 
         // Recuperar userId: (1) do state token armazenado, (2) da sessão atual
+        // Usar dataOwnerId garante que se houver fallback de sessão, a conta vai
+        // pro admin (não pro colaborador) — colaboradores estão bloqueados
+        // de qualquer forma pelo blockCollaborator no /shopee/auth.
         let userId = state ? ShopeeOAuthService.consumeState(state) : null;
         if (!userId) {
-          userId = request.user?.id ?? null;
+          userId = request.user?.dataOwnerId ?? null;
         }
 
         if (!userId) {
@@ -1711,7 +1715,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId
@@ -1755,7 +1759,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountId = (request.query as any)?.accountId as
           | string
           | undefined;
@@ -1799,7 +1803,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { brandValueId, brandName, accountId } =
           (request.query as any) || {};
         if (!brandValueId || typeof brandValueId !== "string") {
@@ -1849,7 +1853,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { brandValueId, modelValueId, accountId } =
           (request.query as any) || {};
         if (!brandValueId || typeof brandValueId !== "string") {
@@ -1897,11 +1901,11 @@ export async function marketplaceRoutes(app: FastifyInstance) {
    */
   app.delete<{ Reply: { success: boolean; message: string } }>(
     "/shopee",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, blockCollaborator] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // UsuÃ¡rio jÃ¡ validado pelo middleware
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const accountIds =
           ((request.body as any)?.accountIds as string[] | undefined) ??
           ((request.query as any)?.accountId

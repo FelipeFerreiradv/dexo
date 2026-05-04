@@ -32,7 +32,7 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           days?: number;
           deductStock?: boolean;
@@ -198,7 +198,7 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const query = request.query as {
           status?: string;
           page?: string;
@@ -327,7 +327,7 @@ export async function orderRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const query = request.query as { platform?: string };
         const prisma = (await import("../lib/prisma")).default;
 

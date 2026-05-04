@@ -24,7 +24,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
 
       try {
         const data = await scrapUseCase.create({
-          userId: user?.id,
+          userId: user?.dataOwnerId,
           brand: body.brand,
           model: body.model,
           year: body.year ?? undefined,
@@ -106,7 +106,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     ) => {
       try {
         const { search, status, page, limit } = request.query;
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
 
         const validStatuses: ScrapStatus[] = [
           "AVAILABLE",
@@ -155,7 +155,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
 
         const scrap = await scrapUseCase.findById(id, userId);
         if (!scrap) {
@@ -183,7 +183,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
       try {
         const { id } = request.params as { id: string };
         const body = request.body as any;
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
 
         const updated = await scrapUseCase.update(
           id,
@@ -250,7 +250,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
 
         await scrapUseCase.delete(id, userId);
 

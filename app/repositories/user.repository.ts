@@ -14,6 +14,7 @@ class UserRepositoryPrisma implements UserRepository {
       email: u.email,
       password: u.password,
       role: u.role as Role,
+      parentUserId: u.parentUserId ?? null,
       name: u.name,
       avatarUrl: u.avatarUrl ?? null,
       defaultProductDescription: u.defaultProductDescription ?? null,
@@ -46,6 +47,9 @@ class UserRepositoryPrisma implements UserRepository {
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
           defaultCostPrice: data.defaultCostPrice,
+          ...(data.parentUserId !== undefined && {
+            parentUserId: data.parentUserId,
+          }),
         },
       });
       return this.mapUser(result);
@@ -82,6 +86,18 @@ class UserRepositoryPrisma implements UserRepository {
         },
       });
       return data ? this.mapUser(data) : null;
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async findChildren(parentUserId: string): Promise<User[]> {
+    try {
+      const data = await prisma.user.findMany({
+        where: { parentUserId },
+        orderBy: { createdAt: "asc" },
+      });
+      return data.map((u) => this.mapUser(u));
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }

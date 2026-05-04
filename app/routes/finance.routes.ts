@@ -17,7 +17,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const summary = await useCase.summary(userId);
         return reply.status(200).send({ summary });
       } catch (error) {
@@ -33,7 +33,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { search, status, customerId, from, to, page, limit } =
           request.query as any;
         const data = await useCase.list(
@@ -70,7 +70,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
         const entry = await useCase.create(kind, { ...body, userId });
         return reply.status(201).send({ entry });
@@ -93,7 +93,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const body = request.body as any;
         const entry = await useCase.update(kind, id, userId, body);
@@ -110,7 +110,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const entry = await useCase.markPaid(kind, id, userId);
         return reply.status(200).send({ entry });
@@ -126,7 +126,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         await useCase.delete(kind, id, userId);
         return reply.status(200).send({ message: "Registro excluído" });
@@ -171,7 +171,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
 
         // Queries independentes em paralelo — entry (com customer) e

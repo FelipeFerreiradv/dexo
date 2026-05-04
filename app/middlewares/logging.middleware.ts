@@ -121,6 +121,151 @@ function determineActionType(
     if (method === "POST") {
       return { action: "CREATE_LISTING", resource: "ProductListing" };
     }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return {
+        action: "UPDATE_LISTING",
+        resource: "ProductListing",
+        resourceId: id,
+      };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return {
+        action: "DELETE_LISTING",
+        resource: "ProductListing",
+        resourceId: id,
+      };
+    }
+  }
+
+  // Notas Fiscais
+  if (cleanUrl.startsWith("/fiscal")) {
+    if (cleanUrl.includes("/nfe/emission") && method === "POST") {
+      return { action: "EMIT_NFE", resource: "NfeEmitida" };
+    }
+    if (cleanUrl.includes("/nfe/draft") && method === "POST") {
+      return { action: "CREATE_NFE_DRAFT", resource: "NfeEmitida" };
+    }
+    if (cleanUrl.includes("/nfe/inutilizacao") && method === "POST") {
+      return { action: "INUTILIZE_NFE", resource: "NfeInutilizacao" };
+    }
+    if (cleanUrl.includes("/nfe") && method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return {
+        action: "UPDATE_NFE_DRAFT",
+        resource: "NfeEmitida",
+        resourceId: id,
+      };
+    }
+    if (cleanUrl.includes("/nfe") && method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "CANCEL_NFE", resource: "NfeEmitida", resourceId: id };
+    }
+    if (cleanUrl.includes("/config") && (method === "POST" || method === "PUT")) {
+      return { action: "UPDATE_FISCAL_CONFIG", resource: "CompanyFiscalConfig" };
+    }
+  }
+
+  // Customers
+  if (cleanUrl.startsWith("/customers")) {
+    if (method === "POST") {
+      return { action: "CREATE_CUSTOMER", resource: "Customer" };
+    }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "UPDATE_CUSTOMER", resource: "Customer", resourceId: id };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "DELETE_CUSTOMER", resource: "Customer", resourceId: id };
+    }
+  }
+
+  // Locations
+  if (cleanUrl.startsWith("/locations")) {
+    if (method === "POST") {
+      return { action: "CREATE_LOCATION", resource: "Location" };
+    }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "UPDATE_LOCATION", resource: "Location", resourceId: id };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "DELETE_LOCATION", resource: "Location", resourceId: id };
+    }
+  }
+
+  // Scraps
+  if (cleanUrl.startsWith("/scraps")) {
+    if (method === "POST") {
+      return { action: "CREATE_SCRAP", resource: "Scrap" };
+    }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "UPDATE_SCRAP", resource: "Scrap", resourceId: id };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "DELETE_SCRAP", resource: "Scrap", resourceId: id };
+    }
+  }
+
+  // Finance — payables / receivables
+  if (cleanUrl.startsWith("/finance/payables")) {
+    if (method === "POST") {
+      return { action: "CREATE_PAYABLE", resource: "Payable" };
+    }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "UPDATE_PAYABLE", resource: "Payable", resourceId: id };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return { action: "DELETE_PAYABLE", resource: "Payable", resourceId: id };
+    }
+  }
+  if (cleanUrl.startsWith("/finance/receivables")) {
+    if (method === "POST") {
+      return { action: "CREATE_RECEIVABLE", resource: "Receivable" };
+    }
+    if (method === "PUT") {
+      const id = extractIdFromUrl(cleanUrl);
+      return {
+        action: "UPDATE_RECEIVABLE",
+        resource: "Receivable",
+        resourceId: id,
+      };
+    }
+    if (method === "DELETE") {
+      const id = extractIdFromUrl(cleanUrl);
+      return {
+        action: "DELETE_RECEIVABLE",
+        resource: "Receivable",
+        resourceId: id,
+      };
+    }
+  }
+
+  // Marketplace connect/disconnect (capturado mesmo quando bloqueado por
+  // colaborador — registra a tentativa via 403)
+  if (
+    cleanUrl.startsWith("/marketplace/ml/auth") ||
+    cleanUrl.startsWith("/marketplace/shopee/auth")
+  ) {
+    if (method === "POST") {
+      return { action: "CONNECT_MARKETPLACE", resource: "MarketplaceAccount" };
+    }
+  }
+  if (
+    (cleanUrl === "/marketplace/ml" || cleanUrl === "/marketplace/shopee") &&
+    method === "DELETE"
+  ) {
+    return {
+      action: "DISCONNECT_MARKETPLACE",
+      resource: "MarketplaceAccount",
+    };
   }
 
   if (cleanUrl.includes("/marketplace/") && cleanUrl.includes("/sync")) {

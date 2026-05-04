@@ -5,6 +5,7 @@ export interface User {
   email: string;
   password: string;
   role: Role;
+  parentUserId?: string | null;
   name?: string | null;
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
@@ -34,6 +35,7 @@ export interface UserCreate {
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
   role?: Role;
+  parentUserId?: string | null;
 }
 
 export interface UserUpdate {
@@ -62,5 +64,6 @@ export interface UserRepository {
   create(data: UserCreate): Promise<User>;
   findByEmail(email: string): Promise<User | null>;
   findById(id: string): Promise<User | null>;
+  findChildren(parentUserId: string): Promise<User[]>;
   update(id: string, data: UserUpdate): Promise<User>;
 }

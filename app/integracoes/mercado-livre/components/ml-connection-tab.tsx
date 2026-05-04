@@ -41,6 +41,9 @@ interface ConnectionStatus {
 
 export function MLConnectionTab() {
   const { data: session } = useSession();
+  // Colaboradores (usuários com parentUserId) não podem conectar/desconectar contas.
+  // Backend também valida via blockCollaborator middleware (HTTP 403).
+  const isCollaborator = Boolean((session?.user as any)?.parentUserId);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [accounts, setAccounts] = useState<
     Array<{ id: string; accountName: string; status?: string }>
@@ -358,15 +361,17 @@ export function MLConnectionTab() {
                       Status: {acc.status || status.status || "Ativo"}
                     </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDisconnect(acc.id)}
-                    disabled={isDisconnecting}
-                  >
-                    <Unplug className="mr-2 h-4 w-4" />
-                    Desconectar
-                  </Button>
+                  {!isCollaborator && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDisconnect(acc.id)}
+                      disabled={isDisconnecting}
+                    >
+                      <Unplug className="mr-2 h-4 w-4" />
+                      Desconectar
+                    </Button>
+                  )}
                 </div>
               ))}
               {accounts.length === 0 && (
@@ -376,11 +381,85 @@ export function MLConnectionTab() {
               )}
             </div>
 
-            {/* Ações globais */}
-            <div className="flex gap-2">
+            {/* Ações globais — escondidas para colaboradores */}
+            {!isCollaborator && (
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleConnect}
+                  disabled={isConnecting || isDisconnecting}
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Conectando...
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Adicionar nova conta
+                    </>
+                  )}
+                </Button>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" disabled={isDisconnecting}>
+                      {isDisconnecting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Desconectando...
+                        </>
+                      ) : (
+                        <>
+                          <Unplug className="mr-2 h-4 w-4" />
+                          Desconectar todas
+                        </>
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Desconectar todas as contas ML?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Esta ação removerá as conexões das contas do Mercado
+                        Livre. Você não perderá seus anúncios, mas a
+                        sincronização será interrompida.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => handleDisconnect()}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Desconectar tudo
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
+            {isCollaborator && (
+              <p className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+                A gestão das conexões com marketplaces é feita pelo
+                administrador da conta. Você pode usar as contas conectadas
+                para criar anúncios.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {isCollaborator
+                ? "Nenhuma conta do Mercado Livre conectada. Solicite ao administrador da conta para conectar."
+                : "Ao conectar, você poderá sincronizar automaticamente o estoque dos seus produtos com os anúncios do Mercado Livre."}
+            </p>
+            {!isCollaborator && (
               <Button
                 onClick={handleConnect}
-                disabled={isConnecting || isDisconnecting}
+                disabled={isConnecting || !session?.user?.email}
               >
                 {isConnecting ? (
                   <>
@@ -390,73 +469,11 @@ export function MLConnectionTab() {
                 ) : (
                   <>
                     <ExternalLink className="mr-2 h-4 w-4" />
-                    Adicionar nova conta
+                    Conectar ao Mercado Livre
                   </>
                 )}
               </Button>
-
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={isDisconnecting}>
-                    {isDisconnecting ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Desconectando...
-                      </>
-                    ) : (
-                      <>
-                        <Unplug className="mr-2 h-4 w-4" />
-                        Desconectar todas
-                      </>
-                    )}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      Desconectar todas as contas ML?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Esta ação removerá as conexões das contas do Mercado
-                      Livre. Você não perderá seus anúncios, mas a sincronização
-                      será interrompida.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => handleDisconnect()}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      Desconectar tudo
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Ao conectar, você poderá sincronizar automaticamente o estoque dos
-              seus produtos com os anúncios do Mercado Livre.
-            </p>
-            <Button
-              onClick={handleConnect}
-              disabled={isConnecting || !session?.user?.email}
-            >
-              {isConnecting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Conectando...
-                </>
-              ) : (
-                <>
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Conectar ao Mercado Livre
-                </>
-              )}
-            </Button>
+            )}
           </div>
         )}
       </CardContent>

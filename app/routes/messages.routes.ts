@@ -24,7 +24,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/accounts",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
@@ -48,7 +48,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/conversations",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const q = (request.query || {}) as Record<string, string | undefined>;
@@ -90,7 +90,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/conversations/:itemId",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const { itemId } = request.params;
@@ -116,7 +116,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/conversations/:itemId/read",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const { itemId } = request.params;
@@ -142,7 +142,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/conversations/:itemId/sync",
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const { itemId } = request.params;
@@ -175,7 +175,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/answers",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const body = (request.body || {}) as {
@@ -215,7 +215,7 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
     "/unread-count",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = request.user?.id;
+      const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
       const count = await QuestionRepository.countUnreadForUser(userId);

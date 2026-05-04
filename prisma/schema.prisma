@@ -32,6 +32,12 @@ model User {
   defaultLocalPickup       Boolean? @default(false)
   defaultManufacturingTime Int?     @default(0)
 
+  // Hierarquia administrador → colaboradores (additive, default NULL).
+  // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
+  parentUserId String?
+  parent       User?   @relation("UserHierarchy", fields: [parentUserId], references: [id], onDelete: SetNull)
+  children     User[]  @relation("UserHierarchy")
+
   accounts            MarketplaceAccount[]
   products            Product[]
   systemLogs          SystemLog[]
@@ -43,6 +49,8 @@ model User {
   companyFiscalConfig CompanyFiscalConfig?
   nfesEmitidas        NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
+
+  @@index([parentUserId])
 }
 
 model Product {

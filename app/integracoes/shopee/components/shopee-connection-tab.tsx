@@ -40,6 +40,8 @@ interface ConnectionStatus {
 
 export function ShopeeConnectionTab() {
   const { data: session } = useSession();
+  // Colaboradores não podem conectar/desconectar — backend bloqueia via 403.
+  const isCollaborator = Boolean((session?.user as any)?.parentUserId);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [accounts, setAccounts] = useState<
     Array<{
@@ -364,15 +366,17 @@ export function ShopeeConnectionTab() {
                         })()}
                       </p>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDisconnect(acc.id)}
-                      disabled={isDisconnecting}
-                    >
-                      <Unplug className="mr-2 h-4 w-4" />
-                      Desconectar
-                    </Button>
+                    {!isCollaborator && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDisconnect(acc.id)}
+                        disabled={isDisconnecting}
+                      >
+                        <Unplug className="mr-2 h-4 w-4" />
+                        Desconectar
+                      </Button>
+                    )}
                   </div>
                 ))}
                 {accounts.length === 0 && (
@@ -392,58 +396,69 @@ export function ShopeeConnectionTab() {
                 )}
               </div>
 
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleConnect}
-                  disabled={isConnecting || isDisconnecting}
-                >
-                  {isConnecting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Conectando...
-                    </>
-                  ) : (
-                    <>
-                      <ExternalLink className="mr-2 h-4 w-4" />
-                      Adicionar nova conta
-                    </>
-                  )}
-                </Button>
+              {!isCollaborator && (
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleConnect}
+                    disabled={isConnecting || isDisconnecting}
+                  >
+                    {isConnecting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Conectando...
+                      </>
+                    ) : (
+                      <>
+                        <ExternalLink className="mr-2 h-4 w-4" />
+                        Adicionar nova conta
+                      </>
+                    )}
+                  </Button>
 
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="destructive" disabled={isDisconnecting}>
-                      {isDisconnecting ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Desconectando...
-                        </>
-                      ) : (
-                        <>
-                          <Unplug className="mr-2 h-4 w-4" />
-                          Desconectar todas
-                        </>
-                      )}
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Tem certeza que deseja desconectar todas as contas do
-                        Shopee? Isso removerá as vinculações e você precisará
-                        reconectar para continuar sincronizando.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => handleDisconnect()}>
-                        Desconectar tudo
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="destructive" disabled={isDisconnecting}>
+                        {isDisconnecting ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Desconectando...
+                          </>
+                        ) : (
+                          <>
+                            <Unplug className="mr-2 h-4 w-4" />
+                            Desconectar todas
+                          </>
+                        )}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Tem certeza que deseja desconectar todas as contas
+                          do Shopee? Isso removerá as vinculações e você
+                          precisará reconectar para continuar sincronizando.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleDisconnect()}
+                        >
+                          Desconectar tudo
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              )}
+              {isCollaborator && (
+                <p className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+                  A gestão das conexões com marketplaces é feita pelo
+                  administrador da conta. Você pode usar as contas conectadas
+                  para criar anúncios.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
@@ -455,25 +470,30 @@ export function ShopeeConnectionTab() {
                       Não conectado
                     </p>
                     <p className="text-sm text-yellow-600 dark:text-yellow-300">
-                      {status?.message || "Conecte sua conta para começar."}
+                      {isCollaborator
+                        ? "Solicite ao administrador da conta para conectar uma conta Shopee."
+                        : status?.message ||
+                          "Conecte sua conta para começar."}
                     </p>
                   </div>
                 </div>
               </div>
 
-              <Button onClick={handleConnect} disabled={isConnecting}>
-                {isConnecting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Conectando...
-                  </>
-                ) : (
-                  <>
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Conectar Shopee
-                  </>
-                )}
-              </Button>
+              {!isCollaborator && (
+                <Button onClick={handleConnect} disabled={isConnecting}>
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Conectando...
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Conectar Shopee
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           )}
         </CardContent>

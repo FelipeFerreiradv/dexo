@@ -10,7 +10,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { search, page, limit } = request.query as {
           search?: string;
           page?: string;
@@ -47,7 +47,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { q } = request.query as { q?: string };
         if (!q || q.trim().length === 0) {
           return reply.status(200).send({ customers: [] });
@@ -68,7 +68,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const customer = await useCase.findById(id, userId);
         return reply.status(200).send({ customer });
@@ -86,7 +86,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
         const customer = await useCase.create({ ...body, userId });
         return reply.status(201).send({ customer });
@@ -108,7 +108,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const body = request.body as any;
         const customer = await useCase.update(id, userId, body);
@@ -133,7 +133,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         await useCase.delete(id, userId);
         return reply

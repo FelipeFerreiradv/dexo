@@ -8,6 +8,13 @@ const userRepository = new UserRepositoryPrisma();
 const userCache = new Map<string, { user: any; expiresAt: number }>();
 const USER_CACHE_TTL_MS = 60_000;
 
+// Resolves the "data owner" id: parent's id for collaborators, own id for admins.
+// Admins (no parentUserId) get dataOwnerId === id, preserving existing query behavior.
+function attachAuth(request: FastifyRequest, user: any) {
+  const dataOwnerId = user.parentUserId ?? user.id;
+  request.user = { ...user, dataOwnerId };
+}
+
 export const authMiddleware = async (
   request: FastifyRequest,
   reply: FastifyReply,
@@ -25,7 +32,7 @@ export const authMiddleware = async (
   // Check cache first
   const cached = userCache.get(email);
   if (cached && cached.expiresAt > Date.now()) {
-    request.user = cached.user;
+    attachAuth(request, cached.user);
     return;
   }
 
@@ -39,5 +46,5 @@ export const authMiddleware = async (
   userCache.set(email, { user, expiresAt: Date.now() + USER_CACHE_TTL_MS });
 
   // Anexar usuário ao request para usar em outras rotas
-  request.user = user;
+  attachAuth(request, user);
 };

@@ -14,7 +14,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { search, parentId, page, limit } = request.query as {
           search?: string;
           parentId?: string;
@@ -59,7 +59,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const locations = await locationUseCase.listForSelect(userId);
         return reply.status(200).send({ locations });
       } catch (error) {
@@ -82,7 +82,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const { search, page, limit } = request.query as {
           search?: string;
@@ -123,7 +123,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { productIds, targetLocationId } = request.body as {
           productIds?: string[];
           targetLocationId?: string | null;
@@ -173,7 +173,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
 
         const location = await locationUseCase.findById(id, userId);
@@ -204,7 +204,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { code, description, maxCapacity, parentId } = request.body as {
           code?: string;
           description?: string;
@@ -261,7 +261,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         const { code, description, maxCapacity, parentId } = request.body as {
           code?: string;
@@ -331,7 +331,7 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
 
         await locationUseCase.delete(id, userId);

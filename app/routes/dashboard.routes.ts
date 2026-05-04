@@ -13,7 +13,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user?.id;
+        const userId = request.user?.dataOwnerId;
         if (!userId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
         }
@@ -105,7 +105,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         // Buscar estatísticas de produtos
         const [totalProducts, totalStock, lowStockProducts] = await Promise.all(
           [
@@ -155,7 +155,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user?.id;
+        const userId = request.user?.dataOwnerId;
 
         if (!userId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
@@ -193,7 +193,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const rows = await prisma.product.groupBy({
           by: ["category"],
           _count: { _all: true },
@@ -226,7 +226,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
 
         // Single query: fetch stock values and bucket in JS (avoids 5 separate COUNT queries)
         const products = await prisma.product.findMany({
@@ -275,7 +275,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const daysParam = (request.query as any)?.days;
         const days = daysParam ? parseInt(daysParam, 10) : 30;
         const now = new Date();
@@ -343,7 +343,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const q = ((request.query as any)?.q as string | undefined)?.trim();
         const limit =
           parseInt((request.query as any)?.limit as string, 10) || 5;
@@ -441,7 +441,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       // @deprecated Usado somente pelo dashboard antigo. Remover após migração para listing-stats.
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const daysParam = (request.query as any)?.days;
         const days = daysParam ? parseInt(daysParam, 10) : 7;
         const startDate = new Date();
@@ -504,7 +504,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string | undefined;
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
         if (!userId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
         }
@@ -672,7 +672,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string | undefined;
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
         if (!userId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
         }
@@ -719,7 +719,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string | undefined;
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
         if (!userId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
         }

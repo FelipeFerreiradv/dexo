@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Session } from "next-auth";
 import type { LucideIcon } from "lucide-react";
 import {
+  Activity,
   LayoutDashboard,
   LineChart,
   Link2,
@@ -21,6 +22,7 @@ import {
   ChevronDown,
   Car,
   Users,
+  Users2,
   Wallet,
   FileText,
   FilePlus2,
@@ -133,9 +135,19 @@ const NAV_SECTIONS: NavSection[] = [
         href: "/logs",
         icon: LineChart,
       },
+      {
+        id: "colaboradores",
+        label: "Colaboradores",
+        href: "/colaboradores",
+        icon: Users2,
+      },
     ],
   },
 ];
+
+// Itens visíveis apenas para administradores (usuários sem parentUserId).
+// Colaboradores não devem ver estes links no menu.
+const ADMIN_ONLY_ITEM_IDS = new Set(["colaboradores"]);
 
 const FISCAL_SECTION: NavSection = {
   id: "fiscal",
@@ -297,24 +309,30 @@ export function AppSidebar({ session }: AppSidebarProps) {
     }
   }, [setOpen]);
 
+  const isCollaborator = Boolean((session?.user as any)?.parentUserId);
+
   const filteredSections = React.useMemo(() => {
     const term = query.trim().toLowerCase();
     const withDynamicBadges = VISIBLE_NAV_SECTIONS.map((section) => ({
       ...section,
-      items: section.items.map((item) => {
-        if (item.id === "pedidos" && ordersCount !== null) {
-          return { ...item, badge: ordersCount };
-        }
-        if (
-          item.id === "mensagens" &&
-          messagesUnreadCount !== null &&
-          messagesUnreadCount > 0
-        ) {
-          return { ...item, badge: messagesUnreadCount };
-        }
-        return item;
-      }),
-    }));
+      items: section.items
+        // Esconde itens admin-only quando o usuário logado é colaborador.
+        // Para admins, comportamento idêntico ao anterior.
+        .filter((item) => !isCollaborator || !ADMIN_ONLY_ITEM_IDS.has(item.id))
+        .map((item) => {
+          if (item.id === "pedidos" && ordersCount !== null) {
+            return { ...item, badge: ordersCount };
+          }
+          if (
+            item.id === "mensagens" &&
+            messagesUnreadCount !== null &&
+            messagesUnreadCount > 0
+          ) {
+            return { ...item, badge: messagesUnreadCount };
+          }
+          return item;
+        }),
+    })).filter((section) => section.items.length > 0);
     if (!term) return withDynamicBadges;
     return withDynamicBadges
       .map((section) => ({
@@ -324,7 +342,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
         ),
       }))
       .filter((section) => section.items.length > 0);
-  }, [messagesUnreadCount, ordersCount, query]);
+  }, [isCollaborator, messagesUnreadCount, ordersCount, query]);
 
   // Busca unificada
   React.useEffect(() => {
@@ -427,11 +445,182 @@ export function AppSidebar({ session }: AppSidebarProps) {
                   })}
               </SidebarNavSection>
             ))}
+
+            <TeamSection
+              collapsed={collapsed}
+              email={session?.user?.email ?? null}
+            />
           </nav>
         </SidebarContent>
       </div>
     </Sidebar>
   );
+}
+
+type TeamMember = {
+  id: string;
+  name?: string | null;
+  email: string;
+  avatarUrl?: string | null;
+  parentUserId?: string | null;
+};
+
+type TeamPresence = Record<
+  string,
+  { online: boolean; lastSeenAt: string | null }
+>;
+
+function TeamSection({
+  collapsed,
+  email,
+}: {
+  collapsed: boolean;
+  email: string | null;
+}) {
+  const [parent, setParent] = React.useState<TeamMember | null>(null);
+  const [children, setChildren] = React.useState<TeamMember[]>([]);
+  const [presence, setPresence] = React.useState<TeamPresence>({});
+
+  React.useEffect(() => {
+    if (!email) return;
+    let cancelled = false;
+    const apiBase = getApiBaseUrl();
+
+    const load = async () => {
+      try {
+        const [teamRes, presRes] = await Promise.all([
+          fetch(`${apiBase}/me/team`, { headers: { email } }),
+          fetch(`${apiBase}/me/team/presence`, { headers: { email } }),
+        ]);
+        if (!teamRes.ok || !presRes.ok) return;
+        const team = await teamRes.json();
+        const pres = await presRes.json();
+        if (cancelled) return;
+        setParent(team.parent ?? null);
+        setChildren(Array.isArray(team.children) ? team.children : []);
+        setPresence(pres.presence ?? {});
+      } catch (err) {
+        console.error("[Sidebar] team load error", err);
+      }
+    };
+
+    load();
+    const id = setInterval(() => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        load();
+      }
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [email]);
+
+  // Para admin sem colaboradores: nada é renderizado (sidebar idêntica à atual).
+  const members: TeamMember[] = parent ? [parent] : children;
+  if (members.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {!collapsed && (
+        <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Minha equipe
+        </div>
+      )}
+      <ul className="space-y-1">
+        {members.map((m) => (
+          <TeamMemberCard
+            key={m.id}
+            member={m}
+            online={presence[m.id]?.online ?? false}
+            collapsed={collapsed}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function TeamMemberCard({
+  member,
+  online,
+  collapsed,
+}: {
+  member: TeamMember;
+  online: boolean;
+  collapsed: boolean;
+}) {
+  const initials = (member.name || member.email)
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase())
+    .join("");
+
+  const node = (
+    <li
+      className={cn(
+        "group flex items-center gap-3 rounded-full px-3 py-2 transition-all duration-150",
+        "text-sidebar-foreground/90 hover:bg-sidebar-accent/14 hover:text-foreground",
+      )}
+      title={member.name || member.email}
+    >
+      <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border border-sidebar-border/60 bg-sidebar-accent/20">
+        {member.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={member.avatarUrl}
+            alt={member.name || member.email}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-foreground/70">
+            {initials || "?"}
+          </span>
+        )}
+        <span
+          className={cn(
+            "absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border border-sidebar",
+            online ? "bg-emerald-500" : "bg-muted-foreground/40",
+          )}
+          aria-label={online ? "Online" : "Offline"}
+        />
+      </div>
+      {!collapsed && (
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">
+            {member.name || member.email}
+          </div>
+        </div>
+      )}
+      {!collapsed && (
+        <Activity
+          className={cn(
+            "h-3.5 w-3.5 shrink-0",
+            online ? "text-emerald-500" : "text-muted-foreground/60",
+          )}
+          aria-hidden="true"
+        />
+      )}
+    </li>
+  );
+
+  if (collapsed) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{node}</TooltipTrigger>
+        <TooltipContent side="right">
+          {member.name || member.email}
+          {online ? " · online" : ""}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return node;
 }
 
 function BrandHeader({

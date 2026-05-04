@@ -27,6 +27,7 @@ import { customerRoutes } from "../routes/customer.routes";
 import { financeRoutes } from "../routes/finance.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
+import { teamRoutes } from "../routes/team.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 const api = fastify({ logger: true });
@@ -112,6 +113,10 @@ api.register(fiscalRoutes, {
 
 api.register(messagesRoutes, {
   prefix: "/messages",
+});
+
+api.register(teamRoutes, {
+  prefix: "/me/team",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

@@ -35,6 +35,10 @@ export const authOptions: NextAuthOptions = {
           email: user.email,
           name: user.name,
           image: user.avatarUrl ?? undefined,
+          // Campos custom propagados pra JWT/session — usados pelo front
+          // pra esconder UI (ex.: botões de conectar marketplace) e lookup da equipe.
+          parentUserId: user.parentUserId ?? null,
+          role: user.role,
         };
       },
     }),
@@ -45,6 +49,8 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         // @ts-expect-error - carry custom avatar url
         token.image = (user as any).image;
+        token.parentUserId = (user as any).parentUserId ?? null;
+        token.role = (user as any).role ?? null;
       }
       return token;
     },
@@ -53,6 +59,8 @@ export const authOptions: NextAuthOptions = {
         session.user.id = token.id as string;
         // @ts-expect-error - expose avatar url on session
         session.user.image = (token as any).image as string | undefined;
+        session.user.parentUserId = (token.parentUserId as string | null) ?? null;
+        session.user.role = (token.role as string | null) ?? null;
       }
       return session;
     },

@@ -33,7 +33,7 @@ export async function listingRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const startedAt = Date.now();
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           productId: string;
           categoryId?: string;
@@ -149,7 +149,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           productId: string;
           categoryId?: string;
@@ -268,7 +268,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { id } = request.params as { id: string };
 
         const prismaMod = await import("@/app/lib/prisma");
@@ -414,7 +414,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { id } = request.params as { id: string };
         const body = (request.body ?? {}) as Record<string, unknown>;
 
@@ -528,7 +528,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { id } = request.params as { id: string };
         const { status } = request.body as { status?: string };
 
@@ -629,7 +629,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const productId = (request.query as any)?.productId as
           | string
           | undefined;
@@ -725,7 +725,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           productId: string;
           requests: ListingDispatchRequest[];
@@ -789,7 +789,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           shopeeAccountId?: string;
           productIds?: string[];
@@ -891,7 +891,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const body = request.body as {
           productIds?: string[];
           requests?: Array<{
@@ -1021,7 +1021,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { jobId } = request.params as { jobId: string };
 
         const job = await BulkListingJobRepository.findByIdAndUser(
@@ -1067,7 +1067,7 @@ export async function listingRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = request.user!.id;
+        const userId = request.user!.dataOwnerId;
         const { jobId } = request.params as { jobId: string };
 
         const job = await BulkListingJobRepository.findByIdAndUser(

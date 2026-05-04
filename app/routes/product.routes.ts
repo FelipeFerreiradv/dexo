@@ -151,7 +151,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const nextSku = await productUseCase.getNextSku(userId);
         return reply.status(200).send({ sku: nextSku });
       } catch (error) {
@@ -167,7 +167,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const options = await productUseCase.getFilterOptions(userId);
         return reply.status(200).send(options);
       } catch (error) {
@@ -461,7 +461,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           description: sanitized.description,
           stock: sanitized.stock,
           price: sanitized.price,
-          userId: user?.id,
+          userId: user?.dataOwnerId,
           // Campos de autopeças
           costPrice: sanitized.costPrice,
           markup: sanitized.markup,
@@ -573,7 +573,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           if (dispatchRequests.length > 0) {
             ListingDispatcher.dispatch({
-              userId: user.id as string,
+              userId: user.dataOwnerId as string,
               productId: data.id as string,
               requests: dispatchRequests,
             });
@@ -691,7 +691,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           locationId,
           marketplace,
         } = request.query;
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const parsedPage = parsePositiveInteger(page, "Página", 1);
         const parsedLimit = parsePositiveInteger(limit, "Limite", 10);
         const parsedCreatedFrom = parseDateBoundary(
@@ -824,7 +824,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     ) => {
       try {
         const { id } = request.params;
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const result = await productUseCase.getDetail(id, userId);
 
         if (!result) {
@@ -855,7 +855,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             .send({ error: "ID do produto é obrigatório" });
         }
 
-        const userId = (request as any).user?.id as string | undefined;
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
         const result = await productUseCase.delete(id, userId);
 
         if (!result.success) {
@@ -958,7 +958,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
-        const userId = (request as any).user?.id as string | undefined;
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
         // Resolver mlCategory se fornecida
         let resolvedMlCategoryId: string | undefined;
         let resolvedMlCategoryPath: string | undefined;

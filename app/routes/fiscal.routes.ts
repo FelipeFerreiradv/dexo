@@ -33,7 +33,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const config = await companyFiscal.getByUserId(userId);
         return reply.status(200).send({ config });
       } catch (error) {
@@ -52,7 +52,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
         const config = await companyFiscal.upsert(userId, body);
         return reply.status(200).send({ config });
@@ -80,7 +80,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const body = (request.body as any) ?? {};
         const draft = await nfeDraft.create(userId, {
           orderId: body.orderId ?? null,
@@ -104,7 +104,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const draft = await nfeDraft.getById(userId, id);
         return reply.status(200).send({ draft });
@@ -125,7 +125,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const body = request.body as any;
         const draft = await nfeDraft.update(userId, id, body);
@@ -149,7 +149,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         await nfeDraft.delete(userId, id);
         return reply.status(204).send();
@@ -172,7 +172,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
 
         // Load draft with items
@@ -253,7 +253,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const q = (request.query as any).q || "";
         const results = await nfeDraft.lookupCustomers(userId, q);
         return reply.status(200).send({ results });
@@ -276,7 +276,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const q = (request.query as any).q || "";
         const results = await nfeDraft.lookupProducts(userId, q);
         return reply.status(200).send({ results });
@@ -301,7 +301,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const result = await nfeEmission.emit(userId, id);
         return reply.status(200).send(result);
@@ -333,7 +333,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const q = request.query as any;
         const result = await nfeListing.list(userId, {
           page: Number(q.page) || 1,
@@ -362,7 +362,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const stats = await nfeListing.stats(userId);
         return reply.status(200).send({ stats });
       } catch (error) {
@@ -381,7 +381,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const q = request.query as any;
         const format = q.format === "pdf" ? "pdf" : "xlsx";
         const buffer = await nfeListing.exportData(
@@ -432,7 +432,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const row = await (prisma as any).nfeEmitida.findFirst({
           where: { id, userId },
@@ -466,7 +466,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const row = await (prisma as any).nfeEmitida.findFirst({
           where: { id, userId },
@@ -508,7 +508,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const row = await (prisma as any).nfeEmitida.findFirst({
           where: { id, userId },
@@ -549,7 +549,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         // Verify ownership
         const nfe = await (prisma as any).nfeEmitida.findFirst({
@@ -585,7 +585,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const body = request.body as any;
         const justificativa = body?.justificativa ?? "";
@@ -616,7 +616,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
         const result = await nfeInutilizacao.inutilizar(userId, {
           serie: Number(body.serie),
@@ -646,7 +646,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const items = await nfeInutilizacao.list(userId);
         return reply.status(200).send({ items });
       } catch (error) {
@@ -676,7 +676,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
-        const userId = (request as any).user?.id as string;
+        const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const body = request.body as any;
         const email = body?.email;
