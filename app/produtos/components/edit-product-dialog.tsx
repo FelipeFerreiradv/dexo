@@ -380,6 +380,24 @@ export function EditProductDialog({
     weightKg?: number;
   } | null>(null);
 
+  // Snapshot dos settings ML do listing no momento da abertura do modal
+  // (modo listingContext). Usado no save para enviar apenas os settings que
+  // o usuário REALMENTE alterou — evita o ML rejeitar shipping/warranty/etc.
+  // como `field_not_modifiable` em anúncios com vendas.
+  // null em qualquer campo = listing não tinha baseline => diff trata como
+  // "não envia" para evitar empurrar setting que o ML pode rejeitar.
+  const mlSettingsSnapshotRef = useRef<{
+    listingType: string | null;
+    itemCondition: string | null;
+    hasWarranty: boolean | null;
+    warrantyUnit: string | null;
+    warrantyDuration: number | null;
+    shippingMode: string | null;
+    freeShipping: boolean | null;
+    localPickup: boolean | null;
+    manufacturingTime: number | null;
+  } | null>(null);
+
   // Verificar se há campos de autopeças preenchidos
   const hasAutopartsData = !!(
     product.brand ||
@@ -935,6 +953,7 @@ export function EditProductDialog({
     if (!open) {
       lastOpenKeyRef.current = null;
       sanityAppliedRef.current = null;
+      mlSettingsSnapshotRef.current = null;
     }
   }, [open]);
 
@@ -960,6 +979,15 @@ export function EditProductDialog({
         if (!resp.ok) return;
         const json = (await resp.json()) as {
           listing?: {
+            listingType: string | null;
+            itemCondition: string | null;
+            hasWarranty: boolean | null;
+            warrantyUnit: string | null;
+            warrantyDuration: number | null;
+            shippingMode: string | null;
+            freeShipping: boolean | null;
+            localPickup: boolean | null;
+            manufacturingTime: number | null;
             titleOverride: string | null;
             descriptionOverride: string | null;
             priceOverride: number | null;
@@ -993,6 +1021,23 @@ export function EditProductDialog({
         };
         if (cancelled || !json?.listing) return;
         const l = json.listing;
+
+        // Snapshot dos settings ML diretamente do banco. Usado no save para
+        // só enviar settings que o usuário REALMENTE alterou.
+        // Convenção: campo null no banco => sem baseline confiável =>
+        // diff trata como "não enviar" (defesa contra ML rejeitar com
+        // field_not_modifiable em anúncios com vendas).
+        mlSettingsSnapshotRef.current = {
+          listingType: l.listingType,
+          itemCondition: l.itemCondition,
+          hasWarranty: l.hasWarranty,
+          warrantyUnit: l.warrantyUnit,
+          warrantyDuration: l.warrantyDuration,
+          shippingMode: l.shippingMode,
+          freeShipping: l.freeShipping,
+          localPickup: l.localPickup,
+          manufacturingTime: l.manufacturingTime,
+        };
 
         if (l.titleOverride !== null) setValue("name", l.titleOverride);
         if (l.descriptionOverride !== null)
@@ -1691,6 +1736,61 @@ export function EditProductDialog({
 
         const productCompatList = cleanData.compatibilities ?? [];
 
+        // Settings ML: só vão no payload quando o usuário REALMENTE alterou.
+        // Sem isso, o backend recebe shipping/warranty/sale_terms inalterados
+        // e o ML rejeita com `field_not_modifiable` em anúncios com vendas.
+        // Snapshot null no campo = listing não tinha baseline => não envia
+        // (defesa: ML pode rejeitar setting "novo" em anúncio com vendas).
+        const settingsSnap = mlSettingsSnapshotRef.current;
+        const mlSettingsDiff: Record<string, unknown> = {};
+        if (settingsSnap) {
+          if (
+            settingsSnap.listingType !== null &&
+            mlListingType !== settingsSnap.listingType
+          )
+            mlSettingsDiff.listingType = mlListingType;
+          if (
+            settingsSnap.itemCondition !== null &&
+            mlItemCondition !== settingsSnap.itemCondition
+          )
+            mlSettingsDiff.itemCondition = mlItemCondition;
+          if (
+            settingsSnap.hasWarranty !== null &&
+            mlHasWarranty !== settingsSnap.hasWarranty
+          )
+            mlSettingsDiff.hasWarranty = mlHasWarranty;
+          if (
+            settingsSnap.warrantyUnit !== null &&
+            mlWarrantyUnit !== settingsSnap.warrantyUnit
+          )
+            mlSettingsDiff.warrantyUnit = mlWarrantyUnit;
+          if (
+            settingsSnap.warrantyDuration !== null &&
+            mlWarrantyDuration !== settingsSnap.warrantyDuration
+          )
+            mlSettingsDiff.warrantyDuration = mlWarrantyDuration;
+          if (
+            settingsSnap.shippingMode !== null &&
+            mlShippingMode !== settingsSnap.shippingMode
+          )
+            mlSettingsDiff.shippingMode = mlShippingMode;
+          if (
+            settingsSnap.freeShipping !== null &&
+            mlFreeShipping !== settingsSnap.freeShipping
+          )
+            mlSettingsDiff.freeShipping = mlFreeShipping;
+          if (
+            settingsSnap.localPickup !== null &&
+            mlLocalPickup !== settingsSnap.localPickup
+          )
+            mlSettingsDiff.localPickup = mlLocalPickup;
+          if (
+            settingsSnap.manufacturingTime !== null &&
+            mlManufacturingTime !== settingsSnap.manufacturingTime
+          )
+            mlSettingsDiff.manufacturingTime = mlManufacturingTime;
+        }
+
         const overridesPayload: Record<string, unknown> = {
           // Campos do produto que viram overrides — apenas quando diferentes
           titleOverride: diffStr(data.name, product.name),
@@ -1722,17 +1822,8 @@ export function EditProductDialog({
             cleanData.sourceVehicle,
             product.sourceVehicle,
           ),
-          // Settings ML específicos do anúncio (sempre por listing,
-          // não comparam com produto)
-          listingType: mlListingType,
-          itemCondition: mlItemCondition,
-          hasWarranty: mlHasWarranty,
-          warrantyUnit: mlWarrantyUnit,
-          warrantyDuration: mlWarrantyDuration,
-          shippingMode: mlShippingMode,
-          freeShipping: mlFreeShipping,
-          localPickup: mlLocalPickup,
-          manufacturingTime: mlManufacturingTime,
+          // Settings ML: apenas os que mudaram desde a abertura do modal.
+          ...mlSettingsDiff,
         };
 
         try {
@@ -1901,12 +1992,47 @@ export function EditProductDialog({
         }
       }
 
-      onToast(
-        dispatched > 0
-          ? `Produto atualizado. ${dispatched} anúncio(s) em processamento — acompanhe na aba Anúncios.`
-          : "Produto atualizado com sucesso!",
-        "success",
-      );
+      // Sumário do re-sync de anúncios EXISTENTES feito dentro do PUT
+      // /products/:id (ProductUseCase.update → syncProductListings).
+      // Mostra ao usuário quantos anúncios ML/Shopee receberam a alteração
+      // e quais falharam, para que ele saiba que a edição se propagou.
+      const syncResults: Array<{
+        success?: boolean;
+        externalListingId?: string;
+        error?: string;
+      }> = Array.isArray(result?.syncResults) ? result.syncResults : [];
+      const synced = syncResults.filter((r) => r?.success).length;
+      const failedItems = syncResults.filter((r) => !r?.success);
+      const failedSummary = failedItems
+        .slice(0, 3)
+        .map(
+          (r) =>
+            `${r?.externalListingId || "?"}${
+              r?.error ? `: ${r.error.slice(0, 80)}` : ""
+            }`,
+        )
+        .join("; ");
+      const moreFailed =
+        failedItems.length > 3 ? ` (+${failedItems.length - 3})` : "";
+
+      let summaryMsg = "Produto atualizado com sucesso!";
+      let summaryType: "success" | "warning" | "error" = "success";
+      if (syncResults.length > 0) {
+        if (failedItems.length === 0) {
+          summaryMsg = `Produto atualizado e ${synced} anúncio(s) sincronizado(s).`;
+        } else if (synced > 0) {
+          summaryMsg = `Produto atualizado. ${synced} anúncio(s) sincronizado(s); ${failedItems.length} falhou(aram): ${failedSummary}${moreFailed}.`;
+          summaryType = "warning";
+        } else {
+          summaryMsg = `Produto atualizado, mas ${failedItems.length} anúncio(s) falhou(aram): ${failedSummary}${moreFailed}.`;
+          summaryType = "warning";
+        }
+      }
+      if (dispatched > 0) {
+        summaryMsg += ` ${dispatched} novo(s) anúncio(s) em processamento — acompanhe na aba Anúncios.`;
+      }
+
+      onToast(summaryMsg, summaryType);
       // Invalida cache de listings — re-sync vai atualizar status/permalinks.
       invalidateListingsStatusCache(product.id);
       onProductUpdated();
