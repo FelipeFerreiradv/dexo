@@ -404,18 +404,66 @@ export class ShopeeApiService {
   }
 
   /**
-   * Atualiza apenas o preço de um item
+   * Atualiza preço de um item (ou modelos específicos) via
+   * /api/v2/product/update_price.
+   *
+   * IMPORTANTE: o endpoint `update_item` aceita `original_price` mas a
+   * Shopee descarta silenciosamente esse campo em vários cenários (mesmo
+   * sem variações). Para garantia de propagação do preço, sempre usar
+   * este método dedicado.
+   *
+   * Para itens SEM variações: passar `[{ original_price }]`.
+   * Para itens COM variações: passar `[{ model_id, original_price }, ...]`
+   * uma entrada por modelo.
+   */
+  static async updatePrice(
+    accessToken: string,
+    shopId: number,
+    itemId: number,
+    priceList: Array<{ model_id?: number; original_price: number }>,
+  ): Promise<void> {
+    const apiPath = "/api/v2/product/update_price";
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        result?: Array<{
+          model_id?: number;
+          failed_reason?: string;
+        }>;
+      }>
+    >("POST", apiPath, accessToken, shopId, {
+      item_id: itemId,
+      price_list: priceList,
+    });
+
+    if (response.error) {
+      throw new Error(
+        `Erro ao atualizar preço Shopee: ${response.message ?? response.error}`,
+      );
+    }
+
+    const failed = response.response?.result?.find((r) => r.failed_reason);
+    if (failed) {
+      throw new Error(
+        `Shopee rejeitou update de preço${failed.model_id ? ` (model ${failed.model_id})` : ""}: ${failed.failed_reason}`,
+      );
+    }
+  }
+
+  /**
+   * Atualiza apenas o preço de um item — wrapper conveniência sobre updatePrice.
+   * Para itens sem variações (caso comum). Para variações, use updatePrice
+   * diretamente com um price_list por model_id.
    */
   static async updateItemPrice(
     accessToken: string,
     shopId: number,
     itemId: number,
     price: number,
-  ): Promise<{ item_id: number }> {
-    return this.updateItem(accessToken, shopId, {
-      item_id: itemId,
-      original_price: price,
-    });
+  ): Promise<void> {
+    return this.updatePrice(accessToken, shopId, itemId, [
+      { original_price: price },
+    ]);
   }
 
   /**

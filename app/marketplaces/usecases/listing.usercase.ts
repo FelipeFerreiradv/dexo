@@ -4128,26 +4128,43 @@ export class ListingUseCase {
     ) {
       payload.condition = fields.itemCondition;
     }
-    if (
-      fields.hasWarranty !== undefined ||
-      fields.warrantyDuration !== undefined ||
-      fields.warrantyUnit !== undefined
-    ) {
-      if (fields.hasWarranty === false) {
+    // Defesa em profundidade: comparar com estado atual do listing antes de
+    // adicionar warranty/shipping/sale_terms ao payload. Se o frontend (ou
+    // outro caller) mandar settings inalterados, NÃO empurramos pro ML —
+    // que rejeita com `field_not_modifiable` em anúncios com vendas.
+    const warrantyChanged =
+      (fields.hasWarranty !== undefined &&
+        fields.hasWarranty !== listing.hasWarranty) ||
+      (fields.warrantyDuration !== undefined &&
+        fields.warrantyDuration !== listing.warrantyDuration) ||
+      (fields.warrantyUnit !== undefined &&
+        fields.warrantyUnit !== listing.warrantyUnit);
+    if (warrantyChanged) {
+      const effectiveHasWarranty =
+        fields.hasWarranty ?? listing.hasWarranty ?? false;
+      const effectiveDuration =
+        fields.warrantyDuration ?? listing.warrantyDuration ?? null;
+      const effectiveUnit =
+        fields.warrantyUnit ?? listing.warrantyUnit ?? null;
+      if (effectiveHasWarranty === false) {
         payload.warranty = "Sem garantia";
       } else if (
-        fields.hasWarranty === true &&
-        fields.warrantyDuration &&
-        fields.warrantyUnit
+        effectiveHasWarranty === true &&
+        effectiveDuration &&
+        effectiveUnit
       ) {
-        payload.warranty = `Garantia do vendedor: ${fields.warrantyDuration} ${fields.warrantyUnit}`;
+        payload.warranty = `Garantia do vendedor: ${effectiveDuration} ${effectiveUnit}`;
       }
     }
-    if (
-      fields.shippingMode !== undefined ||
-      fields.freeShipping !== undefined ||
-      fields.localPickup !== undefined
-    ) {
+
+    const shippingChanged =
+      (fields.shippingMode !== undefined &&
+        fields.shippingMode !== listing.shippingMode) ||
+      (fields.freeShipping !== undefined &&
+        fields.freeShipping !== listing.freeShipping) ||
+      (fields.localPickup !== undefined &&
+        fields.localPickup !== listing.localPickup);
+    if (shippingChanged) {
       payload.shipping = {
         ...(fields.shippingMode ? { mode: fields.shippingMode } : {}),
         ...(fields.freeShipping !== undefined
@@ -4158,7 +4175,10 @@ export class ListingUseCase {
           : {}),
       };
     }
-    if (fields.manufacturingTime !== undefined) {
+    if (
+      fields.manufacturingTime !== undefined &&
+      fields.manufacturingTime !== listing.manufacturingTime
+    ) {
       const value = fields.manufacturingTime;
       // ML rejeita "0 dias" ao tentar deletar/setar manufacturing_time:
       //   "Invalid value '0 dias', it should be between 1 and 60 days"
@@ -4229,8 +4249,10 @@ export class ListingUseCase {
           const rawMessage =
             error instanceof Error ? error.message : "Erro desconhecido";
           console.error(
-            `[ListingUseCase] ML updateItem attempt ${attempt + 1} failed:`,
+            `[ListingUseCase] ML updateItem attempt ${attempt + 1} failed (listingId=${listing.id}, externalId=${listing.externalListingId}):`,
             rawMessage,
+            "payload:",
+            JSON.stringify(currentPayload),
           );
 
           const lower = rawMessage.toLowerCase();
@@ -4270,6 +4292,22 @@ export class ListingUseCase {
             if ("attributes" in currentPayload) {
               blockedThisRound.push("attributes");
               labelThisRound.push("atributos imutáveis");
+            }
+          }
+          // Rede de segurança: se algum caller mandar shipping em anúncio
+          // que não permite alterar (`field_not_modifiable: shipping is not
+          // modifiable`), removemos do payload e tentamos novamente sem.
+          if (
+            lower.includes("shipping") &&
+            (lower.includes("not modifiable") ||
+              lower.includes("not_updatable") ||
+              lower.includes("field_not_updatable"))
+          ) {
+            if ("shipping" in currentPayload) {
+              blockedThisRound.push("shipping");
+              labelThisRound.push(
+                "frete (anúncio com vendas/ofertas — só pode ser ajustado em anúncios sem vendas)",
+              );
             }
           }
           if (
@@ -4450,26 +4488,35 @@ export class ListingUseCase {
 
     type ShopeeUpdate = import("../types/shopee-api.types").ShopeeItemUpdatePayload;
     const payload: ShopeeUpdate = { item_id: itemId };
-    let hasField = false;
+    let hasItemUpdateField = false;
+    let priceToApply: number | null = null;
 
     if (fields.titleOverride !== undefined && fields.titleOverride !== null) {
       payload.item_name = fields.titleOverride;
-      hasField = true;
+      hasItemUpdateField = true;
     }
     if (
       fields.descriptionOverride !== undefined &&
       fields.descriptionOverride !== null
     ) {
       payload.description = fields.descriptionOverride;
-      hasField = true;
+      hasItemUpdateField = true;
     }
     if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
-      payload.original_price = fields.priceOverride;
-      hasField = true;
+      const priceNum = Number(fields.priceOverride);
+      if (!Number.isFinite(priceNum) || priceNum <= 0) {
+        return {
+          success: false,
+          error: "Preço inválido para anúncio Shopee (deve ser número positivo)",
+        };
+      }
+      // Preço NÃO vai pelo update_item (Shopee descarta silenciosamente
+      // em vários cenários). Vai por update_price abaixo.
+      priceToApply = priceNum;
     }
     if (fields.weightKgOverride !== undefined && fields.weightKgOverride !== null) {
       payload.weight = fields.weightKgOverride;
-      hasField = true;
+      hasItemUpdateField = true;
     }
     if (
       fields.heightCmOverride !== undefined &&
@@ -4484,24 +4531,138 @@ export class ListingUseCase {
         package_width: fields.widthCmOverride,
         package_length: fields.lengthCmOverride,
       };
-      hasField = true;
+      hasItemUpdateField = true;
     }
 
-    if (hasField) {
+    if (hasItemUpdateField || priceToApply !== null) {
+      // Pre-check: status e has_model. Se has_model=true e há mudança de
+      // preço, precisamos do model_list para enviar update_price com cada
+      // model_id; senão a Shopee só atualiza um modelo "fantasma".
+      let currentItem: import("../types/shopee-api.types").ShopeeItem | null =
+        null;
       try {
-        await ShopeeApiService.updateItem(
+        currentItem = await ShopeeApiService.getItemBaseInfo(
           account.accessToken,
           account.shopId,
-          payload,
+          itemId,
         );
       } catch (error) {
-        const rawMessage =
-          error instanceof Error ? error.message : "Erro desconhecido";
-        console.error(
-          "[ListingUseCase] Shopee updateItem failed:",
-          rawMessage,
+        // Falha em getItemBaseInfo não bloqueia — só logamos e seguimos.
+        console.warn(
+          `[ListingUseCase] Shopee getItemBaseInfo failed (listingId=${listing.id}, itemId=${itemId}):`,
+          error instanceof Error ? error.message : error,
         );
-        return { success: false, error: rawMessage };
+      }
+
+      if (currentItem) {
+        const blockedStatuses: Array<typeof currentItem.status> = [
+          "BANNED",
+          "DELETED",
+          "REVIEWING",
+          "SELLER_DELETED",
+        ];
+        if (blockedStatuses.includes(currentItem.status)) {
+          return {
+            success: false,
+            error: `Anúncio Shopee em status ${currentItem.status} não aceita edição. Reative o item no painel da Shopee antes.`,
+          };
+        }
+      }
+
+      // 1) Outros campos (title/desc/weight/dimension) via update_item.
+      if (hasItemUpdateField) {
+        try {
+          const response = await ShopeeApiService.updateItem(
+            account.accessToken,
+            account.shopId,
+            payload,
+          );
+          console.log(
+            `[ListingUseCase] Shopee updateItem OK (listingId=${listing.id}, externalId=${listing.externalListingId}):`,
+            "status:",
+            currentItem?.status ?? "unknown",
+            "has_model:",
+            currentItem?.has_model ?? "unknown",
+            "payload:",
+            JSON.stringify(payload),
+            "response_keys:",
+            Object.keys(response || {}).join(","),
+          );
+        } catch (error) {
+          const rawMessage =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          console.error(
+            `[ListingUseCase] Shopee updateItem failed (listingId=${listing.id}, externalId=${listing.externalListingId}):`,
+            rawMessage,
+            "payload:",
+            JSON.stringify(payload),
+          );
+          return { success: false, error: rawMessage };
+        }
+      }
+
+      // 2) Preço via /api/v2/product/update_price (endpoint dedicado).
+      // update_item descarta original_price silenciosamente em vários
+      // cenários — daí a separação.
+      if (priceToApply !== null) {
+        try {
+          const priceList: Array<{
+            model_id?: number;
+            original_price: number;
+          }> = [];
+          if (currentItem?.has_model === true) {
+            // Item com variações: aplica o mesmo preço a TODOS os modelos.
+            // Lê model_list do currentItem (presente em getItemBaseInfo).
+            const models = (currentItem as unknown as {
+              model_list?: Array<{ model_id?: number }>;
+            }).model_list;
+            if (Array.isArray(models) && models.length > 0) {
+              for (const m of models) {
+                if (typeof m.model_id === "number") {
+                  priceList.push({
+                    model_id: m.model_id,
+                    original_price: priceToApply,
+                  });
+                }
+              }
+            }
+            if (priceList.length === 0) {
+              return {
+                success: false,
+                error:
+                  "Anúncio Shopee tem variações mas não foi possível ler a lista de modelos. Ajuste o preço pelo painel da Shopee.",
+              };
+            }
+          } else {
+            priceList.push({ original_price: priceToApply });
+          }
+
+          await ShopeeApiService.updatePrice(
+            account.accessToken,
+            account.shopId,
+            itemId,
+            priceList,
+          );
+          console.log(
+            `[ListingUseCase] Shopee updatePrice OK (listingId=${listing.id}, externalId=${listing.externalListingId}):`,
+            "previous:",
+            currentItem?.price_info?.[0]?.current_price ?? "unknown",
+            "applied:",
+            priceToApply,
+            "models:",
+            priceList.length,
+          );
+        } catch (error) {
+          const rawMessage =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          console.error(
+            `[ListingUseCase] Shopee updatePrice failed (listingId=${listing.id}, externalId=${listing.externalListingId}):`,
+            rawMessage,
+            "priceToApply:",
+            priceToApply,
+          );
+          return { success: false, error: rawMessage };
+        }
       }
     }
 
