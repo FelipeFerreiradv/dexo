@@ -125,6 +125,71 @@ export class SyncUseCase {
   private static readonly SHOPEE_IMPORT_STALE_MS = 15 * 60 * 1000;
 
   /**
+   * Concatena descrição do produto + bloco "Compatível com:" gerado a partir
+   * das compatibilidades veiculares. Usado em `syncMLProductData` e
+   * `syncShopeeProductData` para garantir que o comprador veja a lista de
+   * veículos compatíveis mesmo sem chamadas a endpoints proprietários de
+   * compatibility (ex.: ML autopart catalog).
+   * Idempotente: se a descrição já contém "Compatível com", retorna como está.
+   */
+  private static appendCompatibilityBlock(
+    description: string | null | undefined,
+    compatibilities:
+      | Array<{
+          brand: string;
+          model: string;
+          yearFrom?: number | null;
+          yearTo?: number | null;
+          version?: string | null;
+        }>
+      | null
+      | undefined,
+  ): string {
+    const baseRaw = (description ?? "").toString();
+    if (!Array.isArray(compatibilities) || compatibilities.length === 0) {
+      return baseRaw;
+    }
+    if (/compat[ií]vel com/i.test(baseRaw)) {
+      return baseRaw;
+    }
+    const lines: string[] = [];
+    const seen = new Set<string>();
+    for (const compat of compatibilities) {
+      if (!compat) continue;
+      const brand = (compat.brand || "").trim();
+      const model = (compat.model || "").trim();
+      if (!brand || !model) continue;
+      const yFrom =
+        typeof compat.yearFrom === "number" && compat.yearFrom > 0
+          ? compat.yearFrom
+          : null;
+      const yTo =
+        typeof compat.yearTo === "number" && compat.yearTo > 0
+          ? compat.yearTo
+          : null;
+      let yearPart = "";
+      if (yFrom && yTo && yFrom !== yTo) yearPart = `${yFrom}-${yTo}`;
+      else if (yFrom && yTo) yearPart = `${yFrom}`;
+      else if (yFrom) yearPart = `${yFrom}+`;
+      else if (yTo) yearPart = `até ${yTo}`;
+      const versionPart =
+        typeof compat.version === "string" && compat.version.trim().length > 0
+          ? compat.version.trim()
+          : "";
+      const line = [brand.toUpperCase(), model.toUpperCase(), yearPart, versionPart]
+        .filter(Boolean)
+        .join(" ");
+      if (line && !seen.has(line)) {
+        seen.add(line);
+        lines.push(line);
+      }
+    }
+    if (lines.length === 0) return baseRaw;
+    const block = `\n\nCompatível com:\n- ${lines.join("\n- ")}`;
+    return baseRaw ? `${baseRaw}${block}` : block.trimStart();
+  }
+
+  /**
    * Importa todos os itens do Mercado Livre e tenta vincular automaticamente por SKU
    * Nota: Apenas cria listings para itens que podem ser vinculados a produtos existentes
    */
@@ -2104,21 +2169,49 @@ export class SyncUseCase {
       // personalizados (titleOverride, priceOverride, etc.), precisamos
       // RESPEITAR esses overrides no re-sync — caso contrario, editar o
       // produto sobrescreveria a personalizacao do anuncio.
-      const listingForOverrides = await prisma.productListing.findUnique({
-        where: {
-          marketplaceAccountId_externalListingId: {
-            marketplaceAccountId,
-            externalListingId,
+      const [listingForOverrides, productCompatibilities] = await Promise.all([
+        prisma.productListing.findUnique({
+          where: {
+            marketplaceAccountId_externalListingId: {
+              marketplaceAccountId,
+              externalListingId,
+            },
           },
-        },
-      });
+        }),
+        // Compatibilidades veiculares: usadas para enriquecer a descrição
+        // do anúncio. Falha silenciosa — não bloqueia sync se a tabela
+        // estiver vazia.
+        (prisma as any).productCompatibility
+          .findMany({
+            where: { productId },
+            orderBy: { createdAt: "asc" },
+          })
+          .catch(() => [] as unknown[]),
+      ]);
       const { applyOverridesToProduct } = await import(
         "../services/listing-overrides.service"
       );
       const effectiveProduct = applyOverridesToProduct(
         product,
         listingForOverrides,
-      );
+      ) as Record<string, unknown> & {
+        compatibilities?: Array<{
+          brand: string;
+          model: string;
+          yearFrom?: number | null;
+          yearTo?: number | null;
+          version?: string | null;
+        }>;
+      };
+      effectiveProduct.compatibilities = Array.isArray(productCompatibilities)
+        ? (productCompatibilities as Array<{
+            brand: string;
+            model: string;
+            yearFrom?: number | null;
+            yearTo?: number | null;
+            version?: string | null;
+          }>)
+        : [];
 
       // 3. Roteamento baseado na plataforma
       switch (account.platform) {
@@ -2241,9 +2334,21 @@ export class SyncUseCase {
           updateData.title = product.name;
         }
 
-        // Sincronizar descriÃ§Ã£o se foi alterada
-        if (product.description) {
-          updateData.description = product.description;
+        // Descrição enriquecida com bloco de compatibilidade veicular.
+        // ML aceita PUT em description (com retry específico que extrai
+        // BODY_INVALID_FIELDS quando algum campo é bloqueado).
+        const enrichedDescription = SyncUseCase.appendCompatibilityBlock(
+          product.description,
+          (product as { compatibilities?: unknown }).compatibilities as Array<{
+            brand: string;
+            model: string;
+            yearFrom?: number | null;
+            yearTo?: number | null;
+            version?: string | null;
+          }>,
+        );
+        if (enrichedDescription) {
+          updateData.description = enrichedDescription;
         }
       }
 
@@ -2313,38 +2418,85 @@ export class SyncUseCase {
 
       // SÃ³ fazer a atualizaÃ§Ã£o se houver dados para atualizar
       if (Object.keys(updateData).length > 0) {
+        // Loop de retry: ML pode rejeitar parte do payload por regras
+        // específicas do anúncio (family_name bloqueia title em autopart
+        // catalog; attributes imutáveis em catálogo). Em vez de perder o
+        // sync inteiro de preço/estoque, removemos o campo bloqueado e
+        // tentamos novamente.
         let updatedItem;
-        try {
-          updatedItem = await MLApiService.updateItem(
-            account.accessToken,
-            externalListingId,
-            updateData,
-          );
-        } catch (err: any) {
-          // Se o ML rejeitar o PUT por causa dos attributes (ex.: catálogo
-          // bloqueia algum), retentamos o update SEM attributes para não
-          // perder a sincronização de preço/estoque.
-          const cause = err?.response?.data;
-          const causeStr =
-            typeof cause === "string" ? cause : JSON.stringify(cause || "");
-          const looksLikeAttrError =
-            updateData.attributes &&
-            (causeStr.toLowerCase().includes("attribute") ||
-              err?.response?.status === 400);
-          if (looksLikeAttrError) {
-            console.warn(
-              `[SYNC] PUT com attributes rejeitado pelo ML (${err?.response?.status}). Re-tentando sem attributes:`,
-              causeStr.slice(0, 500),
-            );
-            const { attributes: _drop, ...withoutAttrs } = updateData;
+        let currentPayload = { ...updateData };
+        const MAX_ML_ATTEMPTS = 4;
+        let succeeded = false;
+
+        for (let attempt = 0; attempt < MAX_ML_ATTEMPTS; attempt++) {
+          try {
             updatedItem = await MLApiService.updateItem(
               account.accessToken,
               externalListingId,
-              withoutAttrs,
+              currentPayload,
             );
-          } else {
-            throw err;
+            succeeded = true;
+            break;
+          } catch (err: any) {
+            const cause = err?.response?.data;
+            const causeStr =
+              typeof cause === "string" ? cause : JSON.stringify(cause || "");
+            const lower = (
+              causeStr +
+              " " +
+              (err?.message || "")
+            ).toLowerCase();
+
+            const blockedThisRound: string[] = [];
+            if (
+              "title" in currentPayload &&
+              (lower.includes("cannot modify the title") ||
+                lower.includes("family_name"))
+            ) {
+              blockedThisRound.push("title");
+            }
+            if (
+              "attributes" in currentPayload &&
+              lower.includes("attribute") &&
+              (lower.includes("invalid") || err?.response?.status === 400)
+            ) {
+              blockedThisRound.push("attributes");
+            }
+            if (
+              "description" in currentPayload &&
+              lower.includes("description") &&
+              lower.includes("not_modifiable")
+            ) {
+              blockedThisRound.push("description");
+            }
+
+            if (blockedThisRound.length === 0) {
+              // Erro não conhecido — propaga e marca sync como falho.
+              throw err;
+            }
+
+            console.warn(
+              `[SYNC] ML rejeitou ${blockedThisRound.join(",")} (attempt ${attempt + 1}); removendo do payload e re-tentando. cause:`,
+              causeStr.slice(0, 500),
+            );
+            const next = { ...currentPayload };
+            for (const key of blockedThisRound) {
+              delete (next as Record<string, unknown>)[key];
+            }
+            currentPayload = next;
+
+            if (Object.keys(currentPayload).length === 0) {
+              // Nada sobrou pra mandar — pula sem erro fatal.
+              succeeded = true;
+              break;
+            }
           }
+        }
+
+        if (!succeeded) {
+          throw new Error(
+            "Não foi possível atualizar o anúncio no ML após várias tentativas",
+          );
         }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
 
@@ -2416,8 +2568,11 @@ export class SyncUseCase {
         item_id: parseInt(externalListingId),
       };
 
-      // Sempre sincronizar preÃ§o e estoque
-      updateData.price = Number(product.price);
+      // O preço NÃO vai por update_item (Shopee descarta silenciosamente
+      // em vários cenários). Aplicamos via update_price separado abaixo.
+      const priceNum = Number(product.price);
+      const priceToApply =
+        Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
       updateData.stock = product.stock;
 
       // Sincronizar tÃ­tulo se foi alterado
@@ -2425,23 +2580,119 @@ export class SyncUseCase {
         updateData.item_name = product.name;
       }
 
-      // Sincronizar descriÃ§Ã£o se foi alterada
+      // Descrição enriquecida com bloco de compatibilidade veicular —
+      // Shopee não tem endpoint dedicado de compat, então a descrição é
+      // o veículo. Idempotente: se a descrição já tem o bloco, mantém.
+      const enrichedShopeeDescription = SyncUseCase.appendCompatibilityBlock(
+        product.description,
+        (product as { compatibilities?: unknown }).compatibilities as Array<{
+          brand: string;
+          model: string;
+          yearFrom?: number | null;
+          yearTo?: number | null;
+          version?: string | null;
+        }>,
+      );
       if (
-        product.description &&
-        product.description !== currentItem.description
+        enrichedShopeeDescription &&
+        enrichedShopeeDescription !== currentItem.description
       ) {
-        updateData.description = product.description;
+        updateData.description = enrichedShopeeDescription;
+      }
+
+      // Dimensões e peso — Shopee aceita esses campos no update_item.
+      const heightCm = Number((product as { heightCm?: unknown }).heightCm);
+      const widthCm = Number((product as { widthCm?: unknown }).widthCm);
+      const lengthCm = Number((product as { lengthCm?: unknown }).lengthCm);
+      const weightKg = Number((product as { weightKg?: unknown }).weightKg);
+      if (
+        Number.isFinite(heightCm) &&
+        Number.isFinite(widthCm) &&
+        Number.isFinite(lengthCm) &&
+        heightCm > 0 &&
+        widthCm > 0 &&
+        lengthCm > 0
+      ) {
+        updateData.dimension = {
+          package_height: heightCm,
+          package_width: widthCm,
+          package_length: lengthCm,
+        };
+      }
+      if (Number.isFinite(weightKg) && weightKg > 0) {
+        updateData.weight = weightKg;
       }
 
       console.log(`[SYNC] Dados a serem enviados para Shopee:`, updateData);
 
-      // Fazer a atualizaÃ§Ã£o
-      const updatedItem = await ShopeeApiService.updateItem(
-        account.accessToken,
-        account.shopId,
-        updateData,
+      // 1) Campos não-preço via update_item.
+      //    item_id sempre presente; só chamamos se houver algum campo além dele.
+      const updateItemKeys = Object.keys(updateData).filter(
+        (k) => k !== "item_id",
       );
-      console.log(`[SYNC] Resposta do Shopee:`, updatedItem);
+      if (updateItemKeys.length > 0) {
+        const updatedItem = await ShopeeApiService.updateItem(
+          account.accessToken,
+          account.shopId,
+          updateData,
+        );
+        console.log(
+          `[SYNC] Resposta do Shopee update_item:`,
+          "keys=",
+          Object.keys(updatedItem || {}).join(","),
+        );
+      }
+
+      // 2) Preço via /api/v2/product/update_price (endpoint dedicado).
+      //    update_item descarta original_price em vários cenários — daí
+      //    usamos sempre o endpoint dedicado para garantir propagação.
+      if (priceToApply !== null) {
+        const priceList: Array<{
+          model_id?: number;
+          original_price: number;
+        }> = [];
+        if (currentItem.has_model === true) {
+          const models = (
+            currentItem as unknown as {
+              model_list?: Array<{ model_id?: number }>;
+            }
+          ).model_list;
+          if (Array.isArray(models) && models.length > 0) {
+            for (const m of models) {
+              if (typeof m.model_id === "number") {
+                priceList.push({
+                  model_id: m.model_id,
+                  original_price: priceToApply,
+                });
+              }
+            }
+          }
+        }
+        if (priceList.length === 0) {
+          priceList.push({ original_price: priceToApply });
+        }
+        try {
+          await ShopeeApiService.updatePrice(
+            account.accessToken,
+            account.shopId,
+            parseInt(externalListingId),
+            priceList,
+          );
+          console.log(
+            `[SYNC] Shopee updatePrice OK previous=${currentItem.price_info?.[0]?.current_price ?? "?"} applied=${priceToApply} models=${priceList.length}`,
+          );
+        } catch (priceErr) {
+          // Falha de preço não derruba o sync inteiro — o resto pode ter
+          // passado. Reportamos via result.error para subir como warning.
+          const msg =
+            priceErr instanceof Error ? priceErr.message : String(priceErr);
+          result.error = `Preço não atualizou na Shopee: ${msg}`;
+          console.error(
+            `[SYNC] Shopee updatePrice failed (externalId=${externalListingId}):`,
+            msg,
+          );
+        }
+      }
 
       result.success = true;
       result.previousStock = this.getShopeeAvailableStock(currentItem);

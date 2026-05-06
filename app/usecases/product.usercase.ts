@@ -168,6 +168,14 @@ export class ProductUseCase {
 
     const updated = await this.productRepository.update(id, data, userId);
 
+    // Limpa overrides dos anúncios para os campos que o usuário editou no
+    // produto. Sem isso, anúncios com priceOverride (criados via "Editar
+    // anúncio individual") ignorariam a nova edição porque o re-sync
+    // aplica override antes de enviar pro ML/Shopee.
+    // Estratégia: edição no produto = "produto vira fonte da verdade" para
+    // o campo editado. Outros campos com override permanecem intactos.
+    await this.clearOverridesForEditedFields(id, product, data);
+
     // Run stock log + marketplace sync in parallel (both are independent)
     const stockLogPromise = (async () => {
       try {
@@ -223,6 +231,133 @@ export class ProductUseCase {
       product: updated,
       syncResults,
     };
+  }
+
+  /**
+   * Limpa overrides dos ProductListings vinculados a este produto APENAS
+   * para os campos que o usuário editou neste update. Mantém overrides dos
+   * outros campos para preservar customizações que ele não tocou.
+   *
+   * Decisão de design: edição no produto vira fonte da verdade para o
+   * campo editado. Sem isso, anúncios com priceOverride (criados via
+   * "Editar anúncio individual") ignoram a nova edição.
+   *
+   * Não faz round-trip ao ML/Shopee — a propagação real acontece em
+   * `syncProductListings` chamado logo depois.
+   */
+  private async clearOverridesForEditedFields(
+    productId: string,
+    oldProduct: Product,
+    data: ProductUpdate,
+  ): Promise<void> {
+    const clearOverrides: Record<string, null> = {};
+
+    const stringChanged = (
+      newVal: string | null | undefined,
+      oldVal: string | null | undefined,
+    ) =>
+      newVal !== undefined &&
+      (newVal ?? null) !== ((oldVal ?? null) as string | null);
+
+    const numChanged = (
+      newVal: number | null | undefined,
+      oldVal: unknown,
+    ) => {
+      if (newVal === undefined) return false;
+      const oldNum =
+        typeof oldVal === "number"
+          ? oldVal
+          : oldVal && typeof oldVal === "object" && "toNumber" in (oldVal as object)
+            ? (oldVal as { toNumber(): number }).toNumber()
+            : oldVal == null
+              ? null
+              : Number(oldVal);
+      return Number(newVal) !== oldNum;
+    };
+
+    const jsonChanged = (newVal: unknown, oldVal: unknown) => {
+      if (newVal === undefined) return false;
+      try {
+        return JSON.stringify(newVal ?? null) !== JSON.stringify(oldVal ?? null);
+      } catch {
+        return true;
+      }
+    };
+
+    if (stringChanged(data.name, oldProduct.name))
+      clearOverrides.titleOverride = null;
+    if (stringChanged(data.description, oldProduct.description))
+      clearOverrides.descriptionOverride = null;
+    if (numChanged(data.price, (oldProduct as { price?: unknown }).price))
+      clearOverrides.priceOverride = null;
+    if (stringChanged(data.brand, oldProduct.brand))
+      clearOverrides.brandOverride = null;
+    if (stringChanged(data.model, oldProduct.model))
+      clearOverrides.modelOverride = null;
+    if (stringChanged(data.year, oldProduct.year))
+      clearOverrides.yearOverride = null;
+    if (stringChanged(data.version, oldProduct.version))
+      clearOverrides.versionOverride = null;
+    if (stringChanged(data.category, oldProduct.category))
+      clearOverrides.categoryOverride = null;
+    const newMlCategory = data.mlCategoryId ?? data.mlCategory;
+    const oldMlCategory =
+      (oldProduct as { mlCategoryId?: string | null }).mlCategoryId ??
+      (oldProduct as { mlCategory?: string | null }).mlCategory;
+    if (stringChanged(newMlCategory, oldMlCategory))
+      clearOverrides.mlCategoryOverride = null;
+    if (
+      stringChanged(
+        data.shopeeCategoryId,
+        (oldProduct as { shopeeCategoryId?: string | null }).shopeeCategoryId,
+      )
+    )
+      clearOverrides.shopeeCategoryOverride = null;
+    if (stringChanged(data.partNumber, oldProduct.partNumber))
+      clearOverrides.partNumberOverride = null;
+    if (stringChanged(data.quality, oldProduct.quality))
+      clearOverrides.qualityOverride = null;
+    if (numChanged(data.heightCm, oldProduct.heightCm))
+      clearOverrides.heightCmOverride = null;
+    if (numChanged(data.widthCm, oldProduct.widthCm))
+      clearOverrides.widthCmOverride = null;
+    if (numChanged(data.lengthCm, oldProduct.lengthCm))
+      clearOverrides.lengthCmOverride = null;
+    if (numChanged(data.weightKg, oldProduct.weightKg))
+      clearOverrides.weightKgOverride = null;
+    if (
+      jsonChanged(
+        data.imageUrls,
+        (oldProduct as { imageUrls?: unknown }).imageUrls,
+      )
+    )
+      clearOverrides.imageUrlsOverride = null;
+    if (jsonChanged(data.attributes, oldProduct.attributes))
+      clearOverrides.attributesOverride = null;
+    if (stringChanged(data.sourceVehicle, oldProduct.sourceVehicle))
+      clearOverrides.sourceVehicleOverride = null;
+
+    if (Object.keys(clearOverrides).length === 0) return;
+
+    try {
+      const result = await prisma.productListing.updateMany({
+        where: { productId },
+        data: clearOverrides as Record<string, null>,
+      });
+      if (result.count > 0) {
+        console.log(
+          `[ProductUseCase] Cleared ${Object.keys(clearOverrides).join(",")} override(s) on ${result.count} listing(s) of product ${productId}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[ProductUseCase] Failed to clear overrides for product ${productId}:`,
+        error,
+      );
+      // Não bloqueia o update do produto — overrides desatualizados são
+      // só uma inconsistência cosmética; o re-sync vai usar effectiveProduct
+      // baseado nesses overrides até a próxima edição.
+    }
   }
 
   /**
