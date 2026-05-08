@@ -179,8 +179,29 @@ export class MLOAuthService {
       throw err;
     }
 
+    let perAccountClientId: string | undefined;
+    let perAccountClientSecret: string | undefined;
     try {
-      return await this.refreshAccessToken(refreshToken);
+      const prismaMod = await import("@/app/lib/prisma");
+      const prisma = prismaMod.default;
+      const acc = await (prisma as any).marketplaceAccount.findUnique({
+        where: { id: accountId },
+        select: { appClientId: true, appClientSecret: true },
+      });
+      if (acc?.appClientId && acc?.appClientSecret) {
+        perAccountClientId = acc.appClientId;
+        perAccountClientSecret = acc.appClientSecret;
+      }
+    } catch {
+      // fallback to env credentials
+    }
+
+    try {
+      return await this.refreshAccessToken(
+        refreshToken,
+        perAccountClientId,
+        perAccountClientSecret,
+      );
     } catch (err) {
       const errorCode = (err as any)?.errorCode as string | undefined;
       if (
@@ -229,7 +250,11 @@ export class MLOAuthService {
    * Renova token expirado usando refresh_token
    * Chamada automática quando access_token expira
    */
-  static async refreshAccessToken(refreshToken: string): Promise<{
+  static async refreshAccessToken(
+    refreshToken: string,
+    overrideClientId?: string,
+    overrideClientSecret?: string,
+  ): Promise<{
     accessToken: string;
     refreshToken: string;
     expiresIn: number;
@@ -244,8 +269,8 @@ export class MLOAuthService {
         tokenUrl.toString(),
         {
           grant_type: "refresh_token",
-          client_id: ML_CONSTANTS.CLIENT_ID,
-          client_secret: ML_CONSTANTS.CLIENT_SECRET,
+          client_id: overrideClientId ?? ML_CONSTANTS.CLIENT_ID,
+          client_secret: overrideClientSecret ?? ML_CONSTANTS.CLIENT_SECRET,
           refresh_token: refreshToken,
         },
         {

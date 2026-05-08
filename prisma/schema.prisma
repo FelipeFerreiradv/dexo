@@ -150,19 +150,21 @@ model Location {
 }
 
 model MarketplaceAccount {
-  id             String                @id @default(cuid())
-  userId         String
-  platform       Platform
-  accountName    String
-  accessToken    String
-  refreshToken   String
-  expiresAt      DateTime
-  externalUserId String?
-  status         AccountStatus         @default(ACTIVE)
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
-  shopId         Int?
-  user           User                  @relation(fields: [userId], references: [id])
+  id              String                @id @default(cuid())
+  userId          String
+  platform        Platform
+  accountName     String
+  accessToken     String
+  refreshToken    String
+  expiresAt       DateTime
+  externalUserId  String?
+  status          AccountStatus         @default(ACTIVE)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  shopId          Int?
+  appClientId     String?
+  appClientSecret String?
+  user            User                  @relation(fields: [userId], references: [id])
   orders         Order[]
   listings       ProductListing[]
   syncLogs       SyncLog[]

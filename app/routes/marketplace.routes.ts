@@ -116,6 +116,25 @@ async function resolveMlAccountForCompat(
  * Rotas para gerenciar conexÃµes com marketplaces
  */
 export async function marketplaceRoutes(app: FastifyInstance) {
+  app.get("/ml/cli-callback", async (request, reply) => {
+    const q = (request.query as Record<string, string | undefined>) ?? {};
+    const code = q.code ?? "";
+    const state = q.state ?? "";
+    const error = q.error ?? "";
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ML CLI Callback</title>
+<style>body{font-family:monospace;padding:24px;max-width:900px;margin:0 auto}
+h2{color:#333}pre{background:#f4f4f4;padding:12px;border-radius:6px;word-break:break-all;white-space:pre-wrap}
+.ok{color:#080}.err{color:#c00}</style></head><body>
+<h2>${error ? "<span class=\"err\">Erro retornado pelo ML</span>" : "<span class=\"ok\">Autorização recebida</span>"}</h2>
+${error ? `<p><b>error:</b> ${error}</p>` : ""}
+<p>Cole esta URL completa no terminal do helper CLI:</p>
+<pre>${request.protocol}://${request.hostname}${request.url}</pre>
+<p>Ou, se preferir, cole somente os campos:</p>
+<pre>code=${code}\nstate=${state}</pre>
+</body></html>`;
+    return reply.type("text/html; charset=utf-8").send(html);
+  });
+
   /**
    * POST /marketplace/ml/auth
    * Inicia fluxo de autenticaÃ§Ã£o com Mercado Livre
@@ -193,12 +212,40 @@ export async function marketplaceRoutes(app: FastifyInstance) {
       // O state jÃ¡ contÃ©m o userId de quando o OAuth foi iniciado
       const userId = request.user?.dataOwnerId;
 
-      // Processar callback OAuth (userId serÃ¡ recuperado do state se nÃ£o existir aqui)
-      const account = await MarketplaceUseCase.handleOAuthCallback({
-        code,
-        state,
-        userId,
-      });
+      let account;
+      try {
+        account = await MarketplaceUseCase.handleOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+      } catch (handleErr) {
+        const msg =
+          handleErr instanceof Error ? handleErr.message : String(handleErr);
+        // Fluxo CLI helper: state foi gerado fora deste backend (script
+        // connect-ml-account.ts). Retornar HTML com code+state para o
+        // operador colar no terminal.
+        if (
+          isBrowserRedirect &&
+          /state inv|state expirad|state n[ãa]o encontrado/i.test(msg)
+        ) {
+          const fullUrl = `${request.protocol}://${request.hostname}${request.url}`;
+          const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ML CLI Callback</title>
+<style>body{font-family:monospace;padding:24px;max-width:900px;margin:0 auto}
+h2{color:#080}pre{background:#f4f4f4;padding:12px;border-radius:6px;word-break:break-all;white-space:pre-wrap}
+small{color:#666}</style></head><body>
+<h2>Autorização capturada</h2>
+<p>State não bate com o backend (esperado se você usou o CLI helper).</p>
+<p><b>Cole esta URL completa de volta no terminal do helper:</b></p>
+<pre>${fullUrl}</pre>
+<p>Ou somente os campos:</p>
+<pre>code=${code}\nstate=${state}</pre>
+<small>Esta tela só aparece em conexões via CLI helper.</small>
+</body></html>`;
+          return reply.type("text/html; charset=utf-8").send(html);
+        }
+        throw handleErr;
+      }
 
       // Se veio do browser (redirect do ML), redirecionar para a página de callback do frontend
       // para que o postMessage funcione e o popup feche corretamente

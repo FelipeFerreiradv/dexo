@@ -20,7 +20,8 @@ async function getSharp() {
 
 /**
  * Garante que a imagem tenha pelo menos ML_MIN_IMAGE_PX pixels no lado mais
- * curto. Se já for grande o suficiente retorna o buffer original sem cópia.
+ * curto. PNGs com alpha são achatados sobre fundo branco antes do encode JPEG
+ * para evitar fundo preto (default do sharp ao converter alpha→opaque).
  */
 export async function ensureMLMinImageSize(buf: Buffer): Promise<Buffer> {
   try {
@@ -28,29 +29,33 @@ export async function ensureMLMinImageSize(buf: Buffer): Promise<Buffer> {
     const meta = await sharp(buf).metadata();
     const w = meta.width || 0;
     const h = meta.height || 0;
+    const hasAlpha = Boolean(meta.hasAlpha);
 
-    // Imagem já atende o mínimo — retorna sem processar (fast path)
-    if (w >= ML_MIN_IMAGE_PX && h >= ML_MIN_IMAGE_PX) return buf;
     if (w === 0 || h === 0) return buf;
 
-    // Redimensionar mantendo aspect ratio
-    const resizeOpts =
-      w <= h
-        ? { width: ML_MIN_IMAGE_PX as number }
-        : { height: ML_MIN_IMAGE_PX as number };
+    const meetsMin = w >= ML_MIN_IMAGE_PX && h >= ML_MIN_IMAGE_PX;
+    if (meetsMin && !hasAlpha) return buf;
 
-    const resized = await sharp(buf)
-      .resize(resizeOpts)
-      .jpeg({ quality: 85 })
-      .toBuffer();
+    let pipeline = sharp(buf);
+    if (!meetsMin) {
+      const resizeOpts =
+        w <= h
+          ? { width: ML_MIN_IMAGE_PX as number }
+          : { height: ML_MIN_IMAGE_PX as number };
+      pipeline = pipeline.resize(resizeOpts);
+    }
+    if (hasAlpha) {
+      pipeline = pipeline.flatten({ background: { r: 255, g: 255, b: 255 } });
+    }
+    const out = await pipeline.jpeg({ quality: 85 }).toBuffer();
 
     console.log(
-      `[ImageResize] ${w}x${h} → ${resizeOpts.width ?? "auto"}x${resizeOpts.height ?? "auto"} (${resized.length} bytes)`,
+      `[ImageResize] ${w}x${h} alpha=${hasAlpha} → out=${out.length} bytes (resize=${!meetsMin}, flatten=${hasAlpha})`,
     );
-    return resized;
+    return out;
   } catch (err) {
     console.warn(
-      "[ImageResize] Falha ao redimensionar, usando original:",
+      "[ImageResize] Falha ao processar, usando original:",
       err instanceof Error ? err.message : String(err),
     );
     return buf;
