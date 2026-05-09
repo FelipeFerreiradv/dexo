@@ -22,6 +22,8 @@ interface Flags {
   dryRun: boolean;
   skipListings: boolean;
   onlyPublish: boolean;
+  retryOnlyFromJobs: boolean;
+  retryJobsSince: Date | null;
   limit: number | null;
   platform: "ml" | "shopee" | "all";
   chunkSize: number;
@@ -145,12 +147,17 @@ function parseFlags(argv: string[]): Flags {
     return Number.isFinite(n) && n >= 0 ? n : 180_000;
   })();
 
+  const retryJobsSinceRaw = get("retry-jobs-since");
+  const retryJobsSince = retryJobsSinceRaw ? new Date(retryJobsSinceRaw) : null;
+
   return {
     userId,
     xlsx,
     dryRun: has("dry-run"),
     skipListings: has("skip-listings"),
     onlyPublish: has("only-publish"),
+    retryOnlyFromJobs: has("retry-only-from-jobs"),
+    retryJobsSince,
     limit,
     platform,
     chunkSize,
@@ -1007,12 +1014,34 @@ async function main(): Promise<void> {
 
   if (flags.onlyPublish) {
     console.log("[only-publish] pulando Phase 1 — buscando productIds direto do banco");
-    const dbRows = await prisma.product.findMany({
-      where: { userId: flags.userId },
-      select: { id: true },
-    });
-    const publishProductIds = dbRows.map((p) => p.id);
-    console.log(`[only-publish] ${publishProductIds.length} produtos encontrados no banco`);
+    let publishProductIds: string[];
+    if (flags.retryOnlyFromJobs) {
+      console.log("[retry-only-from-jobs] coletando productIds que falharam em jobs anteriores");
+      const jobs = await prisma.bulkListingJob.findMany({
+        where: {
+          userId: flags.userId,
+          status: { in: ["FAILED", "FAILED_PARTIAL"] },
+          ...(flags.retryJobsSince ? { createdAt: { gte: flags.retryJobsSince } } : {}),
+        },
+        select: { results: true },
+      });
+      const failedIds = new Set<string>();
+      for (const j of jobs) {
+        const results = Array.isArray(j.results)
+          ? (j.results as Array<{ productId: string; success: boolean }>)
+          : [];
+        for (const r of results) if (!r.success) failedIds.add(r.productId);
+      }
+      publishProductIds = Array.from(failedIds);
+      console.log(`[retry-only-from-jobs] ${jobs.length} jobs analisados, ${publishProductIds.length} productIds para reprocessar`);
+    } else {
+      const dbRows = await prisma.product.findMany({
+        where: { userId: flags.userId },
+        select: { id: true },
+      });
+      publishProductIds = dbRows.map((p) => p.id);
+      console.log(`[only-publish] ${publishProductIds.length} produtos encontrados no banco`);
+    }
     const publishSummary = await runPublish(
       publishProductIds,
       flags.userId,

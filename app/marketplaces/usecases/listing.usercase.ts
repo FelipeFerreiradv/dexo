@@ -1249,10 +1249,22 @@ export class ListingUseCase {
 
       // Usar APENAS a categoria resolvida (leaf real do ML) para decidir family_name.
       // Nunca usar originalCategoryId pois pode ser ID sintético do catálogo estático.
-      let includeFamilyName = this.shouldIncludeFamilyName(resolvedCategoryId);
-      // family_name deve ser o nome completo do produto (título desejado pelo usuário),
-      // pois o ML usa family_name para calcular o título visível em categorias User Product.
-      const familyNameValue = this.buildMLTitle(product);
+      // Patch (bulk import 2026-05-09): se o produto tem `attributes.familyName`
+      // explícito (preenchido pelo enrichment), force include para qualquer
+      // categoria — sinaliza que o operador já enriqueceu os dados.
+      const productAttrs =
+        (product.attributes as Record<string, unknown> | null) ?? {};
+      const explicitFamilyName =
+        typeof productAttrs.familyName === "string" &&
+        (productAttrs.familyName as string).trim().length > 0
+          ? (productAttrs.familyName as string).trim()
+          : null;
+      let includeFamilyName =
+        this.shouldIncludeFamilyName(resolvedCategoryId) ||
+        explicitFamilyName !== null;
+      // family_name: prefere o explícito do produto (enrichment) sobre o
+      // derivado do nome. Em ambos os casos, fica disponível para o retry interno.
+      const familyNameValue = explicitFamilyName ?? this.buildMLTitle(product);
       const noTitleWithFamily = this.noTitleWithFamilyName(resolvedCategoryId);
       const forceNoTitleFlow = includeFamilyName && noTitleWithFamily;
 
