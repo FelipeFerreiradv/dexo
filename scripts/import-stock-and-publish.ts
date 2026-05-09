@@ -772,31 +772,24 @@ async function runPublish(
   const sleep = (ms: number) =>
     new Promise<void>((r) => setTimeout(r, Math.max(0, ms)));
 
-  let firstAccount = true;
-  for (const plan of accountPlans) {
-    if (plan.productIds.length === 0) continue;
-    if (!firstAccount && flags.interAccountDelayMs > 0) {
-      console.log(
-        `[publish] aguardando ${Math.round(flags.interAccountDelayMs / 1000)}s antes da próxima conta (rate limit)…`,
-      );
-      await sleep(flags.interAccountDelayMs);
-    }
-    firstAccount = false;
+  // Cada conta roda em paralelo. Rate limit ML é por seller, então 4 contas
+  // simultâneas usam 4 budgets independentes. Dentro da conta os chunks são
+  // sequenciais com delay configurável.
+  const runAccount = async (plan: AccountPlan) => {
+    if (plan.productIds.length === 0) return;
+    const tag = `${plan.platform}/${plan.accountId.slice(-6)}`;
     const planChunks = chunk(plan.productIds, chunkSize);
     let firstChunk = true;
     for (const productChunk of planChunks) {
       if (!firstChunk && flags.interChunkDelayMs > 0) {
         console.log(
-          `[publish] aguardando ${Math.round(flags.interChunkDelayMs / 1000)}s antes do próximo chunk (rate limit)…`,
+          `[publish][${tag}] aguardando ${Math.round(flags.interChunkDelayMs / 1000)}s entre chunks…`,
         );
         await sleep(flags.interChunkDelayMs);
       }
       firstChunk = false;
       const requests: BulkListingRequestSpec[] = [
-        {
-          platform: plan.platform,
-          accountId: plan.accountId,
-        },
+        { platform: plan.platform, accountId: plan.accountId },
       ];
       const job = await BulkListingJobRepository.create({
         userId,
@@ -805,7 +798,7 @@ async function runPublish(
         overrideTemplate: null,
       });
       console.log(
-        `[publish] job criado ${job.id}: ${plan.platform}/${plan.accountId.slice(-6)} produtos=${productChunk.length}`,
+        `[publish][${tag}] job criado ${job.id} produtos=${productChunk.length}`,
       );
       await BulkListingJobRepository.markRunning(job.id);
 
@@ -821,7 +814,7 @@ async function runPublish(
           await BulkListingJobRepository.appendResult(job.id, item);
           if (itemsForThisJob.length % 50 === 0) {
             console.log(
-              `[publish] job=${job.id} progresso: ${itemsForThisJob.length}/${productChunk.length}`,
+              `[publish][${tag}] job=${job.id.slice(-6)} progresso: ${itemsForThisJob.length}/${productChunk.length}`,
             );
           }
         },
@@ -840,10 +833,13 @@ async function runPublish(
         lastError: result.lastError ?? null,
       });
       console.log(
-        `[publish] job ${job.id} finalizado: success=${result.success} failed=${result.failed}`,
+        `[publish][${tag}] job ${job.id.slice(-6)} finalizado: success=${result.success} failed=${result.failed}`,
       );
     }
-  }
+    console.log(`[publish][${tag}] CONTA CONCLUÍDA`);
+  };
+
+  await Promise.all(accountPlans.map((plan) => runAccount(plan)));
 
   summary.finishedAt = new Date().toISOString();
   return summary;
