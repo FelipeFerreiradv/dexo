@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import Link from "next/link";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -47,7 +48,7 @@ export function TopProductsTable({ rows }: TopProductsTableProps) {
           className="rounded-full px-3 py-1"
           asChild
         >
-          <a href="/produtos">Ver tudo</a>
+          <Link href="/produtos">Ver tudo</Link>
         </Button>
       </CardHeader>
       <CardContent className="px-4 pb-5">
