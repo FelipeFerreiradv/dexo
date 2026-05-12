@@ -1727,18 +1727,11 @@ export function CreateProductDialog({
         return;
       }
 
-      const currentCategory = getValues("category");
       const currentMlCategory = getValues("mlCategory");
       const currentBrand = getValues("brand");
       const currentModel = getValues("model");
       const currentYear = getValues("year");
       const currentPartNumber = getValues("partNumber");
-
-      const shouldUpdateCategory =
-        !currentCategory || norm(prev.category) === norm(currentCategory);
-      if (shouldUpdateCategory && best.fullPath) {
-        setValue("category", best.fullPath, { shouldDirty: true });
-      }
 
       const mlValue =
         mlOptions.find(
@@ -2893,66 +2886,6 @@ export function CreateProductDialog({
                     </p>
                   )}
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="category">
-                  Categoria (sugerida automaticamente)
-                </Label>
-                <Controller
-                  name="category"
-                  control={control}
-                  render={({ field }) => {
-                    const detailed =
-                      // Prefer backend synced detailed value by id
-                      mlOptions.find((c) => c.id === watch("mlCategory"))
-                        ?.value ||
-                      // Match by fullPath currently in category field
-                      mlOptions.find((c) => c.value === watch("category"))
-                        ?.value ||
-                      // Static fallback
-                      ML_CATEGORY_OPTIONS.find(
-                        (c) => c.id === watch("mlCategory"),
-                      )?.value ||
-                      ML_CATEGORY_OPTIONS.find(
-                        (c) => c.value === watch("category"),
-                      )?.value;
-
-                    return (
-                      <Select
-                        onValueChange={(val) => {
-                          field.onChange(val);
-                          const match =
-                            mlOptions.find((c) => c.value === val) ||
-                            ML_CATEGORY_OPTIONS.find((c) => c.value === val);
-                          setValue("mlCategory", match?.id || "");
-                        }}
-                        value={field.value ?? ""}
-                      >
-                        <SelectTrigger className="h-auto min-h-10">
-                          <SelectValue>
-                            <span className="block whitespace-normal text-left leading-snug text-sm">
-                              {detailed || field.value || "Selecione..."}
-                            </span>
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ML_CATEGORIES.map((cat) => (
-                            <SelectItem
-                              key={`${cat.id}-${cat.value}`}
-                              value={cat.value}
-                            >
-                              {cat.value}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    );
-                  }}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Sugerida com base no nome. Categorias do Mercado Livre.
-                </p>
               </div>
 
               <div className="space-y-2">

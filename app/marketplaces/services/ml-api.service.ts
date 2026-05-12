@@ -847,15 +847,37 @@ export class MLApiService {
   }
 
   /**
+   * Normaliza o `listing_type_id` antes de enviar para a API do ML.
+   *
+   * Contexto: no MLB (Brasil), o tipo "Premium" atual é `gold_pro`. O alias
+   * legado `gold_premium` ainda é aceito por `POST /items`, mas em fluxos UP
+   * (categorias com `family_name`, ex.: MLB-CARS_AND_VANS) o ML faz downgrade
+   * silencioso para `gold_special` (Clássica) — o item é criado com sucesso
+   * mas com o tipo errado. Tentativas posteriores de promover para
+   * `gold_premium` via `POST /items/{id}/listing_type` falham com
+   * `listing_type_id.invalid`, e o próprio ML responde indicando que o tipo
+   * válido para Premium é `gold_pro`.
+   *
+   * Mapeamos `gold_premium → gold_pro` aqui para garantir que o tipo enviado
+   * seja sempre o que o ML reconhece. Frontend continua com `gold_premium`
+   * (configurações antigas salvas no banco também).
+   */
+  static normalizeListingType(type: string | null | undefined): string {
+    const v = (type || "").trim();
+    if (v === "gold_premium") return "gold_pro";
+    return v || "bronze";
+  }
+
+  /**
    * Altera o tipo de listagem (listing_type_id) de um item via endpoint
    * dedicado. Não é possível alterar listing_type via PUT /items/{id} —
    * o ML retorna `field_not_updatable: listing_type_id is not modifiable`.
    *
    * Endpoint: POST /items/{itemId}/listing_type
-   * Body: { id: "bronze" | "gold_special" | "gold_premium" }
+   * Body: { id: "bronze" | "gold_special" | "gold_pro" }
    *
    * IMPORTANTE: o ML costuma permitir apenas upgrades (bronze → gold_special →
-   * gold_premium). Tentativas de downgrade podem retornar erro do próprio ML.
+   * gold_pro). Tentativas de downgrade podem retornar erro do próprio ML.
    */
   static async changeListingType(
     accessToken: string,
