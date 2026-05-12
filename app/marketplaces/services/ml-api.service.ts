@@ -906,6 +906,53 @@ export class MLApiService {
   }
 
   /**
+   * Atualiza o family_name de um user-product (fluxo "User Product" do ML).
+   *
+   * Contexto: itens com `family_name` (categorias autopart que rodam no
+   * fluxo UP — ex.: MLB-LIGHT_VEHICLE_REPLACEMENTS, MLB-CARS_AND_VANS) têm o
+   * `title` derivado do family_name e NÃO aceitam PUT /items/{id} alterando
+   * `title` — o ML responde `BODY_INVALID_FIELDS: You cannot modify the
+   * title if the item has a family_name`. A forma correta de alterar o
+   * título nesses casos é atualizar o nome do user-product; o ML propaga o
+   * novo nome para o título de TODOS os items vinculados à família.
+   *
+   * Endpoint: PUT /user-products/{user_product_id}
+   * Body: { name: "Novo título" }
+   */
+  static async updateUserProductFamilyName(
+    accessToken: string,
+    userProductId: string,
+    newName: string,
+  ): Promise<void> {
+    if (!userProductId || !newName || !newName.trim()) return;
+    try {
+      await axios.put(
+        `${ML_CONSTANTS.API_URL}/user-products/${userProductId}`,
+        { name: newName.trim() },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const errorData = error.response?.data;
+        const errorMessage = errorData
+          ? JSON.stringify(errorData)
+          : error.message;
+        const err = new Error(
+          `Erro ao atualizar family_name do user-product: ${errorMessage}`,
+        );
+        (err as any).mlError = errorData || null;
+        throw err;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Cria ou atualiza a descriÃ§Ã£o de um item (endpoint dedicado do ML).
    * Usa POST para criar/replace a descriÃ§Ã£o plain_text.
    */

@@ -2294,6 +2294,23 @@ export class SyncUseCase {
 
       console.log(`[SYNC] Status atual do anÃºncio: ${currentItem.status}`);
 
+      // Detecta fluxo "User Product" (UP) — itens com family_name têm título
+      // derivado e NÃO aceitam PUT /items/{id} alterando `title` (ML responde
+      // BODY_INVALID_FIELDS) nem `description` (item.description.not_modifiable).
+      // Para esses, o título vai via PUT /user-products/{up_id} e a descrição
+      // via POST /items/{id}/description.
+      const userProductIdFromMl =
+        ((currentItem as { user_product_id?: string | null })
+          .user_product_id || "").trim();
+      const familyNameFromMl =
+        ((currentItem as { family_name?: string | null }).family_name || "")
+          .trim();
+      const isUserProductItem = !!(userProductIdFromMl || familyNameFromMl);
+
+      // Atualizações UP-específicas pendentes (executadas após o PUT /items).
+      let pendingFamilyNameUpdate: string | null = null;
+      let pendingUpDescriptionUpdate: string | null = null;
+
       // Preparar dados para atualizaÃ§Ã£o baseados no status
       const updateData: MLItemUpdatePayload = {};
 
@@ -2329,14 +2346,21 @@ export class SyncUseCase {
       // SÃ³ sincronizar tÃ­tulo e descriÃ§Ã£o se o anÃºncio estiver ativo
       // AnÃºncios pausados nÃ£o permitem atualizaÃ§Ã£o de tÃ­tulo/descriÃ§Ã£o
       if (currentItem.status === "active" && product.stock > 0) {
-        // Sincronizar nome se foi alterado
+        // Sincronizar nome se foi alterado. Em items UP, o título é derivado
+        // do family_name — usamos PUT /user-products/{up_id} em vez de incluir
+        // `title` no PUT /items (que o ML rejeita com BODY_INVALID_FIELDS).
         if (product.name && product.name !== currentItem.title) {
-          updateData.title = product.name;
+          if (isUserProductItem && userProductIdFromMl) {
+            pendingFamilyNameUpdate = product.name;
+          } else {
+            updateData.title = product.name;
+          }
         }
 
         // Descrição enriquecida com bloco de compatibilidade veicular.
-        // ML aceita PUT em description (com retry específico que extrai
-        // BODY_INVALID_FIELDS quando algum campo é bloqueado).
+        // Em items UP, `description` no PUT /items retorna
+        // item.description.not_modifiable — usamos POST /items/{id}/description
+        // (endpoint dedicado já usado durante a criação do listing).
         const enrichedDescription = SyncUseCase.appendCompatibilityBlock(
           product.description,
           (product as { compatibilities?: unknown }).compatibilities as Array<{
@@ -2348,7 +2372,11 @@ export class SyncUseCase {
           }>,
         );
         if (enrichedDescription) {
-          updateData.description = enrichedDescription;
+          if (isUserProductItem) {
+            pendingUpDescriptionUpdate = enrichedDescription;
+          } else {
+            updateData.description = enrichedDescription;
+          }
         }
       }
 
@@ -2415,6 +2443,15 @@ export class SyncUseCase {
       }
 
       console.log(`[SYNC] Dados a serem enviados para ML:`, updateData);
+      if (pendingFamilyNameUpdate || pendingUpDescriptionUpdate) {
+        console.log(
+          `[SYNC] Item UP detectado (user_product_id=${userProductIdFromMl || "?"}) — title/description serão atualizados via endpoints dedicados:`,
+          {
+            family_name: pendingFamilyNameUpdate ? "queued" : "skip",
+            description: pendingUpDescriptionUpdate ? "queued" : "skip",
+          },
+        );
+      }
 
       // SÃ³ fazer a atualizaÃ§Ã£o se houver dados para atualizar
       if (Object.keys(updateData).length > 0) {
@@ -2499,6 +2536,61 @@ export class SyncUseCase {
           );
         }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
+
+        // Atualizações UP-específicas (title via /user-products, description via
+        // /items/{id}/description). Falhas isoladas aqui são logadas mas não
+        // interrompem o sync — preço/estoque já foram aplicados acima.
+        if (pendingFamilyNameUpdate && userProductIdFromMl) {
+          try {
+            await MLApiService.updateUserProductFamilyName(
+              account.accessToken,
+              userProductIdFromMl,
+              pendingFamilyNameUpdate,
+            );
+            console.log(
+              `[SYNC] UP family_name atualizado para "${pendingFamilyNameUpdate}" (user_product ${userProductIdFromMl}); ML propagará o título para todos os items da família.`,
+            );
+          } catch (err) {
+            const rawMessage =
+              err instanceof Error ? err.message : String(err);
+            console.error(
+              JSON.stringify({
+                event: "ml.user_product.update_failed",
+                productId: product.id,
+                userProductId: userProductIdFromMl,
+                externalListingId,
+                newName: pendingFamilyNameUpdate,
+                error: rawMessage,
+              }),
+            );
+            // Não interrompe o sync principal.
+          }
+        }
+
+        if (pendingUpDescriptionUpdate) {
+          try {
+            await MLApiService.upsertDescription(
+              account.accessToken,
+              externalListingId,
+              pendingUpDescriptionUpdate,
+            );
+            console.log(
+              `[SYNC] UP description atualizada via endpoint dedicado /items/${externalListingId}/description`,
+            );
+          } catch (err) {
+            const rawMessage =
+              err instanceof Error ? err.message : String(err);
+            console.error(
+              JSON.stringify({
+                event: "ml.description.update_failed",
+                productId: product.id,
+                externalListingId,
+                error: rawMessage,
+              }),
+            );
+            // Não interrompe o sync principal.
+          }
+        }
 
         result.success = true;
         result.previousStock = currentItem.available_quantity;
