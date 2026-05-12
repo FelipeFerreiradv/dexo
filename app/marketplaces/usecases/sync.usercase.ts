@@ -2297,8 +2297,9 @@ export class SyncUseCase {
       // Detecta fluxo "User Product" (UP) — itens com family_name têm título
       // derivado e NÃO aceitam PUT /items/{id} alterando `title` (ML responde
       // BODY_INVALID_FIELDS) nem `description` (item.description.not_modifiable).
-      // Para esses, o título vai via PUT /user-products/{up_id} e a descrição
-      // via POST /items/{id}/description.
+      // Para esses, o título é atualizado via PUT /items/{id} com `family_name`
+      // (NÃO `title`) — mesmo caminho usado em ListingUseCase pós-criação. A
+      // descrição vai via POST /items/{id}/description.
       const userProductIdFromMl =
         ((currentItem as { user_product_id?: string | null })
           .user_product_id || "").trim();
@@ -2350,7 +2351,7 @@ export class SyncUseCase {
         // do family_name — usamos PUT /user-products/{up_id} em vez de incluir
         // `title` no PUT /items (que o ML rejeita com BODY_INVALID_FIELDS).
         if (product.name && product.name !== currentItem.title) {
-          if (isUserProductItem && userProductIdFromMl) {
+          if (isUserProductItem) {
             pendingFamilyNameUpdate = product.name;
           } else {
             updateData.title = product.name;
@@ -2537,27 +2538,30 @@ export class SyncUseCase {
         }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
 
-        // Atualizações UP-específicas (title via /user-products, description via
-        // /items/{id}/description). Falhas isoladas aqui são logadas mas não
-        // interrompem o sync — preço/estoque já foram aplicados acima.
-        if (pendingFamilyNameUpdate && userProductIdFromMl) {
+        // Atualizações UP-específicas (title via PUT /items com `family_name`,
+        // description via /items/{id}/description). Falhas isoladas aqui são
+        // logadas mas não interrompem o sync — preço/estoque já foram aplicados
+        // acima. O caminho `family_name` em PUT /items é o mesmo usado pelo
+        // ListingUseCase pós-criação; o ML propaga o novo nome para o título
+        // de todos os items da família.
+        if (pendingFamilyNameUpdate) {
           try {
-            await MLApiService.updateUserProductFamilyName(
+            await MLApiService.updateItem(
               account.accessToken,
-              userProductIdFromMl,
-              pendingFamilyNameUpdate,
+              externalListingId,
+              { family_name: pendingFamilyNameUpdate },
             );
             console.log(
-              `[SYNC] UP family_name atualizado para "${pendingFamilyNameUpdate}" (user_product ${userProductIdFromMl}); ML propagará o título para todos os items da família.`,
+              `[SYNC] UP family_name atualizado para "${pendingFamilyNameUpdate}" via PUT /items (user_product ${userProductIdFromMl || "?"}); ML propagará o título para todos os items da família.`,
             );
           } catch (err) {
             const rawMessage =
               err instanceof Error ? err.message : String(err);
             console.error(
               JSON.stringify({
-                event: "ml.user_product.update_failed",
+                event: "ml.family_name.update_failed",
                 productId: product.id,
-                userProductId: userProductIdFromMl,
+                userProductId: userProductIdFromMl || null,
                 externalListingId,
                 newName: pendingFamilyNameUpdate,
                 error: rawMessage,
