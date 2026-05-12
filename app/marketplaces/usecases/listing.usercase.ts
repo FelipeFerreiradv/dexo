@@ -678,6 +678,13 @@ export class ListingUseCase {
     categoryId?: string,
     accountId?: string,
     mlSettings?: MLListingSettings,
+    /**
+     * Sobrescreve o título do ML para esta criação específica sem persistir
+     * no `product.name` do banco. Usado pelo fluxo de republicação (sync e
+     * edit unitário) para criar o novo anúncio com o título desejado quando
+     * o ML não permite alterar `family_name` de items UP existentes.
+     */
+    titleOverride?: string,
   ): Promise<CreateListingResult> {
     try {
       let account = accountId
@@ -929,6 +936,13 @@ export class ListingUseCase {
           success: false,
           error: "Produto nÃ£o encontrado",
         };
+      }
+
+      // Override do title (cirúrgico): substitui apenas em memória para esta
+      // execução; não persiste no banco. Usado pela republicação UP para
+      // criar o novo anúncio com o título alterado sem mutar o `product.name`.
+      if (titleOverride && titleOverride.trim()) {
+        (product as { name: string }).name = titleOverride.trim();
       }
 
       // Validar prÃ©-requisitos do produto antes de enviar ao ML (ex.: imagem obrigatÃ³ria)
@@ -4350,8 +4364,89 @@ export class ListingUseCase {
             lower.includes("family_name")
           ) {
             if ("title" in currentPayload) {
-              blockedThisRound.push("title");
-              labelThisRound.push("título (anúncio com family_name)");
+              // Tentativa de republicação para items UP sem vendas/bids:
+              // o ML não permite alterar `family_name` (e portanto o título)
+              // de items UP existentes, então a única forma de propagar o
+              // novo título é criar um anúncio novo e fechar o antigo. Mesmo
+              // padrão aplicado em SyncUseCase.republishUpListing. Se a
+              // republicação ocorrer, atualizamos listing.externalListingId
+              // em memória e seguimos o retry com o payload restante (sem
+              // `title`) apontando para o novo anúncio.
+              const titleAttempted = String(
+                (currentPayload as { title?: string }).title || "",
+              );
+              let republished = false;
+              if (titleAttempted) {
+                try {
+                  const item = await MLApiService.getItemDetails(
+                    account.accessToken,
+                    listing.externalListingId,
+                  );
+                  const isUp = !!(
+                    (item as { family_name?: string }).family_name ||
+                    (item as { user_product_id?: string }).user_product_id
+                  );
+                  const soldQty = Number(
+                    (item as { sold_quantity?: number }).sold_quantity || 0,
+                  );
+                  const hasBids = !!(item as { has_bids?: boolean }).has_bids;
+                  if (isUp && soldQty === 0 && !hasBids) {
+                    const { SyncUseCase } = await import("./sync.usercase");
+                    const r = await SyncUseCase.republishUpListing({
+                      userId: account.userId,
+                      productId: listing.productId,
+                      accountId: account.id,
+                      accessToken: account.accessToken,
+                      oldExternalListingId: listing.externalListingId,
+                      currentItem: item,
+                      newTitle: titleAttempted,
+                    });
+                    if (r.republished && r.newExternalListingId) {
+                      // Aponta o listing local pro novo MLB-ID; o `tryPut`
+                      // lê `listing.externalListingId` lazy a cada call.
+                      listing.externalListingId = r.newExternalListingId;
+                      delete (currentPayload as { title?: string }).title;
+                      republished = true;
+                      console.warn(
+                        `[ListingUseCase] UP republished durante edit unitário: ${r.newExternalListingId}`,
+                      );
+                    }
+                  } else if (isUp) {
+                    console.warn(
+                      JSON.stringify({
+                        event: "ml.up.republish.skipped",
+                        reason: "item_has_sales_or_bids",
+                        listingId: listing.id,
+                        externalListingId: listing.externalListingId,
+                        soldQty,
+                        hasBids,
+                      }),
+                    );
+                  }
+                } catch (republishErr) {
+                  console.warn(
+                    "[ListingUseCase] Falha ao tentar republicar UP no edit unitário; vai apenas remover title:",
+                    republishErr instanceof Error
+                      ? republishErr.message
+                      : String(republishErr),
+                  );
+                }
+              }
+              if (!republished) {
+                blockedThisRound.push("title");
+                labelThisRound.push("título (anúncio com family_name)");
+              } else {
+                // Republicação OK — `title` já foi removido do payload e o
+                // listing aponta pro novo MLB-ID. Saímos do catch e seguimos
+                // para a próxima iteração do loop: se ainda restam campos
+                // (price/attributes/etc.), tryPut tenta no novo anúncio; se
+                // o payload ficou vazio, finalizamos com sucesso.
+                if (Object.keys(currentPayload).length === 0) {
+                  succeeded = true;
+                  break;
+                }
+                continue;
+              }
             }
           }
           if (
