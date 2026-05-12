@@ -400,7 +400,9 @@ export class ListingRetryService {
           currency_id: "BRL",
           available_quantity: product.stock || 1,
           buying_mode: "buy_it_now",
-          listing_type_id: retrySettings.listingType || "bronze",
+          listing_type_id: MLApiService.normalizeListingType(
+            retrySettings.listingType || "bronze",
+          ),
           condition: retryCondition,
           pictures: await (async () => {
             if (!product.imageUrl) return [];

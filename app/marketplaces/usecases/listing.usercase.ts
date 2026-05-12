@@ -1441,6 +1441,19 @@ export class ListingUseCase {
         ];
       }
 
+      // Normaliza listing_type_id: o ML Brasil aceita `gold_pro` para Premium;
+      // `gold_premium` é alias legado que sofre downgrade silencioso em fluxos
+      // UP/family_name. Ver `MLApiService.normalizeListingType` para detalhes.
+      const requestedListingType = effectiveSettings.listingType || "bronze";
+      const normalizedListingType = MLApiService.normalizeListingType(
+        requestedListingType,
+      );
+      if (normalizedListingType !== requestedListingType) {
+        console.warn(
+          `[ListingUseCase] listing_type normalizado: ${requestedListingType} → ${normalizedListingType} (alias MLB)`,
+        );
+      }
+
       const payload: MLItemCreatePayload = {
         title: this.buildMLTitle(product),
         category_id: categoryIdForML,
@@ -1448,7 +1461,7 @@ export class ListingUseCase {
         currency_id: currencyId,
         available_quantity: Math.min(product.stock, 999999),
         buying_mode: "buy_it_now",
-        listing_type_id: effectiveSettings.listingType || "bronze",
+        listing_type_id: normalizedListingType,
         condition: conditionForPayload,
         pictures: picturesArray,
         attributes,
@@ -2387,6 +2400,67 @@ export class ListingUseCase {
           throw err;
         }
       }
+
+      // 4.0. Reconciliação de listing_type_id — o ML pode aceitar o POST /items
+      // mas devolver um tipo degradado (ex.: gold_pro → gold_special em
+      // categorias com restrição ou contas sem direito a Premium). Sem essa
+      // verificação, o usuário seleciona Premium e vê o anúncio publicado como
+      // Clássica. POST /items/{id}/listing_type só permite upgrades, então é
+      // seguro (no-op se já estiver no alvo; rejeita downgrades).
+      const sentListingType = (payload as any).listing_type_id as
+        | string
+        | undefined;
+      const returnedListingType = (mlItem as any)?.listing_type_id as
+        | string
+        | undefined;
+      if (
+        mlItem?.id &&
+        sentListingType &&
+        returnedListingType &&
+        returnedListingType !== sentListingType
+      ) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.listing_type.mismatch",
+            productId: product.id,
+            mlItemId: mlItem.id,
+            categoryId: categoryIdForML,
+            requested: sentListingType,
+            returned: returnedListingType,
+          }),
+        );
+        try {
+          await this.withTimeout(
+            MLApiService.changeListingType(
+              acc.accessToken,
+              mlItem.id,
+              sentListingType,
+            ),
+            timeoutMs,
+            "ML changeListingType reconcile",
+          );
+          (mlItem as any).listing_type_id = sentListingType;
+          console.warn(
+            `[ListingUseCase] listing_type promovido ${returnedListingType} → ${sentListingType} (item ${mlItem.id})`,
+          );
+        } catch (promoteErr) {
+          console.error(
+            JSON.stringify({
+              event: "ml.listing_type.promote_failed",
+              productId: product.id,
+              mlItemId: mlItem.id,
+              from: returnedListingType,
+              to: sentListingType,
+              error:
+                promoteErr instanceof Error
+                  ? promoteErr.message
+                  : String(promoteErr),
+            }),
+          );
+          // Não interrompe o fluxo: o item foi criado, descrição/compat seguem.
+        }
+      }
+
       // 4.1. Pós-criação: reforçar descrição via /description e, se necessário,
       // atualizar family_name. As duas chamadas são independentes, então rodam
       // em paralelo. family_name é pulado quando o ML já retornou um valor que
