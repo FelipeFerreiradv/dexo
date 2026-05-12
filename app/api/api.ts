@@ -21,6 +21,7 @@ import { uploadRoutes } from "../routes/upload.routes";
 import { listingRoutes } from "../routes/listing.routes";
 import { systemLogRoutes } from "../routes/system-log.routes";
 import { locationRoutes } from "../routes/location.routes";
+import { scanRoutes } from "../routes/scan.routes";
 import { compatibilityRoutes } from "../routes/compatibility.routes";
 import { scrapRoutes } from "../routes/scrap.routes";
 import { customerRoutes } from "../routes/customer.routes";
@@ -89,6 +90,10 @@ api.register(systemLogRoutes, {
 
 api.register(locationRoutes, {
   prefix: "/locations",
+});
+
+api.register(scanRoutes, {
+  prefix: "/scan",
 });
 
 api.register(compatibilityRoutes, {

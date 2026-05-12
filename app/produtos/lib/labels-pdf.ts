@@ -1,4 +1,4 @@
-import type { PDFFont } from "pdf-lib";
+import { wrapText } from "@/app/lib/pdf-label-utils";
 
 export interface LabelProduct {
   id: string;
@@ -22,63 +22,6 @@ export function getProductUrl(productId: string): string {
       ? process.env.NEXT_PUBLIC_APP_URL || window.location.origin
       : process.env.NEXT_PUBLIC_APP_URL || "";
   return `${base}/produtos/${productId}`;
-}
-
-function wrapText(
-  text: string,
-  font: PDFFont,
-  size: number,
-  maxWidth: number,
-  maxLines: number,
-): string[] {
-  const sanitized = text.replace(/\s+/g, " ").trim();
-  if (!sanitized) return [];
-
-  const words = sanitized.split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    const width = font.widthOfTextAtSize(next, size);
-    if (width <= maxWidth) {
-      current = next;
-      continue;
-    }
-
-    if (current) {
-      lines.push(current);
-    } else {
-      // Word longer than max width â€“ split hard
-      lines.push(word);
-    }
-    current = word;
-
-    if (lines.length === maxLines) break;
-  }
-
-  if (lines.length < maxLines && current) {
-    lines.push(current);
-  }
-
-  if (lines.length > maxLines) {
-    lines.length = maxLines;
-  }
-
-  // Truncate last line if still too long
-  if (lines.length === maxLines) {
-    const last = lines[lines.length - 1];
-    let truncated = last;
-    while (
-      font.widthOfTextAtSize(truncated, size) > maxWidth &&
-      truncated.length > 3
-    ) {
-      truncated = `${truncated.slice(0, -2)}...`;
-    }
-    lines[lines.length - 1] = truncated;
-  }
-
-  return lines;
 }
 
 export async function generateLabelsPdf({

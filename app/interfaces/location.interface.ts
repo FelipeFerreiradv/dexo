@@ -33,6 +33,38 @@ export interface LocationWithOccupancy extends Location {
   childrenCount: number;
 }
 
+export interface AttachedProductRef {
+  id: string;
+  sku: string;
+  name: string;
+}
+
+export interface SkippedProductRef {
+  productId: string;
+  reason: "not_found";
+}
+
+export interface AttachProductsResult {
+  attached: AttachedProductRef[];
+  alreadyAttached: AttachedProductRef[];
+  skipped: SkippedProductRef[];
+  location: {
+    id: string;
+    code: string;
+    productsCount: number;
+    maxCapacity: number;
+  };
+}
+
+export interface CapacityExceededDetail {
+  currentCount: number;
+  maxCapacity: number;
+  attempting: number;
+  wouldExceedBy: number;
+  acceptedIds: string[];
+  excededIds: string[];
+}
+
 export interface LocationRepository {
   create(data: LocationCreate): Promise<Location>;
   findById(id: string, userId?: string): Promise<Location | null>;

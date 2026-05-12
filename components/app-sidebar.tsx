@@ -16,6 +16,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  QrCode,
   Search,
   ShoppingBag,
   Store,
@@ -80,6 +81,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Localizações",
         href: "/localizacoes",
         icon: MapPin,
+      },
+      {
+        id: "scan-receber",
+        label: "Receber por scan",
+        href: "/scan",
+        icon: QrCode,
       },
       {
         id: "pedidos",

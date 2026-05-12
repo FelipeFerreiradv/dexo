@@ -16,9 +16,13 @@ import {
   Unlink,
   X,
   Loader2,
+  QrCode,
+  ScanLine,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import { useSession } from "next-auth/react";
+import { generateLocationLabelsPdf } from "../lib/location-labels-pdf";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -154,6 +158,8 @@ function CapacityBadge({ occupancy }: { occupancy: number }) {
 function LocationRow({
   location,
   depth,
+  isSelected,
+  onToggleSelect,
   onEdit,
   onDelete,
   onAddChild,
@@ -162,6 +168,8 @@ function LocationRow({
 }: {
   location: Location;
   depth: number;
+  isSelected: (id: string) => boolean;
+  onToggleSelect: (id: string) => void;
   onEdit: (loc: Location) => void;
   onDelete: (id: string, code: string) => void;
   onAddChild: (parentId: string, parentCode: string) => void;
@@ -170,6 +178,7 @@ function LocationRow({
 }) {
   const [expanded, setExpanded] = useState(depth === 0);
   const hasChildren = location.children && location.children.length > 0;
+  const selected = isSelected(location.id);
 
   return (
     <>
@@ -177,6 +186,13 @@ function LocationRow({
         className="group flex items-center gap-3 rounded-lg border border-border/60 bg-card/60 p-3 transition-colors hover:bg-muted/40"
         style={{ marginLeft: depth * 24 }}
       >
+        {/* Bulk select checkbox */}
+        <Checkbox
+          checked={selected}
+          onCheckedChange={() => onToggleSelect(location.id)}
+          aria-label={`Selecionar ${location.code}`}
+          className="shrink-0"
+        />
         {/* Expand toggle */}
         <button
           type="button"
@@ -325,6 +341,8 @@ function LocationRow({
               key={child.id}
               location={child}
               depth={depth + 1}
+              isSelected={isSelected}
+              onToggleSelect={onToggleSelect}
               onEdit={onEdit}
               onDelete={onDelete}
               onAddChild={onAddChild}
@@ -551,6 +569,34 @@ export function LocationsList() {
   const [moveLocationTargetId, setMoveLocationTargetId] =
     useState<string>("__root__");
   const [isMovingLocation, setIsMovingLocation] = useState(false);
+
+  // Bulk selection de localizações (para gerar etiquetas)
+  const [selectedLocationIds, setSelectedLocationIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [isGeneratingLocationLabels, setIsGeneratingLocationLabels] =
+    useState(false);
+
+  const isLocationSelected = useCallback(
+    (id: string) => selectedLocationIds.has(id),
+    [selectedLocationIds],
+  );
+
+  const toggleLocationSelect = useCallback((id: string) => {
+    setSelectedLocationIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearLocationSelection = useCallback(() => {
+    setSelectedLocationIds(new Set());
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
@@ -907,6 +953,65 @@ export function LocationsList() {
     }
   };
 
+  // Flatten recursivo: pega todas as locations (raízes + filhas em qualquer profundidade)
+  const flattenLocations = useCallback((items: Location[]): Location[] => {
+    const out: Location[] = [];
+    const walk = (list: Location[]) => {
+      for (const loc of list) {
+        out.push(loc);
+        if (loc.children && loc.children.length > 0) walk(loc.children);
+      }
+    };
+    walk(items);
+    return out;
+  }, []);
+
+  const handleGenerateLocationLabels = async () => {
+    if (selectedLocationIds.size === 0) {
+      showToast(
+        "Selecione pelo menos uma localização para gerar etiquetas.",
+        "warning",
+      );
+      return;
+    }
+
+    const flat = flattenLocations(locations);
+    const selected = flat.filter((loc) => selectedLocationIds.has(loc.id));
+
+    if (selected.length === 0) {
+      showToast(
+        "As localizações selecionadas não estão visíveis. Selecione novamente.",
+        "warning",
+      );
+      clearLocationSelection();
+      return;
+    }
+
+    setIsGeneratingLocationLabels(true);
+    try {
+      await generateLocationLabelsPdf({
+        locations: selected.map((loc) => ({
+          id: loc.id,
+          code: loc.code,
+          description: loc.description ?? null,
+        })),
+        userName: session?.user?.name,
+      });
+      showToast(
+        `${selected.length} etiqueta(s) gerada(s) com sucesso!`,
+        "success",
+      );
+    } catch (error) {
+      console.error("Erro ao gerar etiquetas de localização", error);
+      showToast(
+        error instanceof Error ? error.message : "Erro ao gerar etiquetas",
+        "error",
+      );
+    } finally {
+      setIsGeneratingLocationLabels(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Toast notifications */}
@@ -936,10 +1041,18 @@ export function LocationsList() {
                 Organize seus produtos em locais de armazenamento
               </CardDescription>
             </div>
-            <Button onClick={handleOpenCreate}>
-              <Plus className="mr-2 size-4" />
-              Nova Localização
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild variant="outline">
+                <Link href="/scan">
+                  <ScanLine className="mr-2 size-4" />
+                  Receber por scan
+                </Link>
+              </Button>
+              <Button onClick={handleOpenCreate}>
+                <Plus className="mr-2 size-4" />
+                Nova Localização
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -963,6 +1076,36 @@ export function LocationsList() {
                 </span>
               </div>
 
+              {/* Bulk actions bar */}
+              {selectedLocationIds.size > 0 && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2">
+                  <span className="text-sm font-medium">
+                    {selectedLocationIds.size} selecionada(s)
+                  </span>
+                  <div className="ml-auto flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleGenerateLocationLabels}
+                      disabled={isGeneratingLocationLabels}
+                    >
+                      <QrCode className="mr-1.5 size-3.5" />
+                      {isGeneratingLocationLabels
+                        ? "Gerando..."
+                        : "Gerar etiquetas"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={clearLocationSelection}
+                    >
+                      <X className="mr-1.5 size-3.5" />
+                      Limpar
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {/* Location list */}
               {locations.length > 0 ? (
                 <div className="space-y-2">
@@ -971,6 +1114,8 @@ export function LocationsList() {
                       key={location.id}
                       location={location}
                       depth={0}
+                      isSelected={isLocationSelected}
+                      onToggleSelect={toggleLocationSelect}
                       onEdit={handleOpenEdit}
                       onDelete={handleDelete}
                       onAddChild={handleOpenCreateChild}
