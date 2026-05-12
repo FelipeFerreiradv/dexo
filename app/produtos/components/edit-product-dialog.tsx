@@ -278,6 +278,9 @@ const mlCategoriesCache: { data: CatOption[] | null } = {
 };
 const shopeeAllCategoriesCache: { data: CatOption[] | null } = { data: null };
 const shopeeSuggestCache = new Map<string, CatOption[]>();
+// Cache de sugestões ML por título (módulo) — espelha o de Shopee. Reaproveita
+// entre aberturas do modal; chave = title.trim().toLowerCase().
+const mlSuggestCache = new Map<string, CatOption[]>();
 
 export function EditProductDialog({
   product,
@@ -302,6 +305,9 @@ export function EditProductDialog({
   const [mlOptions, setMlOptions] = useState<{ id: string; value: string }[]>(
     [],
   );
+  const [mlSuggestedOptions, setMlSuggestedOptions] = useState<
+    { id: string; value: string }[]
+  >([]);
   const mlOptionsFetchedRef = useRef(false);
   const mlOptionsFetchingRef = useRef(false);
   const [mlLeafSelectOpen, setMlLeafSelectOpen] = useState(false);
@@ -475,35 +481,127 @@ export function EditProductDialog({
     [mlOptions],
   );
 
-  // Lazy-load ML categories: chamado apenas quando o usuário abre o seletor ou ativa publicação ML
+  // Lazy-load ML categories: chamado apenas quando o usuário abre o seletor ou
+  // ativa publicação ML. Mesmo padrão do `fetchShopeeCategories`: busca em
+  // paralelo (a) sugestões por título (grupo "Sugeridas") e (b) lista completa
+  // (grupo "Todas"). Caches de módulo evitam refetch entre aberturas.
   const fetchMlCategories = useCallback(async () => {
     if (mlOptionsFetchedRef.current || mlOptionsFetchingRef.current) return;
     if (!session?.user?.email) return;
-    if (mlCategoriesCache.data) {
-      setMlOptions(mlCategoriesCache.data);
-      mlOptionsFetchedRef.current = true;
-      return;
-    }
+
     mlOptionsFetchingRef.current = true;
     try {
       const base = getApiBaseUrl();
-      const resp = await fetch(`${base}/marketplace/ml/categories`, {
-        headers: { email: session.user.email },
-      });
-      if (resp.ok) {
-        const json = await resp.json();
-        const cats = json.categories || [];
-        mlCategoriesCache.data = cats;
-        persistMlCategoriesCache(cats);
-        setMlOptions(cats);
-        mlOptionsFetchedRef.current = true;
+      const title = product.name || "";
+      const headers = { email: session.user.email };
+      const suggestKey = title.trim().toLowerCase();
+      const cachedSuggest = suggestKey
+        ? mlSuggestCache.get(suggestKey)
+        : undefined;
+      const cachedAll = mlCategoriesCache.data;
+
+      // Sempre busca AMBOS: sugestões por título + lista completa.
+      const [suggestResp, allResp] = await Promise.all([
+        cachedSuggest !== undefined
+          ? Promise.resolve(null)
+          : title
+            ? fetch(
+                `${base}/marketplace/ml/category-suggest?title=${encodeURIComponent(title)}`,
+                { headers },
+              ).catch(() => null)
+            : Promise.resolve(null),
+        cachedAll !== null
+          ? Promise.resolve(null)
+          : fetch(`${base}/marketplace/ml/categories`, { headers }).catch(
+              () => null,
+            ),
+      ]);
+
+      let suggestions: CatOption[] = cachedSuggest ?? [];
+      if (cachedSuggest === undefined && suggestResp && suggestResp.ok) {
+        const json = await suggestResp.json();
+        suggestions = (json.suggestions || [])
+          .map((s: any) => ({
+            id: s.categoryId || s.externalId || s.id,
+            value: s.fullPath || s.name || s.categoryId,
+          }))
+          .filter((s: any) => s.id && s.value);
+        if (suggestKey) mlSuggestCache.set(suggestKey, suggestions);
       }
+
+      let allCats: CatOption[] = cachedAll ?? [];
+      if (cachedAll === null && allResp && allResp.ok) {
+        const json = await allResp.json();
+        allCats = json.categories || [];
+        mlCategoriesCache.data = allCats;
+        persistMlCategoriesCache(allCats);
+      }
+
+      // Filtro automotivo (perf): o ML devolve milhares de categorias; renderizar
+      // tudo no cmdk trava o popover. Mantemos só o ramo automotivo + nichos
+      // próximos (mesma estratégia do Shopee em `fetchShopeeCategories`).
+      const norm = (s: string) =>
+        (s || "")
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .toLowerCase();
+      const ML_AUTO_MARKERS = [
+        "acessorios para veiculos",
+        "pecas para veiculos",
+        "automotivo",
+      ];
+      const ML_BLOCKED = [
+        "moda",
+        "beleza",
+        "roupa",
+        "vestuario",
+        "calcado",
+        "bolsa",
+        "relogio",
+        "oculos",
+        "joias",
+        "bijuteria",
+        "esporte",
+        "brinquedo",
+        "pet",
+        "alimento",
+        "bebida",
+        "papelaria",
+        "bebe",
+        "saude",
+        "casa",
+        "cozinha",
+        "eletrodomestico",
+        "hobbies",
+        "colecoes",
+        "colecionaveis",
+        "musical",
+        "livros",
+        "jardim",
+        "imoveis",
+        "industria",
+      ];
+      const allFiltered = allCats.filter((c) => {
+        const p = norm(c.value);
+        if (ML_BLOCKED.some((b) => p.includes(b))) return false;
+        return ML_AUTO_MARKERS.some((m) => p.includes(m));
+      });
+
+      // Deduplica: remove de "todas" as que já estão em sugeridas
+      const suggestedIds = new Set(suggestions.map((s) => s.id));
+      const allMinusSuggested = allFiltered.filter(
+        (o) => !suggestedIds.has(o.id),
+      );
+
+      setMlSuggestedOptions(suggestions);
+      setMlOptions(allMinusSuggested);
+      mlOptionsFetchedRef.current = true;
     } catch (err) {
       console.error("Erro ao buscar categorias ML:", err);
     } finally {
       mlOptionsFetchingRef.current = false;
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, product.name]);
 
   // Lazy-load categorias ML quando o usuário ativa publicação ML
   useEffect(() => {
@@ -1332,76 +1430,10 @@ export function EditProductDialog({
       maybeSet("model", watch("model"), prev.model, originalModelRef.current, detected.model);
       maybeSet("year", watch("year"), prev.year, originalYearRef.current, detected.year);
 
-      // category (allow overwrite when field is unchanged from original product)
-      const currentCategory = watch("category");
-      const currentMlCategory = watch("mlCategory");
-      const shouldUpdateCategory =
-        !currentCategory ||
-        norm(prev.category) === norm(currentCategory) ||
-        currentCategory === originalCategoryRef.current;
-
-      if (shouldUpdateCategory) {
-        if (mapping.topLevel) {
-          setValue("category", mapping.topLevel, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
-        } else if (detected.category) {
-          setValue("category", detected.category, {
-            shouldDirty: true,
-            shouldTouch: true,
-            shouldValidate: true,
-          });
-        }
-
-        // mlCategory: follow same policy as create dialog (set/clear only when user didn't manually edit)
-        const prevMl = prev.mlCategory;
-        const isPrevAutoMl =
-          prevMl && norm(prevMl) === norm(currentMlCategory || "");
-        const isPristineMl =
-          currentMlCategory === originalMlCategoryRef.current;
-
-        if (mapping.detailedId) {
-          // try to resolve internal detailed id to an external id from mlOptions
-          const externalFromMlOptions = mlOptionsByValue.get(
-            mapping.detailedValue || "",
-          )?.id;
-
-          // Only allow internal mapping.detailedId when we have NO synced mlOptions;
-          // otherwise prefer externalFromMlOptions or clear field to avoid auto-sending internal ids.
-          const resolvedMlCategory =
-            externalFromMlOptions ??
-            (mlOptions && mlOptions.length === 0 ? mapping.detailedId : "");
-
-          if (!currentMlCategory || isPrevAutoMl || isPristineMl) {
-            if (resolvedMlCategory) {
-              setValue("mlCategory", resolvedMlCategory, {
-                shouldDirty: true,
-                shouldTouch: true,
-                shouldValidate: true,
-              });
-            } else {
-              setValue("mlCategory", "", {
-                shouldDirty: true,
-                shouldTouch: true,
-                shouldValidate: true,
-              });
-            }
-          }
-        } else {
-          if (isPrevAutoMl && currentMlCategory) {
-            setValue("mlCategory", "", {
-              shouldDirty: true,
-              shouldTouch: true,
-              shouldValidate: true,
-            });
-          }
-        }
-
-        // ensure select controllers update
-        void trigger(["category", "mlCategory"]);
-      }
+      // Sugestão automática de category/mlCategory removida: o usuário escolhe
+      // a categoria ML manualmente no popover (grupo "Sugeridas pelo título" +
+      // lista completa), mesmo padrão do Shopee. Mantemos apenas brand/model/
+      // year/measurements como auto-fill por serem campos do produto local.
 
       // Measurements: try to auto-fill from category when available
       // Single call — reused below to update autoDetectedRef
@@ -1426,18 +1458,15 @@ export function EditProductDialog({
         /* ignore measurement lookup errors */
       }
 
-      // store detected (merge — preserve previously-detected values when parser returns undefined)
+      // store detected (merge — preserve previously-detected values when parser returns undefined).
+      // category/mlCategory removidos do auto-detect: a 2.2 exige que o usuário
+      // escolha manualmente; deixar valores aqui faria os fallbacks no submit
+      // (linhas ~1606 e ~1971) republicarem a sugestão por trás.
       autoDetectedRef.current = {
+        ...autoDetectedRef.current,
         brand: detected.brand ?? autoDetectedRef.current?.brand,
         model: detected.model ?? autoDetectedRef.current?.model,
         year: detected.year ?? autoDetectedRef.current?.year,
-        category:
-          mapping.topLevel ||
-          detected.category ||
-          autoDetectedRef.current?.category,
-        mlCategory:
-          mlOptionsByValue.get(mapping.detailedValue || "")?.id ??
-          autoDetectedRef.current?.mlCategory,
         heightCm: measurements?.heightCm ?? autoDetectedRef.current?.heightCm,
         widthCm: measurements?.widthCm ?? autoDetectedRef.current?.widthCm,
         lengthCm: measurements?.lengthCm ?? autoDetectedRef.current?.lengthCm,
@@ -2427,218 +2456,54 @@ export function EditProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="edit-category">
-                    Categoria ML (automática)
-                  </Label>
+              <div className="space-y-2">
+                <Label htmlFor="edit-location">Localização</Label>
+                {locationOptions.length > 0 ? (
                   <Controller
-                    name="category"
-                    control={control}
-                    render={({ field }) => {
-                      // Prefer mlOptions fullPath when available. When multiple mlOptions
-                      // share the same top-level, pick the most specific (longest) path.
-                      const mlById = mlOptionsById.get(
-                        watch("mlCategory") || "",
-                      )?.value;
-
-                      const mlByFull = mlOptionsByValue.get(
-                        watch("category") || "",
-                      )?.value;
-
-                      const staticById = ML_CATEGORY_OPTIONS.find(
-                        (c) => c.id === watch("mlCategory"),
-                      )?.value;
-                      const staticByFull = ML_CATEGORY_OPTIONS.find(
-                        (c) => c.value === watch("category"),
-                      )?.value;
-
-                      const detailed =
-                        mlById || mlByFull || staticById || staticByFull;
-
-                      return (
-                        <Select
-                          onValueChange={(val) => {
-                            field.onChange(val);
-                            const match =
-                              mlOptionsByValue.get(val) ||
-                              ML_CATEGORY_OPTIONS.find((c) => c.value === val);
-                            setValue("mlCategory", match?.id || "");
-                          }}
-                          value={field.value || undefined}
-                        >
-                          <SelectTrigger>
-                            <SelectValue>
-                              {detailed || field.value || undefined}
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ML_CATEGORIES.map((cat) => (
-                              <SelectItem
-                                key={`${cat.id}-${cat.value}`}
-                                value={cat.value}
-                              >
-                                {cat.value}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      );
-                    }}
-                  />
-
-                  <div className="mt-2">
-                    <Label>Categoría no Mercado Livre (opcional)</Label>
-                    <Controller
-                      name="mlCategory"
-                      control={control}
-                      render={({ field }) => {
-                        const hasMl = mlOptions.length > 0;
-                        const optionsSource = hasMl
-                          ? mlOptions
-                          : ML_CATEGORY_OPTIONS.map((c) => ({
-                              id: c.id,
-                              value: c.value,
-                            }));
-
-                        // Pick selectedId: prefer explicit field value, otherwise match fullPath in category
-                        const catVal = watch("category") || "";
-                        const candidateByFull = hasMl
-                          ? mlOptionsByValue.get(catVal)
-                          : optionsSource.find((o) => o.value === catVal);
-                        const selectedId =
-                          field.value || candidateByFull?.id || "";
-
-                        const selectedLabel = hasMl
-                          ? (mlOptionsById.get(field.value || "")?.value ||
-                            candidateByFull?.value ||
-                            catVal ||
-                            undefined)
-                          : (optionsSource.find((o) => o.id === field.value)
-                              ?.value ||
-                            candidateByFull?.value ||
-                            ML_CATEGORY_OPTIONS.find(
-                              (c) => c.value === catVal,
-                            )?.value ||
-                            catVal ||
-                            undefined);
-
-                        return (
-                          <Select
-                            open={mlLeafSelectOpen}
-                            onOpenChange={(isOpen) => {
-                              setMlLeafSelectOpen(isOpen);
-                              if (isOpen) void fetchMlCategories();
-                            }}
-                            onValueChange={(val) => {
-                              field.onChange(val);
-                              const sel = hasMl
-                                ? mlOptionsById.get(val)
-                                : optionsSource.find((o) => o.id === val);
-                              if (sel?.value) {
-                                setValue("category", sel.value);
-                              }
-                            }}
-                            value={selectedId}
-                          >
-                            <SelectTrigger>
-                              <SelectValue>
-                                {selectedLabel ||
-                                  "Selecione uma subcategoria ML (opcional)"}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {mlLeafSelectOpen &&
-                                optionsSource.map((cat) => (
-                                  <SelectItem
-                                    key={`${cat.id}-${cat.value}`}
-                                    value={cat.id}
-                                  >
-                                    {cat.value.split(" > ").slice(-1)[0]}
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
-                        );
-                      }}
-                    />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Sugerida ao editar nome
-                  </p>
-                  {mlCategoryWarning && (
-                    <p
-                      className="text-xs text-destructive"
-                      role="alert"
-                      data-testid="ml-category-warning"
-                    >
-                      {mlCategoryWarning}
-                    </p>
-                  )}
-
-                  <Controller
-                    name="attributes"
+                    name="locationId"
                     control={control}
                     render={({ field }) => (
-                      <MLDynamicAttributesSection
-                        categoryId={watchMlCategory || ""}
-                        value={(field.value as any) || {}}
-                        onChange={(next) => field.onChange(next as any)}
-                        email={session?.user?.email || undefined}
-                      />
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(value === "__none__" ? null : value);
+                          const selected = locationOptions.find(
+                            (l) => l.id === value,
+                          );
+                          setValue("location", selected?.fullPath || "");
+                        }}
+                        value={field.value ?? "__none__"}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecione uma localização" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">Nenhuma</SelectItem>
+                          {locationOptions.map((loc) => (
+                            <SelectItem
+                              key={loc.id}
+                              value={loc.id}
+                              disabled={loc.isFull && loc.id !== field.value}
+                            >
+                              {loc.fullPath}
+                              {loc.maxCapacity > 0
+                                ? ` (${loc.productsCount}/${loc.maxCapacity})`
+                                : ""}
+                              {loc.isFull && loc.id !== field.value
+                                ? " — Lotado"
+                                : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     )}
                   />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-location">Localização</Label>
-                  {locationOptions.length > 0 ? (
-                    <Controller
-                      name="locationId"
-                      control={control}
-                      render={({ field }) => (
-                        <Select
-                          onValueChange={(value) => {
-                            field.onChange(value === "__none__" ? null : value);
-                            const selected = locationOptions.find(
-                              (l) => l.id === value,
-                            );
-                            setValue("location", selected?.fullPath || "");
-                          }}
-                          value={field.value ?? "__none__"}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione uma localização" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none__">Nenhuma</SelectItem>
-                            {locationOptions.map((loc) => (
-                              <SelectItem
-                                key={loc.id}
-                                value={loc.id}
-                                disabled={loc.isFull && loc.id !== field.value}
-                              >
-                                {loc.fullPath}
-                                {loc.maxCapacity > 0
-                                  ? ` (${loc.productsCount}/${loc.maxCapacity})`
-                                  : ""}
-                                {loc.isFull && loc.id !== field.value
-                                  ? " — Lotado"
-                                  : ""}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    />
-                  ) : (
-                    <Input
-                      id="edit-location"
-                      placeholder="Ex: Prateleira A1"
-                      {...register("location")}
-                    />
-                  )}
-                </div>
+                ) : (
+                  <Input
+                    id="edit-location"
+                    placeholder="Ex: Prateleira A1"
+                    {...register("location")}
+                  />
+                )}
               </div>
 
               <div className="space-y-2">
@@ -2881,38 +2746,244 @@ export function EditProductDialog({
                   >
                     Criar anúncio no Mercado Livre
                   </Label>
-                  <span className="text-xs text-muted-foreground">
-                    Usa a categoria ML selecionada acima (se informada).
-                  </span>
                 </div>
               )}
               {!listingContext && createMlListing && (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {mlAccounts.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      Conecte ao menos uma conta do Mercado Livre.
-                    </p>
-                  ) : (
-                    mlAccounts.map((acc) => (
-                      <label
-                        key={acc.id}
-                        className="flex items-center justify-between rounded-md border p-2 text-sm"
+                <>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {mlAccounts.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Conecte ao menos uma conta do Mercado Livre.
+                      </p>
+                    ) : (
+                      mlAccounts.map((acc) => (
+                        <label
+                          key={acc.id}
+                          className="flex items-center justify-between rounded-md border p-2 text-sm"
+                        >
+                          <span>{acc.accountName || acc.id}</span>
+                          <Switch
+                            checked={selectedMlAccounts.includes(acc.id)}
+                            onCheckedChange={(checked) =>
+                              setSelectedMlAccounts((prev) =>
+                                checked
+                                  ? [...prev, acc.id]
+                                  : prev.filter((id) => id !== acc.id),
+                              )
+                            }
+                          />
+                        </label>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Categoria ML (movida pra dentro do switch para só aparecer
+                      quando o usuário decide criar anúncio ML — padrão Shopee). */}
+                  <div className="mt-2 space-y-2">
+                    <div>
+                      <Label htmlFor="edit-category">
+                        Categoria ML (top-level)
+                      </Label>
+                      <Controller
+                        name="category"
+                        control={control}
+                        render={({ field }) => {
+                          const mlById = mlOptionsById.get(
+                            watch("mlCategory") || "",
+                          )?.value;
+                          const mlByFull = mlOptionsByValue.get(
+                            watch("category") || "",
+                          )?.value;
+                          const staticById = ML_CATEGORY_OPTIONS.find(
+                            (c) => c.id === watch("mlCategory"),
+                          )?.value;
+                          const staticByFull = ML_CATEGORY_OPTIONS.find(
+                            (c) => c.value === watch("category"),
+                          )?.value;
+                          const detailed =
+                            mlById || mlByFull || staticById || staticByFull;
+
+                          return (
+                            <Select
+                              onValueChange={(val) => {
+                                field.onChange(val);
+                                const match =
+                                  mlOptionsByValue.get(val) ||
+                                  ML_CATEGORY_OPTIONS.find(
+                                    (c) => c.value === val,
+                                  );
+                                setValue("mlCategory", match?.id || "");
+                              }}
+                              value={field.value || undefined}
+                            >
+                              <SelectTrigger>
+                                <SelectValue>
+                                  {detailed || field.value || undefined}
+                                </SelectValue>
+                              </SelectTrigger>
+                              <SelectContent>
+                                {ML_CATEGORIES.map((cat) => (
+                                  <SelectItem
+                                    key={`${cat.id}-${cat.value}`}
+                                    value={cat.value}
+                                  >
+                                    {cat.value}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          );
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <Label>Categoria no Mercado Livre</Label>
+                      <Controller
+                        name="mlCategory"
+                        control={control}
+                        render={({ field }) => {
+                          const selected = [
+                            ...mlSuggestedOptions,
+                            ...mlOptions,
+                          ].find((o) => o.id === (field.value || ""));
+                          const isLoading =
+                            mlSuggestedOptions.length === 0 &&
+                            mlOptions.length === 0;
+                          return (
+                            <Popover
+                              open={mlLeafSelectOpen}
+                              onOpenChange={(isOpen) => {
+                                setMlLeafSelectOpen(isOpen);
+                                if (isOpen) void fetchMlCategories();
+                              }}
+                              modal
+                            >
+                              <PopoverTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={mlLeafSelectOpen}
+                                  className={cn(
+                                    "w-full justify-between font-normal",
+                                    !selected && "text-muted-foreground",
+                                  )}
+                                >
+                                  <span className="truncate text-left">
+                                    {selected
+                                      ? selected.value
+                                      : isLoading
+                                        ? "Carregando categorias..."
+                                        : "Selecione ou pesquise uma categoria"}
+                                  </span>
+                                  <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent
+                                className="p-0"
+                                align="start"
+                                style={{
+                                  width:
+                                    "var(--radix-popover-trigger-width)",
+                                  maxHeight: 360,
+                                }}
+                              >
+                                <Command>
+                                  <CommandInput placeholder="Pesquisar categoria..." />
+                                  <CommandList>
+                                    <CommandEmpty>
+                                      Nenhuma categoria encontrada.
+                                    </CommandEmpty>
+                                    {mlSuggestedOptions.length > 0 && (
+                                      <CommandGroup heading="Sugeridas pelo título">
+                                        {mlSuggestedOptions.map((opt) => (
+                                          <CommandItem
+                                            key={`ml-sug-${opt.id}`}
+                                            value={`${opt.value} ${opt.id}`}
+                                            onSelect={() => {
+                                              field.onChange(opt.id);
+                                              setMlLeafSelectOpen(false);
+                                            }}
+                                          >
+                                            <Check
+                                              className={cn(
+                                                "mr-2 size-4",
+                                                field.value === opt.id
+                                                  ? "opacity-100"
+                                                  : "opacity-0",
+                                              )}
+                                            />
+                                            <span className="truncate">
+                                              {opt.value}
+                                            </span>
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                    {mlOptions.length > 0 && (
+                                      <CommandGroup heading="Todas as categorias">
+                                        {mlOptions.map((opt) => (
+                                          <CommandItem
+                                            key={`ml-all-${opt.id}`}
+                                            value={`${opt.value} ${opt.id}`}
+                                            onSelect={() => {
+                                              field.onChange(opt.id);
+                                              setMlLeafSelectOpen(false);
+                                            }}
+                                          >
+                                            <Check
+                                              className={cn(
+                                                "mr-2 size-4",
+                                                field.value === opt.id
+                                                  ? "opacity-100"
+                                                  : "opacity-0",
+                                              )}
+                                            />
+                                            <span className="truncate">
+                                              {opt.value}
+                                            </span>
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                          );
+                        }}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Obrigatório para publicar no Mercado Livre. Use o
+                        campo de busca para filtrar a lista.
+                      </p>
+                    </div>
+
+                    {mlCategoryWarning && (
+                      <p
+                        className="text-xs text-destructive"
+                        role="alert"
+                        data-testid="ml-category-warning"
                       >
-                        <span>{acc.accountName || acc.id}</span>
-                        <Switch
-                          checked={selectedMlAccounts.includes(acc.id)}
-                          onCheckedChange={(checked) =>
-                            setSelectedMlAccounts((prev) =>
-                              checked
-                                ? [...prev, acc.id]
-                                : prev.filter((id) => id !== acc.id),
-                            )
-                          }
+                        {mlCategoryWarning}
+                      </p>
+                    )}
+
+                    <Controller
+                      name="attributes"
+                      control={control}
+                      render={({ field }) => (
+                        <MLDynamicAttributesSection
+                          categoryId={watchMlCategory || ""}
+                          value={(field.value as any) || {}}
+                          onChange={(next) => field.onChange(next as any)}
+                          email={session?.user?.email || undefined}
                         />
-                      </label>
-                    ))
-                  )}
-                </div>
+                      )}
+                    />
+                  </div>
+                </>
               )}
 
               {/* Configurações do Anúncio ML */}
