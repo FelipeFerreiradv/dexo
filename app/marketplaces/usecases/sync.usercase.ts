@@ -2550,6 +2550,7 @@ export class SyncUseCase {
         // antigo). Aplicamos salvaguarda: só republicamos se o anúncio antigo
         // não tem vendas nem bids (preserva reputação/vendas de listings
         // com histórico).
+        let wasRepublished = false;
         if (pendingFamilyNameUpdate) {
           const soldQty = Number(
             (currentItem as { sold_quantity?: number }).sold_quantity || 0,
@@ -2569,7 +2570,7 @@ export class SyncUseCase {
             );
           } else {
             try {
-              await SyncUseCase.republishUpListing({
+              const r = await SyncUseCase.republishUpListing({
                 userId: account.userId,
                 productId: product.id,
                 accountId: account.id,
@@ -2578,6 +2579,7 @@ export class SyncUseCase {
                 currentItem,
                 newTitle: pendingFamilyNameUpdate,
               });
+              wasRepublished = r.republished;
             } catch (err) {
               const rawMessage =
                 err instanceof Error ? err.message : String(err);
@@ -2596,7 +2598,10 @@ export class SyncUseCase {
           }
         }
 
-        if (pendingUpDescriptionUpdate) {
+        // Skip se houve republicação: o anúncio antigo foi fechado e a
+        // description já foi setada no novo anúncio dentro do createMLListing.
+        // Tentar PUT no antigo fechado retornaria item.status.invalid.
+        if (pendingUpDescriptionUpdate && !wasRepublished) {
           try {
             await MLApiService.upsertDescription(
               account.accessToken,
@@ -3029,7 +3034,7 @@ export class SyncUseCase {
     oldExternalListingId: string;
     currentItem: MLItemDetails;
     newTitle: string;
-  }): Promise<void> {
+  }): Promise<{ republished: boolean; newExternalListingId?: string }> {
     const {
       userId,
       productId,
@@ -3068,6 +3073,8 @@ export class SyncUseCase {
 
     // 3. Chamar createMLListing — mesmo pipeline usado por novos anúncios
     // (cria item, anexa compatibilidades, reconcilia listing_type, etc.).
+    // Passamos `newTitle` como `titleOverride` para o caso de edit unitário
+    // em que o título alvo difere do `product.name` (override só desse anúncio).
     let result;
     try {
       result = await ListingUseCase.createMLListing(
@@ -3076,6 +3083,7 @@ export class SyncUseCase {
         categoryId,
         accountId,
         mlSettings,
+        newTitle,
       );
     } catch (createErr) {
       // Reverter o placeholder para o ID original — o anúncio antigo
@@ -3132,6 +3140,8 @@ export class SyncUseCase {
         newTitle,
       }),
     );
+
+    return { republished: true, newExternalListingId };
   }
 
   /**
