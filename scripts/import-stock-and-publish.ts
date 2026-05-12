@@ -22,6 +22,8 @@ interface Flags {
   dryRun: boolean;
   skipListings: boolean;
   onlyPublish: boolean;
+  retryOnlyFromJobs: boolean;
+  retryJobsSince: Date | null;
   limit: number | null;
   platform: "ml" | "shopee" | "all";
   chunkSize: number;
@@ -145,12 +147,17 @@ function parseFlags(argv: string[]): Flags {
     return Number.isFinite(n) && n >= 0 ? n : 180_000;
   })();
 
+  const retryJobsSinceRaw = get("retry-jobs-since");
+  const retryJobsSince = retryJobsSinceRaw ? new Date(retryJobsSinceRaw) : null;
+
   return {
     userId,
     xlsx,
     dryRun: has("dry-run"),
     skipListings: has("skip-listings"),
     onlyPublish: has("only-publish"),
+    retryOnlyFromJobs: has("retry-only-from-jobs"),
+    retryJobsSince,
     limit,
     platform,
     chunkSize,
@@ -772,31 +779,24 @@ async function runPublish(
   const sleep = (ms: number) =>
     new Promise<void>((r) => setTimeout(r, Math.max(0, ms)));
 
-  let firstAccount = true;
-  for (const plan of accountPlans) {
-    if (plan.productIds.length === 0) continue;
-    if (!firstAccount && flags.interAccountDelayMs > 0) {
-      console.log(
-        `[publish] aguardando ${Math.round(flags.interAccountDelayMs / 1000)}s antes da próxima conta (rate limit)…`,
-      );
-      await sleep(flags.interAccountDelayMs);
-    }
-    firstAccount = false;
+  // Cada conta roda em paralelo. Rate limit ML é por seller, então 4 contas
+  // simultâneas usam 4 budgets independentes. Dentro da conta os chunks são
+  // sequenciais com delay configurável.
+  const runAccount = async (plan: AccountPlan) => {
+    if (plan.productIds.length === 0) return;
+    const tag = `${plan.platform}/${plan.accountId.slice(-6)}`;
     const planChunks = chunk(plan.productIds, chunkSize);
     let firstChunk = true;
     for (const productChunk of planChunks) {
       if (!firstChunk && flags.interChunkDelayMs > 0) {
         console.log(
-          `[publish] aguardando ${Math.round(flags.interChunkDelayMs / 1000)}s antes do próximo chunk (rate limit)…`,
+          `[publish][${tag}] aguardando ${Math.round(flags.interChunkDelayMs / 1000)}s entre chunks…`,
         );
         await sleep(flags.interChunkDelayMs);
       }
       firstChunk = false;
       const requests: BulkListingRequestSpec[] = [
-        {
-          platform: plan.platform,
-          accountId: plan.accountId,
-        },
+        { platform: plan.platform, accountId: plan.accountId },
       ];
       const job = await BulkListingJobRepository.create({
         userId,
@@ -805,7 +805,7 @@ async function runPublish(
         overrideTemplate: null,
       });
       console.log(
-        `[publish] job criado ${job.id}: ${plan.platform}/${plan.accountId.slice(-6)} produtos=${productChunk.length}`,
+        `[publish][${tag}] job criado ${job.id} produtos=${productChunk.length}`,
       );
       await BulkListingJobRepository.markRunning(job.id);
 
@@ -821,7 +821,7 @@ async function runPublish(
           await BulkListingJobRepository.appendResult(job.id, item);
           if (itemsForThisJob.length % 50 === 0) {
             console.log(
-              `[publish] job=${job.id} progresso: ${itemsForThisJob.length}/${productChunk.length}`,
+              `[publish][${tag}] job=${job.id.slice(-6)} progresso: ${itemsForThisJob.length}/${productChunk.length}`,
             );
           }
         },
@@ -840,10 +840,13 @@ async function runPublish(
         lastError: result.lastError ?? null,
       });
       console.log(
-        `[publish] job ${job.id} finalizado: success=${result.success} failed=${result.failed}`,
+        `[publish][${tag}] job ${job.id.slice(-6)} finalizado: success=${result.success} failed=${result.failed}`,
       );
     }
-  }
+    console.log(`[publish][${tag}] CONTA CONCLUÍDA`);
+  };
+
+  await Promise.all(accountPlans.map((plan) => runAccount(plan)));
 
   summary.finishedAt = new Date().toISOString();
   return summary;
@@ -1011,12 +1014,34 @@ async function main(): Promise<void> {
 
   if (flags.onlyPublish) {
     console.log("[only-publish] pulando Phase 1 — buscando productIds direto do banco");
-    const dbRows = await prisma.product.findMany({
-      where: { userId: flags.userId },
-      select: { id: true },
-    });
-    const publishProductIds = dbRows.map((p) => p.id);
-    console.log(`[only-publish] ${publishProductIds.length} produtos encontrados no banco`);
+    let publishProductIds: string[];
+    if (flags.retryOnlyFromJobs) {
+      console.log("[retry-only-from-jobs] coletando productIds que falharam em jobs anteriores");
+      const jobs = await prisma.bulkListingJob.findMany({
+        where: {
+          userId: flags.userId,
+          status: { in: ["FAILED", "FAILED_PARTIAL"] },
+          ...(flags.retryJobsSince ? { createdAt: { gte: flags.retryJobsSince } } : {}),
+        },
+        select: { results: true },
+      });
+      const failedIds = new Set<string>();
+      for (const j of jobs) {
+        const results = Array.isArray(j.results)
+          ? (j.results as Array<{ productId: string; success: boolean }>)
+          : [];
+        for (const r of results) if (!r.success) failedIds.add(r.productId);
+      }
+      publishProductIds = Array.from(failedIds);
+      console.log(`[retry-only-from-jobs] ${jobs.length} jobs analisados, ${publishProductIds.length} productIds para reprocessar`);
+    } else {
+      const dbRows = await prisma.product.findMany({
+        where: { userId: flags.userId },
+        select: { id: true },
+      });
+      publishProductIds = dbRows.map((p) => p.id);
+      console.log(`[only-publish] ${publishProductIds.length} produtos encontrados no banco`);
+    }
     const publishSummary = await runPublish(
       publishProductIds,
       flags.userId,

@@ -1,6 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { LocationUseCase } from "../usecases/location.usercase";
+import {
+  CapacityExceededError,
+  LocationUseCase,
+} from "../usecases/location.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { SystemLogService } from "../services/system-log.service";
 
 export const locationRoutes = async (fastify: FastifyInstance) => {
   const locationUseCase = new LocationUseCase();
@@ -158,6 +162,79 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
           ? 404
           : message.includes("capacidade")
             ? 422
+            : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  /**
+   * POST /locations/:id/attach-products
+   * Vincula produtos a uma localização (usado pelo fluxo de scan).
+   * Aborta o batch inteiro se exceder maxCapacity.
+   */
+  fastify.post(
+    "/:id/attach-products",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const { productIds } = request.body as { productIds?: unknown };
+
+        if (!Array.isArray(productIds) || productIds.length === 0) {
+          return reply
+            .status(400)
+            .send({ error: "Lista de produtos é obrigatória" });
+        }
+        if (productIds.length > 200) {
+          return reply
+            .status(400)
+            .send({ error: "Limite de 200 produtos por requisição" });
+        }
+        if (!productIds.every((pid) => typeof pid === "string" && pid.length > 0)) {
+          return reply
+            .status(400)
+            .send({ error: "Todos os productIds devem ser strings não vazias" });
+        }
+
+        const result = await locationUseCase.attachProducts(
+          id,
+          productIds as string[],
+          userId,
+        );
+
+        // Log batch único (não 1 por produto)
+        await SystemLogService.logInfo(
+          "UPDATE_LOCATION",
+          `${result.attached.length} produto(s) vinculado(s) à localização "${result.location.code}" via scan`,
+          {
+            userId,
+            resource: "Location",
+            resourceId: id,
+            details: {
+              attached: result.attached.length,
+              alreadyAttached: result.alreadyAttached.length,
+              skipped: result.skipped.length,
+            },
+          },
+        );
+
+        return reply.status(200).send(result);
+      } catch (error) {
+        if (error instanceof CapacityExceededError) {
+          return reply.status(422).send({
+            error: error.message,
+            detail: error.detail,
+          });
+        }
+        const message =
+          error instanceof Error ? error.message : "Erro ao vincular produtos";
+        const status = message.includes("não encontrada")
+          ? 404
+          : message.includes("Nenhum produto") ||
+              message.includes("Limite de 200")
+            ? 400
             : 500;
         return reply.status(status).send({ error: message });
       }
