@@ -16,6 +16,7 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { ListingUseCase } from "./listing.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
@@ -2538,36 +2539,60 @@ export class SyncUseCase {
         }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
 
-        // Atualizações UP-específicas (title via PUT /items com `family_name`,
-        // description via /items/{id}/description). Falhas isoladas aqui são
-        // logadas mas não interrompem o sync — preço/estoque já foram aplicados
-        // acima. O caminho `family_name` em PUT /items é o mesmo usado pelo
-        // ListingUseCase pós-criação; o ML propaga o novo nome para o título
-        // de todos os items da família.
+        // Atualização do título em items UP: o ML NÃO permite alterar
+        // `family_name` (e portanto o título) via PUT /items nem via qualquer
+        // endpoint de /user-products após a criação — testado empiricamente:
+        // GET /user-products/{id} responde 200 mas PUT em qualquer formato
+        // retorna 404 ou 400 ("The field family name is invalid", cause:374).
+        //
+        // A única forma de propagar mudança de título em item UP é
+        // REPUBLICAR (criar um novo anúncio com o novo título e fechar o
+        // antigo). Aplicamos salvaguarda: só republicamos se o anúncio antigo
+        // não tem vendas nem bids (preserva reputação/vendas de listings
+        // com histórico).
         if (pendingFamilyNameUpdate) {
-          try {
-            await MLApiService.updateItem(
-              account.accessToken,
-              externalListingId,
-              { family_name: pendingFamilyNameUpdate },
-            );
-            console.log(
-              `[SYNC] UP family_name atualizado para "${pendingFamilyNameUpdate}" via PUT /items (user_product ${userProductIdFromMl || "?"}); ML propagará o título para todos os items da família.`,
-            );
-          } catch (err) {
-            const rawMessage =
-              err instanceof Error ? err.message : String(err);
-            console.error(
+          const soldQty = Number(
+            (currentItem as { sold_quantity?: number }).sold_quantity || 0,
+          );
+          const hasBids = !!(currentItem as { has_bids?: boolean }).has_bids;
+          if (soldQty > 0 || hasBids) {
+            console.warn(
               JSON.stringify({
-                event: "ml.family_name.update_failed",
+                event: "ml.up.republish.skipped",
+                reason: "item_has_sales_or_bids",
                 productId: product.id,
-                userProductId: userProductIdFromMl || null,
                 externalListingId,
-                newName: pendingFamilyNameUpdate,
-                error: rawMessage,
+                soldQty,
+                hasBids,
+                requestedTitle: pendingFamilyNameUpdate,
               }),
             );
-            // Não interrompe o sync principal.
+          } else {
+            try {
+              await SyncUseCase.republishUpListing({
+                userId: account.userId,
+                productId: product.id,
+                accountId: account.id,
+                accessToken: account.accessToken,
+                oldExternalListingId: externalListingId,
+                currentItem,
+                newTitle: pendingFamilyNameUpdate,
+              });
+            } catch (err) {
+              const rawMessage =
+                err instanceof Error ? err.message : String(err);
+              console.error(
+                JSON.stringify({
+                  event: "ml.up.republish.failed",
+                  productId: product.id,
+                  externalListingId,
+                  newTitle: pendingFamilyNameUpdate,
+                  error: rawMessage,
+                }),
+              );
+              // Não interrompe o sync principal — preço/estoque/description já
+              // foram aplicados acima.
+            }
           }
         }
 
@@ -2969,5 +2994,198 @@ export class SyncUseCase {
     } catch (err) {
       console.error("[alertMLReactivationRisk] falhou:", err);
     }
+  }
+
+  /**
+   * Republica um anúncio em fluxo "User Product" do Mercado Livre quando o
+   * título muda. Necessário porque o ML não permite atualizar `family_name`
+   * de items UP após criação (toda tentativa via PUT /items/{id} retorna
+   * 400 "The field family name is invalid", cause:374; endpoints
+   * /user-products/{id} e /families/{id} retornam 404). O único caminho
+   * para refletir o novo título é criar um anúncio novo e fechar o antigo.
+   *
+   * Aplicado APENAS quando o anúncio antigo não tem vendas nem bids
+   * (salvaguarda aplicada pelo caller). Caso contrário, o sync ignora o
+   * title em silêncio e preserva o anúncio existente.
+   *
+   * Fluxo:
+   *  1. Reset externalListingId do ProductListing para placeholder
+   *     "PENDING_REPUBLISH_<old>_<ts>" — assim createMLListing reusa o
+   *     mesmo registro do banco e atualiza com o novo MLB-ID quando o ML
+   *     criar o anúncio.
+   *  2. Chama ListingUseCase.createMLListing com settings extraídos do
+   *     currentItem (listing_type, condition, shipping, warranty) para
+   *     preservar o tipo do anúncio.
+   *  3. Se sucesso: fecha o anúncio antigo via PUT /items/{old} { status:
+   *     "closed" } e loga ml.up.republished.
+   *  4. Se falha: reverte externalListingId para o oldId original (anúncio
+   *     antigo permanece intocado).
+   */
+  static async republishUpListing(args: {
+    userId: string;
+    productId: string;
+    accountId: string;
+    accessToken: string;
+    oldExternalListingId: string;
+    currentItem: MLItemDetails;
+    newTitle: string;
+  }): Promise<void> {
+    const {
+      userId,
+      productId,
+      accountId,
+      accessToken,
+      oldExternalListingId,
+      currentItem,
+      newTitle,
+    } = args;
+
+    const listing = await ListingRepository.findByProductAndAccount(
+      productId,
+      accountId,
+    );
+    if (!listing) {
+      throw new Error(
+        `Listing não encontrado no banco para product ${productId} / account ${accountId}`,
+      );
+    }
+
+    // 1. Extrair mlSettings do anúncio atual para preservar configurações.
+    const mlSettings = SyncUseCase.extractMlSettingsFromItem(currentItem);
+    const categoryId = currentItem.category_id;
+
+    console.warn(
+      `[SYNC] UP republish: iniciando para ${oldExternalListingId} (productId=${productId}, accountId=${accountId}, newTitle="${newTitle}")`,
+    );
+
+    // 2. Reset externalListingId pra placeholder — createMLListing reusa o
+    // mesmo registro e atualiza com o novo MLB-ID.
+    const placeholder = `PENDING_REPUBLISH_${oldExternalListingId}_${Date.now()}`;
+    await ListingRepository.updateListing(listing.id, {
+      externalListingId: placeholder,
+      status: "pending",
+    });
+
+    // 3. Chamar createMLListing — mesmo pipeline usado por novos anúncios
+    // (cria item, anexa compatibilidades, reconcilia listing_type, etc.).
+    let result;
+    try {
+      result = await ListingUseCase.createMLListing(
+        userId,
+        productId,
+        categoryId,
+        accountId,
+        mlSettings,
+      );
+    } catch (createErr) {
+      // Reverter o placeholder para o ID original — o anúncio antigo
+      // permanece intocado e nada foi alterado no ML.
+      await ListingRepository.updateListing(listing.id, {
+        externalListingId: oldExternalListingId,
+        status: (currentItem.status as string) || "active",
+      });
+      throw createErr;
+    }
+
+    if (!result.success || !result.externalListingId) {
+      // Mesmo tratamento: reverter o placeholder.
+      await ListingRepository.updateListing(listing.id, {
+        externalListingId: oldExternalListingId,
+        status: (currentItem.status as string) || "active",
+      });
+      throw new Error(
+        `createMLListing retornou success=false: ${result.error || "sem detalhes"}`,
+      );
+    }
+
+    const newExternalListingId = result.externalListingId;
+
+    // 4. Fechar anúncio antigo no ML. Não-fatal: se falhar, ficamos com 2
+    // anúncios ativos temporariamente (o user pode fechar manualmente).
+    try {
+      await MLApiService.updateItem(accessToken, oldExternalListingId, {
+        status: "closed",
+      });
+      console.log(
+        `[SYNC] Anúncio antigo ${oldExternalListingId} fechado após republicação para ${newExternalListingId}`,
+      );
+    } catch (closeErr) {
+      console.warn(
+        JSON.stringify({
+          event: "ml.up.republish.old_close_failed",
+          productId,
+          oldExternalListingId,
+          newExternalListingId,
+          error:
+            closeErr instanceof Error ? closeErr.message : String(closeErr),
+        }),
+      );
+    }
+
+    console.warn(
+      JSON.stringify({
+        event: "ml.up.republished",
+        productId,
+        accountId,
+        oldExternalListingId,
+        newExternalListingId,
+        newTitle,
+      }),
+    );
+  }
+
+  /**
+   * Extrai MLListingSettings de um MLItemDetails. Usado pelo flow de
+   * republicação para preservar configurações do anúncio antigo (tipo,
+   * condição, frete, garantia) ao criar o novo.
+   */
+  private static extractMlSettingsFromItem(
+    item: MLItemDetails,
+  ): import("./listing.usercase").MLListingSettings {
+    const settings: import("./listing.usercase").MLListingSettings = {};
+
+    const listingTypeId = (item as { listing_type_id?: string })
+      .listing_type_id;
+    if (listingTypeId) {
+      settings.listingType = listingTypeId;
+    }
+    const condition = (item as { condition?: string }).condition;
+    if (condition) {
+      settings.itemCondition = condition;
+    }
+    const shipping = (item as { shipping?: Record<string, unknown> }).shipping;
+    if (shipping && typeof shipping === "object") {
+      if (typeof shipping.mode === "string") {
+        settings.shippingMode = shipping.mode;
+      }
+      if (typeof shipping.free_shipping === "boolean") {
+        settings.freeShipping = shipping.free_shipping;
+      }
+      if (typeof shipping.local_pick_up === "boolean") {
+        settings.localPickup = shipping.local_pick_up;
+      }
+    }
+    // Warranty vem em sale_terms[].id === "WARRANTY_TYPE" / "WARRANTY_TIME"
+    const saleTerms = (
+      item as { sale_terms?: Array<{ id: string; value_name?: string }> }
+    ).sale_terms;
+    if (Array.isArray(saleTerms)) {
+      const warrantyType = saleTerms.find((t) => t.id === "WARRANTY_TYPE");
+      const warrantyTime = saleTerms.find((t) => t.id === "WARRANTY_TIME");
+      if (warrantyType && warrantyType.value_name) {
+        settings.hasWarranty = true;
+        if (warrantyTime && warrantyTime.value_name) {
+          // value_name format: "90 dias" / "12 meses"
+          const m = warrantyTime.value_name.match(/(\d+)\s*(dias?|meses?)/i);
+          if (m) {
+            settings.warrantyDuration = Number(m[1]);
+            settings.warrantyUnit = m[2].toLowerCase().startsWith("mes")
+              ? "meses"
+              : "dias";
+          }
+        }
+      }
+    }
+    return settings;
   }
 }
