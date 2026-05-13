@@ -10,9 +10,17 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  * ficha técnica de compatibilidades nunca foi populada (ou ficou
  * incompleta) durante a criação.
  *
+ * Por padrão, opera APENAS na conta "MATEUSLASCADO" do user-alvo. Para
+ * trocar de conta, use `--account-name=X` (busca case-insensitive contains)
+ * ou `--account-id=Y` para forçar uma conta específica. `--all-accounts`
+ * remove o filtro e processa todas as contas ML do user.
+ *
  * Uso:
- *   tsx scripts/backfill-product-compatibilities-on-ml.ts             (user default)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts             (user+conta default)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --user=ID   (outro user)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-name=fat  (outra conta por nome)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-id=cmp... (conta exata)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --all-accounts  (sem filtro de conta)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --dry-run   (preview)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --only-missing  (só envia
  *       para anúncios cujo HAS_COMPATIBILITIES não é "Sim" — pula os que já têm)
@@ -32,12 +40,101 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  */
 
 const DEFAULT_USER_ID = "cmnq8opbl0000vsiw19duv1i0";
+const DEFAULT_ACCOUNT_NAME_MATCH = "mateuslascado"; // case-insensitive contains
 
 const args = process.argv.slice(2);
 const userId =
   args.find((a) => a.startsWith("--user="))?.split("=")[1] ?? DEFAULT_USER_ID;
+const accountIdOverride =
+  args.find((a) => a.startsWith("--account-id="))?.split("=")[1] ?? null;
+const accountNameOverride =
+  args.find((a) => a.startsWith("--account-name="))?.split("=")[1] ?? null;
+const allAccounts = args.includes("--all-accounts");
 const dryRun = args.includes("--dry-run");
 const onlyMissing = args.includes("--only-missing");
+
+/**
+ * Resolve quais contas ML serão alvo. Por padrão filtra para a conta
+ * MATEUSLASCADO; `--account-id` força uma conta específica; `--account-name`
+ * troca o filtro de nome; `--all-accounts` remove o filtro.
+ */
+async function resolveTargetAccountIds(): Promise<{
+  ids: string[];
+  label: string;
+} | null> {
+  if (allAccounts) {
+    const all = await prisma.marketplaceAccount.findMany({
+      where: { userId, platform: "MERCADO_LIVRE" },
+      select: { id: true, accountName: true },
+    });
+    return {
+      ids: all.map((a) => a.id),
+      label: `todas as contas ML (${all.length})`,
+    };
+  }
+
+  if (accountIdOverride) {
+    const acc = await prisma.marketplaceAccount.findUnique({
+      where: { id: accountIdOverride },
+      select: {
+        id: true,
+        accountName: true,
+        platform: true,
+        userId: true,
+      },
+    });
+    if (!acc) {
+      console.error(
+        `[backfill-compat] Conta ${accountIdOverride} não encontrada.`,
+      );
+      return null;
+    }
+    if (acc.platform !== "MERCADO_LIVRE") {
+      console.error(
+        `[backfill-compat] Conta ${accountIdOverride} não é ML (platform=${acc.platform}).`,
+      );
+      return null;
+    }
+    if (acc.userId !== userId) {
+      console.error(
+        `[backfill-compat] Conta ${accountIdOverride} não pertence ao user ${userId}.`,
+      );
+      return null;
+    }
+    return { ids: [acc.id], label: `${acc.accountName} (${acc.id})` };
+  }
+
+  const nameMatch = (accountNameOverride ?? DEFAULT_ACCOUNT_NAME_MATCH).toLowerCase();
+  const candidates = await prisma.marketplaceAccount.findMany({
+    where: { userId, platform: "MERCADO_LIVRE" },
+    select: { id: true, accountName: true },
+  });
+  const matching = candidates.filter((a) =>
+    (a.accountName || "").toLowerCase().includes(nameMatch),
+  );
+  if (matching.length === 0) {
+    console.error(
+      `[backfill-compat] Nenhuma conta ML com "${nameMatch}" no nome para user ${userId}.`,
+    );
+    console.error(
+      `[backfill-compat] Contas ML disponíveis: ${
+        candidates.map((c) => `${c.id} (${c.accountName})`).join(", ") || "(nenhuma)"
+      }`,
+    );
+    return null;
+  }
+  if (matching.length > 1) {
+    console.warn(
+      `[backfill-compat] Múltiplas contas com "${nameMatch}": ${matching
+        .map((m) => `${m.id} (${m.accountName})`)
+        .join(", ")}. Use --account-id=ID se quiser escolher uma específica.`,
+    );
+  }
+  return {
+    ids: matching.map((m) => m.id),
+    label: matching.map((m) => m.accountName).join(", "),
+  };
+}
 
 interface AccountTokenLite {
   id: string;
@@ -100,6 +197,15 @@ async function main(): Promise<void> {
     `[backfill-compat] userId=${userId} dryRun=${dryRun} onlyMissing=${onlyMissing}`,
   );
 
+  const target = await resolveTargetAccountIds();
+  if (!target) {
+    await prisma.$disconnect();
+    process.exit(1);
+  }
+  console.log(
+    `[backfill-compat] Conta(s) alvo: ${target.label}${target.ids.length === 1 ? "" : ` [${target.ids.length} contas]`}`,
+  );
+
   const products = await prisma.product.findMany({
     where: {
       userId,
@@ -109,6 +215,7 @@ async function main(): Promise<void> {
       compatibilities: true,
       listings: {
         where: {
+          marketplaceAccountId: { in: target.ids },
           marketplaceAccount: { platform: "MERCADO_LIVRE" },
           externalListingId: { startsWith: "MLB" },
         },
