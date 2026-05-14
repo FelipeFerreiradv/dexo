@@ -93,6 +93,7 @@ import {
 import { ImportExportProducts } from "./import-export-products";
 import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
 import { ProductDetailSheet } from "./product-detail-sheet";
+import { ImageLightbox } from "./image-lightbox";
 import { ProductSkeleton } from "./product-skeleton";
 
 type MarketplacePlatform = MarketplaceListingPlatform;
@@ -495,6 +496,27 @@ export function ProductsList() {
     platform: MarketplaceListingPlatform;
   } | null>(null);
   const [viewProduct, setViewProduct] = useState<Product | null>(null);
+  const [lightboxProduct, setLightboxProduct] = useState<{
+    images: string[];
+    alt: string;
+  } | null>(null);
+
+  const openProductLightbox = (product: Product) => {
+    const seen = new Set<string>();
+    const images: string[] = [];
+    if (product.imageUrl) {
+      seen.add(product.imageUrl);
+      images.push(product.imageUrl);
+    }
+    for (const url of product.imageUrls ?? []) {
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        images.push(url);
+      }
+    }
+    if (images.length === 0) return;
+    setLightboxProduct({ images, alt: product.name });
+  };
   const locationOptionsRequestIdRef = useRef(0);
   const filterOptionsRequestIdRef = useRef(0);
   const productsRequestIdRef = useRef(0);
@@ -1586,16 +1608,23 @@ export function ProductsList() {
                               </TableCell>
                               <TableCell>
                                 {product.imageUrl ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    src={product.imageUrl}
-                                    alt={product.name}
-                                    className="h-24 w-24 rounded border object-cover"
-                                    onError={(event) => {
-                                      event.currentTarget.style.display =
-                                        "none";
-                                    }}
-                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => openProductLightbox(product)}
+                                    title="Ampliar imagem"
+                                    className="group relative h-24 w-24 overflow-hidden rounded border bg-muted transition-shadow hover:shadow-md"
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={product.imageUrl}
+                                      alt={product.name}
+                                      className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
+                                      onError={(event) => {
+                                        event.currentTarget.style.display =
+                                          "none";
+                                      }}
+                                    />
+                                  </button>
                                 ) : (
                                   <div className="flex h-24 w-24 items-center justify-center rounded border bg-muted">
                                     <Package className="h-12 w-12 text-muted-foreground" />
@@ -1724,15 +1753,22 @@ export function ProductsList() {
                               disabled={isBulkDeleting}
                             />
                             {product.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={product.imageUrl}
-                                alt={product.name}
-                                className="h-32 w-32 flex-shrink-0 rounded border object-cover"
-                                onError={(event) => {
-                                  event.currentTarget.style.display = "none";
-                                }}
-                              />
+                              <button
+                                type="button"
+                                onClick={() => openProductLightbox(product)}
+                                title="Ampliar imagem"
+                                className="group relative h-32 w-32 flex-shrink-0 overflow-hidden rounded border bg-muted transition-shadow hover:shadow-md"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={product.imageUrl}
+                                  alt={product.name}
+                                  className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
+                                  onError={(event) => {
+                                    event.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </button>
                             ) : (
                               <div className="flex h-32 w-32 flex-shrink-0 items-center justify-center rounded border bg-muted">
                                 <Package className="h-16 w-16 text-muted-foreground" />
@@ -1972,6 +2008,15 @@ export function ProductsList() {
         onOpenChange={(open) => {
           if (!open) setViewProduct(null);
         }}
+      />
+
+      <ImageLightbox
+        images={lightboxProduct?.images ?? []}
+        open={!!lightboxProduct}
+        onOpenChange={(open) => {
+          if (!open) setLightboxProduct(null);
+        }}
+        alt={lightboxProduct?.alt}
       />
     </div>
   );

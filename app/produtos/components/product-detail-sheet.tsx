@@ -7,8 +7,6 @@ import {
   Box,
   Calendar,
   Car,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   DollarSign,
   ExternalLink,
@@ -25,19 +23,12 @@ import {
   User,
   Warehouse,
   Weight,
-  X,
   ZoomIn,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import {
-  Dialog,
-  DialogOverlay,
-  DialogPortal,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Badge } from "@/components/ui/badge";
+import { ImageLightbox } from "./image-lightbox";
 import {
   Table,
   TableBody,
@@ -352,22 +343,6 @@ export function ProductDetailSheet({
   const scrapSummary = detail?.scrapSummary;
   const productLocation = detail?.productLocation;
   const creator = detail?.creator;
-
-  const lightboxOpen = lightboxIndex !== null;
-  const currentLightboxUrl =
-    lightboxIndex !== null ? allImages[lightboxIndex] : null;
-  const showLightboxNav = allImages.length > 1;
-
-  const goLightboxPrev = () => {
-    if (lightboxIndex === null || allImages.length === 0) return;
-    setLightboxIndex(
-      (lightboxIndex - 1 + allImages.length) % allImages.length,
-    );
-  };
-  const goLightboxNext = () => {
-    if (lightboxIndex === null || allImages.length === 0) return;
-    setLightboxIndex((lightboxIndex + 1) % allImages.length);
-  };
 
   return (
     <>
@@ -1029,83 +1004,15 @@ export function ProductDetailSheet({
       </SheetContent>
     </Sheet>
 
-    <Dialog
-      open={lightboxOpen}
+    <ImageLightbox
+      images={allImages}
+      open={lightboxIndex !== null}
       onOpenChange={(o) => {
         if (!o) setLightboxIndex(null);
       }}
-    >
-      <DialogPortal>
-        <DialogOverlay className="bg-black/85 backdrop-blur-sm" />
-        <DialogPrimitive.Content
-          onKeyDown={(e) => {
-            if (e.key === "ArrowLeft") {
-              e.preventDefault();
-              goLightboxPrev();
-            } else if (e.key === "ArrowRight") {
-              e.preventDefault();
-              goLightboxNext();
-            }
-          }}
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 w-[95vw] max-w-6xl translate-x-[-50%] translate-y-[-50%] outline-none"
-        >
-          <DialogTitle className="sr-only">
-            {`Imagem ${(lightboxIndex ?? 0) + 1} de ${allImages.length} — ${merged.name}`}
-          </DialogTitle>
-
-          {/* Contador */}
-          {allImages.length > 1 ? (
-            <div className="absolute left-4 top-4 z-10 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white backdrop-blur">
-              {(lightboxIndex ?? 0) + 1} / {allImages.length}
-            </div>
-          ) : null}
-
-          {/* Botão fechar */}
-          <button
-            type="button"
-            onClick={() => setLightboxIndex(null)}
-            title="Fechar (Esc)"
-            className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-colors hover:bg-black/80"
-          >
-            <X className="size-4" />
-          </button>
-
-          {/* Imagem principal */}
-          <div className="flex h-[85vh] items-center justify-center">
-            {currentLightboxUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={currentLightboxUrl}
-                alt={merged.name}
-                className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
-              />
-            ) : null}
-          </div>
-
-          {/* Botões navegação */}
-          {showLightboxNav ? (
-            <>
-              <button
-                type="button"
-                onClick={goLightboxPrev}
-                title="Imagem anterior (←)"
-                className="absolute left-4 top-1/2 z-10 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-colors hover:bg-black/80"
-              >
-                <ChevronLeft className="size-5" />
-              </button>
-              <button
-                type="button"
-                onClick={goLightboxNext}
-                title="Próxima imagem (→)"
-                className="absolute right-4 top-1/2 z-10 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-colors hover:bg-black/80"
-              >
-                <ChevronRight className="size-5" />
-              </button>
-            </>
-          ) : null}
-        </DialogPrimitive.Content>
-      </DialogPortal>
-    </Dialog>
+      initialIndex={lightboxIndex ?? 0}
+      alt={merged.name}
+    />
     </>
   );
 }
