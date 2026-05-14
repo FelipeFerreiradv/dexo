@@ -1138,6 +1138,21 @@ class ProductRepositoryPrisma implements ProductRepository {
               version: true,
               color: true,
               plate: true,
+              chassis: true,
+            },
+          },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          productLocation: {
+            select: {
+              id: true,
+              code: true,
+              description: true,
             },
           },
         },
@@ -1195,6 +1210,23 @@ class ProductRepositoryPrisma implements ProductRepository {
           version: item.scrap.version ?? undefined,
           color: item.scrap.color ?? undefined,
           plate: item.scrap.plate ?? undefined,
+          chassis: (item.scrap as { chassis?: string | null }).chassis ?? undefined,
+        }
+      : undefined;
+
+    const creator = (item as { user?: { id: string; name: string | null; email: string } | null }).user
+      ? {
+          id: (item as { user: { id: string } }).user.id,
+          name: (item as { user: { name: string | null } }).user.name ?? undefined,
+          email: (item as { user: { email: string } }).user.email,
+        }
+      : undefined;
+
+    const productLocationSummary = (item as { productLocation?: { id: string; code: string; description: string | null } | null }).productLocation
+      ? {
+          id: (item as { productLocation: { id: string } }).productLocation.id,
+          code: (item as { productLocation: { code: string } }).productLocation.code,
+          description: (item as { productLocation: { description: string | null } }).productLocation.description ?? undefined,
         }
       : undefined;
 
@@ -1203,6 +1235,8 @@ class ProductRepositoryPrisma implements ProductRepository {
       detailedListings,
       recentStockChanges,
       scrapSummary,
+      creator,
+      productLocation: productLocationSummary,
     };
   }
 

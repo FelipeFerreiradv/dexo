@@ -11,6 +11,7 @@ import {
 import {
   ChevronLeft,
   ChevronRight,
+  Eye,
   Filter,
   Loader2,
   Megaphone,
@@ -91,6 +92,7 @@ import {
 } from "./edit-product-dialog";
 import { ImportExportProducts } from "./import-export-products";
 import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
+import { ProductDetailSheet } from "./product-detail-sheet";
 import { ProductSkeleton } from "./product-skeleton";
 
 type MarketplacePlatform = MarketplaceListingPlatform;
@@ -487,6 +489,7 @@ export function ProductsList() {
     product: Product;
     platform: MarketplaceListingPlatform;
   } | null>(null);
+  const [viewProduct, setViewProduct] = useState<Product | null>(null);
   const locationOptionsRequestIdRef = useRef(0);
   const filterOptionsRequestIdRef = useRef(0);
   const productsRequestIdRef = useRef(0);
@@ -1582,15 +1585,15 @@ export function ProductsList() {
                                   <img
                                     src={product.imageUrl}
                                     alt={product.name}
-                                    className="h-12 w-12 rounded border object-cover"
+                                    className="h-24 w-24 rounded border object-cover"
                                     onError={(event) => {
                                       event.currentTarget.style.display =
                                         "none";
                                     }}
                                   />
                                 ) : (
-                                  <div className="flex h-12 w-12 items-center justify-center rounded border bg-muted">
-                                    <Package className="h-6 w-6 text-muted-foreground" />
+                                  <div className="flex h-24 w-24 items-center justify-center rounded border bg-muted">
+                                    <Package className="h-12 w-12 text-muted-foreground" />
                                   </div>
                                 )}
                               </TableCell>
@@ -1638,6 +1641,14 @@ export function ProductsList() {
                               </TableCell>
                               <TableCell className="text-right">
                                 <div className="flex justify-end gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    title="Ver detalhes"
+                                    onClick={() => setViewProduct(product)}
+                                  >
+                                    <Eye className="size-4" />
+                                  </Button>
                                   <Button
                                     variant="ghost"
                                     size="icon-sm"
@@ -1710,14 +1721,14 @@ export function ProductsList() {
                               <img
                                 src={product.imageUrl}
                                 alt={product.name}
-                                className="h-16 w-16 flex-shrink-0 rounded border object-cover"
+                                className="h-32 w-32 flex-shrink-0 rounded border object-cover"
                                 onError={(event) => {
                                   event.currentTarget.style.display = "none";
                                 }}
                               />
                             ) : (
-                              <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded border bg-muted">
-                                <Package className="h-8 w-8 text-muted-foreground" />
+                              <div className="flex h-32 w-32 flex-shrink-0 items-center justify-center rounded border bg-muted">
+                                <Package className="h-16 w-16 text-muted-foreground" />
                               </div>
                             )}
                             <div className="min-w-0 flex-1">
@@ -1765,6 +1776,14 @@ export function ProductsList() {
                               {formatPrice(product.price)}
                             </span>
                             <div className="flex gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                title="Ver detalhes"
+                                onClick={() => setViewProduct(product)}
+                              >
+                                <Eye className="size-4" />
+                              </Button>
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
@@ -1936,6 +1955,14 @@ export function ProductsList() {
           }
         }}
         onToast={showToast}
+      />
+
+      <ProductDetailSheet
+        product={viewProduct}
+        open={!!viewProduct}
+        onOpenChange={(open) => {
+          if (!open) setViewProduct(null);
+        }}
       />
     </div>
   );
