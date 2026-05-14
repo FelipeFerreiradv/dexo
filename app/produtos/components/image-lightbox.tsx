@@ -38,6 +38,25 @@ export function ImageLightbox({
     if (open) setIndex(Math.min(initialIndex, Math.max(0, images.length - 1)));
   }, [open, initialIndex, images.length]);
 
+  // Prefetch das imagens vizinhas (próxima e anterior) para navegação instantânea.
+  // Usa new Image() para baixar em background e popular o cache do navegador,
+  // sem renderizar nada extra no DOM.
+  useEffect(() => {
+    if (!open || images.length <= 1) return;
+    const neighbors = new Set([
+      (index + 1) % images.length,
+      (index - 1 + images.length) % images.length,
+    ]);
+    neighbors.delete(index);
+    neighbors.forEach((i) => {
+      const url = images[i];
+      if (!url) return;
+      const img = new window.Image();
+      img.decoding = "async";
+      img.src = url;
+    });
+  }, [open, index, images]);
+
   if (images.length === 0) return null;
 
   const currentUrl = images[index] ?? null;
@@ -92,6 +111,7 @@ export function ImageLightbox({
               <img
                 src={currentUrl}
                 alt={alt ?? "Imagem em foco"}
+                decoding="async"
                 className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
               />
             ) : null}

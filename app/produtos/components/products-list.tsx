@@ -1612,12 +1612,14 @@ export function ProductsList() {
                                     type="button"
                                     onClick={() => openProductLightbox(product)}
                                     title="Ampliar imagem"
-                                    className="group relative h-24 w-24 overflow-hidden rounded border bg-muted transition-shadow hover:shadow-md"
+                                    className="group relative h-24 w-24 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
                                   >
                                     {/* eslint-disable-next-line @next/next/no-img-element */}
                                     <img
                                       src={product.imageUrl}
                                       alt={product.name}
+                                      loading="lazy"
+                                      decoding="async"
                                       className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
                                       onError={(event) => {
                                         event.currentTarget.style.display =
@@ -1757,12 +1759,14 @@ export function ProductsList() {
                                 type="button"
                                 onClick={() => openProductLightbox(product)}
                                 title="Ampliar imagem"
-                                className="group relative h-32 w-32 flex-shrink-0 overflow-hidden rounded border bg-muted transition-shadow hover:shadow-md"
+                                className="group relative h-32 w-32 flex-shrink-0 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
                               >
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img
                                   src={product.imageUrl}
                                   alt={product.name}
+                                  loading="lazy"
+                                  decoding="async"
                                   className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
                                   onError={(event) => {
                                     event.currentTarget.style.display = "none";
