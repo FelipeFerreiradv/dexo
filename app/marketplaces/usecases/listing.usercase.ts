@@ -4083,6 +4083,17 @@ export class ListingUseCase {
         return { success: true, alreadyInState: true };
       }
 
+      // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        return {
+          success: false,
+          error: "Anúncio ainda não foi publicado no marketplace",
+        };
+      }
+
       const platform = listing.marketplaceAccount?.platform;
 
       if (platform === Platform.MERCADO_LIVRE) {
@@ -4090,16 +4101,6 @@ export class ListingUseCase {
         const account = listing.marketplaceAccount;
         if (!account || !account.accessToken) {
           return { success: false, error: "Conta sem credenciais válidas" };
-        }
-
-        if (
-          !listing.externalListingId ||
-          listing.externalListingId.startsWith("PENDING_")
-        ) {
-          return {
-            success: false,
-            error: "Anúncio ainda não foi publicado no marketplace",
-          };
         }
 
         await MLApiService.updateItem(
@@ -4112,11 +4113,37 @@ export class ListingUseCase {
       }
 
       if (platform === Platform.SHOPEE) {
-        return {
-          success: false,
-          error:
-            "Pausar/reativar anúncios da Shopee ainda não está disponível. Use o painel da Shopee.",
-        };
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken || !account.shopId) {
+          return {
+            success: false,
+            error: "Conta Shopee sem credenciais válidas",
+          };
+        }
+
+        const itemId = Number(listing.externalListingId);
+        if (!Number.isFinite(itemId)) {
+          return {
+            success: false,
+            error: "ID externo do anúncio Shopee inválido",
+          };
+        }
+
+        const result = await ShopeeApiService.unlistItem(
+          account.accessToken,
+          account.shopId,
+          [{ itemId, unlist: status === "paused" }],
+        );
+
+        if (result.failure_list.length > 0) {
+          return {
+            success: false,
+            error: result.failure_list[0].failed_reason,
+          };
+        }
+
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
       }
 
       return {
