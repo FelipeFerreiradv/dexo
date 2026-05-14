@@ -884,6 +884,79 @@ export const productRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  /**
+   * PATCH /products/:id/listings-status
+   * Pausa ou reativa todos os anúncios publicados de um produto.
+   * Body: { status: "active" | "paused" }.
+   * Espelha o DELETE /products/:id em estrutura, mas atua nos anúncios sem
+   * deletar o produto. Falhas parciais ficam visíveis em listingResults.
+   */
+  fastify.patch<{
+    Params: { id: string };
+    Body: { status: "active" | "paused" };
+  }>(
+    "/:id/listings-status",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const { status } = (request.body ?? {}) as { status?: string };
+
+        if (!id) {
+          return reply
+            .status(400)
+            .send({ error: "ID do produto é obrigatório" });
+        }
+        if (status !== "active" && status !== "paused") {
+          return reply.status(400).send({
+            error: "Status inválido",
+            message: 'Use "active" ou "paused"',
+          });
+        }
+
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const result = await productUseCase.pauseListings(id, userId, status);
+
+        // O usecase retorna "Produto não encontrado" explicitamente quando
+        // findById(id, userId) falha — cobre tanto produto inexistente quanto
+        // pertencente a outro usuário (ownership). 404 sem vazar distinção.
+        if (!result.success && result.message.includes("não encontrado")) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: result.message,
+          });
+        }
+
+        const user = (request as any).user;
+        void SystemLogService.logInfo("UPDATE_LISTING", result.message, {
+          userId: user?.id,
+          resource: "Product",
+          resourceId: id,
+          details: { status, listingResults: result.listingResults },
+        });
+
+        // Falhas parciais devolvem 200 (UI mostra detalhes via listingResults).
+        // 500 só quando TODOS os listings falharam.
+        return reply.status(result.success ? 200 : 500).send({
+          success: result.success,
+          message: result.message,
+          listingResults: result.listingResults,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? String(error.message)
+              : "Erro ao alterar status dos anúncios",
+        });
+      }
+    },
+  );
+
   fastify.put<{
     Params: { id: string };
     Body: ProductUpdate;
