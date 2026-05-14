@@ -28,6 +28,12 @@ type PrismaOrderWithRelations = PrismaOrder & {
       name: string;
       sku: string;
       stock: number;
+      location?: string | null;
+      productLocation?: {
+        id: string;
+        code: string;
+        description: string | null;
+      } | null;
     };
     listing?: {
       id: string;
@@ -50,6 +56,12 @@ function mapPrismaToOrderItem(
       name: string;
       sku: string;
       stock: number;
+      location?: string | null;
+      productLocation?: {
+        id: string;
+        code: string;
+        description: string | null;
+      } | null;
     };
     listing?: {
       id: string;
@@ -71,6 +83,14 @@ function mapPrismaToOrderItem(
           name: item.product.name,
           sku: item.product.sku,
           stock: item.product.stock,
+          location: item.product.location ?? null,
+          productLocation: item.product.productLocation
+            ? {
+                id: item.product.productLocation.id,
+                code: item.product.productLocation.code,
+                description: item.product.productLocation.description ?? null,
+              }
+            : null,
         }
       : undefined,
     listing: item.listing
@@ -138,6 +158,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -184,6 +212,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -230,6 +266,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -335,6 +379,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                         name: true,
                         sku: true,
                         stock: true,
+                        location: true,
+                        productLocation: {
+                          select: {
+                            id: true,
+                            code: true,
+                            description: true,
+                          },
+                        },
                       },
                     },
                     listing: {
@@ -392,6 +444,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -442,6 +502,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {

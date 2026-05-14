@@ -105,6 +105,11 @@ export interface Product {
   mlCatalogSnapshot?: Record<string, unknown> | null;
 
   scrapId?: string;
+  productLocation?: {
+    id: string;
+    code: string;
+    description?: string;
+  };
   listings?: ProductListingSummary[];
   compatibilities?: Array<{
     brand: string;

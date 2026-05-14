@@ -12,6 +12,7 @@ import {
   Store,
   FileText,
   Loader2,
+  MapPin,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -392,29 +393,51 @@ export function OrderDetailSheet({
                       <TableRow>
                         <TableHead>Produto</TableHead>
                         <TableHead>SKU</TableHead>
+                        <TableHead>Localização</TableHead>
                         <TableHead>Quantidade</TableHead>
                         <TableHead>Preço Unitário</TableHead>
                         <TableHead>Total</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {order.items.map((item) => (
-                        <TableRow key={item.id} className="hover:bg-muted/40">
-                          <TableCell className="font-medium text-foreground">
-                            {item.product?.name || "Produto não encontrado"}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs text-muted-foreground">
-                            {item.product?.sku || "N/A"}
-                          </TableCell>
-                          <TableCell>{item.quantity}</TableCell>
-                          <TableCell>
-                            {formatCurrency(item.unitPrice)}
-                          </TableCell>
-                          <TableCell>
-                            {formatCurrency(item.quantity * item.unitPrice)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {order.items.map((item) => {
+                        const locationLabel =
+                          item.product?.productLocation?.code ??
+                          item.product?.location ??
+                          null;
+                        const locationDescription =
+                          item.product?.productLocation?.description ?? null;
+                        return (
+                          <TableRow key={item.id} className="hover:bg-muted/40">
+                            <TableCell className="font-medium text-foreground">
+                              {item.product?.name || "Produto não encontrado"}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs text-muted-foreground">
+                              {item.product?.sku || "N/A"}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {locationLabel ? (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 font-medium text-foreground"
+                                  title={locationDescription ?? undefined}
+                                >
+                                  <MapPin className="size-3 text-muted-foreground" />
+                                  {locationLabel}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                            <TableCell>{item.quantity}</TableCell>
+                            <TableCell>
+                              {formatCurrency(item.unitPrice)}
+                            </TableCell>
+                            <TableCell>
+                              {formatCurrency(item.quantity * item.unitPrice)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 ) : (

@@ -187,6 +187,13 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
         | null
         | undefined) ?? undefined,
     scrapId: (item as any).scrapId ?? undefined,
+    productLocation: (item as any).productLocation
+      ? {
+          id: (item as any).productLocation.id,
+          code: (item as any).productLocation.code,
+          description: (item as any).productLocation.description ?? undefined,
+        }
+      : undefined,
     listings,
     compatibilities: mapPrismaCompatibilities(item),
   };
@@ -261,6 +268,13 @@ class ProductRepositoryPrisma implements ProductRepository {
       category: true,
       location: true,
       locationId: true,
+      productLocation: {
+        select: {
+          id: true,
+          code: true,
+          description: true,
+        },
+      },
       partNumber: true,
       quality: true,
       isSecurityItem: true,
