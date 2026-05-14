@@ -373,6 +373,7 @@ export function ProductDetailSheet({
                     <img
                       src={merged.imageUrl}
                       alt={merged.name}
+                      decoding="async"
                       className="absolute inset-0 size-full object-cover transition-transform group-hover:scale-105"
                     />
                     <span className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 transition-opacity group-hover:opacity-100">
@@ -818,6 +819,8 @@ export function ProductDetailSheet({
                       <img
                         src={url}
                         alt={`${merged.name} - imagem ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
                         className="absolute inset-0 size-full object-cover transition-transform group-hover:scale-105"
                       />
                       <span className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 transition-opacity group-hover:opacity-100">
