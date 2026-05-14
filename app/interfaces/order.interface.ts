@@ -25,6 +25,12 @@ export interface OrderItem {
     name: string;
     sku: string;
     stock: number;
+    location?: string | null;
+    productLocation?: {
+      id: string;
+      code: string;
+      description?: string | null;
+    } | null;
   };
   listing?: {
     id: string;
