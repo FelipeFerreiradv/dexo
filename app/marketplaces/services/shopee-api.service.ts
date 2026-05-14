@@ -488,6 +488,46 @@ export class ShopeeApiService {
   }
 
   /**
+   * Pausa (unlist=true) ou reativa (unlist=false) anuncios na Shopee.
+   * Endpoint /api/v2/product/unlist_item aceita ate 50 itens por chamada.
+   *
+   * Erros globais (auth, throttling) sao lancados como exception via
+   * makeAuthenticatedRequest. Falhas por-item vem em failure_list (lista vazia
+   * se todos OK).
+   *
+   * Doc: open.shopee.com -> Open API v2 -> product -> unlist_item
+   */
+  static async unlistItem(
+    accessToken: string,
+    shopId: number,
+    items: Array<{ itemId: number; unlist: boolean }>,
+  ): Promise<{
+    failure_list: Array<{ item_id: number; failed_reason: string }>;
+  }> {
+    if (items.length === 0) {
+      return { failure_list: [] };
+    }
+
+    const apiPath = "/api/v2/product/unlist_item";
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        failure_list?: Array<{ item_id: number; failed_reason: string }>;
+      }>
+    >("POST", apiPath, accessToken, shopId, {
+      item_list: items.map((i) => ({ item_id: i.itemId, unlist: i.unlist })),
+    });
+
+    if (response.error) {
+      throw new Error(
+        `Erro ao alterar visibilidade do(s) anuncio(s) Shopee: ${response.message}`,
+      );
+    }
+
+    return { failure_list: response.response?.failure_list ?? [] };
+  }
+
+  /**
    * Faz upload de imagem para o Shopee (multipart/form-data)
    * Shopee exige que a imagem seja enviada como arquivo binário,
    * não aceita JSON com URL.

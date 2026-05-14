@@ -11,6 +11,7 @@ import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { SyncUseCase } from "../marketplaces/usecases/sync.usercase";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { SystemLogService } from "../services/system-log.service";
+import { Platform } from "@prisma/client";
 import {
   UserRepository,
   UserRepositoryPrisma,
@@ -152,6 +153,110 @@ export class ProductUseCase {
         success: false,
         message:
           error instanceof Error ? error.message : "Erro ao excluir produto",
+      };
+    }
+  }
+
+  /**
+   * Pausa ou reativa todos os anúncios publicados de um produto em paralelo.
+   * Espelha o fluxo de `delete()`: busca os listings, itera com Promise.all
+   * chamando `ListingUseCase.updateListingStatus`, e agrega os resultados.
+   * NÃO toca o ProductRepository — só os anúncios.
+   *
+   * Listings PENDING_ (ainda em publicação) e sem externalListingId são
+   * filtrados antes do round-trip — o updateListingStatus tambem rejeita,
+   * mas evitamos N chamadas desnecessárias.
+   *
+   * Idempotência herdada de updateListingStatus: anúncios já no estado
+   * desejado são contados em `alreadyInState` sem hit em ML/Shopee.
+   */
+  async pauseListings(
+    productId: string,
+    userId: string,
+    status: "active" | "paused",
+  ): Promise<{
+    success: boolean;
+    message: string;
+    listingResults: Array<{
+      externalListingId: string;
+      platform: Platform | null;
+      paused: boolean;
+      alreadyInState: boolean;
+      error?: string;
+    }>;
+  }> {
+    try {
+      const product = await this.productRepository.findById(productId, userId);
+      if (!product) {
+        return {
+          success: false,
+          message: "Produto não encontrado",
+          listingResults: [],
+        };
+      }
+
+      const listings = await this.getProductListings(productId);
+      const publishable = listings.filter(
+        (l) =>
+          l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+      );
+
+      if (publishable.length === 0) {
+        return {
+          success: true,
+          message: "Nenhum anúncio publicado para alterar.",
+          listingResults: [],
+        };
+      }
+
+      const listingResults = await Promise.all(
+        publishable.map(async (listing) => {
+          const result = await ListingUseCase.updateListingStatus(
+            listing.id,
+            userId,
+            status,
+          );
+          return {
+            externalListingId: listing.externalListingId,
+            platform: listing.marketplaceAccount?.platform ?? null,
+            paused: result.success,
+            alreadyInState: result.alreadyInState ?? false,
+            error: result.error,
+          };
+        }),
+      );
+
+      const changed = listingResults.filter(
+        (r) => r.paused && !r.alreadyInState,
+      ).length;
+      const noop = listingResults.filter((r) => r.alreadyInState).length;
+      const failed = listingResults.filter((r) => !r.paused);
+
+      const verbPast = status === "paused" ? "pausado(s)" : "reativado(s)";
+      let message: string;
+      if (failed.length === 0 && noop === 0) {
+        message = `${changed} anúncio(s) ${verbPast}.`;
+      } else if (failed.length === 0) {
+        message = `${changed} ${verbPast}, ${noop} já estava(m) no estado desejado.`;
+      } else if (changed === 0 && noop === 0) {
+        message = `Nenhum anúncio foi alterado: ${failed.length} falha(s).`;
+      } else {
+        message = `${changed} alterado(s), ${noop} já estava(m), ${failed.length} falha(s).`;
+      }
+
+      return {
+        success: failed.length < listingResults.length,
+        message,
+        listingResults,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro ao alterar status dos anúncios",
+        listingResults: [],
       };
     }
   }

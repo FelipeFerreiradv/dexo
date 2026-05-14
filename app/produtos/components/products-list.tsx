@@ -16,7 +16,10 @@ import {
   Loader2,
   Megaphone,
   Package,
+  Pause,
+  PauseCircle,
   Pencil,
+  Play,
   QrCode,
   Search,
   Trash2,
@@ -44,6 +47,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -368,6 +377,128 @@ async function loadProductFilterOptions(email: string, force = false) {
   return request;
 }
 
+type ProductPauseState =
+  | "all-active"
+  | "all-paused"
+  | "mixed"
+  | "no-actionable";
+
+// Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
+// app/lib/marketplace-listing-links.ts ("active" e "normal"). "paused"/"unlist"
+// contam como pausado. Outros (closed, under_review, error) caem em no-actionable.
+function computeProductPauseState(
+  listings: Product["listings"],
+): ProductPauseState {
+  if (!listings || listings.length === 0) return "no-actionable";
+
+  const publishable = listings.filter(
+    (l) =>
+      l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+  );
+
+  if (publishable.length === 0) return "no-actionable";
+
+  let active = 0;
+  let paused = 0;
+  for (const l of publishable) {
+    const s = l.status?.toLowerCase();
+    if (s === "active" || s === "normal") active++;
+    else if (s === "paused" || s === "unlist") paused++;
+  }
+
+  if (active === publishable.length) return "all-active";
+  if (paused === publishable.length) return "all-paused";
+  if (active > 0 && paused > 0) return "mixed";
+
+  return "no-actionable";
+}
+
+function PauseListingsButton({
+  product,
+  state,
+  isPausing,
+  onTogglePause,
+}: {
+  product: Product;
+  state: ProductPauseState;
+  isPausing: boolean;
+  onTogglePause: (product: Product, status: "active" | "paused") => void;
+}) {
+  if (state === "no-actionable") return null;
+
+  if (state === "mixed") {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Pausar/Despausar anúncios"
+            disabled={isPausing}
+          >
+            {isPausing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <PauseCircle className="size-4" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => onTogglePause(product, "paused")}>
+            <Pause className="mr-2 size-4" />
+            Pausar todos
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onTogglePause(product, "active")}>
+            <Play className="mr-2 size-4" />
+            Despausar todos
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  const targetStatus: "active" | "paused" =
+    state === "all-active" ? "paused" : "active";
+  const Icon = state === "all-active" ? Pause : Play;
+  const title = state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
+  const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
+  const description =
+    state === "all-active"
+      ? `Pausar todos os anúncios publicados de "${product.name}"? Eles ficarão invisíveis nos marketplaces até serem despausados.`
+      : `Reativar todos os anúncios publicados de "${product.name}"? Eles voltarão a aparecer nos marketplaces.`;
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title={title}
+          disabled={isPausing}
+        >
+          {isPausing ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Icon className="size-4" />
+          )}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`${confirmLabel} anúncios?`}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction onClick={() => onTogglePause(product, targetStatus)}>
+            {confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function MarketplaceBadges({
   listings,
   size = "md",
@@ -482,6 +613,12 @@ export function ProductsList() {
   const [isGeneratingLabels, setIsGeneratingLabels] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
+  const [isBulkPausing, setIsBulkPausing] = useState(false);
+  const [bulkPauseProgress, setBulkPauseProgress] = useState<{
     done: number;
     total: number;
   } | null>(null);
@@ -809,6 +946,80 @@ export function ProductsList() {
     }
   };
 
+  const handleTogglePause = async (
+    product: Product,
+    status: "active" | "paused",
+  ) => {
+    const id = product.id;
+    const previousProducts = products;
+
+    // Otimista: atualiza listings publicáveis para o novo status. Listings
+    // PENDING_/sem externalListingId ficam intactos (espelha o filtro do backend).
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              listings: (p.listings ?? []).map((l) => {
+                const publishable =
+                  l.externalListingId &&
+                  !l.externalListingId.startsWith("PENDING_");
+                return publishable ? { ...l, status } : l;
+              }),
+            }
+          : p,
+      ),
+    );
+    setPausingIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/products/${id}/listings-status`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            email: session?.user?.email || "",
+          },
+          body: JSON.stringify({ status }),
+        },
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setProducts(previousProducts);
+        throw new Error(
+          data?.message || data?.error || "Erro ao alterar status",
+        );
+      }
+
+      // Mensagem agregada vem do backend: "X pausado(s), Y já estava(m), Z falha(s)".
+      const failed = (data?.listingResults ?? []).filter(
+        (r: { paused: boolean }) => !r.paused,
+      ).length;
+      showToast(
+        data?.message ?? "Status atualizado.",
+        failed > 0 ? "warning" : "success",
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : "Erro ao alterar status",
+        "error",
+      );
+    } finally {
+      setPausingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) {
       showToast(
@@ -924,6 +1135,121 @@ export function ProductsList() {
 
     setIsBulkDeleting(false);
     setBulkDeleteProgress(null);
+  };
+
+  const handleBulkPauseToggle = async (status: "active" | "paused") => {
+    if (selectedIds.length === 0) {
+      showToast(
+        "Selecione pelo menos um produto para alterar.",
+        "warning",
+      );
+      return;
+    }
+
+    const ids = [...selectedIds];
+    const nameById = new Map(products.map((p) => [p.id, p.name]));
+    const email = session?.user?.email || "";
+
+    setIsBulkPausing(true);
+    setBulkPauseProgress({ done: 0, total: ids.length });
+
+    const succeeded: string[] = [];
+    const failed: { id: string; name: string; message: string }[] = [];
+
+    const concurrency = Math.min(4, ids.length);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= ids.length) return;
+        const id = ids[index];
+        try {
+          const response = await fetch(
+            `${getApiBaseUrl()}/products/${id}/listings-status`,
+            {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/json",
+                email,
+              },
+              body: JSON.stringify({ status }),
+            },
+          );
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            failed.push({
+              id,
+              name: nameById.get(id) ?? id,
+              message:
+                data?.message || data?.error || "Erro ao alterar status",
+            });
+          } else {
+            succeeded.push(id);
+          }
+        } catch (error) {
+          failed.push({
+            id,
+            name: nameById.get(id) ?? id,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Erro ao alterar status",
+          });
+        } finally {
+          setBulkPauseProgress((prev) =>
+            prev ? { ...prev, done: prev.done + 1 } : prev,
+          );
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: concurrency }, () => worker()),
+    );
+
+    if (succeeded.length > 0) {
+      // Otimista: atualiza listings publicáveis dos produtos afetados.
+      const succeededSet = new Set(succeeded);
+      setProducts((prev) =>
+        prev.map((p) =>
+          succeededSet.has(p.id)
+            ? {
+                ...p,
+                listings: (p.listings ?? []).map((l) => {
+                  const publishable =
+                    l.externalListingId &&
+                    !l.externalListingId.startsWith("PENDING_");
+                  return publishable ? { ...l, status } : l;
+                }),
+              }
+            : p,
+        ),
+      );
+    }
+
+    const verb = status === "paused" ? "pausado(s)" : "reativado(s)";
+    if (failed.length === 0) {
+      showToast(`${succeeded.length} produto(s) ${verb}.`, "success");
+    } else if (succeeded.length === 0) {
+      showToast(
+        failed[0]?.message
+          ? `Erro ao alterar produtos: ${failed[0].message}`
+          : "Erro ao alterar produtos",
+        "error",
+      );
+    } else {
+      showToast(
+        `${succeeded.length} ${verb}, ${failed.length} falharam.`,
+        "warning",
+      );
+      if (failed[0]?.message) {
+        showToast(`"${failed[0].name}": ${failed[0].message}`, "error");
+      }
+    }
+
+    setIsBulkPausing(false);
+    setBulkPauseProgress(null);
   };
 
   const handleEditClick = (product: Product) => {
@@ -1452,7 +1778,7 @@ export function ProductsList() {
                           : false
                     }
                     onCheckedChange={toggleSelectAll}
-                    disabled={isBulkDeleting}
+                    disabled={isBulkDeleting || isBulkPausing}
                   />
                   <span className="whitespace-nowrap">Selecionar todos</span>
                   {selectionCount > 0 && (
@@ -1487,7 +1813,8 @@ export function ProductsList() {
                       selectionCount === 0 ||
                       isGeneratingLabels ||
                       isBulkDeleting ||
-                      isBulkListing
+                      isBulkListing ||
+                      isBulkPausing
                     }
                     className="gap-2"
                   >
@@ -1504,7 +1831,91 @@ export function ProductsList() {
                           selectionCount === 0 ||
                           isBulkDeleting ||
                           isGeneratingLabels ||
-                          isBulkListing
+                          isBulkListing ||
+                          isBulkPausing
+                        }
+                        className="gap-2"
+                      >
+                        <Pause className="size-4" />
+                        {isBulkPausing && bulkPauseProgress
+                          ? `Pausando... ${bulkPauseProgress.done}/${bulkPauseProgress.total}`
+                          : "Pausar selecionados"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {`Pausar anúncios de ${selectionCount} produto(s)?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Os anúncios publicados serão pausados nos
+                          marketplaces e ficarão invisíveis até serem
+                          despausados. Itens já pausados são ignorados.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleBulkPauseToggle("paused")}
+                        >
+                          {`Pausar ${selectionCount}`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          selectionCount === 0 ||
+                          isBulkDeleting ||
+                          isGeneratingLabels ||
+                          isBulkListing ||
+                          isBulkPausing
+                        }
+                        className="gap-2"
+                      >
+                        <Play className="size-4" />
+                        {isBulkPausing && bulkPauseProgress
+                          ? `Despausando... ${bulkPauseProgress.done}/${bulkPauseProgress.total}`
+                          : "Despausar selecionados"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {`Despausar anúncios de ${selectionCount} produto(s)?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Os anúncios pausados voltarão a aparecer nos
+                          marketplaces. Itens já ativos são ignorados.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleBulkPauseToggle("active")}
+                        >
+                          {`Despausar ${selectionCount}`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          selectionCount === 0 ||
+                          isBulkDeleting ||
+                          isGeneratingLabels ||
+                          isBulkListing ||
+                          isBulkPausing
                         }
                         className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       >
@@ -1563,7 +1974,7 @@ export function ProductsList() {
                                       : false
                                 }
                                 onCheckedChange={toggleSelectAll}
-                                disabled={isBulkDeleting}
+                                disabled={isBulkDeleting || isBulkPausing}
                               />
                             </TableHead>
                             <TableHead>Imagem</TableHead>
@@ -1603,7 +2014,7 @@ export function ProductsList() {
                                   onCheckedChange={(checked) =>
                                     toggleSelectOne(product.id, checked)
                                   }
-                                  disabled={isBulkDeleting}
+                                  disabled={isBulkDeleting || isBulkPausing}
                                 />
                               </TableCell>
                               <TableCell>
@@ -1696,6 +2107,15 @@ export function ProductsList() {
                                     <Pencil className="size-4" />
                                   </Button>
 
+                                  <PauseListingsButton
+                                    product={product}
+                                    state={computeProductPauseState(
+                                      product.listings,
+                                    )}
+                                    isPausing={pausingIds.has(product.id)}
+                                    onTogglePause={handleTogglePause}
+                                  />
+
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
                                       <Button
@@ -1752,7 +2172,7 @@ export function ProductsList() {
                               onCheckedChange={(checked) =>
                                 toggleSelectOne(product.id, checked)
                               }
-                              disabled={isBulkDeleting}
+                              disabled={isBulkDeleting || isBulkPausing}
                             />
                             {product.imageUrl ? (
                               <button
@@ -1840,6 +2260,15 @@ export function ProductsList() {
                               >
                                 <Pencil className="size-4" />
                               </Button>
+
+                              <PauseListingsButton
+                                product={product}
+                                state={computeProductPauseState(
+                                  product.listings,
+                                )}
+                                isPausing={pausingIds.has(product.id)}
+                                onTogglePause={handleTogglePause}
+                              />
 
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
