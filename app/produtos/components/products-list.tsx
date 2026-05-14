@@ -129,6 +129,11 @@ interface Product {
   imageUrls?: string[] | null;
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
+  productLocation?: {
+    id: string;
+    code: string;
+    description?: string | null;
+  } | null;
   listings?: ProductListing[];
 }
 
@@ -1634,7 +1639,9 @@ export function ProductsList() {
                                 </Badge>
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {product.location ?? "—"}
+                                {product.productLocation?.code ??
+                                  product.location ??
+                                  "—"}
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
                                 {formatDate(product.createdAt)}
@@ -1747,9 +1754,11 @@ export function ProductsList() {
                                       setListingsDialog({ product, platform })
                                     }
                                   />
-                                  {product.location && (
+                                  {(product.productLocation?.code ||
+                                    product.location) && (
                                     <p className="text-xs text-muted-foreground">
-                                      {product.location}
+                                      {product.productLocation?.code ??
+                                        product.location}
                                     </p>
                                   )}
                                 </div>
