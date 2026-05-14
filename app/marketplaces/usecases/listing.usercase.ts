@@ -4067,7 +4067,7 @@ export class ListingUseCase {
     listingId: string,
     userId: string,
     status: "active" | "paused",
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; alreadyInState?: boolean }> {
     try {
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
@@ -4075,6 +4075,12 @@ export class ListingUseCase {
       }
       if (listing.product?.userId !== userId) {
         return { success: false, error: "Acesso negado a este anúncio" };
+      }
+
+      // Idempotência: se já está no status desejado, não chama API externa.
+      // Normaliza lowercase porque o DB historicamente recebe ambos os casings.
+      if (listing.status?.toLowerCase() === status) {
+        return { success: true, alreadyInState: true };
       }
 
       const platform = listing.marketplaceAccount?.platform;
