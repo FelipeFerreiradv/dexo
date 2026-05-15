@@ -62,7 +62,9 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   }, [userEmail]);
 
   const [accounts, setAccounts] = React.useState<AccountSummary[] | null>(null);
-  const [accountId, setAccountId] = React.useState<string>("");
+  // Default "Todas as contas". Como não há persistência (URL/localStorage),
+  // não há seleção salva pra conflitar — abre sempre agregando todas.
+  const [accountId, setAccountId] = React.useState<string>("all");
   const [filter, setFilter] = React.useState<ConversationFilter>("all");
   const [search, setSearch] = React.useState("");
   // debouncedSearch isola digitação: só dispara fetch 250ms após parar de digitar.
@@ -89,10 +91,10 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { accounts: AccountSummary[] };
-        const active = data.accounts.filter((a) => a.status === "ACTIVE");
+        // Não força mais uma conta específica: o default "all" (estado
+        // inicial) faz a aba abrir agregando todas as contas. O usuário
+        // troca manualmente no Select se quiser uma conta específica.
         setAccounts(data.accounts);
-        if (active.length > 0) setAccountId(active[0].id);
-        else if (data.accounts.length > 0) setAccountId(data.accounts[0].id);
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
         console.error("messages: failed to load accounts", err);
@@ -213,7 +215,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        {accounts.length > 1 && (
+        {accounts.length >= 1 && (
           <Select value={accountId} onValueChange={setAccountId}>
             <SelectTrigger className="h-9 w-55">
               <SelectValue placeholder="Conta" />
