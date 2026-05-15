@@ -26,6 +26,11 @@ export interface AccountSummary {
 
 export interface ConversationSummary {
   externalItemId: string;
+  // Conta de origem — usada para o badge e para que o ChatPane chame
+  // read/sync/answer na conta correta quando o filtro está em "Todas".
+  marketplaceAccountId: string;
+  accountName: string | null;
+  accountPlatform: string | null;
   productListingId: string | null;
   listingTitle: string | null;
   listingThumbnail: string | null;
@@ -214,6 +219,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
               <SelectValue placeholder="Conta" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all">Todas as contas</SelectItem>
               {accounts.map((acc) => (
                 <SelectItem key={acc.id} value={acc.id}>
                   {acc.accountName}

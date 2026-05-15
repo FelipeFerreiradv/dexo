@@ -71,13 +71,20 @@ export function ChatPane({
 
   const itemId = conversation?.externalItemId ?? null;
 
+  // Em modo "Todas as contas" o accountId global é "all" — read/sync/answer
+  // precisam da conta REAL da conversa (vem no DTO). Quando o filtro é uma
+  // conta específica, conversation.marketplaceAccountId === accountId, então
+  // o comportamento é idêntico ao legado. Fallback no accountId por robustez.
+  const effectiveAccountId =
+    conversation?.marketplaceAccountId || accountId;
+
   const loadConversation = React.useCallback(
     async (signal?: AbortSignal) => {
-      if (!accountId || !itemId) return;
+      if (!effectiveAccountId || !itemId) return;
       setLoading(true);
       try {
         const res = await fetch(
-          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}?accountId=${accountId}`,
+          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}?accountId=${effectiveAccountId}`,
           { headers, signal },
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -95,7 +102,7 @@ export function ChatPane({
         setLoading(false);
       }
     },
-    [accountId, apiBase, headers, itemId],
+    [effectiveAccountId, apiBase, headers, itemId],
   );
 
   // Aborta request anterior se trocar rapidamente entre conversas — evita pintar
@@ -111,12 +118,12 @@ export function ChatPane({
 
   // marca como lida automaticamente ao abrir
   React.useEffect(() => {
-    if (!itemId || !accountId) return;
+    if (!itemId || !effectiveAccountId) return;
     if (!conversation || conversation.unreadCount === 0) return;
     (async () => {
       try {
         await fetch(
-          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}/read?accountId=${accountId}`,
+          `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}/read?accountId=${effectiveAccountId}`,
           { method: "POST", headers },
         );
         onAfterRead(itemId);
@@ -124,7 +131,7 @@ export function ChatPane({
         console.warn("chat: mark-read failed", err);
       }
     })();
-  }, [accountId, apiBase, conversation, headers, itemId, onAfterRead]);
+  }, [effectiveAccountId, apiBase, conversation, headers, itemId, onAfterRead]);
 
   React.useEffect(() => {
     if (data && scrollRef.current) {
@@ -133,11 +140,11 @@ export function ChatPane({
   }, [data]);
 
   const handleSync = async () => {
-    if (!accountId || !itemId || syncing) return;
+    if (!effectiveAccountId || !itemId || syncing) return;
     setSyncing(true);
     try {
       await fetch(
-        `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}/sync?accountId=${accountId}`,
+        `${apiBase}/messages/conversations/${encodeURIComponent(itemId)}/sync?accountId=${effectiveAccountId}`,
         { method: "POST", headers },
       );
       await loadConversation();
@@ -153,7 +160,7 @@ export function ChatPane({
     const res = await fetch(`${apiBase}/messages/answers`, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId, questionId, text }),
+      body: JSON.stringify({ accountId: effectiveAccountId, questionId, text }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
