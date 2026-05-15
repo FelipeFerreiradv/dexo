@@ -4,6 +4,12 @@ import { MLQuestion } from "../types/ml-questions.types";
 
 export interface ConversationSummary {
   externalItemId: string;
+  // Conta de origem desta conversa. Necessário para que read/sync/answer
+  // funcionem quando o filtro está em "Todas as contas" (a conversa pode
+  // pertencer a qualquer conta do usuário, não à selecionada no filtro).
+  marketplaceAccountId: string;
+  accountName: string | null;
+  accountPlatform: string | null;
   productListingId: string | null;
   listingTitle: string | null;
   listingThumbnail: string | null;
@@ -19,7 +25,12 @@ export interface ConversationSummary {
 }
 
 export interface ConversationListParams {
-  marketplaceAccountId: string;
+  // userId sempre presente: escopo de autorização quando
+  // marketplaceAccountId é ausente (modo "Todas as contas").
+  userId: string;
+  // Ausente/undefined = todas as contas do userId. Presente = conta
+  // específica (comportamento idêntico ao legado).
+  marketplaceAccountId?: string;
   search?: string;
   status?: "all" | "unanswered" | "answered" | "unread";
   limit?: number;
@@ -160,9 +171,16 @@ export class QuestionRepository {
     const search = (params.search ?? "").trim();
     const status = params.status ?? "all";
 
-    const where: Prisma.MarketplaceQuestionWhereInput = {
-      marketplaceAccountId: params.marketplaceAccountId,
-    };
+    // Escopo de conta: específica (legado) OU todas as contas do usuário.
+    // Quando marketplaceAccountId é ausente, filtra pela relação
+    // marketplaceAccount.userId — isolamento multi-tenant garantido no banco
+    // (mesmo padrão de countUnreadForUser). Reusado em ambas as fases da query.
+    const accountScope: Prisma.MarketplaceQuestionWhereInput =
+      params.marketplaceAccountId
+        ? { marketplaceAccountId: params.marketplaceAccountId }
+        : { marketplaceAccount: { userId: params.userId } };
+
+    const where: Prisma.MarketplaceQuestionWhereInput = { ...accountScope };
 
     if (status === "unanswered") where.status = "UNANSWERED";
     if (status === "answered") where.status = "ANSWERED";
@@ -208,7 +226,7 @@ export class QuestionRepository {
     // (latest) por item — evita carregar TODAS as perguntas dos itens só para
     // calcular preview/counts (era O(N_questions); agora O(N_items)).
     const inSelected: Prisma.MarketplaceQuestionWhereInput = {
-      marketplaceAccountId: params.marketplaceAccountId,
+      ...accountScope,
       externalItemId: { in: itemIds },
     };
 
@@ -219,6 +237,9 @@ export class QuestionRepository {
         distinct: ["externalItemId"],
         include: {
           answer: true,
+          marketplaceAccount: {
+            select: { id: true, accountName: true, platform: true },
+          },
           productListing: {
             select: {
               id: true,
@@ -256,6 +277,9 @@ export class QuestionRepository {
       const listing = latest?.productListing;
       return {
         externalItemId: itemId,
+        marketplaceAccountId: latest?.marketplaceAccountId ?? "",
+        accountName: latest?.marketplaceAccount?.accountName ?? null,
+        accountPlatform: latest?.marketplaceAccount?.platform ?? null,
         productListingId: listing?.id ?? null,
         listingTitle: listing?.titleOverride ?? listing?.product?.name ?? null,
         listingThumbnail: listing?.product?.imageUrl ?? null,

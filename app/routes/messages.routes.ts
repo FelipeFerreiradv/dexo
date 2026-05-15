@@ -53,13 +53,21 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
 
       const q = (request.query || {}) as Record<string, string | undefined>;
       const accountId = q.accountId;
-      if (!accountId) {
-        return reply.status(400).send({ error: "accountId é obrigatório" });
-      }
+      // accountId ausente ou "all" => todas as contas do usuário.
+      // Sentinela explícito "all" além de ausência por robustez.
+      const isAllAccounts = !accountId || accountId === "all";
 
-      const account = await MarketplaceRepository.findByIdAndUser(accountId, userId);
-      if (!account) {
-        return reply.status(404).send({ error: "Conta não encontrada" });
+      // Conta específica: valida ownership como antes (comportamento legado
+      // idêntico). Modo "todas": o isolamento é garantido na query via
+      // marketplaceAccount.userId, não há accountId para validar.
+      if (!isAllAccounts) {
+        const account = await MarketplaceRepository.findByIdAndUser(
+          accountId as string,
+          userId,
+        );
+        if (!account) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
       }
 
       const status = (q.status as any) ?? "all";
@@ -72,7 +80,8 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const offset = Number(q.offset) || 0;
 
       const result = await QuestionRepository.listConversations({
-        marketplaceAccountId: accountId,
+        userId,
+        marketplaceAccountId: isAllAccounts ? undefined : accountId,
         status,
         search: q.search ?? "",
         limit,
