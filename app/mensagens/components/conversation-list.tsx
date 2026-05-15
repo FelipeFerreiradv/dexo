@@ -78,6 +78,27 @@ export function ConversationList({
   );
 }
 
+// Cor estável por conta: hash do id → paleta fixa. Determinístico (a mesma
+// conta sempre recebe a mesma cor). Amber omitido de propósito para não
+// colidir visualmente com o badge "Pendente" (que é sempre amber).
+const ACCOUNT_BADGE_PALETTE = [
+  "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+  "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+  "border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+];
+
+function accountBadgeClasses(accountId: string): string {
+  let h = 0;
+  for (let i = 0; i < accountId.length; i++) {
+    h = (h * 31 + accountId.charCodeAt(i)) | 0;
+  }
+  return ACCOUNT_BADGE_PALETTE[
+    Math.abs(h) % ACCOUNT_BADGE_PALETTE.length
+  ];
+}
+
 function ConversationRow({
   conversation,
   active,
@@ -124,6 +145,20 @@ function ConversationRow({
               {lastAt}
             </div>
           </div>
+          {conversation.accountName && (
+            <div>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "h-4 max-w-full truncate px-1.5 text-[10px] font-medium",
+                  accountBadgeClasses(conversation.marketplaceAccountId),
+                )}
+                title={conversation.accountName}
+              >
+                {conversation.accountName}
+              </Badge>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2">
             <p
               className={cn(
