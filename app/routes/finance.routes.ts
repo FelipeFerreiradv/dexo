@@ -18,7 +18,8 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const summary = await useCase.summary(userId);
+        const { unidadeId } = request.query as { unidadeId?: string };
+        const summary = await useCase.summary(userId, unidadeId || undefined);
         return reply.status(200).send({ summary });
       } catch (error) {
         return reply.status(500).send({
@@ -34,7 +35,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { search, status, customerId, from, to, page, limit } =
+        const { search, status, customerId, unidadeId, from, to, page, limit } =
           request.query as any;
         const data = await useCase.list(
           kind,
@@ -42,6 +43,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             search: search || undefined,
             status: (status as FinanceStatus) || undefined,
             customerId: customerId || undefined,
+            unidadeId: unidadeId || undefined,
             from: from || undefined,
             to: to || undefined,
             page: page ? parseInt(page) : 1,
@@ -77,10 +79,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao criar registro";
-        const status =
-          message.includes("obrigatório") ||
-          message.includes("inválido") ||
-          message.includes("maior que")
+        const status = message.includes("Já existe")
+          ? 409
+          : message.includes("obrigatório") ||
+              message.includes("inválido") ||
+              message.includes("maior que")
             ? 400
             : message.includes("não encontrado")
               ? 404

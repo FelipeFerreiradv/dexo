@@ -845,6 +845,13 @@ export function LocationsList() {
     setMoveDialogOpen(true);
   };
 
+  // Ação individual "Vincular a outra localização": seleciona apenas este
+  // produto e reusa o mesmo dialog/endpoint já existentes (move atômico).
+  const handleMoveSingleProduct = (productId: string) => {
+    setSelectedProductIds(new Set([productId]));
+    handleOpenMoveDialog();
+  };
+
   const handleMoveProducts = async () => {
     const email = session?.user?.email;
     if (!email || selectedProductIds.size === 0) return;
@@ -1290,6 +1297,14 @@ export function LocationsList() {
                       </div>
                       {/* Individual actions */}
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          title="Vincular a outra localização"
+                          onClick={() => handleMoveSingleProduct(product.id)}
+                        >
+                          <ArrowRightLeft className="size-3.5" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon-sm"

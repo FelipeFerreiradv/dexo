@@ -33,11 +33,26 @@ export interface FinanceEntry {
     cpf: string | null;
     email: string | null;
   } | null;
+  unidade?: {
+    id: string;
+    name: string;
+  } | null;
+}
+
+// Cadastro rápido de cliente (Alteração B) — CPF-only, opcional.
+export interface NewCustomerInput {
+  name: string;
+  cpf?: string | null;
 }
 
 export interface FinanceEntryCreate {
   userId: string;
   customerId: string;
+  // Quando presente, o cliente é criado na MESMA transação da conta
+  // (atômico). Mutuamente exclusivo com customerId no fluxo de cadastro
+  // rápido. Ausente => fluxo atual 100% inalterado.
+  newCustomer?: NewCustomerInput;
+  unidadeId?: string | null;
 
   document?: string | null;
   reason?: string | null;
@@ -63,6 +78,9 @@ export interface FinanceListFilters {
   search?: string;
   status?: FinanceStatus;
   customerId?: string;
+  // undefined/ausente = todas (comportamento atual); "sem_unidade" = unidadeId NULL;
+  // qualquer outro valor = filtra por aquela unidade.
+  unidadeId?: string;
   from?: string;
   to?: string;
   page?: number;

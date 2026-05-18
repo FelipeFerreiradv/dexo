@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
 import {
   FinanceEntry,
@@ -57,6 +58,12 @@ function toEntry(raw: any): FinanceEntry {
           email: raw.customer.email,
         }
       : null,
+    unidade: raw.unidade
+      ? {
+          id: raw.unidade.id,
+          name: raw.unidade.name,
+        }
+      : null,
   };
 }
 
@@ -64,11 +71,16 @@ export class FinanceRepository {
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
+    tx?: Prisma.TransactionClient,
   ): Promise<FinanceEntry> {
-    const created = await model(kind).create({
+    // tx ausente => prisma global => caminho atual inalterado.
+    const db: Prisma.TransactionClient = tx ?? prisma;
+    const delegate: any = kind === "receivable" ? db.receivable : db.payable;
+    const created = await delegate.create({
       data: {
         userId: data.userId,
         customerId: data.customerId,
+        unidadeId: data.unidadeId ?? null,
         document: data.document ?? null,
         reason: data.reason ?? null,
         debtDetails: data.debtDetails ?? null,
@@ -85,6 +97,7 @@ export class FinanceRepository {
       },
       include: {
         customer: { select: { id: true, name: true, cpf: true, email: true } },
+        unidade: { select: { id: true, name: true } },
       },
     });
     return toEntry(created);
@@ -111,6 +124,7 @@ export class FinanceRepository {
       where: { id },
       include: {
         customer: { select: { id: true, name: true, cpf: true, email: true } },
+        unidade: { select: { id: true, name: true } },
       },
     });
     return toEntry(updated);
@@ -125,6 +139,7 @@ export class FinanceRepository {
       where: { id, userId },
       include: {
         customer: { select: { id: true, name: true, cpf: true, email: true } },
+        unidade: { select: { id: true, name: true } },
       },
     });
     return res ? toEntry(res) : null;
@@ -142,6 +157,12 @@ export class FinanceRepository {
     const where: any = { userId };
     if (filters.status) where.status = filters.status;
     if (filters.customerId) where.customerId = filters.customerId;
+    // Filtro de unidade: ausente/"" => não filtra (resultado idêntico ao atual);
+    // "sem_unidade" => contas sem unidade; outro valor => aquela unidade.
+    if (filters.unidadeId) {
+      where.unidadeId =
+        filters.unidadeId === "sem_unidade" ? null : filters.unidadeId;
+    }
     if (filters.from || filters.to) {
       where.dueDate = {};
       if (filters.from) where.dueDate.gte = new Date(filters.from);
@@ -166,6 +187,7 @@ export class FinanceRepository {
           id: true,
           userId: true,
           customerId: true,
+          unidadeId: true,
           document: true,
           reason: true,
           totalAmount: true,
@@ -182,6 +204,9 @@ export class FinanceRepository {
           updatedAt: true,
           customer: {
             select: { id: true, name: true, cpf: true, email: true },
+          },
+          unidade: {
+            select: { id: true, name: true },
           },
         },
       }),
@@ -200,20 +225,28 @@ export class FinanceRepository {
     if (res.count === 0) throw new Error("Registro financeiro não encontrado");
   }
 
-  async summary(userId: string): Promise<FinanceSummary> {
+  async summary(userId: string, unidadeId?: string): Promise<FinanceSummary> {
     const now = new Date();
+
+    // Sem filtro de unidade => objeto vazio => where idêntico ao comportamento
+    // atual ({ userId } e { userId, status, dueDate }).
+    const unidadeWhere: Record<string, unknown> =
+      unidadeId === undefined || unidadeId === ""
+        ? {}
+        : { unidadeId: unidadeId === "sem_unidade" ? null : unidadeId };
 
     async function stats(m: any) {
       const [grouped, overdue] = await Promise.all([
         m.groupBy({
           by: ["status"],
-          where: { userId },
+          where: { userId, ...unidadeWhere },
           _sum: { totalAmount: true },
           _count: { _all: true },
         }),
         m.aggregate({
           where: {
             userId,
+            ...unidadeWhere,
             status: { in: ["PENDENTE", "VENCIDA"] },
             dueDate: { lt: now },
           },

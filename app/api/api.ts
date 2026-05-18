@@ -26,6 +26,7 @@ import { compatibilityRoutes } from "../routes/compatibility.routes";
 import { scrapRoutes } from "../routes/scrap.routes";
 import { customerRoutes } from "../routes/customer.routes";
 import { financeRoutes } from "../routes/finance.routes";
+import { unidadeRoutes } from "../routes/unidade.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
@@ -110,6 +111,10 @@ api.register(customerRoutes, {
 
 api.register(financeRoutes, {
   prefix: "/finance",
+});
+
+api.register(unidadeRoutes, {
+  prefix: "/unidades",
 });
 
 api.register(fiscalRoutes, {
