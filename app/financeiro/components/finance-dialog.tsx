@@ -47,14 +47,14 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
     title: "Cliente",
     description: "Quem está envolvido",
     icon: UserIcon,
-    fields: ["customerId"],
+    fields: ["customerId", "newCustomerName"],
   },
   {
     id: 2,
     title: "Título",
     description: "Documento e valor",
     icon: FileText,
-    fields: ["document", "reason", "debtDetails", "totalAmount"],
+    fields: ["document", "reason", "debtDetails", "totalAmount", "unidadeId"],
   },
   {
     id: 3,
@@ -116,6 +116,7 @@ export function FinanceDialog({
     handleSubmit,
     trigger,
     reset,
+    setValue,
     formState: { errors },
   } = form;
 
@@ -156,13 +157,26 @@ export function FinanceDialog({
   const onSubmit = handleSubmit(async (data) => {
     setIsSubmitting(true);
     try {
-      const payload = {
-        ...data,
-        document: data.document || null,
-        reason: data.reason || null,
-        debtDetails: data.debtDetails || null,
-        dueDate: new Date(data.dueDate).toISOString(),
+      // Campos auxiliares do cadastro rápido não vão ao backend como tais —
+      // viram o objeto `newCustomer` (ou nada, no fluxo antigo).
+      const { quickCreateCustomer, newCustomerName, newCustomerCpf, ...rest } =
+        data;
+      const payload: Record<string, unknown> = {
+        ...rest,
+        document: rest.document || null,
+        reason: rest.reason || null,
+        debtDetails: rest.debtDetails || null,
+        unidadeId: rest.unidadeId || null,
+        dueDate: new Date(rest.dueDate).toISOString(),
       };
+      if (quickCreateCustomer) {
+        // Quick: cria cliente novo na mesma transação; sem customerId.
+        payload.newCustomer = {
+          name: (newCustomerName || "").trim(),
+          cpf: newCustomerCpf ? newCustomerCpf : null,
+        };
+        delete payload.customerId;
+      }
       const basePath =
         kind === "receivable" ? "/finance/receivables" : "/finance/payables";
       const url = isEdit
@@ -244,6 +258,8 @@ export function FinanceDialog({
                 errors={errors}
                 selected={selectedCustomer}
                 onSelect={setSelectedCustomer}
+                setValue={setValue}
+                allowQuickCreate={!isEdit}
               />
             )}
             {currentStep === 2 && (

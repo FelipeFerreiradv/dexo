@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import {
   Customer,
   CustomerCreate,
@@ -14,24 +15,45 @@ export class CustomerUseCase {
     this.repo = new CustomerRepository();
   }
 
-  async create(data: CustomerCreate): Promise<Customer> {
+  // Validações compartilhadas entre create() e createWithTx() — mesma regra
+  // de negócio (nome, CPF, duplicidade), sem duplicar lógica.
+  private assertValidNew(data: CustomerCreate) {
     if (!data.userId) throw new Error("Usuário não encontrado");
     if (!data.name || data.name.trim().length < 2) {
       throw new Error("Nome é obrigatório");
     }
+  }
 
-    if (data.cpf) {
-      const clean = data.cpf.replace(/\D/g, "");
-      if (clean.length !== 11) {
-        throw new Error("CPF inválido");
-      }
-      const existing = await this.repo.findByCpf(clean, data.userId);
-      if (existing) {
-        throw new Error("Já existe um cliente com esse CPF");
-      }
+  private async ensureCpfUnique(
+    cpf: string,
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const clean = cpf.replace(/\D/g, "");
+    if (clean.length !== 11) {
+      throw new Error("CPF inválido");
     }
+    const existing = await this.repo.findByCpf(clean, userId, tx);
+    if (existing) {
+      throw new Error("Já existe um cliente com esse CPF");
+    }
+  }
 
+  async create(data: CustomerCreate): Promise<Customer> {
+    this.assertValidNew(data);
+    if (data.cpf) await this.ensureCpfUnique(data.cpf, data.userId);
     return this.repo.create({ ...data, name: data.name.trim() });
+  }
+
+  // Mesma validação/criação de create(), mas dentro de uma transação Prisma.
+  // Usado pelo cadastro rápido (cliente + conta atômicos no Financeiro).
+  async createWithTx(
+    tx: Prisma.TransactionClient,
+    data: CustomerCreate,
+  ): Promise<Customer> {
+    this.assertValidNew(data);
+    if (data.cpf) await this.ensureCpfUnique(data.cpf, data.userId, tx);
+    return this.repo.create({ ...data, name: data.name.trim() }, tx);
   }
 
   async update(

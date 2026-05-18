@@ -57,12 +57,17 @@ interface FinanceRow {
   dueDate: string;
   status: "PENDENTE" | "PAGA" | "VENCIDA" | "CANCELADA";
   customer: { id: string; name: string; cpf: string | null } | null;
+  unidadeId?: string | null;
+  unidade?: { id: string; name: string } | null;
 }
 
 interface Props {
   kind: FinanceKind;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onChanged?: () => void;
+  // Filtro de unidade vindo do FinanceView. undefined = todas (sem parâmetro,
+  // comportamento idêntico ao atual); "sem_unidade" = contas sem unidade.
+  unidadeId?: string;
 }
 
 const LIMIT = 20;
@@ -74,7 +79,7 @@ const STATUS_STYLES: Record<FinanceRow["status"], string> = {
   CANCELADA: "bg-muted text-muted-foreground",
 };
 
-export function FinanceList({ kind, onToast, onChanged }: Props) {
+export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   const { data: session } = useSession();
   const [rows, setRows] = useState<FinanceRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -104,6 +109,11 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // Mudar o filtro de unidade volta para a primeira página.
+  useEffect(() => {
+    setPage(1);
+  }, [unidadeId]);
+
   const fetchList = useCallback(async () => {
     const email = session?.user?.email;
     if (!email) return;
@@ -117,6 +127,8 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
         limit: String(LIMIT),
       });
       if (searchTerm) params.set("search", searchTerm);
+      // unidadeId ausente => não envia o parâmetro => resultado idêntico ao atual.
+      if (unidadeId) params.set("unidadeId", unidadeId);
       const res = await fetch(`${getApiBaseUrl()}${basePath}?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -132,7 +144,7 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
     }
-  }, [session?.user?.email, page, searchTerm, basePath, onToast]);
+  }, [session?.user?.email, page, searchTerm, unidadeId, basePath, onToast]);
 
   useEffect(() => {
     fetchList();
@@ -148,6 +160,7 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
       id: r.id,
       customerId: r.customer?.id || "",
       customer: r.customer,
+      unidadeId: r.unidadeId ?? null,
       document: r.document,
       reason: r.reason,
       totalAmount: r.totalAmount,
@@ -247,6 +260,7 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
                 <TableRow>
                   <TableHead>Documento</TableHead>
                   <TableHead>Cliente</TableHead>
+                  <TableHead>Unidade</TableHead>
                   <TableHead>Valor</TableHead>
                   <TableHead>Parcelas</TableHead>
                   <TableHead>Vencimento</TableHead>
@@ -258,7 +272,7 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
                 {rows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={8}
                       className="text-center py-8 text-muted-foreground"
                     >
                       Nenhum título encontrado.
@@ -271,6 +285,7 @@ export function FinanceList({ kind, onToast, onChanged }: Props) {
                       {r.document || r.reason || "—"}
                     </TableCell>
                     <TableCell>{r.customer?.name || "—"}</TableCell>
+                    <TableCell>{r.unidade?.name || "—"}</TableCell>
                     <TableCell>R$ {formatToBRL(r.totalAmount)}</TableCell>
                     <TableCell>{r.installments}x</TableCell>
                     <TableCell>

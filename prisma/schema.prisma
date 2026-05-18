@@ -49,6 +49,7 @@ model User {
   companyFiscalConfig CompanyFiscalConfig?
   nfesEmitidas        NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
+  unidades            Unidade[]
 
   @@index([parentUserId])
 }
@@ -539,9 +540,10 @@ model Customer {
 }
 
 model Receivable {
-  id         String @id @default(cuid())
+  id         String  @id @default(cuid())
   userId     String
   customerId String
+  unidadeId  String?
 
   document    String?
   reason      String?
@@ -565,17 +567,20 @@ model Receivable {
 
   user     User     @relation(fields: [userId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
 
   @@index([userId, dueDate])
   @@index([userId, status])
   @@index([customerId])
+  @@index([userId, unidadeId])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
 model Payable {
-  id         String @id @default(cuid())
+  id         String  @id @default(cuid())
   userId     String
   customerId String
+  unidadeId  String?
 
   document    String?
   reason      String?
@@ -599,10 +604,33 @@ model Payable {
 
   user     User     @relation(fields: [userId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
 
   @@index([userId, dueDate])
   @@index([userId, status])
   @@index([customerId])
+  @@index([userId, unidadeId])
+}
+
+// Unidade (filial / loja física) — escopo por userId (= dataOwnerId), igual a
+// Customer/Location. Soft-delete via `active` porque Receivable/Payable têm FK
+// para cá; inativar preserva histórico e a semântica de "Sem unidade".
+model Unidade {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  code      String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  receivables Receivable[]
+  payables    Payable[]
+
+  @@unique([userId, code])
+  @@index([userId, name])
 }
 
 model Scrap {

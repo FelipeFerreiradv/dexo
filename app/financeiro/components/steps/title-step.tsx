@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
+import { UnidadeSelect } from "../shared/unidade-select";
 
 interface Props {
   control: Control<FinanceEntryFormData>;
@@ -42,6 +43,24 @@ export function TitleStep({ control, errors }: Props) {
             />
           )}
         />
+      </div>
+
+      <div className="space-y-1 md:col-span-2">
+        <label className="text-sm font-medium">Unidade</label>
+        <Controller
+          control={control}
+          name="unidadeId"
+          render={({ field }) => (
+            <UnidadeSelect
+              value={field.value ?? null}
+              onChange={(id) => field.onChange(id)}
+            />
+          )}
+        />
+        <p className="text-xs text-muted-foreground">
+          Opcional. Vincule a conta a uma filial/loja para medir desempenho
+          por unidade.
+        </p>
       </div>
 
       <div className="space-y-1 md:col-span-2">
