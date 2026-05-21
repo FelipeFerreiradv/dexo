@@ -201,6 +201,34 @@ export class SystemLogService {
     });
   }
 
+  /**
+   * Registra falha ao fechar/deletar anúncio no marketplace durante deleção
+   * de produto. Em política estrita o produto NÃO é deletado local nessa
+   * situação — este log serve para auditoria e suporte ao usuário.
+   */
+  static async logListingDeleteFailed(
+    userId: string | undefined,
+    listingId: string,
+    details: {
+      productId?: string;
+      externalListingId?: string;
+      platform?: string;
+      error?: string;
+      retryable?: boolean;
+    },
+  ) {
+    return this.logError(
+      "DELETE_LISTING_FAILED",
+      `Falha ao encerrar anúncio no ${details.platform ?? "marketplace"}`,
+      {
+        userId,
+        resource: "ProductListing",
+        resourceId: listingId,
+        details,
+      },
+    );
+  }
+
   // Sincronizações
   static async logSyncStart(
     userId: string,

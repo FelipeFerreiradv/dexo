@@ -6,9 +6,15 @@ import { ProductRepositoryPrisma } from "../app/repositories/product.repository"
 import { ProductUseCase } from "../app/usecases/product.usercase";
 
 // Prevent heavy marketplace/usecase imports from pulling prisma alias in this test
-const removeListingMock = vi
-  .fn()
-  .mockResolvedValue({ success: true } as { success: boolean; error?: string });
+const removeListingMock = vi.fn().mockResolvedValue({
+  success: true,
+  closedOnMarketplace: true,
+} as {
+  success: boolean;
+  closedOnMarketplace: boolean;
+  error?: string;
+  retryable?: boolean;
+});
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
   ListingUseCase: {
     createMLListing: async () => ({
@@ -106,6 +112,7 @@ vi.mock("../app/services/system-log.service", () => ({
     logProductCreate: vi.fn(),
     logProductDelete: vi.fn(),
     logProductUpdate: vi.fn(),
+    logListingDeleteFailed: vi.fn(),
   },
 }));
 
@@ -830,7 +837,10 @@ describe("POST /products (integration)", () => {
       .mockResolvedValue(undefined as any);
 
     removeListingMock.mockClear();
-    removeListingMock.mockResolvedValue({ success: true });
+    removeListingMock.mockResolvedValue({
+      success: true,
+      closedOnMarketplace: true,
+    });
 
     const res = await app.inject({
       method: "DELETE",
@@ -848,7 +858,7 @@ describe("POST /products (integration)", () => {
     expect(body.listingResults.every((r: any) => r.closed === true)).toBe(true);
   });
 
-  it("still deletes the product locally when Shopee removal fails (best-effort)", async () => {
+  it("returns 409 and does NOT delete locally when a marketplace removal fails permanently", async () => {
     const fakeUser = { id: "user-1", email: "test@example.com" } as any;
     vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
       fakeUser,
@@ -871,6 +881,8 @@ describe("POST /products (integration)", () => {
     removeListingMock.mockClear();
     removeListingMock.mockResolvedValueOnce({
       success: false,
+      closedOnMarketplace: false,
+      retryable: false,
       error: "item still active",
     });
 
@@ -880,10 +892,52 @@ describe("POST /products (integration)", () => {
       headers: { email: "test@example.com" },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(deleteSpy).toHaveBeenCalledWith("prod-123", "user-1");
+    expect(res.statusCode).toBe(409);
+    expect(deleteSpy).not.toHaveBeenCalled();
     const body = JSON.parse(res.payload);
+    expect(body.listingResults).toHaveLength(1);
     expect(body.listingResults[0].closed).toBe(false);
+    expect(body.listingResults[0].error).toBe("item still active");
     expect(body.message).toMatch(/marketplace/);
+  });
+
+  it("returns 409 with retryable=true when failure is transient (retryable)", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([
+      {
+        id: "listing-ml-1",
+        externalListingId: "MLB123",
+        marketplaceAccountId: "acc-ml",
+        marketplaceAccount: { id: "acc-ml", platform: "MERCADO_LIVRE" },
+      },
+    ]);
+
+    const deleteSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "delete")
+      .mockResolvedValue(undefined as any);
+
+    removeListingMock.mockClear();
+    removeListingMock.mockResolvedValueOnce({
+      success: false,
+      closedOnMarketplace: false,
+      retryable: true,
+      error: "rate limited after retries",
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/products/prod-123",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    const body = JSON.parse(res.payload);
+    expect(body.listingResults[0].retryable).toBe(true);
   });
 });

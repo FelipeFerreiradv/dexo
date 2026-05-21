@@ -15,6 +15,11 @@ import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
 import { ListingPreflightService } from "../services/listing-preflight.service";
+import {
+  classifyMLRemoveError,
+  classifyShopeeRemoveError,
+  withRetry,
+} from "../services/listing-removal.helpers";
 
 export interface CreateListingResult {
   success: boolean;
@@ -3823,101 +3828,130 @@ export class ListingUseCase {
   }
 
   /**
-   * Remove um anÃºncio do ML
-   * @param listingId ID do vÃ­nculo local
+   * Remove um anúncio do Mercado Livre.
+   *
+   * Política estrita (substitui o "best-effort + delete local sempre" antigo):
+   *  - PENDING_ / sem credenciais → delete local (não há nada remoto a fechar).
+   *  - PUT /items/{id} status=closed bem-sucedido → delete local.
+   *  - Erro idempotente (404, "already closed") → delete local.
+   *  - Erro recuperável (429, 5xx, network) → retry exponencial 500ms/2s/8s.
+   *    Se ainda falhar, NÃO deleta local, retorna retryable=true.
+   *  - Erro permanente (4xx genérico, auth) → NÃO deleta local.
    */
   static async removeMLListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     try {
-      // Buscar vÃ­nculo
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
       }
 
-      // Se ainda estÃ¡ com placeholder PENDING ou sem externalListingId, apenas remove localmente
+      // PENDING ou sem externalListingId: não há nada para fechar no ML.
       if (
         !listing.externalListingId ||
         listing.externalListingId.startsWith("PENDING_")
       ) {
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
-      // Buscar conta para obter access token
       const account = await MarketplaceRepository.findById(
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken) {
-        // Sem credenciais, remova localmente para evitar lixo
-        await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        // Conta desconectada — não conseguimos confirmar fechamento.
+        // Política estrita: NÃO deleta local. O usuário precisa reconectar
+        // a conta antes de remover o anúncio.
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta do Mercado Livre sem token de acesso. Reconecte a conta e tente novamente.",
+        };
       }
 
-      // Primeiro, verificar o status atual do anÃºncio
       try {
-        const currentItem = await MLApiService.getItemDetails(
-          account.accessToken,
-          listing.externalListingId,
-        );
-        console.log(
-          `[ListingUseCase] Current status of ${listing.externalListingId}: ${currentItem.status}`,
-        );
-      } catch (statusError) {
-        console.warn(
-          `[ListingUseCase] Could not get current status of ${listing.externalListingId}:`,
-          statusError,
-        );
-        // se o item nÃ£o existir mais no ML, apenas prossegue com remoÃ§Ã£o local
-      }
-
-      // Tentar fechar anÃºncio no ML (itens com infraÃ§Ãµes ou em processamento podem nÃ£o poder ser fechados)
-      try {
-        await MLApiService.updateItem(
-          account.accessToken,
-          listing.externalListingId,
-          {
-            status: "closed",
-          },
-        );
-        console.log(
-          `[ListingUseCase] ML listing ${listing.externalListingId} closed successfully`,
+        await withRetry(
+          () =>
+            MLApiService.updateItem(
+              account.accessToken!,
+              listing.externalListingId,
+              { status: "closed" },
+            ),
+          { classify: classifyMLRemoveError },
         );
       } catch (closeError) {
+        const c = classifyMLRemoveError(closeError);
+        if (c.kind === "idempotent") {
+          // ML confirma que o item não pode mais ser fechado porque já está
+          // fechado / não existe mais. Trata como sucesso.
+          console.log(
+            `[ListingUseCase] ML listing ${listing.externalListingId} já encerrado (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+
         console.warn(
-          `[ListingUseCase] Could not close ML listing ${listing.externalListingId}:`,
-          closeError,
+          `[ListingUseCase] Falha ao fechar ML listing ${listing.externalListingId} (${c.kind}):`,
+          c.message,
         );
-        // Mesmo que nÃ£o consiga fechar, continua removendo o vÃ­nculo local.
-        // O item pode jÃ¡ ter sido apagado ou estar em processamento; nÃ£o devemos travar a remoÃ§Ã£o local.
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
       }
 
-      // Remover vÃ­nculo local
+      console.log(
+        `[ListingUseCase] ML listing ${listing.externalListingId} closed successfully`,
+      );
       await ListingRepository.deleteListing(listingId);
-
-      return { success: true };
+      return { success: true, closedOnMarketplace: true };
     } catch (error) {
       console.error("[ListingUseCase] Error removing ML listing:", error);
       return {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
+        closedOnMarketplace: false,
+        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
 
   /**
-   * Remove um anÃºncio da Shopee (espelha removeMLListing: best-effort remoto + hard-delete local)
-   * @param listingId ID do vÃ­nculo local
+   * Remove um anúncio da Shopee. Mesma política estrita de removeMLListing.
+   *
+   * Idempotência Shopee: error_inexist / product.error_inexist são tratados
+   * como sucesso (item já não existe no marketplace).
    */
   static async removeShopeeListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     try {
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
       }
 
       if (
@@ -3925,66 +3959,100 @@ export class ListingUseCase {
         listing.externalListingId.startsWith("PENDING_")
       ) {
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
       const account = await MarketplaceRepository.findById(
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken || !account.shopId) {
-        await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta da Shopee sem token/shop_id. Reconecte a conta e tente novamente.",
+        };
       }
 
       const itemId = Number(listing.externalListingId);
       if (!Number.isFinite(itemId)) {
+        // externalListingId malformado é problema de dados locais, não do
+        // marketplace. Limpa o registro local porque não há como reconciliar.
         console.warn(
-          `[ListingUseCase] Shopee externalListingId invÃ¡lido: ${listing.externalListingId}`,
+          `[ListingUseCase] Shopee externalListingId inválido: ${listing.externalListingId}`,
         );
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
       try {
-        await ShopeeApiService.deleteItem(
-          account.accessToken,
-          account.shopId,
-          itemId,
-        );
-        console.log(
-          `[ListingUseCase] Shopee item ${itemId} deleted successfully`,
+        await withRetry(
+          () =>
+            ShopeeApiService.deleteItem(
+              account.accessToken!,
+              account.shopId!,
+              itemId,
+            ),
+          { classify: classifyShopeeRemoveError },
         );
       } catch (deleteError) {
+        const c = classifyShopeeRemoveError(deleteError);
+        if (c.kind === "idempotent") {
+          console.log(
+            `[ListingUseCase] Shopee item ${itemId} já não existe (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+
         console.warn(
-          `[ListingUseCase] Could not delete Shopee item ${itemId}:`,
-          deleteError,
+          `[ListingUseCase] Falha ao deletar Shopee item ${itemId} (${c.kind}):`,
+          c.message,
         );
-        // Mesmo que a API externa recuse, prossegue com remoÃ§Ã£o local - paridade com removeMLListing
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
       }
 
+      console.log(
+        `[ListingUseCase] Shopee item ${itemId} deleted successfully`,
+      );
       await ListingRepository.deleteListing(listingId);
-
-      return { success: true };
+      return { success: true, closedOnMarketplace: true };
     } catch (error) {
       console.error("[ListingUseCase] Error removing Shopee listing:", error);
       return {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
+        closedOnMarketplace: false,
+        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
 
   /**
-   * Dispatcher: remove um anÃºncio escolhendo o fluxo correto pela plataforma da conta vinculada
-   * @param listingId ID do vÃ­nculo local
+   * Dispatcher: remove um anúncio escolhendo o fluxo correto pela plataforma
+   * da conta vinculada. Propaga o resultado estendido (closedOnMarketplace,
+   * retryable). Plataforma desconhecida = só delete local (sem nada remoto).
    */
   static async removeListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     const listing = await ListingRepository.findById(listingId);
     if (!listing) {
-      return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error: "Vínculo não encontrado",
+      };
     }
 
     const platform = listing.marketplaceAccount?.platform;
@@ -3999,7 +4067,7 @@ export class ListingUseCase {
       `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
     );
     await ListingRepository.deleteListing(listingId);
-    return { success: true };
+    return { success: true, closedOnMarketplace: false };
   }
 
   /**

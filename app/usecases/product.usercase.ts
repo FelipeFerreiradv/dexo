@@ -20,6 +20,34 @@ import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
 import { maskCorruptVehicleCategoriesInProducts } from "../marketplaces/services/category-resolution.service";
+import { AccountSemaphore } from "../marketplaces/services/account-semaphore";
+
+export const BULK_DELETE_MAX_IDS = 50;
+
+export interface BulkDeleteListingResult {
+  listingId: string;
+  externalListingId: string;
+  platform: Platform | null;
+  closed: boolean;
+  error?: string;
+  retryable?: boolean;
+}
+
+export interface BulkDeleteProductResult {
+  productId: string;
+  deleted: boolean;
+  message: string;
+  listingResults: BulkDeleteListingResult[];
+}
+
+export interface BulkDeleteResponse {
+  results: BulkDeleteProductResult[];
+  summary: {
+    total: number;
+    deleted: number;
+    failed: number;
+  };
+}
 
 export class ProductUseCase {
   private productRepository: ProductRepository;
@@ -104,6 +132,22 @@ export class ProductUseCase {
     };
   }
 
+  /**
+   * Deleta um produto e seus anúncios em marketplaces.
+   *
+   * Política estrita: o produto local SÓ é deletado se todos os anúncios
+   * forem confirmados encerrados nos respectivos marketplaces (ou se já
+   * estavam fechados / não existem mais — idempotência).
+   *
+   * Se algum listing falhar de forma permanente (4xx do marketplace) ou
+   * recuperável (após retries esgotados), retorna `success: false` com o
+   * relatório por listing — o produto continua no banco e o usuário pode
+   * reintentar. Cada falha é registrada em SystemLog para auditoria.
+   *
+   * `closed` no resultado significa "encerrado no marketplace" (true também
+   * para idempotência); listings sem externalListingId ou em PENDING_ ficam
+   * com `closed: false` mas não bloqueiam a deleção do produto.
+   */
   async delete(
     id: string,
     userId?: string,
@@ -111,48 +155,196 @@ export class ProductUseCase {
     success: boolean;
     message: string;
     listingResults?: Array<{
+      listingId: string;
       externalListingId: string;
+      platform: Platform | null;
       closed: boolean;
       error?: string;
+      retryable?: boolean;
     }>;
   }> {
     try {
-      // Before deleting the product, remove all associated marketplace listings (ML + Shopee)
       const listings = await this.getProductListings(id);
 
-      // Close all listings in parallel for speed
       const listingResults = await Promise.all(
         listings.map(async (listing) => {
           const result = await ListingUseCase.removeListing(listing.id);
           return {
+            listingId: listing.id,
             externalListingId: listing.externalListingId,
-            closed: result.success,
+            platform: listing.marketplaceAccount?.platform ?? null,
+            closed: result.closedOnMarketplace,
+            success: result.success,
             error: result.error,
+            retryable: result.retryable,
           };
         }),
       );
 
-      await this.productRepository.delete(id, userId);
+      const failures = listingResults.filter((r) => !r.success);
 
-      const failedClosures = listingResults.filter((r) => !r.closed);
-      if (failedClosures.length > 0) {
+      if (failures.length > 0) {
+        // Registra cada falha em SystemLog para auditoria/suporte.
+        for (const f of failures) {
+          void SystemLogService.logListingDeleteFailed(userId, f.listingId, {
+            productId: id,
+            externalListingId: f.externalListingId,
+            platform: f.platform ?? undefined,
+            error: f.error,
+            retryable: f.retryable,
+          });
+        }
+
         return {
-          success: true,
-          message: `Produto excluído. ${failedClosures.length} anúncio(s) não puderam ser fechados no marketplace.`,
-          listingResults,
+          success: false,
+          message: `Produto não foi excluído: ${failures.length} anúncio(s) não puderam ser encerrados no marketplace.`,
+          listingResults: listingResults.map(
+            ({ success: _success, ...rest }) => rest,
+          ),
         };
       }
+
+      await this.productRepository.delete(id, userId);
 
       return {
         success: true,
         message: "Produto e anúncios associados excluídos com sucesso",
-        listingResults,
+        listingResults: listingResults.map(
+          ({ success: _success, ...rest }) => rest,
+        ),
       };
     } catch (error) {
       return {
         success: false,
         message:
           error instanceof Error ? error.message : "Erro ao excluir produto",
+      };
+    }
+  }
+
+  /**
+   * Deleta múltiplos produtos em uma única chamada, respeitando rate limit
+   * dos marketplaces.
+   *
+   * Estratégia:
+   *  - Cada produto é processado em paralelo no nível superior.
+   *  - Dentro de cada produto, os listings são fechados em paralelo, mas
+   *    chamadas para a MESMA `marketplaceAccountId` são serializadas via
+   *    AccountSemaphore (evita estourar rate limit ML ~10 req/s).
+   *  - Política estrita (igual ao delete individual): só deleta local se
+   *    todos os listings forem confirmadamente encerrados / idempotentes.
+   *  - Falhas são persistidas em SystemLog com action DELETE_LISTING_FAILED.
+   *
+   * O limite de IDs é validado: arrays com mais de BULK_DELETE_MAX_IDS
+   * disparam exceção (o endpoint converte para 400). IDs duplicados são
+   * deduplicados silenciosamente — chamar com ["a","a","b"] equivale a
+   * ["a","b"].
+   */
+  async bulkDelete(
+    rawIds: string[],
+    userId?: string,
+  ): Promise<BulkDeleteResponse> {
+    const ids = Array.from(new Set(rawIds.filter((id) => typeof id === "string" && id.length > 0)));
+
+    if (ids.length === 0) {
+      return { results: [], summary: { total: 0, deleted: 0, failed: 0 } };
+    }
+
+    if (ids.length > BULK_DELETE_MAX_IDS) {
+      throw new Error(
+        `Limite de ${BULK_DELETE_MAX_IDS} produtos por chamada excedido (${ids.length} recebidos). Divida a operação em lotes menores.`,
+      );
+    }
+
+    const semaphore = new AccountSemaphore();
+
+    const results = await Promise.all(
+      ids.map(async (productId) => this.bulkDeleteOne(productId, userId, semaphore)),
+    );
+
+    const deleted = results.filter((r) => r.deleted).length;
+    const failed = results.length - deleted;
+
+    return {
+      results,
+      summary: {
+        total: results.length,
+        deleted,
+        failed,
+      },
+    };
+  }
+
+  /**
+   * Processa a deleção de UM produto dentro do contexto do bulk: usa o
+   * semáforo compartilhado para serializar chamadas por marketplaceAccountId
+   * e devolve o resultado consolidado para o caller agregar no summary.
+   */
+  private async bulkDeleteOne(
+    productId: string,
+    userId: string | undefined,
+    semaphore: AccountSemaphore,
+  ): Promise<BulkDeleteProductResult> {
+    try {
+      const listings = await this.getProductListings(productId);
+
+      const listingResults = await Promise.all(
+        listings.map(async (listing) => {
+          const accountKey = listing.marketplaceAccountId ?? `listing:${listing.id}`;
+          const result = await semaphore.runExclusive(accountKey, () =>
+            ListingUseCase.removeListing(listing.id),
+          );
+          return {
+            listingId: listing.id,
+            externalListingId: listing.externalListingId,
+            platform: listing.marketplaceAccount?.platform ?? null,
+            closed: result.closedOnMarketplace,
+            success: result.success,
+            error: result.error,
+            retryable: result.retryable,
+          };
+        }),
+      );
+
+      const failures = listingResults.filter((r) => !r.success);
+
+      if (failures.length > 0) {
+        for (const f of failures) {
+          void SystemLogService.logListingDeleteFailed(userId, f.listingId, {
+            productId,
+            externalListingId: f.externalListingId,
+            platform: f.platform ?? undefined,
+            error: f.error,
+            retryable: f.retryable,
+          });
+        }
+        return {
+          productId,
+          deleted: false,
+          message: `${failures.length} anúncio(s) não puderam ser encerrados no marketplace.`,
+          listingResults: listingResults.map(
+            ({ success: _success, ...rest }) => rest,
+          ),
+        };
+      }
+
+      await this.productRepository.delete(productId, userId);
+
+      return {
+        productId,
+        deleted: true,
+        message: "Produto e anúncios associados excluídos com sucesso.",
+        listingResults: listingResults.map(
+          ({ success: _success, ...rest }) => rest,
+        ),
+      };
+    } catch (error) {
+      return {
+        productId,
+        deleted: false,
+        message:
+          error instanceof Error ? error.message : "Erro ao excluir produto",
+        listingResults: [],
       };
     }
   }

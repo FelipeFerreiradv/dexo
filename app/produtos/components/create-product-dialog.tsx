@@ -2447,6 +2447,7 @@ export function CreateProductDialog({
                         console.error("Erro no upload:", error);
                         onToast("Erro ao fazer upload da imagem", "error");
                       }}
+                      onWarning={(warning) => onToast(warning, "warning")}
                       maxImages={10}
                     />
                   )}

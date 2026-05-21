@@ -1,0 +1,5 @@
+rembg==2.0.59
+fastapi==0.115.0
+python-multipart==0.0.9
+uvicorn[standard]==0.32.0
+onnxruntime==1.19.2

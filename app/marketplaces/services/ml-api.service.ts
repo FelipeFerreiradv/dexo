@@ -451,9 +451,14 @@ export class MLApiService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
+        const wrapped = new Error(
           `Erro ao obter detalhes do item: ${error.response?.data?.message || error.message}`,
         );
+        (wrapped as any).status = error.response?.status;
+        (wrapped as any).responseData = error.response?.data;
+        (wrapped as any).code = error.code;
+        (wrapped as any).cause = error;
+        throw wrapped;
       }
       throw error;
     }
@@ -810,7 +815,14 @@ export class MLApiService {
         } catch {
           /* ignore log errors */
         }
-        throw new Error(this.formatAxiosError("Erro ao atualizar item", error));
+        const wrapped = new Error(
+          this.formatAxiosError("Erro ao atualizar item", error),
+        );
+        (wrapped as any).status = error.response?.status;
+        (wrapped as any).responseData = error.response?.data;
+        (wrapped as any).code = error.code;
+        (wrapped as any).cause = error;
+        throw wrapped;
       }
       throw error;
     }

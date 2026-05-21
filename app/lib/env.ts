@@ -74,6 +74,20 @@ const envSchema = z.object({
     .refine((v) => v === undefined || (Number.isFinite(v) && v > 0), {
       message: "ML_MAX_WEIGHT_KG deve ser número positivo",
     }),
+
+  // Remoção de fundo (sidecar Python). Todos opcionais — sem
+  // REMBG_SIDECAR_URL ou com REMBG_ENABLED=false, o pipeline de
+  // upload faz fallback graceful (otimiza, mas não remove fundo).
+  REMBG_SIDECAR_URL: optionalUrlIsh,
+  REMBG_TIMEOUT_MS: z
+    .string()
+    .optional()
+    .default("15000")
+    .transform((v) => Number(v))
+    .refine((n) => Number.isInteger(n) && n >= 1000 && n <= 120000, {
+      message: "REMBG_TIMEOUT_MS deve ser inteiro entre 1000 e 120000",
+    }),
+  REMBG_ENABLED: z.enum(["true", "false"]).optional().default("true"),
 });
 
 export type Env = z.infer<typeof envSchema>;

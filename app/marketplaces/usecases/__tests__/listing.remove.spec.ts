@@ -30,6 +30,11 @@ const shopeeAccount = {
   shopId: 42,
 } as any;
 
+const mlAccount = {
+  id: "acc-ml",
+  accessToken: "ml-tok",
+} as any;
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -44,6 +49,7 @@ describe("ListingUseCase.removeShopeeListing", () => {
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(false);
+    expect(result.closedOnMarketplace).toBe(false);
     expect(del).not.toHaveBeenCalled();
   });
 
@@ -62,11 +68,12 @@ describe("ListingUseCase.removeShopeeListing", () => {
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(false);
     expect(api).not.toHaveBeenCalled();
     expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
   });
 
-  it("skips external API when account has no accessToken or shopId", async () => {
+  it("does NOT delete locally when account has no accessToken/shopId (retryable)", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
     vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
       id: "acc-shopee",
@@ -82,12 +89,13 @@ describe("ListingUseCase.removeShopeeListing", () => {
 
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
     expect(api).not.toHaveBeenCalled();
-    expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
+    expect(del).not.toHaveBeenCalled();
   });
 
-  it("skips external API when externalListingId is not numeric", async () => {
+  it("treats non-numeric externalListingId as local-only cleanup", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue({
       ...shopeeListing,
       externalListingId: "not-a-number",
@@ -104,11 +112,12 @@ describe("ListingUseCase.removeShopeeListing", () => {
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(false);
     expect(api).not.toHaveBeenCalled();
     expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
   });
 
-  it("calls Shopee deleteItem with shopId + itemId then deletes locally (happy path)", async () => {
+  it("calls Shopee deleteItem and deletes locally on happy path", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
     vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(shopeeAccount);
     const del = vi
@@ -121,26 +130,233 @@ describe("ListingUseCase.removeShopeeListing", () => {
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
     expect(api).toHaveBeenCalledWith("tok", 42, 987654321);
     expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
   });
 
-  it("still deletes locally when Shopee deleteItem throws (best-effort parity with ML)", async () => {
+  it("treats Shopee error_inexist as idempotent success (item already gone)", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
     vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(shopeeAccount);
     const del = vi
       .spyOn(ListingRepository, "deleteListing")
       .mockResolvedValue(undefined as any);
-    const api = vi
-      .spyOn(ShopeeApiService, "deleteItem")
-      .mockRejectedValue(new Error("item still active"));
+    const err = Object.assign(new Error("Erro ao deletar item: not exist"), {
+      shopeeError: "product.error_inexist",
+    });
+    vi.spyOn(ShopeeApiService, "deleteItem").mockRejectedValue(err);
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
 
     const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(true);
-    expect(api).toHaveBeenCalled();
+    expect(result.closedOnMarketplace).toBe(true);
     expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
+  });
+
+  it("does NOT delete locally on permanent Shopee error", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(shopeeAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Erro ao deletar item: invalid sig"), {
+      shopeeError: "error.auth",
+    });
+    vi.spyOn(ShopeeApiService, "deleteItem").mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
+
+    expect(result.success).toBe(false);
+    expect(result.closedOnMarketplace).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("retries on 5xx and reports retryable=true after exhausting retries", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(shopeeAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Shopee API 500: boom"), {
+      status: 500,
+    });
+    const api = vi
+      .spyOn(ShopeeApiService, "deleteItem")
+      .mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Speed up backoff: stub global setTimeout via vi.useFakeTimers would
+    // complicate things; instead we rely on the retry helper completing
+    // quickly because vitest awaits the promise chain. Default delays are
+    // short enough for the test budget.
+    vi.useFakeTimers();
+    const resultPromise = ListingUseCase.removeShopeeListing(SHOPEE_LISTING_ID);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
+    expect(api).toHaveBeenCalledTimes(4); // initial + 3 retries
+    expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe("ListingUseCase.removeMLListing", () => {
+  it("returns error when listing not found", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(null as any);
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+    expect(result.success).toBe(false);
+    expect(result.closedOnMarketplace).toBe(false);
+  });
+
+  it("skips external API and deletes locally when PENDING_", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue({
+      ...mlListing,
+      externalListingId: "PENDING_abc",
+    });
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const api = vi
+      .spyOn(MLApiService, "updateItem")
+      .mockResolvedValue({} as any);
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(false);
+    expect(api).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledWith(ML_LISTING_ID);
+  });
+
+  it("does NOT delete locally when account has no accessToken (retryable)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-ml",
+      accessToken: null,
+    } as any);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("calls ML updateItem with status closed and deletes locally on happy path", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(mlAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const api = vi
+      .spyOn(MLApiService, "updateItem")
+      .mockResolvedValue({} as any);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
+    expect(api).toHaveBeenCalledWith("ml-tok", "MLB123456789", {
+      status: "closed",
+    });
+    expect(del).toHaveBeenCalledWith(ML_LISTING_ID);
+  });
+
+  it("treats ML 404 as idempotent success (item already gone)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(mlAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Erro ao atualizar item: not found"), {
+      status: 404,
+    });
+    vi.spyOn(MLApiService, "updateItem").mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
+    expect(del).toHaveBeenCalledWith(ML_LISTING_ID);
+  });
+
+  it("treats ML 'already closed' message as idempotent success", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(mlAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(
+      new Error("Erro ao atualizar item: item is already closed"),
+      { status: 400 },
+    );
+    vi.spyOn(MLApiService, "updateItem").mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
+    expect(del).toHaveBeenCalledWith(ML_LISTING_ID);
+  });
+
+  it("does NOT delete locally on permanent ML error (e.g. 401)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(mlAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(
+      new Error("Erro ao atualizar item: invalid token"),
+      { status: 401 },
+    );
+    vi.spyOn(MLApiService, "updateItem").mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await ListingUseCase.removeMLListing(ML_LISTING_ID);
+
+    expect(result.success).toBe(false);
+    expect(result.closedOnMarketplace).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("retries on ML 429 and reports retryable=true after exhausting retries", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(mlAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Erro ao atualizar item: rate limit"), {
+      status: 429,
+    });
+    const api = vi
+      .spyOn(MLApiService, "updateItem")
+      .mockRejectedValue(err);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    const resultPromise = ListingUseCase.removeMLListing(ML_LISTING_ID);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
+    expect(api).toHaveBeenCalledTimes(4); // initial + 3 retries
+    expect(del).not.toHaveBeenCalled();
   });
 });
 
@@ -149,14 +365,15 @@ describe("ListingUseCase.removeListing (dispatcher)", () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
     const ml = vi
       .spyOn(ListingUseCase, "removeMLListing")
-      .mockResolvedValue({ success: true });
+      .mockResolvedValue({ success: true, closedOnMarketplace: true });
     const shopee = vi
       .spyOn(ListingUseCase, "removeShopeeListing")
-      .mockResolvedValue({ success: true });
+      .mockResolvedValue({ success: true, closedOnMarketplace: true });
 
     const result = await ListingUseCase.removeListing(ML_LISTING_ID);
 
     expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
     expect(ml).toHaveBeenCalledWith(ML_LISTING_ID);
     expect(shopee).not.toHaveBeenCalled();
   });
@@ -165,10 +382,10 @@ describe("ListingUseCase.removeListing (dispatcher)", () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(shopeeListing);
     const ml = vi
       .spyOn(ListingUseCase, "removeMLListing")
-      .mockResolvedValue({ success: true });
+      .mockResolvedValue({ success: true, closedOnMarketplace: true });
     const shopee = vi
       .spyOn(ListingUseCase, "removeShopeeListing")
-      .mockResolvedValue({ success: true });
+      .mockResolvedValue({ success: true, closedOnMarketplace: true });
 
     const result = await ListingUseCase.removeListing(SHOPEE_LISTING_ID);
 
@@ -179,10 +396,9 @@ describe("ListingUseCase.removeListing (dispatcher)", () => {
 
   it("returns error when listing not found", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(null as any);
-
     const result = await ListingUseCase.removeListing("unknown");
-
     expect(result.success).toBe(false);
+    expect(result.closedOnMarketplace).toBe(false);
   });
 
   it("falls back to local delete when platform is unknown", async () => {
@@ -200,6 +416,7 @@ describe("ListingUseCase.removeListing (dispatcher)", () => {
     const result = await ListingUseCase.removeListing(SHOPEE_LISTING_ID);
 
     expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(false);
     expect(del).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
     expect(ml).not.toHaveBeenCalled();
     expect(shopee).not.toHaveBeenCalled();

@@ -156,12 +156,48 @@ export class MLOAuthService {
   >();
 
   /**
+   * Mutex em memória: refreshes em voo por accountId. Concurrent callers do
+   * mesmo accountId aguardam a mesma Promise. Resolve a race em que dois
+   * workers detectam token expirado, ambos chamam refresh, ML invalida o
+   * refresh_token após o primeiro uso e o segundo recebe invalid_grant,
+   * tripa-se o circuit breaker e a conta inteira fica ERROR.
+   */
+  private static refreshesInFlight = new Map<
+    string,
+    Promise<{ accessToken: string; refreshToken: string; expiresIn: number }>
+  >();
+
+  /**
    * Wrapper em cima de `refreshAccessToken` que, em caso de erro terminal
    * (client_id_mismatch, invalid_grant), marca a conta como ERROR no banco
    * e trip-a o circuit breaker em memória para parar loops de retry em
    * webhooks/sync/listing. Use sempre que houver um `accountId` conhecido.
    */
   static async refreshAccessTokenForAccount(
+    accountId: string,
+    refreshToken: string,
+  ): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+  }> {
+    const existing = this.refreshesInFlight.get(accountId);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = this.doRefreshAccessTokenForAccount(
+      accountId,
+      refreshToken,
+    ).finally(() => {
+      this.refreshesInFlight.delete(accountId);
+    });
+
+    this.refreshesInFlight.set(accountId, promise);
+    return promise;
+  }
+
+  private static async doRefreshAccessTokenForAccount(
     accountId: string,
     refreshToken: string,
   ): Promise<{
