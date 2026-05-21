@@ -176,9 +176,28 @@ export async function processUploadedImage(
           height: outMeta.height,
         };
       } catch (err) {
+        // Log diagnóstico expandido: inclui status HTTP + corpo da resposta
+        // do sidecar quando disponível, para acelerar troubleshooting em prod.
+        const extra: Record<string, unknown> = {};
+        if (axios.isAxiosError(err)) {
+          extra.status = err.response?.status;
+          const data = err.response?.data;
+          if (data instanceof Buffer) {
+            extra.body = data.toString("utf8").slice(0, 500);
+          } else if (typeof data === "string") {
+            extra.body = data.slice(0, 500);
+          } else if (data && typeof data === "object") {
+            try {
+              extra.body = JSON.stringify(data).slice(0, 500);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
         console.warn(
           "[processUploadedImage] sidecar rembg falhou; degradando para imagem otimizada sem remoção:",
           err instanceof Error ? err.message : String(err),
+          extra,
         );
         // cai para o fallback abaixo
       }
@@ -225,10 +244,12 @@ async function defaultRembgFetcher(buf: Buffer): Promise<Buffer> {
   if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
   const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "15000");
 
+  // O sidecar valida que content_type comece com "image/" — manter
+  // consistente com o filename `input.png` e evitar 400 do FastAPI.
   const form = new FormData();
   form.append("file", buf, {
     filename: "input.png",
-    contentType: "application/octet-stream",
+    contentType: "image/png",
   });
 
   const endpoint = url.replace(/\/+$/, "") + "/remove-bg";

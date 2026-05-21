@@ -47,8 +47,15 @@ def health():
 
 @app.post("/remove-bg")
 async def remove_bg(file: UploadFile = File(...)):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="expected image/*")
+    # Aceita image/* e application/octet-stream (fallback comum quando o
+    # cliente nao seta MIME). Outros tipos viram log + 400 com motivo
+    # explicito pra facilitar diagnostico do lado do caller.
+    ctype = (file.content_type or "").lower()
+    if not (ctype.startswith("image/") or ctype == "application/octet-stream"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported content_type: {file.content_type!r}",
+        )
 
     raw = await file.read()
     if not raw:
