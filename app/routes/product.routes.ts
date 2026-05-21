@@ -858,14 +858,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
         const result = await productUseCase.delete(id, userId);
 
+        // Política estrita: success=false significa que algum anúncio não
+        // pôde ser encerrado no marketplace e o produto foi MANTIDO no banco.
+        // Devolvemos 409 (Conflict) com listingResults detalhado para que o
+        // frontend mostre o relatório por anúncio e ofereça reintentar.
         if (!result.success) {
-          return reply.status(500).send({
-            error: "Erro ao excluir produto",
+          return reply.status(409).send({
+            error: "Não foi possível excluir o produto",
             message: result.message,
+            listingResults: result.listingResults,
           });
         }
 
-        // Registrar log de exclusão do produto (fire-and-forget, non-blocking)
+        // Sucesso: produto deletado localmente. Log fire-and-forget.
         const user = (request as any).user;
         void SystemLogService.logProductDelete(user?.id, id, "Produto");
 

@@ -481,7 +481,10 @@ export class ShopeeApiService {
     >("POST", apiPath, accessToken, shopId, { item_id: itemId });
 
     if (response.error) {
-      throw new Error(`Erro ao deletar item: ${response.message}`);
+      const err = new Error(`Erro ao deletar item: ${response.message}`);
+      (err as any).shopeeError = response.error;
+      (err as any).shopeeMessage = response.message;
+      throw err;
     }
 
     return response.response!;

@@ -104,6 +104,22 @@ export class ProductUseCase {
     };
   }
 
+  /**
+   * Deleta um produto e seus anúncios em marketplaces.
+   *
+   * Política estrita: o produto local SÓ é deletado se todos os anúncios
+   * forem confirmados encerrados nos respectivos marketplaces (ou se já
+   * estavam fechados / não existem mais — idempotência).
+   *
+   * Se algum listing falhar de forma permanente (4xx do marketplace) ou
+   * recuperável (após retries esgotados), retorna `success: false` com o
+   * relatório por listing — o produto continua no banco e o usuário pode
+   * reintentar. Cada falha é registrada em SystemLog para auditoria.
+   *
+   * `closed` no resultado significa "encerrado no marketplace" (true também
+   * para idempotência); listings sem externalListingId ou em PENDING_ ficam
+   * com `closed: false` mas não bloqueiam a deleção do produto.
+   */
   async delete(
     id: string,
     userId?: string,
@@ -111,42 +127,63 @@ export class ProductUseCase {
     success: boolean;
     message: string;
     listingResults?: Array<{
+      listingId: string;
       externalListingId: string;
+      platform: Platform | null;
       closed: boolean;
       error?: string;
+      retryable?: boolean;
     }>;
   }> {
     try {
-      // Before deleting the product, remove all associated marketplace listings (ML + Shopee)
       const listings = await this.getProductListings(id);
 
-      // Close all listings in parallel for speed
       const listingResults = await Promise.all(
         listings.map(async (listing) => {
           const result = await ListingUseCase.removeListing(listing.id);
           return {
+            listingId: listing.id,
             externalListingId: listing.externalListingId,
-            closed: result.success,
+            platform: listing.marketplaceAccount?.platform ?? null,
+            closed: result.closedOnMarketplace,
+            success: result.success,
             error: result.error,
+            retryable: result.retryable,
           };
         }),
       );
 
-      await this.productRepository.delete(id, userId);
+      const failures = listingResults.filter((r) => !r.success);
 
-      const failedClosures = listingResults.filter((r) => !r.closed);
-      if (failedClosures.length > 0) {
+      if (failures.length > 0) {
+        // Registra cada falha em SystemLog para auditoria/suporte.
+        for (const f of failures) {
+          void SystemLogService.logListingDeleteFailed(userId, f.listingId, {
+            productId: id,
+            externalListingId: f.externalListingId,
+            platform: f.platform ?? undefined,
+            error: f.error,
+            retryable: f.retryable,
+          });
+        }
+
         return {
-          success: true,
-          message: `Produto excluído. ${failedClosures.length} anúncio(s) não puderam ser fechados no marketplace.`,
-          listingResults,
+          success: false,
+          message: `Produto não foi excluído: ${failures.length} anúncio(s) não puderam ser encerrados no marketplace.`,
+          listingResults: listingResults.map(
+            ({ success: _success, ...rest }) => rest,
+          ),
         };
       }
+
+      await this.productRepository.delete(id, userId);
 
       return {
         success: true,
         message: "Produto e anúncios associados excluídos com sucesso",
-        listingResults,
+        listingResults: listingResults.map(
+          ({ success: _success, ...rest }) => rest,
+        ),
       };
     } catch (error) {
       return {
