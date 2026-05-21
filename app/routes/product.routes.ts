@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ProductUseCase } from "../usecases/product.usercase";
+import { BULK_DELETE_MAX_IDS, ProductUseCase } from "../usecases/product.usercase";
 import {
   ProductCreate,
   ProductListFilters,
@@ -838,6 +838,65 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao buscar produto",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /products/bulk-delete
+   * Deleta múltiplos produtos em uma única chamada, respeitando rate limit
+   * dos marketplaces (semáforo por marketplaceAccountId). Política estrita:
+   * produto só é removido localmente se TODOS os anúncios fecharem OK no
+   * marketplace correspondente. Devolve relatório consolidado por produto.
+   *
+   * Limite de IDs por chamada: BULK_DELETE_MAX_IDS (50). Acima disso o
+   * frontend deve quebrar em chunks.
+   */
+  fastify.post(
+    "/bulk-delete",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const body = (request.body ?? {}) as { ids?: unknown };
+        const ids = Array.isArray(body.ids) ? body.ids : null;
+        if (!ids || ids.length === 0) {
+          return reply.status(400).send({
+            error: "Lista de IDs inválida",
+            message: "Envie um array `ids` com pelo menos 1 produto.",
+          });
+        }
+        if (!ids.every((id): id is string => typeof id === "string" && id.length > 0)) {
+          return reply.status(400).send({
+            error: "IDs inválidos",
+            message: "Todos os IDs devem ser strings não vazias.",
+          });
+        }
+        if (ids.length > BULK_DELETE_MAX_IDS) {
+          return reply.status(400).send({
+            error: "Limite excedido",
+            message: `Máximo de ${BULK_DELETE_MAX_IDS} produtos por chamada. Divida em lotes menores.`,
+          });
+        }
+
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        const user = (request as any).user;
+        const result = await productUseCase.bulkDelete(ids, userId);
+
+        // Log fire-and-forget por produto efetivamente deletado.
+        for (const r of result.results) {
+          if (r.deleted) {
+            void SystemLogService.logProductDelete(user?.id, r.productId, "Produto");
+          }
+        }
+
+        return reply.status(200).send(result);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? String(error.message)
+              : "Erro ao excluir produtos em lote",
         });
       }
     },

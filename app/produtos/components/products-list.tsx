@@ -104,6 +104,17 @@ import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
 import { ProductDetailSheet } from "./product-detail-sheet";
 import { ImageLightbox } from "./image-lightbox";
 import { ProductSkeleton } from "./product-skeleton";
+import {
+  BulkDeleteResultModal,
+  type BulkDeleteProductResultView,
+} from "./bulk-delete-result-modal";
+
+const BULK_DELETE_CHUNK_SIZE = 50;
+
+interface BulkDeleteResponseBody {
+  results: BulkDeleteProductResultView[];
+  summary: { total: number; deleted: number; failed: number };
+}
 
 type MarketplacePlatform = MarketplaceListingPlatform;
 type ProductListing = MarketplaceListingLinkInput & {
@@ -616,6 +627,12 @@ export function ProductsList() {
     done: number;
     total: number;
   } | null>(null);
+  const [bulkDeleteResult, setBulkDeleteResult] = useState<{
+    open: boolean;
+    results: BulkDeleteProductResultView[];
+    summary: { total: number; deleted: number; failed: number };
+    productNames: Record<string, string>;
+  } | null>(null);
   const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
   const [isBulkPausing, setIsBulkPausing] = useState(false);
   const [bulkPauseProgress, setBulkPauseProgress] = useState<{
@@ -912,8 +929,11 @@ export function ProductsList() {
   };
 
   const handleDelete = async (id: string) => {
+    const productName =
+      products.find((p) => p.id === id)?.name ?? id;
     const previousProducts = products;
     const previousPagination = pagination;
+    // Optimistic remove apenas até confirmar o resultado do servidor.
     setProducts((prev) => prev.filter((product) => product.id !== id));
     setPagination((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
 
@@ -925,11 +945,44 @@ export function ProductsList() {
         },
       });
 
-      if (!response.ok) {
-        const data = await response.json();
+      if (response.status === 409) {
+        // Política estrita: produto NÃO foi removido porque algum anúncio
+        // não pôde ser encerrado. Restaura UI e mostra o modal de
+        // relatório com o produto único — permitindo reintentar.
         setProducts(previousProducts);
         setPagination(previousPagination);
-        throw new Error(data.error || "Erro ao excluir produto");
+        const data = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          listingResults?: BulkDeleteProductResultView["listingResults"];
+        };
+        setBulkDeleteResult({
+          open: true,
+          results: [
+            {
+              productId: id,
+              deleted: false,
+              message:
+                data.message ??
+                "Anúncio não pôde ser encerrado no marketplace.",
+              listingResults: data.listingResults ?? [],
+            },
+          ],
+          summary: { total: 1, deleted: 0, failed: 1 },
+          productNames: { [id]: productName },
+        });
+        return;
+      }
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          message?: string;
+        };
+        setProducts(previousProducts);
+        setPagination(previousPagination);
+        throw new Error(
+          data.error || data.message || "Erro ao excluir produto",
+        );
       }
 
       showToast("Produto excluído com sucesso!", "success");
@@ -1020,122 +1073,189 @@ export function ProductsList() {
     }
   };
 
+  /**
+   * Dispara o endpoint agregado POST /products/bulk-delete, fazendo
+   * chunking de BULK_DELETE_CHUNK_SIZE em BULK_DELETE_CHUNK_SIZE quando
+   * houver mais IDs do que o limite por chamada. Devolve a resposta
+   * consolidada (results + summary) já no shape esperado pelo modal.
+   */
+  const runBulkDelete = useCallback(
+    async (
+      ids: string[],
+      nameById: Record<string, string>,
+    ): Promise<BulkDeleteResponseBody | null> => {
+      if (ids.length === 0) return null;
+      const email = session?.user?.email || "";
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += BULK_DELETE_CHUNK_SIZE) {
+        chunks.push(ids.slice(i, i + BULK_DELETE_CHUNK_SIZE));
+      }
+
+      const allResults: BulkDeleteProductResultView[] = [];
+      let totalDeleted = 0;
+      let totalFailed = 0;
+
+      for (const chunk of chunks) {
+        const response = await fetch(`${getApiBaseUrl()}/products/bulk-delete`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email,
+          },
+          body: JSON.stringify({ ids: chunk }),
+        });
+
+        if (!response.ok) {
+          const data = (await response.json().catch(() => ({}))) as {
+            error?: string;
+            message?: string;
+          };
+          throw new Error(
+            data.message ||
+              data.error ||
+              `Erro ao excluir produtos (HTTP ${response.status})`,
+          );
+        }
+
+        const body = (await response.json()) as BulkDeleteResponseBody;
+        allResults.push(...body.results);
+        totalDeleted += body.summary.deleted;
+        totalFailed += body.summary.failed;
+
+        setBulkDeleteProgress((prev) =>
+          prev
+            ? { ...prev, done: Math.min(prev.done + chunk.length, prev.total) }
+            : prev,
+        );
+      }
+
+      // Atualiza estado local removendo apenas os produtos efetivamente
+      // deletados; os que falharam continuam na lista (alinha com a
+      // política estrita do backend).
+      const deletedIds = new Set(
+        allResults.filter((r) => r.deleted).map((r) => r.productId),
+      );
+      if (deletedIds.size > 0) {
+        setProducts((prev) =>
+          prev.filter((product) => !deletedIds.has(product.id)),
+        );
+        setPagination((prev) => ({
+          ...prev,
+          total: Math.max(0, prev.total - deletedIds.size),
+        }));
+        setSelectedIds((prev) => prev.filter((id) => !deletedIds.has(id)));
+        invalidateProductFilterOptionsCache(session?.user?.email);
+        fetchFilterOptions(true);
+      }
+
+      return {
+        results: allResults,
+        summary: {
+          total: ids.length,
+          deleted: totalDeleted,
+          failed: totalFailed,
+        },
+      };
+    },
+    [session?.user?.email, fetchFilterOptions],
+  );
+
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) {
-      showToast(
-        "Selecione pelo menos um produto para excluir.",
-        "warning",
-      );
+      showToast("Selecione pelo menos um produto para excluir.", "warning");
       return;
     }
 
     const ids = [...selectedIds];
-    const nameById = new Map(products.map((p) => [p.id, p.name]));
-    const email = session?.user?.email || "";
-    const pageProductsCount = products.length;
+    const nameById: Record<string, string> = {};
+    products.forEach((p) => {
+      nameById[p.id] = p.name;
+    });
 
     setIsBulkDeleting(true);
     setBulkDeleteProgress({ done: 0, total: ids.length });
 
-    const succeeded: string[] = [];
-    const failed: { id: string; name: string; message: string }[] = [];
+    try {
+      const body = await runBulkDelete(ids, nameById);
+      if (!body) return;
 
-    const concurrency = Math.min(4, ids.length);
-    let cursor = 0;
-
-    const worker = async () => {
-      while (true) {
-        const index = cursor++;
-        if (index >= ids.length) return;
-        const id = ids[index];
-        try {
-          const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
-            method: "DELETE",
-            headers: { email },
-          });
-          if (!response.ok) {
-            let message = "Erro ao excluir produto";
-            try {
-              const data = await response.json();
-              message = data?.message || data?.error || message;
-            } catch {
-              // ignore JSON parse errors
-            }
-            failed.push({
-              id,
-              name: nameById.get(id) ?? id,
-              message,
-            });
-          } else {
-            succeeded.push(id);
-          }
-        } catch (error) {
-          failed.push({
-            id,
-            name: nameById.get(id) ?? id,
-            message:
-              error instanceof Error ? error.message : "Erro ao excluir produto",
-          });
-        } finally {
-          setBulkDeleteProgress((prev) =>
-            prev ? { ...prev, done: prev.done + 1 } : prev,
-          );
-        }
+      if (body.summary.failed === 0) {
+        showToast(
+          `${body.summary.deleted} produto(s) excluído(s) com sucesso!`,
+          "success",
+        );
+      } else {
+        setBulkDeleteResult({
+          open: true,
+          results: body.results,
+          summary: body.summary,
+          productNames: nameById,
+        });
       }
-    };
-
-    await Promise.all(
-      Array.from({ length: concurrency }, () => worker()),
-    );
-
-    if (succeeded.length > 0) {
-      const succeededSet = new Set(succeeded);
-      setProducts((prev) =>
-        prev.filter((product) => !succeededSet.has(product.id)),
-      );
-      setPagination((prev) => ({
-        ...prev,
-        total: Math.max(0, prev.total - succeeded.length),
-      }));
-      setSelectedIds((prev) => prev.filter((id) => !succeededSet.has(id)));
-      invalidateProductFilterOptionsCache(session?.user?.email);
-      fetchFilterOptions(true);
-      if (
-        succeeded.length === pageProductsCount &&
-        pagination.page > 1
-      ) {
-        fetchProducts(pagination.page - 1, filters);
-      }
-    }
-
-    if (failed.length === 0) {
+    } catch (error) {
       showToast(
-        `${succeeded.length} produto(s) excluído(s) com sucesso!`,
-        "success",
-      );
-    } else if (succeeded.length === 0) {
-      showToast(
-        failed[0]?.message
-          ? `Erro ao excluir produtos: ${failed[0].message}`
-          : "Erro ao excluir produtos",
+        error instanceof Error ? error.message : "Erro ao excluir produtos",
         "error",
       );
-    } else {
-      showToast(
-        `${succeeded.length} excluído(s), ${failed.length} falharam.`,
-        "warning",
-      );
-      if (failed[0]?.message) {
+    } finally {
+      setIsBulkDeleting(false);
+      setBulkDeleteProgress(null);
+    }
+  };
+
+  /**
+   * Reintenta apenas os produtos que falharam, mantendo o modal aberto e
+   * atualizando os results in-place. Usado pelo botão "Reintentar" do
+   * BulkDeleteResultModal — tanto para bulk quanto para individual.
+   */
+  const handleBulkRetry = useCallback(
+    async (failedIds: string[]) => {
+      if (failedIds.length === 0) return;
+      const nameById = bulkDeleteResult?.productNames ?? {};
+
+      setIsBulkDeleting(true);
+      setBulkDeleteProgress({ done: 0, total: failedIds.length });
+
+      try {
+        const body = await runBulkDelete(failedIds, nameById);
+        if (!body) return;
+
+        setBulkDeleteResult((prev) => {
+          if (!prev) return prev;
+          // Substitui os resultados anteriores dos IDs retentados pelos novos.
+          const retriedIndex = new Map(
+            body.results.map((r) => [r.productId, r]),
+          );
+          const merged = prev.results.map((r) =>
+            retriedIndex.get(r.productId) ?? r,
+          );
+          const deleted = merged.filter((r) => r.deleted).length;
+          const failed = merged.filter((r) => !r.deleted).length;
+          return {
+            ...prev,
+            results: merged,
+            summary: { total: merged.length, deleted, failed },
+          };
+        });
+
+        if (body.summary.failed === 0) {
+          showToast(
+            `${body.summary.deleted} produto(s) excluído(s) na nova tentativa.`,
+            "success",
+          );
+        }
+      } catch (error) {
         showToast(
-          `"${failed[0].name}": ${failed[0].message}`,
+          error instanceof Error ? error.message : "Erro ao reintentar",
           "error",
         );
+      } finally {
+        setIsBulkDeleting(false);
+        setBulkDeleteProgress(null);
       }
-    }
-
-    setIsBulkDeleting(false);
-    setBulkDeleteProgress(null);
-  };
+    },
+    [bulkDeleteResult?.productNames, runBulkDelete],
+  );
 
   const handleBulkPauseToggle = async (status: "active" | "paused") => {
     if (selectedIds.length === 0) {
@@ -2451,6 +2571,24 @@ export function ProductsList() {
         }}
         alt={lightboxProduct?.alt}
       />
+
+      {bulkDeleteResult && (
+        <BulkDeleteResultModal
+          open={bulkDeleteResult.open}
+          onOpenChange={(open) => {
+            if (open) {
+              setBulkDeleteResult((prev) => (prev ? { ...prev, open } : prev));
+            } else {
+              setBulkDeleteResult(null);
+            }
+          }}
+          results={bulkDeleteResult.results}
+          summary={bulkDeleteResult.summary}
+          productNames={bulkDeleteResult.productNames}
+          onRetry={handleBulkRetry}
+          isRetrying={isBulkDeleting}
+        />
+      )}
     </div>
   );
 }
