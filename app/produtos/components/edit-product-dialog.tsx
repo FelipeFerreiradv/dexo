@@ -2238,6 +2238,7 @@ export function EditProductDialog({
                       });
                     }}
                     onError={(error: string) => onToast(error, "error")}
+                    onWarning={(warning) => onToast(warning, "warning")}
                   />
                 )}
               />

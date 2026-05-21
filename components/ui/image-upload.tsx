@@ -1,14 +1,19 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Upload, X, Image as ImageIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { getApiBaseUrl } from "@/lib/api";
+import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
 
 interface ImageUploadProps {
   value?: string;
   onChange: (url: string) => void;
   onError?: (error: string) => void;
+  /** Chamado quando o backend processa mas avisa algo (ex.: fallback). */
+  onWarning?: (warning: string) => void;
   disabled?: boolean;
   className?: string;
 }
@@ -17,6 +22,7 @@ export function ImageUpload({
   value,
   onChange,
   onError,
+  onWarning,
   disabled = false,
   className = "",
 }: ImageUploadProps) {
@@ -25,20 +31,18 @@ export function ImageUpload({
     value && value.trim() !== "" ? value : null,
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
 
-  // Sincronizar preview com valor das props
   useEffect(() => {
     setPreview(value && value.trim() !== "" ? value : null);
   }, [value]);
 
   const handleFileSelect = useCallback(
     async (file: File) => {
-      // Validações básicas
       if (!file.type.startsWith("image/")) {
         onError?.("Apenas arquivos de imagem são permitidos");
         return;
       }
-
       if (file.size > 5 * 1024 * 1024) {
         onError?.("O arquivo deve ter no máximo 5MB");
         return;
@@ -49,6 +53,7 @@ export function ImageUpload({
       try {
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("removeBackground", removeBackground ? "true" : "false");
 
         const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
           method: "POST",
@@ -56,16 +61,19 @@ export function ImageUpload({
         });
 
         if (!response.ok) {
-          const error = await response.json();
+          const error = await response.json().catch(() => ({}));
           throw new Error(error.message || "Erro ao fazer upload");
         }
 
-        const result = await response.json();
-        const imageUrl: string = result.imageUrl;
-
-        // Preview e valor usam localhost (mantendo compatibilidade com ambiente local)
-        setPreview(imageUrl);
-        onChange(imageUrl);
+        const result = (await response.json()) as {
+          imageUrl: string;
+          warning?: string;
+        };
+        if (result.warning) {
+          onWarning?.(result.warning);
+        }
+        setPreview(result.imageUrl);
+        onChange(result.imageUrl);
       } catch (error) {
         console.error("Erro no upload:", error);
         onError?.(
@@ -77,7 +85,7 @@ export function ImageUpload({
         setIsUploading(false);
       }
     },
-    [onChange, onError],
+    [onChange, onError, onWarning, removeBackground],
   );
 
   const handleDrop = useCallback(
@@ -118,16 +126,22 @@ export function ImageUpload({
   }, [onChange]);
 
   return (
-    <div className={`space-y-4 ${className}`}>
-      {/* Área de upload */}
+    <div className={`space-y-3 ${className}`}>
+      <RemoveBackgroundToggle
+        value={removeBackground}
+        onValueChange={setRemoveBackground}
+        disabled={disabled || isUploading}
+        hasPreview={Boolean(preview)}
+      />
+
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onClick={handleClick}
         className={`
-          relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer
+          relative cursor-pointer rounded-lg border-2 border-dashed p-6 text-center
           transition-colors hover:bg-muted/50
-          ${disabled ? "opacity-50 cursor-not-allowed" : ""}
+          ${disabled ? "cursor-not-allowed opacity-50" : ""}
           ${preview ? "border-primary" : "border-muted-foreground/25"}
         `}
       >
@@ -147,9 +161,8 @@ export function ImageUpload({
               <img
                 src={preview}
                 alt="Preview da imagem"
-                className="rounded-lg object-cover max-w-full max-h-48"
+                className="max-h-48 max-w-full rounded-lg object-cover"
                 style={{ width: "200px", height: "200px" }}
-                onLoad={() => console.log("Imagem carregada com sucesso")}
                 onError={(e) => {
                   console.error("Erro ao carregar imagem:", preview);
                   const target = e.currentTarget as HTMLImageElement;
@@ -173,7 +186,7 @@ export function ImageUpload({
                   type="button"
                   variant="destructive"
                   size="sm"
-                  className="absolute -top-2 -right-2 h-6 w-6 rounded-full p-0"
+                  className="absolute -right-2 -top-2 h-6 w-6 rounded-full p-0"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleRemove();
@@ -191,9 +204,11 @@ export function ImageUpload({
           <div className="space-y-4">
             {isUploading ? (
               <div className="flex flex-col items-center space-y-2">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary"></div>
                 <p className="text-sm text-muted-foreground">
-                  Enviando imagem...
+                  {removeBackground
+                    ? "Removendo fundo e otimizando..."
+                    : "Otimizando imagem..."}
                 </p>
               </div>
             ) : (
@@ -213,7 +228,6 @@ export function ImageUpload({
         )}
       </div>
 
-      {/* Botões de ação */}
       {!disabled && (
         <div className="flex gap-2">
           <Button
@@ -223,7 +237,7 @@ export function ImageUpload({
             onClick={handleClick}
             disabled={isUploading}
           >
-            <Upload className="h-4 w-4 mr-2" />
+            <Upload className="mr-2 h-4 w-4" />
             {preview ? "Alterar" : "Selecionar"} Imagem
           </Button>
           {preview && (
@@ -234,12 +248,53 @@ export function ImageUpload({
               onClick={handleRemove}
               disabled={isUploading}
             >
-              <X className="h-4 w-4 mr-2" />
+              <X className="mr-2 h-4 w-4" />
               Remover
             </Button>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Toggle compartilhado de "Remover fundo automaticamente". Mostra um
+ * hint quando já há imagem carregada esclarecendo que a troca só vale
+ * pra próximos uploads (não reprocessa retroativamente).
+ */
+function RemoveBackgroundToggle({
+  value,
+  onValueChange,
+  disabled,
+  hasPreview,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled: boolean;
+  hasPreview: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <Label
+          htmlFor="image-upload-remove-bg"
+          className="cursor-pointer text-sm font-medium"
+        >
+          Remover fundo automaticamente
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          {hasPreview
+            ? "Aplica-se a novas imagens — a atual não é reprocessada."
+            : "Recomendado para fotos de produtos com fundo branco/contextual."}
+        </p>
+      </div>
+      <Switch
+        id="image-upload-remove-bg"
+        checked={value}
+        onCheckedChange={onValueChange}
+        disabled={disabled}
+      />
     </div>
   );
 }
