@@ -1,0 +1,22 @@
+# Compose adicional para serviços auxiliares do Dexo em DEV.
+#
+# Não cobre o deploy do app principal (que continua rodando como
+# `npm run dev` + `npm run api` localmente, ou via Vercel/etc em
+# produção). Apenas o sidecar de remoção de fundo.
+#
+# Subir:  docker compose up rembg --build
+# Parar:  docker compose down
+
+services:
+  rembg:
+    build: ./infra/rembg
+    container_name: dexo-rembg
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
