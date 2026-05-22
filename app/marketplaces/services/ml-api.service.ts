@@ -1165,6 +1165,7 @@ export class MLApiService {
     sellerId: string,
     days: number = 7,
     status: MLOrderStatus = "paid",
+    maxOrders: number = 500,
   ): Promise<MLOrderDetails[]> {
     const dateFrom = new Date();
     dateFrom.setDate(dateFrom.getDate() - days);
@@ -1172,7 +1173,8 @@ export class MLApiService {
     const allOrders: MLOrderDetails[] = [];
     let offset = 0;
     const limit = 50;
-    const maxOrders = 500; // safety cap
+    // safety cap parametrizado (default 500 mantém comportamento do sync loop;
+    // backfill manual pode subir p/ varrer janelas históricas grandes).
 
     while (allOrders.length < maxOrders) {
       const response = await this.getSellerOrders(accessToken, {
