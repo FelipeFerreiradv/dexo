@@ -1098,7 +1098,7 @@ export class OrderUseCase {
             });
           }
         }
-      });
+      }, { timeout: 60_000, maxWait: 20_000 });
     } catch (error) {
       console.error(
         `[OrderUseCase] Error in stock deduction transaction (order=${order.id}):`,
