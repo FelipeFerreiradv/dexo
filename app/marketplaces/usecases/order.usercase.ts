@@ -154,6 +154,7 @@ export class OrderUseCase {
     marketplaceAccountId: string,
     days: number = 7,
     deductStock: boolean = true,
+    maxOrders: number = 500,
   ): Promise<ImportOrdersResult> {
     const account = await MarketplaceRepository.findById(marketplaceAccountId);
     if (!account || !account.accessToken || !account.externalUserId) {
@@ -180,6 +181,7 @@ export class OrderUseCase {
         externalUserId: account.externalUserId,
       },
       days,
+      maxOrders,
     );
 
     result.totalOrders = mlOrders.length;
@@ -892,6 +894,7 @@ export class OrderUseCase {
       externalUserId: string;
     },
     days: number,
+    maxOrders: number = 500,
   ): Promise<MLOrderDetails[]> {
     try {
       return await MLApiService.getRecentOrders(
@@ -899,6 +902,7 @@ export class OrderUseCase {
         account.externalUserId,
         days,
         "paid",
+        maxOrders,
       );
     } catch (error) {
       if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
@@ -921,6 +925,7 @@ export class OrderUseCase {
         account.externalUserId,
         days,
         "paid",
+        maxOrders,
       );
     }
   }

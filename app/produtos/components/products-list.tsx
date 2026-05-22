@@ -141,6 +141,7 @@ interface Product {
   category?: string | null;
   location?: string | null;
   locationId?: string | null;
+  locationPath?: string | null; // caminho completo (read-only, vem enriquecido do backend)
   partNumber?: string | null;
   quality?: Quality | null;
   isSecurityItem?: boolean;
@@ -2201,7 +2202,8 @@ export function ProductsList() {
                                 </Badge>
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {product.productLocation?.code ??
+                                {product.locationPath ??
+                                  product.productLocation?.code ??
                                   product.location ??
                                   "—"}
                               </TableCell>
@@ -2334,10 +2336,12 @@ export function ProductsList() {
                                       setListingsDialog({ product, platform })
                                     }
                                   />
-                                  {(product.productLocation?.code ||
-                                    product.location) && (
+                                  {(product.locationPath ||
+                                    product.location ||
+                                    product.productLocation?.code) && (
                                     <p className="text-xs text-muted-foreground">
-                                      {product.productLocation?.code ??
+                                      {product.locationPath ??
+                                        product.productLocation?.code ??
                                         product.location}
                                     </p>
                                   )}

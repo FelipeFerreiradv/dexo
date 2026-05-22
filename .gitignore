@@ -48,3 +48,12 @@ next-env.d.ts
 # fiscal runtime storage (XMLs assinados e DANFE PDFs)
 .fiscal-storage/
 
+# cópias canônicas de planilhas de importação (grandes, reproduzíveis)
+scripts/data/
+
+# relatórios/saídas dos scripts (JSON/XLSX reproduzíveis, contêm dados de produto)
+scripts/out/
+
+# scripts de diagnóstico/scratch (análises pontuais, não fazem parte do toolset)
+scripts/_tmp-*
+

@@ -68,6 +68,7 @@ interface ProductLike {
   category?: string | null;
   location?: string | null;
   locationId?: string | null;
+  locationPath?: string | null; // caminho completo (read-only, enriquecido no backend)
   partNumber?: string | null;
   quality?: Quality | string | null;
   isSecurityItem?: boolean | null;
@@ -645,7 +646,7 @@ export function ProductDetailSheet({
                     <InfoCard
                       icon={<Warehouse className="size-4" />}
                       label="Localização cadastrada"
-                      value={productLocation.code}
+                      value={merged.locationPath ?? productLocation.code}
                       secondary={productLocation.description}
                     />
                   ) : null}
