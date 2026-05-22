@@ -93,6 +93,7 @@ interface ProductData {
   version?: string;
   category?: string;
   location?: string;
+  locationPath?: string;
   partNumber?: string;
   quality?: string;
   isSecurityItem?: boolean;
@@ -402,7 +403,10 @@ export function ProductDetail({ productId }: { productId: string }) {
             </CardTitle>
           </CardHeader>
           <CardContent className="divide-y">
-            <InfoRow label="Localização" value={product.location} />
+            <InfoRow
+              label="Localização"
+              value={product.locationPath ?? product.location}
+            />
             {(product.heightCm || product.widthCm || product.lengthCm) && (
               <div className="flex items-start justify-between gap-4 py-2">
                 <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1">

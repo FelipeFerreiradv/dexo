@@ -78,6 +78,11 @@ export class ProductUseCase {
     const result = await repo.findByIdDetailed(id, userId);
     if (result) {
       await maskCorruptVehicleCategoriesInProducts([result as any]);
+      // findByIdDetailed retorna { product, productLocation, ... } — o locationId
+      // está em result.product, então enriquecemos esse objeto (não o wrapper).
+      if ((result as any).product) {
+        await this.enrichLocationFullPaths([(result as any).product], userId);
+      }
     }
     return result;
   }
@@ -96,13 +101,15 @@ export class ProductUseCase {
   }
 
   /**
-   * Preenche `Product.location` (campo de exibição) com o CAMINHO COMPLETO da
-   * localização ("Galpão 1 > Andar 1 > Caixa 212"), caminhando a cadeia de
-   * `parentId`. A listagem mostrava só o código do leaf ("212") porque a query
-   * de produtos não traz os ancestrais e o endpoint /locations/select só
-   * retorna raízes + 1 nível (não os leaves profundos onde os produtos ficam).
-   * Aqui carregamos as localizações do user uma vez (id, code, parentId) e
-   * montamos o path — funciona para qualquer profundidade.
+   * Anexa `locationPath` (campo SOMENTE-LEITURA de exibição) com o CAMINHO
+   * COMPLETO da localização ("Galpão 1 > Andar 1 > Caixa 212"), caminhando a
+   * cadeia de `parentId`. NÃO toca em `Product.location` (campo escalar que os
+   * formulários de edição/criação leem e gravam — mexer ali causaria regressão).
+   *
+   * Motivo: a query de produtos não traz os ancestrais e o endpoint
+   * /locations/select só retorna raízes + 1 nível (não os leaves profundos onde
+   * os produtos ficam). Aqui carregamos as localizações do user uma vez
+   * (id, code, parentId) e montamos o path — funciona para qualquer profundidade.
    */
   private async enrichLocationFullPaths(
     products: Product[],
@@ -140,7 +147,8 @@ export class ProductUseCase {
       const locId = (p as any).locationId as string | null | undefined;
       if (!locId) continue;
       const fullPath = buildPath(locId);
-      if (fullPath) (p as any).location = fullPath;
+      // campo de EXIBIÇÃO separado; nunca sobrescreve o escalar editável `location`
+      if (fullPath) (p as any).locationPath = fullPath;
     }
   }
 
