@@ -847,7 +847,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           where: whereExact,
           skip,
           take: limit,
-          orderBy: { createdAt: "desc" },
+          orderBy: [{ stock: "desc" }, { createdAt: "desc" }],
           select: this.productSelect,
         }),
         prisma.product.count({ where: whereExact }),
@@ -883,7 +883,7 @@ class ProductRepositoryPrisma implements ProductRepository {
                    ) AS score
             FROM "Product" p
             WHERE ${rankedWhere}
-            ORDER BY score DESC, p."createdAt" DESC
+            ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
             OFFSET ${skip} LIMIT ${limit};
           `,
           prisma.$queryRaw<{ count: bigint }[]>`
@@ -942,7 +942,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           where,
           skip,
           take: limit,
-          orderBy: { createdAt: "desc" },
+          orderBy: [{ stock: "desc" }, { createdAt: "desc" }],
           select: this.productSelect,
         }),
         prisma.product.count({ where }),
