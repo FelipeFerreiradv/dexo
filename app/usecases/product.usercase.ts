@@ -88,10 +88,60 @@ export class ProductUseCase {
     const { userId, ...rest } = options;
     const data = await this.productRepository.findAll(rest, userId);
     await maskCorruptVehicleCategoriesInProducts(data.products as any);
+    await this.enrichLocationFullPaths(data.products, userId);
     return {
       ...data,
       totalPages: Math.ceil(data.total / (options?.limit || 10)),
     };
+  }
+
+  /**
+   * Preenche `Product.location` (campo de exibição) com o CAMINHO COMPLETO da
+   * localização ("Galpão 1 > Andar 1 > Caixa 212"), caminhando a cadeia de
+   * `parentId`. A listagem mostrava só o código do leaf ("212") porque a query
+   * de produtos não traz os ancestrais e o endpoint /locations/select só
+   * retorna raízes + 1 nível (não os leaves profundos onde os produtos ficam).
+   * Aqui carregamos as localizações do user uma vez (id, code, parentId) e
+   * montamos o path — funciona para qualquer profundidade.
+   */
+  private async enrichLocationFullPaths(
+    products: Product[],
+    userId: string,
+  ): Promise<void> {
+    const hasLocation = products.some((p) => (p as any).locationId);
+    if (!hasLocation) return;
+
+    const locs = await prisma.location.findMany({
+      where: { userId },
+      select: { id: true, code: true, parentId: true },
+    });
+    if (locs.length === 0) return;
+
+    const byId = new Map(locs.map((l) => [l.id, l]));
+    const pathCache = new Map<string, string>();
+    const buildPath = (id: string): string => {
+      const cached = pathCache.get(id);
+      if (cached !== undefined) return cached;
+      const parts: string[] = [];
+      let cur: string | null = id;
+      let guard = 0;
+      while (cur && guard++ < 25) {
+        const node = byId.get(cur);
+        if (!node) break;
+        parts.unshift(node.code);
+        cur = node.parentId;
+      }
+      const path = parts.join(" > ");
+      pathCache.set(id, path);
+      return path;
+    };
+
+    for (const p of products) {
+      const locId = (p as any).locationId as string | null | undefined;
+      if (!locId) continue;
+      const fullPath = buildPath(locId);
+      if (fullPath) (p as any).location = fullPath;
+    }
   }
 
   async getFilterOptions(userId: string): Promise<ProductFilterOptions> {

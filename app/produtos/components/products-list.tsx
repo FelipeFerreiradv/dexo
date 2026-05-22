@@ -605,16 +605,6 @@ export function ProductsList() {
     ProductPublishedCategoryOption[]
   >([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
-  // Mapa locationId -> fullPath (hierarquia completa, ex.: "Galpão 1 > Andar 1 > Caixa 212").
-  // As localizações já são carregadas com fullPath para o filtro; reusamos aqui
-  // para exibir o caminho completo na coluna Localização da listagem (em vez de só o leaf).
-  const locationFullPathById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const loc of locationOptions) {
-      if (loc.id && loc.fullPath) map.set(loc.id, loc.fullPath);
-    }
-    return map;
-  }, [locationOptions]);
   const [isLoadingFilterOptions, setIsLoadingFilterOptions] = useState(false);
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [isFetching, setIsFetching] = useState(false);
@@ -2091,11 +2081,8 @@ export function ProductsList() {
                                 </Badge>
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {(product.locationId
-                                  ? locationFullPathById.get(product.locationId)
-                                  : undefined) ??
+                                {product.location ??
                                   product.productLocation?.code ??
-                                  product.location ??
                                   "—"}
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
@@ -2227,16 +2214,11 @@ export function ProductsList() {
                                       setListingsDialog({ product, platform })
                                     }
                                   />
-                                  {(product.productLocation?.code ||
-                                    product.location) && (
+                                  {(product.location ||
+                                    product.productLocation?.code) && (
                                     <p className="text-xs text-muted-foreground">
-                                      {(product.locationId
-                                        ? locationFullPathById.get(
-                                            product.locationId,
-                                          )
-                                        : undefined) ??
-                                        product.productLocation?.code ??
-                                        product.location}
+                                      {product.location ??
+                                        product.productLocation?.code}
                                     </p>
                                   )}
                                 </div>
