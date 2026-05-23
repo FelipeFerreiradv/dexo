@@ -3948,6 +3948,24 @@ export class ListingUseCase {
         // Permission denied no get_attributes — escopo OAuth incompleto
         /permission denied/i.test(errorMsg);
 
+      // Mensagens mais úteis para erros terminais conhecidos.
+      // Calculado ANTES do updateListing pra que o `lastError` no banco
+      // (que aparece no UI do produto) já leve a mensagem amigável em vez
+      // do texto técnico "Your attribute info is invalid".
+      let userFacingError = errorMsg;
+      if (
+        /attribute .* mandatory required/i.test(errorMsg) ||
+        /attribute info is invalid/i.test(errorMsg) ||
+        /permission denied/i.test(errorMsg)
+      ) {
+        userFacingError =
+          `Shopee bloqueou a publicação automática nesta categoria. ` +
+          `Para resolver: (1) Re-autorize o app Dexo no Shopee Seller ` +
+          `Center → Apps → Autorizações, garantindo TODOS os escopos; ` +
+          `OU (2) Crie 1 anúncio nessa categoria manualmente no Seller ` +
+          `Center — depois a publicação automática volta a funcionar.`;
+      }
+
       // Atualizar placeholder com erro e decisão de retry
       try {
         const acctId = account?.id;
@@ -3963,7 +3981,7 @@ export class ListingUseCase {
 
             await ListingRepository.updateListing(existingListing.id, {
               status: "error",
-              lastError: (isTerminalError ? "[TERMINAL] " : "") + errorMsg.substring(0, 490),
+              lastError: (isTerminalError ? "[TERMINAL] " : "") + userFacingError.substring(0, 490),
               retryEnabled: shouldRetry,
               nextRetryAt: shouldRetry ? new Date(Date.now() + nextDelay * 1000) : null,
               retryAttempts: attempts,
@@ -3981,21 +3999,6 @@ export class ListingUseCase {
           `[ListingUseCase] Failed to update Shopee placeholder with error:`,
           updateErr,
         );
-      }
-
-      // Mensagens mais úteis para erros terminais conhecidos
-      let userFacingError = errorMsg;
-      if (
-        /attribute .* mandatory required/i.test(errorMsg) ||
-        /attribute info is invalid/i.test(errorMsg) ||
-        /permission denied/i.test(errorMsg)
-      ) {
-        userFacingError =
-          `Shopee não está fornecendo os atributos da categoria (HTTP 403). ` +
-          `Re-autorize o app Dexo no Shopee Seller Center (Apps → ` +
-          `Autorizações) garantindo todos os escopos, OU crie 1 anúncio ` +
-          `nessa categoria manualmente via Seller Center — depois a ` +
-          `automação volta a funcionar. Erro original: ${errorMsg.substring(0, 200)}`;
       }
 
       return {
