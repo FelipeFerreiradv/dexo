@@ -38,6 +38,7 @@ import { TitleStep } from "./steps/title-step";
 import { FeesStep } from "./steps/fees-step";
 import { InstallmentsStep } from "./steps/installments-step";
 import type { CustomerOption } from "./shared/customer-combobox";
+import type { ProductMeta } from "./shared/product-picker-block";
 
 export type FinanceKind = "receivable" | "payable";
 
@@ -54,7 +55,17 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
     title: "Título",
     description: "Documento e valor",
     icon: FileText,
-    fields: ["document", "reason", "debtDetails", "totalAmount", "unidadeId"],
+    // `items` é opcional no zod — quando o flag de balcão está OFF, ele é
+    // ausente/[]; quando ON, vira a lista do ProductPickerBlock. Incluir aqui
+    // não tem custo nos dois casos (zod aceita undefined/[]/valid array).
+    fields: [
+      "document",
+      "reason",
+      "debtDetails",
+      "totalAmount",
+      "unidadeId",
+      "items",
+    ],
   },
   {
     id: 3,
@@ -73,6 +84,13 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
 ];
 
 const TOTAL_STEPS = STEPS.length;
+
+// Flag de feature para venda balcão (Fase 5). Lido em módulo (Next.js
+// compila NEXT_PUBLIC_* no bundle do client). Quando ausente/false, a UI
+// renderiza EXATAMENTE como antes — sem bloco de produtos, sem items no
+// payload. Removido na Fase 10 após smoke test em produção controlada.
+const BALCAO_SALE_ENABLED =
+  process.env.NEXT_PUBLIC_BALCAO_SALE_ENABLED === "true";
 
 interface FinanceDialogProps {
   kind: FinanceKind;
@@ -117,8 +135,22 @@ export function FinanceDialog({
     trigger,
     reset,
     setValue,
+    getValues,
     formState: { errors },
   } = form;
+
+  // Balcão só é habilitado em receivable (payable nunca tem items — backend
+  // também rejeita). Verifica o flag e o kind para gatear toda a UX de venda
+  // balcão (bloco de produtos + serialização de items no payload).
+  const balcaoEnabled = BALCAO_SALE_ENABLED && kind === "receivable";
+
+  // ProductMeta (SKU/nome/estoque por productId) vive no dialog para sobreviver
+  // à navegação entre steps (TitleStep desmonta ao mudar de step). É (re)seedado
+  // a cada abertura a partir de initialData.items (snapshot do backend), e
+  // populado também ao selecionar via lookup no ProductPickerBlock.
+  const [productMeta, setProductMeta] = useState<
+    Record<string, ProductMeta>
+  >({});
 
   useEffect(() => {
     if (open) {
@@ -126,8 +158,28 @@ export function FinanceDialog({
       setSelectedCustomer(initialData?.customer ?? null);
       setCurrentStep(1);
       setEmitReceipt(false);
+      // Seed do productMeta a partir do snapshot do backend (Fase 5 / balcão).
+      // O backend (findById) traz items.product = { id, sku, name }; usamos
+      // para o bloco já mostrar SKU/nome em fluxo de edição. Estoque não vem
+      // no snapshot — vira 0 até o usuário re-pesquisar e re-selecionar.
+      const items = (initialData as any)?.items;
+      if (balcaoEnabled && Array.isArray(items) && items.length > 0) {
+        const seed: Record<string, ProductMeta> = {};
+        for (const it of items) {
+          if (it?.product && it.productId) {
+            seed[it.productId] = {
+              sku: it.product.sku,
+              name: it.product.name,
+              stock: 0,
+            };
+          }
+        }
+        setProductMeta(seed);
+      } else {
+        setProductMeta({});
+      }
     }
-  }, [open, initialData, reset]);
+  }, [open, initialData, reset, balcaoEnabled]);
 
   const validateCurrentStep = async () => {
     const fields = STEPS[currentStep - 1].fields;
@@ -176,6 +228,19 @@ export function FinanceDialog({
           cpf: newCustomerCpf ? newCustomerCpf : null,
         };
         delete payload.customerId;
+      }
+      // Defesa-em-profundidade: quando o flag de balcão está OFF (ou em
+      // payable), garantimos que nenhum `items` vaze pro backend. O backend
+      // já é tolerante (validateItems é no-op se ausente), mas o payload
+      // fica idêntico ao da Fase 1.
+      if (!balcaoEnabled) {
+        delete payload.items;
+      } else if (
+        Array.isArray((payload as any).items) &&
+        (payload as any).items.length === 0
+      ) {
+        // items: [] equivale a "sem items" — não enviar reduz ruído.
+        delete payload.items;
       }
       const basePath =
         kind === "receivable" ? "/finance/receivables" : "/finance/payables";
@@ -263,7 +328,17 @@ export function FinanceDialog({
               />
             )}
             {currentStep === 2 && (
-              <TitleStep control={control} errors={errors} />
+              <TitleStep
+                control={control}
+                errors={errors}
+                balcaoEnabled={balcaoEnabled}
+                setValue={balcaoEnabled ? setValue : undefined}
+                getValues={balcaoEnabled ? getValues : undefined}
+                productMeta={balcaoEnabled ? productMeta : undefined}
+                setProductMeta={
+                  balcaoEnabled ? setProductMeta : undefined
+                }
+              />
             )}
             {currentStep === 3 && (
               <FeesStep control={control} errors={errors} />
