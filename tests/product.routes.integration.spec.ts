@@ -1036,8 +1036,15 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
     expect(allTen).toBe(false);
   });
 
-  it("retorna 400 quando ML é solicitado SEM dimensões E SEM peso (não tem como inferir nada)", async () => {
-    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+  it("default fallback (Slice 2d): ML sem nada NUNCA mais retorna 400 — aplica autopeça pequena com jitter", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-default-fallback",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
 
     const res = await app.inject({
       method: "POST",
@@ -1060,14 +1067,30 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
       },
     });
 
-    expect(res.statusCode).toBe(400);
-    const body = JSON.parse(res.payload);
-    expect(body.error).toMatch(/peso/i);
-    expect(createSpy).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // Fallback default: base 15x15x10 cm + jitter, peso 0.5-0.99kg
+    expect(arg.heightCm).toBeGreaterThanOrEqual(5);
+    expect(arg.widthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.lengthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.weightKg).toBeGreaterThan(0);
+    expect(arg.weightKg).toBeLessThan(1.0);
+    // Não pode ser 10x10x10 (padrão fixo que ML detecta)
+    expect(
+      arg.heightCm === 10 && arg.widthCm === 10 && arg.lengthCm === 10,
+    ).toBe(false);
   });
 
-  it("retorna 400 quando weightKg = 0 (nem CSV cobre, nem peso pra derivar)", async () => {
-    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+  it("default fallback: weightKg=0 também recebe valores default (peso e dimensões)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-zero-w",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
 
     const res = await app.inject({
       method: "POST",
@@ -1093,8 +1116,12 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
       },
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(createSpy).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // weightKg=0 deve ser substituído por fallback (0.5-0.99kg)
+    expect(arg.weightKg).toBeGreaterThan(0);
+    expect(arg.weightKg).toBeLessThan(1.0);
   });
 
   it("permite criação SEM ML mesmo quando dimensões faltam (Shopee tem fallback hardcoded — não regrediu)", async () => {
