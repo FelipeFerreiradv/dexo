@@ -3938,7 +3938,15 @@ export class ListingUseCase {
         /categoria.*inv[aá]lida/i.test(errorMsg) ||
         /invalid category/i.test(errorMsg) ||
         /should use leaf category/i.test(errorMsg) ||
-        /leaf category/i.test(errorMsg);
+        /leaf category/i.test(errorMsg) ||
+        // Attribute mandatory missing — sem getCategoryAttributes não temos
+        // os attribute_id reais. Retry com attribute_id=0 falha igual. Para
+        // resolver o operador precisa re-autorizar o app Shopee ou criar
+        // manualmente via Seller Center.
+        /attribute .* mandatory required/i.test(errorMsg) ||
+        /attribute info is invalid/i.test(errorMsg) ||
+        // Permission denied no get_attributes — escopo OAuth incompleto
+        /permission denied/i.test(errorMsg);
 
       // Atualizar placeholder com erro e decisão de retry
       try {
@@ -3975,9 +3983,24 @@ export class ListingUseCase {
         );
       }
 
+      // Mensagens mais úteis para erros terminais conhecidos
+      let userFacingError = errorMsg;
+      if (
+        /attribute .* mandatory required/i.test(errorMsg) ||
+        /attribute info is invalid/i.test(errorMsg) ||
+        /permission denied/i.test(errorMsg)
+      ) {
+        userFacingError =
+          `Shopee não está fornecendo os atributos da categoria (HTTP 403). ` +
+          `Re-autorize o app Dexo no Shopee Seller Center (Apps → ` +
+          `Autorizações) garantindo todos os escopos, OU crie 1 anúncio ` +
+          `nessa categoria manualmente via Seller Center — depois a ` +
+          `automação volta a funcionar. Erro original: ${errorMsg.substring(0, 200)}`;
+      }
+
       return {
         success: false,
-        error: errorMsg,
+        error: userFacingError,
       };
     }
   }
