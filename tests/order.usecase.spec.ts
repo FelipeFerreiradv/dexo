@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
+// Stub do StockSyncRetryService — deductStockForOrder dispara um setImmediate
+// pós-commit que chama runOnce(), que em prod consulta prisma.stockSyncJob.
+// Estes testes usam vi.spyOn(prisma, ...) (não vi.mock global do prisma), então
+// sem este stub a chamada vazaria para o prisma real e travaria o vitest com
+// handles abertos. Tests-only — não altera comportamento de produção.
+vi.mock("@/app/marketplaces/services/stock-sync-retry.service", () => ({
+  StockSyncRetryService: { runOnce: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import { OrderUseCase } from "@/app/marketplaces/usecases/order.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import prisma from "@/app/lib/prisma";
@@ -334,7 +343,10 @@ describe("OrderUseCase.importRecentOrdersForAccount - Mercado Livre auth", () =>
       true,
     );
 
-    expect(refreshSpy).toHaveBeenCalledWith("refresh-token");
+    // refreshAccessTokenForAccount(accountId, refreshToken) repassa para
+    // refreshAccessToken(refreshToken, appClientId?, appClientSecret?) —
+    // a conta de teste não tem credenciais de app por conta (undefined).
+    expect(refreshSpy).toHaveBeenCalledWith("refresh-token", undefined, undefined);
     expect(updateTokensSpy).toHaveBeenCalledWith(
       "acc-ml-1",
       expect.objectContaining({
@@ -343,12 +355,15 @@ describe("OrderUseCase.importRecentOrdersForAccount - Mercado Livre auth", () =>
         expiresAt: expect.any(Date),
       }),
     );
+    // Prod assina (token, sellerId, days, status, maxOrders) — maxOrders tem
+    // default 500 no importRecentOrdersForAccount.
     expect(MLApiService.getRecentOrders).toHaveBeenNthCalledWith(
       2,
       "new-token",
       "seller-1",
       7,
       "paid",
+      500,
     );
     expect(result).toMatchObject({
       totalOrders: 0,
@@ -368,6 +383,8 @@ describe("OrderUseCase.deductStockForOrder - durable enqueue", () => {
       $queryRaw: vi.fn().mockResolvedValue([
         { id: "prod-1", name: "Produto teste", stock: 2 },
       ]),
+      // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
+      $executeRaw: vi.fn().mockResolvedValue(1),
       product: { update: vi.fn().mockResolvedValue({}) },
       stockLog: { create: vi.fn().mockResolvedValue({}) },
       productListing: {

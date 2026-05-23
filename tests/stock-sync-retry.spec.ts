@@ -6,6 +6,7 @@ vi.mock("@/app/lib/prisma", () => ({
       findMany: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+      deleteMany: vi.fn(),
     },
     productListing: {
       findMany: vi.fn(),
@@ -66,7 +67,9 @@ describe("StockSyncRetryService.runOnce", () => {
 
     await StockSyncRetryService.runOnce();
 
-    expect((prisma as any).stockSyncJob.delete).toHaveBeenCalledWith({
+    // Prod usa deleteMany (idempotente — não lança P2025 se outro tick já
+    // removeu o job). Ver app/marketplaces/services/stock-sync-retry.service.ts:132.
+    expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledWith({
       where: { id: "job-1" },
     });
     expect((prisma as any).stockSyncJob.update).not.toHaveBeenCalled();
@@ -115,7 +118,9 @@ describe("StockSyncRetryService.runOnce", () => {
 
     await StockSyncRetryService.runOnce();
 
-    expect((prisma as any).stockSyncJob.delete).toHaveBeenCalledWith({
+    // Prod usa deleteMany (idempotente — não lança P2025 se outro tick já
+    // removeu o job). Ver app/marketplaces/services/stock-sync-retry.service.ts:132.
+    expect((prisma as any).stockSyncJob.deleteMany).toHaveBeenCalledWith({
       where: { id: "job-1" },
     });
     expect(SystemLogService.logError).toHaveBeenCalledWith(

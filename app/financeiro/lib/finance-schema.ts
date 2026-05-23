@@ -39,6 +39,21 @@ export const financeEntrySchema = z
       .max(360, "Máximo 360 parcelas"),
     periodDays: z.number().int().min(0).optional().nullable(),
     dueDate: z.string().min(1, "Data de vencimento é obrigatória"),
+
+    // Itens de venda balcão (Fase 2). Opcional → preserva 100% o fluxo atual
+    // sem itens. Persistido em ReceivableItem (receivable-only) na rota
+    // (Fase 4). Quando presente, totalAmount continua editável pelo usuário;
+    // a UI (Fase 5) é que pré-preenche.
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1, "Produto inválido"),
+          listingId: z.string().optional().nullable(),
+          quantity: z.number().int().positive("Quantidade deve ser positiva"),
+          unitPrice: z.number().nonnegative("Preço unitário deve ser ≥ 0"),
+        }),
+      )
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.quickCreateCustomer) {

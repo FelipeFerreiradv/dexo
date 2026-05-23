@@ -1,6 +1,15 @@
 ﻿import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { Platform } from "@prisma/client";
 
+// Stub do StockSyncRetryService — deductStockForOrder dispara um setImmediate
+// pós-commit que chama runOnce(), que em prod consulta prisma.stockSyncJob.
+// Estes testes usam vi.spyOn(prisma, ...) (não vi.mock global do prisma), então
+// sem este stub a chamada vazaria para o prisma real e travaria o vitest com
+// handles abertos. Tests-only — não altera comportamento de produção.
+vi.mock("@/app/marketplaces/services/stock-sync-retry.service", () => ({
+  StockSyncRetryService: { runOnce: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import {
   OrderUseCase,
   type ImportOrdersResult,
@@ -202,7 +211,10 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
     );
     expect(orderRepository.create).toHaveBeenCalledTimes(1);
     expect(deductSpy).toHaveBeenCalledTimes(1);
-    expect(deductSpy).toHaveBeenCalledWith(createdOrder, "Importação Shopee");
+    expect(deductSpy).toHaveBeenCalledWith(
+      createdOrder,
+      "Venda Shopee #SHP-ORDER-REFRESH",
+    );
     expect(result).toMatchObject({
       totalOrders: 1,
       imported: 1,
@@ -415,7 +427,10 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
       }),
     );
     expect(deductSpy).toHaveBeenCalledTimes(1);
-    expect(deductSpy).toHaveBeenCalledWith(createdOrder, "Importação Shopee");
+    expect(deductSpy).toHaveBeenCalledWith(
+      createdOrder,
+      "Venda Shopee #SHP-ORDER-1",
+    );
     expect(result.imported).toBe(1);
     expect(result.stockDeductions).toBe(1);
     expect(result.results[0]?.stockDeducted).toBe(true);
@@ -469,6 +484,7 @@ describe("OrderUseCase.importRecentShopeeOrdersForAccount", () => {
 
 type MockTx = {
   $queryRaw: ReturnType<typeof vi.fn>;
+  $executeRaw: ReturnType<typeof vi.fn>;
   product: { update: ReturnType<typeof vi.fn> };
   stockLog: { create: ReturnType<typeof vi.fn> };
   productListing: { findMany: ReturnType<typeof vi.fn> };
@@ -483,6 +499,8 @@ const buildMockTx = (
     const p = products[productId];
     return Promise.resolve(p ? [p] : []);
   }),
+  // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
+  $executeRaw: vi.fn().mockResolvedValue(1),
   product: { update: vi.fn().mockResolvedValue({}) },
   stockLog: { create: vi.fn().mockResolvedValue({}) },
   productListing: {
@@ -634,13 +652,15 @@ describe("OrderUseCase.deductStockForOrder", () => {
     const upsertSpy = vi.fn().mockResolvedValue({});
     vi.spyOn(prisma, "$transaction").mockRejectedValue(new Error("tx failed"));
 
-    const result = await (OrderUseCase as any).deductStockForOrder(
-      order,
-      "Importação Shopee",
-    );
+    // Prod foi endurecido (commit bd50319 "prevent silent stock deduction
+    // failures") para RE-LANÇAR erros da transação em vez de engolir
+    // silenciosamente. O teste preserva a intenção: "tx falha → nada é
+    // enfileirado".
+    await expect(
+      (OrderUseCase as any).deductStockForOrder(order, "Importação Shopee"),
+    ).rejects.toThrow("tx failed");
 
     expect(upsertSpy).not.toHaveBeenCalled();
-    expect(result).toEqual([]);
   });
 
   it("persiste a baixa local mesmo sem listings vinculados", async () => {

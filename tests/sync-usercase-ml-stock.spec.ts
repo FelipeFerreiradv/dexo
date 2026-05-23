@@ -101,7 +101,7 @@ describe("SyncUseCase ML stock sync by listing status", () => {
         data: expect.objectContaining({
           marketplaceAccountId: "acc-2",
           status: "WARNING",
-          message: expect.stringContaining("já está paused"),
+          message: expect.stringContaining("paused com quantidade remota"),
         }),
       }),
     );

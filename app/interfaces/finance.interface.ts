@@ -37,12 +37,32 @@ export interface FinanceEntry {
     id: string;
     name: string;
   } | null;
+
+  // Itens de venda balcão — ausente quando não houver. Snapshot do preço no
+  // momento da venda (unitPrice é imutável).
+  items?: ReceivableItemSnapshot[];
 }
 
 // Cadastro rápido de cliente (Alteração B) — CPF-only, opcional.
 export interface NewCustomerInput {
   name: string;
   cpf?: string | null;
+}
+
+// Item de venda balcão (Fase 2 — venda balcão → estoque).
+// receivable-only: payables nunca recebem items (validado no usecase). Tudo
+// opcional na criação para preservar 100% o fluxo atual sem itens.
+export interface ReceivableItemInput {
+  productId: string;
+  listingId?: string | null;
+  quantity: number;
+  unitPrice: number; // snapshot — não acompanha mudanças em Product.price
+}
+
+export interface ReceivableItemSnapshot extends ReceivableItemInput {
+  id: string;
+  product?: { id: string; sku: string; name: string } | null;
+  createdAt?: Date;
 }
 
 export interface FinanceEntryCreate {
@@ -70,6 +90,11 @@ export interface FinanceEntryCreate {
 
   status?: FinanceStatus;
   paidAt?: string | Date | null;
+
+  // Itens de venda balcão — opcional, receivable-only. Ausente = fluxo atual
+  // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`
+  // na mesma transação da Receivable.
+  items?: ReceivableItemInput[];
 }
 
 export type FinanceEntryUpdate = Partial<Omit<FinanceEntryCreate, "userId">>;

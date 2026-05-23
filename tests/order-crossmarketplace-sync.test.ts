@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Stub do StockSyncRetryService — deductStockForOrder dispara um setImmediate
+// pós-commit que chama runOnce(), que em prod consulta prisma.stockSyncJob.
+// Estes testes usam vi.spyOn(prisma, ...) (não vi.mock global do prisma), então
+// sem este stub a chamada vazaria para o prisma real e travaria o vitest com
+// handles abertos. Tests-only — não altera comportamento de produção.
+vi.mock("@/app/marketplaces/services/stock-sync-retry.service", () => ({
+  StockSyncRetryService: { runOnce: vi.fn().mockResolvedValue(undefined) },
+}));
+
 import prisma from "@/app/lib/prisma";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
@@ -9,6 +18,7 @@ import { SystemLogService } from "@/app/services/system-log.service";
 
 type MockTx = {
   $queryRaw: ReturnType<typeof vi.fn>;
+  $executeRaw: ReturnType<typeof vi.fn>;
   product: { update: ReturnType<typeof vi.fn> };
   stockLog: { create: ReturnType<typeof vi.fn> };
   productListing: { findMany: ReturnType<typeof vi.fn> };
@@ -23,6 +33,8 @@ const buildTx = (
     const p = products[productId];
     return Promise.resolve(p ? [p] : []);
   }),
+  // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
+  $executeRaw: vi.fn().mockResolvedValue(1),
   product: { update: vi.fn().mockResolvedValue({}) },
   stockLog: { create: vi.fn().mockResolvedValue({}) },
   productListing: {

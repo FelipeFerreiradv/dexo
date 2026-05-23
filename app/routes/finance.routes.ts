@@ -30,6 +30,30 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // Lookup de produto para a UI do financeiro (Fase 4 — venda balcão).
+  // Mesmo contrato { results: ProductLookup[] } da rota fiscal de lookup;
+  // delega ao FinanceUseCase.lookupProducts (que reusa NfeDraftUseCase) para
+  // não duplicar a query e desacoplar a UI do prefixo /fiscal.
+  fastify.get(
+    "/products/lookup",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { q } = request.query as { q?: string };
+        const results = await useCase.lookupProducts(userId, q || "");
+        return reply.status(200).send({ results });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar produtos",
+        });
+      }
+    },
+  );
+
   const buildListHandler =
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -136,7 +160,14 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao excluir";
-        const status = message.includes("não encontrado") ? 404 : 500;
+        // Fase 9: "Estornar" sinaliza guard de conta-paga-com-itens — 409.
+        // Caminhos pré-existentes ("não encontrado" → 404, resto → 500)
+        // permanecem.
+        const status = message.includes("Estornar")
+          ? 409
+          : message.includes("não encontrado")
+            ? 404
+            : 500;
         return reply.status(status).send({ error: message });
       }
     };
@@ -166,6 +197,71 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/receivables/:id",
     { preHandler: [authMiddleware] },
     buildDeleteHandler("receivable"),
+  );
+
+  // ── Fase 9 — Estorno explícito (apenas receivable PAGA com itens) ──
+  // Devolve o estoque (contra-lançamento) e reabre anúncios best-effort.
+  // Idempotente: já CANCELADA → no-op. Atômico via $transaction com os
+  // mesmos opts do markPaid ({timeout:60_000, maxWait:20_000}).
+  fastify.post(
+    "/receivables/:id/reverse",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const entry = await useCase.reverse(id, userId);
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao estornar";
+        // "não encontrada" → 404; "inválida"/"inválido" (não-PAGA OU sem
+        // itens) → 400; resto → 500.
+        const status = message.includes("não encontrada")
+          ? 404
+          : message.includes("inválida") || message.includes("inválido")
+            ? 400
+            : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── Fase 8: Cupom fiscal real (NF-e modelo 55) — Opção A ──
+  // Cria um rascunho de NF-e pré-preenchido a partir da Conta a Receber
+  // (destinatário do customer, itens com defaults CFOP 5102 / origem 0 /
+  // unidade UN / NCM em branco, pagamento DINHEIRO com valor total).
+  // O cupom-PDF-sem-validade-fiscal abaixo continua intacto — esta é uma
+  // operação adicional, não substituição.
+  fastify.post(
+    "/receivables/:id/fiscal-draft",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const draft = await useCase.createFiscalDraftFromReceivable(
+          id,
+          userId,
+        );
+        return reply.status(201).send({ draft });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao criar rascunho fiscal";
+        // Mesma convenção de mapping do buildCreateHandler: "não encontrado"
+        // → 404, "inválido"/"obrigatório" → 400, resto → 500.
+        const status = message.includes("não encontrada")
+          ? 404
+          : message.includes("não encontrado")
+            ? 404
+            : message.includes("inválida") || message.includes("inválido")
+              ? 400
+              : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
   );
 
   // ── Cupom sem validade fiscal (apenas Receivable) ──
