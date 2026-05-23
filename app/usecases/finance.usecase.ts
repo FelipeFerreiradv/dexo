@@ -245,13 +245,21 @@ export class FinanceUseCase {
       { timeout: 60_000, maxWait: 20_000 },
     );
 
-    // Pós-commit: dispara sync dos jobs enfileirados. pauseOnZero NÃO é
-    // passado aqui — wiring entra na Fase 7. Caller `userId` está no escopo
-    // (parâmetro) e será usado quando opt-in.
+    // Pós-commit (Fase 7): dispara sync dos jobs enfileirados E pausa
+    // anúncios cujos produtos zeraram o estoque. Ambos rodam em `setImmediate`
+    // dentro do firePostEffects — best-effort, fora da tx financeira, não
+    // travam a resposta ao usuário. Idempotência herdada do
+    // `ProductUseCase.pauseListings` (anúncio já pausado é contado como
+    // alreadyInState; falha em um marketplace não trava o resto).
+    //
+    // NOTE: pauseOnZero é OPT-IN. Order (cross-marketplace) NÃO passa, então
+    // preserva o comportamento atual (estoque 0 só é sincronizado, anúncio
+    // permanece active no marketplace). Venda balcão passa para evitar
+    // oversell quando a peça fisicamente saiu.
     StockDeductionService.firePostEffects({
       deductions,
       logPrefix: "[FinanceUseCase]",
-      // pauseOnZero: { userId },  // ← Fase 7
+      pauseOnZero: { userId },
     });
 
     return updated!;

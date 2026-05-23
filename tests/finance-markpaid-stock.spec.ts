@@ -233,12 +233,13 @@ describe("Fase 6 — markPaid: receivable COM itens (venda balcao)", () => {
         logPrefix: "[FinanceUseCase]",
       },
     );
-    // firePostEffects disparado pos-commit (SEM pauseOnZero — Fase 7).
+    // firePostEffects disparado pos-commit COM pauseOnZero (Fase 7 wired).
+    // Balcao pausa anuncios ao zerar; Order nao (preserva comportamento atual).
     expect(StockDeductionService.firePostEffects).toHaveBeenCalledTimes(1);
     const postArg = (StockDeductionService.firePostEffects as any).mock
       .calls[0][0];
     expect(postArg.logPrefix).toBe("[FinanceUseCase]");
-    expect(postArg.pauseOnZero).toBeUndefined();
+    expect(postArg.pauseOnZero).toEqual({ userId: "user-owner" });
     expect(postArg.deductions).toHaveLength(2);
   });
 
