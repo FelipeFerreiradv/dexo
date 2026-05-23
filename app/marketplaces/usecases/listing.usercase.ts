@@ -3421,9 +3421,53 @@ export class ListingUseCase {
             message: reasonMsg,
           }),
         );
+
+        // Fallback de último recurso: enviar attributes a partir do mapa
+        // productAttrValues mesmo sem o catálogo da Shopee. Usa attribute_id=0
+        // + original_value_name (texto livre). A Shopee pode ou não aceitar —
+        // mas é melhor tentar do que mandar attribute_list=[] que dispara
+        // "Attribute Auto-Part Number is mandatory required" com 100%
+        // de certeza. Nomes em pt-BR + en que cobrem as mandatory comuns
+        // de categorias de autopeças (incluindo Auto-Part Number).
+        const fallbackEntries: Array<{
+          attribute_name: string;
+          productKey: string;
+        }> = [
+          { attribute_name: "Auto-Part Number", productKey: "auto-part number" },
+          { attribute_name: "Número da Peça", productKey: "número da peça" },
+          { attribute_name: "Part Number (OEM)", productKey: "part number (oem)" },
+          { attribute_name: "Marca", productKey: "marca" },
+          { attribute_name: "Brand", productKey: "brand" },
+          { attribute_name: "Modelo", productKey: "modelo" },
+          { attribute_name: "Ano", productKey: "ano" },
+        ];
+        const fallbackAdded: string[] = [];
+        for (const e of fallbackEntries) {
+          const value = productAttrValues[e.productKey];
+          if (!value) continue;
+          // Evita duplicar caso o loop principal já tenha adicionado
+          if (
+            attributeList.some(
+              (a) =>
+                a.attribute_name?.toLowerCase() ===
+                e.attribute_name.toLowerCase(),
+            )
+          )
+            continue;
+          attributeList.push({
+            attribute_id: 0,
+            attribute_name: e.attribute_name,
+            attribute_value_list: [
+              {
+                value_id: 0,
+                original_value_name: value,
+              } as any,
+            ],
+          });
+          fallbackAdded.push(e.attribute_name);
+        }
         console.warn(
-          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
-          reasonMsg,
+          `[ListingUseCase] Shopee category ${numericCategoryId} attrs unavailable (${is403 ? "403" : "error"}). Sending best-effort fallback: ${fallbackAdded.length > 0 ? fallbackAdded.join(", ") : "<none>"}`,
         );
       }
 
