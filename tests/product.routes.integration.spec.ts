@@ -990,8 +990,15 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
     await app.close();
   });
 
-  it("retorna 400 quando ML é solicitado sem dimensões E categoria não está no CSV de auto-fill", async () => {
-    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+  it("auto-fill via weight: ML com weightKg + categoria fora do CSV deriva H/W/L do peso (Slice 2c)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-weight-derived",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
 
     const res = await app.inject({
       method: "POST",
@@ -1003,8 +1010,46 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
         price: 99,
         stock: 1,
         imageUrl: "http://localhost:3333/uploads/x.jpg",
-        // heightCm/widthCm/lengthCm OMITIDOS deliberadamente
+        // heightCm/widthCm/lengthCm OMITIDOS — só weightKg cadastrado
         weightKg: 8,
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // weightKg=8 cai na faixa "5 <= w < 15" → base { h:25, w:30, l:40 } + jitter
+    expect(arg.heightCm).toBeGreaterThanOrEqual(5);
+    expect(arg.widthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.lengthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.weightKg).toBe(8); // preservado
+    // Sanidade: não pode ter caído no fallback fixo 10x10x10 (anti-pattern ML).
+    const allTen =
+      arg.heightCm === 10 && arg.widthCm === 10 && arg.lengthCm === 10;
+    expect(allTen).toBe(false);
+  });
+
+  it("retorna 400 quando ML é solicitado SEM dimensões E SEM peso (não tem como inferir nada)", async () => {
+    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-NO-ANYTHING-1",
+        name: "Produto Sem Nada",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // SEM heightCm/widthCm/lengthCm E SEM weightKg
         listings: [
           {
             platform: "MERCADO_LIVRE",
@@ -1017,14 +1062,11 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.payload);
-    expect(body.error).toMatch(/altura.*largura.*comprimento.*peso/i);
-    expect(body.error).toMatch(/Mercado Livre/i);
-    // Categoria mockada como "Mock > Category" não bate em nenhuma entrada
-    // do CSV de medidas, então auto-fill falha e a rota recusa antes do create.
+    expect(body.error).toMatch(/peso/i);
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("retorna 400 quando weightKg = 0 e ML é solicitado (categoria fora do CSV)", async () => {
+  it("retorna 400 quando weightKg = 0 (nem CSV cobre, nem peso pra derivar)", async () => {
     const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
 
     const res = await app.inject({

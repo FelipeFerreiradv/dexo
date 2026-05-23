@@ -57,3 +57,6 @@ scripts/out/
 # scripts de diagnóstico/scratch (análises pontuais, não fazem parte do toolset)
 scripts/_tmp-*
 
+# runtime cache (shopee category attrs, etc) — populado em prod, não versionado
+.cache/
+
