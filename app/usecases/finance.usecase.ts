@@ -14,6 +14,7 @@ import { FinanceRepository } from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
+import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
 
 export class FinanceUseCase {
   private repo: FinanceRepository;
@@ -169,15 +170,91 @@ export class FinanceUseCase {
     return this.repo.update(kind, id, userId, data);
   }
 
+  /**
+   * Marca uma conta como PAGA.
+   *
+   * Para receivable COM itens (venda balcão) — Fase 6:
+   *  - **Idempotente**: se já está PAGA, retorna a entry sem efeito colateral.
+   *  - **Atômico**: status + paidAt + baixa de estoque (FOR UPDATE, stockLog,
+   *    advisory lock, upsert do StockSyncJob) na MESMA `$transaction({
+   *    timeout: 60_000, maxWait: 20_000 })`. Falha em qualquer ponto faz
+   *    rollback completo — a conta volta para PENDENTE.
+   *  - Pós-commit: `firePostEffects` dispara `StockSyncRetryService.runOnce()`
+   *    em `setImmediate`. `pauseOnZero` NÃO é passado aqui (Fase 6) — entra
+   *    como opt-in na Fase 7.
+   *
+   * Para payable OU receivable SEM itens: caminho atual idêntico (sem tx,
+   * sem estoque) — preserva 100% o fluxo da Fase 1.
+   */
   async markPaid(
     kind: FinanceKind,
     id: string,
     userId: string,
   ): Promise<FinanceEntry> {
-    return this.repo.update(kind, id, userId, {
-      status: "PAGA",
-      paidAt: new Date(),
+    const current = await this.repo.findById(kind, id, userId);
+    if (!current) throw new Error("Registro financeiro não encontrado");
+
+    // Idempotência: já paga → no-op (não decrementa de novo).
+    if (current.status === "PAGA") {
+      return current;
+    }
+
+    // Caminho com itens (balcão): atômico + estoque + sync.
+    const hasItems =
+      kind === "receivable" &&
+      Array.isArray(current.items) &&
+      current.items.length > 0;
+
+    if (!hasItems) {
+      // Caminho atual — 100% inalterado.
+      return this.repo.update(kind, id, userId, {
+        status: "PAGA",
+        paidAt: new Date(),
+      });
+    }
+
+    const items = current.items!;
+    let updated: FinanceEntry | undefined;
+    let deductions: Awaited<
+      ReturnType<typeof StockDeductionService.deductWithinTx>
+    >["deductions"] = [];
+
+    await prisma.$transaction(
+      async (tx) => {
+        // Status + paidAt na MESMA tx.
+        updated = await this.repo.update(
+          kind,
+          id,
+          userId,
+          { status: "PAGA", paidAt: new Date() },
+          tx,
+        );
+        // Baixa de estoque dentro da MESMA tx.
+        const result = await StockDeductionService.deductWithinTx(tx, {
+          items: items.map((it) => ({
+            productId: it.productId,
+            quantity: it.quantity,
+          })),
+          reason: `Venda balcão — Conta a Receber ${id}`,
+          // StockSyncJob.orderId é String? livre — anotação para auditoria.
+          orderId: `receivable:${id}`,
+          logPrefix: "[FinanceUseCase]",
+        });
+        deductions = result.deductions;
+      },
+      { timeout: 60_000, maxWait: 20_000 },
+    );
+
+    // Pós-commit: dispara sync dos jobs enfileirados. pauseOnZero NÃO é
+    // passado aqui — wiring entra na Fase 7. Caller `userId` está no escopo
+    // (parâmetro) e será usado quando opt-in.
+    StockDeductionService.firePostEffects({
+      deductions,
+      logPrefix: "[FinanceUseCase]",
+      // pauseOnZero: { userId },  // ← Fase 7
     });
+
+    return updated!;
   }
 
   async findById(
