@@ -160,7 +160,14 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao excluir";
-        const status = message.includes("não encontrado") ? 404 : 500;
+        // Fase 9: "Estornar" sinaliza guard de conta-paga-com-itens — 409.
+        // Caminhos pré-existentes ("não encontrado" → 404, resto → 500)
+        // permanecem.
+        const status = message.includes("Estornar")
+          ? 409
+          : message.includes("não encontrado")
+            ? 404
+            : 500;
         return reply.status(status).send({ error: message });
       }
     };
@@ -190,6 +197,34 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/receivables/:id",
     { preHandler: [authMiddleware] },
     buildDeleteHandler("receivable"),
+  );
+
+  // ── Fase 9 — Estorno explícito (apenas receivable PAGA com itens) ──
+  // Devolve o estoque (contra-lançamento) e reabre anúncios best-effort.
+  // Idempotente: já CANCELADA → no-op. Atômico via $transaction com os
+  // mesmos opts do markPaid ({timeout:60_000, maxWait:20_000}).
+  fastify.post(
+    "/receivables/:id/reverse",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const entry = await useCase.reverse(id, userId);
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao estornar";
+        // "não encontrada" → 404; "inválida"/"inválido" (não-PAGA OU sem
+        // itens) → 400; resto → 500.
+        const status = message.includes("não encontrada")
+          ? 404
+          : message.includes("inválida") || message.includes("inválido")
+            ? 400
+            : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
   );
 
   // ── Fase 8: Cupom fiscal real (NF-e modelo 55) — Opção A ──

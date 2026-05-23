@@ -63,6 +63,13 @@ export interface FirePostEffectsInput {
    * (preserva comportamento atual); venda balcão (Fase 7) usa.
    */
   pauseOnZero?: { userId: string };
+  /**
+   * Opt-in (Fase 9 — estorno): ao detectar `previousStock === 0 && newStock > 0`
+   * (estoque saiu de zero), reabre os anúncios via `pauseListings(_, _, "active")`.
+   * Espelho de `pauseOnZero` para o caminho de restore. Idempotente,
+   * best-effort. Só usado pelo `FinanceUseCase.reverse`.
+   */
+  reopenOnRefill?: { userId: string };
 }
 
 export class StockDeductionService {
@@ -172,6 +179,111 @@ export class StockDeductionService {
   }
 
   /**
+   * Fase 9 — Restaura estoque dentro de uma transação (espelho invertido de
+   * `deductWithinTx`). Usado pelo `FinanceUseCase.reverse` ao estornar
+   * conta PAGA. Estrutura idêntica:
+   *  - `SELECT … FOR UPDATE` para serializar com webhooks concorrentes.
+   *  - `product.update` somando `quantity` ao estoque atual.
+   *  - `stockLog.create` com `change: +quantity` (positivo, distingue de
+   *    deduções).
+   *  - `pg_advisory_xact_lock` por listing + `stockSyncJob.upsert` com
+   *    `targetStock = newStock` (estoque restaurado) — propaga aos
+   *    marketplaces via `runOnce` na fase pós-commit.
+   * Diferenças em relação ao `deductWithinTx`:
+   *  - Sem clamping (estoque sempre sobe `+quantity`).
+   *  - Sem oversellAlerts (não faz sentido em restauração).
+   *  - `change` no StockLog é positivo, não negativo.
+   */
+  static async restoreWithinTx(
+    tx: Prisma.TransactionClient,
+    input: DeductWithinTxInput,
+  ): Promise<{ deductions: StockDeductionResult[] }> {
+    const restorations: StockDeductionResult[] = [];
+    const logPrefix = input.logPrefix ?? "[StockDeductionService]";
+
+    for (const item of input.items) {
+      const locked = await tx.$queryRaw<
+        { id: string; name: string; stock: number }[]
+      >`SELECT id, name, stock FROM "Product" WHERE id = ${item.productId} FOR UPDATE`;
+
+      const product = locked[0];
+      if (!product) continue;
+
+      const previousStock = product.stock;
+      const restoreBy = item.quantity;
+      const newStock = previousStock + restoreBy;
+
+      await tx.product.update({
+        where: { id: item.productId },
+        data: { stock: newStock },
+      });
+
+      await tx.stockLog.create({
+        data: {
+          productId: item.productId,
+          change: +restoreBy, // positivo: distingue claramente de deduções
+          reason: input.reason,
+          previousStock,
+          newStock,
+        },
+      });
+
+      // O mesmo formato de StockDeductionResult — facilita o consumidor
+      // (firePostEffects) tratar deduct/restore com a mesma interface.
+      // `quantity` aqui é a magnitude positiva restaurada.
+      restorations.push({
+        productId: item.productId,
+        productName: product.name,
+        previousStock,
+        newStock,
+        quantity: item.quantity,
+      });
+
+      console.log(
+        `${logPrefix} Stock restored: ${product.name} (${previousStock} → ${newStock})`,
+      );
+
+      const listings = await tx.productListing.findMany({
+        where: { productId: item.productId },
+        include: { marketplaceAccount: { select: { platform: true } } },
+      });
+
+      for (const listing of listings) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + listing.id}))`;
+
+        await tx.stockSyncJob.upsert({
+          where: {
+            listingId_status: {
+              listingId: listing.id,
+              status: "PENDING",
+            },
+          },
+          create: {
+            productId: item.productId,
+            listingId: listing.id,
+            platform: listing.marketplaceAccount.platform,
+            targetStock: newStock,
+            orderId: input.orderId ?? null,
+            status: "PENDING",
+          },
+          update: {
+            targetStock: newStock,
+            attempts: 0,
+            nextRunAt: new Date(),
+            lastError: null,
+            orderId: input.orderId ?? null,
+          },
+        });
+      }
+    }
+
+    // Retornamos como `deductions` para casar com a interface do
+    // FirePostEffectsInput — semanticamente são "movimentações de estoque",
+    // o sinal indica direção (sempre positivo aqui).
+    return { deductions: restorations };
+  }
+
+  /**
    * Efeitos pós-commit. NÃO-bloqueante: ambos os side-effects rodam em
    * `setImmediate`, então erros não param o caller (e o caller já commitou
    * a transação, então estoque está persistido independentemente do que
@@ -222,6 +334,43 @@ export class StockDeductionService {
             .catch((err) =>
               console.error(
                 `${logPrefix} Falha ao importar ProductUseCase para pausar anuncios:`,
+                err,
+              ),
+            );
+        });
+      }
+    }
+
+    // Fase 9 — Reabrir-ao-restaurar: opt-in para o caminho de estorno
+    // (FinanceUseCase.reverse). Filtra produtos que SAÍRAM de zero
+    // (previousStock===0 && newStock>0): foram pausados quando zeraram
+    // (via pauseOnZero), e agora têm estoque novamente. pauseListings com
+    // status "active" é idempotente — anúncios que já estão active são
+    // contados como alreadyInState. Best-effort, mesmo padrão.
+    if (input.reopenOnRefill) {
+      const refilled = input.deductions.filter(
+        (d) => d.previousStock === 0 && d.newStock > 0,
+      );
+      if (refilled.length > 0) {
+        const { userId } = input.reopenOnRefill;
+        setImmediate(() => {
+          void import("@/app/usecases/product.usercase")
+            .then(async ({ ProductUseCase }) => {
+              const uc = new ProductUseCase();
+              for (const d of refilled) {
+                try {
+                  await uc.pauseListings(d.productId, userId, "active");
+                } catch (err) {
+                  console.error(
+                    `${logPrefix} Falha ao reabrir anuncios do produto ${d.productId} (best-effort):`,
+                    err,
+                  );
+                }
+              }
+            })
+            .catch((err) =>
+              console.error(
+                `${logPrefix} Falha ao importar ProductUseCase para reabrir anuncios:`,
                 err,
               ),
             );

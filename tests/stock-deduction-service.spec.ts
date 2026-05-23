@@ -128,6 +128,59 @@ describe("StockDeductionService.firePostEffects", () => {
     expect(pauseListingsMock).not.toHaveBeenCalled();
   });
 
+  // ── Fase 9 — reopenOnRefill ─────────────────────────────────────────
+  it("SEM reopenOnRefill: não reabre, mesmo com produto saindo de zero", async () => {
+    StockDeductionService.firePostEffects({
+      deductions: [
+        deduction({ productId: "p-1", previousStock: 0, newStock: 3 }),
+      ],
+      logPrefix: "[FinanceUseCase]",
+      // reopenOnRefill ausente — pauseListings NUNCA chamado.
+    });
+    await flushSetImmediates();
+    expect(StockSyncRetryService.runOnce).toHaveBeenCalledTimes(1);
+    expect(pauseListingsMock).not.toHaveBeenCalled();
+  });
+
+  it("COM reopenOnRefill: reabre apenas produtos que saíram de zero (previousStock===0 && newStock>0)", async () => {
+    StockDeductionService.firePostEffects({
+      deductions: [
+        // SAIU de zero → reabre.
+        deduction({ productId: "p-refilled", previousStock: 0, newStock: 5 }),
+        // estava com estoque, voltou maior → NÃO reabre (não estava pausado).
+        deduction({ productId: "p-normal", previousStock: 3, newStock: 6 }),
+        // ainda zerado (impossível em restore, mas defensivo) → NÃO reabre.
+        deduction({ productId: "p-stayed-zero", previousStock: 0, newStock: 0 }),
+      ],
+      logPrefix: "[FinanceUseCase]",
+      reopenOnRefill: { userId: "user-owner" },
+    });
+    await flushSetImmediates();
+
+    expect(StockSyncRetryService.runOnce).toHaveBeenCalledTimes(1);
+    // Reabre SÓ o que saiu de zero, com status "active".
+    expect(pauseListingsMock).toHaveBeenCalledTimes(1);
+    expect(pauseListingsMock).toHaveBeenCalledWith(
+      "p-refilled",
+      "user-owner",
+      "active",
+    );
+  });
+
+  it("pauseOnZero e reopenOnRefill independentes (Order não usa nenhum)", async () => {
+    StockDeductionService.firePostEffects({
+      deductions: [
+        deduction({ productId: "p-1", previousStock: 5, newStock: 0 }),
+        deduction({ productId: "p-2", previousStock: 0, newStock: 3 }),
+      ],
+      logPrefix: "[OrderUseCase]",
+      // Nenhum dos dois flags — caminho Order.
+    });
+    await flushSetImmediates();
+    expect(StockSyncRetryService.runOnce).toHaveBeenCalledTimes(1);
+    expect(pauseListingsMock).not.toHaveBeenCalled();
+  });
+
   it("best-effort: falha ao pausar UM produto não impede os outros", async () => {
     pauseListingsMock
       .mockRejectedValueOnce(new Error("ML 503"))

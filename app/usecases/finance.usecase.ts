@@ -287,8 +287,115 @@ export class FinanceUseCase {
     };
   }
 
+  /**
+   * Exclui conta a receber/pagar.
+   *
+   * Fase 9 — Guard: conta a receber PAGA com itens NÃO pode ser hard-deleted
+   * (causaria drift de estoque). O usuário deve usar `reverse` (estorno
+   * explícito), que devolve o estoque atomicamente. Outras combinações
+   * (payable, receivable sem itens, receivable não-PAGA) seguem o fluxo
+   * atual byte-idêntico.
+   */
   async delete(kind: FinanceKind, id: string, userId: string): Promise<void> {
+    if (kind === "receivable") {
+      const current = await this.repo.findById(kind, id, userId);
+      if (
+        current &&
+        current.status === "PAGA" &&
+        Array.isArray(current.items) &&
+        current.items.length > 0
+      ) {
+        // Mensagem contém "Estornar" — o error handler do route mapeia
+        // para 409 (conflito de estado: a operação correta é POST /reverse).
+        throw new Error(
+          "Conta paga com itens não pode ser excluída. Use Estornar para devolver o estoque.",
+        );
+      }
+    }
     await this.repo.delete(kind, id, userId);
+  }
+
+  /**
+   * Fase 9 — Estorna uma Conta a Receber PAGA, devolvendo o estoque dos
+   * itens (contra-lançamento atômico) e reabrindo anúncios cujos produtos
+   * voltaram a ter estoque (best-effort, pós-commit).
+   *
+   * Idempotência: já CANCELADA → no-op (retorna a entry sem efeito).
+   * Validações:
+   *  - Receivable inexistente → "não encontrada" (404).
+   *  - Não-PAGA → erro (só faz sentido estornar pagamento).
+   *  - Sem itens → erro (delete normal cobre esse caso).
+   * Transação:
+   *  - status → CANCELADA + restoreWithinTx(items, reason) na MESMA tx
+   *    (mesmos opts do markPaid: { timeout: 60_000, maxWait: 20_000 }).
+   *  - Falha em qualquer ponto → rollback (status permanece PAGA, estoque
+   *    permanece deduzido).
+   * Pós-commit: firePostEffects com reopenOnRefill — reabre anúncios cujos
+   * produtos saíram de zero.
+   */
+  async reverse(id: string, userId: string): Promise<FinanceEntry> {
+    const current = await this.repo.findById("receivable", id, userId);
+    if (!current) {
+      throw new Error("Conta a receber não encontrada");
+    }
+
+    // Idempotência: já estornada → no-op.
+    if (current.status === "CANCELADA") {
+      return current;
+    }
+
+    if (current.status !== "PAGA") {
+      throw new Error(
+        "Apenas contas PAGA podem ser estornadas (status atual inválido para estorno).",
+      );
+    }
+
+    if (!Array.isArray(current.items) || current.items.length === 0) {
+      throw new Error(
+        "Conta sem itens é inválida para estorno — use exclusão simples.",
+      );
+    }
+
+    const items = current.items;
+    let updated: FinanceEntry | undefined;
+    let restorations: Awaited<
+      ReturnType<typeof StockDeductionService.restoreWithinTx>
+    >["deductions"] = [];
+
+    await prisma.$transaction(
+      async (tx) => {
+        // 1. Status → CANCELADA na MESMA tx do estorno.
+        updated = await this.repo.update(
+          "receivable",
+          id,
+          userId,
+          { status: "CANCELADA" },
+          tx,
+        );
+        // 2. Contra-lançamento de estoque (+quantity por item).
+        const result = await StockDeductionService.restoreWithinTx(tx, {
+          items: items.map((it) => ({
+            productId: it.productId,
+            quantity: it.quantity,
+          })),
+          reason: `Estorno venda balcão — Conta a Receber ${id}`,
+          orderId: `receivable:${id}`,
+          logPrefix: "[FinanceUseCase]",
+        });
+        restorations = result.deductions;
+      },
+      { timeout: 60_000, maxWait: 20_000 },
+    );
+
+    // Pós-commit: sincroniza com marketplaces + reabre anúncios cujos
+    // produtos saíram de zero. Best-effort, fora da tx.
+    StockDeductionService.firePostEffects({
+      deductions: restorations,
+      logPrefix: "[FinanceUseCase]",
+      reopenOnRefill: { userId },
+    });
+
+    return updated!;
   }
 
   async summary(
