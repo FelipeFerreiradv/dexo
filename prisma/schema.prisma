@@ -104,6 +104,7 @@ model Product {
   listings               ProductListing[]
   stockLogs              StockLog[]
   nfeItens               NfeItem[]
+  receivableItems        ReceivableItem[]
 
   @@unique([userId, sku])
   @@index([userId, skuNormalized])
@@ -234,6 +235,7 @@ model ProductListing {
   marketplaceAccount MarketplaceAccount    @relation(fields: [marketplaceAccountId], references: [id])
   product            Product               @relation(fields: [productId], references: [id])
   questions          MarketplaceQuestion[]
+  receivableItems    ReceivableItem[]
 
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
@@ -568,6 +570,7 @@ model Receivable {
   user     User     @relation(fields: [userId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
   unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  items    ReceivableItem[]
 
   @@index([userId, dueDate])
   @@index([userId, status])
@@ -610,6 +613,31 @@ model Payable {
   @@index([userId, status])
   @@index([customerId])
   @@index([userId, unidadeId])
+}
+
+// Item de venda balcão vinculado a uma Conta a Receber.
+// Snapshot do preço no momento da venda (unitPrice não acompanha mudanças em
+// Product.price). Cascade do Receivable: apagar receivable apaga seus itens
+// (no fluxo PENDENTE/sem-pagamento — o estorno de conta PAGA é via
+// FinanceUseCase.reverse, fora do cascade). Restrict no Product preserva
+// integridade do histórico para produtos vendidos no balcão (não regride o
+// delete atual: nenhum produto existente tem ReceivableItem).
+model ReceivableItem {
+  id           String   @id @default(cuid())
+  receivableId String
+  productId    String
+  listingId    String?
+  quantity     Int
+  unitPrice    Decimal  @db.Decimal(10, 2)
+  createdAt    DateTime @default(now())
+
+  receivable Receivable      @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  listing    ProductListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  @@index([receivableId])
+  @@index([productId])
+  @@index([listingId])
 }
 
 // Unidade (filial / loja física) — escopo por userId (= dataOwnerId), igual a
