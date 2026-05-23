@@ -941,3 +941,172 @@ describe("POST /products (integration)", () => {
     expect(body.listingResults[0].retryable).toBe(true);
   });
 });
+
+describe("POST /products — fail-fast quando ML é solicitado sem dimensões", () => {
+  let app: ReturnType<typeof fastify>;
+
+  beforeEach(async () => {
+    app = fastify();
+    await app.register(productRoutes, { prefix: "/products" });
+
+    const fakeUser = {
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
+      null,
+    );
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  it("retorna 400 quando listing ML é solicitado e produto não tem dimensões (heightCm null)", async () => {
+    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-NO-DIMS-1",
+        name: "Sonda Lambda Sem Dimensões",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // heightCm/widthCm/lengthCm OMITIDOS deliberadamente
+        weightKg: 8,
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.payload);
+    expect(body.error).toMatch(/altura.*largura.*comprimento.*peso/i);
+    expect(body.error).toMatch(/Mercado Livre/i);
+    // Produto NÃO pode ter sido criado — fail-fast antes do create
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it("retorna 400 quando weightKg = 0 (não > 0) e ML é solicitado", async () => {
+    const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-ZERO-WEIGHT-1",
+        name: "Produto Peso Zero",
+        price: 50,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        heightCm: 10,
+        widthCm: 10,
+        lengthCm: 10,
+        weightKg: 0,
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it("permite criação SEM ML mesmo quando dimensões faltam (Shopee tem fallback hardcoded — não regrediu)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockResolvedValue({
+        id: "prod-shopee-no-dims",
+        sku: "PROD-SHP-1",
+        name: "Produto só Shopee",
+        stock: 1,
+        price: 99,
+        imageUrl: "http://localhost/x.jpg",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-SHP-1",
+        name: "Produto só Shopee",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // sem dimensões — Shopee tem fallback (10x10x10/1kg) internamente
+        listings: [
+          {
+            platform: "SHOPEE",
+            categoryId: "102340",
+            accountIds: ["acc-shp-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("permite criação SEM listings nenhum mesmo sem dimensões (caminho de cadastro puro)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockResolvedValue({
+        id: "prod-only-record",
+        sku: "PROD-ONLY-1",
+        name: "Produto Cadastro Puro",
+        stock: 1,
+        price: 99,
+        imageUrl: "http://localhost/x.jpg",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-ONLY-1",
+        name: "Produto Cadastro Puro",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // sem dimensões, sem listings — só cadastrar
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Nota: o "caminho feliz" (POST /products ML com dimensões válidas → 201)
+  // é coberto pelo teste "creates a product when payload is valid and user exists"
+  // do describe principal (que monta o cenário completo de mocks). Aqui focamos
+  // apenas no novo gate de validação.
+});

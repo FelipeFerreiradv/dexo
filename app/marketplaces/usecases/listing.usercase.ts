@@ -3062,7 +3062,13 @@ export class ListingUseCase {
       // 3. Buscar atributos obrigatórios da categoria via API Shopee
       const attributeList: ShopeeItemCreatePayload["attribute_list"] = [];
 
-      // Mapa de valores do produto para os nomes de atributos mais comuns
+      // Mapa de valores do produto para os nomes de atributos mais comuns.
+      // Lookup é case-insensitive (linha ~3158: attr.attribute_name.toLowerCase()),
+      // então as chaves aqui DEVEM ser lowercase. Categorias de autopeça da
+      // Shopee retornam "Auto-Part Number" como atributo mandatório em várias
+      // categorias (102340 Injeção, 102370 Filtros, 102416, etc) — sem o
+      // mapeamento correspondente, o lookup falhava e a API rejeitava o item
+      // com "Attribute Auto-Part Number is mandatory required".
       const productAttrValues: Record<string, string> = {};
       if (product.brand) productAttrValues["marca"] = product.brand;
       if (product.brand) productAttrValues["brand"] = product.brand;
@@ -3070,12 +3076,19 @@ export class ListingUseCase {
       if (product.model) productAttrValues["model"] = product.model;
       if (product.year) productAttrValues["ano"] = product.year;
       if (product.year) productAttrValues["year"] = product.year;
-      if (product.partNumber)
+      if (product.partNumber) {
         productAttrValues["número de referência"] = product.partNumber;
-      if (product.partNumber)
+        productAttrValues["numero de referencia"] = product.partNumber;
         productAttrValues["part number"] = product.partNumber;
-      if (product.partNumber)
         productAttrValues["reference number"] = product.partNumber;
+        productAttrValues["auto-part number"] = product.partNumber;
+        productAttrValues["auto part number"] = product.partNumber;
+        productAttrValues["número da peça"] = product.partNumber;
+        productAttrValues["numero da peca"] = product.partNumber;
+        productAttrValues["part number (oem)"] = product.partNumber;
+        productAttrValues["oem part number"] = product.partNumber;
+        productAttrValues["oem"] = product.partNumber;
+      }
 
       // Coletar TODAS as URLs de imagens do produto (galeria completa).
       // Shopee aceita até 9 imagens por item; preservar ordem original.

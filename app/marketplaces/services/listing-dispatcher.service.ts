@@ -87,15 +87,36 @@ export class ListingDispatcher {
     productId: string,
     req: ListingDispatchRequest,
   ): Promise<void> {
+    // Observabilidade simétrica ML↔Shopee. createMLListing e createShopeeListing
+    // ambos retornam CreateListingResult com `success: boolean`. Antes desta
+    // simetria, ML descartava o retorno e falhas "normais" (success: false sem
+    // throw) ficavam invisíveis — o placeholder PENDING_ era criado, status ia
+    // pra "error" no banco, mas nada aparecia no log. O usuário só percebia
+    // pelo ícone dimmed no frontend.
     try {
       if (req.platform === "MERCADO_LIVRE") {
-        await ListingUseCase.createMLListing(
+        const result = await ListingUseCase.createMLListing(
           userId,
           productId,
           req.categoryId,
           req.accountId,
           req.mlSettings,
         );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+          mlError: (result as any).mlError || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] MERCADO_LIVRE listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        }
         return;
       }
       if (req.platform === "SHOPEE") {
@@ -105,6 +126,15 @@ export class ListingDispatcher {
           req.categoryId,
           req.accountId,
         );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
         if (!result.success) {
           console.error(
             `[ListingDispatcher] Shopee listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
@@ -117,6 +147,63 @@ export class ListingDispatcher {
         `[ListingDispatcher] ${req.platform} error (product=${productId}, account=${req.accountId}):`,
         err instanceof Error ? err.message : err,
       );
+      this.logDispatchResult({
+        userId,
+        productId,
+        req,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        threw: true,
+      });
+    }
+  }
+
+  /**
+   * Log estruturado de resultado de cada plataforma×conta. Mesmo formato JSON
+   * one-line do `listing.dispatch` event que já existe (linha 72), pra ficar
+   * grep-friendly. Não deve lançar — falhas de logging não devem mascarar
+   * resultados reais.
+   */
+  private static logDispatchResult(args: {
+    userId: string;
+    productId: string;
+    req: ListingDispatchRequest;
+    success: boolean;
+    listingId?: string;
+    externalListingId?: string;
+    error?: string | null;
+    mlError?: unknown;
+    threw?: boolean;
+  }) {
+    try {
+      console.log(
+        JSON.stringify({
+          event: "listing.dispatch.result",
+          productId: args.productId,
+          userId: args.userId,
+          platform: args.req.platform,
+          accountId: args.req.accountId,
+          success: args.success,
+          listingId: args.listingId,
+          externalListingId: args.externalListingId,
+          error: args.error,
+          mlError:
+            args.mlError !== undefined && args.mlError !== null
+              ? typeof args.mlError === "string"
+                ? args.mlError
+                : (() => {
+                    try {
+                      return JSON.stringify(args.mlError);
+                    } catch {
+                      return String(args.mlError);
+                    }
+                  })()
+              : null,
+          threw: args.threw || false,
+        }),
+      );
+    } catch {
+      // ignore
     }
   }
 
