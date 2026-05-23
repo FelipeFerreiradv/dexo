@@ -936,26 +936,85 @@ class ProductRepositoryPrisma implements ProductRepository {
         })
       : baseWhere;
 
+    // Ordena por (stock > 0) DESC, createdAt DESC via SQL bruto. O Prisma
+    // findMany.orderBy não suporta a expressão booleana; um simples
+    // { stock: "desc" } ordenaria por QUANTIDADE (estoque=5 antes de 1 antes
+    // de 0), enterrando produtos recém-criados com pouco estoque abaixo de
+    // produtos antigos com muito. O agrupamento booleano garante: em-estoque
+    // mais novo primeiro, depois fora-de-estoque mais novo primeiro — mesma
+    // regra que o caminho de busca fuzzy acima.
     try {
+      const baseSqlWhere = this.buildBaseSqlWhere(filters, userId);
+      const sqlWhere = search
+        ? combineSqlClauses([
+            baseSqlWhere,
+            Prisma.sql`(p."name" ILIKE ${`%${search}%`} OR p."sku" ILIKE ${`%${search}%`})`,
+          ])
+        : baseSqlWhere;
+
+      const [rankedRows, totalRow] = await Promise.all([
+        prisma.$queryRaw<{ id: string }[]>`
+          SELECT p."id"
+          FROM "Product" p
+          WHERE ${sqlWhere}
+          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          OFFSET ${skip} LIMIT ${limit};
+        `,
+        prisma.$queryRaw<{ count: bigint }[]>`
+          SELECT COUNT(*)::bigint as count
+          FROM "Product" p
+          WHERE ${sqlWhere};
+        `,
+      ]);
+      const total = Number(totalRow?.[0]?.count ?? 0);
+      const idOrder = rankedRows.map((r) => r.id);
+
+      if (idOrder.length === 0) {
+        return { products: [], total };
+      }
+
+      const items = await prisma.product.findMany({
+        where: combineWhereClauses(baseWhere, { id: { in: idOrder } }),
+        select: this.productSelect,
+      });
+      const itemsById = new Map(
+        items.map((item) => [
+          item.id,
+          mapPrismaToProduct(item as unknown as PrismaProduct),
+        ]),
+      );
+
+      return {
+        products: idOrder
+          .map((id) => itemsById.get(id))
+          .filter(Boolean) as Product[],
+        total,
+      };
+    } catch (error) {
+      // Fallback de segurança: se o SQL bruto falhar por qualquer motivo,
+      // cai pro findMany do Prisma ordenado por createdAt apenas. Mantém
+      // "novo primeiro" e a listagem nunca quebra (perde só o "estoque 0
+      // ao fim" temporariamente até o erro ser investigado).
+      console.error(
+        "[product-list] fallback para findMany simples:",
+        error,
+      );
       const [items, total] = await Promise.all([
         prisma.product.findMany({
           where,
           skip,
           take: limit,
-          orderBy: [{ stock: "desc" }, { createdAt: "desc" }],
+          orderBy: { createdAt: "desc" },
           select: this.productSelect,
         }),
         prisma.product.count({ where }),
       ]);
-
       return {
         products: items.map((it) =>
           mapPrismaToProduct(it as unknown as PrismaProduct),
         ),
         total,
       };
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : String(error));
     }
   }
 
