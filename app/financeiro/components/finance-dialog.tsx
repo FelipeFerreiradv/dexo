@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   CalendarClock,
   FileText,
+  Loader2,
   Percent,
   Receipt,
   User as UserIcon,
@@ -20,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import {
   StepperHeader,
   StepperStep,
@@ -122,6 +124,9 @@ export function FinanceDialog({
   const isEdit = !!initialData?.id;
   const label = kind === "receivable" ? "a receber" : "a pagar";
   const canEmitReceipt = kind === "receivable";
+  // Fase 8: estado de "emitindo rascunho fiscal" — independente do submit
+  // do form (fluxo paralelo, conta já existe).
+  const [isEmittingFiscal, setIsEmittingFiscal] = useState(false);
 
   const form = useForm<FinanceEntryFormData>({
     resolver: zodResolver(financeEntrySchema) as any,
@@ -151,6 +156,13 @@ export function FinanceDialog({
   const [productMeta, setProductMeta] = useState<
     Record<string, ProductMeta>
   >({});
+
+  // Fase 8: items em tempo real para gatear o botão de cupom fiscal (só faz
+  // sentido oferecer quando a conta tem itens vinculados). useWatch garante
+  // re-render quando o usuário adiciona/remove no ProductPickerBlock.
+  const watchedItems = useWatch({ control, name: "items" });
+  const hasItemsInForm =
+    Array.isArray(watchedItems) && watchedItems.length > 0;
 
   useEffect(() => {
     if (open) {
@@ -295,6 +307,44 @@ export function FinanceDialog({
     }
   });
 
+  // Fase 8: dispara POST /finance/receivables/<id>/fiscal-draft. Fluxo
+  // paralelo ao submit — conta JÁ existe (isEdit). Após sucesso, o usuário
+  // navega ao módulo Notas Fiscais para revisar NCM e emitir. Mantemos o
+  // dialog aberto (não fecha) para o usuário poder ajustar outros campos.
+  const handleEmitFiscalDraft = async () => {
+    if (!initialData?.id) return;
+    const userEmail = session?.user?.email;
+    if (!userEmail) {
+      onToast("Sessão inválida — faça login novamente", "error");
+      return;
+    }
+    setIsEmittingFiscal(true);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/finance/receivables/${initialData.id}/fiscal-draft`,
+        {
+          method: "POST",
+          headers: { email: userEmail, "content-type": "application/json" },
+        },
+      );
+      const result = await res.json();
+      if (!res.ok) {
+        throw new Error(result.error || "Erro ao criar rascunho fiscal");
+      }
+      onToast(
+        "Rascunho de NF-e criado. Revise NCM no módulo Notas Fiscais e emita.",
+        "success",
+      );
+    } catch (e) {
+      onToast(
+        e instanceof Error ? e.message : "Erro ao criar rascunho fiscal",
+        "error",
+      );
+    } finally {
+      setIsEmittingFiscal(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-187.5">
@@ -369,6 +419,41 @@ export function FinanceDialog({
                       onCheckedChange={setEmitReceipt}
                       aria-label="Emitir cupom sem validade fiscal"
                     />
+                  </div>
+                )}
+
+                {/* Fase 8 — Cupom fiscal de verdade (NF-e modelo 55).
+                    Distinto do Switch acima (sem-validade preservado intacto).
+                    Aparece somente em edição com itens + flag de balcão ON. */}
+                {balcaoEnabled && isEdit && hasItemsInForm && (
+                  <div className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background">
+                        <FileText className="size-4 text-muted-foreground" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">
+                          Emitir cupom fiscal (NF-e modelo 55)
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Gera um rascunho fiscal com os itens desta conta
+                          (CFOP 5102, presencial). Você revisa o NCM no
+                          módulo Notas Fiscais e emite.
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleEmitFiscalDraft}
+                      disabled={isEmittingFiscal}
+                    >
+                      {isEmittingFiscal && (
+                        <Loader2 className="size-4 animate-spin" />
+                      )}
+                      Criar rascunho
+                    </Button>
                   </div>
                 )}
               </div>

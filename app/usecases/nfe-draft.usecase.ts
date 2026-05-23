@@ -6,7 +6,22 @@ import type {
   NfeDraftResponse,
   CustomerLookup,
   ProductLookup,
+  NfeDraftItem,
+  NfeDestinatario,
 } from "../interfaces/nfe.interface";
+
+// ── Fase 8 — input para pré-popular draft a partir de venda balcão ──
+// O caller (FinanceUseCase) é responsável por mapear Receivable + Customer
+// para esta forma. NfeDraftUseCase apenas orquestra createDraft + updateDraft
+// + addAuditLog, garantindo um draft FRESCO (sem reuso do mais-recente — o
+// que `create()` faz e não cabe aqui).
+export interface NfeDraftFromReceivableInput {
+  customerId: string;
+  receivableId: string;
+  destinatario: NfeDestinatario;
+  itens: NfeDraftItem[];
+  pagamentos: Array<{ meio: string; valor: number }>;
+}
 
 export class NfeDraftUseCase {
   private nfeRepo: NfeRepository;
@@ -85,6 +100,66 @@ export class NfeDraftUseCase {
     }
 
     await this.nfeRepo.deleteDraft(userId, id);
+  }
+
+  // ── Fase 8 — Cupom fiscal de venda balcão (Opção A: NF-e modelo 55) ──
+  //
+  // Cria um draft FRESCO (não reusa o "mais recente" do usuário — que é o
+  // que `create()` faz quando não há orderId) e o popula com destinatário,
+  // itens e pagamento derivados da Conta a Receber. Itens entram com
+  // defaults seguros (CFOP 5102 venda dentro-do-estado, origem 0 nacional,
+  // unidade UN, NCM em branco) — o usuário completa o NCM no editor de
+  // rascunho fiscal existente antes de emitir.
+  //
+  // Retorna o draft já populado; a UI então redireciona ao editor fiscal
+  // existente para revisão e emissão via NfeEmissionUseCase (pipeline
+  // intacto — esta fase NÃO toca emissão, apenas o setup do rascunho).
+  async createPopulatedFromReceivable(
+    userId: string,
+    input: NfeDraftFromReceivableInput,
+  ): Promise<NfeDraftResponse> {
+    const config = await this.configRepo.findByUserId(userId);
+    if (!config) {
+      throw new Error(
+        "Configuração fiscal não encontrada. Configure o emissor antes de emitir cupom fiscal.",
+      );
+    }
+
+    const ambiente =
+      (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO";
+
+    // 1. Cria draft fresco — bypassa o reuso de "mais recente" (esse vive em
+    //    `this.create`; aqui chamamos o repo direto para sempre ter um draft
+    //    novo, evitando colisão com drafts não relacionados de outras
+    //    operações fiscais do mesmo usuário).
+    const draft = await this.nfeRepo.createDraft(userId, {
+      customerId: input.customerId,
+      ambiente,
+    });
+
+    // 2. Popula tudo via updateDraft (replace strategy para itens, igual ao
+    //    fluxo manual do wizard fiscal). numeroPedido usa o id da Conta a
+    //    Receber como anotação livre para auditoria (NfeEmitida não tem FK
+    //    para Receivable — link textual no campo `numeroPedido`).
+    const filled = await this.nfeRepo.updateDraft(userId, draft.id, {
+      tipoOperacao: "SAIDA",
+      finalidade: "NORMAL",
+      destinoOperacao: "INTERNA",
+      naturezaOperacao: "VENDA DE MERCADORIA",
+      indPresenca: "PRESENCIAL",
+      customerId: input.customerId,
+      destinatarioJson: input.destinatario,
+      itens: input.itens,
+      pagamentosJson: input.pagamentos,
+      numeroPedido: `receivable:${input.receivableId}`,
+    });
+
+    await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", {
+      source: "venda-balcao",
+      receivableId: input.receivableId,
+    });
+
+    return filled;
   }
 
   // ── Lookups ──

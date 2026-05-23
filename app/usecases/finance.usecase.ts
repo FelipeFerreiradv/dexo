@@ -306,6 +306,103 @@ export class FinanceUseCase {
     return this.nfeDraftUseCase.lookupProducts(userId, query);
   }
 
+  /**
+   * Fase 8 — Cria um rascunho de NF-e modelo 55 pré-preenchido a partir de
+   * uma Conta a Receber (venda balcão, Opção A do plano).
+   *
+   * O cupom-PDF-sem-validade-fiscal continua intacto e é gerado por outra
+   * rota (`GET /finance/receivables/:id/receipt`); este método produz um
+   * draft FISCAL real, que o usuário revisa no editor de rascunho fiscal
+   * existente (incluindo NCM, que entra em branco) antes de emitir via
+   * `NfeEmissionUseCase`. O pipeline de emissão NÃO muda.
+   *
+   * Mapeamentos (apenas dados):
+   *  - Destinatário: derivado do Customer (PF vs PJ pela presença de
+   *    deliveryCnpj), endereço principal.
+   *  - Itens: cada ReceivableItem vira NfeDraftItem com CFOP 5102, origem
+   *    0 (nacional), unidade UN, NCM em branco (decisão da Fase 1).
+   *  - Pagamento: "DINHEIRO" com valor total (usuário ajusta no editor
+   *    se for PIX/cartão/etc.).
+   *
+   * Erros mapeáveis a HTTP por mensagem:
+   *  - Receivable inexistente → "não encontrado" (404).
+   *  - Sem itens → "inválida" (400).
+   *  - Cliente inexistente → "não encontrado" (404).
+   *  - Config fiscal ausente → propaga do NfeDraftUseCase.
+   */
+  async createFiscalDraftFromReceivable(
+    receivableId: string,
+    userId: string,
+  ) {
+    const entry = await this.repo.findById("receivable", receivableId, userId);
+    if (!entry) {
+      throw new Error("Conta a receber não encontrada");
+    }
+    if (!entry.items || entry.items.length === 0) {
+      throw new Error(
+        "Conta sem itens é inválida para cupom fiscal — adicione produtos antes de emitir.",
+      );
+    }
+    const customer = await this.customerRepo.findById(entry.customerId, userId);
+    if (!customer) {
+      throw new Error("Cliente da conta não encontrado");
+    }
+    const c = customer as any;
+
+    // Destinatário (PF vs PJ). Cliente sem CPF/CNPJ é permitido aqui — o
+    // editor fiscal sinaliza o campo obrigatório antes da emissão.
+    const isPJ = !!c.deliveryCnpj;
+    const destinatario = {
+      tipoPessoa: isPJ ? ("PJ" as const) : ("PF" as const),
+      cpfCnpj: (isPJ ? c.deliveryCnpj : c.cpf) ?? "",
+      nome: (isPJ ? c.deliveryCorporateName : c.name) ?? c.name ?? "",
+      inscricaoEstadual: null,
+      email: c.email ?? null,
+      telefone: c.phone ?? c.mobile ?? null,
+      cep: c.cep ?? null,
+      logradouro: c.street ?? null,
+      numero: c.number ?? null,
+      complemento: c.complement ?? null,
+      bairro: c.neighborhood ?? null,
+      municipio: c.city ?? null,
+      codMunicipio: c.ibge ?? null,
+      uf: c.state ?? null,
+      codPais: "1058",
+      pais: "BRASIL",
+    };
+
+    // Itens — defaults seguros conforme decisão da Fase 1.
+    const itens = entry.items.map((it, idx) => ({
+      numero: idx + 1,
+      productId: it.productId,
+      codigo: it.product?.sku ?? it.productId,
+      descricao: it.product?.name ?? "",
+      ncm: "", // usuário completa no editor fiscal antes de emitir
+      cfop: "5102", // venda dentro-do-estado
+      cest: null,
+      origem: 0 as const, // nacional
+      unidade: "UN",
+      quantidade: it.quantity,
+      valorUnitario: it.unitPrice,
+      valorTotal: Number((it.quantity * it.unitPrice).toFixed(2)),
+      desconto: null,
+      observacoes: null,
+    }));
+
+    // Pagamento default — "DINHEIRO" (balcão típico). Usuário ajusta.
+    const pagamentos = [
+      { meio: "DINHEIRO", valor: Number(entry.totalAmount) },
+    ];
+
+    return this.nfeDraftUseCase.createPopulatedFromReceivable(userId, {
+      customerId: entry.customerId,
+      receivableId: entry.id,
+      destinatario,
+      itens,
+      pagamentos,
+    });
+  }
+
   private applyOverdueFlag(entry: FinanceEntry): FinanceEntry {
     if (entry.status === "PENDENTE" && entry.dueDate < new Date()) {
       return { ...entry, status: "VENCIDA" };
