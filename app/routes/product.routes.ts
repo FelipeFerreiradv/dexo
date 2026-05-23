@@ -337,6 +337,40 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           .status(400)
           .send({ error: "Imagem do produto é obrigatória" });
 
+      // Dimensões obrigatórias para listing no Mercado Livre.
+      // `createMLListing` faz hard-return `{success:false}` quando heightCm/widthCm/
+      // lengthCm/weightKg são null/0 (linha ~965 de listing.usercase.ts). O comentário
+      // lá explica: o fallback artificial 10x10x10/1kg foi removido porque o ML
+      // detecta o padrão e suspende anúncios. Sem fail-fast aqui, o produto é
+      // criado, dispatch é disparado, ML retorna `success:false` e o dispatcher
+      // engole o erro (era invisível antes do Slice 1 de observabilidade) — o
+      // usuário vê o ícone do ML "apagado" sem mensagem clara. Validar antes do
+      // create dá feedback imediato no modal. Fica antes da resolução de
+      // categoria pra não gastar chamada de API/DB quando já vai retornar 400.
+      const wantsMlListing =
+        Boolean(createListing) ||
+        (Array.isArray(listings) &&
+          listings.some(
+            (l: any) => l && l.platform === "MERCADO_LIVRE",
+          ));
+      if (wantsMlListing) {
+        const missingMlDims =
+          sanitized.heightCm == null ||
+          sanitized.widthCm == null ||
+          sanitized.lengthCm == null ||
+          sanitized.weightKg == null ||
+          !(Number(sanitized.heightCm) > 0) ||
+          !(Number(sanitized.widthCm) > 0) ||
+          !(Number(sanitized.lengthCm) > 0) ||
+          !(Number(sanitized.weightKg) > 0);
+        if (missingMlDims) {
+          return reply.status(400).send({
+            error:
+              "Produto precisa ter altura, largura, comprimento e peso preenchidos para criar anúncio no Mercado Livre.",
+          });
+        }
+      }
+
       // Resolver categorias ML e Shopee em paralelo (OPT-5)
       let resolvedMlCategoryId: string | undefined;
       let resolvedMlCategoryPath: string | undefined;
