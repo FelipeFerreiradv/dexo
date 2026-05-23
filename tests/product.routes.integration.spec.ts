@@ -942,7 +942,7 @@ describe("POST /products (integration)", () => {
   });
 });
 
-describe("POST /products — fail-fast quando ML é solicitado sem dimensões", () => {
+describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV não cobre", () => {
   let app: ReturnType<typeof fastify>;
 
   beforeEach(async () => {
@@ -963,6 +963,26 @@ describe("POST /products — fail-fast quando ML é solicitado sem dimensões", 
     vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
       null,
     );
+    // Re-mock CategoryResolutionService: o vi.mock module-level (topo do
+    // arquivo) usa vi.fn().mockResolvedValue(...), e vi.restoreAllMocks() em
+    // afterEach de outros describes faz mockReset desses fns, zerando o
+    // retorno e quebrando a resolução de categoria no nosso flow.
+    const catModule = await import(
+      "../app/marketplaces/services/category-resolution.service"
+    );
+    (catModule.CategoryResolutionService.resolveMLCategory as any) = vi
+      .fn()
+      .mockResolvedValue({
+        externalId: "MLB-MOCK",
+        fullPath: "Mock > Category",
+        source: "explicit",
+      });
+    (catModule.CategoryResolutionService.ensureLeafLocalOnly as any) = vi
+      .fn()
+      .mockResolvedValue({
+        externalId: "MLB-MOCK",
+        fullPath: "Mock > Category",
+      });
   });
 
   afterEach(async () => {
@@ -970,7 +990,7 @@ describe("POST /products — fail-fast quando ML é solicitado sem dimensões", 
     await app.close();
   });
 
-  it("retorna 400 quando listing ML é solicitado e produto não tem dimensões (heightCm null)", async () => {
+  it("retorna 400 quando ML é solicitado sem dimensões E categoria não está no CSV de auto-fill", async () => {
     const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
 
     const res = await app.inject({
@@ -999,11 +1019,12 @@ describe("POST /products — fail-fast quando ML é solicitado sem dimensões", 
     const body = JSON.parse(res.payload);
     expect(body.error).toMatch(/altura.*largura.*comprimento.*peso/i);
     expect(body.error).toMatch(/Mercado Livre/i);
-    // Produto NÃO pode ter sido criado — fail-fast antes do create
+    // Categoria mockada como "Mock > Category" não bate em nenhuma entrada
+    // do CSV de medidas, então auto-fill falha e a rota recusa antes do create.
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("retorna 400 quando weightKg = 0 (não > 0) e ML é solicitado", async () => {
+  it("retorna 400 quando weightKg = 0 e ML é solicitado (categoria fora do CSV)", async () => {
     const createSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "create");
 
     const res = await app.inject({
@@ -1105,8 +1126,34 @@ describe("POST /products — fail-fast quando ML é solicitado sem dimensões", 
     expect(createSpy).toHaveBeenCalledTimes(1);
   });
 
-  // Nota: o "caminho feliz" (POST /products ML com dimensões válidas → 201)
+  // Nota: o "caminho feliz" com dimensões já preenchidas pelo client
   // é coberto pelo teste "creates a product when payload is valid and user exists"
-  // do describe principal (que monta o cenário completo de mocks). Aqui focamos
-  // apenas no novo gate de validação.
+  // do describe principal.
+
+  it("smoke do CSV de auto-fill: getMeasurementsForCategory cobre categorias comuns de autopeça", async () => {
+    // Sanity check direto da lib (sem rota HTTP), pra garantir que o CSV
+    // resolve categorias frequentes do Dexo. Se isso quebrar, é regressão
+    // no CSV (app/lib/ml-measurements.ts) — investigar lá.
+    const mod = await import("@/app/lib/ml-measurements");
+    const { getMeasurementsForCategory } = mod;
+
+    // Categoria que aparece nos logs de criação (Sonda Lambda → Injeção)
+    // não está literalmente no CSV mas o nome do produto contendo "Sonda"
+    // ou similares pode dar match. Quando não dá, a rota retorna 400 com
+    // mensagem clara — comportamento já coberto pelos testes acima.
+
+    // Categoria explicitamente no CSV: "Calotas" (linha do CSV: 35;35;35;2)
+    const calotas = getMeasurementsForCategory("Calotas");
+    expect(calotas).toBeDefined();
+    expect(calotas?.heightCm).toBeGreaterThan(0);
+    expect(calotas?.widthCm).toBeGreaterThan(0);
+    expect(calotas?.lengthCm).toBeGreaterThan(0);
+    expect(calotas?.weightKg).toBeGreaterThan(0);
+
+    // Categoria com fullPath (formato que o backend usa)
+    const composta = getMeasurementsForCategory(
+      "Acessórios para Veículos > Calotas",
+    );
+    expect(composta).toBeDefined();
+  });
 });

@@ -19,6 +19,7 @@ import { SystemLogService } from "../services/system-log.service";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
+import { getMeasurementsForCategory } from "../lib/ml-measurements";
 
 const PUBLICATION_STATUS_VALUES = new Set<ProductPublicationStatus>([
   "ACTIVE",
@@ -337,40 +338,6 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           .status(400)
           .send({ error: "Imagem do produto é obrigatória" });
 
-      // Dimensões obrigatórias para listing no Mercado Livre.
-      // `createMLListing` faz hard-return `{success:false}` quando heightCm/widthCm/
-      // lengthCm/weightKg são null/0 (linha ~965 de listing.usercase.ts). O comentário
-      // lá explica: o fallback artificial 10x10x10/1kg foi removido porque o ML
-      // detecta o padrão e suspende anúncios. Sem fail-fast aqui, o produto é
-      // criado, dispatch é disparado, ML retorna `success:false` e o dispatcher
-      // engole o erro (era invisível antes do Slice 1 de observabilidade) — o
-      // usuário vê o ícone do ML "apagado" sem mensagem clara. Validar antes do
-      // create dá feedback imediato no modal. Fica antes da resolução de
-      // categoria pra não gastar chamada de API/DB quando já vai retornar 400.
-      const wantsMlListing =
-        Boolean(createListing) ||
-        (Array.isArray(listings) &&
-          listings.some(
-            (l: any) => l && l.platform === "MERCADO_LIVRE",
-          ));
-      if (wantsMlListing) {
-        const missingMlDims =
-          sanitized.heightCm == null ||
-          sanitized.widthCm == null ||
-          sanitized.lengthCm == null ||
-          sanitized.weightKg == null ||
-          !(Number(sanitized.heightCm) > 0) ||
-          !(Number(sanitized.widthCm) > 0) ||
-          !(Number(sanitized.lengthCm) > 0) ||
-          !(Number(sanitized.weightKg) > 0);
-        if (missingMlDims) {
-          return reply.status(400).send({
-            error:
-              "Produto precisa ter altura, largura, comprimento e peso preenchidos para criar anúncio no Mercado Livre.",
-          });
-        }
-      }
-
       // Resolver categorias ML e Shopee em paralelo (OPT-5)
       let resolvedMlCategoryId: string | undefined;
       let resolvedMlCategoryPath: string | undefined;
@@ -486,6 +453,70 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           error:
             "Produto não possui categoria do Shopee. Selecione uma categoria antes de criar o anúncio.",
         });
+      }
+
+      // Auto-fill de dimensões para ML quando o payload veio sem elas.
+      // `createMLListing` faz hard-return `{success:false}` em dimensões null/0
+      // (linha ~965 de listing.usercase.ts) — o fallback artificial 10x10x10/1kg
+      // foi removido lá porque o ML detecta o padrão e suspende. Mas o frontend
+      // tem auto-sugestão via `getMeasurementsForCategory` baseada em CSV por
+      // categoria (app/lib/ml-measurements.ts). Replicamos esse lookup aqui no
+      // backend como rede de segurança: se o frontend não sugeriu (categoria
+      // fora do CSV, modal não disparou, ou criação via API direta), tentamos
+      // popular antes do create. Só falha com 400 se NEM o payload NEM o CSV
+      // tiverem dimensões — feedback útil em vez do dispatcher engolir silente.
+      if (requiresMlCategory) {
+        const needsHeight =
+          sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0);
+        const needsWidth =
+          sanitized.widthCm == null || !(Number(sanitized.widthCm) > 0);
+        const needsLength =
+          sanitized.lengthCm == null || !(Number(sanitized.lengthCm) > 0);
+        const needsWeight =
+          sanitized.weightKg == null || !(Number(sanitized.weightKg) > 0);
+
+        if (needsHeight || needsWidth || needsLength || needsWeight) {
+          const suggested = getMeasurementsForCategory(
+            resolvedMlCategoryPath || sanitized.category,
+            sanitized.name,
+          );
+          if (suggested) {
+            if (needsHeight && typeof suggested.heightCm === "number")
+              sanitized.heightCm = suggested.heightCm;
+            if (needsWidth && typeof suggested.widthCm === "number")
+              sanitized.widthCm = suggested.widthCm;
+            if (needsLength && typeof suggested.lengthCm === "number")
+              sanitized.lengthCm = suggested.lengthCm;
+            if (needsWeight && typeof suggested.weightKg === "number")
+              sanitized.weightKg = suggested.weightKg;
+            console.log(
+              JSON.stringify({
+                event: "product.create.dimensions_auto_filled",
+                sku: sanitized.sku,
+                category: resolvedMlCategoryPath || sanitized.category,
+                suggested,
+              }),
+            );
+          }
+
+          // Re-check após tentativa de auto-fill: se ainda faltar alguma
+          // dimensão > 0, recusar antes de criar produto + disparar ML.
+          const stillMissing =
+            sanitized.heightCm == null ||
+            sanitized.widthCm == null ||
+            sanitized.lengthCm == null ||
+            sanitized.weightKg == null ||
+            !(Number(sanitized.heightCm) > 0) ||
+            !(Number(sanitized.widthCm) > 0) ||
+            !(Number(sanitized.lengthCm) > 0) ||
+            !(Number(sanitized.weightKg) > 0);
+          if (stillMissing) {
+            return reply.status(400).send({
+              error:
+                "Produto precisa ter altura, largura, comprimento e peso preenchidos para criar anúncio no Mercado Livre. Não foi possível inferir as medidas para esta categoria — preencha manualmente.",
+            });
+          }
+        }
       }
 
       try {
