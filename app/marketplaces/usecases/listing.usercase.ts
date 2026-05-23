@@ -20,6 +20,10 @@ import {
   classifyShopeeRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
+import {
+  lookupShopeeCategoryAttrs,
+  storeShopeeCategoryAttrs,
+} from "../services/shopee-category-attrs-cache";
 
 export interface CreateListingResult {
   success: boolean;
@@ -3122,34 +3126,197 @@ export class ListingUseCase {
         ),
       );
 
-      // Stage 4 wrapper: single retry on 403 para absorver transientes.
-      // Shopee retorna 403 "permission denied" esporadicamente mesmo para
-      // contas ACTIVE com escopo correto; um retry curto costuma resolver.
-      const fetchCategoryAttrsWithRetry = async () => {
+      // Stage 4 wrapper: cache + retry 403 + harvest fallback.
+      // 1. Tenta cache fresh (24h) — devolve imediato sem hit na API.
+      // 2. Senão, chama API. Se 403, espera 800ms e tenta de novo.
+      // 3. Se ainda 403, faz HARVEST: procura um listing Shopee ativo na mesma
+      //    categoria (no DB do Dexo), chama getItemBaseInfo e extrai
+      //    attribute_list de lá — Shopee bloqueia get_attributes mas permite
+      //    ler items existentes. Popula cache pro próximo retry/criação.
+      // 4. Senão tenta cache stale (até 30 dias) — melhor velho do que nada.
+      // 5. Por fim, lança o erro pra que o caller marque listing como error
+      //    em vez de criar com attribute_list=[] (que era o fail-open antigo).
+      const fetchCategoryAttrsWithCache = async (): Promise<{
+        attribute_list: any[];
+        source: "live" | "cache_fresh" | "cache_stale" | "harvested";
+      }> => {
+        const cached = await lookupShopeeCategoryAttrs(
+          account.shopId,
+          numericCategoryId,
+          "pt-BR",
+        );
+        if (cached.status === "fresh" && cached.attribute_list) {
+          console.log(
+            JSON.stringify({
+              event: "shopee.category_attrs.cache_hit",
+              status: "fresh",
+              categoryId: numericCategoryId,
+              shopId: account.shopId,
+              ageMs: cached.ageMs,
+              attrCount: cached.attribute_list.length,
+            }),
+          );
+          return {
+            attribute_list: cached.attribute_list,
+            source: "cache_fresh",
+          };
+        }
+
         try {
-          return await ShopeeApiService.getCategoryAttributes(
+          const live = await ShopeeApiService.getCategoryAttributes(
             account.accessToken,
             account.shopId,
             numericCategoryId,
             "pt-BR",
           );
+          const list = live?.attribute_list || [];
+          storeShopeeCategoryAttrs(
+            account.shopId,
+            numericCategoryId,
+            "pt-BR",
+            list,
+          );
+          return { attribute_list: list, source: "live" };
         } catch (err) {
           const status = (err as any)?.status;
-          if (status !== 403) throw err;
-          await new Promise((r) => setTimeout(r, 800));
-          return await ShopeeApiService.getCategoryAttributes(
-            account.accessToken,
-            account.shopId,
-            numericCategoryId,
-            "pt-BR",
-          );
+          if (status === 403) {
+            await new Promise((r) => setTimeout(r, 800));
+            try {
+              const live = await ShopeeApiService.getCategoryAttributes(
+                account.accessToken,
+                account.shopId,
+                numericCategoryId,
+                "pt-BR",
+              );
+              const list = live?.attribute_list || [];
+              storeShopeeCategoryAttrs(
+                account.shopId,
+                numericCategoryId,
+                "pt-BR",
+                list,
+              );
+              return { attribute_list: list, source: "live" };
+            } catch (retryErr) {
+              // Fallback 1: HARVEST de listing Shopee existente na mesma
+              // categoria. get_item_base_info costuma funcionar mesmo quando
+              // get_attributes 403 — extraímos attribute_list de um item já
+              // criado pra popular o cache.
+              try {
+                const prismaMod = await import("../../lib/prisma");
+                const prisma = prismaMod.default;
+                const sample = await (prisma as any).productListing.findFirst({
+                  where: {
+                    marketplaceAccountId: account.id,
+                    status: "active",
+                    NOT: { externalListingId: { startsWith: "PENDING_" } },
+                    product: {
+                      shopeeCategoryId: String(numericCategoryId),
+                    },
+                  },
+                  select: { externalListingId: true, productId: true },
+                });
+                if (sample?.externalListingId) {
+                  const sampleItemId = Number(sample.externalListingId);
+                  if (Number.isFinite(sampleItemId) && sampleItemId > 0) {
+                    const item = await ShopeeApiService.getItemBaseInfo(
+                      account.accessToken,
+                      account.shopId,
+                      sampleItemId,
+                    );
+                    if (
+                      item?.attribute_list &&
+                      item.attribute_list.length > 0
+                    ) {
+                      storeShopeeCategoryAttrs(
+                        account.shopId,
+                        numericCategoryId,
+                        "pt-BR",
+                        item.attribute_list,
+                      );
+                      console.log(
+                        JSON.stringify({
+                          event: "shopee.category_attrs.harvested",
+                          categoryId: numericCategoryId,
+                          shopId: account.shopId,
+                          fromItemId: sampleItemId,
+                          attrCount: item.attribute_list.length,
+                        }),
+                      );
+                      return {
+                        attribute_list: item.attribute_list,
+                        source: "harvested",
+                      };
+                    }
+                  }
+                }
+              } catch (harvestErr) {
+                console.warn(
+                  JSON.stringify({
+                    event: "shopee.category_attrs.harvest_failed",
+                    categoryId: numericCategoryId,
+                    shopId: account.shopId,
+                    message:
+                      harvestErr instanceof Error
+                        ? harvestErr.message
+                        : String(harvestErr),
+                  }),
+                );
+              }
+              // Fallback 2: cache stale (até 30 dias) é melhor do que nada
+              if (
+                cached.status === "stale" &&
+                cached.attribute_list &&
+                cached.attribute_list.length > 0
+              ) {
+                console.warn(
+                  JSON.stringify({
+                    event: "shopee.category_attrs.cache_hit",
+                    status: "stale",
+                    categoryId: numericCategoryId,
+                    shopId: account.shopId,
+                    ageMs: cached.ageMs,
+                    attrCount: cached.attribute_list.length,
+                    reason: "live_403_after_retry",
+                  }),
+                );
+                return {
+                  attribute_list: cached.attribute_list,
+                  source: "cache_stale",
+                };
+              }
+              throw retryErr;
+            }
+          }
+          // Não-403: stale cache mesmo assim, pra sobreviver downtime Shopee
+          if (
+            cached.status === "stale" &&
+            cached.attribute_list &&
+            cached.attribute_list.length > 0
+          ) {
+            console.warn(
+              JSON.stringify({
+                event: "shopee.category_attrs.cache_hit",
+                status: "stale",
+                categoryId: numericCategoryId,
+                shopId: account.shopId,
+                ageMs: cached.ageMs,
+                attrCount: cached.attribute_list.length,
+                reason: "live_error_non_403",
+              }),
+            );
+            return {
+              attribute_list: cached.attribute_list,
+              source: "cache_stale",
+            };
+          }
+          throw err;
         }
       };
 
       const [categoryAttrsResult, imageUploadResult, logisticsResult] =
         await Promise.allSettled([
-          // Stage 4: Category Attributes (com retry 403)
-          fetchCategoryAttrsWithRetry(),
+          // Stage 4: Category Attributes (cache + live + stale fallback)
+          fetchCategoryAttrsWithCache(),
           // Stage 5: Image Upload (multi-imagem em paralelo)
           imageUploadStage,
           // Stage 6: Logistics Channels
@@ -3159,12 +3326,11 @@ export class ListingUseCase {
           ),
         ]);
 
-      // ── Processar resultados de Category Attributes (mesmo tratamento de antes) ──
+      // ── Processar resultados de Category Attributes ──
       if (categoryAttrsResult.status === "fulfilled") {
-        const categoryAttrs = categoryAttrsResult.value;
-        const attrs = categoryAttrs?.attribute_list || [];
+        const { attribute_list: attrs, source } = categoryAttrsResult.value;
         console.log(
-          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a) => a.is_mandatory).length} mandatory)`,
+          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a: any) => a.is_mandatory).length} mandatory) [source=${source}]`,
         );
 
         for (const attr of attrs) {
