@@ -347,7 +347,17 @@ export function FinanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-187.5">
+      <DialogContent
+        className={
+          // Fase 5+: com o bloco de venda balcão (linha de item com produto +
+          // qty + preço + lixeira), o modal antigo (~750px) ficava apertado.
+          // Em balcaoEnabled crescemos para sm:max-w-4xl (~896px). Sem o flag,
+          // mantemos a largura histórica para preservar 100% a UX anterior.
+          balcaoEnabled
+            ? "max-h-[90vh] overflow-y-auto sm:max-w-4xl"
+            : "max-h-[90vh] overflow-y-auto sm:max-w-187.5"
+        }
+      >
         <DialogHeader>
           <DialogTitle>
             {isEdit

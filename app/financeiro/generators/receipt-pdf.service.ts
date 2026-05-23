@@ -467,9 +467,24 @@ function drawItems(
 
   y -= rowH;
 
-  // Linhas
-  const lines = parseItemLines(entry);
-  const maxRows = Math.min(lines.length, 14);
+  // Linhas — preferimos os itens estruturados da conta (Fase 4+: venda
+  // balcão persiste ReceivableItem com snapshot de unitPrice/quantity).
+  // Se ausentes, caímos no parser legado de debtDetails (regex), que pode
+  // confundir números no fim do texto com preço (ex.: "Fluence 2011 A 2017"
+  // → 2017 como preço). O caminho estruturado elimina essa ambiguidade.
+  const rows: ParsedItem[] =
+    Array.isArray(entry.items) && entry.items.length > 0
+      ? entry.items.map((it: any) => ({
+          description: buildItemDescription(it),
+          amount: Number(
+            (Number(it.quantity ?? 0) * Number(it.unitPrice ?? 0)).toFixed(2),
+          ),
+        }))
+      : parseItemLines(entry).map((line, _, arr) =>
+          parseItemLine(line, entry, arr.length),
+        );
+
+  const maxRows = Math.min(rows.length, 14);
   for (let i = 0; i < maxRows; i++) {
     const zebra = i % 2 === 1;
     if (zebra) {
@@ -481,8 +496,7 @@ function drawItems(
         color: palette.softBg,
       });
     }
-    const rawLine = lines[i];
-    const parsed = parseItemLine(rawLine, entry, lines.length);
+    const parsed = rows[i];
     const textY = y - 10;
     // # index
     page.drawText(String(i + 1), {
@@ -517,8 +531,8 @@ function drawItems(
     }
     y -= rowH;
   }
-  if (lines.length > maxRows) {
-    page.drawText(`+ ${lines.length - maxRows} item(ns) nao exibidos`, {
+  if (rows.length > maxRows) {
+    page.drawText(`+ ${rows.length - maxRows} item(ns) nao exibidos`, {
       x: tableX + 36,
       y: y - 6,
       size: 8,
@@ -882,6 +896,17 @@ function buildAddressLine(c: CompanyFiscalConfig | null): string {
 }
 
 type ParsedItem = { description: string; amount: number | null };
+
+// Constrói a descrição de uma linha do PDF a partir de um ReceivableItem
+// estruturado (Fase 4+ — venda balcão). Formato: "<SKU> <nome>" com prefixo
+// "<qty>×" quando qty > 1. Mantemos curto para caber na coluna de descrição.
+function buildItemDescription(it: any): string {
+  const sku = it?.product?.sku ? `${it.product.sku} ` : "";
+  const name = it?.product?.name ?? "Produto";
+  const qty = Number(it?.quantity ?? 0);
+  const qtyPrefix = qty > 1 ? `${qty}× ` : "";
+  return `${qtyPrefix}${sku}${name}`.trim();
+}
 
 function parseItemLines(entry: FinanceEntry): string[] {
   const raw = (entry.debtDetails ?? "").trim();

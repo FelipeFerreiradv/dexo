@@ -235,9 +235,9 @@ export function ProductPickerBlock({
 
       {fields.length > 0 && (
         <div className="space-y-2">
-          <div className="grid grid-cols-12 gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            <div className="col-span-6">Produto</div>
-            <div className="col-span-3">Qtd</div>
+          <div className="grid grid-cols-12 gap-3 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            <div className="col-span-7">Produto</div>
+            <div className="col-span-2">Qtd</div>
             <div className="col-span-2">Preço un.</div>
             <div className="col-span-1" />
           </div>
@@ -305,11 +305,14 @@ function ItemRow({
   onRemove,
 }: ItemRowProps) {
   return (
-    <div className="grid grid-cols-12 items-start gap-2">
-      <div className="col-span-6">
-        <div className="flex h-9 w-full items-center rounded-md border border-border/60 bg-muted/40 px-3 text-sm">
+    <div className="grid grid-cols-12 items-start gap-3">
+      <div className="col-span-7">
+        {/* Card produto: altura adaptável; nome pode quebrar em até 2 linhas
+            (line-clamp-2). SKU em fonte menor abaixo. Reservado para nomes
+            longos comuns em autopeças. */}
+        <div className="flex min-h-9 w-full items-start rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-sm">
           <span className="flex min-w-0 flex-col leading-tight">
-            <span className="truncate font-medium">
+            <span className="font-medium line-clamp-2 break-words">
               {meta?.name ?? "Produto"}
             </span>
             <span className="truncate text-[10px] text-muted-foreground">
@@ -318,7 +321,7 @@ function ItemRow({
           </span>
         </div>
       </div>
-      <div className="col-span-3">
+      <div className="col-span-2">
         <Controller
           control={control}
           name={`items.${index}.quantity` as const}
