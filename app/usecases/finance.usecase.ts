@@ -7,23 +7,27 @@ import {
   FinanceListResult,
   FinanceSummary,
 } from "../interfaces/finance.interface";
+import type { ProductLookup } from "../interfaces/nfe.interface";
 import prisma from "../lib/prisma";
 import { CustomerRepository } from "../repositories/customer.repository";
 import { FinanceRepository } from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
+import { NfeDraftUseCase } from "./nfe-draft.usecase";
 
 export class FinanceUseCase {
   private repo: FinanceRepository;
   private customerRepo: CustomerRepository;
   private unidadeRepo: UnidadeRepository;
   private customerUseCase: CustomerUseCase;
+  private nfeDraftUseCase: NfeDraftUseCase;
 
   constructor() {
     this.repo = new FinanceRepository();
     this.customerRepo = new CustomerRepository();
     this.unidadeRepo = new UnidadeRepository();
     this.customerUseCase = new CustomerUseCase();
+    this.nfeDraftUseCase = new NfeDraftUseCase();
   }
 
   private async assertCustomer(customerId: string, userId: string) {
@@ -59,11 +63,60 @@ export class FinanceUseCase {
     this.validateMonetary(data);
   }
 
+  // Validação de itens (Fase 4 — venda balcão). Só roda quando `items` está
+  // presente; ausência preserva 100% o fluxo atual. Mensagens contêm
+  // "obrigatório"/"inválido" para mapear a 400 no error handler de finance.
+  private validateItems(kind: FinanceKind, data: FinanceEntryCreate | FinanceEntryUpdate) {
+    const items = (data as any).items;
+    if (items === undefined) return; // sem field => fluxo atual
+    if (!Array.isArray(items)) {
+      throw new Error("Itens inválidos: deve ser uma lista");
+    }
+    if (kind !== "receivable") {
+      // "inválido" mapeia para 400 no buildCreateHandler de finance.routes
+      // (mesma convenção do assertUnidade).
+      throw new Error(
+        "Itens inválidos: somente contas a receber aceitam itens",
+      );
+    }
+    for (const [idx, it] of items.entries()) {
+      if (!it || typeof it !== "object") {
+        throw new Error(`Item ${idx + 1} inválido`);
+      }
+      if (!it.productId || typeof it.productId !== "string") {
+        throw new Error(`Item ${idx + 1}: produto é obrigatório`);
+      }
+      if (
+        !Number.isInteger(it.quantity) ||
+        it.quantity <= 0
+      ) {
+        // Estrutura "Item N inválido: ..." garante o substring "inválido"
+        // (masculino) que o buildCreateHandler casa para mapear a 400.
+        throw new Error(
+          `Item ${idx + 1} inválido: quantidade deve ser inteiro positivo`,
+        );
+      }
+      if (
+        typeof it.unitPrice !== "number" ||
+        !Number.isFinite(it.unitPrice) ||
+        it.unitPrice < 0
+      ) {
+        throw new Error(
+          `Item ${idx + 1}: preço unitário inválido`,
+        );
+      }
+    }
+  }
+
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
   ): Promise<FinanceEntry> {
     if (!data.userId) throw new Error("Usuário não encontrado");
+
+    // Validação de itens vale para os DOIS fluxos (quick-create e padrão).
+    // Quando `items` ausente, é no-op — preserva 100% o fluxo atual.
+    this.validateItems(kind, data);
 
     // ── Cadastro rápido: cria cliente + conta numa ÚNICA transação ──
     // Se a criação da conta falhar, o cliente também sofre rollback
@@ -111,6 +164,8 @@ export class FinanceUseCase {
       await this.assertCustomer(data.customerId, userId);
     }
     if (data.unidadeId) await this.assertUnidade(data.unidadeId, userId);
+    // Validação de itens — no-op quando `items` ausente; preserva fluxo atual.
+    this.validateItems(kind, data);
     return this.repo.update(kind, id, userId, data);
   }
 
@@ -156,6 +211,14 @@ export class FinanceUseCase {
     unidadeId?: string,
   ): Promise<FinanceSummary> {
     return this.repo.summary(userId, unidadeId);
+  }
+
+  // Lookup de produto para a UI do financeiro (autocompletar por SKU/nome).
+  // Reusa exatamente o mesmo lookup do módulo fiscal (NfeDraftUseCase →
+  // NfeRepository: name/sku/partNumber contains, take 20) — query única,
+  // sem divergência. Desacopla a UI do financeiro do prefixo /fiscal.
+  async lookupProducts(userId: string, query: string): Promise<ProductLookup[]> {
+    return this.nfeDraftUseCase.lookupProducts(userId, query);
   }
 
   private applyOverdueFlag(entry: FinanceEntry): FinanceEntry {

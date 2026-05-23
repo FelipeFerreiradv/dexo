@@ -30,6 +30,10 @@ function toNumberOrNull(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Itens só são incluídos no include de receivable (payable não tem relação).
+// Quando incluído, `raw.items` é um array (possivelmente vazio); quando não
+// incluído, é undefined — preserva-se no toEntry para não alterar payloads
+// que historicamente não traziam itens.
 function toEntry(raw: any): FinanceEntry {
   return {
     id: raw.id,
@@ -64,7 +68,35 @@ function toEntry(raw: any): FinanceEntry {
           name: raw.unidade.name,
         }
       : null,
+    items: Array.isArray(raw.items)
+      ? raw.items.map((i: any) => ({
+          id: i.id,
+          productId: i.productId,
+          listingId: i.listingId ?? null,
+          quantity: i.quantity,
+          unitPrice: Number(i.unitPrice),
+          createdAt: i.createdAt,
+          product: i.product
+            ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
+            : null,
+        }))
+      : undefined,
   };
+}
+
+// Include de itens (somente receivable). Não-receivable ignora.
+const itemsInclude = {
+  orderBy: { createdAt: "asc" as const },
+  include: { product: { select: { id: true, sku: true, name: true } } },
+};
+
+function buildInclude(kind: FinanceKind, withItems: boolean): any {
+  const include: any = {
+    customer: { select: { id: true, name: true, cpf: true, email: true } },
+    unidade: { select: { id: true, name: true } },
+  };
+  if (withItems && kind === "receivable") include.items = itemsInclude;
+  return include;
 }
 
 export class FinanceRepository {
@@ -73,7 +105,31 @@ export class FinanceRepository {
     data: FinanceEntryCreate,
     tx?: Prisma.TransactionClient,
   ): Promise<FinanceEntry> {
-    // tx ausente => prisma global => caminho atual inalterado.
+    const wantsItems =
+      kind === "receivable" && Array.isArray(data.items) && data.items.length > 0;
+
+    // Sem itens => caminho atual 100% inalterado (sem $transaction se o caller
+    // também não passou tx; com tx se o caller forneceu — ex.: quick-create).
+    if (!wantsItems) {
+      return this.createSingle(kind, data, tx);
+    }
+
+    // Com itens => atomicidade obrigatória (Receivable + ReceivableItem na
+    // MESMA transação). Se o caller já abriu tx (ex.: quick-create), reusa.
+    if (tx) {
+      return this.createWithItems(kind, data, tx);
+    }
+    return prisma.$transaction((txClient) =>
+      this.createWithItems(kind, data, txClient),
+    );
+  }
+
+  // Caminho histórico — preservado byte-idêntico ao da Fase 1.
+  private async createSingle(
+    kind: FinanceKind,
+    data: FinanceEntryCreate,
+    tx?: Prisma.TransactionClient,
+  ): Promise<FinanceEntry> {
     const db: Prisma.TransactionClient = tx ?? prisma;
     const delegate: any = kind === "receivable" ? db.receivable : db.payable;
     const created = await delegate.create({
@@ -103,24 +159,113 @@ export class FinanceRepository {
     return toEntry(created);
   }
 
+  // Caminho com itens — só receivable, sempre dentro de uma tx (o create
+  // wrapper garante isso). Cria Receivable + ReceivableItems e re-busca com
+  // include de itens.
+  private async createWithItems(
+    kind: FinanceKind,
+    data: FinanceEntryCreate,
+    tx: Prisma.TransactionClient,
+  ): Promise<FinanceEntry> {
+    if (kind !== "receivable") {
+      // Defesa-em-profundidade — o usecase já bloqueia este caminho.
+      throw new Error(
+        "Itens inválidos: somente contas a receber aceitam itens",
+      );
+    }
+    const delegate: any = (tx as any).receivable;
+    const created = await delegate.create({
+      data: {
+        userId: data.userId,
+        customerId: data.customerId,
+        unidadeId: data.unidadeId ?? null,
+        document: data.document ?? null,
+        reason: data.reason ?? null,
+        debtDetails: data.debtDetails ?? null,
+        totalAmount: data.totalAmount,
+        fineAmount: data.fineAmount ?? null,
+        finePercent: data.finePercent ?? null,
+        interestPercent: data.interestPercent ?? null,
+        toleranceDays: data.toleranceDays ?? null,
+        installments: data.installments ?? 1,
+        periodDays: data.periodDays ?? null,
+        dueDate: parseDate(data.dueDate)!,
+        status: (data.status as FinanceStatus) ?? "PENDENTE",
+        paidAt: parseDate(data.paidAt ?? null),
+      },
+      // Não incluímos itens aqui (acabamos de criar e vamos preencher na
+      // próxima query); a 2ª query traz o include completo.
+      select: { id: true },
+    });
+
+    await (tx as any).receivableItem.createMany({
+      data: data.items!.map((it) => ({
+        receivableId: created.id,
+        productId: it.productId,
+        listingId: it.listingId ?? null,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+      })),
+    });
+
+    const full = await (tx as any).receivable.findUnique({
+      where: { id: created.id },
+      include: buildInclude("receivable", true),
+    });
+    return toEntry(full);
+  }
+
   async update(
     kind: FinanceKind,
     id: string,
     userId: string,
     data: FinanceEntryUpdate,
+    tx?: Prisma.TransactionClient,
   ): Promise<FinanceEntry> {
+    // `items` no payload significa "substituir lista de itens" (replace
+    // strategy). Ausência (undefined) preserva itens existentes — fluxo atual
+    // não-quebra.
+    const hasItemsField = "items" in data && data.items !== undefined;
+
+    if (!hasItemsField) {
+      return this.updateSingle(kind, id, userId, data, tx);
+    }
+    if (kind !== "receivable") {
+      throw new Error(
+        "Itens inválidos: somente contas a receber aceitam itens",
+      );
+    }
+    if (tx) {
+      return this.updateWithItems(kind, id, userId, data, tx);
+    }
+    return prisma.$transaction((txClient) =>
+      this.updateWithItems(kind, id, userId, data, txClient),
+    );
+  }
+
+  // Caminho histórico — preservado byte-idêntico ao da Fase 1 (sem tx).
+  private async updateSingle(
+    kind: FinanceKind,
+    id: string,
+    userId: string,
+    data: FinanceEntryUpdate,
+    tx?: Prisma.TransactionClient,
+  ): Promise<FinanceEntry> {
+    const db: any = tx ?? prisma;
+    const delegate: any = kind === "receivable" ? db.receivable : db.payable;
     const payload: any = { ...data };
+    delete payload.items; // defesa: nunca passar items pro update do delegate
     if ("dueDate" in payload) payload.dueDate = parseDate(payload.dueDate);
     if ("paidAt" in payload) payload.paidAt = parseDate(payload.paidAt);
     delete payload.userId;
 
-    const res = await model(kind).updateMany({
+    const res = await delegate.updateMany({
       where: { id, userId },
       data: payload,
     });
     if (res.count === 0) throw new Error("Registro financeiro não encontrado");
 
-    const updated = await model(kind).findUnique({
+    const updated = await delegate.findUnique({
       where: { id },
       include: {
         customer: { select: { id: true, name: true, cpf: true, email: true } },
@@ -130,19 +275,88 @@ export class FinanceRepository {
     return toEntry(updated);
   }
 
+  // Atualiza receivable + replace de itens — atomicidade obrigatória.
+  private async updateWithItems(
+    kind: FinanceKind,
+    id: string,
+    userId: string,
+    data: FinanceEntryUpdate,
+    tx: Prisma.TransactionClient,
+  ): Promise<FinanceEntry> {
+    const items = data.items ?? [];
+    const otherFields: any = { ...data };
+    delete otherFields.items;
+    delete otherFields.userId;
+    if ("dueDate" in otherFields)
+      otherFields.dueDate = parseDate(otherFields.dueDate);
+    if ("paidAt" in otherFields)
+      otherFields.paidAt = parseDate(otherFields.paidAt);
+
+    const res = await (tx as any).receivable.updateMany({
+      where: { id, userId },
+      data: otherFields,
+    });
+    if (res.count === 0) throw new Error("Registro financeiro não encontrado");
+
+    // Replace strategy: apaga todos e re-cria. Igual ao padrão usado em
+    // NfeRepository.updateDraft para itens de NFe.
+    await (tx as any).receivableItem.deleteMany({ where: { receivableId: id } });
+    if (items.length > 0) {
+      await (tx as any).receivableItem.createMany({
+        data: items.map((it) => ({
+          receivableId: id,
+          productId: it.productId,
+          listingId: it.listingId ?? null,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+        })),
+      });
+    }
+
+    const updated = await (tx as any).receivable.findUnique({
+      where: { id },
+      include: buildInclude("receivable", true),
+    });
+    return toEntry(updated);
+  }
+
   async findById(
     kind: FinanceKind,
     id: string,
     userId: string,
   ): Promise<FinanceEntry | null> {
+    // Receivable: traz items (uso pontual — pagamento, cupom, etc.).
+    // Payable: items não se aplica (preserva payload atual).
     const res = await model(kind).findFirst({
       where: { id, userId },
-      include: {
-        customer: { select: { id: true, name: true, cpf: true, email: true } },
-        unidade: { select: { id: true, name: true } },
-      },
+      include: buildInclude(kind, true),
     });
     return res ? toEntry(res) : null;
+  }
+
+  // Busca apenas os itens de uma Receivable (ownership-aware via JOIN
+  // implícito pelo `receivable.userId`). Útil para markPaid (Fase 6) sem
+  // precisar carregar o entry inteiro.
+  async findItems(
+    receivableId: string,
+    userId: string,
+  ): Promise<NonNullable<FinanceEntry["items"]>> {
+    const rows = await prisma.receivableItem.findMany({
+      where: { receivableId, receivable: { userId } },
+      orderBy: { createdAt: "asc" },
+      include: { product: { select: { id: true, sku: true, name: true } } },
+    });
+    return rows.map((i: any) => ({
+      id: i.id,
+      productId: i.productId,
+      listingId: i.listingId ?? null,
+      quantity: i.quantity,
+      unitPrice: Number(i.unitPrice),
+      createdAt: i.createdAt,
+      product: i.product
+        ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
+        : null,
+    }));
   }
 
   async findAll(

@@ -30,6 +30,33 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // Lookup de produto para a UI do financeiro (Fase 4 — venda balcão).
+  // Mesmo contrato { results: ProductLookup[] } da rota fiscal de lookup;
+  // delega ao FinanceUseCase.lookupProducts (que reusa NfeDraftUseCase) para
+  // não duplicar a query e desacoplar a UI do prefixo /fiscal.
+  fastify.get(
+    "/products/lookup",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Querystring: { q?: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const q = (request.query as any).q || "";
+        const results = await useCase.lookupProducts(userId, q);
+        return reply.status(200).send({ results });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao buscar produtos",
+        });
+      }
+    },
+  );
+
   const buildListHandler =
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
