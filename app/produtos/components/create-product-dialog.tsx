@@ -1456,6 +1456,57 @@ export function CreateProductDialog({
           });
         }
 
+        // Fallback visível: quando o CSV não cobre a categoria, aplica valores
+        // razoáveis de autopeça pequena (mesmas faixas do backend Slice 2d:
+        // 15×15×10cm + 0.5kg + jitter por hash do SKU). User vê esses valores
+        // no modal e pode editar antes de submeter — em vez de ver campos
+        // em branco e ser surpreendido pelo fallback silencioso do backend.
+        if (!measurements) {
+          const skuValue = (getValues("sku") || "").toString();
+          const seed =
+            skuValue.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) ||
+            42;
+          const jitter = (mod: number) => (seed % mod) - Math.floor(mod / 2);
+
+          const stillEmptyHeight =
+            getValues("heightCm") === null ||
+            getValues("heightCm") === undefined;
+          const stillEmptyWidth =
+            getValues("widthCm") === null ||
+            getValues("widthCm") === undefined;
+          const stillEmptyLength =
+            getValues("lengthCm") === null ||
+            getValues("lengthCm") === undefined;
+          const stillEmptyWeight =
+            getValues("weightKg") === null ||
+            getValues("weightKg") === undefined;
+
+          if (stillEmptyHeight)
+            setValue("heightCm", Math.max(5, 15 + jitter(5)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyWidth)
+            setValue("widthCm", Math.max(5, 15 + jitter(7)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyLength)
+            setValue("lengthCm", Math.max(5, 10 + jitter(9)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyWeight)
+            setValue("weightKg", 0.5 + (seed % 50) / 100, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+        }
+
         // If category wasn't detected earlier, try to suggest a category from
         // the input title or from the measurement key that matched (best-effort).
         try {
