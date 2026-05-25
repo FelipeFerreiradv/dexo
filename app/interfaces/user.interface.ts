@@ -66,4 +66,6 @@ export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findChildren(parentUserId: string): Promise<User[]>;
   update(id: string, data: UserUpdate): Promise<User>;
+  getLastSkuSequential(id: string): Promise<number | null>;
+  bumpLastSkuSequential(id: string, candidate: number): Promise<void>;
 }

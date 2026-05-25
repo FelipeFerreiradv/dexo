@@ -2221,6 +2221,8 @@ export function CreateProductDialog({
     setCompatibilities([]);
     setSelectedScrap(null);
     scrapAutofilledRef.current = {};
+    // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
+    hasFetchedOnOpenRef.current = false;
     setOpen(false);
   };
 

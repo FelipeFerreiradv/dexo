@@ -1464,21 +1464,32 @@ class ProductRepositoryPrisma implements ProductRepository {
         where: userId ? { userId } : {},
         select: { sku: true },
       });
-
-      let max = 0;
-      for (const { sku } of rows) {
-        if (!sku) continue;
-        const match = sku.match(/^(?:PROD-)?(\d{1,9})$/);
-        if (!match) continue;
-        const n = parseInt(match[1], 10);
-        if (!Number.isSafeInteger(n)) continue;
-        if (n > max) max = n;
-      }
-      return max;
+      return computeMaxNumericSku(rows.map((r) => r.sku));
     } catch {
       throw new Error("Erro ao buscar maior SKU");
     }
   }
+}
+
+// Limite de 6 dígitos (até 999.999): SKUs sequenciais criados pelo sistema
+// nunca passam disso. Códigos longos (códigos de barra, part-numbers de
+// fornecedor com 8+ dígitos) que entram via importação são ignorados para
+// não inflarem a sequência automática.
+const SEQUENTIAL_SKU_REGEX = /^(?:PROD-)?(\d{1,6})$/;
+
+export function computeMaxNumericSku(
+  skus: ReadonlyArray<string | null | undefined>,
+): number {
+  let max = 0;
+  for (const sku of skus) {
+    if (!sku) continue;
+    const match = sku.match(SEQUENTIAL_SKU_REGEX);
+    if (!match) continue;
+    const n = parseInt(match[1], 10);
+    if (!Number.isSafeInteger(n)) continue;
+    if (n > max) max = n;
+  }
+  return max;
 }
 
 export { ProductRepositoryPrisma };

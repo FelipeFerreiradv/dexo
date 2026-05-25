@@ -161,6 +161,26 @@ class UserRepositoryPrisma implements UserRepository {
       throw err;
     }
   }
+
+  async getLastSkuSequential(id: string): Promise<number | null> {
+    const u = await prisma.user.findUnique({
+      where: { id },
+      select: { lastSkuSequential: true },
+    });
+    return u?.lastSkuSequential ?? null;
+  }
+
+  async bumpLastSkuSequential(id: string, candidate: number): Promise<void> {
+    // Bump atômico: nunca regride o contador. Dois inserts paralelos com
+    // valores diferentes resolvem na ordem que chegarem ao DB, mas o
+    // resultado final é sempre o maior dos dois.
+    await prisma.$executeRaw`
+      UPDATE "User"
+      SET "lastSkuSequential" = ${candidate}
+      WHERE id = ${id}
+        AND ("lastSkuSequential" IS NULL OR "lastSkuSequential" < ${candidate})
+    `;
+  }
 }
 
 export { UserRepositoryPrisma };
