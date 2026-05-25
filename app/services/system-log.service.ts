@@ -229,6 +229,34 @@ export class SystemLogService {
     );
   }
 
+  /**
+   * Registra quando o sistema detecta que um ProductListing estava vinculado
+   * à conta errada e reaponta automaticamente para a conta correta do mesmo
+   * usuário. Auditoria importante: explica por que o `marketplaceAccountId`
+   * de um listing pode mudar sem ação direta do usuário.
+   */
+  static async logListingOwnershipRepaired(
+    userId: string,
+    listingId: string,
+    details: {
+      externalListingId?: string;
+      oldAccountId?: string;
+      newAccountId?: string;
+      itemStatus?: string;
+    },
+  ) {
+    return this.logInfo(
+      "LISTING_OWNERSHIP_REPAIRED",
+      `Vínculo do anúncio ${details.externalListingId ?? listingId} reapontado para a conta correta`,
+      {
+        userId,
+        resource: "ProductListing",
+        resourceId: listingId,
+        details,
+      },
+    );
+  }
+
   // Sincronizações
   static async logSyncStart(
     userId: string,

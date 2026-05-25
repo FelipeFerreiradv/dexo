@@ -20,6 +20,7 @@ import {
   classifyShopeeRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
+import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
 import {
   lookupShopeeCategoryAttrs,
   storeShopeeCategoryAttrs,
@@ -4147,6 +4148,78 @@ export class ListingUseCase {
           );
           await ListingRepository.deleteListing(listingId);
           return { success: true, closedOnMarketplace: true };
+        }
+
+        // 403 "you are not the seller" frequentemente significa que o
+        // ProductListing local está vinculado à CONTA ERRADA do mesmo
+        // usuário (caso típico: importações em massa que erraram o
+        // ownership). Tentamos descobrir qual conta é o dono real e
+        // reparar o vínculo automaticamente antes de desistir.
+        if (c.kind === "permanent" && c.status === 403) {
+          const userId = listing.product?.userId;
+          if (userId) {
+            const repair = await findCorrectMLAccount({
+              userId,
+              currentAccountId: listing.marketplaceAccountId,
+              externalListingId: listing.externalListingId,
+            });
+            if (repair.repaired && repair.newAccountId && repair.newAccountToken) {
+              await ListingRepository.reassignAccount(
+                listingId,
+                repair.newAccountId,
+              );
+              void SystemLogService.logListingOwnershipRepaired(userId, listingId, {
+                externalListingId: listing.externalListingId,
+                oldAccountId: listing.marketplaceAccountId,
+                newAccountId: repair.newAccountId,
+                itemStatus: repair.itemStatus,
+              });
+              console.log(
+                `[ListingUseCase] ownership reparado: listing ${listingId} reapontado para conta ${repair.newAccountId} (item status=${repair.itemStatus})`,
+              );
+
+              // Se o item já está closed no ML, o close pedido é
+              // idempotente — basta deletar o vínculo local.
+              if (repair.itemStatus === "closed") {
+                await ListingRepository.deleteListing(listingId);
+                return { success: true, closedOnMarketplace: true };
+              }
+
+              // Item ainda está vivo no ML: re-tenta o fechamento com o
+              // token da conta correta.
+              try {
+                await withRetry(
+                  () =>
+                    MLApiService.updateItem(
+                      repair.newAccountToken!,
+                      listing.externalListingId,
+                      { status: "closed" },
+                    ),
+                  { classify: classifyMLRemoveError },
+                );
+                await ListingRepository.deleteListing(listingId);
+                return { success: true, closedOnMarketplace: true };
+              } catch (retryError) {
+                const cRetry = classifyMLRemoveError(retryError);
+                if (cRetry.kind === "idempotent") {
+                  await ListingRepository.deleteListing(listingId);
+                  return { success: true, closedOnMarketplace: true };
+                }
+                console.warn(
+                  `[ListingUseCase] reparo OK mas re-close ainda falhou (${cRetry.kind}): ${cRetry.message}`,
+                );
+                return {
+                  success: false,
+                  closedOnMarketplace: false,
+                  retryable: cRetry.kind === "retryable",
+                  error: cRetry.message,
+                };
+              }
+            }
+            console.log(
+              `[ListingUseCase] reparo não encontrou conta correta para ${listing.externalListingId}: ${repair.reason}`,
+            );
+          }
         }
 
         console.warn(
