@@ -1,5 +1,6 @@
 import prisma from "@/app/lib/prisma";
 import { Platform, AccountStatus } from "@prisma/client";
+import { chunk } from "@/app/lib/chunk";
 
 /**
  * Camada de acesso a dados para contas de marketplace
@@ -356,23 +357,39 @@ export class MarketplaceRepository {
       });
 
       if (ordersCount > 0) {
-        // Desconexão "soft": limpa tokens e desativa a conta, preservando histórico de pedidos.
-        await prisma.$transaction([
-          // orderItems podem referenciar listings; anulamos para não deixar pendência
+        // PostgreSQL aceita no máximo 32767 bind variables por prepared
+        // statement. Contas grandes (JB Desmonte do Leonardo: 42K+ listings)
+        // estouravam esse limite em um único updateMany com IN(...).
+        // Quebramos em chunks de 10000 IDs (bem abaixo do teto) e mantemos
+        // tudo na mesma transação para preservar atomicidade.
+        const listingIds = listings.map((l) => l.id);
+        const idChunks = chunk(listingIds, 10_000);
+        const updateOps = idChunks.map((ids) =>
           prisma.orderItem.updateMany({
-            where: { listingId: { in: listings.map((l) => l.id) } },
+            where: { listingId: { in: ids } },
             data: { listingId: null },
           }),
-          prisma.marketplaceAccount.update({
-            where: { id },
-            data: {
-              accessToken: "",
-              refreshToken: "",
-              expiresAt: new Date(0),
-              status: AccountStatus.INACTIVE,
-            },
-          }),
-        ]);
+        );
+
+        // Desconexão "soft": limpa tokens e desativa a conta, preservando histórico de pedidos.
+        await prisma.$transaction(
+          [
+            // orderItems podem referenciar listings; anulamos para não deixar pendência
+            ...updateOps,
+            prisma.marketplaceAccount.update({
+              where: { id },
+              data: {
+                accessToken: "",
+                refreshToken: "",
+                expiresAt: new Date(0),
+                status: AccountStatus.INACTIVE,
+              },
+            }),
+          ],
+          // Timeout maior para contas grandes (5 chunks de 10K updates podem
+          // levar alguns segundos no Supabase pooler).
+          { timeout: 60_000 },
+        );
       } else {
         // Nenhum pedido vinculado: podemos excluir tudo de forma segura
         await prisma.$transaction([
