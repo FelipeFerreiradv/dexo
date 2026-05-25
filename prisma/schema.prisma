@@ -32,6 +32,12 @@ model User {
   defaultLocalPickup       Boolean? @default(false)
   defaultManufacturingTime Int?     @default(0)
 
+  // Contador do último SKU sequencial gerado pelo modal "Novo Produto".
+  // Importações de estoque escrevem direto em Product e NÃO tocam aqui —
+  // por isso o contador reflete só a sequência humana, sem contaminação
+  // de códigos externos de fornecedor (códigos de barra etc).
+  lastSkuSequential Int?
+
   // Hierarquia administrador → colaboradores (additive, default NULL).
   // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
   parentUserId String?

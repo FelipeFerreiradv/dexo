@@ -1,4 +1,5 @@
 import prisma from "../app/lib/prisma";
+import { computeMaxNumericSku } from "../app/repositories/product.repository";
 
 const TARGET_USER_ID = "cmn5yc4rn0000vsasmwv9m8nc";
 
@@ -60,6 +61,12 @@ async function main() {
   console.log(`  SKUs que batem:        ${matchesProposed}`);
   console.log(`  max (safe):            ${maxProposed}`);
   console.log(`  nextSku simulado:      ${(maxProposed + 1).toString().padStart(3, "0")}`);
+
+  // Em produção (após fix): chama a função real do repository.
+  const maxApplied = computeMaxNumericSku(products.map((p) => p.sku));
+  console.log("\n=== Regra em produção (computeMaxNumericSku, \\d{1,6}) ===");
+  console.log(`  max (safe):            ${maxApplied}`);
+  console.log(`  nextSku simulado:      ${(maxApplied + 1).toString().padStart(3, "0")}`);
 
   console.log(`\n=== SKUs suspeitos (>9 dígitos, provavelmente códigos de barra) ===`);
   if (suspects.length === 0) {

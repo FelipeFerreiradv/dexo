@@ -98,7 +98,32 @@ export class ProductUseCase {
 
     // Persistência transacional única: o repositório grava produto + compatibilidades
     // no mesmo prisma.product.create (nested write). Não duplicar aqui.
-    return this.productRepository.create(productData);
+    const created = await this.productRepository.create(productData);
+
+    // Mantém o contador de sequência humana atualizado. Só os fluxos da UI
+    // passam por aqui — importações de estoque chamam prisma.product.create
+    // direto, por isso o counter não recebe códigos externos.
+    await this.tryBumpSkuCounter(productData.userId, productData.sku);
+
+    return created;
+  }
+
+  private async tryBumpSkuCounter(userId: string, sku: string): Promise<void> {
+    // Só conta SKUs numéricos puros até 6 dígitos — o formato que o
+    // getNextSku gera (`padStart(3, "0")`). SKUs legados `PROD-XXX` e SKUs
+    // custom de importação não atualizam o counter.
+    const match = sku.match(/^(\d{1,6})$/);
+    if (!match) return;
+    const n = parseInt(match[1], 10);
+    if (!Number.isSafeInteger(n) || n <= 0) return;
+    try {
+      await this.userRepository.bumpLastSkuSequential(userId, n);
+    } catch (err) {
+      // Não bloqueia o create: o produto já foi persistido. Log para
+      // diagnóstico — se o counter ficar atrás, a próxima sugestão de
+      // SKU vai colidir e o safety-loop do getNextSku resolve.
+      console.error("[SKU_BUMP] falhou ao atualizar lastSkuSequential:", err);
+    }
   }
 
   async getDetail(id: string, userId: string) {
@@ -717,12 +742,24 @@ export class ProductUseCase {
 
   /**
    * Gera o próximo SKU disponível
-   * Formato: 001, 002, etc. (continua a partir dos SKUs PROD-XXX legados)
+   * Formato: 001, 002, etc. Lê o contador `User.lastSkuSequential`, que é
+   * incrementado apenas em `create()` (rota UI). Importações de estoque
+   * gravam direto em Product e não tocam aqui — assim a sequência humana
+   * fica isolada de códigos externos vindos de planilha.
    */
   async getNextSku(userId: string): Promise<string> {
-    const maxNumber = await this.productRepository.getMaxSkuNumber(userId);
-    const nextNumber = maxNumber + 1;
-    return nextNumber.toString().padStart(3, "0");
+    let n = (await this.userRepository.getLastSkuSequential(userId)) ?? 0;
+    n += 1;
+    // Pula SKUs já tomados — uma importação anterior pode ter usado um
+    // valor dentro da janela sequencial (ex.: "032763"). Sem isso, o
+    // create estouraria o índice único (userId, sku).
+    for (let i = 0; i < 1000; i++) {
+      const candidate = n.toString().padStart(3, "0");
+      const existing = await this.productRepository.findBySku(candidate, userId);
+      if (!existing) return candidate;
+      n++;
+    }
+    throw new Error("Não foi possível gerar próximo SKU disponível");
   }
 
   /**
