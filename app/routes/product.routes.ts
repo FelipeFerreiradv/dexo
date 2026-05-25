@@ -20,6 +20,7 @@ import CategoryRepository from "../marketplaces/repositories/category.repository
 import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
 import { getMeasurementsForCategory } from "../lib/ml-measurements";
+import { normalizeQuality, InvalidQualityError } from "../lib/quality";
 
 const PUBLICATION_STATUS_VALUES = new Set<ProductPublicationStatus>([
   "ACTIVE",
@@ -239,6 +240,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
       const user = (request as any).user;
 
+      // Valida o enum `quality` antes do sanitize. Sem isso, valores fora do
+      // enum (ex.: "USADO" vindo de cliente externo) chegavam ao Prisma e
+      // estouravam com uma mensagem crua que vazava o stack do ORM.
+      let normalizedQuality;
+      try {
+        normalizedQuality = normalizeQuality(quality);
+      } catch (err) {
+        if (err instanceof InvalidQualityError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
+      }
+
       // Sanitize / coerce incoming numeric fields to expected types to avoid Prisma/runtime errors
       const sanitized = {
         sku: sku as string,
@@ -256,7 +270,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         location: location ?? undefined,
         locationId: locationId ?? undefined,
         partNumber: partNumber ?? undefined,
-        quality: quality ?? undefined,
+        quality: normalizedQuality,
         isSecurityItem: Boolean(isSecurityItem),
         isTraceable: Boolean(isTraceable),
         sourceVehicle: sourceVehicle ?? undefined,
@@ -1261,6 +1275,18 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
+        // Mesma validação do POST: aceita case-insensitive, rejeita com 400
+        // amigável se o cliente externo mandar fora do enum (ex.: "USADO").
+        let normalizedQuality;
+        try {
+          normalizedQuality = normalizeQuality(quality);
+        } catch (err) {
+          if (err instanceof InvalidQualityError) {
+            return reply.status(400).send({ error: err.message });
+          }
+          throw err;
+        }
+
         const userId = (request as any).user?.dataOwnerId as string | undefined;
         // Resolver mlCategory se fornecida
         let resolvedMlCategoryId: string | undefined;
@@ -1345,7 +1371,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             location,
             locationId,
             partNumber,
-            quality,
+            quality: normalizedQuality,
             isSecurityItem,
             isTraceable,
             sourceVehicle,
