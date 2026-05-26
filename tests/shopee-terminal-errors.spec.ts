@@ -177,6 +177,33 @@ describe("Shopee terminal error classification", () => {
     );
   });
 
+  it("disables retry for 'Não foi possível obter os atributos' (catálogo vazio + 403 + sem harvest) — operador precisa rodar shopee:sync-attrs", async () => {
+    const candidate = makeShopeeCandidate({ id: "listing-shp-attrs-unavailable" });
+    (ListingRepository.findPendingRetries as any).mockResolvedValue([
+      candidate,
+    ]);
+
+    vi.doMock("../app/marketplaces/usecases/listing.usercase", () => ({
+      ListingUseCase: {
+        createShopeeListing: vi.fn().mockRejectedValue(
+          new Error(
+            "Não foi possível obter os atributos da categoria Shopee 102291 (catálogo vazio, API retornou 403, e nenhum anúncio ativo nessa categoria em qualquer conta para harvest). Execute: npm run shopee:sync-attrs -- --category=102291 com uma conta Shopee que tenha permissão, ou crie 1 anúncio manualmente nessa categoria via Seller Center.",
+          ),
+        ),
+      },
+    }));
+
+    await ListingRetryService.runOnce();
+
+    expect(ListingRepository.incrementRetryAttempts).toHaveBeenCalledWith(
+      "listing-shp-attrs-unavailable",
+      expect.objectContaining({
+        retryEnabled: false,
+        lastError: expect.stringContaining("[TERMINAL]"),
+      }),
+    );
+  });
+
   it("allows retry for transient Shopee errors with backoff", async () => {
     const candidate = makeShopeeCandidate({
       id: "listing-shp-3",

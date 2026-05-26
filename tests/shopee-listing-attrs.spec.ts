@@ -41,7 +41,7 @@ import { MarketplaceRepository } from "../app/marketplaces/repositories/marketpl
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
 import { ShopeeApiService } from "../app/marketplaces/services/shopee-api.service";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
-import { __resetShopeeCategoryAttrsCacheForTests } from "../app/marketplaces/services/shopee-category-attrs-cache";
+import { ShopeeAttributeCatalogService } from "../app/marketplaces/services/shopee-attribute-catalog.service";
 
 describe("ListingUseCase.createShopeeListing — atributos obrigatórios de autopeça", () => {
   const mockAccount = {
@@ -77,10 +77,9 @@ describe("ListingUseCase.createShopeeListing — atributos obrigatórios de auto
   } as any;
 
   beforeEach(async () => {
-    // Cache de atributos Shopee é singleton process-level + persistido em
-    // disco — entries de testes anteriores fariam o teste atual pular o mock
-    // de getCategoryAttributes.
-    await __resetShopeeCategoryAttrsCacheForTests();
+    // Cache de atributos Shopee tem memória process-level e seed lazy de
+    // disco — limpa pra não pular o mock de getCategoryAttributes.
+    ShopeeAttributeCatalogService._resetForTests();
 
     vi.spyOn(MarketplaceRepository, "findByIdAndUser").mockResolvedValue(
       mockAccount,

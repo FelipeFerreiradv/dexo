@@ -377,6 +377,21 @@ model MLCategoryAttributeCache {
   @@index([ttlExpiresAt])
 }
 
+model ShopeeCategoryAttribute {
+  id           String   @id @default(cuid())
+  region       String
+  categoryId   Int
+  locale       String
+  attributes   Json
+  source       String
+  fetchedAt    DateTime @default(now())
+  ttlExpiresAt DateTime
+
+  @@unique([region, categoryId, locale])
+  @@index([ttlExpiresAt])
+  @@index([categoryId])
+}
+
 model WebhookEventLog {
   id         String   @id @default(cuid())
   source     String
