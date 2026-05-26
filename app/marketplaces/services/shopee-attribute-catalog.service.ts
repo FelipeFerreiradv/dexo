@@ -252,9 +252,34 @@ export class ShopeeAttributeCatalogService {
           memoryCache.set(k, { attribute_list: list, cachedAt: now });
           return { attribute_list: list, source: "live" };
         }
+        // Live respondeu mas o shape veio inválido (não-array, faltando
+        // campos). Logar pra observabilidade — caso raro mas crítico.
+        console.warn(
+          JSON.stringify({
+            event: "shopee.attr_catalog.live_invalid_shape",
+            region,
+            categoryId,
+            locale,
+            sample: Array.isArray(list) ? list.slice(0, 1) : null,
+          }),
+        );
       }
     } catch (err) {
       liveError = err;
+      // CRÍTICO pra debug: o erro do live precisa ser visível. Antes era
+      // silenciado e o script só dizia "live falhou" sem o motivo —
+      // impossível distinguir 403 IP whitelist de token expirado de
+      // permission_denied de scope insuficiente.
+      console.warn(
+        JSON.stringify({
+          event: "shopee.attr_catalog.live_failed",
+          region,
+          categoryId,
+          locale,
+          status: (err as any)?.status,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
     }
 
     // 4. Harvest (cross-account) — apenas se live falhou

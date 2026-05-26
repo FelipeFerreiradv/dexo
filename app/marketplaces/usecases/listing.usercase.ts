@@ -150,6 +150,19 @@ export class ListingUseCase {
         };
       }>;
 
+      if (samples.length === 0) {
+        // Caso muito comum: primeira publicação em uma categoria.
+        // Logar pra observabilidade — usuário precisa saber que harvest não
+        // tinha candidatos (vs. ter tentado e falhado).
+        console.log(
+          JSON.stringify({
+            event: "shopee.category_attrs.harvest_no_candidates",
+            categoryId,
+            reason: "no_active_shopee_listing_in_category",
+          }),
+        );
+      }
+
       for (const sample of samples) {
         const itemId = Number(sample.externalListingId);
         if (!Number.isFinite(itemId) || itemId <= 0) continue;
