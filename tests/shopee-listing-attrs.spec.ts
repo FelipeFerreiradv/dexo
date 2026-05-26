@@ -1,5 +1,35 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// Mockar prisma porque o catalog service tenta findUnique/upsert em
+// shopeeCategoryAttribute. Sem mock, o Prisma client (depois de prisma generate)
+// tenta conectar em localhost:5432 do test env e da timeout. Antes do prisma
+// generate o property era undefined e o try/catch interno engolia — agora
+// precisamos do mock pra retornar null/no-op sincronicamente.
+vi.mock("@/app/lib/prisma", () => ({
+  default: {
+    shopeeCategoryAttribute: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
+    productListing: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+vi.mock("../app/lib/prisma", () => ({
+  default: {
+    shopeeCategoryAttribute: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
+    productListing: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
     findByIdAndUser: vi.fn(),

@@ -1,5 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// Mockar prisma — catalog service tenta findUnique/upsert e harvest
+// faz productListing.findMany. Sem mock, Prisma client tenta conectar
+// em localhost:5432 do test env e da timeout em ~5s.
+vi.mock("@/app/lib/prisma", () => ({
+  default: {
+    shopeeCategoryAttribute: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
+    productListing: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+vi.mock("../app/lib/prisma", () => ({
+  default: {
+    shopeeCategoryAttribute: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
+    productListing: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+
 // ── Mocks de repositórios/servicos que tocam Prisma/HTTP ──
 vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
   MarketplaceRepository: {
