@@ -21,10 +21,7 @@ import {
   withRetry,
 } from "../services/listing-removal.helpers";
 import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
-import {
-  lookupShopeeCategoryAttrs,
-  storeShopeeCategoryAttrs,
-} from "../services/shopee-category-attrs-cache";
+import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
 
 export interface CreateListingResult {
   success: boolean;
@@ -108,6 +105,101 @@ export class ListingUseCase {
   // Limites de quantidade de imagens por marketplace (Shopee: 9, ML: 12)
   private static readonly SHOPEE_MAX_IMAGES = 9;
   private static readonly ML_MAX_IMAGES = 12;
+
+  /**
+   * Harvest cross-account: extrai attribute_list de algum listing Shopee
+   * ATIVO em qualquer conta da plataforma na mesma categoria. Útil quando
+   * a conta atual recebe 403 em get_attributes mas outra conta (ou a mesma
+   * em momento anterior) tem item ativo de onde o schema é legível via
+   * get_item_base_info. Tenta até 5 candidatos; primeiro sucesso ganha.
+   * Retorna null se nada disponível.
+   */
+  public static async harvestShopeeAttrsFromAnyAccount(
+    categoryId: number,
+  ): Promise<any[] | null> {
+    try {
+      const prismaMod = await import("../../lib/prisma");
+      const prisma = prismaMod.default;
+      const samples = (await (prisma as any).productListing.findMany({
+        where: {
+          status: "active",
+          NOT: { externalListingId: { startsWith: "PENDING_" } },
+          marketplaceAccount: {
+            platform: "SHOPEE",
+            status: "ACTIVE",
+          },
+          product: { shopeeCategoryId: String(categoryId) },
+        },
+        select: {
+          externalListingId: true,
+          marketplaceAccount: {
+            select: {
+              id: true,
+              accessToken: true,
+              shopId: true,
+            },
+          },
+        },
+        take: 5,
+      })) as Array<{
+        externalListingId: string;
+        marketplaceAccount: {
+          id: string;
+          accessToken: string;
+          shopId: number;
+        };
+      }>;
+
+      for (const sample of samples) {
+        const itemId = Number(sample.externalListingId);
+        if (!Number.isFinite(itemId) || itemId <= 0) continue;
+        const acct = sample.marketplaceAccount;
+        if (!acct?.accessToken || !acct?.shopId) continue;
+        try {
+          const item = await ShopeeApiService.getItemBaseInfo(
+            acct.accessToken,
+            acct.shopId,
+            itemId,
+          );
+          if (
+            item?.attribute_list &&
+            Array.isArray(item.attribute_list) &&
+            item.attribute_list.length > 0
+          ) {
+            console.log(
+              JSON.stringify({
+                event: "shopee.category_attrs.harvested",
+                categoryId,
+                fromAccountId: acct.id,
+                fromItemId: itemId,
+                attrCount: item.attribute_list.length,
+              }),
+            );
+            return item.attribute_list;
+          }
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              event: "shopee.category_attrs.harvest_attempt_failed",
+              categoryId,
+              fromAccountId: acct.id,
+              fromItemId: itemId,
+              message: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          event: "shopee.category_attrs.harvest_query_failed",
+          categoryId,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+    return null;
+  }
 
   /**
    * Coleta a galeria completa de imagens de um produto preservando ordem.
@@ -245,7 +337,14 @@ export class ListingUseCase {
       case "SUCATA":
         return "used";
       default:
-        return "used"; // ML não aceita not_specified em MLB
+        // ML não aceita not_specified em MLB. Sem signal explícito de
+        // qualidade nem de itemCondition, assumir "new" — é o default seguro
+        // que preserva a intenção comum quando o usuário não preencheu nada.
+        // Quem vende usado/sucata explicita via `quality` ou
+        // `mlSettings.itemCondition` no modal — ambos sobrescrevem este
+        // fallback. Antes este default era "used" e mascarava silenciosamente
+        // a escolha do usuário, virando "usado" no anúncio publicado.
+        return "new";
     }
   }
 
@@ -1175,13 +1274,41 @@ export class ListingUseCase {
           categoryIdForML,
           effectiveConditionForPreflight,
         );
+      // Rastreia se a condição veio EXPLICITAMENTE do modal (mlSettings) vs.
+      // de derivação automática (product.quality). Override silencioso só é
+      // aceitável no segundo caso — quando o usuário não escolheu, derivamos.
+      // Mas se ele escolheu "novo" e categoria só aceita "usado", BLOQUEAR
+      // com erro claro em vez de publicar como "usado" sem avisar.
+      const userExplicitlyChoseCondition = !!mlSettings?.itemCondition;
       let conditionForPayload: string = effectiveConditionForPreflight;
       if (!condCheck.ok && condCheck.reason === "incompatible") {
         const allowed = condCheck.allowedConditions || [];
+        if (userExplicitlyChoseCondition) {
+          // Escolha explícita do operador. Bloquear em vez de overriding
+          // silencioso — o usuário precisa decidir: ajustar categoria, ou
+          // ajustar a condição.
+          guardConditionAllowed = false;
+          console.warn(
+            `[ListingUseCase] category trace BLOCKED user_choice_vs_category`,
+            {
+              productId: product.id,
+              resolved: categoryIdForML,
+              fullPath: resolvedCategory.fullPath,
+              userChose: effectiveConditionForPreflight,
+              allowedConditions: allowed,
+            },
+          );
+          return {
+            success: false,
+            error: `Você escolheu publicar como '${effectiveConditionForPreflight}', mas a categoria '${resolvedCategory.fullPath || categoryIdForML}' aceita apenas ${JSON.stringify(allowed)}. Escolha outra categoria ou ajuste a condição do item no modal.`,
+          };
+        }
         // Categorias de autopeça frequentemente têm leaves com uma única
-        // condição permitida (ex: Servo Freio → ["new"]). Em vez de bloquear,
-        // publicamos com a única condição aceita — comportamento esperado
-        // para catálogos ML onde não há variante "used" da sub-categoria.
+        // condição permitida (ex: Servo Freio → ["new"]). Quando o usuário
+        // NÃO escolheu explicitamente (derivamos de product.quality ou
+        // default), em vez de bloquear, publicamos com a única condição
+        // aceita — comportamento esperado para catálogos ML onde não há
+        // variante "used" da sub-categoria.
         if (allowed.length === 1) {
           console.warn(`[ListingUseCase] category trace OVERRIDE condition`, {
             productId: product.id,
@@ -1190,6 +1317,7 @@ export class ListingUseCase {
             fullPath: resolvedCategory.fullPath,
             productCondition: effectiveConditionForPreflight,
             overrideTo: allowed[0],
+            reason: "derived_from_quality_not_user_choice",
           });
           conditionForPayload = allowed[0];
           guardConditionAllowed = true;
@@ -3127,191 +3255,82 @@ export class ListingUseCase {
         ),
       );
 
-      // Stage 4 wrapper: cache + retry 403 + harvest fallback.
-      // 1. Tenta cache fresh (24h) — devolve imediato sem hit na API.
-      // 2. Senão, chama API. Se 403, espera 800ms e tenta de novo.
-      // 3. Se ainda 403, faz HARVEST: procura um listing Shopee ativo na mesma
-      //    categoria (no DB do Dexo), chama getItemBaseInfo e extrai
-      //    attribute_list de lá — Shopee bloqueia get_attributes mas permite
-      //    ler items existentes. Popula cache pro próximo retry/criação.
-      // 4. Senão tenta cache stale (até 30 dias) — melhor velho do que nada.
-      // 5. Por fim, lança o erro pra que o caller marque listing como error
-      //    em vez de criar com attribute_list=[] (que era o fail-open antigo).
+      // Stage 4: catálogo persistente de atributos.
+      // Tenta memória → DB → live (com retry) → harvest cross-account → DB stale.
+      // Retorna null se TUDO falhar — caller emite erro terminal em vez de
+      // mandar attribute_list inválida (que a Shopee rejeita por contrato).
       const fetchCategoryAttrsWithCache = async (): Promise<{
         attribute_list: any[];
-        source: "live" | "cache_fresh" | "cache_stale" | "harvested";
+        source: "live" | "memory" | "db_fresh" | "db_stale" | "harvested";
       }> => {
-        const cached = await lookupShopeeCategoryAttrs(
-          account.shopId,
-          numericCategoryId,
-          "pt-BR",
-        );
-        if (cached.status === "fresh" && cached.attribute_list) {
-          console.log(
-            JSON.stringify({
-              event: "shopee.category_attrs.cache_hit",
-              status: "fresh",
-              categoryId: numericCategoryId,
-              shopId: account.shopId,
-              ageMs: cached.ageMs,
-              attrCount: cached.attribute_list.length,
-            }),
-          );
-          return {
-            attribute_list: cached.attribute_list,
-            source: "cache_fresh",
-          };
-        }
-
-        try {
-          const live = await ShopeeApiService.getCategoryAttributes(
-            account.accessToken,
-            account.shopId,
+        const resolution =
+          await ShopeeAttributeCatalogService.getCategoryAttributes(
+            "BR",
             numericCategoryId,
             "pt-BR",
-          );
-          const list = live?.attribute_list || [];
-          storeShopeeCategoryAttrs(
-            account.shopId,
-            numericCategoryId,
-            "pt-BR",
-            list,
-          );
-          return { attribute_list: list, source: "live" };
-        } catch (err) {
-          const status = (err as any)?.status;
-          if (status === 403) {
-            await new Promise((r) => setTimeout(r, 800));
-            try {
-              const live = await ShopeeApiService.getCategoryAttributes(
-                account.accessToken,
-                account.shopId,
-                numericCategoryId,
-                "pt-BR",
-              );
-              const list = live?.attribute_list || [];
-              storeShopeeCategoryAttrs(
-                account.shopId,
-                numericCategoryId,
-                "pt-BR",
-                list,
-              );
-              return { attribute_list: list, source: "live" };
-            } catch (retryErr) {
-              // Fallback 1: HARVEST de listing Shopee existente na mesma
-              // categoria. get_item_base_info costuma funcionar mesmo quando
-              // get_attributes 403 — extraímos attribute_list de um item já
-              // criado pra popular o cache.
-              try {
-                const prismaMod = await import("../../lib/prisma");
-                const prisma = prismaMod.default;
-                const sample = await (prisma as any).productListing.findFirst({
-                  where: {
-                    marketplaceAccountId: account.id,
-                    status: "active",
-                    NOT: { externalListingId: { startsWith: "PENDING_" } },
-                    product: {
-                      shopeeCategoryId: String(numericCategoryId),
-                    },
-                  },
-                  select: { externalListingId: true, productId: true },
-                });
-                if (sample?.externalListingId) {
-                  const sampleItemId = Number(sample.externalListingId);
-                  if (Number.isFinite(sampleItemId) && sampleItemId > 0) {
-                    const item = await ShopeeApiService.getItemBaseInfo(
+            {
+              fetchLive: async () => {
+                try {
+                  return await ShopeeApiService.getCategoryAttributes(
+                    account.accessToken,
+                    account.shopId,
+                    numericCategoryId,
+                    "pt-BR",
+                  );
+                } catch (err) {
+                  if ((err as any)?.status === 403) {
+                    // Espera curta e re-tenta uma vez (cobre flakiness)
+                    await new Promise((r) => setTimeout(r, 800));
+                    return await ShopeeApiService.getCategoryAttributes(
                       account.accessToken,
                       account.shopId,
-                      sampleItemId,
+                      numericCategoryId,
+                      "pt-BR",
                     );
-                    if (
-                      item?.attribute_list &&
-                      item.attribute_list.length > 0
-                    ) {
-                      storeShopeeCategoryAttrs(
-                        account.shopId,
-                        numericCategoryId,
-                        "pt-BR",
-                        item.attribute_list,
-                      );
-                      console.log(
-                        JSON.stringify({
-                          event: "shopee.category_attrs.harvested",
-                          categoryId: numericCategoryId,
-                          shopId: account.shopId,
-                          fromItemId: sampleItemId,
-                          attrCount: item.attribute_list.length,
-                        }),
-                      );
-                      return {
-                        attribute_list: item.attribute_list,
-                        source: "harvested",
-                      };
-                    }
                   }
+                  throw err;
                 }
-              } catch (harvestErr) {
-                console.warn(
-                  JSON.stringify({
-                    event: "shopee.category_attrs.harvest_failed",
-                    categoryId: numericCategoryId,
-                    shopId: account.shopId,
-                    message:
-                      harvestErr instanceof Error
-                        ? harvestErr.message
-                        : String(harvestErr),
-                  }),
-                );
-              }
-              // Fallback 2: cache stale (até 30 dias) é melhor do que nada
-              if (
-                cached.status === "stale" &&
-                cached.attribute_list &&
-                cached.attribute_list.length > 0
-              ) {
-                console.warn(
-                  JSON.stringify({
-                    event: "shopee.category_attrs.cache_hit",
-                    status: "stale",
-                    categoryId: numericCategoryId,
-                    shopId: account.shopId,
-                    ageMs: cached.ageMs,
-                    attrCount: cached.attribute_list.length,
-                    reason: "live_403_after_retry",
-                  }),
-                );
-                return {
-                  attribute_list: cached.attribute_list,
-                  source: "cache_stale",
-                };
-              }
-              throw retryErr;
-            }
-          }
-          // Não-403: stale cache mesmo assim, pra sobreviver downtime Shopee
-          if (
-            cached.status === "stale" &&
-            cached.attribute_list &&
-            cached.attribute_list.length > 0
-          ) {
-            console.warn(
-              JSON.stringify({
-                event: "shopee.category_attrs.cache_hit",
-                status: "stale",
-                categoryId: numericCategoryId,
-                shopId: account.shopId,
-                ageMs: cached.ageMs,
-                attrCount: cached.attribute_list.length,
-                reason: "live_error_non_403",
-              }),
-            );
-            return {
-              attribute_list: cached.attribute_list,
-              source: "cache_stale",
-            };
-          }
-          throw err;
+              },
+              harvest: () =>
+                ListingUseCase.harvestShopeeAttrsFromAnyAccount(
+                  numericCategoryId,
+                ),
+            },
+          );
+        if (!resolution) {
+          // null = TODOS os caminhos falharam (memory + DB + live + harvest +
+          // stale). Diferente de attribute_list: [] (categoria sem mandatory
+          // attrs — caso legítimo). Fail-fast com mensagem acionável; nunca
+          // emitir payload com attribute_id=0 que a Shopee rejeita.
+          console.warn(
+            JSON.stringify({
+              event: "shopee.category_attrs.failed",
+              categoryId: numericCategoryId,
+              shopId: account.shopId,
+              message: "no_schema_from_any_source",
+            }),
+          );
+          throw new Error(
+            `Não foi possível obter os atributos da categoria Shopee ${numericCategoryId} ` +
+              `(catálogo vazio, API retornou 403, e nenhum anúncio ativo nessa categoria em ` +
+              `qualquer conta para harvest). Execute: npm run shopee:sync-attrs -- ` +
+              `--category=${numericCategoryId} com uma conta Shopee que tenha permissão, ou ` +
+              `crie 1 anúncio manualmente nessa categoria via Seller Center.`,
+          );
         }
+        console.log(
+          JSON.stringify({
+            event: "shopee.category_attrs.resolved",
+            categoryId: numericCategoryId,
+            shopId: account.shopId,
+            source: resolution.source,
+            attrCount: resolution.attribute_list.length,
+          }),
+        );
+        return {
+          attribute_list: resolution.attribute_list,
+          source: resolution.source,
+        };
       };
 
       const [categoryAttrsResult, imageUploadResult, logisticsResult] =
@@ -3408,68 +3427,14 @@ export class ListingUseCase {
           }
         }
       } else {
+        // Sem schema de atributos, mandar payload é garantia de rejeição da
+        // Shopee ("Auto-Part Number is mandatory required" ou "attribute info
+        // is invalid"). Fail-fast com a mensagem acionável já formatada por
+        // fetchCategoryAttrsWithCache.
         const reason: any = categoryAttrsResult.reason;
-        const reasonMsg = reason?.message || String(reason || "unknown");
-        const is403 =
-          /403/.test(reasonMsg) || /permission denied/i.test(reasonMsg);
-        console.warn(
-          JSON.stringify({
-            event: "shopee.category_attrs.failed",
-            categoryId: numericCategoryId,
-            shopId: account.shopId,
-            status: is403 ? 403 : undefined,
-            errorCode: is403 ? "permission_denied" : "unknown",
-            message: reasonMsg,
-          }),
-        );
-
-        // Fallback de último recurso: enviar attributes a partir do mapa
-        // productAttrValues mesmo sem o catálogo da Shopee. Usa attribute_id=0
-        // + original_value_name (texto livre). A Shopee pode ou não aceitar —
-        // mas é melhor tentar do que mandar attribute_list=[] que dispara
-        // "Attribute Auto-Part Number is mandatory required" com 100%
-        // de certeza. Nomes em pt-BR + en que cobrem as mandatory comuns
-        // de categorias de autopeças (incluindo Auto-Part Number).
-        const fallbackEntries: Array<{
-          attribute_name: string;
-          productKey: string;
-        }> = [
-          { attribute_name: "Auto-Part Number", productKey: "auto-part number" },
-          { attribute_name: "Número da Peça", productKey: "número da peça" },
-          { attribute_name: "Part Number (OEM)", productKey: "part number (oem)" },
-          { attribute_name: "Marca", productKey: "marca" },
-          { attribute_name: "Brand", productKey: "brand" },
-          { attribute_name: "Modelo", productKey: "modelo" },
-          { attribute_name: "Ano", productKey: "ano" },
-        ];
-        const fallbackAdded: string[] = [];
-        for (const e of fallbackEntries) {
-          const value = productAttrValues[e.productKey];
-          if (!value) continue;
-          // Evita duplicar caso o loop principal já tenha adicionado
-          if (
-            attributeList.some(
-              (a) =>
-                a.attribute_name?.toLowerCase() ===
-                e.attribute_name.toLowerCase(),
-            )
-          )
-            continue;
-          attributeList.push({
-            attribute_id: 0,
-            attribute_name: e.attribute_name,
-            attribute_value_list: [
-              {
-                value_id: 0,
-                original_value_name: value,
-              } as any,
-            ],
-          });
-          fallbackAdded.push(e.attribute_name);
-        }
-        console.warn(
-          `[ListingUseCase] Shopee category ${numericCategoryId} attrs unavailable (${is403 ? "403" : "error"}). Sending best-effort fallback: ${fallbackAdded.length > 0 ? fallbackAdded.join(", ") : "<none>"}`,
-        );
+        throw reason instanceof Error
+          ? reason
+          : new Error(String(reason || "shopee.category_attrs.unavailable"));
       }
 
       // ── Processar resultado dos uploads de imagens (multi-imagem) ──
@@ -3940,14 +3905,16 @@ export class ListingUseCase {
         /invalid category/i.test(errorMsg) ||
         /should use leaf category/i.test(errorMsg) ||
         /leaf category/i.test(errorMsg) ||
-        // Attribute mandatory missing — sem getCategoryAttributes não temos
-        // os attribute_id reais. Retry com attribute_id=0 falha igual. Para
-        // resolver o operador precisa re-autorizar o app Shopee ou criar
-        // manualmente via Seller Center.
+        // Attribute mandatory missing — pode acontecer se o schema do
+        // catálogo estiver incompleto/desatualizado. Retry não ajuda;
+        // operador precisa rodar sync-shopee-attrs ou validar permissão.
         /attribute .* mandatory required/i.test(errorMsg) ||
         /attribute info is invalid/i.test(errorMsg) ||
         // Permission denied no get_attributes — escopo OAuth incompleto
-        /permission denied/i.test(errorMsg);
+        /permission denied/i.test(errorMsg) ||
+        // Catálogo não tem schema e nada conseguiu resolver — fail-fast
+        // emitido por fetchCategoryAttrsWithCache. Retry sem sync não ajuda.
+        /não foi possível obter os atributos da categoria/i.test(errorMsg);
 
       // Atualizar placeholder com erro e decisão de retry
       try {
@@ -3986,17 +3953,20 @@ export class ListingUseCase {
 
       // Mensagens mais úteis para erros terminais conhecidos
       let userFacingError = errorMsg;
-      if (
+      if (/não foi possível obter os atributos da categoria/i.test(errorMsg)) {
+        // Já é uma mensagem acionável formatada por fetchCategoryAttrsWithCache
+        userFacingError = errorMsg;
+      } else if (
         /attribute .* mandatory required/i.test(errorMsg) ||
         /attribute info is invalid/i.test(errorMsg) ||
         /permission denied/i.test(errorMsg)
       ) {
         userFacingError =
-          `Shopee não está fornecendo os atributos da categoria (HTTP 403). ` +
-          `Re-autorize o app Dexo no Shopee Seller Center (Apps → ` +
-          `Autorizações) garantindo todos os escopos, OU crie 1 anúncio ` +
-          `nessa categoria manualmente via Seller Center — depois a ` +
-          `automação volta a funcionar. Erro original: ${errorMsg.substring(0, 200)}`;
+          `Shopee rejeitou o anúncio por atributos obrigatórios da categoria. ` +
+          `Rode: npm run shopee:sync-attrs -- --category=<id> para popular o ` +
+          `catálogo, ou re-autorize o app Dexo no Shopee Seller Center (Apps → ` +
+          `Autorizações) garantindo todos os escopos. ` +
+          `Erro original: ${errorMsg.substring(0, 200)}`;
       }
 
       return {
