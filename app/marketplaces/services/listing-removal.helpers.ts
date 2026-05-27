@@ -41,9 +41,17 @@ function pickMessage(err: unknown): string {
 /**
  * Classifica um erro de fechamento de anúncio do Mercado Livre.
  *
- * Idempotente (tratar como sucesso):
+ * Idempotente (tratar como sucesso — o item já está em estado terminal e
+ * o objetivo da remoção foi atingido):
  *  - 404: item não existe mais.
- *  - 4xx com mensagem indicando "already closed", "closed", "cannot modify".
+ *  - "already closed" / "cannot modify": item fechado anteriormente.
+ *  - "not modifiable" / "item.status.not_modifiable": ML responde isso
+ *    quando o item está em estado terminal `inactive` (vinha como erro
+ *    `permanent` antes — bloqueando a deleção local de produtos cujo
+ *    anúncio ML já foi descontinuado).
+ *  - "status:inactive" / "status:closed" no payload: ML inclui o status
+ *    atual entre colchetes quando rejeita update — confirma que já está
+ *    no estado-alvo da remoção (ou além dele).
  *
  * Retryable:
  *  - 429, 5xx, timeout, network errors (ECONNRESET, ECONNABORTED, ETIMEDOUT).
@@ -64,6 +72,10 @@ export function classifyMLRemoveError(
     lower.includes("already_closed") ||
     lower.includes("cannot be modified") ||
     lower.includes("cannot modify") ||
+    lower.includes("not modifiable") ||
+    lower.includes("not_modifiable") ||
+    lower.includes("status:inactive") ||
+    lower.includes("status:closed") ||
     lower.includes("item not found") ||
     lower.includes("not_found") ||
     lower.includes("item_not_found");

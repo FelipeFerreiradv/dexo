@@ -28,6 +28,38 @@ describe("classifyMLRemoveError", () => {
     expect(classifyMLRemoveError(err)).toMatchObject({ kind: "idempotent" });
   });
 
+  it("classifies ML 'item.status.not_modifiable' + status:inactive as idempotent (regression: deleção falhava para items já inativos no ML)", () => {
+    // Erro EXATO retornado pelo ML quando o item está em estado terminal
+    // `inactive` e tentamos PUT /items/{id} {status: closed}. Antes do fix
+    // este erro era classificado como `permanent` e bloqueava a deleção
+    // local — frustrando o usuário que via "Cannot update item" no toast.
+    const err = Object.assign(
+      new Error(
+        "Erro ao atualizar item: Cannot update item MLB4358822301 [status:inactive, has_bids:false] (validation_error | item.status.not_modifiable: status is not modifiable.)",
+      ),
+      { status: 400 },
+    );
+    expect(classifyMLRemoveError(err)).toMatchObject({ kind: "idempotent" });
+  });
+
+  it("classifies 'status:closed' bracket marker as idempotent (alternative ML status format)", () => {
+    const err = Object.assign(
+      new Error(
+        "Erro ao atualizar item: Cannot update item MLB1234567890 [status:closed, has_bids:true]",
+      ),
+      { status: 400 },
+    );
+    expect(classifyMLRemoveError(err)).toMatchObject({ kind: "idempotent" });
+  });
+
+  it("classifies 'not modifiable' as idempotent regardless of bracket presence", () => {
+    const err = Object.assign(
+      new Error("Erro ao atualizar item: status is not modifiable"),
+      { status: 400 },
+    );
+    expect(classifyMLRemoveError(err)).toMatchObject({ kind: "idempotent" });
+  });
+
   it("classifies 429 as retryable", () => {
     const err = Object.assign(new Error("Erro ao atualizar item: rate limit"), {
       status: 429,
