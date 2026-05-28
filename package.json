@@ -29,6 +29,7 @@
     "audit:logs": "tsx scripts/prod-audit/audit-system-logs.ts",
     "cleanup:orphan-originals": "tsx scripts/cleanup-orphan-originals.ts",
     "shopee:sync-attrs": "tsx scripts/sync-shopee-attributes.ts",
+    "shopee:debug-cats": "tsx scripts/debug-shopee-categories.ts",
     "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts"
   },
   "dependencies": {
