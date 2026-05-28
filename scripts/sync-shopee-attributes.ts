@@ -86,9 +86,14 @@ async function syncOne(
   attrCount?: number;
   mandatoryCount?: number;
   error?: string;
+  liveError?: string;
 }> {
-  // Limpa memória do serviço para forçar lookup completo, mas
-  // mantemos o fluxo idêntico ao runtime (memory → DB → live → harvest).
+  // Capturamos o erro do fetchLive ANTES dele ser engolido pelo service
+  // (o catalog service silencia o erro do live e cai pra harvest/stale).
+  // Sem isso, qualquer falha fica como "nenhuma fonte disponivel" generico
+  // e e impossivel distinguir 403 escope vs categoria nao-folha vs categoria
+  // obsoleta vs rate limit.
+  let liveError: string | null = null;
   try {
     const resolution =
       await ShopeeAttributeCatalogService.getCategoryAttributes(
@@ -97,12 +102,19 @@ async function syncOne(
         LOCALE,
         {
           fetchLive: async () => {
-            return ShopeeApiService.getCategoryAttributes(
-              account.accessToken,
-              account.shopId,
-              categoryId,
-              LOCALE,
-            );
+            try {
+              return await ShopeeApiService.getCategoryAttributes(
+                account.accessToken,
+                account.shopId,
+                categoryId,
+                LOCALE,
+              );
+            } catch (err) {
+              const status = (err as any)?.status;
+              const message = err instanceof Error ? err.message : String(err);
+              liveError = status ? `[${status}] ${message}` : message;
+              throw err;
+            }
           },
           harvest: () =>
             ListingUseCase.harvestShopeeAttrsFromAnyAccount(categoryId),
@@ -111,7 +123,10 @@ async function syncOne(
     if (!resolution || !resolution.attribute_list?.length) {
       return {
         categoryId,
-        error: "nenhuma fonte disponível (DB vazio + live falhou + harvest vazio)",
+        error: liveError
+          ? `live falhou (${liveError}); harvest vazio; DB vazio`
+          : "nenhuma fonte disponível (DB vazio + live falhou + harvest vazio)",
+        liveError: liveError ?? undefined,
       };
     }
     const mandatoryCount = resolution.attribute_list.filter(
@@ -127,6 +142,7 @@ async function syncOne(
     return {
       categoryId,
       error: err instanceof Error ? err.message : String(err),
+      liveError: liveError ?? undefined,
     };
   }
 }
