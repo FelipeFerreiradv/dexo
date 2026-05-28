@@ -36,6 +36,116 @@ describe("ShopeeApiService.getOrderDetails", () => {
   });
 });
 
+describe("ShopeeApiService.getCategoryAttributes (migrado para get_attribute_tree)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("chama /api/v2/product/get_attribute_tree (nao mais o get_attributes deprecated)", async () => {
+    const requestSpy = vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "",
+        message: "",
+        response: { list: [{ category_id: 102291, attribute_tree: [] }] },
+      });
+
+    await ShopeeApiService.getCategoryAttributes("token-1", 123, 102291, "pt-BR");
+
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    const [method, path] = requestSpy.mock.calls[0] as [string, string, ...any[]];
+    expect(method).toBe("GET");
+    expect(path).toContain("/api/v2/product/get_attribute_tree");
+    expect(path).toContain("category_id_list=102291");
+    expect(path).toContain("language=pt-BR");
+    // Sanidade negativa: nao deve mais bater no endpoint descontinuado
+    expect(path).not.toContain("/api/v2/product/get_attributes?");
+  });
+
+  it("mapeia formato novo (attribute_tree) para o formato antigo (attribute_list) que os consumers esperam", async () => {
+    vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "",
+        message: "",
+        response: {
+          list: [
+            {
+              category_id: 102291,
+              attribute_tree: [
+                {
+                  attribute_id: 4233,
+                  name: "Auto-Part Number",
+                  mandatory: true,
+                  attribute_value_list: [],
+                  attribute_info: { input_type: 3, attribute_unit_list: [] },
+                },
+                {
+                  attribute_id: 4001,
+                  name: "Marca",
+                  mandatory: true,
+                  attribute_value_list: [
+                    { value_id: 10, name: "Chevrolet" },
+                    { value_id: 11, name: "Fiat" },
+                  ],
+                  attribute_info: { input_type: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const res = await ShopeeApiService.getCategoryAttributes("token", 1, 102291, "pt-BR");
+
+    // Shape antigo preservado para retrocompat com ShopeeAttributeCatalogService,
+    // listing.usercase.ts e tests/shopee-listing-attrs.spec.ts.
+    expect(res.attribute_list).toHaveLength(2);
+    expect(res.attribute_list[0]).toMatchObject({
+      attribute_id: 4233,
+      attribute_name: "Auto-Part Number", // antes "name" no novo formato
+      is_mandatory: true, // antes "mandatory"
+      attribute_value_list: [],
+    });
+    expect(res.attribute_list[1]).toMatchObject({
+      attribute_id: 4001,
+      attribute_name: "Marca",
+      is_mandatory: true,
+    });
+    expect(res.attribute_list[1].attribute_value_list).toEqual([
+      { value_id: 10, value_name: "Chevrolet", parent_attribute_id: 0, parent_value_id: 0 },
+      { value_id: 11, value_name: "Fiat", parent_attribute_id: 0, parent_value_id: 0 },
+    ]);
+  });
+
+  it("retorna attribute_list vazio quando a categoria nao tem atributos (lista vazia legitima)", async () => {
+    vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "",
+        message: "",
+        response: { list: [{ category_id: 9999, attribute_tree: [] }] },
+      });
+
+    const res = await ShopeeApiService.getCategoryAttributes("token", 1, 9999);
+    expect(res.attribute_list).toEqual([]);
+  });
+
+  it("propaga erro com mensagem amigavel quando a Shopee retorna error", async () => {
+    vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "error_invalid_category",
+        message: "Invalid category ID",
+        response: null,
+      });
+
+    await expect(
+      ShopeeApiService.getCategoryAttributes("token", 1, 99999999),
+    ).rejects.toThrow(/Erro ao buscar atributos da categoria.*Invalid category ID/);
+  });
+});
+
 describe("ShopeeApiService.getRecentOrders", () => {
   afterEach(() => {
     vi.restoreAllMocks();
