@@ -121,11 +121,34 @@ async function syncOne(
         },
       );
     if (!resolution || !resolution.attribute_list?.length) {
+      // Tres casos distintos com diagnostico diferente:
+      //   (a) liveError setado: live API throwou (ex: 403 escope, 400 categoria invalida)
+      //   (b) resolution?.source === "live": live respondeu OK mas com [] —
+      //       categoria pode ser nao-folha, obsoleta, ou simplesmente sem
+      //       atributos. Importante NAO confundir com falha real porque o
+      //       usuario nao consegue agir (re-rodar nao adianta).
+      //   (c) caso geral (memory + DB + live + harvest todos vazios sem erro):
+      //       mensagem antiga generica.
+      let errorMsg: string;
+      if (liveError) {
+        errorMsg = `live falhou (${liveError}); harvest vazio; DB vazio`;
+      } else if (resolution?.source === "live") {
+        // Contar quantos produtos do usuario estao referenciando essa
+        // categoria — info acionavel pro operador decidir se vale mudar
+        // a categoria desses produtos pra uma folha valida.
+        const productCount = await prisma.product.count({
+          where: { shopeeCategoryId: String(categoryId) },
+        });
+        errorMsg =
+          `live respondeu OK mas com 0 atributos (categoria provavelmente ` +
+          `nao-folha, obsoleta ou sem schema). ` +
+          `${productCount} produto(s) do DB usam essa shopeeCategoryId.`;
+      } else {
+        errorMsg = "nenhuma fonte disponível (DB vazio + live falhou + harvest vazio)";
+      }
       return {
         categoryId,
-        error: liveError
-          ? `live falhou (${liveError}); harvest vazio; DB vazio`
-          : "nenhuma fonte disponível (DB vazio + live falhou + harvest vazio)",
+        error: errorMsg,
         liveError: liveError ?? undefined,
       };
     }
