@@ -23,6 +23,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { generateLocationLabelsPdf } from "../lib/location-labels-pdf";
+import { HighlightText } from "./highlight-text";
+import { useLocationSearch } from "../hooks/use-location-search";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -165,6 +167,12 @@ function LocationRow({
   onAddChild,
   onViewProducts,
   onMoveLocation,
+  searchActive = false,
+  expandedIds,
+  matchedIds,
+  tokens,
+  pathMap,
+  fullPath,
 }: {
   location: Location;
   depth: number;
@@ -175,8 +183,25 @@ function LocationRow({
   onAddChild: (parentId: string, parentCode: string) => void;
   onViewProducts: (loc: Location) => void;
   onMoveLocation: (loc: Location) => void;
+  // ── Props opcionais da busca (só usadas quando searchActive) ──
+  searchActive?: boolean;
+  expandedIds?: Set<string>;
+  matchedIds?: Set<string>;
+  tokens?: string[];
+  pathMap?: Map<string, string>;
+  fullPath?: string;
 }) {
-  const [expanded, setExpanded] = useState(depth === 0);
+  // Expansão híbrida: estado local quando navegando; controlada pelo pai
+  // (ancestrais de match auto-expandidos) quando há busca ativa.
+  const [localExpanded, setLocalExpanded] = useState(depth === 0);
+  const expanded = searchActive
+    ? (expandedIds?.has(location.id) ?? false) ||
+      (matchedIds?.has(location.id) ?? false)
+    : localExpanded;
+  const toggleExpanded = () => {
+    if (!searchActive) setLocalExpanded((v) => !v);
+  };
+  const highlightTokens = tokens ?? [];
   const hasChildren = location.children && location.children.length > 0;
   const selected = isSelected(location.id);
 
@@ -196,7 +221,8 @@ function LocationRow({
         {/* Expand toggle */}
         <button
           type="button"
-          onClick={() => setExpanded(!expanded)}
+          onClick={toggleExpanded}
+          aria-label={expanded ? "Recolher" : "Expandir"}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
         >
           {hasChildren ? (
@@ -222,13 +248,25 @@ function LocationRow({
         {/* Info */}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-sm">{location.code}</span>
+            <span className="font-semibold text-sm">
+              <HighlightText text={location.code} tokens={highlightTokens} />
+            </span>
             {location.description && (
               <span className="truncate text-sm text-muted-foreground">
-                — {location.description}
+                —{" "}
+                <HighlightText
+                  text={location.description}
+                  tokens={highlightTokens}
+                />
               </span>
             )}
           </div>
+          {/* Breadcrumb do caminho (só na busca, para nós não-raiz) */}
+          {searchActive && fullPath && depth > 0 && (
+            <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
+              {fullPath}
+            </p>
+          )}
           <div className="mt-1 flex items-center gap-3">
             {/* Capacity bar */}
             {location.maxCapacity > 0 ? (
@@ -348,6 +386,12 @@ function LocationRow({
               onAddChild={onAddChild}
               onViewProducts={onViewProducts}
               onMoveLocation={onMoveLocation}
+              searchActive={searchActive}
+              expandedIds={expandedIds}
+              matchedIds={matchedIds}
+              tokens={tokens}
+              pathMap={pathMap}
+              fullPath={pathMap?.get(child.id)}
             />
           ))}
         </div>
@@ -533,6 +577,17 @@ export function LocationsList() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [total, setTotal] = useState(0);
 
+  // Busca client-side sobre a árvore completa (montada a partir da lista flat).
+  const {
+    filtered: filteredLocations,
+    pathMap,
+    tokens: searchTokens,
+    matchedIds,
+    expandedIds,
+    count: filteredCount,
+    active: searchActive,
+  } = useLocationSearch(locations, debouncedSearch);
+
   // Dialog states
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogMode, setDialogMode] = useState<
@@ -614,16 +669,15 @@ export function LocationsList() {
     [],
   );
 
+  // Carrega a árvore COMPLETA achatada (todos os níveis) uma vez; a busca é
+  // 100% client-side (ver useLocationSearch). Não envia `search` ao backend.
   const fetchLocations = useCallback(async () => {
     const email = session?.user?.email;
     if (!email) return;
 
     setIsLoading(true);
     try {
-      const params = new URLSearchParams({ limit: "100" });
-      if (debouncedSearch.length >= 2) {
-        params.set("search", debouncedSearch);
-      }
+      const params = new URLSearchParams({ tree: "full" });
 
       const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/locations?${params}`, {
@@ -645,11 +699,11 @@ export function LocationsList() {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedSearch, session?.user?.email, showToast]);
+  }, [session?.user?.email, showToast]);
 
   useEffect(() => {
     fetchLocations();
-  }, [debouncedSearch, fetchLocations]);
+  }, [fetchLocations]);
 
   // ──── Dialog handlers ────
 
@@ -1078,8 +1132,13 @@ export function LocationsList() {
                     className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
                   />
                 </div>
-                <span className="text-sm text-muted-foreground">
-                  {total} localização(ões)
+                <span
+                  className="text-sm text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {searchActive
+                    ? `${filteredCount} de ${total} localização(ões)`
+                    : `${total} localização(ões)`}
                 </span>
               </div>
 
@@ -1114,9 +1173,9 @@ export function LocationsList() {
               )}
 
               {/* Location list */}
-              {locations.length > 0 ? (
+              {filteredLocations.length > 0 ? (
                 <div className="space-y-2">
-                  {locations.map((location) => (
+                  {filteredLocations.map((location) => (
                     <LocationRow
                       key={location.id}
                       location={location}
@@ -1128,6 +1187,12 @@ export function LocationsList() {
                       onAddChild={handleOpenCreateChild}
                       onViewProducts={handleViewProducts}
                       onMoveLocation={handleOpenMoveLocation}
+                      searchActive={searchActive}
+                      expandedIds={expandedIds}
+                      matchedIds={matchedIds}
+                      tokens={searchTokens}
+                      pathMap={pathMap}
+                      fullPath={pathMap.get(location.id)}
                     />
                   ))}
                 </div>
@@ -1135,16 +1200,16 @@ export function LocationsList() {
                 <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-12">
                   <MapPin className="mb-3 size-10 text-muted-foreground/30" />
                   <p className="text-sm font-medium text-muted-foreground">
-                    {debouncedSearch
+                    {searchActive
                       ? "Nenhuma localização encontrada"
                       : "Nenhuma localização cadastrada"}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground/70">
-                    {debouncedSearch
-                      ? "Tente buscar por outro termo"
+                    {searchActive
+                      ? `Nada corresponde a "${searchInput.trim()}". Tente outro termo.`
                       : "Crie seu primeiro local de armazenamento"}
                   </p>
-                  {!debouncedSearch && (
+                  {!searchActive && (
                     <Button
                       variant="outline"
                       className="mt-4"
