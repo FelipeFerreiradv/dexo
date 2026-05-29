@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Search,
   Plus,
@@ -577,6 +577,8 @@ export function LocationsList() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [total, setTotal] = useState(0);
 
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Busca client-side sobre a árvore completa (montada a partir da lista flat).
   const {
     filtered: filteredLocations,
@@ -587,6 +589,12 @@ export function LocationsList() {
     count: filteredCount,
     active: searchActive,
   } = useLocationSearch(locations, debouncedSearch);
+
+  const clearSearch = useCallback(() => {
+    setSearchInput("");
+    setDebouncedSearch("");
+    searchInputRef.current?.focus();
+  }, []);
 
   // Dialog states
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1123,14 +1131,33 @@ export function LocationsList() {
             <div className="space-y-4">
               {/* Search */}
               <div className="flex items-center gap-4">
-                <div className="relative max-w-sm flex-1">
+                <div className="relative w-full max-w-sm flex-1">
                   <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    placeholder="Buscar por sigla ou descrição..."
+                    ref={searchInputRef}
+                    type="search"
+                    aria-label="Buscar localizações por sigla, descrição ou caminho"
+                    placeholder="Buscar por sigla, descrição ou caminho..."
                     value={searchInput}
                     onChange={(e) => setSearchInput(e.target.value)}
-                    className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && searchInput) {
+                        e.preventDefault();
+                        clearSearch();
+                      }
+                    }}
+                    className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9 pr-9 [&::-webkit-search-cancel-button]:appearance-none"
                   />
+                  {searchInput && (
+                    <button
+                      type="button"
+                      onClick={clearSearch}
+                      aria-label="Limpar busca"
+                      className="absolute right-3 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  )}
                 </div>
                 <span
                   className="text-sm text-muted-foreground"
