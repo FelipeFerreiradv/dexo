@@ -132,7 +132,12 @@ describe("GET /locations?tree=full", () => {
 
   it("occupancy satura em 100 quando ocupação excede a capacidade", async () => {
     findManyMock.mockResolvedValue([
-      row({ id: "c1", code: "CX", maxCapacity: 2, _count: { products: 5, children: 0 } }),
+      row({
+        id: "c1",
+        code: "CX",
+        maxCapacity: 2,
+        _count: { products: 5, children: 0 },
+      }),
     ]);
 
     const app = buildApp();

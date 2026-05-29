@@ -52,9 +52,7 @@ export function matchesTokens(
     normalizeText(fields.description),
     normalizeText(fields.fullPath),
   ];
-  return tokens.every((token) =>
-    haystacks.some((hay) => hay.includes(token)),
-  );
+  return tokens.every((token) => haystacks.some((hay) => hay.includes(token)));
 }
 
 /**

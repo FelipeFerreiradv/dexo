@@ -41,8 +41,7 @@ export function buildTree<T extends FlatNode>(flat: T[]): Array<TreeNode<T>> {
   const roots: Array<TreeNode<T>> = [];
   for (const item of flat) {
     const node = nodes.get(item.id)!;
-    const parent =
-      item.parentId != null ? nodes.get(item.parentId) : undefined;
+    const parent = item.parentId != null ? nodes.get(item.parentId) : undefined;
     if (parent) {
       parent.children.push(node);
     } else {
@@ -69,8 +68,7 @@ export function buildFullPathMap<T extends FlatNode>(
     if (seen.has(node.id)) return node.code; // ciclo defensivo
     seen.add(node.id);
 
-    const parent =
-      node.parentId != null ? byId.get(node.parentId) : undefined;
+    const parent = node.parentId != null ? byId.get(node.parentId) : undefined;
     const path = parent ? `${pathOf(parent, seen)} / ${node.code}` : node.code;
     cache.set(node.id, path);
     return path;

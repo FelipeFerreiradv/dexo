@@ -72,9 +72,9 @@ describe("matchesTokens", () => {
   });
 
   it("description ausente não quebra", () => {
-    expect(
-      matchesTokens(tokenize("g1"), { code: "G1", fullPath: "G1" }),
-    ).toBe(true);
+    expect(matchesTokens(tokenize("g1"), { code: "G1", fullPath: "G1" })).toBe(
+      true,
+    );
   });
 });
 
