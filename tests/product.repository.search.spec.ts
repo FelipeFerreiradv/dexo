@@ -142,7 +142,7 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     expect(result.products[0]).toMatchObject({ sku: "CUBO-001" });
   });
 
-  it("falls back to simple list when search is empty", async () => {
+  it("uses the plain listing path (no fuzzy search) when search is empty", async () => {
     const repo = new ProductRepositoryPrisma();
 
     mockFindMany.mockResolvedValue([
@@ -159,13 +159,25 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     ]);
     mockCount.mockResolvedValue(1);
 
+    // Busca vazia segue o caminho de LISTAGEM (nao o fuzzy): $queryRaw devolve
+    // os ids ja ordenados por (stock > 0) DESC, createdAt DESC + o total, e a
+    // hidratacao vem do findMany. A ordenacao por estoque exige SQL bruto
+    // (ver comentario em product.repository.findAll).
+    mockQueryRaw
+      .mockResolvedValueOnce([{ id: "prod-c" }])
+      .mockResolvedValueOnce([{ count: BigInt(1) }]);
+
     const result = await repo.findAll(
       { search: "", page: 1, limit: 10 },
       "user-1",
     );
 
-    expect(mockQueryRaw).not.toHaveBeenCalled();
+    // NAO deve acionar o caminho fuzzy (que garante extensoes pg_trgm/unaccent
+    // via executeRawUnsafe). Usa 2 queries brutas: ids ordenados + total.
+    expect(mockExecuteRawUnsafe).not.toHaveBeenCalled();
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
     expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({ id: "prod-c", sku: "SKU-003" });
     expect(result.total).toBe(1);
   });
 
