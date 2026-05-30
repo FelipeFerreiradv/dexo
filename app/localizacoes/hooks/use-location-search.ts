@@ -3,6 +3,7 @@ import { tokenize } from "../lib/search-utils";
 import {
   buildTree,
   buildFullPathMap,
+  buildSearchIndex,
   filterTree,
   countNodes,
   type FlatNode,
@@ -42,6 +43,8 @@ export function useLocationSearch<T extends FlatNode>(
 ): UseLocationSearchResult<T> {
   const tree = useMemo(() => buildTree(flat), [flat]);
   const pathMap = useMemo(() => buildFullPathMap(flat), [flat]);
+  // Texto de busca normalizado uma vez por `flat` (não a cada keystroke).
+  const searchIndex = useMemo(() => buildSearchIndex(flat), [flat]);
   const total = useMemo(() => countNodes(tree), [tree]);
   const tokens = useMemo(() => tokenize(query), [query]);
   const active = tokens.length > 0;
@@ -62,6 +65,7 @@ export function useLocationSearch<T extends FlatNode>(
     const { filtered, matchedIds, expandedIds, count } = filterTree(
       tree,
       tokens,
+      searchIndex,
     );
     return {
       filtered,
@@ -73,5 +77,5 @@ export function useLocationSearch<T extends FlatNode>(
       total,
       active,
     };
-  }, [active, tree, pathMap, tokens, total]);
+  }, [active, tree, pathMap, searchIndex, tokens, total]);
 }

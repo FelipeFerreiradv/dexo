@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildTree,
   buildFullPathMap,
+  buildSearchIndex,
   filterTree,
   countNodes,
   type FlatNode,
@@ -133,4 +134,56 @@ describe("filterTree", () => {
     expect(r.filtered).toHaveLength(0);
     expect(r.count).toBe(0);
   });
+});
+
+describe("buildSearchIndex", () => {
+  it("normaliza code+description por id (sem acento, minúsculo)", () => {
+    const index = buildSearchIndex(flat);
+    expect(index.get("sub03")).toBe("sub-03 subdivisao norte");
+    expect(index.get("g1")).toBe("g1 galpao 1");
+  });
+
+  it("nó sem description indexa só o code", () => {
+    const index = buildSearchIndex([
+      { id: "x", code: "CX-01", parentId: null },
+    ]);
+    expect(index.get("x")).toBe("cx-01");
+  });
+});
+
+describe("filterTree: índice produz resultado IDÊNTICO ao caminho on-the-fly", () => {
+  const tree = buildTree(flat);
+  const index = buildSearchIndex(flat);
+  const queries = [
+    "",
+    "g1",
+    "prat",
+    "sub-03",
+    "subdivisao",
+    "sub norte",
+    "galpao",
+    "inexistente-xyz",
+    "PRAT-0",
+    "armazem",
+  ];
+
+  for (const q of queries) {
+    it(`mesma saída com e sem índice para "${q}"`, () => {
+      const tokens = tokenize(q);
+      const withoutIndex = filterTree(tree, tokens);
+      const withIndex = filterTree(tree, tokens, index);
+
+      expect([...withIndex.matchedIds].sort()).toEqual(
+        [...withoutIndex.matchedIds].sort(),
+      );
+      expect([...withIndex.expandedIds].sort()).toEqual(
+        [...withoutIndex.expandedIds].sort(),
+      );
+      expect(withIndex.count).toBe(withoutIndex.count);
+      // Estrutura podada idêntica (ids por nível, serializados).
+      const shape = (nodes: typeof withIndex.filtered): unknown =>
+        nodes.map((n) => ({ id: n.id, children: shape(n.children) }));
+      expect(shape(withIndex.filtered)).toEqual(shape(withoutIndex.filtered));
+    });
+  }
 });

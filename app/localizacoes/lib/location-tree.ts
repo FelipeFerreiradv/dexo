@@ -3,7 +3,7 @@
  * lista achatada retornada por `GET /locations?tree=full`. Funções puras (sem
  * React/DOM) para serem testáveis isoladamente.
  */
-import { matchesTokens } from "./search-utils";
+import { matchesTokens, normalizeText } from "./search-utils";
 
 /** Campos mínimos necessários para montar a árvore e buscar. */
 export interface FlatNode {
@@ -11,6 +11,25 @@ export interface FlatNode {
   code: string;
   description?: string | null;
   parentId?: string | null;
+}
+
+/**
+ * Índice de busca: `id → "code description"` já normalizado (sem acento,
+ * minúsculo). Permite que `filterTree` faça apenas `includes` por keystroke,
+ * sem re-normalizar o texto de cada nó a cada busca. Construído uma vez por
+ * `flat` (memoizado no hook). Mesma semântica de `matchesTokens` (AND entre
+ * tokens sobre code+description do próprio nó).
+ */
+export type SearchIndex = Map<string, string>;
+
+export function buildSearchIndex<T extends FlatNode>(flat: T[]): SearchIndex {
+  const index: SearchIndex = new Map();
+  for (const node of flat) {
+    const code = normalizeText(node.code);
+    const description = normalizeText(node.description);
+    index.set(node.id, description ? `${code} ${description}` : code);
+  }
+  return index;
 }
 
 /** Nó de árvore: o item original com `children` resolvido (sempre presente). */
@@ -106,7 +125,11 @@ export function countNodes<T>(tree: Array<TreeNode<T>>): number {
  */
 export function filterTree<
   T extends { id: string; code: string; description?: string | null },
->(tree: Array<TreeNode<T>>, tokens: string[]): FilterResult<T> {
+>(
+  tree: Array<TreeNode<T>>,
+  tokens: string[],
+  index?: SearchIndex,
+): FilterResult<T> {
   const matchedIds = new Set<string>();
   const expandedIds = new Set<string>();
 
@@ -114,11 +137,22 @@ export function filterTree<
     return { filtered: tree, matchedIds, expandedIds, count: 0 };
   }
 
-  const visit = (node: TreeNode<T>): TreeNode<T> | null => {
-    const selfMatch = matchesTokens(tokens, {
+  // Caminho rápido: com índice pré-normalizado, o match é só `includes`.
+  // Sem índice, recai sobre `matchesTokens` (normaliza on-the-fly) — mesma
+  // semântica, usado por testes/chamadas que não passam índice.
+  const isMatch = (node: TreeNode<T>): boolean => {
+    const hay = index?.get(node.id);
+    if (hay !== undefined) {
+      return tokens.every((t) => hay.includes(t));
+    }
+    return matchesTokens(tokens, {
       code: node.code,
       description: node.description,
     });
+  };
+
+  const visit = (node: TreeNode<T>): TreeNode<T> | null => {
+    const selfMatch = isMatch(node);
     if (selfMatch) matchedIds.add(node.id);
 
     // Visita todos os filhos (efeitos colaterais nos sets globais).
