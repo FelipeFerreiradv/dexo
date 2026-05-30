@@ -19,12 +19,29 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { search, parentId, page, limit } = request.query as {
+        const { search, parentId, page, limit, tree } = request.query as {
           search?: string;
           parentId?: string;
           page?: string;
           limit?: string;
+          tree?: string;
         };
+
+        // tree=full: árvore completa achatada (todos os níveis) para busca/
+        // navegação client-side. Param opcional e retrocompatível — quando
+        // ausente, o comportamento abaixo permanece idêntico.
+        if (tree === "full") {
+          const data = await locationUseCase.listAllFlat(userId);
+          return reply.status(200).send({
+            locations: data.locations,
+            pagination: {
+              page: 1,
+              limit: data.total,
+              total: data.total,
+              totalPages: 1,
+            },
+          });
+        }
 
         const data = await locationUseCase.listLocations({
           userId,

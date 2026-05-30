@@ -33,6 +33,13 @@ export interface LocationWithOccupancy extends Location {
   childrenCount: number;
 }
 
+/**
+ * Location achatada (sem `children` aninhado) com a contagem de filhos vinda
+ * do `_count`. Usada pela listagem `tree=full`, que monta a hierarquia no
+ * cliente a partir de `parentId` (ver `findAllFlat`).
+ */
+export type LocationFlat = Location & { childrenCount: number };
+
 export interface AttachedProductRef {
   id: string;
   sku: string;
@@ -77,6 +84,7 @@ export interface LocationRepository {
     },
     userId?: string,
   ): Promise<{ locations: Location[]; total: number }>;
+  findAllFlat(userId: string): Promise<LocationFlat[]>;
   findByCode(code: string, userId: string): Promise<Location | null>;
   update(id: string, data: LocationUpdate, userId?: string): Promise<Location>;
   delete(id: string, userId?: string): Promise<void>;

@@ -2,6 +2,7 @@ import {
   Location,
   LocationCreate,
   LocationUpdate,
+  LocationFlat,
   LocationRepository,
 } from "../interfaces/location.interface";
 import prisma from "../lib/prisma";
@@ -136,6 +137,28 @@ export class LocationRepositoryPrisma implements LocationRepository {
       locations: locations.map(mapPrismaToLocation),
       total,
     };
+  }
+
+  /**
+   * Retorna TODAS as localizações do usuário, em qualquer profundidade, como
+   * uma lista achatada (sem `children` aninhado). Cada item traz `childrenCount`
+   * do `_count` para que o cliente possa montar a árvore por `parentId` sem
+   * perder a contagem de subtópicos. Não pagina — o conjunto por usuário é
+   * pequeno o suficiente (mesma premissa de `listForSelect`).
+   */
+  async findAllFlat(userId: string): Promise<LocationFlat[]> {
+    const rows = await prisma.location.findMany({
+      where: { userId },
+      orderBy: { code: "asc" },
+      include: {
+        _count: { select: { products: true, children: true } },
+      },
+    });
+
+    return rows.map((item) => ({
+      ...mapPrismaToLocation(item),
+      childrenCount: item._count?.children ?? 0,
+    }));
   }
 
   async findByCode(code: string, userId: string): Promise<Location | null> {
