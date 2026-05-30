@@ -1,5 +1,8 @@
-import dotenv from "dotenv";
-dotenv.config();
+// Side-effect import: roda dotenv.config() durante a FASE DE IMPORTS (ordenada),
+// antes do import do prisma. Com `dotenv.config()` como statement, o hoisting de
+// imports do esbuild/tsx avalia prisma.ts (que lê DATABASE_URL) ANTES do config,
+// quebrando o boot em shells sem as vars já no ambiente.
+import "dotenv/config";
 
 import { loadEnvOrExit } from "../lib/env";
 loadEnvOrExit();
