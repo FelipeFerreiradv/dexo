@@ -32,6 +32,11 @@ class UserRepositoryPrisma implements UserRepository {
       defaultLocalPickup: u.defaultLocalPickup ?? null,
       defaultManufacturingTime: u.defaultManufacturingTime ?? null,
 
+      // Aumento percentual escalonado entre contas ML (default 0)
+      crossAccountPriceIncreasePercent: u.crossAccountPriceIncreasePercent
+        ? Number(u.crossAccountPriceIncreasePercent)
+        : 0,
+
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
@@ -146,6 +151,12 @@ class UserRepositoryPrisma implements UserRepository {
           }),
           ...(data.defaultManufacturingTime !== undefined && {
             defaultManufacturingTime: data.defaultManufacturingTime,
+          }),
+
+          // Aumento percentual escalonado entre contas ML
+          ...(data.crossAccountPriceIncreasePercent !== undefined && {
+            crossAccountPriceIncreasePercent:
+              data.crossAccountPriceIncreasePercent,
           }),
         },
       });

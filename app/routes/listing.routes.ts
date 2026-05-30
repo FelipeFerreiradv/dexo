@@ -16,6 +16,66 @@ import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
+import prisma from "../lib/prisma";
+
+/**
+ * Enriquece a config de aumento percentual escalonado entre contas ML antes de
+ * persistir/disparar o job. O front envia apenas { enabled, percent }; aqui
+ * resolvemos o percentual final (clamp 0..100, com fallback à preferência do
+ * usuário) e congelamos `indexByAccountId` pela ordem de seleção das contas ML
+ * (= ordem das entradas ML em `requests`; 1ª selecionada = índice 0 = preço
+ * base). Persistir essa config no overrideTemplate faz o retry-failed reproduzir
+ * preços idênticos, pois lê a config congelada em vez de recalcular.
+ *
+ * Devolve o template inalterado quando o recurso está desligado e remove a flag
+ * (no-op, comportamento atual) quando o percentual resolvido é <= 0.
+ */
+async function enrichCrossAccountIncrease(
+  userId: string,
+  requests: Array<{ platform: BulkListingPlatform; accountId: string }>,
+  template: BulkOverrideTemplate | null,
+): Promise<BulkOverrideTemplate | null> {
+  const ca = template?.crossAccountIncrease;
+  if (!template || !ca?.enabled) return template;
+
+  let percent =
+    typeof ca.percent === "number" && Number.isFinite(ca.percent)
+      ? ca.percent
+      : NaN;
+  if (!Number.isFinite(percent)) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { crossAccountPriceIncreasePercent: true },
+    });
+    percent = user?.crossAccountPriceIncreasePercent
+      ? Number(user.crossAccountPriceIncreasePercent)
+      : 0;
+  }
+  percent = Math.min(100, Math.max(0, percent));
+
+  // Percentual 0 ⇒ no-op: remove a flag para preservar o comportamento atual.
+  if (percent <= 0) {
+    const rest = { ...template };
+    delete rest.crossAccountIncrease;
+    return Object.keys(rest).length > 0 ? rest : null;
+  }
+
+  const indexByAccountId: Record<string, number> = {};
+  let idx = 0;
+  for (const r of requests) {
+    if (
+      r.platform === "MERCADO_LIVRE" &&
+      !Object.prototype.hasOwnProperty.call(indexByAccountId, r.accountId)
+    ) {
+      indexByAccountId[r.accountId] = idx++;
+    }
+  }
+
+  return {
+    ...template,
+    crossAccountIncrease: { enabled: true, percent, indexByAccountId },
+  };
+}
 
 export async function listingRoutes(app: FastifyInstance) {
   /**
@@ -360,7 +420,9 @@ export async function listingRoutes(app: FastifyInstance) {
               category: listing.product.category ?? null,
               mlCategory:
                 (listing.product as { mlCategory?: string | null })
-                  .mlCategory ?? listing.product.mlCategoryId ?? null,
+                  .mlCategory ??
+                listing.product.mlCategoryId ??
+                null,
               shopeeCategoryId:
                 (listing.product as { shopeeCategoryId?: string | null })
                   .shopeeCategoryId ?? null,
@@ -444,7 +506,9 @@ export async function listingRoutes(app: FastifyInstance) {
           manufacturingTime: pickSetting<number>("manufacturingTime"),
           // Product overrides (null = limpar override)
           titleOverride: pickOverride<string | null>("titleOverride"),
-          descriptionOverride: pickOverride<string | null>("descriptionOverride"),
+          descriptionOverride: pickOverride<string | null>(
+            "descriptionOverride",
+          ),
           priceOverride: pickOverride<number | null>("priceOverride"),
           brandOverride: pickOverride<string | null>("brandOverride"),
           modelOverride: pickOverride<string | null>("modelOverride"),
@@ -462,19 +526,17 @@ export async function listingRoutes(app: FastifyInstance) {
           lengthCmOverride: pickOverride<number | null>("lengthCmOverride"),
           weightKgOverride: pickOverride<number | null>("weightKgOverride"),
           imageUrlsOverride: pickOverride<string[] | null>("imageUrlsOverride"),
-          attributesOverride: pickOverride<
-            Record<string, { value_id?: string; value_name?: string }> | null
-          >("attributesOverride"),
-          compatibilitiesOverride: pickOverride<
-            | Array<{
-                brand?: string;
-                model?: string;
-                yearFrom?: number | null;
-                yearTo?: number | null;
-                version?: string | null;
-              }>
-            | null
-          >("compatibilitiesOverride"),
+          attributesOverride: pickOverride<Record<
+            string,
+            { value_id?: string; value_name?: string }
+          > | null>("attributesOverride"),
+          compatibilitiesOverride: pickOverride<Array<{
+            brand?: string;
+            model?: string;
+            yearFrom?: number | null;
+            yearTo?: number | null;
+            version?: string | null;
+          }> | null>("compatibilitiesOverride"),
           sourceVehicleOverride: pickOverride<string | null>(
             "sourceVehicleOverride",
           ),
@@ -729,6 +791,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const body = request.body as {
           productId: string;
           requests: ListingDispatchRequest[];
+          crossAccountIncrease?: { enabled?: boolean; percent?: number };
         };
 
         if (!body.productId) {
@@ -753,10 +816,25 @@ export async function listingRoutes(app: FastifyInstance) {
           }
         }
 
+        // Aumento percentual escalonado entre contas ML (edição de produto):
+        // monta o overrideTemplate a partir da ordem das contas ML nos
+        // requests. Sem cfg habilitada, o dispatch segue idêntico ao de hoje.
+        const caCfg = body.crossAccountIncrease;
+        const overrideTemplate = caCfg?.enabled
+          ? ListingDispatcher.buildCrossAccountOverride(
+              body.requests,
+              await ListingDispatcher.resolveCrossAccountPercent(
+                userId,
+                caCfg.percent,
+              ),
+            )
+          : null;
+
         const snapshot = ListingDispatcher.dispatch({
           userId,
           productId: body.productId,
           requests: body.requests,
+          overrideTemplate,
         });
 
         return reply.status(202).send({
@@ -859,8 +937,7 @@ export async function listingRoutes(app: FastifyInstance) {
                 numId,
               );
             } catch (e) {
-              const msg =
-                e instanceof Error ? e.message : "categoria inválida";
+              const msg = e instanceof Error ? e.message : "categoria inválida";
               issues.push({
                 productId: id,
                 code: "shopee_category_not_leaf",
@@ -926,7 +1003,8 @@ export async function listingRoutes(app: FastifyInstance) {
         ) {
           return reply.status(400).send({
             error: "Dados inválidos",
-            message: "requests deve conter ao menos um par platform+accountId válido",
+            message:
+              "requests deve conter ao menos um par platform+accountId válido",
           });
         }
         if (body.productIds.length * body.requests.length > 2000) {
@@ -937,11 +1015,21 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
+        // Enriquece a config de aumento escalonado entre contas ML (resolve o
+        // percentual e congela a ordem de seleção das contas) ANTES de criar o
+        // job, para que persistência e disparo usem a mesma config — e o
+        // retry-failed, que relê o template persistido, reproduza preços iguais.
+        const overrideTemplate = await enrichCrossAccountIncrease(
+          userId,
+          body.requests,
+          body.overrideTemplate ?? null,
+        );
+
         const job = await BulkListingJobRepository.create({
           userId,
           productIds: body.productIds,
           requests: body.requests as BulkListingRequestSpec[],
-          overrideTemplate: body.overrideTemplate ?? null,
+          overrideTemplate,
         });
 
         // Disparo fire-and-forget. O cliente faz polling pelo jobId.
@@ -959,7 +1047,7 @@ export async function listingRoutes(app: FastifyInstance) {
                   | BulkListingRequestSpec["mlSettings"]
                   | undefined,
               })),
-              overrideTemplate: body.overrideTemplate ?? null,
+              overrideTemplate,
               onItemDone: async (item) => {
                 try {
                   await BulkListingJobRepository.appendResult(job.id, item);
@@ -1099,7 +1187,8 @@ export async function listingRoutes(app: FastifyInstance) {
 
         // Reconstrói requests a partir das tuplas falhas. Mantém categoryId/
         // mlSettings do request original quando o accountId bate.
-        const originalRequests = (job.requests as unknown as BulkListingRequestSpec[]) || [];
+        const originalRequests =
+          (job.requests as unknown as BulkListingRequestSpec[]) || [];
         const findOriginal = (platform: string, accountId: string) =>
           originalRequests.find(
             (r) => r.platform === platform && r.accountId === accountId,

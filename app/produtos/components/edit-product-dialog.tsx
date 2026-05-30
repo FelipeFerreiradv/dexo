@@ -230,10 +230,7 @@ interface EditProductDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onProductUpdated: () => void;
-  onToast: (
-    message: string,
-    type: "success" | "error" | "warning",
-  ) => void;
+  onToast: (message: string, type: "success" | "error" | "warning") => void;
   listingContext?: EditProductDialogListingContext | null;
 }
 
@@ -346,6 +343,9 @@ export function EditProductDialog({
   const [mlFreeShipping, setMlFreeShipping] = useState(false);
   const [mlLocalPickup, setMlLocalPickup] = useState(false);
   const [mlManufacturingTime, setMlManufacturingTime] = useState(0);
+  // Aumento percentual escalonado entre contas ML (anti-penalização)
+  const [crossAccountIncrease, setCrossAccountIncrease] = useState(false);
+  const [crossAccountPercent, setCrossAccountPercent] = useState<string>("");
   const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
     [],
   );
@@ -541,10 +541,7 @@ export function EditProductDialog({
       // tudo no cmdk trava o popover. Mantemos só o ramo automotivo + nichos
       // próximos (mesma estratégia do Shopee em `fetchShopeeCategories`).
       const norm = (s: string) =>
-        (s || "")
-          .normalize("NFD")
-          .replace(/[̀-ͯ]/g, "")
-          .toLowerCase();
+        (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
       const ML_AUTO_MARKERS = [
         "acessorios para veiculos",
         "pecas para veiculos",
@@ -781,6 +778,11 @@ export function EditProductDialog({
         if (!product.description && desc) setValue("description", desc);
 
         if (user.defaultListingType) setMlListingType(user.defaultListingType);
+        if (
+          user.crossAccountPriceIncreasePercent != null &&
+          Number(user.crossAccountPriceIncreasePercent) > 0
+        )
+          setCrossAccountPercent(String(user.crossAccountPriceIncreasePercent));
         if (
           user.defaultHasWarranty !== undefined &&
           user.defaultHasWarranty !== null
@@ -1039,12 +1041,7 @@ export function EditProductDialog({
           setCompatibilitiesLoading(false);
         });
     }
-  }, [
-    open,
-    product.id,
-    reset,
-    session?.user?.email,
-  ]);
+  }, [open, product.id, reset, session?.user?.email]);
 
   // Ao fechar, libera a guarda para permitir reabrir e reexecutar o corpo.
   useEffect(() => {
@@ -1145,7 +1142,8 @@ export function EditProductDialog({
         if (l.modelOverride !== null) setValue("model", l.modelOverride);
         if (l.yearOverride !== null) setValue("year", l.yearOverride);
         if (l.versionOverride !== null) setValue("version", l.versionOverride);
-        if (l.categoryOverride !== null) setValue("category", l.categoryOverride);
+        if (l.categoryOverride !== null)
+          setValue("category", l.categoryOverride);
         if (l.mlCategoryOverride !== null)
           setValue("mlCategory", l.mlCategoryOverride);
         if (l.shopeeCategoryOverride !== null)
@@ -1170,7 +1168,8 @@ export function EditProductDialog({
           setValue("weightKg", l.weightKgOverride);
         if (Array.isArray(l.imageUrlsOverride)) {
           setValue("imageUrls", l.imageUrlsOverride);
-          if (l.imageUrlsOverride[0]) setValue("imageUrl", l.imageUrlsOverride[0]);
+          if (l.imageUrlsOverride[0])
+            setValue("imageUrl", l.imageUrlsOverride[0]);
         }
         if (l.attributesOverride && typeof l.attributesOverride === "object") {
           setValue("attributes", l.attributesOverride);
@@ -1240,8 +1239,7 @@ export function EditProductDialog({
     // Pool restrito a categorias sob o nicho veicular (só elas interessam
     // para um produto com brand+model+year).
     const vehiclePool = mlOptions.filter(
-      (c) =>
-        isCategoryUnderVehicleRoot(c.id, mlOptions) === true,
+      (c) => isCategoryUnderVehicleRoot(c.id, mlOptions) === true,
     );
 
     if (vehiclePool.length === 0) {
@@ -1426,9 +1424,27 @@ export function EditProductDialog({
         }
       };
 
-      maybeSet("brand", watch("brand"), prev.brand, originalBrandRef.current, detected.brand);
-      maybeSet("model", watch("model"), prev.model, originalModelRef.current, detected.model);
-      maybeSet("year", watch("year"), prev.year, originalYearRef.current, detected.year);
+      maybeSet(
+        "brand",
+        watch("brand"),
+        prev.brand,
+        originalBrandRef.current,
+        detected.brand,
+      );
+      maybeSet(
+        "model",
+        watch("model"),
+        prev.model,
+        originalModelRef.current,
+        detected.model,
+      );
+      maybeSet(
+        "year",
+        watch("year"),
+        prev.year,
+        originalYearRef.current,
+        detected.year,
+      );
 
       // Sugestão automática de category/mlCategory removida: o usuário escolhe
       // a categoria ML manualmente no popover (grupo "Sugeridas pelo título" +
@@ -1437,14 +1453,21 @@ export function EditProductDialog({
 
       // Measurements: try to auto-fill from category when available
       // Single call — reused below to update autoDetectedRef
-      let measurements: ReturnType<typeof getMeasurementsForCategory> | undefined;
+      let measurements:
+        | ReturnType<typeof getMeasurementsForCategory>
+        | undefined;
       try {
         measurements = getMeasurementsForCategory(
           mapping.topLevel || detected.category,
           mapping.detailedValue,
         );
 
-        const measureFields = ["heightCm", "widthCm", "lengthCm", "weightKg"] as const;
+        const measureFields = [
+          "heightCm",
+          "widthCm",
+          "lengthCm",
+          "weightKg",
+        ] as const;
         for (const field of measureFields) {
           const current = watch(field);
           const prevAuto = prev[field];
@@ -1683,10 +1706,12 @@ export function EditProductDialog({
         lengthCm: data.lengthCm ?? null,
         weightKg: data.weightKg ?? null,
 
-        imageUrl: (data.imageUrls && data.imageUrls[0]) || data.imageUrl || null,
+        imageUrl:
+          (data.imageUrls && data.imageUrls[0]) || data.imageUrl || null,
         imageUrls: data.imageUrls || [],
         mlCategorySource: mlCategorySourceToSend,
-        mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory || null,
+        mlCategory:
+          data.mlCategory || autoDetectedRef.current?.mlCategory || null,
         shopeeCategory: data.shopeeCategory || null,
 
         // Compatibilidades no mesmo payload
@@ -1732,7 +1757,8 @@ export function EditProductDialog({
           productVal: string | null | undefined,
         ): string | null => {
           const a = newVal == null || newVal === "" ? null : String(newVal);
-          const b = productVal == null || productVal === "" ? null : String(productVal);
+          const b =
+            productVal == null || productVal === "" ? null : String(productVal);
           return a === b ? null : a;
         };
         const diffNum = (
@@ -1748,7 +1774,7 @@ export function EditProductDialog({
             return JSON.stringify(newVal ?? null) ===
               JSON.stringify(productVal ?? null)
               ? null
-              : newVal ?? null;
+              : (newVal ?? null);
           } catch {
             return newVal ?? null;
           }
@@ -1884,10 +1910,7 @@ export function EditProductDialog({
           // foram aplicados no ML, outros ficaram só locais como override.
           if (listingBody?.warning) {
             invalidateListingsStatusCache(product.id);
-            onToast(
-              `Anúncio atualizado. ${listingBody.warning}`,
-              "warning",
-            );
+            onToast(`Anúncio atualizado. ${listingBody.warning}`, "warning");
             onProductUpdated();
             onOpenChange(false);
             return;
@@ -1998,6 +2021,14 @@ export function EditProductDialog({
             body: JSON.stringify({
               productId: product.id,
               requests: dispatchRequests,
+              crossAccountIncrease: crossAccountIncrease
+                ? {
+                    enabled: true,
+                    percent: crossAccountPercent
+                      ? Number(crossAccountPercent)
+                      : undefined,
+                  }
+                : undefined,
             }),
           });
           const body = await resp.json().catch(() => ({}));
@@ -2103,10 +2134,10 @@ export function EditProductDialog({
           <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">
             <strong>Edição isolada por conta.</strong> Tudo o que você alterar
             aqui vai afetar <em>apenas este anúncio</em> da conta{" "}
-            <strong>{listingContext.accountName}</strong>. O produto compartilhado
-            e os anúncios de outras contas continuam intactos. Para limpar uma
-            personalização e voltar a herdar do produto, deixe o campo igual ao
-            valor original do produto.
+            <strong>{listingContext.accountName}</strong>. O produto
+            compartilhado e os anúncios de outras contas continuam intactos.
+            Para limpar uma personalização e voltar a herdar do produto, deixe o
+            campo igual ao valor original do produto.
           </div>
         )}
         <form
@@ -2778,6 +2809,55 @@ export function EditProductDialog({
                     )}
                   </div>
 
+                  {/* Aumento percentual escalonado entre contas ML */}
+                  {mlAccounts.length > 1 && (
+                    <div className="mt-2 space-y-2 rounded-md border p-3">
+                      <label className="flex items-center justify-between gap-2 text-sm font-medium">
+                        <span>
+                          Aumentar percentual nas demais contas (Mercado Livre)
+                        </span>
+                        <Switch
+                          checked={crossAccountIncrease}
+                          onCheckedChange={setCrossAccountIncrease}
+                        />
+                      </label>
+                      {crossAccountIncrease && (
+                        <div className="space-y-1">
+                          <Label
+                            htmlFor="edit-cross-account-percent"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Percentual de aumento composto entre contas
+                          </Label>
+                          <div className="relative w-40">
+                            <Input
+                              id="edit-cross-account-percent"
+                              type="number"
+                              inputMode="decimal"
+                              min={0}
+                              max={100}
+                              step="0.01"
+                              value={crossAccountPercent}
+                              onChange={(e) =>
+                                setCrossAccountPercent(e.target.value)
+                              }
+                              placeholder="Ex.: 10"
+                              className="pr-7"
+                            />
+                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                              %
+                            </span>
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-muted-foreground">
+                            Aplicado em cascata: a 1ª conta selecionada mantém o
+                            preço base; cada conta seguinte recebe este % sobre
+                            o preço da anterior.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Categoria ML (movida pra dentro do switch para só aparecer
                       quando o usuário decide criar anúncio ML — padrão Shopee). */}
                   <div className="mt-2 space-y-2">
@@ -2885,8 +2965,7 @@ export function EditProductDialog({
                                 className="p-0"
                                 align="start"
                                 style={{
-                                  width:
-                                    "var(--radix-popover-trigger-width)",
+                                  width: "var(--radix-popover-trigger-width)",
                                   maxHeight: 360,
                                 }}
                               >
@@ -2956,8 +3035,8 @@ export function EditProductDialog({
                         }}
                       />
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Obrigatório para publicar no Mercado Livre. Use o
-                        campo de busca para filtrar a lista.
+                        Obrigatório para publicar no Mercado Livre. Use o campo
+                        de busca para filtrar a lista.
                       </p>
                     </div>
 
@@ -3159,174 +3238,173 @@ export function EditProductDialog({
             </div>
 
             {!listingContext && (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Switch
-                  id="edit-create-shopee-listing"
-                  checked={createShopeeListing}
-                  onCheckedChange={setCreateShopeeListing}
-                />
-                <Label
-                  htmlFor="edit-create-shopee-listing"
-                  className="cursor-pointer"
-                >
-                  Criar anúncio no Shopee
-                </Label>
-              </div>
-              {createShopeeListing && (
-                <>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {shopeeAccounts.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        Conecte ao menos uma conta do Shopee.
-                      </p>
-                    ) : (
-                      shopeeAccounts.map((acc) => (
-                        <label
-                          key={acc.id}
-                          className="flex items-center justify-between rounded-md border p-2 text-sm"
-                        >
-                          <span>{acc.accountName || acc.id}</span>
-                          <Switch
-                            checked={selectedShopeeAccounts.includes(acc.id)}
-                            onCheckedChange={(checked) =>
-                              setSelectedShopeeAccounts((prev) =>
-                                checked
-                                  ? [...prev, acc.id]
-                                  : prev.filter((id) => id !== acc.id),
-                              )
-                            }
-                          />
-                        </label>
-                      ))
-                    )}
-                  </div>
-                  <div className="mt-2">
-                    <Label>Categoria no Shopee</Label>
-                    <Controller
-                      name="shopeeCategory"
-                      control={control}
-                      render={({ field }) => {
-                        const selected = [
-                          ...shopeeSuggestedOptions,
-                          ...shopeeOptions,
-                        ].find((o) => o.id === (field.value || ""));
-                        const isLoading =
-                          shopeeSuggestedOptions.length === 0 &&
-                          shopeeOptions.length === 0;
-                        return (
-                          <Popover
-                            open={shopeeCategoryOpen}
-                            onOpenChange={(isOpen) => {
-                              setShopeeCategoryOpen(isOpen);
-                              if (isOpen) void fetchShopeeCategories();
-                            }}
-                            modal
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    id="edit-create-shopee-listing"
+                    checked={createShopeeListing}
+                    onCheckedChange={setCreateShopeeListing}
+                  />
+                  <Label
+                    htmlFor="edit-create-shopee-listing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio no Shopee
+                  </Label>
+                </div>
+                {createShopeeListing && (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {shopeeAccounts.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Conecte ao menos uma conta do Shopee.
+                        </p>
+                      ) : (
+                        shopeeAccounts.map((acc) => (
+                          <label
+                            key={acc.id}
+                            className="flex items-center justify-between rounded-md border p-2 text-sm"
                           >
-                            <PopoverTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                role="combobox"
-                                aria-expanded={shopeeCategoryOpen}
-                                className={cn(
-                                  "w-full justify-between font-normal",
-                                  !selected && "text-muted-foreground",
-                                )}
-                              >
-                                <span className="truncate text-left">
-                                  {selected
-                                    ? selected.value
-                                    : isLoading
-                                      ? "Carregando categorias..."
-                                      : "Selecione ou pesquise uma categoria"}
-                                </span>
-                                <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              className="p-0"
-                              align="start"
-                              style={{
-                                width:
-                                  "var(--radix-popover-trigger-width)",
-                                maxHeight: 360,
+                            <span>{acc.accountName || acc.id}</span>
+                            <Switch
+                              checked={selectedShopeeAccounts.includes(acc.id)}
+                              onCheckedChange={(checked) =>
+                                setSelectedShopeeAccounts((prev) =>
+                                  checked
+                                    ? [...prev, acc.id]
+                                    : prev.filter((id) => id !== acc.id),
+                                )
+                              }
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-2">
+                      <Label>Categoria no Shopee</Label>
+                      <Controller
+                        name="shopeeCategory"
+                        control={control}
+                        render={({ field }) => {
+                          const selected = [
+                            ...shopeeSuggestedOptions,
+                            ...shopeeOptions,
+                          ].find((o) => o.id === (field.value || ""));
+                          const isLoading =
+                            shopeeSuggestedOptions.length === 0 &&
+                            shopeeOptions.length === 0;
+                          return (
+                            <Popover
+                              open={shopeeCategoryOpen}
+                              onOpenChange={(isOpen) => {
+                                setShopeeCategoryOpen(isOpen);
+                                if (isOpen) void fetchShopeeCategories();
                               }}
+                              modal
                             >
-                              <Command>
-                                <CommandInput placeholder="Pesquisar categoria..." />
-                                <CommandList>
-                                  <CommandEmpty>
-                                    Nenhuma categoria encontrada.
-                                  </CommandEmpty>
-                                  {shopeeSuggestedOptions.length > 0 && (
-                                    <CommandGroup heading="Sugeridas pelo título">
-                                      {shopeeSuggestedOptions.map((opt) => (
-                                        <CommandItem
-                                          key={`sug-${opt.id}`}
-                                          value={`${opt.value} ${opt.id}`}
-                                          onSelect={() => {
-                                            field.onChange(opt.id);
-                                            setShopeeCategoryOpen(false);
-                                          }}
-                                        >
-                                          <Check
-                                            className={cn(
-                                              "mr-2 size-4",
-                                              field.value === opt.id
-                                                ? "opacity-100"
-                                                : "opacity-0",
-                                            )}
-                                          />
-                                          <span className="truncate">
-                                            {opt.value}
-                                          </span>
-                                        </CommandItem>
-                                      ))}
-                                    </CommandGroup>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={shopeeCategoryOpen}
+                                  className={cn(
+                                    "w-full justify-between font-normal",
+                                    !selected && "text-muted-foreground",
                                   )}
-                                  {shopeeOptions.length > 0 && (
-                                    <CommandGroup heading="Todas as categorias de autopeças">
-                                      {shopeeOptions.map((opt) => (
-                                        <CommandItem
-                                          key={opt.id}
-                                          value={`${opt.value} ${opt.id}`}
-                                          onSelect={() => {
-                                            field.onChange(opt.id);
-                                            setShopeeCategoryOpen(false);
-                                          }}
-                                        >
-                                          <Check
-                                            className={cn(
-                                              "mr-2 size-4",
-                                              field.value === opt.id
-                                                ? "opacity-100"
-                                                : "opacity-0",
-                                            )}
-                                          />
-                                          <span className="truncate">
-                                            {opt.value}
-                                          </span>
-                                        </CommandItem>
-                                      ))}
-                                    </CommandGroup>
-                                  )}
-                                </CommandList>
-                              </Command>
-                            </PopoverContent>
-                          </Popover>
-                        );
-                      }}
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Obrigatório para publicar no Shopee. Use o campo de busca
-                      para filtrar a lista. A categoria será persistida no
-                      produto.
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
+                                >
+                                  <span className="truncate text-left">
+                                    {selected
+                                      ? selected.value
+                                      : isLoading
+                                        ? "Carregando categorias..."
+                                        : "Selecione ou pesquise uma categoria"}
+                                  </span>
+                                  <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent
+                                className="p-0"
+                                align="start"
+                                style={{
+                                  width: "var(--radix-popover-trigger-width)",
+                                  maxHeight: 360,
+                                }}
+                              >
+                                <Command>
+                                  <CommandInput placeholder="Pesquisar categoria..." />
+                                  <CommandList>
+                                    <CommandEmpty>
+                                      Nenhuma categoria encontrada.
+                                    </CommandEmpty>
+                                    {shopeeSuggestedOptions.length > 0 && (
+                                      <CommandGroup heading="Sugeridas pelo título">
+                                        {shopeeSuggestedOptions.map((opt) => (
+                                          <CommandItem
+                                            key={`sug-${opt.id}`}
+                                            value={`${opt.value} ${opt.id}`}
+                                            onSelect={() => {
+                                              field.onChange(opt.id);
+                                              setShopeeCategoryOpen(false);
+                                            }}
+                                          >
+                                            <Check
+                                              className={cn(
+                                                "mr-2 size-4",
+                                                field.value === opt.id
+                                                  ? "opacity-100"
+                                                  : "opacity-0",
+                                              )}
+                                            />
+                                            <span className="truncate">
+                                              {opt.value}
+                                            </span>
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                    {shopeeOptions.length > 0 && (
+                                      <CommandGroup heading="Todas as categorias de autopeças">
+                                        {shopeeOptions.map((opt) => (
+                                          <CommandItem
+                                            key={opt.id}
+                                            value={`${opt.value} ${opt.id}`}
+                                            onSelect={() => {
+                                              field.onChange(opt.id);
+                                              setShopeeCategoryOpen(false);
+                                            }}
+                                          >
+                                            <Check
+                                              className={cn(
+                                                "mr-2 size-4",
+                                                field.value === opt.id
+                                                  ? "opacity-100"
+                                                  : "opacity-0",
+                                              )}
+                                            />
+                                            <span className="truncate">
+                                              {opt.value}
+                                            </span>
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    )}
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                          );
+                        }}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Obrigatório para publicar no Shopee. Use o campo de
+                        busca para filtrar a lista. A categoria será persistida
+                        no produto.
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
 

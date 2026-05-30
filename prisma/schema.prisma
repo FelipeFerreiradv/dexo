@@ -32,6 +32,11 @@ model User {
   defaultLocalPickup       Boolean? @default(false)
   defaultManufacturingTime Int?     @default(0)
 
+  // Aumento percentual escalonado de preço entre contas ML (anti-penalização
+  // por anúncios idênticos). Valor padrão usado para pré-preencher o toggle no
+  // wizard de anúncio em massa; 0 = desativado. Ver cross-account-price.service.
+  crossAccountPriceIncreasePercent Decimal? @default(0) @db.Decimal(5, 2)
+
   // Contador do último SKU sequencial gerado pelo modal "Novo Produto".
   // Importações de estoque escrevem direto em Product e NÃO tocam aqui —
   // por isso o contador reflete só a sequência humana, sem contaminação

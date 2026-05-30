@@ -1,5 +1,8 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { BULK_DELETE_MAX_IDS, ProductUseCase } from "../usecases/product.usercase";
+import {
+  BULK_DELETE_MAX_IDS,
+  ProductUseCase,
+} from "../usecases/product.usercase";
 import {
   ProductCreate,
   ProductListFilters,
@@ -86,7 +89,12 @@ function parseDateBoundary(
   }
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    parsed.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    parsed.setHours(
+      endOfDay ? 23 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 999 : 0,
+    );
   }
 
   return parsed;
@@ -115,9 +123,7 @@ function parseEnumValue<T extends string>(
  */
 function sanitizeProductAttributes(
   raw: unknown,
-):
-  | Record<string, { value_id?: string; value_name?: string }>
-  | undefined {
+): Record<string, { value_id?: string; value_name?: string }> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const out: Record<string, { value_id?: string; value_name?: string }> = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -403,12 +409,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           : Promise.resolve(null),
         shopeeCategoryExternalToResolve
           ? (async () => {
-              const externalId =
-                shopeeCategoryExternalToResolve!.startsWith("SHP_")
-                  ? shopeeCategoryExternalToResolve!
-                  : `SHP_${shopeeCategoryExternalToResolve}`;
-              const cat =
-                await CategoryRepository.findByExternalId(externalId);
+              const externalId = shopeeCategoryExternalToResolve!.startsWith(
+                "SHP_",
+              )
+                ? shopeeCategoryExternalToResolve!
+                : `SHP_${shopeeCategoryExternalToResolve}`;
+              const cat = await CategoryRepository.findByExternalId(externalId);
               return { externalId, cat };
             })()
           : Promise.resolve(null),
@@ -542,10 +548,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             else base = { h: 35, w: 40, l: 55 };
 
             // Pequena variação determinística por SKU pra evitar padrão fixo.
-            const seed = (sanitized.sku || "").split("").reduce(
-              (acc, c) => acc + c.charCodeAt(0),
-              0,
-            );
+            const seed = (sanitized.sku || "")
+              .split("")
+              .reduce((acc, c) => acc + c.charCodeAt(0), 0);
             const jitter = (mod: number) => (seed % mod) - Math.floor(mod / 2);
 
             if (sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0))
@@ -589,29 +594,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             !(Number(sanitized.lengthCm) > 0) ||
             !(Number(sanitized.weightKg) > 0);
           if (stillMissing) {
-            const seedFallback = (sanitized.sku || "default").split("").reduce(
-              (acc, c) => acc + c.charCodeAt(0),
-              0,
-            );
+            const seedFallback = (sanitized.sku || "default")
+              .split("")
+              .reduce((acc, c) => acc + c.charCodeAt(0), 0);
             const jitter = (mod: number) =>
               (seedFallback % mod) - Math.floor(mod / 2);
 
-            if (
-              sanitized.heightCm == null ||
-              !(Number(sanitized.heightCm) > 0)
-            )
+            if (sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0))
               sanitized.heightCm = Math.max(5, 15 + jitter(5));
             if (sanitized.widthCm == null || !(Number(sanitized.widthCm) > 0))
               sanitized.widthCm = Math.max(5, 15 + jitter(7));
-            if (
-              sanitized.lengthCm == null ||
-              !(Number(sanitized.lengthCm) > 0)
-            )
+            if (sanitized.lengthCm == null || !(Number(sanitized.lengthCm) > 0))
               sanitized.lengthCm = Math.max(5, 10 + jitter(9));
-            if (
-              sanitized.weightKg == null ||
-              !(Number(sanitized.weightKg) > 0)
-            )
+            if (sanitized.weightKg == null || !(Number(sanitized.weightKg) > 0))
               // 0.5kg base + jitter 0-9 dezenas de grama → 0.5-0.99kg
               sanitized.weightKg = 0.5 + (seedFallback % 50) / 100;
 
@@ -751,11 +746,33 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             });
           }
 
+          // Aumento percentual escalonado entre contas ML (se habilitado no
+          // modal). Monta o overrideTemplate a partir da ordem das contas ML
+          // em dispatchRequests (1ª = preço base). Sem isso, o dispatch segue
+          // idêntico ao de hoje (overrideTemplate undefined).
+          const mlListingCfg = (
+            bgListings as Array<{
+              platform?: string;
+              crossAccountIncrease?: { enabled?: boolean; percent?: number };
+            }>
+          ).find((l) => l.platform === "MERCADO_LIVRE");
+          const caCfg = mlListingCfg?.crossAccountIncrease;
+          const overrideTemplate = caCfg?.enabled
+            ? ListingDispatcher.buildCrossAccountOverride(
+                dispatchRequests,
+                await ListingDispatcher.resolveCrossAccountPercent(
+                  user.dataOwnerId as string,
+                  caCfg.percent,
+                ),
+              )
+            : null;
+
           if (dispatchRequests.length > 0) {
             ListingDispatcher.dispatch({
               userId: user.dataOwnerId as string,
               productId: data.id as string,
               requests: dispatchRequests,
+              overrideTemplate,
             });
           }
         }
@@ -905,9 +922,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           MARKETPLACE_VALUES,
           "Marketplace",
         );
-        const parsedListingCategory = parseProductListingCategoryValue(
-          listingCategory,
-        );
+        const parsedListingCategory =
+          parseProductListingCategoryValue(listingCategory);
 
         if (listingCategory && !parsedListingCategory) {
           throw new Error("Categoria publicada invÃ¡lida");
@@ -1015,9 +1031,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error:
-            error instanceof Error
-              ? error.message
-              : "Erro ao buscar produto",
+            error instanceof Error ? error.message : "Erro ao buscar produto",
         });
       }
     },
@@ -1046,7 +1060,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             message: "Envie um array `ids` com pelo menos 1 produto.",
           });
         }
-        if (!ids.every((id): id is string => typeof id === "string" && id.length > 0)) {
+        if (
+          !ids.every(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          )
+        ) {
           return reply.status(400).send({
             error: "IDs inválidos",
             message: "Todos os IDs devem ser strings não vazias.",
@@ -1066,7 +1084,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         // Log fire-and-forget por produto efetivamente deletado.
         for (const r of result.results) {
           if (r.deleted) {
-            void SystemLogService.logProductDelete(user?.id, r.productId, "Produto");
+            void SystemLogService.logProductDelete(
+              user?.id,
+              r.productId,
+              "Produto",
+            );
           }
         }
 
@@ -1311,10 +1333,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           // corrupções como mangueira → Gin voltem a ser persistidas.
           const normalizedSource = (mlCategorySource as any) || "manual";
           const hasVehicleSignals = !!(brand && model && year);
-          if (
-            hasVehicleSignals &&
-            normalizedSource !== "imported"
-          ) {
+          if (hasVehicleSignals && normalizedSource !== "imported") {
             const domainCheck =
               await CategoryResolutionService.assertWithinVehicleRoot(
                 cat.externalId,
@@ -1421,7 +1440,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                         ? Number(c.yearTo)
                         : null,
                     version:
-                      typeof c.version === "string" && c.version.trim().length > 0
+                      typeof c.version === "string" &&
+                      c.version.trim().length > 0
                         ? c.version.trim()
                         : null,
                   }))

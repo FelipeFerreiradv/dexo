@@ -23,6 +23,9 @@ export interface User {
   defaultLocalPickup?: boolean | null;
   defaultManufacturingTime?: number | null;
 
+  // Aumento percentual escalonado entre contas ML (default 0 = desativado)
+  crossAccountPriceIncreasePercent?: number | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +59,9 @@ export interface UserUpdate {
   defaultFreeShipping?: boolean | null;
   defaultLocalPickup?: boolean | null;
   defaultManufacturingTime?: number | null;
+
+  // Aumento percentual escalonado entre contas ML (default 0 = desativado)
+  crossAccountPriceIncreasePercent?: number | null;
 
   role?: Role;
 }

@@ -130,6 +130,10 @@ const productSchema = z.object({
   mlManufacturingTime: z.number().int().min(0).optional().nullable(),
   mlListingPrice: z.number().min(0).optional().nullable(),
 
+  // Aumento percentual escalonado entre contas ML (anti-penalização)
+  mlCrossAccountIncrease: z.boolean().optional(),
+  mlCrossAccountPercent: z.number().min(0).max(100).optional().nullable(),
+
   // Step 5: Anúncio Shopee (opcional)
   createShopeeListing: z.boolean().optional(),
   shopeeAccountIds: z.array(z.string()).optional(),
@@ -420,6 +424,8 @@ export function CreateProductDialog({
       mlLocalPickup: false,
       mlManufacturingTime: 0,
       mlListingPrice: null,
+      mlCrossAccountIncrease: false,
+      mlCrossAccountPercent: null,
       createShopeeListing: false,
       shopeeAccountIds: [],
       shopeeCategory: "",
@@ -618,6 +624,14 @@ export function CreateProductDialog({
             setValue(
               "mlManufacturingTime",
               Number(user.defaultManufacturingTime),
+            );
+          if (
+            user.crossAccountPriceIncreasePercent != null &&
+            Number(user.crossAccountPriceIncreasePercent) > 0
+          )
+            setValue(
+              "mlCrossAccountPercent",
+              Number(user.crossAccountPriceIncreasePercent),
             );
         }
       }
@@ -1472,8 +1486,7 @@ export function CreateProductDialog({
             getValues("heightCm") === null ||
             getValues("heightCm") === undefined;
           const stillEmptyWidth =
-            getValues("widthCm") === null ||
-            getValues("widthCm") === undefined;
+            getValues("widthCm") === null || getValues("widthCm") === undefined;
           const stillEmptyLength =
             getValues("lengthCm") === null ||
             getValues("lengthCm") === undefined;
@@ -1731,13 +1744,16 @@ export function CreateProductDialog({
       const shopeeBest = shopeeSuggestion?.suggestions?.[0];
       console.log("[SHP auto-detect]", {
         total: shopeeSuggestion?.suggestions?.length ?? 0,
-        best: shopeeBest ? { id: shopeeBest.categoryId, conf: shopeeBest.confidence, path: shopeeBest.fullPath?.substring(0, 60) } : null,
+        best: shopeeBest
+          ? {
+              id: shopeeBest.categoryId,
+              conf: shopeeBest.confidence,
+              path: shopeeBest.fullPath?.substring(0, 60),
+            }
+          : null,
         optionsLoaded: shopeeOptions.length,
       });
-      if (
-        shopeeBest &&
-        (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE
-      ) {
+      if (shopeeBest && (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE) {
         const currentShopeeCategory = getValues("shopeeCategory");
         shopeeValue =
           shopeeOptions.find(
@@ -1747,11 +1763,12 @@ export function CreateProductDialog({
         const isPrevAutoShopee =
           prev.shopeeCategory &&
           norm(prev.shopeeCategory) === norm(currentShopeeCategory || "");
-        console.log("[SHP auto-detect] setValue?", { shopeeValue, currentShopeeCategory, isPrevAutoShopee });
-        if (
-          (!currentShopeeCategory || isPrevAutoShopee) &&
-          shopeeValue
-        ) {
+        console.log("[SHP auto-detect] setValue?", {
+          shopeeValue,
+          currentShopeeCategory,
+          isPrevAutoShopee,
+        });
+        if ((!currentShopeeCategory || isPrevAutoShopee) && shopeeValue) {
           setValue("shopeeCategory", shopeeValue, { shouldDirty: true });
         }
       }
@@ -2062,6 +2079,7 @@ export function CreateProductDialog({
         localPickup?: boolean;
         manufacturingTime?: number;
         listingPrice?: number;
+        crossAccountIncrease?: { enabled: boolean; percent?: number };
       }> = [];
 
       if (data.createMLListing && selectedMlAccounts.length > 0) {
@@ -2081,6 +2099,12 @@ export function CreateProductDialog({
           localPickup: data.mlLocalPickup || false,
           manufacturingTime: data.mlManufacturingTime ?? undefined,
           listingPrice: data.mlListingPrice ?? undefined,
+          crossAccountIncrease: data.mlCrossAccountIncrease
+            ? {
+                enabled: true,
+                percent: data.mlCrossAccountPercent ?? undefined,
+              }
+            : undefined,
         });
       }
 
@@ -2682,7 +2706,10 @@ export function CreateProductDialog({
                           setValue("model", "");
                         if (prev.year && getValues("year") === prev.year)
                           setValue("year", "");
-                        if (prev.version && getValues("version") === prev.version)
+                        if (
+                          prev.version &&
+                          getValues("version") === prev.version
+                        )
                           setValue("version", "");
                         if (
                           prev.sourceVehicle &&
@@ -3189,9 +3216,7 @@ export function CreateProductDialog({
                         <MLDynamicAttributesSection
                           categoryId={watchMlCategory || ""}
                           value={(field.value as any) || {}}
-                          onChange={(next) =>
-                            field.onChange(next as any)
-                          }
+                          onChange={(next) => field.onChange(next as any)}
                           email={session?.user?.email || undefined}
                         />
                       )}
@@ -3239,6 +3264,63 @@ export function CreateProductDialog({
                         Nenhuma conta Mercado Livre conectada. Conecte em
                         Integrações.
                       </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Aumento percentual escalonado entre contas ML */}
+                {watch("createMLListing") && mlAccounts.length > 1 && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={!!watch("mlCrossAccountIncrease")}
+                        onChange={(e) =>
+                          setValue("mlCrossAccountIncrease", e.target.checked, {
+                            shouldDirty: true,
+                          })
+                        }
+                      />
+                      Aumentar percentual nas demais contas (Mercado Livre)
+                    </label>
+                    {watch("mlCrossAccountIncrease") && (
+                      <div className="space-y-1 pl-6">
+                        <Label
+                          htmlFor="mlCrossAccountPercent"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Percentual de aumento composto entre contas
+                        </Label>
+                        <div className="relative w-40">
+                          <Input
+                            id="mlCrossAccountPercent"
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={watch("mlCrossAccountPercent") ?? ""}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setValue(
+                                "mlCrossAccountPercent",
+                                v === "" ? null : Number(v),
+                                { shouldDirty: true },
+                              );
+                            }}
+                            placeholder="Ex.: 10"
+                            className="pr-7"
+                          />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Aplicado em cascata: a 1ª conta selecionada mantém o
+                          preço base; cada conta seguinte recebe este % sobre o
+                          preço da anterior.
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}
