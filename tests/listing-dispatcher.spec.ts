@@ -30,7 +30,11 @@ describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee"
       userId: "user-1",
       productId: "prod-1",
       requests: [
-        { platform: "MERCADO_LIVRE", accountId: "acc-ml-1", categoryId: "MLB123" },
+        {
+          platform: "MERCADO_LIVRE",
+          accountId: "acc-ml-1",
+          categoryId: "MLB123",
+        },
       ],
     });
 
@@ -58,7 +62,11 @@ describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee"
       userId: "user-1",
       productId: "prod-2",
       requests: [
-        { platform: "MERCADO_LIVRE", accountId: "acc-ml-1", categoryId: "MLB123" },
+        {
+          platform: "MERCADO_LIVRE",
+          accountId: "acc-ml-1",
+          categoryId: "MLB123",
+        },
       ],
     });
 
@@ -97,7 +105,11 @@ describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee"
       userId: "user-1",
       productId: "prod-3",
       requests: [
-        { platform: "MERCADO_LIVRE", accountId: "acc-ml-2", categoryId: "MLB123" },
+        {
+          platform: "MERCADO_LIVRE",
+          accountId: "acc-ml-2",
+          categoryId: "MLB123",
+        },
       ],
     });
 
@@ -159,7 +171,11 @@ describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee"
       userId: "user-1",
       productId: "prod-5",
       requests: [
-        { platform: "MERCADO_LIVRE", accountId: "acc-ml-3", categoryId: "MLB123" },
+        {
+          platform: "MERCADO_LIVRE",
+          accountId: "acc-ml-3",
+          categoryId: "MLB123",
+        },
       ],
     });
 
@@ -195,5 +211,160 @@ describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee"
         }
       });
     expect(resultLog).toBeDefined();
+  });
+});
+
+describe("ListingDispatcher.runOneWithResult — aumento escalonado entre contas ML", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Cache pré-fetched (evita DB). price/costPrice como o dispatchBatch monta.
+  const cacheFor = (price: number, costPrice = 50) =>
+    new Map([
+      ["prod-1", { id: "prod-1", name: "Produto X", price, costPrice }],
+    ]) as any;
+
+  const mlReq = (accountId: string) =>
+    ({ platform: "MERCADO_LIVRE" as const, accountId }) as any;
+
+  const mockCreateOk = () =>
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: true,
+      listingId: "L1",
+      externalListingId: "MLB1",
+    } as any);
+
+  it("REGRESSÃO: sem overrideTemplate ⇒ updateListingFields NÃO é chamado", async () => {
+    mockCreateOk();
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    const res = await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      mlReq("acc1"),
+      null,
+      cacheFor(100),
+    );
+
+    expect(res.success).toBe(true);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("REGRESSÃO: regra delta_pct sem cascata ⇒ priceOverride = preço da regra (130)", async () => {
+    mockCreateOk();
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      mlReq("acc1"),
+      { priceRule: { type: "delta_pct", value: 30 } } as any,
+      cacheFor(100),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(130);
+  });
+
+  it("cascata ON: índice 1 recebe priceOverride = base × (1+10%)¹ = 110", async () => {
+    mockCreateOk();
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      mlReq("acc1"),
+      {
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          indexByAccountId: { acc0: 0, acc1: 1 },
+        },
+      } as any,
+      cacheFor(100),
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(110);
+  });
+
+  it("cascata ON: 1ª conta (índice 0) mantém o preço base ⇒ updateListingFields NÃO é chamado", async () => {
+    mockCreateOk();
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      mlReq("acc0"),
+      {
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          indexByAccountId: { acc0: 0, acc1: 1 },
+        },
+      } as any,
+      cacheFor(100),
+    );
+
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("cascata compõe com a regra de preço: delta_pct 30 (base→130) × 10%¹ = 143", async () => {
+    mockCreateOk();
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      mlReq("acc1"),
+      {
+        priceRule: { type: "delta_pct", value: 30 },
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          indexByAccountId: { acc1: 1 },
+        },
+      } as any,
+      cacheFor(100),
+    );
+
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(143);
+  });
+
+  it("Shopee nunca escalona (guard de plataforma) ⇒ updateListingFields NÃO é chamado", async () => {
+    vi.spyOn(ListingUseCase, "createShopeeListing").mockResolvedValue({
+      success: true,
+      listingId: "L-shopee",
+    } as any);
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "SHOPEE" as const, accountId: "acc1" } as any,
+      {
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          indexByAccountId: { acc1: 1 },
+        },
+      } as any,
+      cacheFor(100),
+    );
+
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 });

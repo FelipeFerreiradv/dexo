@@ -8,7 +8,12 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -66,6 +71,9 @@ export default function ConfigModal({
   const [defaultManufacturingTime, setDefaultManufacturingTime] =
     useState<string>("0");
 
+  // Aumento percentual escalonado entre contas ML (anti-penalização)
+  const [crossAccountPercent, setCrossAccountPercent] = useState<string>("");
+
   const apiBase = useMemo(() => getApiBaseUrl(), []);
 
   // sync controlled open
@@ -110,6 +118,11 @@ export default function ConfigModal({
         user.defaultManufacturingTime != null
           ? String(user.defaultManufacturingTime)
           : "0",
+      );
+      setCrossAccountPercent(
+        user.crossAccountPriceIncreasePercent != null
+          ? String(user.crossAccountPriceIncreasePercent)
+          : "",
       );
     } catch (error) {
       alert("Erro ao carregar configurações");
@@ -187,6 +200,10 @@ export default function ConfigModal({
           defaultManufacturingTime: defaultManufacturingTime
             ? Number(defaultManufacturingTime)
             : 0,
+
+          // Aumento percentual escalonado entre contas ML
+          crossAccountPriceIncreasePercent:
+            crossAccountPercent !== "" ? Number(crossAccountPercent) : 0,
         }),
       });
 
@@ -317,6 +334,8 @@ export default function ConfigModal({
                   onLocalPickupChange={setDefaultLocalPickup}
                   defaultManufacturingTime={defaultManufacturingTime}
                   onManufacturingTimeChange={setDefaultManufacturingTime}
+                  crossAccountPercent={crossAccountPercent}
+                  onCrossAccountPercentChange={setCrossAccountPercent}
                   onSave={handleSavePreferences}
                   saving={savingPrefs}
                 />
@@ -545,6 +564,8 @@ function PreferencesSection(props: {
   onLocalPickupChange: (value: boolean) => void;
   defaultManufacturingTime: string;
   onManufacturingTimeChange: (value: string) => void;
+  crossAccountPercent: string;
+  onCrossAccountPercentChange: (value: string) => void;
   onSave: () => void;
   saving: boolean;
 }) {
@@ -573,6 +594,8 @@ function PreferencesSection(props: {
     onLocalPickupChange,
     defaultManufacturingTime,
     onManufacturingTimeChange,
+    crossAccountPercent,
+    onCrossAccountPercentChange,
     onSave,
     saving,
   } = props;
@@ -792,6 +815,39 @@ function PreferencesSection(props: {
               value={defaultManufacturingTime}
               onChange={(e) => onManufacturingTimeChange(e.target.value)}
             />
+          </div>
+        </SettingRow>
+      </SettingGroup>
+
+      <SettingGroup
+        title="Preços entre contas (Mercado Livre)"
+        description="Diferencia o preço entre contas ML ao anunciar em massa, evitando a penalização do ML por anúncios idênticos."
+      >
+        <SettingRow
+          title="Aumento percentual escalonado"
+          description="Aplicado em cascata ao anunciar o mesmo produto em várias contas: cada conta seguinte recebe este % sobre o preço da anterior; a 1ª conta mantém o preço base. 0 = desativado. Este valor é o padrão — também pode ser editado na hora de anunciar."
+        >
+          <div className="space-y-1">
+            <Label htmlFor="cfgCrossAccountPercent" className="sr-only">
+              Aumento percentual entre contas
+            </Label>
+            <div className="relative w-full md:w-48">
+              <Input
+                id="cfgCrossAccountPercent"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                max="100"
+                step="0.01"
+                placeholder="0"
+                value={crossAccountPercent}
+                onChange={(e) => onCrossAccountPercentChange(e.target.value)}
+                className="pr-8"
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                %
+              </span>
+            </div>
           </div>
         </SettingRow>
       </SettingGroup>

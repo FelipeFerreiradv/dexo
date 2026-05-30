@@ -1,7 +1,16 @@
-import { ListingUseCase, ListingFullEditInput } from "../usecases/listing.usercase";
+import {
+  ListingUseCase,
+  ListingFullEditInput,
+} from "../usecases/listing.usercase";
 import { ProductRepositoryPrisma } from "../../repositories/product.repository";
 import prisma from "../../lib/prisma";
-import { applyRules, type BulkRulesProductInput } from "./bulk-listing-rules.service";
+import {
+  applyRules,
+  computeBulkPrice,
+  toNum,
+  type BulkRulesProductInput,
+} from "./bulk-listing-rules.service";
+import { computeStaggeredPrice } from "./cross-account-price.service";
 import type {
   BulkOverrideTemplate,
   BulkListingItemResult,
@@ -376,7 +385,9 @@ export class ListingDispatcher {
               productRules = {
                 id: product.id,
                 name: product.name,
-                price: product.price as unknown as number | { toNumber(): number },
+                price: product.price as unknown as
+                  | number
+                  | { toNumber(): number },
                 costPrice: product.costPrice as unknown as
                   | number
                   | { toNumber(): number }
@@ -387,7 +398,32 @@ export class ListingDispatcher {
           }
 
           if (productRules) {
-            const fields = applyRules(productRules, overrideTemplate);
+            let fields = applyRules(productRules, overrideTemplate);
+
+            // Aumento percentual escalonado entre contas ML: compõe o
+            // priceOverride por conta sobre o preço base (regra de preço já
+            // aplicada, se houver). idx 0 = preço base (sem alteração) ⇒
+            // comportamento idêntico ao de hoje. Só ML; Shopee nunca escalona.
+            // A config (enabled/percent/índices) viaja no overrideTemplate
+            // persistido no job, então o retry reproduz preços idênticos.
+            const ca = overrideTemplate.crossAccountIncrease;
+            if (
+              ca?.enabled &&
+              ca.percent > 0 &&
+              req.platform === "MERCADO_LIVRE"
+            ) {
+              const idx = ca.indexByAccountId?.[req.accountId] ?? 0;
+              if (idx > 0) {
+                const base =
+                  computeBulkPrice(productRules, overrideTemplate.priceRule) ??
+                  toNum(productRules.price);
+                const price = computeStaggeredPrice(base, idx, ca.percent);
+                if (price > 0) {
+                  fields = { ...(fields ?? {}), priceOverride: price };
+                }
+              }
+            }
+
             if (fields) {
               const upd = await ListingUseCase.updateListingFields(
                 createResult.listingId,

@@ -54,6 +54,7 @@ import {
   computeBulkPrice,
   previewWarnings,
 } from "@/app/marketplaces/services/bulk-listing-rules.service";
+import { computeStaggeredPrices } from "@/app/marketplaces/services/cross-account-price.service";
 import { useBulkListingJob } from "../hooks/use-bulk-listing-job";
 
 type Platform = "MERCADO_LIVRE" | "SHOPEE";
@@ -83,10 +84,7 @@ export interface BulkListingWizardProps {
   selectedProducts: BulkListingProduct[];
   email: string;
   onJobStarted?: (jobId: string) => void;
-  onJobFinished?: (summary: {
-    success: number;
-    failed: number;
-  }) => void;
+  onJobFinished?: (summary: { success: number; failed: number }) => void;
   onShowToast?: (msg: string, type: "success" | "warning" | "error") => void;
 }
 
@@ -100,6 +98,9 @@ interface RulesForm {
   mlListingType: string;
   mlItemCondition: string;
   mlFreeShipping: boolean;
+  // Aumento percentual escalonado entre contas ML (anti-penalização).
+  crossAccountIncrease: boolean;
+  crossAccountPercent: number;
 }
 
 const DEFAULT_RULES: RulesForm = {
@@ -110,6 +111,8 @@ const DEFAULT_RULES: RulesForm = {
   mlListingType: "gold_special",
   mlItemCondition: "used",
   mlFreeShipping: false,
+  crossAccountIncrease: false,
+  crossAccountPercent: 0,
 };
 
 const STEPS: StepperStep[] = [
@@ -150,9 +153,9 @@ export function BulkListingWizard({
 }: BulkListingWizardProps) {
   const [step, setStep] = useState(1);
   const [mlAccounts, setMlAccounts] = useState<MarketplaceAccountLite[]>([]);
-  const [shopeeAccounts, setShopeeAccounts] = useState<MarketplaceAccountLite[]>(
-    [],
-  );
+  const [shopeeAccounts, setShopeeAccounts] = useState<
+    MarketplaceAccountLite[]
+  >([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedMlIds, setSelectedMlIds] = useState<Set<string>>(new Set());
   const [selectedShopeeIds, setSelectedShopeeIds] = useState<Set<string>>(
@@ -228,8 +231,28 @@ export function BulkListingWizard({
     };
   }, [open, step, email]);
 
-  const totalAccountsSelected =
-    selectedMlIds.size + selectedShopeeIds.size;
+  // Pré-preenche o percentual escalonado com o valor padrão das Preferências do
+  // usuário. É só conveniência de UI (campo editável por publicação); o backend
+  // é a fonte de verdade e revalida o valor final.
+  useEffect(() => {
+    if (!open || !email) return;
+    let cancelled = false;
+    fetch(`${getApiBaseUrl()}/users/me`, { headers: { email } })
+      .then((r) => r.json())
+      .then((u) => {
+        if (cancelled) return;
+        const pref = Number(u?.crossAccountPriceIncreasePercent);
+        if (Number.isFinite(pref) && pref > 0) {
+          setRules((r) => ({ ...r, crossAccountPercent: pref }));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, email]);
+
+  const totalAccountsSelected = selectedMlIds.size + selectedShopeeIds.size;
   const totalListings =
     selectedProducts.length * Math.max(1, totalAccountsSelected);
 
@@ -262,17 +285,31 @@ export function BulkListingWizard({
 
   const buildOverrideTemplate = () => {
     const t: Record<string, unknown> = {};
+    // Rastreia se há override "real" — mlCategoryStrategy sozinho não conta
+    // (mantém o comportamento atual de não enviar template só por causa dela).
+    let hasMeaningful = false;
     if (rules.priceRuleType !== "keep") {
       t.priceRule = {
         type: rules.priceRuleType,
         value: rules.priceRuleValue,
       };
+      hasMeaningful = true;
     }
     if (rules.titleSuffix.trim()) {
       t.titleSuffix = rules.titleSuffix.trim();
+      hasMeaningful = true;
+    }
+    // Aumento escalonado entre contas ML: envia só { enabled, percent }; o
+    // backend resolve/valida o percentual e congela a ordem das contas.
+    if (rules.crossAccountIncrease && rules.crossAccountPercent > 0) {
+      t.crossAccountIncrease = {
+        enabled: true,
+        percent: rules.crossAccountPercent,
+      };
+      hasMeaningful = true;
     }
     t.mlCategoryStrategy = rules.mlCategoryStrategy;
-    return Object.keys(t).length > 1 ? t : null;
+    return hasMeaningful ? t : null;
   };
 
   const runPreflight = async () => {
@@ -389,10 +426,11 @@ export function BulkListingWizard({
     }
   };
 
-  const { snapshot, error: pollError, isPolling } = useBulkListingJob(
-    jobId,
-    email,
-  );
+  const {
+    snapshot,
+    error: pollError,
+    isPolling,
+  } = useBulkListingJob(jobId, email);
 
   const isTerminal =
     !!snapshot &&
@@ -441,9 +479,7 @@ export function BulkListingWizard({
       );
       const data = await res.json();
       if (!res.ok || !data?.jobId) {
-        throw new Error(
-          data?.message || data?.error || "Falha ao reprocessar",
-        );
+        throw new Error(data?.message || data?.error || "Falha ao reprocessar");
       }
       setParentJobIdForRetry(jobId);
       setJobId(data.jobId as string);
@@ -471,6 +507,17 @@ export function BulkListingWizard({
     for (const p of selectedProducts) m.set(p.id, p);
     return m;
   }, [selectedProducts]);
+
+  // Contas ML selecionadas, em ordem de seleção (= ordem de inserção no Set).
+  // Define a escada de preços: índice 0 = preço base. O backend congela a mesma
+  // ordem (a partir da ordem dos requests) ao criar o job.
+  const selectedMlAccountsOrdered = useMemo(
+    () =>
+      Array.from(selectedMlIds)
+        .map((id) => mlAccounts.find((a) => a.id === id))
+        .filter((a): a is MarketplaceAccountLite => !!a),
+    [selectedMlIds, mlAccounts],
+  );
 
   return (
     <>
@@ -535,7 +582,13 @@ export function BulkListingWizard({
               />
             )}
 
-            {step === 2 && <StepRules rules={rules} setRules={setRules} />}
+            {step === 2 && (
+              <StepRules
+                rules={rules}
+                setRules={setRules}
+                mlSelectedCount={selectedMlIds.size}
+              />
+            )}
 
             {step === 3 && (
               <StepReview
@@ -547,6 +600,7 @@ export function BulkListingWizard({
                 hasShopee={selectedShopeeIds.size > 0}
                 preflightLoading={preflightLoading}
                 preflightIssues={preflightIssues}
+                crossAccountAccounts={selectedMlAccountsOrdered}
               />
             )}
 
@@ -606,8 +660,8 @@ export function BulkListingWizard({
             </AlertDialogTitle>
             <AlertDialogDescription>
               {selectedProducts.length} produto(s) × {totalAccountsSelected}{" "}
-              conta(s). Esta ação envia requisições reais aos marketplaces e
-              não pode ser desfeita em massa. Verifique as regras antes de
+              conta(s). Esta ação envia requisições reais aos marketplaces e não
+              pode ser desfeita em massa. Verifique as regras antes de
               continuar.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -727,9 +781,11 @@ function AccountSection({
 function StepRules({
   rules,
   setRules,
+  mlSelectedCount,
 }: {
   rules: RulesForm;
   setRules: React.Dispatch<React.SetStateAction<RulesForm>>;
+  mlSelectedCount: number;
 }) {
   return (
     <div className="grid gap-5 sm:grid-cols-2">
@@ -748,9 +804,7 @@ function StepRules({
           <SelectContent>
             <SelectItem value="keep">Manter preço do produto</SelectItem>
             <SelectItem value="fixed">Preço fixo (R$)</SelectItem>
-            <SelectItem value="markup_pct">
-              Markup sobre custo (%)
-            </SelectItem>
+            <SelectItem value="markup_pct">Markup sobre custo (%)</SelectItem>
             <SelectItem value="delta_pct">
               Delta sobre preço atual (%)
             </SelectItem>
@@ -827,16 +881,16 @@ function StepRules({
         <Label>Tipo de anúncio (ML)</Label>
         <Select
           value={rules.mlListingType}
-          onValueChange={(v) =>
-            setRules((r) => ({ ...r, mlListingType: v }))
-          }
+          onValueChange={(v) => setRules((r) => ({ ...r, mlListingType: v }))}
         >
           <SelectTrigger>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="bronze">Grátis (bronze)</SelectItem>
-            <SelectItem value="gold_special">Clássico (gold_special)</SelectItem>
+            <SelectItem value="gold_special">
+              Clássico (gold_special)
+            </SelectItem>
             <SelectItem value="gold_premium">Premium (gold_premium)</SelectItem>
           </SelectContent>
         </Select>
@@ -846,9 +900,7 @@ function StepRules({
         <Label>Condição (ML)</Label>
         <Select
           value={rules.mlItemCondition}
-          onValueChange={(v) =>
-            setRules((r) => ({ ...r, mlItemCondition: v }))
-          }
+          onValueChange={(v) => setRules((r) => ({ ...r, mlItemCondition: v }))}
         >
           <SelectTrigger>
             <SelectValue />
@@ -872,6 +924,68 @@ function StepRules({
           Frete grátis (ML)
         </Label>
       </div>
+
+      {/* Aumento percentual escalonado entre contas ML */}
+      <div className="space-y-2 pt-2 sm:col-span-2">
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="crossaccount"
+            checked={rules.crossAccountIncrease}
+            onCheckedChange={(c) =>
+              setRules((r) => ({ ...r, crossAccountIncrease: !!c }))
+            }
+          />
+          <Label htmlFor="crossaccount" className="cursor-pointer">
+            Aumentar percentual nas demais contas (Mercado Livre)
+          </Label>
+        </div>
+        {rules.crossAccountIncrease && (
+          <div className="space-y-2 rounded-md border border-dashed bg-muted/30 px-3 py-3">
+            <div className="space-y-1">
+              <Label
+                htmlFor="crossaccountpct"
+                className="text-xs text-muted-foreground"
+              >
+                Percentual de aumento composto entre contas
+              </Label>
+              <div className="relative w-full sm:w-48">
+                <Input
+                  id="crossaccountpct"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={rules.crossAccountPercent || ""}
+                  onChange={(e) =>
+                    setRules((r) => ({
+                      ...r,
+                      crossAccountPercent: Number(e.target.value) || 0,
+                    }))
+                  }
+                  placeholder="Ex.: 10"
+                  className="pr-8"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                  %
+                </span>
+              </div>
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Aplicado em cascata: a 1ª conta selecionada mantém o preço base;
+              cada conta seguinte recebe este % sobre o preço da anterior.
+              Confira o preview por conta na etapa de revisão.
+            </p>
+            {mlSelectedCount < 2 && (
+              <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="inline size-3 mr-1" />
+                Selecione 2 ou mais contas do Mercado Livre para o escalonamento
+                ter efeito.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -886,6 +1000,7 @@ function StepReview({
   hasShopee,
   preflightLoading,
   preflightIssues,
+  crossAccountAccounts,
 }: {
   products: BulkListingProduct[];
   rules: RulesForm;
@@ -899,6 +1014,7 @@ function StepReview({
     code: "shopee_category_missing" | "shopee_category_not_leaf";
     message: string;
   }>;
+  crossAccountAccounts: MarketplaceAccountLite[];
 }) {
   const issueByProduct = new Map(preflightIssues.map((i) => [i.productId, i]));
   const template = {
@@ -913,7 +1029,21 @@ function StepReview({
   };
 
   const issueCount = issueByProduct.size;
-  const allBlocked = hasShopee && issueCount > 0 && issueCount === products.length;
+  const allBlocked =
+    hasShopee && issueCount > 0 && issueCount === products.length;
+
+  // Aumento escalonado: só tem efeito quando ligado, com % > 0 e ≥ 2 contas ML.
+  const cascadeOn =
+    rules.crossAccountIncrease &&
+    rules.crossAccountPercent > 0 &&
+    crossAccountAccounts.length >= 2;
+  const MAX_PREVIEW_ACCOUNTS = 8;
+  const previewAccounts = cascadeOn
+    ? crossAccountAccounts.slice(0, MAX_PREVIEW_ACCOUNTS)
+    : [];
+  const hiddenAccounts = cascadeOn
+    ? crossAccountAccounts.length - previewAccounts.length
+    : 0;
 
   return (
     <div className="space-y-3">
@@ -921,6 +1051,32 @@ function StepReview({
         Serão criados <strong>{totalListings}</strong> anúncio(s) —{" "}
         {products.length} produto(s) × {accountsCount} conta(s).
       </div>
+
+      {cascadeOn && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-700 dark:bg-amber-950">
+          <p className="mb-1.5 font-medium text-amber-800 dark:text-amber-200">
+            Aumento escalonado ativo —{" "}
+            {formatPercent(rules.crossAccountPercent)} em cascata entre{" "}
+            {crossAccountAccounts.length} contas ML
+          </p>
+          <ol className="space-y-0.5 text-amber-800/90 dark:text-amber-200/90">
+            {previewAccounts.map((acc, i) => {
+              const factor = Math.pow(1 + rules.crossAccountPercent / 100, i);
+              return (
+                <li key={acc.id}>
+                  {i + 1}. {acc.accountName} —{" "}
+                  {i === 0
+                    ? "preço base"
+                    : `+${formatPercent((factor - 1) * 100)} (×${factor.toFixed(4)})`}
+                </li>
+              );
+            })}
+            {hiddenAccounts > 0 && (
+              <li className="italic">… +{hiddenAccounts} conta(s)</li>
+            )}
+          </ol>
+        </div>
+      )}
 
       {hasShopee && preflightLoading && (
         <div className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
@@ -954,7 +1110,9 @@ function StepReview({
               <th className="px-3 py-2">SKU</th>
               <th className="px-3 py-2">Nome</th>
               <th className="px-3 py-2 text-right">Preço atual</th>
-              <th className="px-3 py-2 text-right">Preço final</th>
+              <th className="px-3 py-2 text-right">
+                {cascadeOn ? "Preço por conta" : "Preço final"}
+              </th>
               <th className="px-3 py-2">Avisos</th>
             </tr>
           </thead>
@@ -988,22 +1146,47 @@ function StepReview({
                 { hasMl, hasShopee },
               );
               const issue = issueByProduct.get(p.id);
-              const rowClass = issue
-                ? "border-t bg-destructive/5"
-                : "border-t";
+              const rowClass = issue ? "border-t bg-destructive/5" : "border-t";
               return (
                 <tr key={p.id} className={rowClass}>
                   <td className="px-3 py-2 font-mono text-xs">{p.sku}</td>
-                  <td className="px-3 py-2 max-w-[280px] truncate">
-                    {p.name}
-                  </td>
+                  <td className="px-3 py-2 max-w-[280px] truncate">{p.name}</td>
                   <td className="px-3 py-2 text-right text-muted-foreground">
                     {formatCurrency(p.price)}
                   </td>
                   <td className="px-3 py-2 text-right font-medium">
-                    {newPrice !== null
-                      ? formatCurrency(newPrice)
-                      : formatCurrency(p.price)}
+                    {cascadeOn ? (
+                      <div className="space-y-0.5">
+                        {computeStaggeredPrices(
+                          newPrice ?? p.price,
+                          crossAccountAccounts.length,
+                          rules.crossAccountPercent,
+                        )
+                          .slice(0, MAX_PREVIEW_ACCOUNTS)
+                          .map((pr, i) => (
+                            <div
+                              key={i}
+                              className="flex items-center justify-end gap-2 text-xs"
+                            >
+                              <span className="text-muted-foreground">
+                                C{i + 1}
+                              </span>
+                              <span className="tabular-nums">
+                                {formatCurrency(pr)}
+                              </span>
+                            </div>
+                          ))}
+                        {hiddenAccounts > 0 && (
+                          <div className="text-[10px] italic text-muted-foreground">
+                            … +{hiddenAccounts}
+                          </div>
+                        )}
+                      </div>
+                    ) : newPrice !== null ? (
+                      formatCurrency(newPrice)
+                    ) : (
+                      formatCurrency(p.price)
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs">
                     {warnings.length === 0 && !issue ? (
@@ -1113,7 +1296,10 @@ function StepProgress({
             {snapshot.results.map((r, i) => {
               const p = productById.get(r.productId);
               return (
-                <tr key={`${r.productId}-${r.platform}-${r.accountId}-${i}`} className="border-t">
+                <tr
+                  key={`${r.productId}-${r.platform}-${r.accountId}-${i}`}
+                  className="border-t"
+                >
                   <td className="px-3 py-2 max-w-[280px] truncate">
                     <span className="font-mono text-xs text-muted-foreground mr-1">
                       {p?.sku ?? r.productId.slice(0, 6)}
@@ -1192,6 +1378,11 @@ function formatCurrency(v: number): string {
     style: "currency",
     currency: "BRL",
   });
+}
+
+function formatPercent(v: number): string {
+  // Até 2 casas, sem zeros desnecessários (10 → "10%", 5,5 → "5,5%").
+  return `${v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`;
 }
 
 // silence unused import in some build modes
