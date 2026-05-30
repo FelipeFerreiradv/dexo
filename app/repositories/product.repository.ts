@@ -83,7 +83,9 @@ function combineSqlClauses(clauses: Prisma.Sql[]): Prisma.Sql {
     );
 }
 
-function mapPrismaCompatibilities(item: PrismaProduct): Product["compatibilities"] {
+function mapPrismaCompatibilities(
+  item: PrismaProduct,
+): Product["compatibilities"] {
   const raw = (item as any).compatibilities as
     | Array<{
         brand: string;
@@ -210,9 +212,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       // which Postgres refuses for multi-command strings ("cannot insert
       // multiple commands into a prepared statement"). Split into one call
       // per statement.
-      await prisma.$executeRawUnsafe(
-        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-      );
+      await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
       await prisma.$executeRawUnsafe(
         `CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
          RETURNS text
@@ -235,6 +235,15 @@ class ProductRepositoryPrisma implements ProductRepository {
            END IF;
            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_sku_trgm_idx') THEN
              EXECUTE 'CREATE INDEX product_sku_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("sku")) gin_trgm_ops)';
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_brand_trgm_idx') THEN
+             EXECUTE 'CREATE INDEX product_brand_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("brand")) gin_trgm_ops)';
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_model_trgm_idx') THEN
+             EXECUTE 'CREATE INDEX product_model_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("model")) gin_trgm_ops)';
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'product_partnumber_trgm_idx') THEN
+             EXECUTE 'CREATE INDEX product_partnumber_trgm_idx ON "Product" USING GIN (immutable_unaccent(lower("partNumber")) gin_trgm_ops)';
            END IF;
          END$outer$`,
       );
@@ -853,12 +862,17 @@ class ProductRepositoryPrisma implements ProductRepository {
         prisma.product.count({ where: whereExact }),
       ]);
 
-      return {
-        products: items.map((it) =>
-          mapPrismaToProduct(it as unknown as PrismaProduct),
-        ),
-        total,
-      };
+      // Match exato de SKU tem prioridade. Mas se NÃO houver SKU exato, não
+      // retorna vazio: cai para a busca fuzzy abaixo (partNumber/modelo/nome) —
+      // essencial para buscas numéricas de número de peça / modelo (ex.: "208").
+      if (total > 0) {
+        return {
+          products: items.map((it) =>
+            mapPrismaToProduct(it as unknown as PrismaProduct),
+          ),
+          total,
+        };
+      }
     }
 
     if (search) {
@@ -869,8 +883,14 @@ class ProductRepositoryPrisma implements ProductRepository {
         const fuzzyPredicate = Prisma.sql`(
           immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
           immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
+          immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+          immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+          immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
           similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
-          similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold}
+          similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold} OR
+          similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+          similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+          similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}
         )`;
         const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
 
@@ -932,6 +952,9 @@ class ProductRepositoryPrisma implements ProductRepository {
           OR: [
             { name: { contains: search, mode: "insensitive" } },
             { sku: { contains: search, mode: "insensitive" } },
+            { brand: { contains: search, mode: "insensitive" } },
+            { model: { contains: search, mode: "insensitive" } },
+            { partNumber: { contains: search, mode: "insensitive" } },
           ],
         })
       : baseWhere;
@@ -948,7 +971,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       const sqlWhere = search
         ? combineSqlClauses([
             baseSqlWhere,
-            Prisma.sql`(p."name" ILIKE ${`%${search}%`} OR p."sku" ILIKE ${`%${search}%`})`,
+            Prisma.sql`(p."name" ILIKE ${`%${search}%`} OR p."sku" ILIKE ${`%${search}%`} OR p."brand" ILIKE ${`%${search}%`} OR p."model" ILIKE ${`%${search}%`} OR p."partNumber" ILIKE ${`%${search}%`})`,
           ])
         : baseSqlWhere;
 
@@ -995,10 +1018,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       // cai pro findMany do Prisma ordenado por createdAt apenas. Mantém
       // "novo primeiro" e a listagem nunca quebra (perde só o "estoque 0
       // ao fim" temporariamente até o erro ser investigado).
-      console.error(
-        "[product-list] fallback para findMany simples:",
-        error,
-      );
+      console.error("[product-list] fallback para findMany simples:", error);
       const [items, total] = await Promise.all([
         prisma.product.findMany({
           where,
@@ -1283,23 +1303,40 @@ class ProductRepositoryPrisma implements ProductRepository {
           version: item.scrap.version ?? undefined,
           color: item.scrap.color ?? undefined,
           plate: item.scrap.plate ?? undefined,
-          chassis: (item.scrap as { chassis?: string | null }).chassis ?? undefined,
+          chassis:
+            (item.scrap as { chassis?: string | null }).chassis ?? undefined,
         }
       : undefined;
 
-    const creator = (item as { user?: { id: string; name: string | null; email: string } | null }).user
+    const creator = (
+      item as {
+        user?: { id: string; name: string | null; email: string } | null;
+      }
+    ).user
       ? {
           id: (item as { user: { id: string } }).user.id,
-          name: (item as { user: { name: string | null } }).user.name ?? undefined,
+          name:
+            (item as { user: { name: string | null } }).user.name ?? undefined,
           email: (item as { user: { email: string } }).user.email,
         }
       : undefined;
 
-    const productLocationSummary = (item as { productLocation?: { id: string; code: string; description: string | null } | null }).productLocation
+    const productLocationSummary = (
+      item as {
+        productLocation?: {
+          id: string;
+          code: string;
+          description: string | null;
+        } | null;
+      }
+    ).productLocation
       ? {
           id: (item as { productLocation: { id: string } }).productLocation.id,
-          code: (item as { productLocation: { code: string } }).productLocation.code,
-          description: (item as { productLocation: { description: string | null } }).productLocation.description ?? undefined,
+          code: (item as { productLocation: { code: string } }).productLocation
+            .code,
+          description:
+            (item as { productLocation: { description: string | null } })
+              .productLocation.description ?? undefined,
         }
       : undefined;
 
@@ -1322,28 +1359,27 @@ class ProductRepositoryPrisma implements ProductRepository {
       // Preparar compatibilidades se fornecidas (CPU-only, antes da transação)
       const compatInput =
         data.compatibilities !== undefined
-          ? (Array.isArray(data.compatibilities)
-              ? data.compatibilities
-                  .filter(
-                    (c) =>
-                      c &&
-                      typeof c.brand === "string" &&
-                      c.brand.trim().length > 0 &&
-                      typeof c.model === "string" &&
-                      c.model.trim().length > 0,
-                  )
-                  .map((c) => ({
-                    brand: c.brand.trim(),
-                    model: c.model.trim(),
-                    yearFrom: c.yearFrom ?? null,
-                    yearTo: c.yearTo ?? null,
-                    version:
-                      typeof c.version === "string" &&
-                      c.version.trim().length > 0
-                        ? c.version.trim()
-                        : null,
-                  }))
-              : [])
+          ? Array.isArray(data.compatibilities)
+            ? data.compatibilities
+                .filter(
+                  (c) =>
+                    c &&
+                    typeof c.brand === "string" &&
+                    c.brand.trim().length > 0 &&
+                    typeof c.model === "string" &&
+                    c.model.trim().length > 0,
+                )
+                .map((c) => ({
+                  brand: c.brand.trim(),
+                  model: c.model.trim(),
+                  yearFrom: c.yearFrom ?? null,
+                  yearTo: c.yearTo ?? null,
+                  version:
+                    typeof c.version === "string" && c.version.trim().length > 0
+                      ? c.version.trim()
+                      : null,
+                }))
+            : []
           : undefined;
 
       const productData: Prisma.ProductUpdateInput = {
