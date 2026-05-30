@@ -791,6 +791,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const body = request.body as {
           productId: string;
           requests: ListingDispatchRequest[];
+          crossAccountIncrease?: { enabled?: boolean; percent?: number };
         };
 
         if (!body.productId) {
@@ -815,10 +816,25 @@ export async function listingRoutes(app: FastifyInstance) {
           }
         }
 
+        // Aumento percentual escalonado entre contas ML (edição de produto):
+        // monta o overrideTemplate a partir da ordem das contas ML nos
+        // requests. Sem cfg habilitada, o dispatch segue idêntico ao de hoje.
+        const caCfg = body.crossAccountIncrease;
+        const overrideTemplate = caCfg?.enabled
+          ? ListingDispatcher.buildCrossAccountOverride(
+              body.requests,
+              await ListingDispatcher.resolveCrossAccountPercent(
+                userId,
+                caCfg.percent,
+              ),
+            )
+          : null;
+
         const snapshot = ListingDispatcher.dispatch({
           userId,
           productId: body.productId,
           requests: body.requests,
+          overrideTemplate,
         });
 
         return reply.status(202).send({

@@ -40,6 +40,10 @@ export interface ListingDispatchInput {
   userId: string;
   productId: string;
   requests: ListingDispatchRequest[];
+  // Overrides opcionais aplicados APÓS a criação de cada anúncio (ex.: aumento
+  // percentual escalonado entre contas ML). Quando ausente, o fluxo é idêntico
+  // ao de hoje (nenhum override, nenhuma busca extra de produto).
+  overrideTemplate?: BulkOverrideTemplate | null;
 }
 
 export interface BulkRunRequest {
@@ -70,13 +74,11 @@ export interface ListingDispatchSnapshot {
  */
 export class ListingDispatcher {
   static dispatch(input: ListingDispatchInput): ListingDispatchSnapshot {
-    const { userId, productId, requests } = input;
-    const queued: ListingDispatchSnapshot["queued"] = [];
-
-    for (const req of requests) {
-      queued.push({ platform: req.platform, accountId: req.accountId });
-      void this.runOne(userId, productId, req);
-    }
+    const { userId, productId, requests, overrideTemplate } = input;
+    const queued: ListingDispatchSnapshot["queued"] = requests.map((req) => ({
+      platform: req.platform,
+      accountId: req.accountId,
+    }));
 
     console.log(
       JSON.stringify({
@@ -88,6 +90,49 @@ export class ListingDispatcher {
       }),
     );
 
+    if (overrideTemplate) {
+      // Caminho com overrides (ex.: aumento escalonado entre contas): busca o
+      // produto UMA vez (preço base) e dispara cada request com o template, que
+      // é aplicado via updateListingFields após a criação.
+      void (async () => {
+        let productRules: BulkRulesProductInput | undefined;
+        try {
+          const p = await new ProductRepositoryPrisma().findById(productId);
+          if (p) {
+            productRules = {
+              id: p.id,
+              name: p.name,
+              price: p.price as unknown as number | { toNumber(): number },
+              costPrice: p.costPrice as unknown as
+                | number
+                | { toNumber(): number }
+                | null
+                | undefined,
+            };
+          }
+        } catch (e) {
+          console.warn(
+            "[ListingDispatcher] falha ao carregar produto p/ overrides:",
+            e instanceof Error ? e.message : e,
+          );
+        }
+        for (const req of requests) {
+          void this.runOne(
+            userId,
+            productId,
+            req,
+            overrideTemplate,
+            productRules,
+          );
+        }
+      })();
+    } else {
+      // Caminho atual (sem overrides): dispara síncrono, comportamento idêntico.
+      for (const req of requests) {
+        void this.runOne(userId, productId, req);
+      }
+    }
+
     return { queued };
   }
 
@@ -95,6 +140,8 @@ export class ListingDispatcher {
     userId: string,
     productId: string,
     req: ListingDispatchRequest,
+    overrideTemplate?: BulkOverrideTemplate | null,
+    productRules?: BulkRulesProductInput,
   ): Promise<void> {
     // Observabilidade simétrica ML↔Shopee. createMLListing e createShopeeListing
     // ambos retornam CreateListingResult com `success: boolean`. Antes desta
@@ -125,6 +172,19 @@ export class ListingDispatcher {
           console.error(
             `[ListingDispatcher] MERCADO_LIVRE listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
           );
+          return;
+        }
+        // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
+        // contas ML) se houver template. Sem template, nada muda (fluxo atual).
+        if (overrideTemplate && (result as any).listingId) {
+          await this.applyOverridesAfterCreate({
+            userId,
+            productId,
+            listingId: (result as any).listingId as string,
+            req,
+            overrideTemplate,
+            productRules,
+          });
         }
         return;
       }
@@ -369,80 +429,18 @@ export class ListingDispatcher {
         };
       }
 
-      // Sucesso na criação — aplicar overrides se o template render algum.
+      // Sucesso na criação — aplica overrides (regras de bulk + aumento
+      // escalonado entre contas ML) via helper compartilhado com o dispatch
+      // single. O productRulesCache pré-fetched do dispatchBatch é reutilizado.
       if (overrideTemplate) {
-        try {
-          // Usa cache pre-fetched do dispatchBatch quando disponível; caso
-          // contrário, faz fallback ao repositório (caminho antigo, mantido
-          // para callers que invocam runOneWithResult fora do batch).
-          let productRules: BulkRulesProductInput | undefined =
-            productRulesCache?.get(productId);
-          if (!productRules) {
-            const product = await new ProductRepositoryPrisma().findById(
-              productId,
-            );
-            if (product) {
-              productRules = {
-                id: product.id,
-                name: product.name,
-                price: product.price as unknown as
-                  | number
-                  | { toNumber(): number },
-                costPrice: product.costPrice as unknown as
-                  | number
-                  | { toNumber(): number }
-                  | null
-                  | undefined,
-              };
-            }
-          }
-
-          if (productRules) {
-            let fields = applyRules(productRules, overrideTemplate);
-
-            // Aumento percentual escalonado entre contas ML: compõe o
-            // priceOverride por conta sobre o preço base (regra de preço já
-            // aplicada, se houver). idx 0 = preço base (sem alteração) ⇒
-            // comportamento idêntico ao de hoje. Só ML; Shopee nunca escalona.
-            // A config (enabled/percent/índices) viaja no overrideTemplate
-            // persistido no job, então o retry reproduz preços idênticos.
-            const ca = overrideTemplate.crossAccountIncrease;
-            if (
-              ca?.enabled &&
-              ca.percent > 0 &&
-              req.platform === "MERCADO_LIVRE"
-            ) {
-              const idx = ca.indexByAccountId?.[req.accountId] ?? 0;
-              if (idx > 0) {
-                const base =
-                  computeBulkPrice(productRules, overrideTemplate.priceRule) ??
-                  toNum(productRules.price);
-                const price = computeStaggeredPrice(base, idx, ca.percent);
-                if (price > 0) {
-                  fields = { ...(fields ?? {}), priceOverride: price };
-                }
-              }
-            }
-
-            if (fields) {
-              const upd = await ListingUseCase.updateListingFields(
-                createResult.listingId,
-                userId,
-                fields as ListingFullEditInput,
-              );
-              if (!upd.success) {
-                console.warn(
-                  `[ListingDispatcher] override apply falhou (listing=${createResult.listingId}): ${upd.error}`,
-                );
-              }
-            }
-          }
-        } catch (overrideErr) {
-          console.warn(
-            "[ListingDispatcher] override apply lançou exceção:",
-            overrideErr instanceof Error ? overrideErr.message : overrideErr,
-          );
-        }
+        await this.applyOverridesAfterCreate({
+          userId,
+          productId,
+          listingId: createResult.listingId,
+          req,
+          overrideTemplate,
+          productRulesCache,
+        });
       }
 
       return {
@@ -464,6 +462,144 @@ export class ListingDispatcher {
         finishedAt: finishedAt(),
       };
     }
+  }
+
+  /**
+   * Aplica overrides (regras de bulk + aumento percentual escalonado entre
+   * contas ML) a um anúncio recém-criado, via updateListingFields. Compartilhado
+   * entre o dispatch single (runOne) e o batch (runOneWithResult). Resolve o
+   * productRules a partir do que for fornecido (pré-fetch / cache) ou busca no
+   * repositório. Nunca lança — falhas viram warning.
+   */
+  private static async applyOverridesAfterCreate(args: {
+    userId: string;
+    productId: string;
+    listingId: string;
+    req: { platform: BulkListingPlatform; accountId?: string };
+    overrideTemplate: BulkOverrideTemplate | null;
+    productRules?: BulkRulesProductInput;
+    productRulesCache?: Map<string, BulkRulesProductInput> | null;
+  }): Promise<void> {
+    const { userId, productId, listingId, req, overrideTemplate } = args;
+    if (!overrideTemplate) return;
+    try {
+      let productRules: BulkRulesProductInput | undefined =
+        args.productRules ?? args.productRulesCache?.get(productId);
+      if (!productRules) {
+        const product = await new ProductRepositoryPrisma().findById(productId);
+        if (product) {
+          productRules = {
+            id: product.id,
+            name: product.name,
+            price: product.price as unknown as number | { toNumber(): number },
+            costPrice: product.costPrice as unknown as
+              | number
+              | { toNumber(): number }
+              | null
+              | undefined,
+          };
+        }
+      }
+      if (!productRules) return;
+
+      let fields = applyRules(productRules, overrideTemplate);
+
+      // Aumento percentual escalonado entre contas ML: compõe o priceOverride
+      // por conta sobre o preço base (regra de preço já aplicada, se houver).
+      // idx 0 = preço base (sem alteração) ⇒ comportamento idêntico ao de hoje.
+      // Só ML; Shopee nunca escalona.
+      const ca = overrideTemplate.crossAccountIncrease;
+      if (
+        ca?.enabled &&
+        ca.percent > 0 &&
+        req.platform === "MERCADO_LIVRE" &&
+        req.accountId
+      ) {
+        const idx = ca.indexByAccountId?.[req.accountId] ?? 0;
+        if (idx > 0) {
+          const base =
+            computeBulkPrice(productRules, overrideTemplate.priceRule) ??
+            toNum(productRules.price);
+          const price = computeStaggeredPrice(base, idx, ca.percent);
+          if (price > 0) {
+            fields = { ...(fields ?? {}), priceOverride: price };
+          }
+        }
+      }
+
+      if (fields) {
+        const upd = await ListingUseCase.updateListingFields(
+          listingId,
+          userId,
+          fields as ListingFullEditInput,
+        );
+        if (!upd.success) {
+          console.warn(
+            `[ListingDispatcher] override apply falhou (listing=${listingId}): ${upd.error}`,
+          );
+        }
+      }
+    } catch (overrideErr) {
+      console.warn(
+        "[ListingDispatcher] override apply lançou exceção:",
+        overrideErr instanceof Error ? overrideErr.message : overrideErr,
+      );
+    }
+  }
+
+  /**
+   * Resolve o percentual de aumento escalonado: usa o valor do cliente (clamp
+   * 0..100) e cai para a preferência do usuário quando ausente/inválido.
+   */
+  static async resolveCrossAccountPercent(
+    userId: string,
+    clientPercent?: number,
+  ): Promise<number> {
+    let percent =
+      typeof clientPercent === "number" && Number.isFinite(clientPercent)
+        ? clientPercent
+        : NaN;
+    if (!Number.isFinite(percent)) {
+      try {
+        const u = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { crossAccountPriceIncreasePercent: true },
+        });
+        percent = u?.crossAccountPriceIncreasePercent
+          ? Number(u.crossAccountPriceIncreasePercent)
+          : 0;
+      } catch {
+        percent = 0;
+      }
+    }
+    return Math.min(100, Math.max(0, percent));
+  }
+
+  /**
+   * Monta o overrideTemplate de aumento escalonado a partir da ordem das contas
+   * ML em `requests` (1ª selecionada = índice 0 = preço base). Retorna null se
+   * o percentual for <= 0 ou houver menos de 2 contas ML (sem efeito).
+   */
+  static buildCrossAccountOverride(
+    requests: Array<{ platform: BulkListingPlatform; accountId?: string }>,
+    percent: number,
+  ): BulkOverrideTemplate | null {
+    if (!(percent > 0)) return null;
+    const indexByAccountId: Record<string, number> = {};
+    let idx = 0;
+    for (const r of requests) {
+      if (
+        r.platform === "MERCADO_LIVRE" &&
+        r.accountId &&
+        !Object.prototype.hasOwnProperty.call(indexByAccountId, r.accountId)
+      ) {
+        indexByAccountId[r.accountId] = idx++;
+      }
+    }
+    if (idx < 2) return null;
+    return {
+      crossAccountIncrease: { enabled: true, percent, indexByAccountId },
+    };
   }
 }
 

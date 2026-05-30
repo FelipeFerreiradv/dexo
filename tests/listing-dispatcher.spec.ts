@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import { ListingDispatcher } from "@/app/marketplaces/services/listing-dispatcher.service";
 import { ListingUseCase } from "@/app/marketplaces/usecases/listing.usercase";
+import { ProductRepositoryPrisma } from "@/app/repositories/product.repository";
 
 describe("ListingDispatcher.dispatch — observabilidade simétrica ML↔Shopee", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -366,5 +367,100 @@ describe("ListingDispatcher.runOneWithResult — aumento escalonado entre contas
     );
 
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("ListingDispatcher.dispatch — aumento escalonado no fluxo single (Opção A)", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const flush = async (n = 8) => {
+    for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  it("buildCrossAccountOverride: indexByAccountId pela ordem das contas ML; <2 ou %<=0 ⇒ null", () => {
+    const reqs = [
+      { platform: "MERCADO_LIVRE" as const, accountId: "a" },
+      { platform: "SHOPEE" as const, accountId: "s" },
+      { platform: "MERCADO_LIVRE" as const, accountId: "b" },
+    ];
+    expect(ListingDispatcher.buildCrossAccountOverride(reqs, 10)).toEqual({
+      crossAccountIncrease: {
+        enabled: true,
+        percent: 10,
+        indexByAccountId: { a: 0, b: 1 },
+      },
+    });
+    expect(ListingDispatcher.buildCrossAccountOverride(reqs, 0)).toBeNull();
+    expect(
+      ListingDispatcher.buildCrossAccountOverride(
+        [{ platform: "MERCADO_LIVRE" as const, accountId: "a" }],
+        10,
+      ),
+    ).toBeNull();
+  });
+
+  it("dispatch com overrideTemplate aplica priceOverride só em idx>0 ML (110 na 2ª conta)", async () => {
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockResolvedValue({
+      id: "prod-1",
+      name: "P",
+      price: 100,
+      costPrice: 50,
+    } as any);
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: true,
+      listingId: "L",
+      externalListingId: "MLB",
+    } as any);
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    ListingDispatcher.dispatch({
+      userId: "u",
+      productId: "prod-1",
+      requests: [
+        { platform: "MERCADO_LIVRE", accountId: "a" },
+        { platform: "MERCADO_LIVRE", accountId: "b" },
+      ],
+      overrideTemplate: {
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          indexByAccountId: { a: 0, b: 1 },
+        },
+      },
+    });
+    await flush();
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(110);
+  });
+
+  it("REGRESSÃO: sem overrideTemplate não busca produto nem chama updateListingFields", async () => {
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: true,
+      listingId: "L",
+    } as any);
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+    const findSpy = vi.spyOn(ProductRepositoryPrisma.prototype, "findById");
+
+    ListingDispatcher.dispatch({
+      userId: "u",
+      productId: "prod-1",
+      requests: [{ platform: "MERCADO_LIVRE", accountId: "a" }],
+    });
+    await flush();
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(findSpy).not.toHaveBeenCalled();
   });
 });
