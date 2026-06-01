@@ -886,15 +886,17 @@ export class ShopeeApiService {
     // aqui consultamos uma so para preservar a assinatura existente.
     const query = `?category_id_list=${categoryId}${language ? `&language=${language}` : ""}`;
 
+    interface AttributeTreeValue {
+      value_id: number;
+      name: string;
+      value_unit?: string;
+      child_attribute_list?: AttributeTreeNode[];
+    }
     interface AttributeTreeNode {
       attribute_id: number;
       name: string;
       mandatory: boolean;
-      attribute_value_list?: Array<{
-        value_id: number;
-        name: string;
-        value_unit?: string;
-      }>;
+      attribute_value_list?: AttributeTreeValue[];
       attribute_info?: {
         input_type?: number;
         attribute_unit_list?: string[];
@@ -906,6 +908,23 @@ export class ShopeeApiService {
         attribute_tree: AttributeTreeNode[];
       }>;
     }
+
+    // true se escolher um valor introduz, em qualquer profundidade do
+    // child_attribute_list, um atributo OBRIGATORIO. Selecionar esse valor
+    // sem preencher os filhos faz a Shopee rejeitar o item com
+    // "Attribute X is mandatory required".
+    const hasMandatoryDescendant = (
+      children?: AttributeTreeNode[],
+    ): boolean => {
+      if (!children || children.length === 0) return false;
+      for (const child of children) {
+        if (child.mandatory === true) return true;
+        for (const v of child.attribute_value_list ?? []) {
+          if (hasMandatoryDescendant(v.child_attribute_list)) return true;
+        }
+      }
+      return false;
+    };
 
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<AttributeTreeResponse>
@@ -921,7 +940,9 @@ export class ShopeeApiService {
 
     // Mapear formato novo (attribute_tree) -> formato antigo (attribute_list)
     // que os consumers a jusante esperam. Preserva attribute_id intacto e
-    // converte apenas os nomes de campo divergentes.
+    // converte apenas os nomes de campo divergentes. Anexa
+    // has_mandatory_children por valor pra o mapping evitar disparar
+    // atributos-filho obrigatorios que nao temos como preencher.
     const attribute_list: ShopeeCategoryAttribute[] = tree.map((node) => ({
       attribute_id: node.attribute_id,
       attribute_name: node.name,
@@ -933,6 +954,7 @@ export class ShopeeApiService {
         value_name: v.name,
         parent_attribute_id: 0,
         parent_value_id: 0,
+        has_mandatory_children: hasMandatoryDescendant(v.child_attribute_list),
       })),
     }));
 

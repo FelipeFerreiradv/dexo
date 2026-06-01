@@ -243,6 +243,14 @@ export interface ShopeeCategoryAttributeValue {
   value_name: string;
   parent_attribute_id: number;
   parent_value_id: number;
+  /**
+   * true se escolher este valor dispara atributos-filho OBRIGATORIOS
+   * (child_attribute_list com algum mandatory). Usado pra evitar selecionar
+   * valores que cascateiam em atributos obrigatorios que nao temos como
+   * preencher (ex: "Connection Type=Wireless" → Registration ID mandatory).
+   * Opcional pra retrocompat com schemas cacheados antes desta mudanca.
+   */
+  has_mandatory_children?: boolean;
 }
 
 // Resposta dos atributos de categoria
