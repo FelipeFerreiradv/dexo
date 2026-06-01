@@ -311,4 +311,121 @@ describe("ListingUseCase.createShopeeListing — atributos obrigatórios de auto
     expect(autoPartAttr).toBeDefined();
     expect(autoPartAttr.attribute_value_list[0].original_value_name).toBeTruthy();
   });
+
+  it("evita valor com filhos obrigatórios: escolhe 'Others' (sem filhos) em vez de 'Wireless' (regressão: Registration ID mandatory required)", async () => {
+    // Reproduz a categoria 101251 (Ferragens/Fechaduras): "Connection Type"
+    // mandatory com dois valores — Wireless dispara filhos obrigatorios
+    // (Registration ID etc), Others nao. Antes do fix pegavamos [0]=Wireless
+    // e a Shopee rejeitava por "Registration ID is mandatory required".
+    vi.spyOn(ShopeeApiService, "getCategoryAttributes").mockResolvedValue({
+      attribute_list: [
+        {
+          attribute_id: 100408,
+          attribute_name: "Connection Type",
+          is_mandatory: true,
+          attribute_value_list: [
+            { value_id: 2530, value_name: "Wireless", has_mandatory_children: true },
+            { value_id: 16702, value_name: "Others", has_mandatory_children: false },
+          ],
+        },
+      ],
+    } as any);
+
+    const createSpy = vi
+      .spyOn(ShopeeApiService, "createItem")
+      .mockResolvedValue({ item_id: 99001 } as any);
+
+    const res = await ListingUseCase.createShopeeListing(
+      "user-autopart",
+      "prod-autopart",
+      "101251",
+      "shp-acct-attr",
+    );
+
+    expect(res.success).toBe(true);
+    const payload = createSpy.mock.calls[0]?.[2] as any;
+    const conn = payload.attribute_list.find(
+      (a: any) => a.attribute_name === "Connection Type",
+    );
+    expect(conn).toBeDefined();
+    // Deve ter escolhido "Others" (16702, sem filhos), NAO "Wireless" (2530)
+    expect(conn.attribute_value_list[0].value_id).toBe(16702);
+    expect(conn.attribute_value_list[0].original_value_name).toBe("Others");
+  });
+
+  it("prefere valor sem filhos mesmo sem sinônimo neutro nomeado", async () => {
+    // Nenhum valor se chama "Outros"; só importa quem NAO tem filhos.
+    vi.spyOn(ShopeeApiService, "getCategoryAttributes").mockResolvedValue({
+      attribute_list: [
+        {
+          attribute_id: 5555,
+          attribute_name: "Tipo X",
+          is_mandatory: true,
+          attribute_value_list: [
+            { value_id: 1, value_name: "Alpha", has_mandatory_children: true },
+            { value_id: 2, value_name: "Beta", has_mandatory_children: false },
+          ],
+        },
+      ],
+    } as any);
+
+    const createSpy = vi
+      .spyOn(ShopeeApiService, "createItem")
+      .mockResolvedValue({ item_id: 99002 } as any);
+
+    await ListingUseCase.createShopeeListing(
+      "user-autopart",
+      "prod-autopart",
+      "102340",
+      "shp-acct-attr",
+    );
+
+    const payload = createSpy.mock.calls[0]?.[2] as any;
+    const attr = payload.attribute_list.find(
+      (a: any) => a.attribute_name === "Tipo X",
+    );
+    expect(attr.attribute_value_list[0].value_id).toBe(2); // Beta, sem filhos
+  });
+});
+
+describe("ListingUseCase.pickSafeMandatoryShopeeValue (unit)", () => {
+  it("1) prefere sinônimo neutro SEM filhos", () => {
+    const picked = ListingUseCase.pickSafeMandatoryShopeeValue([
+      { value_id: 1, value_name: "Wireless", has_mandatory_children: true },
+      { value_id: 2, value_name: "Others", has_mandatory_children: false },
+      { value_id: 3, value_name: "Wired", has_mandatory_children: false },
+    ]);
+    expect(picked.value_id).toBe(2);
+  });
+
+  it("2) sem neutro, prefere qualquer valor SEM filhos", () => {
+    const picked = ListingUseCase.pickSafeMandatoryShopeeValue([
+      { value_id: 1, value_name: "Alpha", has_mandatory_children: true },
+      { value_id: 2, value_name: "Beta", has_mandatory_children: false },
+    ]);
+    expect(picked.value_id).toBe(2);
+  });
+
+  it("3) todos com filhos: cai no sinônimo neutro mesmo com filhos", () => {
+    const picked = ListingUseCase.pickSafeMandatoryShopeeValue([
+      { value_id: 1, value_name: "Alpha", has_mandatory_children: true },
+      { value_id: 2, value_name: "Outros", has_mandatory_children: true },
+    ]);
+    expect(picked.value_id).toBe(2);
+  });
+
+  it("4) sem flag (schema legado): degrada para sinônimo neutro, senão primeiro", () => {
+    // has_mandatory_children undefined → tratado como 'sem filhos'
+    const withSynonym = ListingUseCase.pickSafeMandatoryShopeeValue([
+      { value_id: 1, value_name: "Fiat" },
+      { value_id: 2, value_name: "Outros" },
+    ]);
+    expect(withSynonym.value_id).toBe(2);
+
+    const noSynonym = ListingUseCase.pickSafeMandatoryShopeeValue([
+      { value_id: 10, value_name: "Fiat" },
+      { value_id: 11, value_name: "Volkswagen" },
+    ]);
+    expect(noSynonym.value_id).toBe(10); // primeiro, comportamento legado
+  });
 });

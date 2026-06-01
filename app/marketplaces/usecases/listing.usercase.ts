@@ -106,6 +106,56 @@ export class ListingUseCase {
   private static readonly SHOPEE_MAX_IMAGES = 9;
   private static readonly ML_MAX_IMAGES = 12;
 
+  // Sinonimos de "valor neutro" (não aplicável / outros / genérico) em
+  // pt-BR e en. Usados quando precisamos escolher um valor para um atributo
+  // mandatory sem dados do produto — preferimos o neutro.
+  private static readonly SHOPEE_NEUTRAL_VALUE_SYNONYMS = new Set([
+    "outros", "outro", "other", "others",
+    "não aplicável", "nao aplicavel", "n/a", "na",
+    "nenhum", "nenhuma", "none", "sem",
+    "genérica", "generica", "genérico", "generico", "generic",
+    "indefinido", "indefinida", "não informado", "nao informado",
+  ]);
+
+  /**
+   * Escolhe um valor "seguro" para um atributo Shopee MANDATORY quando nao
+   * temos dado do produto pra preencher.
+   *
+   * Prioridade (evita disparar atributos-filho obrigatorios que nao
+   * conseguimos preencher — ex: "Connection Type=Wireless" exige
+   * Registration ID / Manufacturer / Model Name):
+   *   1. sinonimo neutro ("Outros"/"Others"/"N/A"...) SEM filhos obrigatorios
+   *   2. qualquer valor SEM filhos obrigatorios
+   *   3. sinonimo neutro (mesmo com filhos — raro)
+   *   4. primeiro valor (fallback final, comportamento legado)
+   *
+   * has_mandatory_children pode ser undefined em schemas cacheados antes do
+   * adapter passar a computa-lo — nesse caso `!== true` trata como "sem
+   * filhos" (degrada pra preferencia por sinonimo, sem regressao).
+   */
+  public static pickSafeMandatoryShopeeValue(
+    values: Array<{
+      value_id: number;
+      value_name: string;
+      has_mandatory_children?: boolean;
+    }>,
+  ): { value_id: number; value_name: string } {
+    const isNeutral = (name: string) =>
+      ListingUseCase.SHOPEE_NEUTRAL_VALUE_SYNONYMS.has(
+        (name || "").trim().toLowerCase(),
+      );
+    const childless = values.filter((v) => v.has_mandatory_children !== true);
+
+    const neutralChildless = childless.find((v) => isNeutral(v.value_name));
+    if (neutralChildless) return neutralChildless;
+    if (childless.length > 0) return childless[0];
+
+    const neutral = values.find((v) => isNeutral(v.value_name));
+    if (neutral) return neutral;
+
+    return values[0];
+  }
+
   /**
    * Harvest cross-account: extrai attribute_list de algum listing Shopee
    * ATIVO em qualquer conta da plataforma na mesma categoria. Útil quando
@@ -3404,19 +3454,11 @@ export class ListingUseCase {
             }
 
             if (attr.is_mandatory && !valueName) {
-              const otherValue = attr.attribute_value_list.find(
-                (v) =>
-                  v.value_name.toLowerCase() === "outros" ||
-                  v.value_name.toLowerCase() === "other" ||
-                  v.value_name.toLowerCase() === "genérica",
+              const picked = ListingUseCase.pickSafeMandatoryShopeeValue(
+                attr.attribute_value_list,
               );
-              if (otherValue) {
-                valueId = otherValue.value_id;
-                valueName = otherValue.value_name;
-              } else {
-                valueId = attr.attribute_value_list[0].value_id;
-                valueName = attr.attribute_value_list[0].value_name;
-              }
+              valueId = picked.value_id;
+              valueName = picked.value_name;
             }
           } else if (attr.is_mandatory && !valueName) {
             valueName = productValue || product.brand || product.name;

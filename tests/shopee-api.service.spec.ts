@@ -113,9 +113,89 @@ describe("ShopeeApiService.getCategoryAttributes (migrado para get_attribute_tre
       is_mandatory: true,
     });
     expect(res.attribute_list[1].attribute_value_list).toEqual([
-      { value_id: 10, value_name: "Chevrolet", parent_attribute_id: 0, parent_value_id: 0 },
-      { value_id: 11, value_name: "Fiat", parent_attribute_id: 0, parent_value_id: 0 },
+      { value_id: 10, value_name: "Chevrolet", parent_attribute_id: 0, parent_value_id: 0, has_mandatory_children: false },
+      { value_id: 11, value_name: "Fiat", parent_attribute_id: 0, parent_value_id: 0, has_mandatory_children: false },
     ]);
+  });
+
+  it("computa has_mandatory_children: valor com filho obrigatorio (recursivo) eh marcado true", async () => {
+    vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "",
+        message: "",
+        response: {
+          list: [
+            {
+              category_id: 101251,
+              attribute_tree: [
+                {
+                  attribute_id: 100408,
+                  name: "Connection Type",
+                  mandatory: true,
+                  attribute_value_list: [
+                    {
+                      value_id: 2530,
+                      name: "Wireless",
+                      child_attribute_list: [
+                        {
+                          attribute_id: 101197,
+                          name: "Registration ID",
+                          mandatory: true,
+                          attribute_value_list: [],
+                        },
+                      ],
+                    },
+                    { value_id: 16702, name: "Others" }, // sem filhos
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const res = await ShopeeApiService.getCategoryAttributes("t", 1, 101251, "pt-BR");
+    const conn = res.attribute_list[0];
+    const wireless = conn.attribute_value_list.find((v) => v.value_id === 2530);
+    const others = conn.attribute_value_list.find((v) => v.value_id === 16702);
+    expect((wireless as any).has_mandatory_children).toBe(true);
+    expect((others as any).has_mandatory_children).toBe(false);
+  });
+
+  it("has_mandatory_children=false quando filhos existem mas nenhum eh obrigatorio", async () => {
+    vi
+      .spyOn(ShopeeApiService as any, "makeAuthenticatedRequest")
+      .mockResolvedValue({
+        error: "",
+        message: "",
+        response: {
+          list: [
+            {
+              category_id: 999,
+              attribute_tree: [
+                {
+                  attribute_id: 1,
+                  name: "Attr",
+                  mandatory: true,
+                  attribute_value_list: [
+                    {
+                      value_id: 5,
+                      name: "ValComFilhoOpcional",
+                      child_attribute_list: [
+                        { attribute_id: 2, name: "Opt", mandatory: false, attribute_value_list: [] },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+    const res = await ShopeeApiService.getCategoryAttributes("t", 1, 999);
+    expect((res.attribute_list[0].attribute_value_list[0] as any).has_mandatory_children).toBe(false);
   });
 
   it("retorna attribute_list vazio quando a categoria nao tem atributos (lista vazia legitima)", async () => {
