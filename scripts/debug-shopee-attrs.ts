@@ -139,13 +139,46 @@ async function listCategories(
       where: { id: product },
       select: { shopeeCategoryId: true, name: true },
     });
-    if (!p?.shopeeCategoryId) {
-      throw new Error(`Produto ${product} sem shopeeCategoryId`);
+    if (p?.shopeeCategoryId) {
+      console.log(
+        `[debug-attrs] produto ${product} ("${p.name}") → categoria ${p.shopeeCategoryId} (Product.shopeeCategoryId)`,
+      );
+      return [Number(p.shopeeCategoryId)];
     }
+    // Produto sem categoria persistida — a categoria usada na publicacao veio
+    // do dispatch request e ficou no ProductListing.requestedCategoryId dos
+    // placeholders Shopee (status error). Coletar todas distintas.
+    const listings = await (prisma as any).productListing.findMany({
+      where: {
+        productId: product,
+        marketplaceAccount: { platform: "SHOPEE" },
+      },
+      select: {
+        requestedCategoryId: true,
+        status: true,
+        externalListingId: true,
+        lastError: true,
+      },
+    });
     console.log(
-      `[debug-attrs] produto ${product} ("${p.name}") → categoria ${p.shopeeCategoryId}`,
+      `[debug-attrs] produto ${product} ("${p?.name ?? "?"}") sem Product.shopeeCategoryId; ` +
+        `${listings.length} ProductListing Shopee:`,
     );
-    return [Number(p.shopeeCategoryId)];
+    const cats = new Set<number>();
+    for (const l of listings) {
+      console.log(
+        `    - reqCat=${l.requestedCategoryId ?? "?"} status=${l.status} ext=${l.externalListingId} err="${(l.lastError ?? "").slice(0, 80)}"`,
+      );
+      const n = Number(l.requestedCategoryId);
+      if (Number.isFinite(n) && n > 0) cats.add(n);
+    }
+    if (cats.size === 0) {
+      throw new Error(
+        `Produto ${product} sem shopeeCategoryId e sem requestedCategoryId nos listings. ` +
+          `Passe --category=<id> manualmente.`,
+      );
+    }
+    return [...cats].sort((a, b) => a - b);
   }
   if (category) return [category];
   const rows = await prisma.product.findMany({
