@@ -39,8 +39,23 @@ async function main() {
   console.log(`[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`);
   while (true) {
     const started = Date.now();
-    await runOnce();
-    await prisma.$disconnect();
+    try {
+      await runOnce();
+    } catch (err) {
+      // Um erro transiente de banco (pool apertado, blip de rede) NAO pode
+      // matar o processo: process.exit aqui gera crash-loop no PM2, e cada
+      // reinicio vaza as conexoes abertas -> satura o pooler do Supabase ->
+      // derruba api/frontend (504). Loga e segue pro proximo ciclo.
+      console.error("[sync-loop] Ciclo falhou (loop continua, sem matar o processo):", err);
+    } finally {
+      // Libera as conexoes durante o intervalo ocioso; reconecta sozinho no
+      // proximo ciclo. Protegido pra um disconnect com erro nao escapar.
+      try {
+        await prisma.$disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
     const elapsed = Date.now() - started;
     const waitMs = Math.max(intervalMinutes * 60 * 1000 - elapsed, 5000);
     console.log(`[sync-loop] Ciclo conclu�do em ${elapsed} ms. Pr�ximo em ${waitMs} ms.`);
