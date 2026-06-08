@@ -17,6 +17,7 @@ import {
   parseProductListingCategoryValue,
 } from "../lib/product-listing-category";
 import { normalizeSku } from "../lib/sku";
+import { tokenizeSearch, reduceVariants } from "./product-search-terms";
 
 const LOW_STOCK_THRESHOLD = 10;
 const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
@@ -81,6 +82,80 @@ function combineSqlClauses(clauses: Prisma.Sql[]): Prisma.Sql {
       (combined, clause) => Prisma.sql`${combined} AND ${clause}`,
       clauses[0],
     );
+}
+
+/**
+ * Campos textuais usados na busca por termo. Coincidem com as expressões já
+ * indexadas via GIN trigram em `ensureTextSearchExtensions`
+ * (`immutable_unaccent(lower("campo"))`), então o ILIKE por termo usa índice.
+ */
+const TOKEN_SEARCH_FIELDS = [
+  "name",
+  "sku",
+  "brand",
+  "model",
+  "partNumber",
+] as const;
+
+/** Expressão normalizada de um campo (bate com o índice trigram). */
+function fieldUnaccent(field: string): Prisma.Sql {
+  // `field` vem sempre de TOKEN_SEARCH_FIELDS (constantes), nunca de input.
+  return Prisma.raw(`immutable_unaccent(lower(p."${field}"))`);
+}
+
+/** OR de várias cláusulas SQL (FALSE se vazio). */
+function joinOr(parts: Prisma.Sql[]): Prisma.Sql {
+  if (parts.length === 0) return Prisma.sql`FALSE`;
+  return parts
+    .slice(1)
+    .reduce((acc, part) => Prisma.sql`${acc} OR ${part}`, parts[0]);
+}
+
+/** `campo ILIKE %variante%` para cada (campo, variante), unidos por OR. */
+function ilikeAnyField(
+  variants: string[],
+  fields: readonly string[],
+): Prisma.Sql {
+  // Colapsa variantes redundantes (`%tras%` cobre `%traseira%`) antes de gerar
+  // as condições — mesmo resultado, menos trabalho no Postgres.
+  const effective = reduceVariants(variants);
+  const parts: Prisma.Sql[] = [];
+  for (const field of fields) {
+    const expr = fieldUnaccent(field);
+    for (const variant of effective) {
+      parts.push(Prisma.sql`${expr} ILIKE ${`%${variant}%`}`);
+    }
+  }
+  return joinOr(parts);
+}
+
+/**
+ * Predicado AND: cada grupo de termos deve casar em ALGUM campo. É isto que
+ * derruba o ruído — "fecha tras esq palio" exige fecha E tras E esq E palio,
+ * em vez de qualquer-um (OR da frase inteira).
+ */
+function buildTokenPredicate(groups: string[][]): Prisma.Sql {
+  const groupClauses = groups.map(
+    (variants) => Prisma.sql`(${ilikeAnyField(variants, TOKEN_SEARCH_FIELDS)})`,
+  );
+  return combineSqlClauses(groupClauses); // AND entre grupos
+}
+
+/**
+ * Score de relevância: por grupo, pega o MAIOR peso de campo casado
+ * (name/partNumber=3, sku/brand/model=2) e soma entre os grupos. Usado só
+ * para ORDENAR; o predicado AND já filtrou o conjunto.
+ */
+function buildTokenScore(groups: string[][]): Prisma.Sql {
+  if (groups.length === 0) return Prisma.sql`0`;
+  const perGroup = groups.map((variants) => {
+    const high = ilikeAnyField(variants, ["name", "partNumber"]);
+    const mid = ilikeAnyField(variants, ["sku", "brand", "model"]);
+    return Prisma.sql`(CASE WHEN ${high} THEN 3 WHEN ${mid} THEN 2 ELSE 0 END)`;
+  });
+  return perGroup
+    .slice(1)
+    .reduce((acc, group) => Prisma.sql`${acc} + ${group}`, perGroup[0]);
 }
 
 function mapPrismaCompatibilities(
@@ -839,6 +914,135 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
+  /**
+   * Tier 1 da busca: AND por termo. Cada grupo de variantes precisa casar em
+   * algum dos campos indexados; ordena por score de relevância. Mantém o
+   * contrato de 2 chamadas `$queryRaw` (ids + total) seguidas da hidratação.
+   */
+  private async runTokenSearch(params: {
+    tokenGroups: string[][];
+    baseSqlWhere: Prisma.Sql;
+    baseWhere: Prisma.ProductWhereInput;
+    skip: number;
+    limit: number;
+  }): Promise<{ products: Product[]; total: number }> {
+    const { tokenGroups, baseSqlWhere, baseWhere, skip, limit } = params;
+    const predicate = buildTokenPredicate(tokenGroups);
+    const scoreExpr = buildTokenScore(tokenGroups);
+    const rankedWhere = combineSqlClauses([baseSqlWhere, predicate]);
+
+    const [rankedIds, totalRow] = await Promise.all([
+      prisma.$queryRaw<{ id: string; score: number }[]>`
+        SELECT p."id", (${scoreExpr}) AS score
+        FROM "Product" p
+        WHERE ${rankedWhere}
+        ORDER BY score DESC, (p."stock" > 0) DESC, p."createdAt" DESC
+        OFFSET ${skip} LIMIT ${limit};
+      `,
+      prisma.$queryRaw<{ count: bigint }[]>`
+        SELECT COUNT(*)::bigint as count
+        FROM "Product" p
+        WHERE ${rankedWhere};
+      `,
+    ]);
+
+    const total = Number(totalRow?.[0]?.count ?? 0);
+    const idOrder = rankedIds.map((item) => item.id);
+    if (idOrder.length === 0) {
+      return { products: [], total };
+    }
+
+    const items = await prisma.product.findMany({
+      where: combineWhereClauses(baseWhere, { id: { in: idOrder } }),
+      select: this.productSelect,
+    });
+    const mapped = new Map(
+      items.map((item) => [
+        item.id,
+        mapPrismaToProduct(item as unknown as PrismaProduct),
+      ]),
+    );
+
+    return {
+      products: idOrder
+        .map((id) => mapped.get(id))
+        .filter(Boolean) as Product[],
+      total,
+    };
+  }
+
+  /**
+   * Tier 2 (fallback de recall): fuzzy legado — frase inteira via ILIKE +
+   * `similarity()` trigram. Menos preciso, mas tolera digitação/vocabulário
+   * fora do dicionário de sinônimos. Acionado só quando o Tier 1 não acha nada.
+   */
+  private async runLegacyFuzzySearch(params: {
+    search: string;
+    baseSqlWhere: Prisma.Sql;
+    baseWhere: Prisma.ProductWhereInput;
+    skip: number;
+    limit: number;
+  }): Promise<{ products: Product[]; total: number }> {
+    const { search, baseSqlWhere, baseWhere, skip, limit } = params;
+    const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
+    const fuzzyPredicate = Prisma.sql`(
+      immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
+      immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
+      immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+      immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+      immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+      similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
+      similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold} OR
+      similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+      similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+      similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}
+    )`;
+    const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
+
+    const [rankedIds, totalRow] = await Promise.all([
+      prisma.$queryRaw<{ id: string; score: number }[]>`
+        SELECT p."id",
+               GREATEST(
+                 similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
+                 similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
+               ) AS score
+        FROM "Product" p
+        WHERE ${rankedWhere}
+        ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+        OFFSET ${skip} LIMIT ${limit};
+      `,
+      prisma.$queryRaw<{ count: bigint }[]>`
+        SELECT COUNT(*)::bigint as count
+        FROM "Product" p
+        WHERE ${rankedWhere};
+      `,
+    ]);
+
+    const total = Number(totalRow?.[0]?.count ?? 0);
+    const idOrder = rankedIds.map((item) => item.id);
+    if (idOrder.length === 0) {
+      return { products: [], total };
+    }
+
+    const items = await prisma.product.findMany({
+      where: combineWhereClauses(baseWhere, { id: { in: idOrder } }),
+      select: this.productSelect,
+    });
+    const mapped = new Map(
+      items.map((item) => [
+        item.id,
+        mapPrismaToProduct(item as unknown as PrismaProduct),
+      ]),
+    );
+
+    return {
+      products: idOrder
+        .map((id) => mapped.get(id))
+        .filter(Boolean) as Product[],
+      total,
+    };
+  }
+
   async findAll(
     filters?: ProductListFilters,
     userId?: string,
@@ -878,67 +1082,34 @@ class ProductRepositoryPrisma implements ProductRepository {
     if (search) {
       try {
         await this.ensureTextSearchExtensions();
-        const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
         const baseSqlWhere = this.buildBaseSqlWhere(filters, userId);
-        const fuzzyPredicate = Prisma.sql`(
-          immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
-          immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
-          immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-          immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-          immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-          similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
-          similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold} OR
-          similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
-          similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
-          similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}
-        )`;
-        const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
 
-        const [rankedIds, totalRow] = await Promise.all([
-          prisma.$queryRaw<{ id: string; score: number }[]>`
-            SELECT p."id",
-                   GREATEST(
-                     similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
-                     similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
-                   ) AS score
-            FROM "Product" p
-            WHERE ${rankedWhere}
-            ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
-            OFFSET ${skip} LIMIT ${limit};
-          `,
-          prisma.$queryRaw<{ count: bigint }[]>`
-            SELECT COUNT(*)::bigint as count
-            FROM "Product" p
-            WHERE ${rankedWhere};
-          `,
-        ]);
-        const total = Number(totalRow?.[0]?.count ?? 0);
-        const idOrder = rankedIds.map((item) => item.id);
-
-        if (idOrder.length === 0) {
-          return { products: [], total };
+        // Tier 1 — precisão: cada termo (expandido por sinônimos) deve casar
+        // em algum campo (AND entre termos). É o que corrige o ruído.
+        const tokenGroups = tokenizeSearch(search);
+        if (tokenGroups.length > 0) {
+          const tier1 = await this.runTokenSearch({
+            tokenGroups,
+            baseSqlWhere,
+            baseWhere,
+            skip,
+            limit,
+          });
+          if (tier1.total > 0) {
+            return tier1;
+          }
+          // total === 0 → termo fora do dicionário ou erro de digitação:
+          // cai para o fuzzy (recall) abaixo, em vez de devolver vazio.
         }
 
-        const items = await prisma.product.findMany({
-          where: combineWhereClauses(baseWhere, {
-            id: { in: idOrder },
-          }),
-          select: this.productSelect,
+        // Tier 2 — recall: fuzzy legado (frase inteira + similarity trigram).
+        return await this.runLegacyFuzzySearch({
+          search,
+          baseSqlWhere,
+          baseWhere,
+          skip,
+          limit,
         });
-
-        const mapped = new Map(
-          items.map((item) => [
-            item.id,
-            mapPrismaToProduct(item as unknown as PrismaProduct),
-          ]),
-        );
-
-        return {
-          products: idOrder
-            .map((id) => mapped.get(id))
-            .filter(Boolean) as Product[],
-          total,
-        };
       } catch (error) {
         console.error(
           "[product-search] fallback para busca simples devido a erro:",
