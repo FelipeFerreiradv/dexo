@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { getApiBaseUrl } from "@/lib/api";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
+import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
 interface MultiImageUploadProps {
   value: string[];
@@ -31,6 +32,7 @@ export function MultiImageUpload({
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
+  const [addShadow, setAddShadow] = useAddShadowToggle(true);
 
   const uploadFile = useCallback(
     async (
@@ -48,6 +50,11 @@ export function MultiImageUpload({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("removeBackground", removeBackground ? "true" : "false");
+      // Sombra exige o recorte: só pede sombra se a remoção de fundo está ON.
+      formData.append(
+        "addShadow",
+        removeBackground && addShadow ? "true" : "false",
+      );
 
       const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
         method: "POST",
@@ -65,7 +72,7 @@ export function MultiImageUpload({
       };
       return { url: result.imageUrl, warning: result.warning };
     },
-    [onError, removeBackground],
+    [onError, removeBackground, addShadow],
   );
 
   const handleFilesSelect = useCallback(
@@ -183,6 +190,13 @@ export function MultiImageUpload({
         hasImages={hasImages}
       />
 
+      <ContactShadowToggle
+        value={addShadow}
+        onValueChange={setAddShadow}
+        disabled={disabled || isUploading || !removeBackground}
+        removeBackgroundOff={!removeBackground}
+      />
+
       {/* Imagens já enviadas */}
       {hasImages && (
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
@@ -259,9 +273,11 @@ export function MultiImageUpload({
             <div className="flex flex-col items-center space-y-2">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <p className="text-sm text-muted-foreground">
-                {removeBackground
-                  ? "Removendo fundo e otimizando..."
-                  : "Otimizando imagens..."}
+                {!removeBackground
+                  ? "Otimizando imagens..."
+                  : addShadow
+                    ? "Removendo fundo, adicionando sombra e otimizando..."
+                    : "Removendo fundo e otimizando..."}
               </p>
             </div>
           ) : (
@@ -333,6 +349,42 @@ function RemoveBackgroundToggle({
       <Switch
         id="multi-image-upload-remove-bg"
         checked={value}
+        onCheckedChange={onValueChange}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+function ContactShadowToggle({
+  value,
+  onValueChange,
+  disabled,
+  removeBackgroundOff,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled: boolean;
+  removeBackgroundOff: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <Label
+          htmlFor="multi-image-upload-add-shadow"
+          className="cursor-pointer text-sm font-medium"
+        >
+          Adicionar sombra automaticamente
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          {removeBackgroundOff
+            ? "Requer “Remover fundo” ligado — a sombra usa o recorte."
+            : "Sombra de contato suave sob a peça, com aspecto profissional."}
+        </p>
+      </div>
+      <Switch
+        id="multi-image-upload-add-shadow"
+        checked={value && !removeBackgroundOff}
         onCheckedChange={onValueChange}
         disabled={disabled}
       />

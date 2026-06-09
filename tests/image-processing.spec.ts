@@ -165,4 +165,58 @@ describe("processUploadedImage", () => {
     // Sharp já aplicou rotate() — Orientation não é mais 6.
     expect(meta.orientation === undefined || meta.orientation === 1).toBe(true);
   });
+
+  it("repassa addShadow=true ao fetcher e marca shadowApplied", async () => {
+    const buf = await makeImage(1200, 900);
+    const transparent = await makeImage(800, 600, { hasAlpha: true });
+    const fetcher = vi.fn().mockResolvedValue(transparent);
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      addShadow: true,
+      rembgFetcher: fetcher,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ addShadow: true }),
+    );
+    expect(result.removedBackground).toBe(true);
+    expect(result.shadowApplied).toBe(true);
+    expect(result.format).toBe("png");
+  });
+
+  it("shadowApplied=false quando addShadow é omitido (default)", async () => {
+    const buf = await makeImage(1200, 900);
+    const transparent = await makeImage(800, 600, { hasAlpha: true });
+    const fetcher = vi.fn().mockResolvedValue(transparent);
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+    });
+
+    // Fetcher é chamado com addShadow=false (o serviço normaliza undefined).
+    expect(fetcher).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ addShadow: false }),
+    );
+    expect(result.shadowApplied).toBe(false);
+  });
+
+  it("não aplica sombra quando removeBackground=false (sombra exige recorte)", async () => {
+    const buf = await makeImage(1200, 900);
+    const fetcher = vi.fn();
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: false,
+      addShadow: true,
+      rembgFetcher: fetcher,
+    });
+
+    // Sem recorte não há alpha → sidecar não é chamado e não há sombra.
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.removedBackground).toBe(false);
+    expect(result.shadowApplied).toBeFalsy();
+  });
 });
