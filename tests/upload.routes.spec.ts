@@ -44,11 +44,13 @@ function buildForm({
   filename,
   mimetype,
   removeBackground,
+  addShadow,
 }: {
   file?: Buffer;
   filename?: string;
   mimetype?: string;
   removeBackground?: string;
+  addShadow?: string;
 }): { headers: Record<string, string>; body: Buffer } {
   const form = new FormData();
   if (file) {
@@ -59,6 +61,9 @@ function buildForm({
   }
   if (removeBackground !== undefined) {
     form.append("removeBackground", removeBackground);
+  }
+  if (addShadow !== undefined) {
+    form.append("addShadow", addShadow);
   }
   return {
     headers: form.getHeaders(),
@@ -306,5 +311,71 @@ describe("POST /upload/image", () => {
     // O segundo é a processada (`.webp`).
     const processedCall = writeFileMock.mock.calls[1];
     expect(processedCall[0]).toMatch(/\.webp$/);
+  });
+
+  it("repassa addShadow=true e devolve shadowApplied na resposta", async () => {
+    const file = await makeImage(800, 600, "jpeg");
+    const processed = await makeImage(800, 600, "png");
+    processUploadedImageMock.mockResolvedValue({
+      processed,
+      format: "png",
+      removedBackground: true,
+      shadowApplied: true,
+      width: 800,
+      height: 600,
+    });
+
+    const { headers, body } = buildForm({
+      file,
+      filename: "p.jpg",
+      mimetype: "image/jpeg",
+      removeBackground: "true",
+      addShadow: "true",
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.payload);
+    expect(payload.shadowApplied).toBe(true);
+    expect(processUploadedImageMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ removeBackground: true, addShadow: true }),
+    );
+  });
+
+  it("default do addShadow é false quando o campo é omitido", async () => {
+    const file = await makeImage(800, 600, "jpeg");
+    const processed = await makeImage(800, 600, "png");
+    processUploadedImageMock.mockResolvedValue({
+      processed,
+      format: "png",
+      removedBackground: true,
+      shadowApplied: false,
+    });
+
+    const { headers, body } = buildForm({
+      file,
+      filename: "p.jpg",
+      mimetype: "image/jpeg",
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const payload = JSON.parse(res.payload);
+    expect(payload.shadowApplied).toBe(false);
+    expect(processUploadedImageMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ addShadow: false }),
+    );
   });
 });

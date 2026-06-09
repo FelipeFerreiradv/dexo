@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { getApiBaseUrl } from "@/lib/api";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
+import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
 interface ImageUploadProps {
   value?: string;
@@ -32,6 +33,7 @@ export function ImageUpload({
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
+  const [addShadow, setAddShadow] = useAddShadowToggle(true);
 
   useEffect(() => {
     setPreview(value && value.trim() !== "" ? value : null);
@@ -54,6 +56,11 @@ export function ImageUpload({
         const formData = new FormData();
         formData.append("file", file);
         formData.append("removeBackground", removeBackground ? "true" : "false");
+        // Sombra exige o recorte: só pede sombra se a remoção de fundo está ON.
+        formData.append(
+          "addShadow",
+          removeBackground && addShadow ? "true" : "false",
+        );
 
         const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
           method: "POST",
@@ -85,7 +92,7 @@ export function ImageUpload({
         setIsUploading(false);
       }
     },
-    [onChange, onError, onWarning, removeBackground],
+    [onChange, onError, onWarning, removeBackground, addShadow],
   );
 
   const handleDrop = useCallback(
@@ -132,6 +139,13 @@ export function ImageUpload({
         onValueChange={setRemoveBackground}
         disabled={disabled || isUploading}
         hasPreview={Boolean(preview)}
+      />
+
+      <ContactShadowToggle
+        value={addShadow}
+        onValueChange={setAddShadow}
+        disabled={disabled || isUploading || !removeBackground}
+        removeBackgroundOff={!removeBackground}
       />
 
       <div
@@ -206,9 +220,11 @@ export function ImageUpload({
               <div className="flex flex-col items-center space-y-2">
                 <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary"></div>
                 <p className="text-sm text-muted-foreground">
-                  {removeBackground
-                    ? "Removendo fundo e otimizando..."
-                    : "Otimizando imagem..."}
+                  {!removeBackground
+                    ? "Otimizando imagem..."
+                    : addShadow
+                      ? "Removendo fundo, adicionando sombra e otimizando..."
+                      : "Removendo fundo e otimizando..."}
                 </p>
               </div>
             ) : (
@@ -292,6 +308,47 @@ function RemoveBackgroundToggle({
       <Switch
         id="image-upload-remove-bg"
         checked={value}
+        onCheckedChange={onValueChange}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+/**
+ * Toggle de "Adicionar sombra automaticamente". Espelha o de fundo, mas
+ * exige o recorte: fica desabilitado (e desligado visualmente) quando
+ * "remover fundo" está OFF — a sombra é derivada do alpha do recorte.
+ */
+function ContactShadowToggle({
+  value,
+  onValueChange,
+  disabled,
+  removeBackgroundOff,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled: boolean;
+  removeBackgroundOff: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <Label
+          htmlFor="image-upload-add-shadow"
+          className="cursor-pointer text-sm font-medium"
+        >
+          Adicionar sombra automaticamente
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          {removeBackgroundOff
+            ? "Requer “Remover fundo” ligado — a sombra usa o recorte."
+            : "Sombra de contato suave sob a peça, com aspecto profissional."}
+        </p>
+      </div>
+      <Switch
+        id="image-upload-add-shadow"
+        checked={value && !removeBackgroundOff}
         onCheckedChange={onValueChange}
         disabled={disabled}
       />

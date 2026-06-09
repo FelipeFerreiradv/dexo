@@ -44,6 +44,8 @@ export async function uploadRoutes(app: FastifyInstance) {
    * Multipart:
    *  - file: imagem (jpg/png/webp), até 5 MB
    *  - removeBackground (opcional): "true" | "false" (default "true")
+   *  - addShadow (opcional): "true" | "false" (default "false"). Adiciona
+   *    sombra de contato; exige recorte — ignorado se removeBackground=false.
    *
    * Pipeline:
    *  1. Lê o arquivo e os campos do multipart (em qualquer ordem).
@@ -78,6 +80,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         let mimetype = "";
         let originalFilename = "";
         let removeBackground = true; // default ON
+        let addShadow = false; // default OFF server-side (protege clientes antigos)
 
         for await (const part of request.parts()) {
           if (part.type === "file") {
@@ -105,6 +108,11 @@ export async function uploadRoutes(app: FastifyInstance) {
               removeBackground = parseBoolean(
                 typeof part.value === "string" ? part.value : String(part.value),
                 true,
+              );
+            } else if (part.fieldname === "addShadow") {
+              addShadow = parseBoolean(
+                typeof part.value === "string" ? part.value : String(part.value),
+                false,
               );
             }
           }
@@ -142,8 +150,13 @@ export async function uploadRoutes(app: FastifyInstance) {
         const originalPath = join(uploadDir, originalFileName);
         await writeFile(originalPath, buffer);
 
-        // 2) Processa (resize + opcional remoção de fundo + encode).
-        const result = await processUploadedImage(buffer, { removeBackground });
+        // 2) Processa (resize + opcional remoção de fundo + sombra + encode).
+        // Sombra exige recorte: o serviço só a aplica no caminho de remoção,
+        // então com removeBackground=false o addShadow é naturalmente ignorado.
+        const result = await processUploadedImage(buffer, {
+          removeBackground,
+          addShadow,
+        });
 
         const processedFileName = `${uuid}${FORMAT_EXTENSION[result.format]}`;
         const processedPath = join(uploadDir, processedFileName);
@@ -160,6 +173,7 @@ export async function uploadRoutes(app: FastifyInstance) {
           originalUrl,
           fileName: processedFileName,
           removedBackground: result.removedBackground,
+          shadowApplied: result.shadowApplied ?? false,
           format: result.format,
           width: result.width,
           height: result.height,

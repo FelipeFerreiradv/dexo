@@ -85,14 +85,20 @@ export type ProcessedImageFormat = "webp" | "png" | "jpeg";
 
 export interface ProcessUploadedImageOptions {
   removeBackground: boolean;
+  /** Sombra de contato. Exige recorte — ignorada se removeBackground=false. */
+  addShadow?: boolean;
   /** Override para testes — injeta um fetcher do sidecar. */
-  rembgFetcher?: (buf: Buffer) => Promise<Buffer>;
+  rembgFetcher?: (
+    buf: Buffer,
+    opts?: { addShadow?: boolean },
+  ) => Promise<Buffer>;
 }
 
 export interface ProcessUploadedImageResult {
   processed: Buffer;
   format: ProcessedImageFormat;
   removedBackground: boolean;
+  shadowApplied?: boolean;
   warning?: string;
   width?: number;
   height?: number;
@@ -157,7 +163,8 @@ export async function processUploadedImage(
     if (isRembgEnabled() || opts.rembgFetcher) {
       try {
         const fetcher = opts.rembgFetcher ?? defaultRembgFetcher;
-        const cutout = await fetcher(normalized);
+        const addShadow = opts.addShadow === true;
+        const cutout = await fetcher(normalized, { addShadow });
 
         // Re-encode em PNG otimizado (preserva transparência).
         const encoded = await sharp(cutout)
@@ -172,6 +179,7 @@ export async function processUploadedImage(
           processed: encoded,
           format: "png",
           removedBackground: true,
+          shadowApplied: addShadow,
           width: outMeta.width,
           height: outMeta.height,
         };
@@ -239,10 +247,13 @@ function isRembgEnabled(): boolean {
   return Boolean(url) && enabled !== "false";
 }
 
-async function defaultRembgFetcher(buf: Buffer): Promise<Buffer> {
+async function defaultRembgFetcher(
+  buf: Buffer,
+  opts?: { addShadow?: boolean },
+): Promise<Buffer> {
   const url = process.env.REMBG_SIDECAR_URL;
   if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
-  const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "15000");
+  const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "30000");
 
   // O sidecar valida que content_type comece com "image/" — manter
   // consistente com o filename `input.png` e evitar 400 do FastAPI.
@@ -251,6 +262,11 @@ async function defaultRembgFetcher(buf: Buffer): Promise<Buffer> {
     filename: "input.png",
     contentType: "image/png",
   });
+  // Campo retrocompatível: só enviamos add_shadow quando solicitado, pra
+  // manter requests sem sombra idênticos ao comportamento de hoje.
+  if (opts?.addShadow) {
+    form.append("add_shadow", "true");
+  }
 
   const endpoint = url.replace(/\/+$/, "") + "/remove-bg";
   const response = await axios.post(endpoint, form, {
