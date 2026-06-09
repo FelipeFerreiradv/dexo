@@ -182,6 +182,10 @@ export interface ScrapPart {
   price: number;
   stock: number;
   status: ScrapPartStatus;
+  quality?: string;
+  isSecurityItem: boolean;
+  isTraceable: boolean;
+  soldQuantity: number; // total vendido (marketplace + balcão)
 }
 
 // GET /scraps/:id enriquecido (campos opcionais, aditivos — só vêm quando
@@ -224,7 +228,7 @@ export interface ScrapRepository {
     scrapId: string,
     userId: string,
   ): Promise<{ marketplace: number; counter: number; potential: number }>;
-  getScrapParts(scrapId: string): Promise<ScrapPart[]>;
+  getScrapParts(scrapId: string, userId: string): Promise<ScrapPart[]>;
   findStagesByIds(
     ids: string[],
     userId: string,

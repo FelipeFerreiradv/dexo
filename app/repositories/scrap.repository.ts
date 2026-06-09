@@ -283,9 +283,11 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
     };
   }
 
-  // Peças de uma sucata com etiqueta Vendido/Em estoque (por stock). scrapId
-  // já restringe ao tenant (sucata validada no usecase).
-  async getScrapParts(scrapId: string): Promise<ScrapPart[]> {
+  // Peças de uma sucata com etiqueta Vendido/Em estoque, qualidade, flags e
+  // quantidade realmente vendida (marketplace + balcão). scrapId já restringe
+  // ao tenant (sucata validada no usecase); userId reforça o escopo das vendas.
+  // Sem N+1: 1 findMany + 2 groupBy agregados.
+  async getScrapParts(scrapId: string, userId: string): Promise<ScrapPart[]> {
     const products = await prisma.product.findMany({
       where: { scrapId },
       select: {
@@ -295,9 +297,48 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         partNumber: true,
         price: true,
         stock: true,
+        quality: true,
+        isSecurityItem: true,
+        isTraceable: true,
       },
       orderBy: [{ stock: "desc" }, { name: "asc" }],
     });
+
+    if (products.length === 0) return [];
+    const ids = products.map((p) => p.id);
+
+    const [marketplaceSold, counterSold] = await Promise.all([
+      prisma.orderItem.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: ids },
+          order: {
+            status: { in: ["PAID", "SHIPPED", "DELIVERED"] },
+            marketplaceAccount: { userId },
+          },
+        },
+        _sum: { quantity: true },
+      }),
+      prisma.receivableItem.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: ids },
+          receivable: { status: "PAGA", userId },
+        },
+        _sum: { quantity: true },
+      }),
+    ]);
+
+    const soldBy = new Map<string, number>();
+    for (const r of marketplaceSold) {
+      soldBy.set(r.productId, (r._sum.quantity ?? 0));
+    }
+    for (const r of counterSold) {
+      soldBy.set(
+        r.productId,
+        (soldBy.get(r.productId) ?? 0) + (r._sum.quantity ?? 0),
+      );
+    }
 
     return products.map((p) => ({
       id: p.id,
@@ -307,6 +348,10 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
       price: Number(p.price ?? 0),
       stock: p.stock,
       status: p.stock > 0 ? "IN_STOCK" : "SOLD",
+      quality: p.quality ?? undefined,
+      isSecurityItem: p.isSecurityItem ?? false,
+      isTraceable: p.isTraceable ?? false,
+      soldQuantity: soldBy.get(p.id) ?? 0,
     }));
   }
 

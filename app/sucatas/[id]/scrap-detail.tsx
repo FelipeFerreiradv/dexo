@@ -15,6 +15,8 @@ import {
   Boxes,
   Hash,
   Gauge,
+  ShieldCheck,
+  ScanLine,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -50,6 +52,10 @@ interface ScrapPart {
   price: number;
   stock: number;
   status: "IN_STOCK" | "SOLD";
+  quality?: string;
+  isSecurityItem: boolean;
+  isTraceable: boolean;
+  soldQuantity: number;
 }
 
 interface ScrapFinancials {
@@ -103,6 +109,13 @@ const dateFmt = new Intl.DateTimeFormat("pt-BR", {
 const money = (n?: number) => moneyFmt.format(n ?? 0);
 const price = (n?: number) => priceFmt.format(n ?? 0);
 const formatDate = (s: string) => dateFmt.format(new Date(s));
+
+const QUALITY_LABELS: Record<string, string> = {
+  SUCATA: "Sucata",
+  SEMINOVO: "Seminovo",
+  NOVO: "Novo",
+  RECONDICIONADO: "Recondicionado",
+};
 
 function HealthCard({
   title,
@@ -179,6 +192,9 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [partFilter, setPartFilter] = useState<"ALL" | "IN_STOCK" | "SOLD">(
+    "ALL",
+  );
 
   const load = useCallback(async () => {
     if (!email) return;
@@ -267,6 +283,9 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
   const fin = data.financials;
   const targets = LOGISTICS_ORDER.filter((s) => s !== data.logisticsStatus);
   const parts = data.products ?? [];
+  const filteredParts = parts.filter((p) =>
+    partFilter === "ALL" ? true : p.status === partFilter,
+  );
 
   return (
     <div className="space-y-6">
@@ -454,19 +473,46 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
         </Card>
       </div>
 
-      {/* Lista de peças */}
+      {/* Lista de peças (inventário inteligente) */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Boxes className="size-4" />
-            Peças do lote ({data.productsCount ?? parts.length})
-          </CardTitle>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Boxes className="size-4" />
+              Peças do lote ({data.productsCount ?? parts.length})
+            </CardTitle>
+            {parts.length > 0 ? (
+              <div className="flex items-center gap-0.5 rounded-lg border p-0.5">
+                {(
+                  [
+                    ["ALL", "Todas"],
+                    ["IN_STOCK", "Em estoque"],
+                    ["SOLD", "Vendidas"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <Button
+                    key={value}
+                    variant={partFilter === value ? "default" : "ghost"}
+                    size="sm"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setPartFilter(value)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </CardHeader>
         <CardContent>
           {parts.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-center text-sm text-muted-foreground">
               <Package className="mb-2 size-8 text-muted-foreground/40" />
               Nenhuma peça cadastrada para este lote ainda.
+            </div>
+          ) : filteredParts.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Nenhuma peça nesta situação.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -476,21 +522,49 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
                     <th className="pb-2 pr-4 font-medium">Peça</th>
                     <th className="pb-2 pr-4 font-medium">SKU</th>
                     <th className="pb-2 pr-4 font-medium">Part Number</th>
+                    <th className="pb-2 pr-4 font-medium">Qualidade</th>
                     <th className="pb-2 pr-4 font-medium">Preço</th>
                     <th className="pb-2 pr-4 font-medium">Estoque</th>
+                    <th className="pb-2 pr-4 font-medium">Vendidas</th>
                     <th className="pb-2 font-medium">Situação</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {parts.map((p) => (
+                  {filteredParts.map((p) => (
                     <tr key={p.id}>
-                      <td className="py-2 pr-4 font-medium">{p.name}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex items-center gap-1.5 font-medium">
+                          <span>{p.name}</span>
+                          {p.isSecurityItem ? (
+                            <ShieldCheck
+                              className="size-3.5 text-amber-600 dark:text-amber-400"
+                              aria-label="Item de segurança"
+                            />
+                          ) : null}
+                          {p.isTraceable ? (
+                            <ScanLine
+                              className="size-3.5 text-muted-foreground"
+                              aria-label="Rastreável"
+                            />
+                          ) : null}
+                        </div>
+                      </td>
                       <td className="py-2 pr-4 font-mono text-xs">{p.sku}</td>
                       <td className="py-2 pr-4 font-mono text-xs">
                         {p.partNumber || "—"}
                       </td>
+                      <td className="py-2 pr-4">
+                        {p.quality ? (
+                          <Badge variant="secondary">
+                            {QUALITY_LABELS[p.quality] ?? p.quality}
+                          </Badge>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="py-2 pr-4">{price(p.price)}</td>
                       <td className="py-2 pr-4">{p.stock}</td>
+                      <td className="py-2 pr-4">{p.soldQuantity || "—"}</td>
                       <td className="py-2">
                         <Badge
                           variant={

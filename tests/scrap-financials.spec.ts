@@ -15,6 +15,8 @@ vi.mock("../app/lib/prisma", () => {
   const prisma: any = {
     scrap: { findFirst: vi.fn() },
     product: { findMany: vi.fn().mockResolvedValue([]) },
+    orderItem: { groupBy: vi.fn().mockResolvedValue([]) },
+    receivableItem: { groupBy: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi
       .fn()
       .mockResolvedValue([{ marketplace: 0, counter: 0, potential: 0 }]),
@@ -97,6 +99,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   (prisma as any).scrap.findFirst.mockReset();
   (prisma as any).product.findMany.mockReset().mockResolvedValue([]);
+  (prisma as any).orderItem.groupBy.mockReset().mockResolvedValue([]);
+  (prisma as any).receivableItem.groupBy.mockReset().mockResolvedValue([]);
   (prisma as any).$queryRaw
     .mockReset()
     .mockResolvedValue([{ marketplace: 0, counter: 0, potential: 0 }]);
@@ -231,6 +235,60 @@ describe("Fase 4 — GET /scraps/:id?include=products", () => {
     );
     // financials não foi pedido → não agrega.
     expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe("Diferencial G — peças enriquecidas (quality/segurança/vendidas)", () => {
+  it("inclui quality, isSecurityItem e soldQuantity (marketplace + balcão)", async () => {
+    (prisma as any).scrap.findFirst.mockResolvedValue({ ...baseScrapRow });
+    (prisma as any).product.findMany.mockResolvedValue([
+      {
+        id: "p-1",
+        name: "Farol",
+        sku: "SKU-1",
+        partNumber: "FAR-001",
+        price: "150.00",
+        stock: 1,
+        quality: "SEMINOVO",
+        isSecurityItem: true,
+        isTraceable: false,
+      },
+    ]);
+    (prisma as any).orderItem.groupBy.mockResolvedValue([
+      { productId: "p-1", _sum: { quantity: 2 } },
+    ]);
+    (prisma as any).receivableItem.groupBy.mockResolvedValue([
+      { productId: "p-1", _sum: { quantity: 1 } },
+    ]);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/scraps/s-1?include=products",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.products[0]).toMatchObject({
+      id: "p-1",
+      quality: "SEMINOVO",
+      isSecurityItem: true,
+      isTraceable: false,
+      soldQuantity: 3, // 2 marketplace + 1 balcão
+    });
+    // Vendas escopadas por userId do tenant.
+    expect((prisma as any).orderItem.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ["productId"],
+        where: expect.objectContaining({
+          productId: { in: ["p-1"] },
+          order: expect.objectContaining({
+            marketplaceAccount: { userId: "user-owner" },
+          }),
+        }),
+      }),
+    );
   });
 });
 

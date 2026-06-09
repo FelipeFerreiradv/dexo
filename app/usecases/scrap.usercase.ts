@@ -88,7 +88,7 @@ export class ScrapUseCase {
     }
 
     if (include?.products) {
-      detail.products = await this.scrapRepository.getScrapParts(id);
+      detail.products = await this.scrapRepository.getScrapParts(id, userId);
     }
 
     return detail;
