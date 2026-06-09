@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
 import { PageHeader } from "@/components/page-header";
-import { ScrapsList } from "./components/scraps-list";
+import { ScrapsWorkspace } from "./components/scraps-workspace";
 
 export const metadata: Metadata = {
   title: "Sucatas",
@@ -27,7 +27,7 @@ export default async function ScrapsPage() {
         subtitle="Gerencie os veículos sucateados. Cadastre dados do veículo, nota fiscal, custos e vincule produtos extraídos."
       />
 
-      <ScrapsList />
+      <ScrapsWorkspace />
     </div>
   );
 }

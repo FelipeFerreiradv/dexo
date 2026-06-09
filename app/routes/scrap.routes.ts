@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ScrapUseCase } from "../usecases/scrap.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
-import { ScrapStatus } from "@prisma/client";
+import { ScrapStatus, LogisticsStatus } from "@prisma/client";
 
 export const scrapRoutes = async (fastify: FastifyInstance) => {
   const scrapUseCase = new ScrapUseCase();
@@ -37,6 +37,8 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           lot: body.lot ?? undefined,
           deregistrationCert: body.deregistrationCert ?? undefined,
           cost: body.cost !== undefined ? Number(body.cost) : undefined,
+          extraCosts:
+            body.extraCosts !== undefined ? Number(body.extraCosts) : undefined,
           paymentMethod: body.paymentMethod ?? undefined,
           locationId: body.locationId ?? undefined,
           ncm: body.ncm ?? undefined,
@@ -63,6 +65,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
               )
             : undefined,
           status: body.status ?? undefined,
+          logisticsStatus: body.logisticsStatus ?? undefined,
           notes: body.notes ?? undefined,
         });
 
@@ -87,6 +90,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     Querystring: {
       search?: string;
       status?: string;
+      logisticsStatus?: string;
       page?: string;
       limit?: string;
     };
@@ -98,6 +102,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
         Querystring: {
           search?: string;
           status?: string;
+          logisticsStatus?: string;
           page?: string;
           limit?: string;
         };
@@ -105,7 +110,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
       reply: FastifyReply,
     ) => {
       try {
-        const { search, status, page, limit } = request.query;
+        const { search, status, logisticsStatus, page, limit } = request.query;
         const userId = (request as any).user?.dataOwnerId as string;
 
         const validStatuses: ScrapStatus[] = [
@@ -119,9 +124,22 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
             ? (status as ScrapStatus)
             : undefined;
 
+        const validLogistics: LogisticsStatus[] = [
+          "IN_TRANSIT",
+          "IN_YARD",
+          "ON_LIFT",
+          "DISMANTLED",
+        ];
+        const logisticsFilter =
+          logisticsStatus &&
+          validLogistics.includes(logisticsStatus as LogisticsStatus)
+            ? (logisticsStatus as LogisticsStatus)
+            : undefined;
+
         const data = await scrapUseCase.listScraps({
           search: search || "",
           status: statusFilter,
+          logisticsStatus: logisticsFilter,
           page: page ? parseInt(page) : 1,
           limit: limit ? parseInt(limit) : 10,
           userId,
@@ -146,6 +164,61 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
   );
 
   /**
+   * GET /scraps/pipeline
+   * Visão de pipeline (Kanban): contadores + amostra de cards por estágio
+   * logístico, num único request. Definido antes de /:id por clareza.
+   */
+  fastify.get(
+    "/pipeline",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const stages = await scrapUseCase.getPipeline(userId);
+        return reply.status(200).send({ stages });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao montar pipeline de sucatas",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /scraps/balcao
+   * Visão de Balcão: busca peça-cêntrica (reusa o ranking de produtos) e
+   * devolve cada peça com o lote de origem e seu estágio logístico.
+   * Endpoint NOVO; estático (vem antes de /:id).
+   */
+  fastify.get<{ Querystring: { q?: string; limit?: string } }>(
+    "/balcao",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Querystring: { q?: string; limit?: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const { q, limit } = request.query;
+        const userId = (request as any).user?.dataOwnerId as string;
+        const data = await scrapUseCase.balcaoSearch(
+          q ?? "",
+          userId,
+          limit ? parseInt(limit) : 12,
+        );
+        return reply.status(200).send(data);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro na busca de balcão",
+        });
+      }
+    },
+  );
+
+  /**
    * GET /scraps/:id
    * Busca sucata por ID
    */
@@ -155,9 +228,21 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
+        const { include } = request.query as { include?: string };
         const userId = (request as any).user?.dataOwnerId as string;
 
-        const scrap = await scrapUseCase.findById(id, userId);
+        // ?include=financials,products — opt-in e aditivo. Sem o parâmetro a
+        // resposta é exatamente a de hoje (e nenhuma query extra é executada).
+        const wants = (include ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        const scrap = await scrapUseCase.getScrapDetail(id, userId, {
+          financials: wants.includes("financials"),
+          products: wants.includes("products"),
+          history: wants.includes("history"),
+        });
         if (!scrap) {
           return reply.status(404).send({ error: "Sucata não encontrada" });
         }
@@ -200,6 +285,10 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
             lot: body.lot,
             deregistrationCert: body.deregistrationCert,
             cost: body.cost !== undefined ? Number(body.cost) : undefined,
+            extraCosts:
+              body.extraCosts !== undefined
+                ? Number(body.extraCosts)
+                : undefined,
             paymentMethod: body.paymentMethod,
             locationId: body.locationId,
             ncm: body.ncm,
@@ -224,6 +313,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
               ? body.imageUrls
               : undefined,
             status: body.status,
+            logisticsStatus: body.logisticsStatus,
             notes: body.notes,
           },
           userId,
@@ -235,6 +325,41 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           error instanceof Error ? error.message : "Erro ao atualizar sucata";
         if (msg.includes("não encontrada"))
           return reply.status(404).send({ error: msg });
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
+
+  /**
+   * PATCH /scraps/:id/logistics-status
+   * Transição de estágio logístico do veículo no pátio. Endpoint NOVO e
+   * retrocompatível — não altera nenhum contrato existente.
+   */
+  fastify.patch(
+    "/:id/logistics-status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const body = request.body as any;
+        const userId = (request as any).user?.dataOwnerId as string;
+
+        const updated = await scrapUseCase.transitionLogistics(
+          id,
+          body?.logisticsStatus,
+          userId,
+        );
+
+        return reply.status(200).send(updated);
+      } catch (error) {
+        const msg =
+          error instanceof Error
+            ? error.message
+            : "Erro ao atualizar status logístico";
+        if (msg.includes("não encontrada"))
+          return reply.status(404).send({ error: msg });
+        if (msg.includes("inválido"))
+          return reply.status(400).send({ error: msg });
         return reply.status(500).send({ error: msg });
       }
     },

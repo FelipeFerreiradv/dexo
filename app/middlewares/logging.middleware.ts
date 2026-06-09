@@ -210,6 +210,11 @@ function determineActionType(
       const id = extractIdFromUrl(cleanUrl);
       return { action: "DELETE_SCRAP", resource: "Scrap", resourceId: id };
     }
+    if (method === "PATCH") {
+      // Transição de estágio logístico (/scraps/:id/logistics-status): o log
+      // estruturado {from,to} é gravado no ScrapUseCase. Evita log duplicado.
+      return null;
+    }
   }
 
   // Finance — payables / receivables

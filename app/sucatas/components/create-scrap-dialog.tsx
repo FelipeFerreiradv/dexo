@@ -34,6 +34,7 @@ import {
   getYearsForModel,
   getVersionsForModel,
 } from "@/app/lib/vehicle-catalog";
+import { LOGISTICS_ORDER, LOGISTICS_CONFIG } from "../lib/logistics";
 
 const PAYMENT_METHODS = [
   { value: "DINHEIRO", label: "Dinheiro" },
@@ -87,6 +88,7 @@ interface ScrapFormData {
   lot: string;
   deregistrationCert: string;
   cost: number | null;
+  extraCosts: number | null;
   paymentMethod: string;
   locationId: string;
   ncm: string;
@@ -105,6 +107,7 @@ interface ScrapFormData {
   issuePurpose: string;
   imageUrls: string[];
   status: string;
+  logisticsStatus: string;
   notes: string;
 }
 
@@ -121,6 +124,7 @@ const EMPTY_FORM: ScrapFormData = {
   lot: "",
   deregistrationCert: "",
   cost: null,
+  extraCosts: null,
   paymentMethod: "",
   locationId: "",
   ncm: "",
@@ -139,6 +143,7 @@ const EMPTY_FORM: ScrapFormData = {
   issuePurpose: "",
   imageUrls: [],
   status: "AVAILABLE",
+  logisticsStatus: "IN_YARD",
   notes: "",
 };
 
@@ -227,6 +232,7 @@ export function CreateScrapDialog({
         lot: editData.lot || "",
         deregistrationCert: editData.deregistrationCert || "",
         cost: editData.cost ?? null,
+        extraCosts: editData.extraCosts ?? null,
         paymentMethod: editData.paymentMethod || "",
         locationId: editData.locationId || "",
         ncm: editData.ncm || "",
@@ -249,6 +255,7 @@ export function CreateScrapDialog({
         issuePurpose: editData.issuePurpose || "",
         imageUrls: editData.imageUrls || [],
         status: editData.status || "AVAILABLE",
+        logisticsStatus: editData.logisticsStatus || "IN_YARD",
         notes: editData.notes || "",
       });
     } else {
@@ -314,6 +321,7 @@ export function CreateScrapDialog({
         lot: form.lot || undefined,
         deregistrationCert: form.deregistrationCert || undefined,
         cost: form.cost ?? undefined,
+        extraCosts: form.extraCosts ?? undefined,
         paymentMethod: form.paymentMethod || undefined,
         locationId: form.locationId || undefined,
         ncm: form.ncm || undefined,
@@ -332,6 +340,7 @@ export function CreateScrapDialog({
         issuePurpose: form.issuePurpose || undefined,
         imageUrls: form.imageUrls.length > 0 ? form.imageUrls : undefined,
         status: form.status || undefined,
+        logisticsStatus: form.logisticsStatus || undefined,
         notes: form.notes || undefined,
       };
 
@@ -641,6 +650,15 @@ export function CreateScrapDialog({
                 </div>
 
                 <div className="space-y-2">
+                  <Label>Custos extras (transporte/guincho)</Label>
+                  <CurrencyInput
+                    value={form.extraCosts}
+                    onChange={(v) => updateField("extraCosts", v)}
+                    placeholder="0,00"
+                  />
+                </div>
+
+                <div className="space-y-2">
                   <Label>Forma de pagamento</Label>
                   <Select
                     value={form.paymentMethod}
@@ -676,6 +694,28 @@ export function CreateScrapDialog({
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="space-y-2 sm:col-span-2">
+                  <Label>Estágio logístico (pátio)</Label>
+                  <Select
+                    value={form.logisticsStatus}
+                    onValueChange={(v) => updateField("logisticsStatus", v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione o estágio" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LOGISTICS_ORDER.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {LOGISTICS_CONFIG[s].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Onde o veículo está no fluxo do pátio. Padrão: No Pátio.
+                  </p>
                 </div>
               </div>
             </div>
