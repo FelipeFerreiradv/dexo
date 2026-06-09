@@ -3,8 +3,12 @@ import {
   ScrapCreate,
   ScrapUpdate,
   ScrapStatus,
+  LogisticsStatus,
+  ScrapPipeline,
+  ScrapDetail,
 } from "../interfaces/scrap.interface";
 import { ScrapRepositoryPrisma } from "../repositories/scrap.repository";
+import { SystemLogService } from "../services/system-log.service";
 
 export class ScrapUseCase {
   private scrapRepository: ScrapRepositoryPrisma;
@@ -49,9 +53,47 @@ export class ScrapUseCase {
     return this.scrapRepository.findById(id, userId);
   }
 
+  // Detalhe enriquecido do lote. Sem `include` retorna apenas a sucata
+  // (idêntico ao findById). Investimento = cost + extraCosts; ROI calculado
+  // aqui (usecase) a partir dos somatórios do repository.
+  async getScrapDetail(
+    id: string,
+    userId: string,
+    include?: { financials?: boolean; products?: boolean },
+  ): Promise<ScrapDetail | null> {
+    const scrap = await this.scrapRepository.findById(id, userId);
+    if (!scrap) return null;
+
+    const detail: ScrapDetail = { ...scrap };
+
+    if (include?.financials) {
+      const { marketplace, counter, potential } =
+        await this.scrapRepository.getScrapMoney(id, userId);
+      const investment = (scrap.cost ?? 0) + (scrap.extraCosts ?? 0);
+      const realizedTotal = marketplace + counter;
+      const roi =
+        investment > 0
+          ? ((realizedTotal - investment) / investment) * 100
+          : null;
+      detail.financials = {
+        investment,
+        realizedRevenue: { marketplace, counter, total: realizedTotal },
+        potentialRevenue: potential,
+        roi,
+      };
+    }
+
+    if (include?.products) {
+      detail.products = await this.scrapRepository.getScrapParts(id);
+    }
+
+    return detail;
+  }
+
   async listScraps(options: {
     search?: string;
     status?: ScrapStatus;
+    logisticsStatus?: LogisticsStatus;
     page?: number;
     limit?: number;
     userId: string;
@@ -62,6 +104,61 @@ export class ScrapUseCase {
       ...data,
       totalPages: Math.ceil(data.total / (options?.limit || 10)),
     };
+  }
+
+  async getPipeline(userId: string): Promise<ScrapPipeline> {
+    if (!userId) {
+      throw new Error("Usuário não encontrado");
+    }
+    return this.scrapRepository.pipeline(userId);
+  }
+
+  private static readonly VALID_LOGISTICS: LogisticsStatus[] = [
+    "IN_TRANSIT",
+    "IN_YARD",
+    "ON_LIFT",
+    "DISMANTLED",
+  ];
+
+  async transitionLogistics(
+    id: string,
+    logisticsStatus: LogisticsStatus,
+    userId?: string,
+  ): Promise<Scrap> {
+    if (!ScrapUseCase.VALID_LOGISTICS.includes(logisticsStatus)) {
+      throw new Error("Status logístico inválido");
+    }
+
+    const existing = await this.scrapRepository.findById(id, userId);
+    if (!existing) {
+      throw new Error("Sucata não encontrada");
+    }
+
+    const updated = await this.scrapRepository.updateLogisticsStatus(
+      id,
+      logisticsStatus,
+      userId,
+    );
+
+    // Carimbo de tempo da transição (auditoria + base para o histórico da
+    // Fase F). Defensivo: SystemLogService.log já engole erros internamente,
+    // então uma falha de log nunca derruba a transição.
+    await SystemLogService.logInfo(
+      "UPDATE_SCRAP",
+      `Estágio logístico: ${existing.logisticsStatus} -> ${logisticsStatus}`,
+      {
+        userId,
+        resource: "Scrap",
+        resourceId: id,
+        details: {
+          field: "logisticsStatus",
+          from: existing.logisticsStatus,
+          to: logisticsStatus,
+        },
+      },
+    );
+
+    return updated;
   }
 
   async update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap> {

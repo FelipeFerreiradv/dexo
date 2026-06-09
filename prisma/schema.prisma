@@ -504,6 +504,15 @@ enum ScrapStatus {
   ARCHIVED
 }
 
+// Status logístico/físico do veículo no pátio (pipeline de desmembramento).
+// ORTOGONAL ao ScrapStatus (inventário): uma sucata pode estar IN_YARD e AVAILABLE.
+enum LogisticsStatus {
+  IN_TRANSIT // Em Trânsito: arrematado, em deslocamento para a loja
+  IN_YARD // No Pátio: chegou, veículo inteiro
+  ON_LIFT // No Elevador: em desmontagem ativa
+  DISMANTLED // Desmembrado: concluído, peças cadastradas
+}
+
 enum FinanceStatus {
   PENDENTE
   PAGA
@@ -706,6 +715,7 @@ model Scrap {
 
   // Custo e pagamento
   cost          Decimal? @db.Decimal(10, 2)
+  extraCosts    Decimal? @db.Decimal(10, 2) // transporte/guincho/taxas (Investimento = cost + extraCosts)
   paymentMethod String?
 
   // Localização (referência à entidade Location existente)
@@ -732,8 +742,9 @@ model Scrap {
   imageUrls String[] @default([])
 
   // Status e controle
-  status ScrapStatus @default(AVAILABLE)
-  notes  String?
+  status          ScrapStatus     @default(AVAILABLE)
+  logisticsStatus LogisticsStatus @default(IN_YARD)
+  notes           String?
 
   // Timestamps
   createdAt DateTime @default(now())
@@ -745,6 +756,7 @@ model Scrap {
 
   @@index([userId, createdAt])
   @@index([userId, status])
+  @@index([userId, logisticsStatus])
   @@index([plate])
   @@index([chassis])
 }
