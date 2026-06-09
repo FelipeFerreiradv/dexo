@@ -63,7 +63,7 @@ export class ScrapUseCase {
   async getScrapDetail(
     id: string,
     userId: string,
-    include?: { financials?: boolean; products?: boolean },
+    include?: { financials?: boolean; products?: boolean; history?: boolean },
   ): Promise<ScrapDetail | null> {
     const scrap = await this.scrapRepository.findById(id, userId);
     if (!scrap) return null;
@@ -89,6 +89,10 @@ export class ScrapUseCase {
 
     if (include?.products) {
       detail.products = await this.scrapRepository.getScrapParts(id, userId);
+    }
+
+    if (include?.history) {
+      detail.history = await this.scrapRepository.getStatusEvents(id, userId);
     }
 
     return detail;
@@ -197,6 +201,21 @@ export class ScrapUseCase {
       logisticsStatus,
       userId,
     );
+
+    // Histórico estruturado da transição (diferencial F). Best-effort: uma
+    // falha ao gravar o evento não pode derrubar a transição em si.
+    if (userId) {
+      try {
+        await this.scrapRepository.recordStatusEvent(
+          id,
+          userId,
+          existing.logisticsStatus,
+          logisticsStatus,
+        );
+      } catch (err) {
+        console.error("[ScrapUseCase] Falha ao gravar ScrapStatusEvent:", err);
+      }
+    }
 
     // Carimbo de tempo da transição (auditoria + base para o histórico da
     // Fase F). Defensivo: SystemLogService.log já engole erros internamente,

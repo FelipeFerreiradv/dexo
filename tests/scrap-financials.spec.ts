@@ -17,6 +17,7 @@ vi.mock("../app/lib/prisma", () => {
     product: { findMany: vi.fn().mockResolvedValue([]) },
     orderItem: { groupBy: vi.fn().mockResolvedValue([]) },
     receivableItem: { groupBy: vi.fn().mockResolvedValue([]) },
+    scrapStatusEvent: { findMany: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi
       .fn()
       .mockResolvedValue([{ marketplace: 0, counter: 0, potential: 0 }]),
@@ -101,6 +102,7 @@ beforeEach(() => {
   (prisma as any).product.findMany.mockReset().mockResolvedValue([]);
   (prisma as any).orderItem.groupBy.mockReset().mockResolvedValue([]);
   (prisma as any).receivableItem.groupBy.mockReset().mockResolvedValue([]);
+  (prisma as any).scrapStatusEvent.findMany.mockReset().mockResolvedValue([]);
   (prisma as any).$queryRaw
     .mockReset()
     .mockResolvedValue([{ marketplace: 0, counter: 0, potential: 0 }]);
@@ -289,6 +291,46 @@ describe("Diferencial G — peças enriquecidas (quality/segurança/vendidas)", 
         }),
       }),
     );
+  });
+});
+
+describe("Diferencial F — GET /scraps/:id?include=history", () => {
+  it("retorna o histórico de transições ordenado e escopado", async () => {
+    (prisma as any).scrap.findFirst.mockResolvedValue({ ...baseScrapRow });
+    (prisma as any).scrapStatusEvent.findMany.mockResolvedValue([
+      {
+        fromStatus: "IN_TRANSIT",
+        toStatus: "IN_YARD",
+        createdAt: new Date("2026-06-02"),
+      },
+      {
+        fromStatus: "IN_YARD",
+        toStatus: "ON_LIFT",
+        createdAt: new Date("2026-06-04"),
+      },
+    ]);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/scraps/s-1?include=history",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.history).toHaveLength(2);
+    expect(body.history[0]).toMatchObject({
+      fromStatus: "IN_TRANSIT",
+      toStatus: "IN_YARD",
+    });
+    expect((prisma as any).scrapStatusEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scrapId: "s-1", userId: "user-owner" },
+        orderBy: { createdAt: "asc" },
+      }),
+    );
+    expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
   });
 });
 

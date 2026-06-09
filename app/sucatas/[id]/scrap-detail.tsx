@@ -17,6 +17,7 @@ import {
   Gauge,
   ShieldCheck,
   ScanLine,
+  History,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -65,6 +66,12 @@ interface ScrapFinancials {
   roi: number | null;
 }
 
+interface ScrapHistoryEvent {
+  fromStatus: LogisticsStatus | null;
+  toStatus: LogisticsStatus;
+  createdAt: string;
+}
+
 interface ScrapDetailData {
   id: string;
   brand: string;
@@ -89,6 +96,7 @@ interface ScrapDetailData {
   updatedAt: string;
   financials?: ScrapFinancials;
   products?: ScrapPart[];
+  history?: ScrapHistoryEvent[];
 }
 
 const moneyFmt = new Intl.NumberFormat("pt-BR", {
@@ -116,6 +124,15 @@ const QUALITY_LABELS: Record<string, string> = {
   NOVO: "Novo",
   RECONDICIONADO: "Recondicionado",
 };
+
+const DAY_MS = 86_400_000;
+function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const days = Math.floor(ms / DAY_MS);
+  if (days >= 1) return `${days} dia${days > 1 ? "s" : ""}`;
+  const hours = Math.max(1, Math.round(ms / 3_600_000));
+  return `${hours}h`;
+}
 
 function HealthCard({
   title,
@@ -200,7 +217,7 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
     if (!email) return;
     try {
       const res = await fetch(
-        `${getApiBaseUrl()}/scraps/${encodeURIComponent(scrapId)}?include=financials,products`,
+        `${getApiBaseUrl()}/scraps/${encodeURIComponent(scrapId)}?include=financials,products,history`,
         { headers: { email } },
       );
       if (res.status === 404) {
@@ -286,6 +303,38 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
   const filteredParts = parts.filter((p) =>
     partFilter === "ALL" ? true : p.status === partFilter,
   );
+
+  // Linha do tempo do histórico de estágios (diferencial F).
+  const historyEvents = (data.history ?? [])
+    .map((e) => ({ ...e, ts: new Date(e.createdAt).getTime() }))
+    .sort((a, b) => a.ts - b.ts);
+  const createdTs = new Date(data.createdAt).getTime();
+  const timeline = historyEvents.map((e, i) => {
+    const prevTs = i === 0 ? createdTs : historyEvents[i - 1].ts;
+    const fromConf = e.fromStatus ? LOGISTICS_CONFIG[e.fromStatus] : undefined;
+    const toConf = LOGISTICS_CONFIG[e.toStatus];
+    return {
+      key: i,
+      label: fromConf
+        ? `${fromConf.label} → ${toConf?.label ?? e.toStatus}`
+        : (toConf?.label ?? e.toStatus),
+      dateLabel: formatDate(e.createdAt),
+      stayLabel:
+        fromConf && e.ts > prevTs
+          ? `${formatDuration(e.ts - prevTs)} em ${fromConf.label}`
+          : null,
+    };
+  });
+  const lastEvent = historyEvents[historyEvents.length - 1];
+  const currentStageLabel =
+    LOGISTICS_CONFIG[data.logisticsStatus]?.label ?? data.logisticsStatus;
+  const nowTs = Date.now();
+  const historySummary =
+    lastEvent && lastEvent.toStatus === "DISMANTLED"
+      ? `Desmembrado em ${formatDuration(lastEvent.ts - createdTs)} desde o cadastro.`
+      : `${formatDuration(nowTs - createdTs)} desde o cadastro · ${formatDuration(
+          nowTs - (lastEvent ? lastEvent.ts : createdTs),
+        )} no estágio atual (${currentStageLabel}).`;
 
   return (
     <div className="space-y-6">
@@ -579,6 +628,38 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
                 </tbody>
               </table>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Histórico de movimentação (diferencial F) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <History className="size-4" />
+            Histórico de movimentação
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">{historySummary}</p>
+          {timeline.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nenhuma transição de estágio registrada ainda (o histórico passa a
+              ser gravado a cada movimentação).
+            </p>
+          ) : (
+            <ol className="relative space-y-4 border-l pl-5">
+              {timeline.map((t) => (
+                <li key={t.key} className="relative">
+                  <span className="absolute -left-[23px] top-1 size-2.5 rounded-full border-2 border-background bg-primary" />
+                  <div className="text-sm font-medium">{t.label}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t.dateLabel}
+                    {t.stayLabel ? ` · ${t.stayLabel}` : ""}
+                  </div>
+                </li>
+              ))}
+            </ol>
           )}
         </CardContent>
       </Card>

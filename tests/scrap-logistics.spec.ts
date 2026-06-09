@@ -21,6 +21,7 @@ vi.mock("../app/lib/prisma", () => {
       groupBy: vi.fn().mockResolvedValue([]),
     },
     product: { updateMany: vi.fn() },
+    scrapStatusEvent: { create: vi.fn().mockResolvedValue({}) },
   };
   return { default: prisma };
 });
@@ -108,6 +109,7 @@ beforeEach(() => {
   s.findMany.mockReset().mockResolvedValue([]);
   s.count.mockReset().mockResolvedValue(0);
   s.groupBy.mockReset().mockResolvedValue([]);
+  (prisma as any).scrapStatusEvent.create.mockReset().mockResolvedValue({});
 });
 
 describe("Fase 2 — GET /scraps (filtro logístico retrocompatível)", () => {
@@ -237,6 +239,16 @@ describe("Fase 2 — PATCH /scraps/:id/logistics-status", () => {
         details: expect.objectContaining({ from: "IN_YARD", to: "ON_LIFT" }),
       }),
     );
+
+    // Diferencial F: evento estruturado de transição gravado.
+    expect((prisma as any).scrapStatusEvent.create).toHaveBeenCalledWith({
+      data: {
+        scrapId: "s-1",
+        userId: "user-owner",
+        fromStatus: "IN_YARD",
+        toStatus: "ON_LIFT",
+      },
+    });
   });
 
   it("valor inválido => 400 e nada é persistido/lido", async () => {

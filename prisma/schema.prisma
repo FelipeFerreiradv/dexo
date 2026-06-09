@@ -751,14 +751,31 @@ model Scrap {
   updatedAt DateTime @updatedAt
 
   // Relacionamentos
-  user     User      @relation(fields: [userId], references: [id])
-  products Product[]
+  user         User               @relation(fields: [userId], references: [id])
+  products     Product[]
+  statusEvents ScrapStatusEvent[]
 
   @@index([userId, createdAt])
   @@index([userId, status])
   @@index([userId, logisticsStatus])
   @@index([plate])
   @@index([chassis])
+}
+
+// Histórico de transições de estágio logístico (diferencial F). Aditivo:
+// gravado a cada transição; base para medir tempo por estágio e leilão→desmembrado.
+model ScrapStatusEvent {
+  id         String           @id @default(cuid())
+  scrapId    String
+  userId     String
+  fromStatus LogisticsStatus?
+  toStatus   LogisticsStatus
+  createdAt  DateTime         @default(now())
+
+  scrap Scrap @relation(fields: [scrapId], references: [id], onDelete: Cascade)
+
+  @@index([scrapId, createdAt])
+  @@index([userId, createdAt])
 }
 
 // =====================================================================

@@ -190,9 +190,17 @@ export interface ScrapPart {
 
 // GET /scraps/:id enriquecido (campos opcionais, aditivos — só vêm quando
 // solicitados via ?include=).
+// Histórico de transições de estágio (diferencial F).
+export interface ScrapStatusEventDTO {
+  fromStatus: LogisticsStatus | null;
+  toStatus: LogisticsStatus;
+  createdAt: Date;
+}
+
 export interface ScrapDetail extends Scrap {
   financials?: ScrapFinancials;
   products?: ScrapPart[];
+  history?: ScrapStatusEventDTO[];
 }
 
 // Visão de Balcão: busca peça-cêntrica que devolve a peça + o lote de origem
@@ -242,6 +250,16 @@ export interface ScrapRepository {
       logisticsStatus: LogisticsStatus;
     }>
   >;
+  recordStatusEvent(
+    scrapId: string,
+    userId: string,
+    fromStatus: LogisticsStatus | null,
+    toStatus: LogisticsStatus,
+  ): Promise<void>;
+  getStatusEvents(
+    scrapId: string,
+    userId: string,
+  ): Promise<ScrapStatusEventDTO[]>;
   update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap>;
   updateLogisticsStatus(
     id: string,

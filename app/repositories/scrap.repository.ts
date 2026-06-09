@@ -6,6 +6,7 @@ import {
   ScrapListOptions,
   ScrapPipeline,
   ScrapPart,
+  ScrapStatusEventDTO,
 } from "../interfaces/scrap.interface";
 import prisma from "../lib/prisma";
 import {
@@ -382,6 +383,35 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         logisticsStatus: true,
       },
     });
+  }
+
+  // Registra um evento de transição de estágio (histórico — diferencial F).
+  async recordStatusEvent(
+    scrapId: string,
+    userId: string,
+    fromStatus: LogisticsStatus | null,
+    toStatus: LogisticsStatus,
+  ): Promise<void> {
+    await prisma.scrapStatusEvent.create({
+      data: { scrapId, userId, fromStatus, toStatus },
+    });
+  }
+
+  // Linha do tempo de transições de uma sucata (mais antigo → mais recente).
+  async getStatusEvents(
+    scrapId: string,
+    userId: string,
+  ): Promise<ScrapStatusEventDTO[]> {
+    const events = await prisma.scrapStatusEvent.findMany({
+      where: { scrapId, userId },
+      orderBy: { createdAt: "asc" },
+      select: { fromStatus: true, toStatus: true, createdAt: true },
+    });
+    return events.map((e) => ({
+      fromStatus: e.fromStatus,
+      toStatus: e.toStatus,
+      createdAt: e.createdAt,
+    }));
   }
 
   async update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap> {

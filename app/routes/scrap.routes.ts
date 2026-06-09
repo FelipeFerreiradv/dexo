@@ -241,6 +241,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
         const scrap = await scrapUseCase.getScrapDetail(id, userId, {
           financials: wants.includes("financials"),
           products: wants.includes("products"),
+          history: wants.includes("history"),
         });
         if (!scrap) {
           return reply.status(404).send({ error: "Sucata não encontrada" });
