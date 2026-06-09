@@ -310,6 +310,35 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
     }));
   }
 
+  // Estágios de várias sucatas por id (Visão de Balcão). Os ids já vêm de
+  // produtos do tenant; o filtro userId reforça o isolamento.
+  async findStagesByIds(
+    ids: string[],
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      brand: string;
+      model: string;
+      year: string | null;
+      plate: string | null;
+      logisticsStatus: LogisticsStatus;
+    }>
+  > {
+    if (ids.length === 0) return [];
+    return prisma.scrap.findMany({
+      where: { id: { in: ids }, userId },
+      select: {
+        id: true,
+        brand: true,
+        model: true,
+        year: true,
+        plate: true,
+        logisticsStatus: true,
+      },
+    });
+  }
+
   async update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap> {
     try {
       if (userId) {

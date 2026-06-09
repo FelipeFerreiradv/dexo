@@ -1,10 +1,11 @@
 "use client";
 
-import { LayoutGrid, List } from "lucide-react";
+import { LayoutGrid, List, Store } from "lucide-react";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrapsList } from "./scraps-list";
 import { ScrapsPipeline } from "./scraps-pipeline";
+import { ScrapsBalcao } from "./scraps-balcao";
 import { ScrapSearch } from "./scrap-search";
 
 // Alterna entre a visão de pipeline (Kanban, nova) e a lista tabular existente.
@@ -22,6 +23,10 @@ export function ScrapsWorkspace() {
             <List className="mr-2 h-4 w-4" />
             Lista
           </TabsTrigger>
+          <TabsTrigger value="balcao">
+            <Store className="mr-2 h-4 w-4" />
+            Balcão
+          </TabsTrigger>
         </TabsList>
         <ScrapSearch />
       </div>
@@ -30,6 +35,9 @@ export function ScrapsWorkspace() {
       </TabsContent>
       <TabsContent value="list">
         <ScrapsList />
+      </TabsContent>
+      <TabsContent value="balcao">
+        <ScrapsBalcao />
       </TabsContent>
     </Tabs>
   );

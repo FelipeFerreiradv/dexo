@@ -191,6 +191,27 @@ export interface ScrapDetail extends Scrap {
   products?: ScrapPart[];
 }
 
+// Visão de Balcão: busca peça-cêntrica que devolve a peça + o lote de origem
+// com seu estágio logístico (para o vendedor saber se já dá pra retirar).
+export interface BalcaoPartSource {
+  scrapId: string;
+  brand: string;
+  model: string;
+  year?: string;
+  plate?: string;
+  logisticsStatus: LogisticsStatus;
+}
+
+export interface BalcaoPart {
+  id: string;
+  name: string;
+  sku: string;
+  partNumber?: string;
+  price: number;
+  stock: number;
+  source: BalcaoPartSource | null;
+}
+
 export interface ScrapRepository {
   create(data: ScrapCreate): Promise<Scrap>;
   findById(id: string, userId?: string): Promise<Scrap | null>;
@@ -204,6 +225,19 @@ export interface ScrapRepository {
     userId: string,
   ): Promise<{ marketplace: number; counter: number; potential: number }>;
   getScrapParts(scrapId: string): Promise<ScrapPart[]>;
+  findStagesByIds(
+    ids: string[],
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      brand: string;
+      model: string;
+      year: string | null;
+      plate: string | null;
+      logisticsStatus: LogisticsStatus;
+    }>
+  >;
   update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap>;
   updateLogisticsStatus(
     id: string,

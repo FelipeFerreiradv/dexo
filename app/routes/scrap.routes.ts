@@ -188,6 +188,37 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
   );
 
   /**
+   * GET /scraps/balcao
+   * Visão de Balcão: busca peça-cêntrica (reusa o ranking de produtos) e
+   * devolve cada peça com o lote de origem e seu estágio logístico.
+   * Endpoint NOVO; estático (vem antes de /:id).
+   */
+  fastify.get<{ Querystring: { q?: string; limit?: string } }>(
+    "/balcao",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Querystring: { q?: string; limit?: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const { q, limit } = request.query;
+        const userId = (request as any).user?.dataOwnerId as string;
+        const data = await scrapUseCase.balcaoSearch(
+          q ?? "",
+          userId,
+          limit ? parseInt(limit) : 12,
+        );
+        return reply.status(200).send(data);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro na busca de balcão",
+        });
+      }
+    },
+  );
+
+  /**
    * GET /scraps/:id
    * Busca sucata por ID
    */

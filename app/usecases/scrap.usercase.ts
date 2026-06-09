@@ -6,15 +6,19 @@ import {
   LogisticsStatus,
   ScrapPipeline,
   ScrapDetail,
+  BalcaoPart,
 } from "../interfaces/scrap.interface";
 import { ScrapRepositoryPrisma } from "../repositories/scrap.repository";
+import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { SystemLogService } from "../services/system-log.service";
 
 export class ScrapUseCase {
   private scrapRepository: ScrapRepositoryPrisma;
+  private productRepository: ProductRepositoryPrisma;
 
   constructor() {
     this.scrapRepository = new ScrapRepositoryPrisma();
+    this.productRepository = new ProductRepositoryPrisma();
   }
 
   async create(data: ScrapCreate): Promise<Scrap> {
@@ -111,6 +115,60 @@ export class ScrapUseCase {
       throw new Error("Usuário não encontrado");
     }
     return this.scrapRepository.pipeline(userId);
+  }
+
+  // Visão de Balcão: reaproveita o ranking da busca de produtos (3 tiers
+  // tokenizados) e enriquece cada peça com o lote de origem + estágio
+  // logístico, num batch só (sem N+1). Escopado por userId.
+  async balcaoSearch(
+    q: string,
+    userId: string,
+    limit = 12,
+  ): Promise<{ results: BalcaoPart[] }> {
+    const term = (q ?? "").trim();
+    if (!userId || term.length < 2) return { results: [] };
+
+    const { products } = await this.productRepository.findAll(
+      { search: term, limit },
+      userId,
+    );
+
+    const scrapIds = Array.from(
+      new Set(
+        products
+          .map((p) => p.scrapId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    );
+
+    const scraps = await this.scrapRepository.findStagesByIds(scrapIds, userId);
+    const byId = new Map(scraps.map((s) => [s.id, s]));
+
+    const results: BalcaoPart[] = products.map((p) => {
+      const s = p.scrapId ? byId.get(p.scrapId) : undefined;
+      return {
+        id: p.id,
+        name: p.name,
+        sku: p.sku,
+        partNumber: p.partNumber ?? undefined,
+        price: Number(p.price ?? 0),
+        stock: p.stock ?? 0,
+        source: s
+          ? {
+              scrapId: s.id,
+              brand: s.brand,
+              model: s.model,
+              year: s.year ?? undefined,
+              plate: s.plate ?? undefined,
+              logisticsStatus: s.logisticsStatus,
+            }
+          : null,
+      };
+    });
+
+    return { results };
   }
 
   private static readonly VALID_LOGISTICS: LogisticsStatus[] = [
