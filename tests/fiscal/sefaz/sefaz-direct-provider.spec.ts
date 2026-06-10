@@ -1169,3 +1169,152 @@ describe("SefazDirectProvider.inutilizar()", () => {
     expect(result.mensagem).toMatch(/ECONNRESET|rede/);
   });
 });
+
+// ── F-G: contingencia SVC ──
+
+describe("SefazDirectProvider.emitir() — modo contingencia SVC", () => {
+  let cert: LoadedCertificate;
+
+  beforeAll(() => {
+    const tc = generateTestCertificate();
+    cert = parsePfx(tc.pfxBuffer, tc.password);
+  });
+
+  it("roteia para SVC-AN quando contingencia='SVC_AN' e usa tpEmis=6", async () => {
+    const fakeSoap = new FakeSoapClient({
+      status: 200,
+      body: AUTORIZADA_RESPONSE("35260561122233300018155001000000001100100012"),
+      headers: {},
+      durationMs: 50,
+    });
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP", // SP usa SVC_AN como fallback
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+
+    const payload: SefazEmitPayload = {
+      ...makeEmitPayload(),
+      contingencia: "SVC_AN",
+    };
+    const result = await provider.emitir({
+      nfeData: payload as any,
+      token: "",
+      ref: "nfe-id-svc",
+    });
+
+    expect(result.status).toBe("autorizada");
+    expect(fakeSoap.lastRequest?.endpointUrl).toContain("svc.fazenda.gov.br");
+    // tpEmis=6 aparece no envelope (campo <tpEmis>6</tpEmis>) e no Id
+    expect(fakeSoap.lastRequest?.envelope).toContain("<tpEmis>6</tpEmis>");
+  });
+
+  it("roteia para SVC-RS quando contingencia='SVC_RS' e usa tpEmis=7", async () => {
+    const fakeSoap = new FakeSoapClient({
+      status: 200,
+      body: AUTORIZADA_RESPONSE("43260571122233300018155001000000001120100012"),
+      headers: {},
+      durationMs: 50,
+    });
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "PR", // PR usa SVC_RS como fallback
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+
+    const payload: SefazEmitPayload = {
+      ...makeEmitPayload(),
+      contingencia: "SVC_RS",
+    };
+    const result = await provider.emitir({
+      nfeData: payload as any,
+      token: "",
+      ref: "nfe-id-svc",
+    });
+
+    expect(result.status).toBe("autorizada");
+    expect(fakeSoap.lastRequest?.endpointUrl).toContain("svrs.rs.gov.br");
+    expect(fakeSoap.lastRequest?.envelope).toContain("<tpEmis>7</tpEmis>");
+  });
+
+  it("sem contingencia, envia para SEFAZ origem com tpEmis=1", async () => {
+    const fakeSoap = new FakeSoapClient({
+      status: 200,
+      body: AUTORIZADA_RESPONSE("35260511222333000181550010000000011120100012"),
+      headers: {},
+      durationMs: 50,
+    });
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+
+    await provider.emitir({
+      nfeData: makeEmitPayload() as any,
+      token: "",
+      ref: "nfe-id-normal",
+    });
+
+    // SP SEFAZ próprio, não SVC
+    expect(fakeSoap.lastRequest?.endpointUrl).toContain("sp.gov.br");
+    expect(fakeSoap.lastRequest?.endpointUrl).not.toContain("svc.fazenda");
+    expect(fakeSoap.lastRequest?.envelope).toContain("<tpEmis>1</tpEmis>");
+  });
+
+  it("contingencia preserva numero/serie mas gera chave de acesso nova", async () => {
+    // Mesma nota emitida com tpEmis=1 vs tpEmis=6 produz chaves diferentes
+    // (cDV recalculado). Testamos rodando o builder pelo provider duas vezes.
+    const normalResponse = {
+      status: 200,
+      body: AUTORIZADA_RESPONSE("35260511222333000181550010000000011120100012"),
+      headers: {},
+      durationMs: 50,
+    };
+    const svcResponse = {
+      status: 200,
+      body: AUTORIZADA_RESPONSE("35260561122233300018155001000000001100100012"),
+      headers: {},
+      durationMs: 50,
+    };
+
+    const fakeSoapNormal = new FakeSoapClient(normalResponse);
+    const providerNormal = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoapNormal,
+    });
+    await providerNormal.emitir({
+      nfeData: makeEmitPayload() as any,
+      token: "",
+      ref: "ref-a",
+    });
+
+    const fakeSoapSvc = new FakeSoapClient(svcResponse);
+    const providerSvc = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoapSvc,
+    });
+    await providerSvc.emitir({
+      nfeData: { ...makeEmitPayload(), contingencia: "SVC_AN" } as any,
+      token: "",
+      ref: "ref-b",
+    });
+
+    const idNormal = fakeSoapNormal.lastRequest!.envelope.match(/Id="(NFe\d{44})"/)?.[1];
+    const idSvc = fakeSoapSvc.lastRequest!.envelope.match(/Id="(NFe\d{44})"/)?.[1];
+
+    expect(idNormal).toBeDefined();
+    expect(idSvc).toBeDefined();
+    expect(idNormal).not.toBe(idSvc);
+    // O dígito tpEmis (pos 34 da chave, 35 do Id que tem "NFe" no início) muda
+    expect(idNormal!.charAt(3 + 34)).toBe("1");
+    expect(idSvc!.charAt(3 + 34)).toBe("6");
+  });
+});

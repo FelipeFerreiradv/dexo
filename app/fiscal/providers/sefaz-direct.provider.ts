@@ -36,6 +36,7 @@ import {
   type SefazAmbiente,
   type UF,
 } from "../sefaz/endpoints";
+import { getTpEmisForSvc } from "../sefaz/contingencia.service";
 import {
   extractIntValue,
   extractTagValueNs,
@@ -101,6 +102,13 @@ export interface SefazEmitPayload {
   dhEmi?: Date;
   cNF?: string;
   tpEmis?: 1 | 6 | 7;
+  /**
+   * Modo de contingência. Quando definido, o XML é montado com tpEmis
+   * correspondente (6=SVC-AN, 7=SVC-RS) e enviado ao endpoint SVC em vez
+   * do SEFAZ da UF. Use case detecta SEFAZ-down via ContingenciaService
+   * e chama emitir novamente com este modo populado.
+   */
+  contingencia?: "SVC_AN" | "SVC_RS";
 }
 
 const NFE_NS = "http://www.portalfiscal.inf.br/nfe";
@@ -148,6 +156,12 @@ export class SefazDirectProvider implements INfeProvider {
     }
 
     // 1. Build XML modelo 55 v4.00
+    // Se contingencia foi solicitada, força tpEmis correspondente (6 ou 7).
+    // Caso contrário, respeita payload.tpEmis (default 1 dentro do builder).
+    const effectiveTpEmis: 1 | 6 | 7 = payload.contingencia
+      ? getTpEmisForSvc(payload.contingencia)
+      : (payload.tpEmis ?? 1);
+
     let built;
     try {
       built = this.builder.build({
@@ -156,7 +170,7 @@ export class SefazDirectProvider implements INfeProvider {
         numero: payload.numero,
         dhEmi: payload.dhEmi,
         cNF: payload.cNF,
-        tpEmis: payload.tpEmis,
+        tpEmis: effectiveTpEmis,
       });
     } catch (error) {
       return makeEmitErrorResult(
@@ -193,8 +207,10 @@ export class SefazDirectProvider implements INfeProvider {
       indSinc: "1", // síncrono — recomendado NT 2018.005
     });
 
-    // 4. Send
-    const endpoint = getSefazEndpoint(this.uf, this.ambiente, "NFeAutorizacao4");
+    // 4. Send — em contingencia, roteia para SVC; senão SEFAZ origem
+    const endpoint = payload.contingencia
+      ? getSvcEndpoint(this.uf, this.ambiente, "NFeAutorizacao4")
+      : getSefazEndpoint(this.uf, this.ambiente, "NFeAutorizacao4");
     let response: SoapResponse;
     try {
       response = await this.soapClient.send({

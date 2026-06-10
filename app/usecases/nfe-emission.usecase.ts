@@ -11,6 +11,12 @@ import {
   createNfeProviderFromConfig,
 } from "../fiscal/providers/provider-factory";
 import type { SefazEmitPayload } from "../fiscal/providers/sefaz-direct.provider";
+import {
+  shouldFallbackToSvc,
+  getSvcType,
+  isAutoFallbackEnabled,
+} from "../fiscal/sefaz/contingencia.service";
+import type { UF } from "../fiscal/sefaz/endpoints";
 import type { NfeItemInput, RegimeTributario, NfeStatus, FiscalAmbiente } from "../fiscal/domain/nfe.types";
 import { canTransition } from "../fiscal/domain/nfe.types";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
@@ -213,11 +219,53 @@ export class NfeEmissionUseCase {
           })
         : createNfeProvider(config.providerName, config.ambiente as any);
 
-      const providerResult = await provider.emitir({
+      let providerResult = await provider.emitir({
         nfeData: payload,
         token: config.providerToken ?? "",
         ref: nfeId,
       });
+
+      // ── 7a. Auto-fallback para SVC (contingência) ──
+      // Só dispara para SEFAZ direto, com auto-fallback habilitado via env,
+      // e quando o resultado indica problema de infra (cStat 108/109/280+,
+      // timeout, ECONNRESET, HTTP 5xx persistente). Rejeições "comuns" (XML
+      // inválido, etc.) NÃO são retentadas via SVC.
+      if (isSefazDirect && isAutoFallbackEnabled() && config.uf) {
+        const decision = shouldFallbackToSvc(providerResult);
+        if (decision.shouldFallback) {
+          const svcType = getSvcType(config.uf as UF);
+          await this.nfeRepo.addAuditLog(nfeId, userId, "CONTINGENCIA_SVC", {
+            svcType,
+            motivo: decision.reason,
+            cStatOrigem: providerResult.codigoStatus,
+            mensagemOrigem: providerResult.mensagem,
+          });
+
+          // Reenvia com mesmo numero/serie mas tpEmis ajustado.
+          // O builder vai gerar nova chave (cDV recalculado) e novo XML
+          // assinado — totalmente independente da tentativa anterior.
+          const sefazPayload = payload as SefazEmitPayload;
+          providerResult = await provider.emitir({
+            nfeData: { ...sefazPayload, contingencia: svcType },
+            token: config.providerToken ?? "",
+            ref: nfeId,
+          });
+
+          if (providerResult.success) {
+            await this.nfeRepo.addAuditLog(nfeId, userId, "CONTINGENCIA_OK", {
+              svcType,
+              chaveAcesso: providerResult.chaveAcesso,
+              protocolo: providerResult.protocolo,
+            });
+          } else {
+            await this.nfeRepo.addAuditLog(nfeId, userId, "CONTINGENCIA_FALHOU", {
+              svcType,
+              cStat: providerResult.codigoStatus,
+              mensagem: providerResult.mensagem,
+            });
+          }
+        }
+      }
 
       // ── 8. Handle result ──
       if (providerResult.status === "processando") {
