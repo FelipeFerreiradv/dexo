@@ -6,7 +6,11 @@ import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator
 import { NfeXmlBuilderService } from "../fiscal/generators/nfe-xml-builder.service";
 import { DanfePdfService } from "../fiscal/generators/danfe-pdf.service";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
-import { createNfeProvider } from "../fiscal/providers/provider-factory";
+import {
+  createNfeProvider,
+  createNfeProviderFromConfig,
+} from "../fiscal/providers/provider-factory";
+import type { SefazEmitPayload } from "../fiscal/providers/sefaz-direct.provider";
 import type { NfeItemInput, RegimeTributario, NfeStatus, FiscalAmbiente } from "../fiscal/domain/nfe.types";
 import { canTransition } from "../fiscal/domain/nfe.types";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
@@ -147,16 +151,43 @@ export class NfeEmissionUseCase {
       // ── Transition: VALIDATING → SIGNING ──
       await this.transitionStatus(nfeId, userId, "VALIDATING", "SIGNING");
 
-      // ── 6. Build payload for Focus NFe ──
+      // ── 6. Build payload + select provider ──
       // Reload with numero
       const nfeWithNumero = await this.loadNfe(nfeId);
-      const payload = this.xmlBuilder.build(nfeWithNumero, config, numero);
 
-      // Save payload as "XML original" (JSON in our case since Focus takes JSON)
+      const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
+      let payload: any;
+      let xmlOriginalContent: string;
+
+      if (isSefazDirect) {
+        // SEFAZ direto: provider monta + assina + envia o XML. Aqui apenas
+        // empacotamos a fonte (draft + config + numero) — a serialização XML
+        // efetiva acontece dentro do provider.
+        const sefazPayload: SefazEmitPayload = {
+          draft: nfeWithNumero,
+          config,
+          numero,
+        };
+        payload = sefazPayload;
+        // Audit/storage: salvamos um snapshot legível do payload de entrada
+        // (não é o XML assinado — esse fica em xmlAutorizadoPath após emit).
+        xmlOriginalContent = JSON.stringify(
+          { providerName: "SEFAZ_DIRECT", numero, draft: nfeWithNumero, config: redactConfig(config) },
+          null,
+          2,
+        );
+      } else {
+        // Focus NFe: builder produz JSON proprietário que o provider envia.
+        payload = this.xmlBuilder.build(nfeWithNumero, config, numero);
+        xmlOriginalContent = JSON.stringify(payload, null, 2);
+      }
+
+      // Save payload as "XML original" — JSON em ambos os caminhos, formato
+      // diferente conforme provider.
       const xmlOriginalPath = await this.storage.saveXmlOriginal(
         userId,
         nfeId,
-        JSON.stringify(payload, null, 2),
+        xmlOriginalContent,
       );
 
       await (prisma as any).nfeEmitida.update({
@@ -172,10 +203,19 @@ export class NfeEmissionUseCase {
       });
 
       // ── 7. Send to provider ──
-      const provider = createNfeProvider(config.providerName, config.ambiente as any);
+      const provider = isSefazDirect
+        ? await createNfeProviderFromConfig({
+            providerName: "SEFAZ_DIRECT",
+            ambiente: config.ambiente as any,
+            uf: config.uf,
+            certificadoPath: config.certificadoPath,
+            certificadoSenhaEnc: config.certificadoSenhaEnc,
+          })
+        : createNfeProvider(config.providerName, config.ambiente as any);
+
       const providerResult = await provider.emitir({
         nfeData: payload,
-        token: config.providerToken,
+        token: config.providerToken ?? "",
         ref: nfeId,
       });
 
@@ -201,6 +241,7 @@ export class NfeEmissionUseCase {
             consultaResult.dataAutorizacao,
             provider as any,
             config,
+            consultaResult.xmlAutorizado,
           );
         }
 
@@ -247,6 +288,7 @@ export class NfeEmissionUseCase {
           providerResult.dataAutorizacao,
           provider as any,
           config,
+          providerResult.xmlAutorizado,
         );
       }
 
@@ -310,13 +352,22 @@ export class NfeEmissionUseCase {
     dataAutorizacao: Date | null,
     provider: any,
     config: CompanyFiscalConfig,
+    xmlAutorizadoInline?: string | null,
   ): Promise<EmissionResult> {
     // Transition to AUTHORIZED
     await this.transitionStatus(nfeId, userId, "SENDING", "AUTHORIZED");
 
-    // Fetch authorized XML from provider
+    // Fetch authorized XML — preferimos o XML inline retornado pelo provider
+    // (caso SEFAZ direto, vem no payload de retorno). Como fallback, Focus
+    // exige uma chamada extra via buscarXml(ref, token).
     let xmlAutorizadoPath: string | null = null;
-    if (provider.buscarXml) {
+    if (xmlAutorizadoInline) {
+      xmlAutorizadoPath = await this.storage.saveXmlAutorizado(
+        userId,
+        nfeId,
+        xmlAutorizadoInline,
+      );
+    } else if (provider.buscarXml) {
       const xml = await provider.buscarXml(nfeId, config.providerToken!);
       if (xml) {
         xmlAutorizadoPath = await this.storage.saveXmlAutorizado(userId, nfeId, xml);
@@ -511,4 +562,16 @@ export class NfeEmissionUseCase {
       cep: config.cep,
     };
   }
+}
+
+/**
+ * Remove campos sensíveis do CompanyFiscalConfig antes de persistir como
+ * snapshot do xmlOriginal (SEFAZ direto). Mantém o que é útil para auditoria,
+ * mascara/elimina senhas e tokens.
+ */
+function redactConfig(config: CompanyFiscalConfig): Partial<CompanyFiscalConfig> {
+  const { certificadoSenhaEnc, providerToken, ...rest } = config as any;
+  void certificadoSenhaEnc;
+  void providerToken;
+  return rest;
 }
