@@ -7,13 +7,14 @@ memoria (1 worker).
 
 POST /remove-bg  multipart 'file' image/*  -> image/png transparente
                  campo opcional 'add_shadow' (default false): adiciona uma
-                 sombra de contato suave sob a peca. Sem o campo => identico.
+                 sombra projetada direcional (drop shadow) atras da peca.
+                 Sem o campo => identico.
 GET  /health     liveness
 
-Modelo default: isnet-general-use (~1s/img, pico ~1.6GB RAM; borda melhor que
-o u2net, fica boa com o refino). Para maxima qualidade em fundo complexo ha o
-birefnet-general-lite (melhor, porem ~7s + pico ~8.5GB RAM) — troque via env
-REMBG_MODEL ou --build-arg, desde que pre-baixado no build (ver Dockerfile).
+Modelo default: birefnet-general-lite (melhor borda + fundo complexo; pico
+~8.5GB RAM em CPU — viavel em servidor com folga, ex. KVM8/32GB). Alternativa
+leve: isnet-general-use (~1.6GB / ~1s) via env REMBG_MODEL ou --build-arg,
+desde que pre-baixado no build (ver Dockerfile).
 
 Refino de borda (apos o recorte, controlado por env, com killswitch
 REMBG_REFINE_EDGES=false):
@@ -39,7 +40,7 @@ from rembg import new_session, remove
 # - 10 MB de input cobre folgadamente o limite do app (5 MB) e ainda
 #   protege o sidecar de payloads patologicos.
 MAX_BYTES = 10 * 1024 * 1024
-MODEL_NAME = os.getenv("REMBG_MODEL", "isnet-general-use")
+MODEL_NAME = os.getenv("REMBG_MODEL", "birefnet-general-lite")
 
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
@@ -76,20 +77,18 @@ def _parse_color(s: str, default):
     return default
 
 
-# Cor neutra escura da sombra (R,G,B) e opacidade discreta (~0.30-0.45).
-SHADOW_COLOR = _parse_color(os.getenv("REMBG_SHADOW_COLOR", ""), (18, 18, 22))
-SHADOW_OPACITY = float(os.getenv("REMBG_SHADOW_OPACITY", "0.38"))
-# Achatamento vertical da silhueta (sombra de chao) e largura relativa.
-SHADOW_SQUASH = float(os.getenv("REMBG_SHADOW_SQUASH", "0.22"))
-SHADOW_WIDTH = float(os.getenv("REMBG_SHADOW_WIDTH", "1.0"))
-# Blur gaussiano: sigma = fator * maior lado do objeto.
-SHADOW_BLUR = float(os.getenv("REMBG_SHADOW_BLUR", "0.04"))
-# Desloca a sombra p/ baixo (fracao da altura do objeto) — peca "apoiada".
-SHADOW_OFFSET_Y = float(os.getenv("REMBG_SHADOW_OFFSET_Y", "0.06"))
-# Folgas do canvas pra caber a sombra (fracao do tamanho do objeto).
-SHADOW_PAD_X = float(os.getenv("REMBG_SHADOW_PAD_X", "0.07"))
-SHADOW_PAD_BOTTOM = float(os.getenv("REMBG_SHADOW_PAD_BOTTOM", "0.14"))
-SHADOW_PAD_TOP = float(os.getenv("REMBG_SHADOW_PAD_TOP", "0.03"))
+# Cor neutra escura da sombra (R,G,B) e opacidade (compoe ~cinza sobre branco).
+SHADOW_COLOR = _parse_color(os.getenv("REMBG_SHADOW_COLOR", ""), (28, 28, 32))
+SHADOW_OPACITY = float(os.getenv("REMBG_SHADOW_OPACITY", "0.45"))  # ~0.30-0.50
+# Sombra projetada direcional (luz de cima-esquerda => sombra p/ baixo-direita).
+# Offsets em fracao do tamanho do objeto; sinais invertem a direcao. Defaults
+# calibrados p/ aparecer bem tanto em peca cheia (cubo) quanto fina (para-lama).
+SHADOW_OFFSET_X = float(os.getenv("REMBG_SHADOW_OFFSET_X", "0.10"))  # + = direita
+SHADOW_OFFSET_Y = float(os.getenv("REMBG_SHADOW_OFFSET_Y", "0.08"))  # + = baixo
+# Inclinacao (shear) que projeta o topo da silhueta na direcao da sombra.
+SHADOW_SHEAR = float(os.getenv("REMBG_SHADOW_SHEAR", "0.28"))
+# Blur gaussiano: sigma = fator * maior lado do objeto (suaviza/espalha).
+SHADOW_BLUR = float(os.getenv("REMBG_SHADOW_BLUR", "0.045"))
 # Cap do lado longo do resultado (nao estourar muito alem de ~1600px).
 SHADOW_MAX_LONG = int(os.getenv("REMBG_SHADOW_MAX_LONG", "1600"))
 SHADOW_ALPHA_THRESH = int(os.getenv("REMBG_SHADOW_ALPHA_THRESH", "16"))
@@ -187,19 +186,6 @@ def _encode_png(rgba: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _paste_max(dst: np.ndarray, src: np.ndarray, top: int, left: int) -> None:
-    """Cola `src` em `dst` na posicao (top,left) usando max, com clipping."""
-    H, W = dst.shape[:2]
-    sh, sw = src.shape[:2]
-    y0, x0 = max(0, top), max(0, left)
-    y1, x1 = min(H, top + sh), min(W, left + sw)
-    if y0 >= y1 or x0 >= x1:
-        return
-    dst[y0:y1, x0:x1] = np.maximum(
-        dst[y0:y1, x0:x1], src[y0 - top:y1 - top, x0 - left:x1 - left]
-    )
-
-
 def _alpha_over(fg: np.ndarray, bg: np.ndarray) -> np.ndarray:
     """Compoe fg sobre bg (ambos RGBA float, alpha 0-255; straight alpha)."""
     fa = fg[..., 3:4] / 255.0
@@ -212,10 +198,13 @@ def _alpha_over(fg: np.ndarray, bg: np.ndarray) -> np.ndarray:
     return out
 
 
-def _add_contact_shadow(rgba: np.ndarray) -> np.ndarray:
-    """Sombra de contato suave derivada do alpha: silhueta achatada, ancorada
-    na base do objeto, blur gaussiano, opacidade discreta. Compoe o cutout por
-    cima num canvas expandido (com cap no lado longo). Saida RGBA uint8."""
+def _add_drop_shadow(rgba: np.ndarray) -> np.ndarray:
+    """Sombra projetada direcional (estilo foto de produto): a silhueta (alpha)
+    e' deslocada + inclinada (shear) na direcao da sombra, borrada (gaussiano) e
+    tingida de cinza neutro semi-transparente, composta ATRAS do objeto num
+    canvas expandido (dimensionado por bounding box, com cap no lado longo).
+    Luz default vinda de cima-esquerda => sombra projeta p/ baixo-direita.
+    Saida RGBA uint8."""
     if rgba.ndim != 3 or rgba.shape[2] != 4:
         return rgba
     h, w = rgba.shape[:2]
@@ -226,32 +215,34 @@ def _add_contact_shadow(rgba: np.ndarray) -> np.ndarray:
     y0, y1 = int(ys.min()), int(ys.max())
     x0, x1 = int(xs.min()), int(xs.max())
     oh, ow = y1 - y0 + 1, x1 - x0 + 1
-    cx = (x0 + x1) / 2.0
+    base_y = float(y1)  # contato no "chao" = base do objeto (pivo do shear)
 
-    pad_x = int(round(ow * SHADOW_PAD_X))
-    pad_bottom = int(round(oh * SHADOW_PAD_BOTTOM))
-    pad_top = int(round(oh * SHADOW_PAD_TOP))
-    new_h, new_w = h + pad_top + pad_bottom, w + 2 * pad_x
-    ox, oy = pad_x, pad_top
-
-    # Silhueta achatada (sombra de chao), centrada na base do objeto.
-    sil = alpha.astype(np.float32) / 255.0
-    sh_h = max(1, int(round(oh * SHADOW_SQUASH)))
-    sh_w = max(1, int(round(ow * SHADOW_WIDTH)))
-    sil_small = cv2.resize(sil[y0:y1 + 1, x0:x1 + 1], (sh_w, sh_h),
-                           interpolation=cv2.INTER_AREA)
-
-    shadow = np.zeros((new_h, new_w), np.float32)
-    base_y = oy + y1
-    sx = int(round(ox + cx - sh_w / 2.0))
-    sy = int(round(base_y - sh_h / 2.0 + oh * SHADOW_OFFSET_Y))
-    _paste_max(shadow, sil_small, sy, sx)
-
+    dx = SHADOW_OFFSET_X * ow
+    dy = SHADOW_OFFSET_Y * oh
+    shx = SHADOW_SHEAR
     sigma = max(1.0, SHADOW_BLUR * max(ow, oh))
+    blur_margin = int(np.ceil(3 * sigma))
+
+    # Extensao do shear (maxima no topo do objeto: dist = base_y - y0).
+    shear_ext = shx * (base_y - y0)  # >0 empurra o topo p/ direita
+    left = int(np.ceil(blur_margin + max(0.0, -dx) + max(0.0, -shear_ext)))
+    right = int(np.ceil(blur_margin + max(0.0, dx) + max(0.0, shear_ext)))
+    top = int(np.ceil(blur_margin + max(0.0, -dy)))
+    bottom = int(np.ceil(blur_margin + max(0.0, dy)))
+    ox, oy = left, top
+    new_w, new_h = w + left + right, h + top + bottom
+
+    # Warp da silhueta -> sombra no canvas. Para o pixel original (x,y):
+    #   canvas_x = ox + x - shx*y + dx + shx*base_y   (shear pivotando na base)
+    #   canvas_y = oy + y + dy
+    M = np.array([
+        [1.0, -shx, ox + dx + shx * base_y],
+        [0.0, 1.0, oy + dy],
+    ], dtype=np.float32)
+    sil = alpha.astype(np.float32) / 255.0
+    shadow = cv2.warpAffine(sil, M, (new_w, new_h), flags=cv2.INTER_LINEAR,
+                            borderValue=0.0)
     shadow = cv2.GaussianBlur(shadow, (0, 0), sigma)
-    peak = float(shadow.max())
-    if peak > 0:
-        shadow /= peak  # normaliza: pico da sombra = SHADOW_OPACITY
     shadow = np.clip(shadow * SHADOW_OPACITY, 0.0, 1.0)
 
     bg = np.zeros((new_h, new_w, 4), np.float32)
@@ -306,7 +297,7 @@ async def remove_bg(
             rgba = _refine_edges(rgba)
         if add_shadow and SHADOW_GLOBAL_ENABLED:
             try:
-                rgba = _add_contact_shadow(rgba)
+                rgba = _add_drop_shadow(rgba)
             except Exception:  # noqa: BLE001 — sombra best-effort, nao derruba o recorte
                 pass
         png_bytes = _encode_png(rgba)

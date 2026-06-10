@@ -14,10 +14,10 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
-    # Pico de RSS ~1.6GB com o isnet-general-use (default); limite com folga
-    # protege o host de runaway. Se trocar p/ birefnet-general-lite (pico
-    # ~8.5GB) suba este limite p/ ~10g e garanta RAM no servidor.
-    mem_limit: 3g
+    # Pico de RSS ~8.5GB com o birefnet-general-lite (default) — ok no KVM8
+    # (32GB). Limite com folga protege o host de runaway. Se trocar p/
+    # isnet-general-use (pico ~1.6GB) pode baixar p/ ~3g.
+    mem_limit: 12g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
       interval: 30s

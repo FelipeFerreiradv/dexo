@@ -82,9 +82,10 @@ const envSchema = z.object({
   REMBG_TIMEOUT_MS: z
     .string()
     .optional()
-    // Default 30s: o BiRefNet em CPU leva ~7s/img + overhead; 15s ficava
-    // perto do p95 sob carga. Faixa permitida 1000–120000.
-    .default("30000")
+    // Default 60s: BiRefNet ~7s/img em CPU; em upload de lote a fila no
+    // sidecar (1 worker) faz as ultimas esperarem — 60s cobre com folga.
+    // Faixa permitida 1000–120000.
+    .default("60000")
     .transform((v) => Number(v))
     .refine((n) => Number.isInteger(n) && n >= 1000 && n <= 120000, {
       message: "REMBG_TIMEOUT_MS deve ser inteiro entre 1000 e 120000",
