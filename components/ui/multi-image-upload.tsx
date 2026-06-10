@@ -30,7 +30,7 @@ const UPLOAD_CONCURRENCY = 3;
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
-  worker: (item: T) => Promise<R>,
+  worker: (item: T, index: number) => Promise<R>,
 ): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = new Array(items.length);
   let next = 0;
@@ -38,7 +38,7 @@ async function runWithConcurrency<T, R>(
     while (next < items.length) {
       const i = next++;
       try {
-        results[i] = { status: "fulfilled", value: await worker(items[i]) };
+        results[i] = { status: "fulfilled", value: await worker(items[i], i) };
       } catch (reason) {
         results[i] = { status: "rejected", reason };
       }
@@ -117,21 +117,29 @@ export function MultiImageUpload({
       setIsUploading(true);
 
       try {
+        // Progressivo: cada imagem aparece assim que fica pronta (a 1ª em
+        // ~7s, sem esperar o lote inteiro). Mantém a ordem de seleção via
+        // `slots`, mesmo que terminem fora de ordem.
+        const slots: (string | null)[] = new Array(filesToUpload.length).fill(
+          null,
+        );
         const settled = await runWithConcurrency(
           filesToUpload,
           UPLOAD_CONCURRENCY,
-          (file) => uploadFile(file),
+          async (file, index) => {
+            const r = await uploadFile(file);
+            if (r.url) {
+              slots[index] = r.url;
+              const done = slots.filter((u): u is string => u !== null);
+              onChange([...value, ...done]);
+            }
+            return r;
+          },
         );
         const fulfilled = settled.filter(
           (r): r is PromiseFulfilledResult<{ url: string | null; warning?: string }> =>
             r.status === "fulfilled",
         );
-        const urls = fulfilled
-          .map((r) => r.value.url)
-          .filter((url): url is string => url !== null);
-        if (urls.length > 0) {
-          onChange([...value, ...urls]);
-        }
 
         // Dedup warnings: se múltiplas imagens caíram no mesmo fallback,
         // mostra uma mensagem só.
