@@ -3,7 +3,8 @@ Dexo rembg sidecar.
 
 Endpoints HTTP minimos pra remocao de fundo de imagens de produto.
 Servico proposital: sem auth, sticky session pra reaproveitar o modelo em
-memoria (1 worker).
+memoria. Roda N workers paralelos (env REMBG_WORKERS, default 2) — cada worker
+tem sua propria sessao/modelo; acelera o upload em lote sem mudar a qualidade.
 
 POST /remove-bg  multipart 'file' image/*  -> image/png transparente
                  campo opcional 'add_shadow' (default false): adiciona uma

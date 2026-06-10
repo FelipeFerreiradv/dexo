@@ -14,10 +14,15 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
-    # Pico de RSS ~8.5GB com o birefnet-general-lite (default) — ok no KVM8
-    # (32GB). Limite com folga protege o host de runaway. Se trocar p/
-    # isnet-general-use (pico ~1.6GB) pode baixar p/ ~3g.
-    mem_limit: 12g
+    # Workers paralelos aceleram o upload em LOTE. REMBG_WORKERS x
+    # OMP_NUM_THREADS ~= nº de vCPUs (default 2 x 4 = 8, p/ o KVM8). Tunável
+    # aqui sem rebuild (só `docker compose up -d rembg`).
+    environment:
+      REMBG_WORKERS: "2"
+      OMP_NUM_THREADS: "4"
+    # Pico ~8.5GB POR worker (birefnet) => 2 workers ~17GB; 20g cobre c/ folga
+    # no KVM8/32GB. Se subir p/ 3 workers (~25GB), aumente p/ ~28g.
+    mem_limit: 20g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
       interval: 30s
