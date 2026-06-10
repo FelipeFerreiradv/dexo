@@ -24,6 +24,10 @@ import { CategoryResolutionService } from "../marketplaces/services/category-res
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
 import { getMeasurementsForCategory } from "../lib/ml-measurements";
 import { normalizeQuality, InvalidQualityError } from "../lib/quality";
+import {
+  parseNfeXml,
+  NfeParseError,
+} from "../fiscal/nfe-import/parse-nfe-xml";
 
 const PUBLICATION_STATUS_VALUES = new Set<ProductPublicationStatus>([
   "ACTIVE",
@@ -165,6 +169,76 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao gerar SKU",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /products/nfe/parse
+   * Recebe o XML de uma NF-e de compra (modelo 55, multipart, campo `file`) e
+   * devolve os itens normalizados para PRÉ-PREENCHER o modal de criação de
+   * produto. NÃO persiste nada. O parsing é isolado e seguro contra XXE
+   * (ver app/fiscal/nfe-import/parse-nfe-xml.ts).
+   */
+  fastify.post(
+    "/nfe/parse",
+    {
+      preHandler: [
+        authMiddleware,
+        async (request: FastifyRequest, reply: FastifyReply) => {
+          if (!request.isMultipart()) {
+            return reply.status(400).send({
+              error: "Tipo de conteúdo inválido",
+              message: "Esperado multipart/form-data com o XML no campo `file`",
+            });
+          }
+        },
+      ],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        let buffer: Buffer | null = null;
+        for await (const part of request.parts()) {
+          if (part.type === "file") {
+            if (part.fieldname !== "file") {
+              // descarta outros arquivos para liberar o stream
+              await part.toBuffer().catch(() => undefined);
+              continue;
+            }
+            try {
+              buffer = await part.toBuffer();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
+                return reply.status(400).send({
+                  error: "Arquivo muito grande",
+                  message: "O tamanho máximo permitido é 5MB",
+                });
+              }
+              throw e;
+            }
+          }
+        }
+
+        if (!buffer) {
+          return reply.status(400).send({
+            error: "Arquivo não encontrado",
+            message: "Envie o XML da NF-e no campo `file`",
+          });
+        }
+
+        const result = parseNfeXml(buffer.toString("utf-8"));
+        return reply.status(200).send(result);
+      } catch (error) {
+        if (error instanceof NfeParseError) {
+          return reply.status(error.statusCode).send({ error: error.message });
+        }
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao ler o XML da NF-e",
         });
       }
     },

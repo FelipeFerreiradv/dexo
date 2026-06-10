@@ -64,6 +64,7 @@ import {
   applyMlCatalogSuggestion,
   type CatalogApplyFormValues,
 } from "../lib/apply-ml-catalog-suggestion";
+import { nfeFieldEntries } from "../lib/nfe-import-mapping";
 import type { CatalogProductDetail } from "../../marketplaces/usecases/ml-catalog-suggestion.usecase";
 
 // NextAuth
@@ -230,6 +231,19 @@ type SuggestionResponse = {
 interface CreateProductDialogProps {
   onProductCreated: () => void;
   onToast: (message: string, type: "success" | "error" | "warning") => void;
+  // --- Props ADITIVAS (fluxo de importação de NF-e) ---
+  // Todas opcionais: quando ausentes, o modal se comporta EXATAMENTE como hoje
+  // (estado de abertura interno, botão "Novo Produto", sem pré-preenchimento).
+  /** Abertura controlada pelo pai. Se `undefined`, usa estado interno (atual). */
+  open?: boolean;
+  /** Notifica o pai quando a abertura muda (só relevante no modo controlado). */
+  onOpenChange?: (open: boolean) => void;
+  /** Valores iniciais p/ pré-preencher (apenas campos permitidos da NF-e). */
+  initialValues?: Partial<ProductFormData>;
+  /** Origem da abertura. "nfe" liga o pré-preenchimento e o aviso de imagem. */
+  source?: "manual" | "nfe";
+  /** Oculta o gatilho "Novo Produto" (quando o pai controla a abertura). */
+  hideTrigger?: boolean;
 }
 
 const qualityOptions = [
@@ -314,10 +328,22 @@ const TOTAL_STEPS = STEPS.length;
 export function CreateProductDialog({
   onProductCreated,
   onToast,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+  initialValues,
+  source = "manual",
+  hideTrigger = false,
 }: CreateProductDialogProps) {
   const { data: session } = useSession();
   const backendBase = getApiBaseUrl();
-  const [open, setOpen] = useState(false);
+  // Abertura controlada (pai) OU não-controlada (estado interno = atual).
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlledOpen = controlledOpen !== undefined;
+  const open = isControlledOpen ? controlledOpen : internalOpen;
+  const setOpen = (next: boolean) => {
+    if (!isControlledOpen) setInternalOpen(next);
+    controlledOnOpenChange?.(next);
+  };
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSku, setIsLoadingSku] = useState(false);
@@ -389,6 +415,11 @@ export function CreateProductDialog({
     version?: string;
     sourceVehicle?: string;
   }>({});
+  // Espelha `initialValues` (NF-e) para os fetches assíncronos lerem sem virar dependência.
+  const initialValuesRef = useRef(initialValues);
+  initialValuesRef.current = initialValues;
+  // Garante que o pré-preenchimento da NF-e seja aplicado uma vez por abertura.
+  const nfeAppliedRef = useRef(false);
 
   const {
     register,
@@ -592,11 +623,16 @@ export function CreateProductDialog({
               ? Number(user.defaultCostPrice)
               : null;
           setDefaultCostPrice(costPriceDefault);
-          if (costPriceDefault != null) {
+          // Não sobrescrever custo/estoque vindos da NF-e (fluxo de importação).
+          // Sem `initialValues` (fluxo manual), o comportamento é idêntico ao de hoje.
+          const nfeInit = initialValuesRef.current as
+            | Record<string, unknown>
+            | undefined;
+          if (costPriceDefault != null && nfeInit?.costPrice == null) {
             setValue("costPrice", costPriceDefault);
           }
 
-          if (user.defaultStock != null) {
+          if (user.defaultStock != null && nfeInit?.stock == null) {
             setValue("stock", Number(user.defaultStock));
           }
 
@@ -767,6 +803,24 @@ export function CreateProductDialog({
     fetchAccounts,
     session?.user?.email,
   ]);
+
+  // Pré-preenche o form com os valores vindos da NF-e (fluxo de importação).
+  // ADITIVO: sem `initialValues` ou fora do source "nfe", não faz NADA — o fluxo
+  // manual segue idêntico. Roda 1x por abertura (nfeAppliedRef). Os campos
+  // permitidos (nfeFieldEntries) excluem imageUrl e sku de propósito. Os fetches
+  // on-open são guardados para não sobrescrever custo/estoque (ver fetchDefaultDescription).
+  useEffect(() => {
+    if (!open || source !== "nfe" || !initialValues) return;
+    if (nfeAppliedRef.current) return;
+    nfeAppliedRef.current = true;
+    for (const [field, value] of nfeFieldEntries(
+      initialValues as Record<string, unknown>,
+    )) {
+      setValue(field as keyof ProductFormData, value as never, {
+        shouldDirty: true,
+      });
+    }
+  }, [open, source, initialValues, setValue]);
 
   // Define descrição padrão quando carregada
   useEffect(() => {
@@ -2247,6 +2301,8 @@ export function CreateProductDialog({
     scrapAutofilledRef.current = {};
     // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
     hasFetchedOnOpenRef.current = false;
+    // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
+    nfeAppliedRef.current = false;
     setOpen(false);
   };
 
@@ -2322,12 +2378,14 @@ export function CreateProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="size-4" />
-          Novo Produto
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="size-4" />
+            Novo Produto
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
@@ -2335,6 +2393,13 @@ export function CreateProductDialog({
             Preencha os dados do produto em {TOTAL_STEPS} etapas simples.
           </DialogDescription>
         </DialogHeader>
+        {source === "nfe" && (
+          <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
+            Dados importados da NF-e. Revise os valores e lembre de adicionar a{" "}
+            <strong>imagem</strong> (obrigatória) e a categoria antes de
+            finalizar.
+          </div>
+        )}
 
         {/* Progress Bar */}
         <div className="space-y-4">

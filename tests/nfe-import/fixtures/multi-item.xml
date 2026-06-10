@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>55</mod><nNF>8</nNF></ide>
+    <emit><xNome>DIST PECAS</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>AMT01</cProd><cEAN>7890000000024</cEAN>
+      <xProd>AMORTECEDOR DIANTEIRO</xProd>
+      <uCom>UN</uCom><qCom>4.0000</qCom><vUnCom>200.0000</vUnCom><vProd>800.00</vProd>
+    </prod></det>
+    <det nItem="2"><prod>
+      <cProd>BAT60</cProd><cEAN>7890000000031</cEAN>
+      <xProd>BATERIA 60AH</xProd>
+      <uCom>UN</uCom><qCom>2.0000</qCom><vUnCom>300.0000</vUnCom><vProd>600.00</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>

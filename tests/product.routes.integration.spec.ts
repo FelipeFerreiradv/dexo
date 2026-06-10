@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fastify from "fastify";
+import fastifyMultipart from "@fastify/multipart";
+import FormData from "form-data";
 import { productRoutes } from "../app/routes/product.routes";
 import { UserRepositoryPrisma } from "../app/repositories/user.repository";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
@@ -1224,5 +1226,103 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
       "Acessórios para Veículos > Calotas",
     );
     expect(composta).toBeDefined();
+  });
+});
+
+describe("POST /products/nfe/parse (integration)", () => {
+  let nfeApp: ReturnType<typeof fastify>;
+
+  const VALID_NFE = `<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>55</mod><nNF>1</nNF></ide>
+    <emit><xNome>FORNECEDOR TESTE</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>ABC123</cProd><cEAN>7890000000017</cEAN>
+      <xProd>PASTILHA DE FREIO DIANTEIRA</xProd>
+      <uCom>UN</uCom><qCom>5.0000</qCom><vUnCom>45.9000</vUnCom><vProd>229.50</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>`;
+
+  const DOCTYPE_NFE = `<?xml version="1.0"?>
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<nfeProc><NFe><infNFe><ide><mod>55</mod></ide></infNFe></NFe></nfeProc>`;
+
+  beforeEach(async () => {
+    nfeApp = fastify();
+    await nfeApp.register(fastifyMultipart, {
+      limits: { fileSize: 5 * 1024 * 1024 },
+    });
+    await nfeApp.register(productRoutes, { prefix: "/products" });
+    // authMiddleware resolve o usuário autenticado por email.
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await nfeApp.close();
+  });
+
+  const injectXml = (xml: string) => {
+    const form = new FormData();
+    form.append("file", xml, {
+      filename: "nota.xml",
+      contentType: "application/xml",
+    });
+    return nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: { email: "test@example.com", ...form.getHeaders() },
+      payload: form,
+    });
+  };
+
+  it("retorna 200 e itens normalizados para um XML válido", async () => {
+    const res = await injectXml(VALID_NFE);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      name: "PASTILHA DE FREIO DIANTEIRA",
+      costPrice: 45.9,
+      quantity: 5,
+      unit: "UN",
+    });
+    expect(body.meta.groupedCount).toBe(1);
+  });
+
+  it("bloqueia XXE (DOCTYPE) com status 400", async () => {
+    const res = await injectXml(DOCTYPE_NFE);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.payload).error).toMatch(/DOCTYPE/i);
+  });
+
+  it("retorna 400 quando nenhum arquivo é enviado", async () => {
+    const form = new FormData();
+    form.append("naoArquivo", "x");
+    const res = await nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: { email: "test@example.com", ...form.getHeaders() },
+      payload: form,
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("retorna 400 para conteúdo não-multipart", async () => {
+    const res = await nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: {
+        email: "test@example.com",
+        "content-type": "application/json",
+      },
+      payload: JSON.stringify({ foo: "bar" }),
+    });
+    expect(res.statusCode).toBe(400);
   });
 });

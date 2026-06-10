@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>55</mod><nNF>9</nNF></ide>
+    <emit><xNome>DIST PECAS</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>KIT01</cProd><cEAN>7890000000048</cEAN>
+      <xProd>CONJUNTO DE PASTILHAS DE FREIO DIANTEIRAS E TRASEIRAS HONDA CIVIC ORIGINAL</xProd>
+      <uCom>KIT</uCom><qCom>1.0000</qCom><vUnCom>320.0000</vUnCom><vProd>320.00</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>

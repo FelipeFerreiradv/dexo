@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>65</mod><nNF>1</nNF></ide>
+    <emit><xNome>VAREJO LTDA</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>X</cProd><cEAN>SEM GTIN</cEAN><xProd>PRODUTO QUALQUER</xProd>
+      <uCom>UN</uCom><qCom>1</qCom><vUnCom>10</vUnCom><vProd>10</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>
