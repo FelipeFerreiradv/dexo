@@ -100,6 +100,7 @@ import {
   type EditProductDialogListingContext,
 } from "./edit-product-dialog";
 import { ImportExportProducts } from "./import-export-products";
+import { ImportNfeXml } from "./import-nfe-xml";
 import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
 import { ProductDetailSheet } from "./product-detail-sheet";
 import { ImageLightbox } from "./image-lightbox";
@@ -1871,6 +1872,17 @@ export function ProductsList() {
                 }}
                 onToast={showToast}
               />
+              {process.env.NEXT_PUBLIC_NFE_IMPORT_ENABLED === "true" && (
+                <ImportNfeXml
+                  email={session?.user?.email}
+                  onProductCreated={() => {
+                    fetchProducts(1, filters);
+                    invalidateProductFilterOptionsCache(session?.user?.email);
+                    fetchFilterOptions(true);
+                  }}
+                  onToast={showToast}
+                />
+              )}
               <CreateProductDialog
                 onProductCreated={() => {
                   fetchProducts(1, filters);

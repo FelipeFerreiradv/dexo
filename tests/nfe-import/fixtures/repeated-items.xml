@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>55</mod><nNF>7</nNF></ide>
+    <emit><xNome>DIST PECAS</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>ABC123</cProd><cEAN>7890000000017</cEAN>
+      <xProd>PASTILHA DE FREIO DIANTEIRA HONDA CIVIC</xProd>
+      <uCom>UN</uCom><qCom>3.0000</qCom><vUnCom>45.9000</vUnCom><vProd>137.70</vProd>
+    </prod></det>
+    <det nItem="2"><prod>
+      <cProd>ABC123</cProd><cEAN>7890000000017</cEAN>
+      <xProd>PASTILHA DE FREIO DIANTEIRA HONDA CIVIC</xProd>
+      <uCom>UN</uCom><qCom>2.0000</qCom><vUnCom>45.9000</vUnCom><vProd>91.80</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>
