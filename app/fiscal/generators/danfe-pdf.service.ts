@@ -1,7 +1,8 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
-import type { NfeDraftResponse, NfeDraftItem } from "../../interfaces/nfe.interface";
+import type { NfeDraftResponse, NfeDraftItem, NfeDestinatario } from "../../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
 import type { NfeTotais } from "../domain/nfe.types";
+import { parseNfeXml, type ParsedNfe } from "../sefaz/nfe-xml-parser.service";
 
 /**
  * Gerador de DANFE simplificado usando pdf-lib.
@@ -184,5 +185,194 @@ export class DanfePdfService {
     const d = cnpj.replace(/\D/g, "");
     if (d.length !== 14) return cnpj;
     return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+  }
+
+  /**
+   * Gera DANFE a partir do XML autorizado (`<nfeProc>` ou `<NFe>` solto).
+   *
+   * Fonte primária para SEFAZ direto (após F-H), porque o XML autorizado é
+   * o documento canônico imutável retornado pela SEFAZ. Para Focus NFe, o
+   * use case ainda pode usar `generate(NfeEmitida, ...)` quando o XML não
+   * está disponível em mão.
+   *
+   * Reutiliza o renderer existente — parseia o XML, projeta para os tipos
+   * `NfeDraftResponse`-like e `CompanyFiscalConfig`-like e delega para
+   * `generate()`. O resultado visual é idêntico.
+   */
+  async generateFromXml(xml: string): Promise<Uint8Array> {
+    const parsed = parseNfeXml(xml);
+    const projected = projectParsedNfeToDraft(parsed);
+    return this.generate(
+      projected.draft,
+      projected.config,
+      parsed.chaveAcesso || projected.draft.chaveAcesso,
+      parsed.protNFe?.nProt ?? null,
+    );
+  }
+}
+
+/**
+ * Projeta o resultado do parser de XML em estruturas equivalentes às do
+ * banco (NfeDraftResponse + CompanyFiscalConfig). Permite reaproveitar o
+ * renderer atual sem refatorar a assinatura pública.
+ *
+ * Campos que existem só no DB e não no XML (orderId, customerId,
+ * createdAt etc) ficam com defaults seguros — o renderer não os usa.
+ */
+export function projectParsedNfeToDraft(parsed: ParsedNfe): {
+  draft: NfeDraftResponse;
+  config: CompanyFiscalConfig;
+} {
+  const { ide, emit, dest, itens, total, transp, pag, protNFe } = parsed;
+
+  const ambiente = ide.tpAmb === "1" ? "PRODUCAO" : "HOMOLOGACAO";
+
+  const config: CompanyFiscalConfig = {
+    id: "from-xml",
+    userId: "from-xml",
+    cnpj: emit.CNPJ ?? emit.CPF ?? "",
+    razaoSocial: emit.xNome,
+    nomeFantasia: emit.xFant,
+    inscricaoEstadual: emit.IE,
+    inscricaoMunicipal: emit.IM,
+    regimeTributario:
+      emit.CRT === "1"
+        ? "SIMPLES"
+        : emit.CRT === "2"
+          ? "SIMPLES"
+          : "LUCRO_PRESUMIDO",
+    cnae: emit.CNAE,
+    ambiente,
+    cep: emit.ender.CEP,
+    logradouro: emit.ender.xLgr,
+    numero: emit.ender.nro,
+    complemento: emit.ender.xCpl,
+    bairro: emit.ender.xBairro,
+    municipio: emit.ender.xMun,
+    codMunicipio: emit.ender.cMun,
+    uf: emit.ender.UF,
+    codPais: emit.ender.cPais,
+    pais: emit.ender.xPais,
+    certificadoPath: null,
+    certificadoSenhaEnc: null,
+    certificadoValidoAte: null,
+    providerName: "SEFAZ_DIRECT",
+    providerToken: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as CompanyFiscalConfig;
+
+  const destinatario: NfeDestinatario = {
+    tipoPessoa: dest.CPF ? "PF" : dest.idEstrangeiro ? "EXTERIOR" : "PJ",
+    cpfCnpj: dest.CNPJ ?? dest.CPF ?? dest.idEstrangeiro ?? "",
+    nome: dest.xNome,
+    inscricaoEstadual: dest.IE,
+    email: dest.email,
+    telefone: dest.ender?.fone ?? null,
+    cep: dest.ender?.CEP ?? null,
+    logradouro: dest.ender?.xLgr ?? null,
+    numero: dest.ender?.nro ?? null,
+    complemento: dest.ender?.xCpl ?? null,
+    bairro: dest.ender?.xBairro ?? null,
+    municipio: dest.ender?.xMun ?? null,
+    codMunicipio: dest.ender?.cMun ?? null,
+    uf: dest.ender?.UF ?? null,
+    codPais: dest.ender?.cPais ?? null,
+    pais: dest.ender?.xPais ?? null,
+  };
+
+  const draftItens: NfeDraftItem[] = itens.map((it) => ({
+    productId: null,
+    numero: it.nItem,
+    codigo: it.cProd,
+    descricao: it.xProd,
+    ncm: it.NCM,
+    cfop: it.CFOP,
+    cest: it.CEST,
+    origem: 0,
+    unidade: it.uCom,
+    quantidade: it.qCom,
+    valorUnitario: it.vUnCom,
+    valorTotal: it.vProd,
+    desconto: it.vDesc > 0 ? it.vDesc : null,
+    observacoes: null,
+    cstIcms: null,
+    cstPis: null,
+    cstCofins: null,
+    aliquotaIcms: null,
+    aliquotaIpi: null,
+    aliquotaPis: null,
+    aliquotaCofins: null,
+    reducaoBcIcms: null,
+    tributosJson: null,
+  }));
+
+  const totais: NfeTotais = {
+    totalProdutos: total.vProd,
+    totalDesconto: total.vDesc,
+    totalBcIcms: total.vBC,
+    totalIcms: total.vICMS,
+    totalBcIpi: 0,
+    totalIpi: total.vIPI,
+    totalPis: total.vPIS,
+    totalCofins: total.vCOFINS,
+    totalNota: total.vNF,
+    totalTributos: total.vICMS + total.vIPI + total.vPIS + total.vCOFINS,
+  };
+
+  const draft: NfeDraftResponse = {
+    id: "from-xml",
+    userId: "from-xml",
+    orderId: null,
+    customerId: null,
+    ambiente,
+    modelo: ide.mod,
+    serie: ide.serie,
+    numero: ide.nNF,
+    chaveAcesso: parsed.chaveAcesso,
+    tipoOperacao: ide.tpNF === "1" ? "SAIDA" : "ENTRADA",
+    finalidade: "NORMAL",
+    destinoOperacao: "INTERNA",
+    naturezaOperacao: ide.natOp,
+    indPresenca: "PRESENCIAL",
+    intermediador: null,
+    numeroPedido: null,
+    dataEmissao: ide.dhEmi ? new Date(ide.dhEmi) : null,
+    dataSaida: ide.dhSaiEnt ? new Date(ide.dhSaiEnt) : null,
+    destinatarioJson: destinatario,
+    emitenteJson: null,
+    modalidadeFrete: mapModFreteToDomain(transp?.modFrete ?? "9"),
+    transportadoraJson: transp?.transporta ?? null,
+    totaisJson: totais,
+    notasReferenciadasJson: null,
+    exportacaoJson: null,
+    pagamentosJson: pag.length > 0 ? pag : null,
+    duplicatasJson: null,
+    volumesJson: null,
+    status: protNFe ? "AUTHORIZED" : "DRAFT",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    itens: draftItens,
+  };
+
+  return { draft, config };
+}
+
+function mapModFreteToDomain(cod: string): string | null {
+  switch (cod) {
+    case "0":
+      return "CIF";
+    case "1":
+      return "FOB";
+    case "2":
+      return "TERCEIROS";
+    case "3":
+      return "PROPRIO_REMETENTE";
+    case "4":
+      return "PROPRIO_DESTINATARIO";
+    case "9":
+      return "SEM_FRETE";
+    default:
+      return null;
   }
 }

@@ -423,15 +423,29 @@ export class NfeEmissionUseCase {
     }
 
     // Generate DANFE PDF
+    // Preferimos gerar a partir do XML autorizado (fonte canônica imutável
+    // retornada pela SEFAZ). Fallback para o caminho DB quando XML inline
+    // não está disponível (cenário Focus NFe, ou retorno parcial).
     let danfePdfPath: string | null = null;
     try {
-      const nfeData = await this.loadNfe(nfeId);
-      const pdfBytes = await this.danfeService.generate(
-        nfeData,
-        config,
-        chaveAcesso,
-        protocolo,
-      );
+      let pdfBytes: Uint8Array | null = null;
+      if (xmlAutorizadoInline) {
+        try {
+          pdfBytes = await this.danfeService.generateFromXml(xmlAutorizadoInline);
+        } catch {
+          // Parse falhou — cai no fallback DB
+          pdfBytes = null;
+        }
+      }
+      if (!pdfBytes) {
+        const nfeData = await this.loadNfe(nfeId);
+        pdfBytes = await this.danfeService.generate(
+          nfeData,
+          config,
+          chaveAcesso,
+          protocolo,
+        );
+      }
       danfePdfPath = await this.storage.saveDanfePdf(userId, nfeId, pdfBytes);
     } catch {
       // DANFE generation is non-critical — log but don't fail
