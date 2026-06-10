@@ -7,6 +7,7 @@ import { NfeEmissionUseCase } from "../usecases/nfe-emission.usecase";
 import { NfeListingUseCase } from "../usecases/nfe-listing.usecase";
 import { NfeCancelamentoUseCase } from "../usecases/nfe-cancelamento.usecase";
 import { NfeInutilizacaoUseCase } from "../usecases/nfe-inutilizacao.usecase";
+import { NfeCartaCorrecaoUseCase } from "../usecases/nfe-carta-correcao.usecase";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
@@ -21,6 +22,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const nfeListing = new NfeListingUseCase();
   const nfeCancelamento = new NfeCancelamentoUseCase();
   const nfeInutilizacao = new NfeInutilizacaoUseCase();
+  const nfeCartaCorrecao = new NfeCartaCorrecaoUseCase();
   const calculator = new FiscalCalculatorService();
   const configRepo = new CompanyFiscalRepository();
   const nfeRepo = new NfeRepository();
@@ -602,6 +604,46 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
                 message.includes("expirado") ||
                 message.includes("sem chave") ||
                 message.includes("sem protocolo")
+              ? 400
+              : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // ── Carta de Correção Eletrônica (F-F) ──
+  //
+  // Só funciona com providerName=SEFAZ_DIRECT (Focus NFe não expõe via API).
+  // Body: { correcao: string }. Retorno inclui sequencia atribuída (1..20).
+
+  fastify.post(
+    "/nfe/:id/carta-correcao",
+    { preHandler: [authMiddleware] },
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params;
+        const body = request.body as any;
+        const correcao = body?.correcao ?? "";
+        const result = await nfeCartaCorrecao.execute(userId, id, correcao);
+        return reply.status(result.success ? 200 : 422).send(result);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao enviar Carta de Correcao";
+        const status =
+          message.includes("nao encontrada")
+            ? 404
+            : message.includes("Limite") ||
+                message.includes("15..1000") ||
+                message.includes("Somente NFes") ||
+                message.includes("sem chave") ||
+                message.includes("SEFAZ_DIRECT") ||
+                message.includes("certificado")
               ? 400
               : 500;
         return reply.status(status).send({ error: message });
