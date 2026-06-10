@@ -11,17 +11,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Modelo default: isnet-general-use (~1s/img, pico ~1.6GB RAM; borda boa com
-# o refino, bem acima do u2net). Trocável no build sem editar código — p/
-# máxima qualidade em fundo complexo (custa ~7s + pico ~8.5GB RAM, exige
-# servidor com folga de RAM e mem_limit maior no compose):
-#   docker build --build-arg REMBG_MODEL=birefnet-general-lite
+# Modelo default: birefnet-general-lite (melhor borda + fundo complexo; pico
+# ~8.5GB RAM em CPU — requer servidor com folga, ex. KVM8/32GB). Trocável no
+# build sem editar código p/ a variante leve (~1.6GB / ~1s):
+#   docker build --build-arg REMBG_MODEL=isnet-general-use
 # O ENV persiste em runtime, então o app.py usa o MESMO modelo pré-baixado.
-ARG REMBG_MODEL=isnet-general-use
+ARG REMBG_MODEL=birefnet-general-lite
 ENV REMBG_MODEL=${REMBG_MODEL}
 
-# Pré-baixa o modelo no build (~178MB p/ o isnet) pra evitar latência no
-# primeiro request em produção (senão a 1ª chamada baixaria e duraria dezenas de s).
+# Pré-baixa o modelo no build (~224MB p/ o birefnet-lite) pra evitar latência
+# no primeiro request em produção (senão a 1ª chamada baixaria e duraria dezenas de s).
 RUN python -c "from rembg import new_session; new_session('$REMBG_MODEL')"
 
 COPY app.py .

@@ -20,6 +20,36 @@ interface MultiImageUploadProps {
   maxImages?: number;
 }
 
+// Concorrência do upload em lote: o sidecar tem 1 worker e o modelo é
+// CPU-bound, então disparar todas as imagens de uma vez enche a fila e as
+// últimas podem estourar o timeout (caindo no fallback sem remoção). Enviar
+// em pequenos blocos mantém a espera por requisição baixa — assim TODAS as
+// imagens têm fundo removido + sombra, não só as primeiras.
+const UPLOAD_CONCURRENCY = 3;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  async function runner() {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await worker(items[i]) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => runner()),
+  );
+  return results;
+}
+
 export function MultiImageUpload({
   value = [],
   onChange,
@@ -87,8 +117,10 @@ export function MultiImageUpload({
       setIsUploading(true);
 
       try {
-        const settled = await Promise.allSettled(
-          filesToUpload.map((file) => uploadFile(file)),
+        const settled = await runWithConcurrency(
+          filesToUpload,
+          UPLOAD_CONCURRENCY,
+          (file) => uploadFile(file),
         );
         const fulfilled = settled.filter(
           (r): r is PromiseFulfilledResult<{ url: string | null; warning?: string }> =>

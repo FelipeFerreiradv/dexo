@@ -253,7 +253,7 @@ async function defaultRembgFetcher(
 ): Promise<Buffer> {
   const url = process.env.REMBG_SIDECAR_URL;
   if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
-  const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "30000");
+  const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "60000");
 
   // O sidecar valida que content_type comece com "image/" — manter
   // consistente com o filename `input.png` e evitar 400 do FastAPI.
