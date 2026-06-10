@@ -53,7 +53,7 @@ curl -fsS -X POST http://localhost:8000/remove-bg \
 
 Modelo trocavel no build, sem editar codigo (pre-baixa o escolhido). Default
 `birefnet-general-lite` (melhor borda + fundo complexo; pico ~8.5 GB RAM em
-CPU — requer servidor com folga, ex. KVM8/32 GB; `mem_limit: 20g` no compose).
+CPU — requer servidor com folga, ex. KVM8/32 GB; `mem_limit: 12g` no compose).
 Variante leve p/ hosts pequenos (~1.6 GB / ~1s):
 
 ```bash
@@ -61,13 +61,13 @@ docker compose build --build-arg REMBG_MODEL=isnet-general-use rembg
 # qualidade x custo: birefnet-general-lite (default) > isnet-general-use > u2net
 ```
 
-**Velocidade (upload em lote):** o sidecar roda `REMBG_WORKERS` workers em
-paralelo (default 2). Uma inferencia do birefnet nao satura os vCPUs (4
-nucleos ~= 8), entao varios workers processam imagens simultaneamente e
-aceleram MUITO o lote — sem mudar a qualidade. Regra: `REMBG_WORKERS` x
-`OMP_NUM_THREADS` ~= nº de vCPUs (default 2 x 4 = 8). Cada worker birefnet usa
-~8.5 GB. Ajuste em `docker-compose.yml` (`environment:` + `mem_limit`) e
-`docker compose up -d rembg` (sem rebuild). Reverter: `REMBG_WORKERS=1`.
+**Velocidade:** o birefnet em CPU e' memory-bound (~7s/img e' o piso; mais
+nucleos/workers nao aceleram — nos testes 4 nucleos ~= 8). Default **1 worker**
+(`REMBG_WORKERS=1`, `OMP_NUM_THREADS=8`): imagem unica mais rapida + menos RAM.
+A sensacao de rapidez no LOTE vem do **upload progressivo** (cada imagem
+aparece assim que fica pronta, no front). Multi-worker fica configuravel
+(`REMBG_WORKERS` x `OMP_NUM_THREADS` ~= vCPUs; ~8.5 GB/worker) caso o host
+tenha banda de memoria sobrando. Velocidade *real* do birefnet so com GPU.
 
 Refino de borda ajustavel por env (defaults calibrados). Killswitch:
 `REMBG_REFINE_EDGES=false` volta pro recorte cru do modelo, sem rebuild.

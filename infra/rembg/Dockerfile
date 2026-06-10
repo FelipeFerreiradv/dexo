@@ -27,12 +27,12 @@ COPY app.py .
 
 EXPOSE 8000
 
-# Workers paralelos: UMA inferência do birefnet não satura os vCPUs (em CPU,
-# 4 núcleos ~= 8 núcleos), então rodar vários workers acelera MUITO o upload
-# em LOTE — cada worker processa uma imagem em parte dos núcleos, em paralelo.
-# Custo: cada worker carrega o modelo (~8.5GB c/ birefnet). Regra: REMBG_WORKERS
-# x OMP_NUM_THREADS ~= nº de vCPUs. Default 2 x 4 = 8 (KVM8). Tunável por env no
-# compose, sem editar código. 'exec' faz o uvicorn virar PID 1 (shutdown ok).
-ENV REMBG_WORKERS=2
-ENV OMP_NUM_THREADS=4
-CMD ["/bin/sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port 8000 --workers ${REMBG_WORKERS:-2}"]
+# Workers configuráveis. Em CPU o birefnet é LIMITADO POR BANDA DE MEMÓRIA
+# (4 núcleos ~= 8, e +workers não acelerou o lote nos testes), então o default
+# é 1 worker — imagem única mais rápida (usa todos os vCPUs) e menos RAM. A
+# infra multi-worker fica disponível p/ tunar (REMBG_WORKERS x OMP_NUM_THREADS
+# ~= vCPUs) caso o host tenha banda de memória sobrando. Velocidade percebida
+# no lote vem do upload progressivo no front. 'exec' faz o uvicorn virar PID 1.
+ENV REMBG_WORKERS=1
+ENV OMP_NUM_THREADS=8
+CMD ["/bin/sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port 8000 --workers ${REMBG_WORKERS:-1}"]
