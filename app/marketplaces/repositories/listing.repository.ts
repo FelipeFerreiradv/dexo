@@ -222,6 +222,29 @@ export class ListingRepository {
   }
 
   /**
+   * Reaponta um listing para outra conta de marketplace.
+   *
+   * Usado pelo reparo automático de ownership: quando a remoção via API
+   * estoura 403 ("you are not the seller") e descobrimos que o anúncio
+   * pertence a outra conta do MESMO usuário, atualizamos o FK aqui em vez
+   * de pedir intervenção manual.
+   *
+   * O índice único `(marketplaceAccountId, externalListingId)` é respeitado
+   * porque o destino é uma conta diferente — só dispara conflict se já
+   * houver outro listing local para o mesmo externalId nessa conta-destino,
+   * o que indicaria duplicação prévia (raro; deixar o erro propagar).
+   */
+  static async reassignAccount(
+    listingId: string,
+    newAccountId: string,
+  ) {
+    return prisma.productListing.update({
+      where: { id: listingId },
+      data: { marketplaceAccountId: newAccountId },
+    });
+  }
+
+  /**
    * Atualiza SKU externo de um listing
    */
   static async updateExternalSku(listingId: string, externalSku: string) {

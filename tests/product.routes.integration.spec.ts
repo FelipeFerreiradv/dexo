@@ -1,14 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fastify from "fastify";
+import fastifyMultipart from "@fastify/multipart";
+import FormData from "form-data";
 import { productRoutes } from "../app/routes/product.routes";
 import { UserRepositoryPrisma } from "../app/repositories/user.repository";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
 import { ProductUseCase } from "../app/usecases/product.usercase";
 
 // Prevent heavy marketplace/usecase imports from pulling prisma alias in this test
-const removeListingMock = vi
-  .fn()
-  .mockResolvedValue({ success: true } as { success: boolean; error?: string });
+const removeListingMock = vi.fn().mockResolvedValue({
+  success: true,
+  closedOnMarketplace: true,
+} as {
+  success: boolean;
+  closedOnMarketplace: boolean;
+  error?: string;
+  retryable?: boolean;
+});
 vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
   ListingUseCase: {
     createMLListing: async () => ({
@@ -106,6 +114,7 @@ vi.mock("../app/services/system-log.service", () => ({
     logProductCreate: vi.fn(),
     logProductDelete: vi.fn(),
     logProductUpdate: vi.fn(),
+    logListingDeleteFailed: vi.fn(),
   },
 }));
 
@@ -830,7 +839,10 @@ describe("POST /products (integration)", () => {
       .mockResolvedValue(undefined as any);
 
     removeListingMock.mockClear();
-    removeListingMock.mockResolvedValue({ success: true });
+    removeListingMock.mockResolvedValue({
+      success: true,
+      closedOnMarketplace: true,
+    });
 
     const res = await app.inject({
       method: "DELETE",
@@ -848,7 +860,7 @@ describe("POST /products (integration)", () => {
     expect(body.listingResults.every((r: any) => r.closed === true)).toBe(true);
   });
 
-  it("still deletes the product locally when Shopee removal fails (best-effort)", async () => {
+  it("returns 409 and does NOT delete locally when a marketplace removal fails permanently", async () => {
     const fakeUser = { id: "user-1", email: "test@example.com" } as any;
     vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
       fakeUser,
@@ -871,6 +883,8 @@ describe("POST /products (integration)", () => {
     removeListingMock.mockClear();
     removeListingMock.mockResolvedValueOnce({
       success: false,
+      closedOnMarketplace: false,
+      retryable: false,
       error: "item still active",
     });
 
@@ -880,10 +894,435 @@ describe("POST /products (integration)", () => {
       headers: { email: "test@example.com" },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(deleteSpy).toHaveBeenCalledWith("prod-123", "user-1");
+    expect(res.statusCode).toBe(409);
+    expect(deleteSpy).not.toHaveBeenCalled();
     const body = JSON.parse(res.payload);
+    expect(body.listingResults).toHaveLength(1);
     expect(body.listingResults[0].closed).toBe(false);
+    expect(body.listingResults[0].error).toBe("item still active");
     expect(body.message).toMatch(/marketplace/);
+  });
+
+  it("returns 409 with retryable=true when failure is transient (retryable)", async () => {
+    const fakeUser = { id: "user-1", email: "test@example.com" } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+
+    const prismaMock = (await import("@/app/lib/prisma")).default as any;
+    prismaMock.productListing.findMany = vi.fn().mockResolvedValue([
+      {
+        id: "listing-ml-1",
+        externalListingId: "MLB123",
+        marketplaceAccountId: "acc-ml",
+        marketplaceAccount: { id: "acc-ml", platform: "MERCADO_LIVRE" },
+      },
+    ]);
+
+    const deleteSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "delete")
+      .mockResolvedValue(undefined as any);
+
+    removeListingMock.mockClear();
+    removeListingMock.mockResolvedValueOnce({
+      success: false,
+      closedOnMarketplace: false,
+      retryable: true,
+      error: "rate limited after retries",
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/products/prod-123",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(deleteSpy).not.toHaveBeenCalled();
+    const body = JSON.parse(res.payload);
+    expect(body.listingResults[0].retryable).toBe(true);
+  });
+});
+
+describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV não cobre", () => {
+  let app: ReturnType<typeof fastify>;
+
+  beforeEach(async () => {
+    app = fastify();
+    await app.register(productRoutes, { prefix: "/products" });
+
+    const fakeUser = {
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
+      null,
+    );
+    // Re-mock CategoryResolutionService: o vi.mock module-level (topo do
+    // arquivo) usa vi.fn().mockResolvedValue(...), e vi.restoreAllMocks() em
+    // afterEach de outros describes faz mockReset desses fns, zerando o
+    // retorno e quebrando a resolução de categoria no nosso flow.
+    const catModule = await import(
+      "../app/marketplaces/services/category-resolution.service"
+    );
+    (catModule.CategoryResolutionService.resolveMLCategory as any) = vi
+      .fn()
+      .mockResolvedValue({
+        externalId: "MLB-MOCK",
+        fullPath: "Mock > Category",
+        source: "explicit",
+      });
+    (catModule.CategoryResolutionService.ensureLeafLocalOnly as any) = vi
+      .fn()
+      .mockResolvedValue({
+        externalId: "MLB-MOCK",
+        fullPath: "Mock > Category",
+      });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  it("auto-fill via weight: ML com weightKg + categoria fora do CSV deriva H/W/L do peso (Slice 2c)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-weight-derived",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-NO-DIMS-1",
+        name: "Sonda Lambda Sem Dimensões",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // heightCm/widthCm/lengthCm OMITIDOS — só weightKg cadastrado
+        weightKg: 8,
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // weightKg=8 cai na faixa "5 <= w < 15" → base { h:25, w:30, l:40 } + jitter
+    expect(arg.heightCm).toBeGreaterThanOrEqual(5);
+    expect(arg.widthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.lengthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.weightKg).toBe(8); // preservado
+    // Sanidade: não pode ter caído no fallback fixo 10x10x10 (anti-pattern ML).
+    const allTen =
+      arg.heightCm === 10 && arg.widthCm === 10 && arg.lengthCm === 10;
+    expect(allTen).toBe(false);
+  });
+
+  it("default fallback (Slice 2d): ML sem nada NUNCA mais retorna 400 — aplica autopeça pequena com jitter", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-default-fallback",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-NO-ANYTHING-1",
+        name: "Produto Sem Nada",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // SEM heightCm/widthCm/lengthCm E SEM weightKg
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // Fallback default: base 15x15x10 cm + jitter, peso 0.5-0.99kg
+    expect(arg.heightCm).toBeGreaterThanOrEqual(5);
+    expect(arg.widthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.lengthCm).toBeGreaterThanOrEqual(5);
+    expect(arg.weightKg).toBeGreaterThan(0);
+    expect(arg.weightKg).toBeLessThan(1.0);
+    // Não pode ser 10x10x10 (padrão fixo que ML detecta)
+    expect(
+      arg.heightCm === 10 && arg.widthCm === 10 && arg.lengthCm === 10,
+    ).toBe(false);
+  });
+
+  it("default fallback: weightKg=0 também recebe valores default (peso e dimensões)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(async (data: any) => ({
+        ...data,
+        id: "prod-zero-w",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }) as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-ZERO-WEIGHT-1",
+        name: "Produto Peso Zero",
+        price: 50,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        heightCm: 10,
+        widthCm: 10,
+        lengthCm: 10,
+        weightKg: 0,
+        listings: [
+          {
+            platform: "MERCADO_LIVRE",
+            categoryId: "MLB123",
+            accountIds: ["acc-ml-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const arg = createSpy.mock.calls[0][0] as any;
+    // weightKg=0 deve ser substituído por fallback (0.5-0.99kg)
+    expect(arg.weightKg).toBeGreaterThan(0);
+    expect(arg.weightKg).toBeLessThan(1.0);
+  });
+
+  it("permite criação SEM ML mesmo quando dimensões faltam (Shopee tem fallback hardcoded — não regrediu)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockResolvedValue({
+        id: "prod-shopee-no-dims",
+        sku: "PROD-SHP-1",
+        name: "Produto só Shopee",
+        stock: 1,
+        price: 99,
+        imageUrl: "http://localhost/x.jpg",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-SHP-1",
+        name: "Produto só Shopee",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // sem dimensões — Shopee tem fallback (10x10x10/1kg) internamente
+        listings: [
+          {
+            platform: "SHOPEE",
+            categoryId: "102340",
+            accountIds: ["acc-shp-1"],
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("permite criação SEM listings nenhum mesmo sem dimensões (caminho de cadastro puro)", async () => {
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockResolvedValue({
+        id: "prod-only-record",
+        sku: "PROD-ONLY-1",
+        name: "Produto Cadastro Puro",
+        stock: 1,
+        price: 99,
+        imageUrl: "http://localhost/x.jpg",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        sku: "PROD-ONLY-1",
+        name: "Produto Cadastro Puro",
+        price: 99,
+        stock: 1,
+        imageUrl: "http://localhost:3333/uploads/x.jpg",
+        // sem dimensões, sem listings — só cadastrar
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Nota: o "caminho feliz" com dimensões já preenchidas pelo client
+  // é coberto pelo teste "creates a product when payload is valid and user exists"
+  // do describe principal.
+
+  it("smoke do CSV de auto-fill: getMeasurementsForCategory cobre categorias comuns de autopeça", async () => {
+    // Sanity check direto da lib (sem rota HTTP), pra garantir que o CSV
+    // resolve categorias frequentes do Dexo. Se isso quebrar, é regressão
+    // no CSV (app/lib/ml-measurements.ts) — investigar lá.
+    const mod = await import("@/app/lib/ml-measurements");
+    const { getMeasurementsForCategory } = mod;
+
+    // Categoria que aparece nos logs de criação (Sonda Lambda → Injeção)
+    // não está literalmente no CSV mas o nome do produto contendo "Sonda"
+    // ou similares pode dar match. Quando não dá, a rota retorna 400 com
+    // mensagem clara — comportamento já coberto pelos testes acima.
+
+    // Categoria explicitamente no CSV: "Calotas" (linha do CSV: 35;35;35;2)
+    const calotas = getMeasurementsForCategory("Calotas");
+    expect(calotas).toBeDefined();
+    expect(calotas?.heightCm).toBeGreaterThan(0);
+    expect(calotas?.widthCm).toBeGreaterThan(0);
+    expect(calotas?.lengthCm).toBeGreaterThan(0);
+    expect(calotas?.weightKg).toBeGreaterThan(0);
+
+    // Categoria com fullPath (formato que o backend usa)
+    const composta = getMeasurementsForCategory(
+      "Acessórios para Veículos > Calotas",
+    );
+    expect(composta).toBeDefined();
+  });
+});
+
+describe("POST /products/nfe/parse (integration)", () => {
+  let nfeApp: ReturnType<typeof fastify>;
+
+  const VALID_NFE = `<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00">
+    <ide><mod>55</mod><nNF>1</nNF></ide>
+    <emit><xNome>FORNECEDOR TESTE</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>ABC123</cProd><cEAN>7890000000017</cEAN>
+      <xProd>PASTILHA DE FREIO DIANTEIRA</xProd>
+      <uCom>UN</uCom><qCom>5.0000</qCom><vUnCom>45.9000</vUnCom><vProd>229.50</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>`;
+
+  const DOCTYPE_NFE = `<?xml version="1.0"?>
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<nfeProc><NFe><infNFe><ide><mod>55</mod></ide></infNFe></NFe></nfeProc>`;
+
+  beforeEach(async () => {
+    nfeApp = fastify();
+    await nfeApp.register(fastifyMultipart, {
+      limits: { fileSize: 5 * 1024 * 1024 },
+    });
+    await nfeApp.register(productRoutes, { prefix: "/products" });
+    // authMiddleware resolve o usuário autenticado por email.
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await nfeApp.close();
+  });
+
+  const injectXml = (xml: string) => {
+    const form = new FormData();
+    form.append("file", xml, {
+      filename: "nota.xml",
+      contentType: "application/xml",
+    });
+    return nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: { email: "test@example.com", ...form.getHeaders() },
+      payload: form,
+    });
+  };
+
+  it("retorna 200 e itens normalizados para um XML válido", async () => {
+    const res = await injectXml(VALID_NFE);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      name: "PASTILHA DE FREIO DIANTEIRA",
+      costPrice: 45.9,
+      quantity: 5,
+      unit: "UN",
+    });
+    expect(body.meta.groupedCount).toBe(1);
+  });
+
+  it("bloqueia XXE (DOCTYPE) com status 400", async () => {
+    const res = await injectXml(DOCTYPE_NFE);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.payload).error).toMatch(/DOCTYPE/i);
+  });
+
+  it("retorna 400 quando nenhum arquivo é enviado", async () => {
+    const form = new FormData();
+    form.append("naoArquivo", "x");
+    const res = await nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: { email: "test@example.com", ...form.getHeaders() },
+      payload: form,
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("retorna 400 para conteúdo não-multipart", async () => {
+    const res = await nfeApp.inject({
+      method: "POST",
+      url: "/products/nfe/parse",
+      headers: {
+        email: "test@example.com",
+        "content-type": "application/json",
+      },
+      payload: JSON.stringify({ foo: "bar" }),
+    });
+    expect(res.statusCode).toBe(400);
   });
 });

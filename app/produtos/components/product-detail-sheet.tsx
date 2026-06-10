@@ -23,10 +23,12 @@ import {
   User,
   Warehouse,
   Weight,
+  ZoomIn,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import { ImageLightbox } from "./image-lightbox";
 import {
   Table,
   TableBody,
@@ -66,6 +68,7 @@ interface ProductLike {
   category?: string | null;
   location?: string | null;
   locationId?: string | null;
+  locationPath?: string | null; // caminho completo (read-only, enriquecido no backend)
   partNumber?: string | null;
   quality?: Quality | string | null;
   isSecurityItem?: boolean | null;
@@ -258,6 +261,12 @@ export function ProductDetailSheet({
   const [error, setError] = useState<string | null>(null);
 
   const sessionEmail = session?.user?.email;
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Reset do lightbox quando o Sheet fechar
+  useEffect(() => {
+    if (!open) setLightboxIndex(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !product?.id || !sessionEmail) return;
@@ -337,6 +346,7 @@ export function ProductDetailSheet({
   const creator = detail?.creator;
 
   return (
+    <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
@@ -354,12 +364,23 @@ export function ProductDetailSheet({
             <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
               <div className="flex items-start gap-3">
                 {merged.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={merged.imageUrl}
-                    alt={merged.name}
-                    className="size-16 shrink-0 rounded-xl border border-border/60 bg-card object-cover shadow-inner"
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setLightboxIndex(0)}
+                    title="Ampliar imagem"
+                    className="group relative size-16 shrink-0 overflow-hidden rounded-xl border border-border/60 bg-card shadow-inner transition-shadow hover:shadow-md"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={merged.imageUrl}
+                      alt={merged.name}
+                      decoding="async"
+                      className="absolute inset-0 size-full object-cover transition-transform group-hover:scale-105"
+                    />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 transition-opacity group-hover:opacity-100">
+                      <ZoomIn className="size-5 text-white drop-shadow" />
+                    </span>
+                  </button>
                 ) : (
                   <span className="flex size-16 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-primary/10 text-primary shadow-inner shadow-primary/20">
                     <Package className="size-7" />
@@ -625,7 +646,7 @@ export function ProductDetailSheet({
                     <InfoCard
                       icon={<Warehouse className="size-4" />}
                       label="Localização cadastrada"
-                      value={productLocation.code}
+                      value={merged.locationPath ?? productLocation.code}
                       secondary={productLocation.description}
                     />
                   ) : null}
@@ -779,7 +800,7 @@ export function ProductDetailSheet({
             ) : null}
 
             {/* Imagens extras */}
-            {allImages.length > 1 ? (
+            {allImages.length > 0 ? (
               <section className="space-y-3">
                 <SectionHeader
                   icon={<ImageIcon className="size-4" />}
@@ -787,14 +808,26 @@ export function ProductDetailSheet({
                   subtitle={`${allImages.length} foto${allImages.length === 1 ? "" : "s"}`}
                 />
                 <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
-                  {allImages.map((url) => (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                  {allImages.map((url, idx) => (
+                    <button
                       key={url}
-                      src={url}
-                      alt={merged.name}
-                      className="aspect-square w-full rounded-xl border border-border/60 bg-card object-cover shadow-sm"
-                    />
+                      type="button"
+                      onClick={() => setLightboxIndex(idx)}
+                      title="Ampliar imagem"
+                      className="group relative aspect-square w-full overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-shadow hover:shadow-md"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={url}
+                        alt={`${merged.name} - imagem ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
+                        className="absolute inset-0 size-full object-cover transition-transform group-hover:scale-105"
+                      />
+                      <span className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 transition-opacity group-hover:opacity-100">
+                        <ZoomIn className="size-6 text-white drop-shadow" />
+                      </span>
+                    </button>
                   ))}
                 </div>
               </section>
@@ -974,5 +1007,16 @@ export function ProductDetailSheet({
         </div>
       </SheetContent>
     </Sheet>
+
+    <ImageLightbox
+      images={allImages}
+      open={lightboxIndex !== null}
+      onOpenChange={(o) => {
+        if (!o) setLightboxIndex(null);
+      }}
+      initialIndex={lightboxIndex ?? 0}
+      alt={merged.name}
+    />
+    </>
   );
 }

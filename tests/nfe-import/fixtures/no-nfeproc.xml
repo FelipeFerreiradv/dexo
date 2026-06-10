@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFe xmlns="http://www.portalfiscal.inf.br/nfe"><infNFe versao="4.00" Id="NFe35200114200166000187550010000000099">
+  <ide><mod>55</mod><nNF>42</nNF></ide>
+  <emit><xNome>AUTOPECAS XYZ</xNome></emit>
+  <det nItem="1"><prod>
+    <cProd>F100</cProd><cEAN>SEM GTIN</cEAN>
+    <xProd>FILTRO DE OLEO MOTOR</xProd>
+    <uCom>PC</uCom><qCom>10.0000</qCom><vUnCom>12.5000</vUnCom><vProd>125.00</vProd>
+  </prod></det>
+</infNFe></NFe>

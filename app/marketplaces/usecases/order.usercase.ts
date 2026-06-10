@@ -14,6 +14,10 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import {
+  StockDeductionService,
+  type StockOversellAlert,
+} from "../services/stock-deduction.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SyncUseCase } from "./sync.usercase";
@@ -154,6 +158,7 @@ export class OrderUseCase {
     marketplaceAccountId: string,
     days: number = 7,
     deductStock: boolean = true,
+    maxOrders: number = 500,
   ): Promise<ImportOrdersResult> {
     const account = await MarketplaceRepository.findById(marketplaceAccountId);
     if (!account || !account.accessToken || !account.externalUserId) {
@@ -180,6 +185,7 @@ export class OrderUseCase {
         externalUserId: account.externalUserId,
       },
       days,
+      maxOrders,
     );
 
     result.totalOrders = mlOrders.length;
@@ -892,6 +898,7 @@ export class OrderUseCase {
       externalUserId: string;
     },
     days: number,
+    maxOrders: number = 500,
   ): Promise<MLOrderDetails[]> {
     try {
       return await MLApiService.getRecentOrders(
@@ -899,6 +906,7 @@ export class OrderUseCase {
         account.externalUserId,
         days,
         "paid",
+        maxOrders,
       );
     } catch (error) {
       if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
@@ -921,6 +929,7 @@ export class OrderUseCase {
         account.externalUserId,
         days,
         "paid",
+        maxOrders,
       );
     }
   }
@@ -984,116 +993,44 @@ export class OrderUseCase {
   /**
    * Desconta estoque dos produtos de um pedido de forma atômica.
    *
-   * Garante serialização via `SELECT ... FOR UPDATE` por produto, evitando
-   * TOCTOU entre webhooks concorrentes de marketplaces diferentes.
-   * Enfileira jobs duráveis de sincronização cross-marketplace dentro da
-   * mesma transação, garantindo que nenhum decremento fique sem propagação.
+   * Wrapper fino sobre `StockDeductionService` (Fase 3 do plano venda-balcão).
+   * O núcleo in-transação (FOR UPDATE → stockLog → advisory lock → upsert do
+   * StockSyncJob) e o efeito pós-commit (setImmediate runOnce) vivem no
+   * service compartilhado e são reutilizados pelo `FinanceUseCase.markPaid`.
+   *
+   * Comportamento preservado byte-idêntico: mesmos opts de tx
+   * ({ timeout: 60_000, maxWait: 20_000 }), mesmo `logPrefix "[OrderUseCase]"`,
+   * mesmo log de oversell ("Oversell detectado no pedido ${order.id}..."),
+   * mesmo retorno `OrderStockDeduction[]`. `pauseOnZero` NÃO é passado —
+   * Order não pausa anúncios ao zerar (opt-in apenas para venda balcão).
    */
   private static async deductStockForOrder(
     order: Order,
     reason: string,
   ): Promise<OrderStockDeduction[]> {
-    const deductions: OrderStockDeduction[] = [];
-
     const orderItems = order.items;
-    if (!orderItems || orderItems.length === 0) return deductions;
+    if (!orderItems || orderItems.length === 0) return [];
 
-    const oversellAlerts: Array<{
-      productId: string;
-      productName: string;
-      requested: number;
-      available: number;
-    }> = [];
+    let deductions: OrderStockDeduction[] = [];
+    let oversellAlerts: StockOversellAlert[] = [];
 
     try {
-      await prisma.$transaction(async (tx) => {
-        for (const item of orderItems) {
-          // Lock da linha do produto até o fim da transação.
-          const locked = await tx.$queryRaw<
-            { id: string; name: string; stock: number }[]
-          >`SELECT id, name, stock FROM "Product" WHERE id = ${item.productId} FOR UPDATE`;
-
-          const product = locked[0];
-          if (!product) continue;
-
-          const previousStock = product.stock;
-          const decrementBy = Math.min(item.quantity, Math.max(0, previousStock));
-          const newStock = previousStock - decrementBy;
-
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stock: newStock },
+      await prisma.$transaction(
+        async (tx) => {
+          const result = await StockDeductionService.deductWithinTx(tx, {
+            items: orderItems.map((i) => ({
+              productId: i.productId,
+              quantity: i.quantity,
+            })),
+            reason,
+            orderId: order.id,
+            logPrefix: "[OrderUseCase]",
           });
-
-          await tx.stockLog.create({
-            data: {
-              productId: item.productId,
-              change: -decrementBy,
-              reason,
-              previousStock,
-              newStock,
-            },
-          });
-
-          deductions.push({
-            productId: item.productId,
-            productName: product.name,
-            previousStock,
-            newStock,
-            quantity: item.quantity,
-          });
-
-          if (decrementBy < item.quantity) {
-            oversellAlerts.push({
-              productId: item.productId,
-              productName: product.name,
-              requested: item.quantity,
-              available: previousStock,
-            });
-          }
-
-          console.log(
-            `[OrderUseCase] Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
-          );
-
-          // Enfileira sync durável para cada listing vinculado ao produto.
-          const listings = await tx.productListing.findMany({
-            where: { productId: item.productId },
-            include: { marketplaceAccount: { select: { platform: true } } },
-          });
-
-          for (const listing of listings) {
-            // Serializa com StockReconciliationService pelo mesmo listing para
-            // evitar P2002 no upsert não-atômico do Prisma: ambos lados pegam
-            // o mesmo advisory lock antes de SELECT/INSERT.
-            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stock_sync_job:" + listing.id}))`;
-
-            await tx.stockSyncJob.upsert({
-              where: {
-                listingId_status: {
-                  listingId: listing.id,
-                  status: "PENDING",
-                },
-              },
-              create: {
-                productId: item.productId,
-                listingId: listing.id,
-                platform: listing.marketplaceAccount.platform,
-                targetStock: newStock,
-                orderId: order.id,
-                status: "PENDING",
-              },
-              update: {
-                targetStock: newStock,
-                attempts: 0,
-                nextRunAt: new Date(),
-                lastError: null,
-                orderId: order.id,
-              },
-            });
-          }
-        }
-      });
+          deductions = result.deductions;
+          oversellAlerts = result.oversellAlerts;
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
     } catch (error) {
       console.error(
         `[OrderUseCase] Error in stock deduction transaction (order=${order.id}):`,
@@ -1102,21 +1039,13 @@ export class OrderUseCase {
       throw error;
     }
 
-    // Dispara processamento imediato dos jobs recém-enfileirados (best-effort;
-    // se falhar, o interval do service pegará no próximo ciclo).
-    if (deductions.length > 0) {
-      setImmediate(() => {
-        void import("../services/stock-sync-retry.service")
-          .then(({ StockSyncRetryService }) => StockSyncRetryService.runOnce())
-          .catch((err) =>
-            console.error(
-              "[OrderUseCase] Falha ao disparar StockSyncRetryService.runOnce:",
-              err,
-            ),
-          );
-      });
-    }
+    StockDeductionService.firePostEffects({
+      deductions,
+      logPrefix: "[OrderUseCase]",
+      // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
+    });
 
+    // Log de oversell preservado byte-idêntico (mesma message + details).
     if (oversellAlerts.length > 0) {
       try {
         await SystemLogService.logWarning(

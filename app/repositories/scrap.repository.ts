@@ -3,9 +3,18 @@ import {
   ScrapCreate,
   ScrapUpdate,
   ScrapRepository,
+  ScrapListOptions,
+  ScrapPipeline,
+  ScrapPart,
+  ScrapStatusEventDTO,
 } from "../interfaces/scrap.interface";
 import prisma from "../lib/prisma";
-import { Scrap as PrismaScrap, ScrapStatus } from "@prisma/client";
+import {
+  Prisma,
+  Scrap as PrismaScrap,
+  ScrapStatus,
+  LogisticsStatus,
+} from "@prisma/client";
 
 function mapPrismaToScrap(
   item: PrismaScrap & {
@@ -30,6 +39,7 @@ function mapPrismaToScrap(
     deregistrationCert: item.deregistrationCert ?? undefined,
 
     cost: item.cost?.toNumber() ?? undefined,
+    extraCosts: item.extraCosts?.toNumber() ?? undefined,
     paymentMethod: item.paymentMethod ?? undefined,
 
     locationId: item.locationId ?? undefined,
@@ -53,6 +63,7 @@ function mapPrismaToScrap(
     imageUrls: item.imageUrls ?? [],
 
     status: item.status,
+    logisticsStatus: item.logisticsStatus,
     notes: item.notes ?? undefined,
 
     createdAt: item.createdAt,
@@ -80,6 +91,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           lot: data.lot ?? null,
           deregistrationCert: data.deregistrationCert ?? null,
           cost: data.cost ?? null,
+          extraCosts: data.extraCosts ?? null,
           paymentMethod: data.paymentMethod ?? null,
           locationId: data.locationId ?? null,
           ncm: data.ncm ?? null,
@@ -98,6 +110,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           issuePurpose: data.issuePurpose ?? null,
           imageUrls: data.imageUrls ?? [],
           status: data.status ?? "AVAILABLE",
+          logisticsStatus: data.logisticsStatus ?? "IN_YARD",
           notes: data.notes ?? null,
         },
         include: {
@@ -132,12 +145,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
   }
 
   async findAll(
-    options?: {
-      search?: string;
-      status?: ScrapStatus;
-      page?: number;
-      limit?: number;
-    },
+    options?: ScrapListOptions,
     userId?: string,
   ): Promise<{ scraps: Scrap[]; total: number }> {
     const page = options?.page ?? 1;
@@ -149,6 +157,10 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
 
     if (options?.status) {
       where.status = options.status;
+    }
+
+    if (options?.logisticsStatus) {
+      where.logisticsStatus = options.logisticsStatus;
     }
 
     if (search) {
@@ -183,6 +195,225 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
     }
   }
 
+  // Pipeline logístico (Kanban): contadores por estágio + amostra de cards,
+  // tudo num único request (1 groupBy + N findMany em paralelo, sem N+1).
+  async pipeline(userId: string): Promise<ScrapPipeline> {
+    const STAGES: LogisticsStatus[] = [
+      "IN_TRANSIT",
+      "IN_YARD",
+      "ON_LIFT",
+      "DISMANTLED",
+    ];
+    const PER_STAGE = 12;
+
+    const [counts, ...lists] = await Promise.all([
+      prisma.scrap.groupBy({
+        by: ["logisticsStatus"],
+        where: { userId },
+        _count: { _all: true },
+      }),
+      ...STAGES.map((stage) =>
+        prisma.scrap.findMany({
+          where: { userId, logisticsStatus: stage },
+          orderBy: { createdAt: "desc" },
+          take: PER_STAGE,
+          include: {
+            location: { select: { code: true } },
+            _count: { select: { products: true } },
+          },
+        }),
+      ),
+    ]);
+
+    const countByStage = new Map<string, number>(
+      counts.map((c: any) => [c.logisticsStatus, c._count?._all ?? 0]),
+    );
+
+    const pipeline = {} as ScrapPipeline;
+    STAGES.forEach((stage, i) => {
+      pipeline[stage] = {
+        count: countByStage.get(stage) ?? 0,
+        scraps: lists[i].map(mapPrismaToScrap),
+      };
+    });
+    return pipeline;
+  }
+
+  // Agregados financeiros de uma sucata num único request (3 subqueries
+  // escalares). Espelha a lógica financeira existente: receita = unitPrice
+  // (snapshot) * quantity; marketplace conta Order PAID/SHIPPED/DELIVERED;
+  // balcão conta Receivable PAGA. O chamador (usecase) já validou que a
+  // sucata pertence ao userId, então scrapId já restringe ao tenant.
+  async getScrapMoney(
+    scrapId: string,
+    userId: string,
+  ): Promise<{ marketplace: number; counter: number; potential: number }> {
+    const rows = await prisma.$queryRaw<
+      { marketplace: number; counter: number; potential: number }[]
+    >(Prisma.sql`
+      SELECT
+        (SELECT COALESCE(SUM(oi."unitPrice" * oi."quantity"), 0)::float8
+           FROM "OrderItem" oi
+           JOIN "Product" p ON p."id" = oi."productId"
+           JOIN "Order" o ON o."id" = oi."orderId"
+           JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
+           WHERE p."scrapId" = ${scrapId}
+             AND o."status"::text IN ('PAID', 'SHIPPED', 'DELIVERED')
+             AND ma."userId" = ${userId}
+        ) AS marketplace,
+        (SELECT COALESCE(SUM(ri."unitPrice" * ri."quantity"), 0)::float8
+           FROM "ReceivableItem" ri
+           JOIN "Product" p ON p."id" = ri."productId"
+           JOIN "Receivable" r ON r."id" = ri."receivableId"
+           WHERE p."scrapId" = ${scrapId}
+             AND r."status"::text = 'PAGA'
+             AND r."userId" = ${userId}
+        ) AS counter,
+        (SELECT COALESCE(SUM(p."price" * p."stock"), 0)::float8
+           FROM "Product" p
+           WHERE p."scrapId" = ${scrapId}
+             AND p."stock" > 0
+        ) AS potential
+    `);
+
+    const row = rows[0] ?? { marketplace: 0, counter: 0, potential: 0 };
+    return {
+      marketplace: Number(row.marketplace) || 0,
+      counter: Number(row.counter) || 0,
+      potential: Number(row.potential) || 0,
+    };
+  }
+
+  // Peças de uma sucata com etiqueta Vendido/Em estoque, qualidade, flags e
+  // quantidade realmente vendida (marketplace + balcão). scrapId já restringe
+  // ao tenant (sucata validada no usecase); userId reforça o escopo das vendas.
+  // Sem N+1: 1 findMany + 2 groupBy agregados.
+  async getScrapParts(scrapId: string, userId: string): Promise<ScrapPart[]> {
+    const products = await prisma.product.findMany({
+      where: { scrapId },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        partNumber: true,
+        price: true,
+        stock: true,
+        quality: true,
+        isSecurityItem: true,
+        isTraceable: true,
+      },
+      orderBy: [{ stock: "desc" }, { name: "asc" }],
+    });
+
+    if (products.length === 0) return [];
+    const ids = products.map((p) => p.id);
+
+    const [marketplaceSold, counterSold] = await Promise.all([
+      prisma.orderItem.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: ids },
+          order: {
+            status: { in: ["PAID", "SHIPPED", "DELIVERED"] },
+            marketplaceAccount: { userId },
+          },
+        },
+        _sum: { quantity: true },
+      }),
+      prisma.receivableItem.groupBy({
+        by: ["productId"],
+        where: {
+          productId: { in: ids },
+          receivable: { status: "PAGA", userId },
+        },
+        _sum: { quantity: true },
+      }),
+    ]);
+
+    const soldBy = new Map<string, number>();
+    for (const r of marketplaceSold) {
+      soldBy.set(r.productId, (r._sum.quantity ?? 0));
+    }
+    for (const r of counterSold) {
+      soldBy.set(
+        r.productId,
+        (soldBy.get(r.productId) ?? 0) + (r._sum.quantity ?? 0),
+      );
+    }
+
+    return products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      sku: p.sku,
+      partNumber: p.partNumber ?? undefined,
+      price: Number(p.price ?? 0),
+      stock: p.stock,
+      status: p.stock > 0 ? "IN_STOCK" : "SOLD",
+      quality: p.quality ?? undefined,
+      isSecurityItem: p.isSecurityItem ?? false,
+      isTraceable: p.isTraceable ?? false,
+      soldQuantity: soldBy.get(p.id) ?? 0,
+    }));
+  }
+
+  // Estágios de várias sucatas por id (Visão de Balcão). Os ids já vêm de
+  // produtos do tenant; o filtro userId reforça o isolamento.
+  async findStagesByIds(
+    ids: string[],
+    userId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      brand: string;
+      model: string;
+      year: string | null;
+      plate: string | null;
+      logisticsStatus: LogisticsStatus;
+    }>
+  > {
+    if (ids.length === 0) return [];
+    return prisma.scrap.findMany({
+      where: { id: { in: ids }, userId },
+      select: {
+        id: true,
+        brand: true,
+        model: true,
+        year: true,
+        plate: true,
+        logisticsStatus: true,
+      },
+    });
+  }
+
+  // Registra um evento de transição de estágio (histórico — diferencial F).
+  async recordStatusEvent(
+    scrapId: string,
+    userId: string,
+    fromStatus: LogisticsStatus | null,
+    toStatus: LogisticsStatus,
+  ): Promise<void> {
+    await prisma.scrapStatusEvent.create({
+      data: { scrapId, userId, fromStatus, toStatus },
+    });
+  }
+
+  // Linha do tempo de transições de uma sucata (mais antigo → mais recente).
+  async getStatusEvents(
+    scrapId: string,
+    userId: string,
+  ): Promise<ScrapStatusEventDTO[]> {
+    const events = await prisma.scrapStatusEvent.findMany({
+      where: { scrapId, userId },
+      orderBy: { createdAt: "asc" },
+      select: { fromStatus: true, toStatus: true, createdAt: true },
+    });
+    return events.map((e) => ({
+      fromStatus: e.fromStatus,
+      toStatus: e.toStatus,
+      createdAt: e.createdAt,
+    }));
+  }
+
   async update(id: string, data: ScrapUpdate, userId?: string): Promise<Scrap> {
     try {
       if (userId) {
@@ -212,6 +443,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
             deregistrationCert: data.deregistrationCert,
           }),
           ...(data.cost !== undefined && { cost: data.cost }),
+          ...(data.extraCosts !== undefined && { extraCosts: data.extraCosts }),
           ...(data.paymentMethod !== undefined && {
             paymentMethod: data.paymentMethod,
           }),
@@ -246,8 +478,42 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           }),
           ...(data.imageUrls !== undefined && { imageUrls: data.imageUrls }),
           ...(data.status !== undefined && { status: data.status }),
+          ...(data.logisticsStatus !== undefined && {
+            logisticsStatus: data.logisticsStatus,
+          }),
           ...(data.notes !== undefined && { notes: data.notes }),
         },
+        include: {
+          location: { select: { code: true } },
+          _count: { select: { products: true } },
+        },
+      });
+
+      return mapPrismaToScrap(result);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  // Transição de estágio logístico (PATCH dedicado). Verifica ownership e
+  // atualiza só a coluna logisticsStatus — não toca em Product nem dispara sync.
+  async updateLogisticsStatus(
+    id: string,
+    logisticsStatus: LogisticsStatus,
+    userId?: string,
+  ): Promise<Scrap> {
+    try {
+      if (userId) {
+        const owner = await prisma.scrap.findFirst({
+          where: { id, userId },
+          select: { id: true },
+        });
+        if (!owner) throw new Error("Sucata não encontrada para este usuário");
+      }
+
+      const result = await prisma.scrap.update({
+        where: { id },
+        data: { logisticsStatus },
         include: {
           location: { select: { code: true } },
           _count: { select: { products: true } },

@@ -1,43 +1,90 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { Upload, X, Image as ImageIcon, GripVertical } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import { GripVertical, Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { getApiBaseUrl } from "@/lib/api";
+import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
+import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
 interface MultiImageUploadProps {
   value: string[];
   onChange: (urls: string[]) => void;
   onError?: (error: string) => void;
+  /** Avisos não-bloqueantes do backend (ex.: fallback do sidecar). */
+  onWarning?: (warning: string) => void;
   disabled?: boolean;
   className?: string;
   maxImages?: number;
+}
+
+// Concorrência do upload em lote: o sidecar tem 1 worker e o modelo é
+// CPU-bound, então disparar todas as imagens de uma vez enche a fila e as
+// últimas podem estourar o timeout (caindo no fallback sem remoção). Enviar
+// em pequenos blocos mantém a espera por requisição baixa — assim TODAS as
+// imagens têm fundo removido + sombra, não só as primeiras.
+const UPLOAD_CONCURRENCY = 3;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  async function runner() {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await worker(items[i], i) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => runner()),
+  );
+  return results;
 }
 
 export function MultiImageUpload({
   value = [],
   onChange,
   onError,
+  onWarning,
   disabled = false,
   className = "",
   maxImages = 10,
 }: MultiImageUploadProps) {
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
+  const [addShadow, setAddShadow] = useAddShadowToggle(true);
 
   const uploadFile = useCallback(
-    async (file: File): Promise<string | null> => {
+    async (
+      file: File,
+    ): Promise<{ url: string | null; warning?: string }> => {
       if (!file.type.startsWith("image/")) {
         onError?.("Apenas arquivos de imagem são permitidos");
-        return null;
+        return { url: null };
       }
       if (file.size > 5 * 1024 * 1024) {
         onError?.("O arquivo deve ter no máximo 5MB");
-        return null;
+        return { url: null };
       }
 
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("removeBackground", removeBackground ? "true" : "false");
+      // Sombra exige o recorte: só pede sombra se a remoção de fundo está ON.
+      formData.append(
+        "addShadow",
+        removeBackground && addShadow ? "true" : "false",
+      );
 
       const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
         method: "POST",
@@ -45,14 +92,17 @@ export function MultiImageUpload({
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         throw new Error(error.message || "Erro ao fazer upload");
       }
 
-      const result = await response.json();
-      return result.imageUrl as string;
+      const result = (await response.json()) as {
+        imageUrl: string;
+        warning?: string;
+      };
+      return { url: result.imageUrl, warning: result.warning };
     },
-    [onError],
+    [onError, removeBackground, addShadow],
   );
 
   const handleFilesSelect = useCallback(
@@ -67,19 +117,41 @@ export function MultiImageUpload({
       setIsUploading(true);
 
       try {
-        const settled = await Promise.allSettled(
-          filesToUpload.map((file) => uploadFile(file)),
+        // Progressivo: cada imagem aparece assim que fica pronta (a 1ª em
+        // ~7s, sem esperar o lote inteiro). Mantém a ordem de seleção via
+        // `slots`, mesmo que terminem fora de ordem.
+        const slots: (string | null)[] = new Array(filesToUpload.length).fill(
+          null,
         );
-        const results = settled
-          .filter(
-            (r): r is PromiseFulfilledResult<string | null> =>
-              r.status === "fulfilled",
-          )
-          .map((r) => r.value)
-          .filter((url): url is string => url !== null);
-        if (results.length > 0) {
-          onChange([...value, ...results]);
-        }
+        const settled = await runWithConcurrency(
+          filesToUpload,
+          UPLOAD_CONCURRENCY,
+          async (file, index) => {
+            const r = await uploadFile(file);
+            if (r.url) {
+              slots[index] = r.url;
+              const done = slots.filter((u): u is string => u !== null);
+              onChange([...value, ...done]);
+            }
+            return r;
+          },
+        );
+        const fulfilled = settled.filter(
+          (r): r is PromiseFulfilledResult<{ url: string | null; warning?: string }> =>
+            r.status === "fulfilled",
+        );
+
+        // Dedup warnings: se múltiplas imagens caíram no mesmo fallback,
+        // mostra uma mensagem só.
+        const warnings = Array.from(
+          new Set(
+            fulfilled
+              .map((r) => r.value.warning)
+              .filter((w): w is string => Boolean(w)),
+          ),
+        );
+        for (const w of warnings) onWarning?.(w);
+
         const failed = settled.filter((r) => r.status === "rejected");
         if (failed.length > 0) {
           onError?.(`${failed.length} imagem(ns) falharam no upload`);
@@ -95,7 +167,7 @@ export function MultiImageUpload({
         setIsUploading(false);
       }
     },
-    [value, onChange, onError, maxImages, uploadFile],
+    [value, onChange, onError, onWarning, maxImages, uploadFile],
   );
 
   const handleDrop = useCallback(
@@ -117,7 +189,6 @@ export function MultiImageUpload({
       if (files && files.length > 0) {
         handleFilesSelect(Array.from(files));
       }
-      // Reset input so the same file can be selected again
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
     [handleFilesSelect],
@@ -148,10 +219,26 @@ export function MultiImageUpload({
     [value, onChange],
   );
 
+  const hasImages = value.length > 0;
+
   return (
     <div className={`space-y-4 ${className}`}>
+      <RemoveBackgroundToggle
+        value={removeBackground}
+        onValueChange={setRemoveBackground}
+        disabled={disabled || isUploading}
+        hasImages={hasImages}
+      />
+
+      <ContactShadowToggle
+        value={addShadow}
+        onValueChange={setAddShadow}
+        disabled={disabled || isUploading || !removeBackground}
+        removeBackgroundOff={!removeBackground}
+      />
+
       {/* Imagens já enviadas */}
-      {value.length > 0 && (
+      {hasImages && (
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
           {value.map((url, index) => (
             <div
@@ -209,7 +296,7 @@ export function MultiImageUpload({
             relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer
             transition-colors hover:bg-muted/50
             ${disabled ? "opacity-50 cursor-not-allowed" : ""}
-            ${value.length > 0 ? "border-muted-foreground/25" : "border-muted-foreground/25"}
+            border-muted-foreground/25
           `}
         >
           <input
@@ -226,7 +313,11 @@ export function MultiImageUpload({
             <div className="flex flex-col items-center space-y-2">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <p className="text-sm text-muted-foreground">
-                Enviando imagem...
+                {!removeBackground
+                  ? "Otimizando imagens..."
+                  : addShadow
+                    ? "Removendo fundo, adicionando sombra e otimizando..."
+                    : "Removendo fundo e otimizando..."}
               </p>
             </div>
           ) : (
@@ -249,7 +340,7 @@ export function MultiImageUpload({
       )}
 
       {/* Botões de ação */}
-      {!disabled && value.length > 0 && (
+      {!disabled && hasImages && (
         <div className="flex gap-2">
           {value.length < maxImages && (
             <Button
@@ -265,6 +356,78 @@ export function MultiImageUpload({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function RemoveBackgroundToggle({
+  value,
+  onValueChange,
+  disabled,
+  hasImages,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled: boolean;
+  hasImages: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <Label
+          htmlFor="multi-image-upload-remove-bg"
+          className="cursor-pointer text-sm font-medium"
+        >
+          Remover fundo automaticamente
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          {hasImages
+            ? "Aplica-se a novas imagens — as atuais não são reprocessadas."
+            : "Recomendado para fotos de produtos com fundo branco/contextual."}
+        </p>
+      </div>
+      <Switch
+        id="multi-image-upload-remove-bg"
+        checked={value}
+        onCheckedChange={onValueChange}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+function ContactShadowToggle({
+  value,
+  onValueChange,
+  disabled,
+  removeBackgroundOff,
+}: {
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled: boolean;
+  removeBackgroundOff: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <Label
+          htmlFor="multi-image-upload-add-shadow"
+          className="cursor-pointer text-sm font-medium"
+        >
+          Adicionar sombra automaticamente
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          {removeBackgroundOff
+            ? "Requer “Remover fundo” ligado — a sombra usa o recorte."
+            : "Sombra de contato suave sob a peça, com aspecto profissional."}
+        </p>
+      </div>
+      <Switch
+        id="multi-image-upload-add-shadow"
+        checked={value && !removeBackgroundOff}
+        onCheckedChange={onValueChange}
+        disabled={disabled}
+      />
     </div>
   );
 }

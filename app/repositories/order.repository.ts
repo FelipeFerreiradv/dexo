@@ -28,6 +28,12 @@ type PrismaOrderWithRelations = PrismaOrder & {
       name: string;
       sku: string;
       stock: number;
+      location?: string | null;
+      productLocation?: {
+        id: string;
+        code: string;
+        description: string | null;
+      } | null;
     };
     listing?: {
       id: string;
@@ -50,6 +56,12 @@ function mapPrismaToOrderItem(
       name: string;
       sku: string;
       stock: number;
+      location?: string | null;
+      productLocation?: {
+        id: string;
+        code: string;
+        description: string | null;
+      } | null;
     };
     listing?: {
       id: string;
@@ -71,6 +83,14 @@ function mapPrismaToOrderItem(
           name: item.product.name,
           sku: item.product.sku,
           stock: item.product.stock,
+          location: item.product.location ?? null,
+          productLocation: item.product.productLocation
+            ? {
+                id: item.product.productLocation.id,
+                code: item.product.productLocation.code,
+                description: item.product.productLocation.description ?? null,
+              }
+            : null,
         }
       : undefined,
     listing: item.listing
@@ -138,6 +158,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -161,6 +189,28 @@ class OrderRepositoryPrisma implements OrderRepository {
 
       return mapPrismaToOrder(result);
     } catch (error) {
+      // P2002 (unique constraint) acontece em race entre webhooks ML duplicados
+      // do mesmo pedido (vimos isso causar acúmulo de stacktraces e OOM em prod).
+      // O caller (processOrder) trata como `already_exists` quando o erro
+      // carrega `code === "P2002"`. ANTES desta fix, o `throw new Error(...)`
+      // descartava o `code` original, então o catch superior nunca pegava o
+      // ramo concurrent — caía no ramo genérico e logava o stack inteiro 2x
+      // (uma no repository, outra no usecase).
+      const isPrismaUniqueError =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as any).code === "P2002";
+      if (isPrismaUniqueError) {
+        // Log compacto: sem stack, sem objeto inteiro. Reduz pressão de memória
+        // quando centenas de webhooks chegam simultaneamente.
+        console.warn(
+          `[OrderRepository] race P2002 ao criar order (já existe): account=${data.marketplaceAccountId} externalOrderId=${data.externalOrderId}`,
+        );
+        const dupErr = new Error("Pedido já existe (concurrent)");
+        (dupErr as any).code = "P2002";
+        throw dupErr;
+      }
       console.error("Erro Prisma ao criar pedido:", error);
       throw new Error(
         error instanceof Error ? error.message : "Erro ao criar pedido",
@@ -184,6 +234,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -230,6 +288,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -335,6 +401,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                         name: true,
                         sku: true,
                         stock: true,
+                        location: true,
+                        productLocation: {
+                          select: {
+                            id: true,
+                            code: true,
+                            description: true,
+                          },
+                        },
                       },
                     },
                     listing: {
@@ -392,6 +466,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {
@@ -442,6 +524,14 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  location: true,
+                  productLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      description: true,
+                    },
+                  },
                 },
               },
               listing: {

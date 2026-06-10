@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+  <NFe><infNFe versao="4.00" Id="NFe35200114200166000187550010000000015">
+    <ide><mod>55</mod><nNF>1</nNF></ide>
+    <emit><xNome>FORNECEDOR EXEMPLO LTDA</xNome></emit>
+    <det nItem="1"><prod>
+      <cProd>ABC123</cProd><cEAN>7890000000017</cEAN>
+      <xProd>PASTILHA DE FREIO DIANTEIRA HONDA CIVIC</xProd>
+      <NCM>87083090</NCM><CFOP>5102</CFOP><uCom>UN</uCom>
+      <qCom>5.0000</qCom><vUnCom>45.9000</vUnCom><vProd>229.50</vProd>
+    </prod></det>
+  </infNFe></NFe>
+</nfeProc>

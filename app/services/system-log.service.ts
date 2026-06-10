@@ -201,6 +201,62 @@ export class SystemLogService {
     });
   }
 
+  /**
+   * Registra falha ao fechar/deletar anúncio no marketplace durante deleção
+   * de produto. Em política estrita o produto NÃO é deletado local nessa
+   * situação — este log serve para auditoria e suporte ao usuário.
+   */
+  static async logListingDeleteFailed(
+    userId: string | undefined,
+    listingId: string,
+    details: {
+      productId?: string;
+      externalListingId?: string;
+      platform?: string;
+      error?: string;
+      retryable?: boolean;
+    },
+  ) {
+    return this.logError(
+      "DELETE_LISTING_FAILED",
+      `Falha ao encerrar anúncio no ${details.platform ?? "marketplace"}`,
+      {
+        userId,
+        resource: "ProductListing",
+        resourceId: listingId,
+        details,
+      },
+    );
+  }
+
+  /**
+   * Registra quando o sistema detecta que um ProductListing estava vinculado
+   * à conta errada e reaponta automaticamente para a conta correta do mesmo
+   * usuário. Auditoria importante: explica por que o `marketplaceAccountId`
+   * de um listing pode mudar sem ação direta do usuário.
+   */
+  static async logListingOwnershipRepaired(
+    userId: string,
+    listingId: string,
+    details: {
+      externalListingId?: string;
+      oldAccountId?: string;
+      newAccountId?: string;
+      itemStatus?: string;
+    },
+  ) {
+    return this.logInfo(
+      "LISTING_OWNERSHIP_REPAIRED",
+      `Vínculo do anúncio ${details.externalListingId ?? listingId} reapontado para a conta correta`,
+      {
+        userId,
+        resource: "ProductListing",
+        resourceId: listingId,
+        details,
+      },
+    );
+  }
+
   // Sincronizações
   static async logSyncStart(
     userId: string,

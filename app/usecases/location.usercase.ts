@@ -3,6 +3,7 @@ import {
   CapacityExceededDetail,
   Location,
   LocationCreate,
+  LocationFlat,
   LocationUpdate,
   LocationWithOccupancy,
 } from "../interfaces/location.interface";
@@ -89,6 +90,31 @@ export class LocationUseCase {
       total: data.total,
       totalPages: Math.ceil(data.total / (options?.limit || 50)),
     };
+  }
+
+  /**
+   * Lista TODAS as localizações do usuário (qualquer profundidade) achatadas,
+   * já enriquecidas com `occupancy`/`childrenCount`. O cliente monta a árvore
+   * por `parentId`. `childrenCount` vem do `_count` (via `findAllFlat`), NÃO de
+   * `children.length` — por isso não reaproveita `enrichWithOccupancy`.
+   */
+  async listAllFlat(
+    userId: string,
+  ): Promise<{ locations: LocationWithOccupancy[]; total: number }> {
+    const rows: LocationFlat[] =
+      await this.locationRepository.findAllFlat(userId);
+
+    const locations: LocationWithOccupancy[] = rows.map((loc) => {
+      const productsCount = loc.productsCount ?? 0;
+      const childrenCount = loc.childrenCount ?? 0;
+      const occupancy =
+        loc.maxCapacity > 0
+          ? Math.min(100, Math.round((productsCount / loc.maxCapacity) * 100))
+          : 0;
+      return { ...loc, productsCount, childrenCount, occupancy };
+    });
+
+    return { locations, total: locations.length };
   }
 
   async update(

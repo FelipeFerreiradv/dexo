@@ -15,6 +15,13 @@ import { AccountStatus } from "@prisma/client";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
 import { ListingPreflightService } from "../services/listing-preflight.service";
+import {
+  classifyMLRemoveError,
+  classifyShopeeRemoveError,
+  withRetry,
+} from "../services/listing-removal.helpers";
+import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
+import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
 
 export interface CreateListingResult {
   success: boolean;
@@ -98,6 +105,164 @@ export class ListingUseCase {
   // Limites de quantidade de imagens por marketplace (Shopee: 9, ML: 12)
   private static readonly SHOPEE_MAX_IMAGES = 9;
   private static readonly ML_MAX_IMAGES = 12;
+
+  // Sinonimos de "valor neutro" (não aplicável / outros / genérico) em
+  // pt-BR e en. Usados quando precisamos escolher um valor para um atributo
+  // mandatory sem dados do produto — preferimos o neutro.
+  private static readonly SHOPEE_NEUTRAL_VALUE_SYNONYMS = new Set([
+    "outros", "outro", "other", "others",
+    "não aplicável", "nao aplicavel", "n/a", "na",
+    "nenhum", "nenhuma", "none", "sem",
+    "genérica", "generica", "genérico", "generico", "generic",
+    "indefinido", "indefinida", "não informado", "nao informado",
+  ]);
+
+  /**
+   * Escolhe um valor "seguro" para um atributo Shopee MANDATORY quando nao
+   * temos dado do produto pra preencher.
+   *
+   * Prioridade (evita disparar atributos-filho obrigatorios que nao
+   * conseguimos preencher — ex: "Connection Type=Wireless" exige
+   * Registration ID / Manufacturer / Model Name):
+   *   1. sinonimo neutro ("Outros"/"Others"/"N/A"...) SEM filhos obrigatorios
+   *   2. qualquer valor SEM filhos obrigatorios
+   *   3. sinonimo neutro (mesmo com filhos — raro)
+   *   4. primeiro valor (fallback final, comportamento legado)
+   *
+   * has_mandatory_children pode ser undefined em schemas cacheados antes do
+   * adapter passar a computa-lo — nesse caso `!== true` trata como "sem
+   * filhos" (degrada pra preferencia por sinonimo, sem regressao).
+   */
+  public static pickSafeMandatoryShopeeValue(
+    values: Array<{
+      value_id: number;
+      value_name: string;
+      has_mandatory_children?: boolean;
+    }>,
+  ): { value_id: number; value_name: string } {
+    const isNeutral = (name: string) =>
+      ListingUseCase.SHOPEE_NEUTRAL_VALUE_SYNONYMS.has(
+        (name || "").trim().toLowerCase(),
+      );
+    const childless = values.filter((v) => v.has_mandatory_children !== true);
+
+    const neutralChildless = childless.find((v) => isNeutral(v.value_name));
+    if (neutralChildless) return neutralChildless;
+    if (childless.length > 0) return childless[0];
+
+    const neutral = values.find((v) => isNeutral(v.value_name));
+    if (neutral) return neutral;
+
+    return values[0];
+  }
+
+  /**
+   * Harvest cross-account: extrai attribute_list de algum listing Shopee
+   * ATIVO em qualquer conta da plataforma na mesma categoria. Útil quando
+   * a conta atual recebe 403 em get_attributes mas outra conta (ou a mesma
+   * em momento anterior) tem item ativo de onde o schema é legível via
+   * get_item_base_info. Tenta até 5 candidatos; primeiro sucesso ganha.
+   * Retorna null se nada disponível.
+   */
+  public static async harvestShopeeAttrsFromAnyAccount(
+    categoryId: number,
+  ): Promise<any[] | null> {
+    try {
+      const prismaMod = await import("../../lib/prisma");
+      const prisma = prismaMod.default;
+      const samples = (await (prisma as any).productListing.findMany({
+        where: {
+          status: "active",
+          NOT: { externalListingId: { startsWith: "PENDING_" } },
+          marketplaceAccount: {
+            platform: "SHOPEE",
+            status: "ACTIVE",
+          },
+          product: { shopeeCategoryId: String(categoryId) },
+        },
+        select: {
+          externalListingId: true,
+          marketplaceAccount: {
+            select: {
+              id: true,
+              accessToken: true,
+              shopId: true,
+            },
+          },
+        },
+        take: 5,
+      })) as Array<{
+        externalListingId: string;
+        marketplaceAccount: {
+          id: string;
+          accessToken: string;
+          shopId: number;
+        };
+      }>;
+
+      if (samples.length === 0) {
+        // Caso muito comum: primeira publicação em uma categoria.
+        // Logar pra observabilidade — usuário precisa saber que harvest não
+        // tinha candidatos (vs. ter tentado e falhado).
+        console.log(
+          JSON.stringify({
+            event: "shopee.category_attrs.harvest_no_candidates",
+            categoryId,
+            reason: "no_active_shopee_listing_in_category",
+          }),
+        );
+      }
+
+      for (const sample of samples) {
+        const itemId = Number(sample.externalListingId);
+        if (!Number.isFinite(itemId) || itemId <= 0) continue;
+        const acct = sample.marketplaceAccount;
+        if (!acct?.accessToken || !acct?.shopId) continue;
+        try {
+          const item = await ShopeeApiService.getItemBaseInfo(
+            acct.accessToken,
+            acct.shopId,
+            itemId,
+          );
+          if (
+            item?.attribute_list &&
+            Array.isArray(item.attribute_list) &&
+            item.attribute_list.length > 0
+          ) {
+            console.log(
+              JSON.stringify({
+                event: "shopee.category_attrs.harvested",
+                categoryId,
+                fromAccountId: acct.id,
+                fromItemId: itemId,
+                attrCount: item.attribute_list.length,
+              }),
+            );
+            return item.attribute_list;
+          }
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              event: "shopee.category_attrs.harvest_attempt_failed",
+              categoryId,
+              fromAccountId: acct.id,
+              fromItemId: itemId,
+              message: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          event: "shopee.category_attrs.harvest_query_failed",
+          categoryId,
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+    return null;
+  }
 
   /**
    * Coleta a galeria completa de imagens de um produto preservando ordem.
@@ -235,7 +400,14 @@ export class ListingUseCase {
       case "SUCATA":
         return "used";
       default:
-        return "used"; // ML não aceita not_specified em MLB
+        // ML não aceita not_specified em MLB. Sem signal explícito de
+        // qualidade nem de itemCondition, assumir "new" — é o default seguro
+        // que preserva a intenção comum quando o usuário não preencheu nada.
+        // Quem vende usado/sucata explicita via `quality` ou
+        // `mlSettings.itemCondition` no modal — ambos sobrescrevem este
+        // fallback. Antes este default era "used" e mascarava silenciosamente
+        // a escolha do usuário, virando "usado" no anúncio publicado.
+        return "new";
     }
   }
 
@@ -1165,13 +1337,41 @@ export class ListingUseCase {
           categoryIdForML,
           effectiveConditionForPreflight,
         );
+      // Rastreia se a condição veio EXPLICITAMENTE do modal (mlSettings) vs.
+      // de derivação automática (product.quality). Override silencioso só é
+      // aceitável no segundo caso — quando o usuário não escolheu, derivamos.
+      // Mas se ele escolheu "novo" e categoria só aceita "usado", BLOQUEAR
+      // com erro claro em vez de publicar como "usado" sem avisar.
+      const userExplicitlyChoseCondition = !!mlSettings?.itemCondition;
       let conditionForPayload: string = effectiveConditionForPreflight;
       if (!condCheck.ok && condCheck.reason === "incompatible") {
         const allowed = condCheck.allowedConditions || [];
+        if (userExplicitlyChoseCondition) {
+          // Escolha explícita do operador. Bloquear em vez de overriding
+          // silencioso — o usuário precisa decidir: ajustar categoria, ou
+          // ajustar a condição.
+          guardConditionAllowed = false;
+          console.warn(
+            `[ListingUseCase] category trace BLOCKED user_choice_vs_category`,
+            {
+              productId: product.id,
+              resolved: categoryIdForML,
+              fullPath: resolvedCategory.fullPath,
+              userChose: effectiveConditionForPreflight,
+              allowedConditions: allowed,
+            },
+          );
+          return {
+            success: false,
+            error: `Você escolheu publicar como '${effectiveConditionForPreflight}', mas a categoria '${resolvedCategory.fullPath || categoryIdForML}' aceita apenas ${JSON.stringify(allowed)}. Escolha outra categoria ou ajuste a condição do item no modal.`,
+          };
+        }
         // Categorias de autopeça frequentemente têm leaves com uma única
-        // condição permitida (ex: Servo Freio → ["new"]). Em vez de bloquear,
-        // publicamos com a única condição aceita — comportamento esperado
-        // para catálogos ML onde não há variante "used" da sub-categoria.
+        // condição permitida (ex: Servo Freio → ["new"]). Quando o usuário
+        // NÃO escolheu explicitamente (derivamos de product.quality ou
+        // default), em vez de bloquear, publicamos com a única condição
+        // aceita — comportamento esperado para catálogos ML onde não há
+        // variante "used" da sub-categoria.
         if (allowed.length === 1) {
           console.warn(`[ListingUseCase] category trace OVERRIDE condition`, {
             productId: product.id,
@@ -1180,6 +1380,7 @@ export class ListingUseCase {
             fullPath: resolvedCategory.fullPath,
             productCondition: effectiveConditionForPreflight,
             overrideTo: allowed[0],
+            reason: "derived_from_quality_not_user_choice",
           });
           conditionForPayload = allowed[0];
           guardConditionAllowed = true;
@@ -3057,7 +3258,13 @@ export class ListingUseCase {
       // 3. Buscar atributos obrigatórios da categoria via API Shopee
       const attributeList: ShopeeItemCreatePayload["attribute_list"] = [];
 
-      // Mapa de valores do produto para os nomes de atributos mais comuns
+      // Mapa de valores do produto para os nomes de atributos mais comuns.
+      // Lookup é case-insensitive (linha ~3158: attr.attribute_name.toLowerCase()),
+      // então as chaves aqui DEVEM ser lowercase. Categorias de autopeça da
+      // Shopee retornam "Auto-Part Number" como atributo mandatório em várias
+      // categorias (102340 Injeção, 102370 Filtros, 102416, etc) — sem o
+      // mapeamento correspondente, o lookup falhava e a API rejeitava o item
+      // com "Attribute Auto-Part Number is mandatory required".
       const productAttrValues: Record<string, string> = {};
       if (product.brand) productAttrValues["marca"] = product.brand;
       if (product.brand) productAttrValues["brand"] = product.brand;
@@ -3065,12 +3272,19 @@ export class ListingUseCase {
       if (product.model) productAttrValues["model"] = product.model;
       if (product.year) productAttrValues["ano"] = product.year;
       if (product.year) productAttrValues["year"] = product.year;
-      if (product.partNumber)
+      if (product.partNumber) {
         productAttrValues["número de referência"] = product.partNumber;
-      if (product.partNumber)
+        productAttrValues["numero de referencia"] = product.partNumber;
         productAttrValues["part number"] = product.partNumber;
-      if (product.partNumber)
         productAttrValues["reference number"] = product.partNumber;
+        productAttrValues["auto-part number"] = product.partNumber;
+        productAttrValues["auto part number"] = product.partNumber;
+        productAttrValues["número da peça"] = product.partNumber;
+        productAttrValues["numero da peca"] = product.partNumber;
+        productAttrValues["part number (oem)"] = product.partNumber;
+        productAttrValues["oem part number"] = product.partNumber;
+        productAttrValues["oem"] = product.partNumber;
+      }
 
       // Coletar TODAS as URLs de imagens do produto (galeria completa).
       // Shopee aceita até 9 imagens por item; preservar ordem original.
@@ -3104,34 +3318,88 @@ export class ListingUseCase {
         ),
       );
 
-      // Stage 4 wrapper: single retry on 403 para absorver transientes.
-      // Shopee retorna 403 "permission denied" esporadicamente mesmo para
-      // contas ACTIVE com escopo correto; um retry curto costuma resolver.
-      const fetchCategoryAttrsWithRetry = async () => {
-        try {
-          return await ShopeeApiService.getCategoryAttributes(
-            account.accessToken,
-            account.shopId,
+      // Stage 4: catálogo persistente de atributos.
+      // Tenta memória → DB → live (com retry) → harvest cross-account → DB stale.
+      // Retorna null se TUDO falhar — caller emite erro terminal em vez de
+      // mandar attribute_list inválida (que a Shopee rejeita por contrato).
+      const fetchCategoryAttrsWithCache = async (): Promise<{
+        attribute_list: any[];
+        source: "live" | "memory" | "db_fresh" | "db_stale" | "harvested";
+      }> => {
+        const resolution =
+          await ShopeeAttributeCatalogService.getCategoryAttributes(
+            "BR",
             numericCategoryId,
             "pt-BR",
+            {
+              fetchLive: async () => {
+                try {
+                  return await ShopeeApiService.getCategoryAttributes(
+                    account.accessToken,
+                    account.shopId,
+                    numericCategoryId,
+                    "pt-BR",
+                  );
+                } catch (err) {
+                  if ((err as any)?.status === 403) {
+                    // Espera curta e re-tenta uma vez (cobre flakiness)
+                    await new Promise((r) => setTimeout(r, 800));
+                    return await ShopeeApiService.getCategoryAttributes(
+                      account.accessToken,
+                      account.shopId,
+                      numericCategoryId,
+                      "pt-BR",
+                    );
+                  }
+                  throw err;
+                }
+              },
+              harvest: () =>
+                ListingUseCase.harvestShopeeAttrsFromAnyAccount(
+                  numericCategoryId,
+                ),
+            },
           );
-        } catch (err) {
-          const status = (err as any)?.status;
-          if (status !== 403) throw err;
-          await new Promise((r) => setTimeout(r, 800));
-          return await ShopeeApiService.getCategoryAttributes(
-            account.accessToken,
-            account.shopId,
-            numericCategoryId,
-            "pt-BR",
+        if (!resolution) {
+          // null = TODOS os caminhos falharam (memory + DB + live + harvest +
+          // stale). Diferente de attribute_list: [] (categoria sem mandatory
+          // attrs — caso legítimo). Fail-fast com mensagem acionável; nunca
+          // emitir payload com attribute_id=0 que a Shopee rejeita.
+          console.warn(
+            JSON.stringify({
+              event: "shopee.category_attrs.failed",
+              categoryId: numericCategoryId,
+              shopId: account.shopId,
+              message: "no_schema_from_any_source",
+            }),
+          );
+          throw new Error(
+            `Não foi possível obter os atributos da categoria Shopee ${numericCategoryId} ` +
+              `(catálogo vazio, API retornou 403, e nenhum anúncio ativo nessa categoria em ` +
+              `qualquer conta para harvest). Execute: npm run shopee:sync-attrs -- ` +
+              `--category=${numericCategoryId} com uma conta Shopee que tenha permissão, ou ` +
+              `crie 1 anúncio manualmente nessa categoria via Seller Center.`,
           );
         }
+        console.log(
+          JSON.stringify({
+            event: "shopee.category_attrs.resolved",
+            categoryId: numericCategoryId,
+            shopId: account.shopId,
+            source: resolution.source,
+            attrCount: resolution.attribute_list.length,
+          }),
+        );
+        return {
+          attribute_list: resolution.attribute_list,
+          source: resolution.source,
+        };
       };
 
       const [categoryAttrsResult, imageUploadResult, logisticsResult] =
         await Promise.allSettled([
-          // Stage 4: Category Attributes (com retry 403)
-          fetchCategoryAttrsWithRetry(),
+          // Stage 4: Category Attributes (cache + live + stale fallback)
+          fetchCategoryAttrsWithCache(),
           // Stage 5: Image Upload (multi-imagem em paralelo)
           imageUploadStage,
           // Stage 6: Logistics Channels
@@ -3141,12 +3409,11 @@ export class ListingUseCase {
           ),
         ]);
 
-      // ── Processar resultados de Category Attributes (mesmo tratamento de antes) ──
+      // ── Processar resultados de Category Attributes ──
       if (categoryAttrsResult.status === "fulfilled") {
-        const categoryAttrs = categoryAttrsResult.value;
-        const attrs = categoryAttrs?.attribute_list || [];
+        const { attribute_list: attrs, source } = categoryAttrsResult.value;
         console.log(
-          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a) => a.is_mandatory).length} mandatory)`,
+          `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a: any) => a.is_mandatory).length} mandatory) [source=${source}]`,
         );
 
         for (const attr of attrs) {
@@ -3187,19 +3454,11 @@ export class ListingUseCase {
             }
 
             if (attr.is_mandatory && !valueName) {
-              const otherValue = attr.attribute_value_list.find(
-                (v) =>
-                  v.value_name.toLowerCase() === "outros" ||
-                  v.value_name.toLowerCase() === "other" ||
-                  v.value_name.toLowerCase() === "genérica",
+              const picked = ListingUseCase.pickSafeMandatoryShopeeValue(
+                attr.attribute_value_list,
               );
-              if (otherValue) {
-                valueId = otherValue.value_id;
-                valueName = otherValue.value_name;
-              } else {
-                valueId = attr.attribute_value_list[0].value_id;
-                valueName = attr.attribute_value_list[0].value_name;
-              }
+              valueId = picked.value_id;
+              valueName = picked.value_name;
             }
           } else if (attr.is_mandatory && !valueName) {
             valueName = productValue || product.brand || product.name;
@@ -3223,24 +3482,14 @@ export class ListingUseCase {
           }
         }
       } else {
+        // Sem schema de atributos, mandar payload é garantia de rejeição da
+        // Shopee ("Auto-Part Number is mandatory required" ou "attribute info
+        // is invalid"). Fail-fast com a mensagem acionável já formatada por
+        // fetchCategoryAttrsWithCache.
         const reason: any = categoryAttrsResult.reason;
-        const reasonMsg = reason?.message || String(reason || "unknown");
-        const is403 =
-          /403/.test(reasonMsg) || /permission denied/i.test(reasonMsg);
-        console.warn(
-          JSON.stringify({
-            event: "shopee.category_attrs.failed",
-            categoryId: numericCategoryId,
-            shopId: account.shopId,
-            status: is403 ? 403 : undefined,
-            errorCode: is403 ? "permission_denied" : "unknown",
-            message: reasonMsg,
-          }),
-        );
-        console.warn(
-          `[ListingUseCase] Failed to fetch Shopee category attributes for ${numericCategoryId}, proceeding without attributes:`,
-          reasonMsg,
-        );
+        throw reason instanceof Error
+          ? reason
+          : new Error(String(reason || "shopee.category_attrs.unavailable"));
       }
 
       // ── Processar resultado dos uploads de imagens (multi-imagem) ──
@@ -3710,7 +3959,17 @@ export class ListingUseCase {
         /categoria.*inv[aá]lida/i.test(errorMsg) ||
         /invalid category/i.test(errorMsg) ||
         /should use leaf category/i.test(errorMsg) ||
-        /leaf category/i.test(errorMsg);
+        /leaf category/i.test(errorMsg) ||
+        // Attribute mandatory missing — pode acontecer se o schema do
+        // catálogo estiver incompleto/desatualizado. Retry não ajuda;
+        // operador precisa rodar sync-shopee-attrs ou validar permissão.
+        /attribute .* mandatory required/i.test(errorMsg) ||
+        /attribute info is invalid/i.test(errorMsg) ||
+        // Permission denied no get_attributes — escopo OAuth incompleto
+        /permission denied/i.test(errorMsg) ||
+        // Catálogo não tem schema e nada conseguiu resolver — fail-fast
+        // emitido por fetchCategoryAttrsWithCache. Retry sem sync não ajuda.
+        /não foi possível obter os atributos da categoria/i.test(errorMsg);
 
       // Atualizar placeholder com erro e decisão de retry
       try {
@@ -3747,9 +4006,27 @@ export class ListingUseCase {
         );
       }
 
+      // Mensagens mais úteis para erros terminais conhecidos
+      let userFacingError = errorMsg;
+      if (/não foi possível obter os atributos da categoria/i.test(errorMsg)) {
+        // Já é uma mensagem acionável formatada por fetchCategoryAttrsWithCache
+        userFacingError = errorMsg;
+      } else if (
+        /attribute .* mandatory required/i.test(errorMsg) ||
+        /attribute info is invalid/i.test(errorMsg) ||
+        /permission denied/i.test(errorMsg)
+      ) {
+        userFacingError =
+          `Shopee rejeitou o anúncio por atributos obrigatórios da categoria. ` +
+          `Rode: npm run shopee:sync-attrs -- --category=<id> para popular o ` +
+          `catálogo, ou re-autorize o app Dexo no Shopee Seller Center (Apps → ` +
+          `Autorizações) garantindo todos os escopos. ` +
+          `Erro original: ${errorMsg.substring(0, 200)}`;
+      }
+
       return {
         success: false,
-        error: errorMsg,
+        error: userFacingError,
       };
     }
   }
@@ -3823,101 +4100,202 @@ export class ListingUseCase {
   }
 
   /**
-   * Remove um anÃºncio do ML
-   * @param listingId ID do vÃ­nculo local
+   * Remove um anúncio do Mercado Livre.
+   *
+   * Política estrita (substitui o "best-effort + delete local sempre" antigo):
+   *  - PENDING_ / sem credenciais → delete local (não há nada remoto a fechar).
+   *  - PUT /items/{id} status=closed bem-sucedido → delete local.
+   *  - Erro idempotente (404, "already closed") → delete local.
+   *  - Erro recuperável (429, 5xx, network) → retry exponencial 500ms/2s/8s.
+   *    Se ainda falhar, NÃO deleta local, retorna retryable=true.
+   *  - Erro permanente (4xx genérico, auth) → NÃO deleta local.
    */
   static async removeMLListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     try {
-      // Buscar vÃ­nculo
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
       }
 
-      // Se ainda estÃ¡ com placeholder PENDING ou sem externalListingId, apenas remove localmente
+      // PENDING ou sem externalListingId: não há nada para fechar no ML.
       if (
         !listing.externalListingId ||
         listing.externalListingId.startsWith("PENDING_")
       ) {
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
-      // Buscar conta para obter access token
       const account = await MarketplaceRepository.findById(
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken) {
-        // Sem credenciais, remova localmente para evitar lixo
-        await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        // Conta desconectada — não conseguimos confirmar fechamento.
+        // Política estrita: NÃO deleta local. O usuário precisa reconectar
+        // a conta antes de remover o anúncio.
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta do Mercado Livre sem token de acesso. Reconecte a conta e tente novamente.",
+        };
       }
 
-      // Primeiro, verificar o status atual do anÃºncio
       try {
-        const currentItem = await MLApiService.getItemDetails(
-          account.accessToken,
-          listing.externalListingId,
-        );
-        console.log(
-          `[ListingUseCase] Current status of ${listing.externalListingId}: ${currentItem.status}`,
-        );
-      } catch (statusError) {
-        console.warn(
-          `[ListingUseCase] Could not get current status of ${listing.externalListingId}:`,
-          statusError,
-        );
-        // se o item nÃ£o existir mais no ML, apenas prossegue com remoÃ§Ã£o local
-      }
-
-      // Tentar fechar anÃºncio no ML (itens com infraÃ§Ãµes ou em processamento podem nÃ£o poder ser fechados)
-      try {
-        await MLApiService.updateItem(
-          account.accessToken,
-          listing.externalListingId,
-          {
-            status: "closed",
-          },
-        );
-        console.log(
-          `[ListingUseCase] ML listing ${listing.externalListingId} closed successfully`,
+        await withRetry(
+          () =>
+            MLApiService.updateItem(
+              account.accessToken!,
+              listing.externalListingId,
+              { status: "closed" },
+            ),
+          { classify: classifyMLRemoveError },
         );
       } catch (closeError) {
+        const c = classifyMLRemoveError(closeError);
+        if (c.kind === "idempotent") {
+          // ML confirma que o item não pode mais ser fechado porque já está
+          // fechado / não existe mais. Trata como sucesso.
+          console.log(
+            `[ListingUseCase] ML listing ${listing.externalListingId} já encerrado (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+
+        // 403 "you are not the seller" frequentemente significa que o
+        // ProductListing local está vinculado à CONTA ERRADA do mesmo
+        // usuário (caso típico: importações em massa que erraram o
+        // ownership). Tentamos descobrir qual conta é o dono real e
+        // reparar o vínculo automaticamente antes de desistir.
+        if (c.kind === "permanent" && c.status === 403) {
+          const userId = listing.product?.userId;
+          if (userId) {
+            const repair = await findCorrectMLAccount({
+              userId,
+              currentAccountId: listing.marketplaceAccountId,
+              externalListingId: listing.externalListingId,
+            });
+            if (repair.repaired && repair.newAccountId && repair.newAccountToken) {
+              await ListingRepository.reassignAccount(
+                listingId,
+                repair.newAccountId,
+              );
+              void SystemLogService.logListingOwnershipRepaired(userId, listingId, {
+                externalListingId: listing.externalListingId,
+                oldAccountId: listing.marketplaceAccountId,
+                newAccountId: repair.newAccountId,
+                itemStatus: repair.itemStatus,
+              });
+              console.log(
+                `[ListingUseCase] ownership reparado: listing ${listingId} reapontado para conta ${repair.newAccountId} (item status=${repair.itemStatus})`,
+              );
+
+              // Se o item já está closed no ML, o close pedido é
+              // idempotente — basta deletar o vínculo local.
+              if (repair.itemStatus === "closed") {
+                await ListingRepository.deleteListing(listingId);
+                return { success: true, closedOnMarketplace: true };
+              }
+
+              // Item ainda está vivo no ML: re-tenta o fechamento com o
+              // token da conta correta.
+              try {
+                await withRetry(
+                  () =>
+                    MLApiService.updateItem(
+                      repair.newAccountToken!,
+                      listing.externalListingId,
+                      { status: "closed" },
+                    ),
+                  { classify: classifyMLRemoveError },
+                );
+                await ListingRepository.deleteListing(listingId);
+                return { success: true, closedOnMarketplace: true };
+              } catch (retryError) {
+                const cRetry = classifyMLRemoveError(retryError);
+                if (cRetry.kind === "idempotent") {
+                  await ListingRepository.deleteListing(listingId);
+                  return { success: true, closedOnMarketplace: true };
+                }
+                console.warn(
+                  `[ListingUseCase] reparo OK mas re-close ainda falhou (${cRetry.kind}): ${cRetry.message}`,
+                );
+                return {
+                  success: false,
+                  closedOnMarketplace: false,
+                  retryable: cRetry.kind === "retryable",
+                  error: cRetry.message,
+                };
+              }
+            }
+            console.log(
+              `[ListingUseCase] reparo não encontrou conta correta para ${listing.externalListingId}: ${repair.reason}`,
+            );
+          }
+        }
+
         console.warn(
-          `[ListingUseCase] Could not close ML listing ${listing.externalListingId}:`,
-          closeError,
+          `[ListingUseCase] Falha ao fechar ML listing ${listing.externalListingId} (${c.kind}):`,
+          c.message,
         );
-        // Mesmo que nÃ£o consiga fechar, continua removendo o vÃ­nculo local.
-        // O item pode jÃ¡ ter sido apagado ou estar em processamento; nÃ£o devemos travar a remoÃ§Ã£o local.
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
       }
 
-      // Remover vÃ­nculo local
+      console.log(
+        `[ListingUseCase] ML listing ${listing.externalListingId} closed successfully`,
+      );
       await ListingRepository.deleteListing(listingId);
-
-      return { success: true };
+      return { success: true, closedOnMarketplace: true };
     } catch (error) {
       console.error("[ListingUseCase] Error removing ML listing:", error);
       return {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
+        closedOnMarketplace: false,
+        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
 
   /**
-   * Remove um anÃºncio da Shopee (espelha removeMLListing: best-effort remoto + hard-delete local)
-   * @param listingId ID do vÃ­nculo local
+   * Remove um anúncio da Shopee. Mesma política estrita de removeMLListing.
+   *
+   * Idempotência Shopee: error_inexist / product.error_inexist são tratados
+   * como sucesso (item já não existe no marketplace).
    */
   static async removeShopeeListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     try {
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
-        return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
       }
 
       if (
@@ -3925,66 +4303,100 @@ export class ListingUseCase {
         listing.externalListingId.startsWith("PENDING_")
       ) {
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
       const account = await MarketplaceRepository.findById(
         listing.marketplaceAccountId,
       );
       if (!account || !account.accessToken || !account.shopId) {
-        await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta da Shopee sem token/shop_id. Reconecte a conta e tente novamente.",
+        };
       }
 
       const itemId = Number(listing.externalListingId);
       if (!Number.isFinite(itemId)) {
+        // externalListingId malformado é problema de dados locais, não do
+        // marketplace. Limpa o registro local porque não há como reconciliar.
         console.warn(
-          `[ListingUseCase] Shopee externalListingId invÃ¡lido: ${listing.externalListingId}`,
+          `[ListingUseCase] Shopee externalListingId inválido: ${listing.externalListingId}`,
         );
         await ListingRepository.deleteListing(listingId);
-        return { success: true };
+        return { success: true, closedOnMarketplace: false };
       }
 
       try {
-        await ShopeeApiService.deleteItem(
-          account.accessToken,
-          account.shopId,
-          itemId,
-        );
-        console.log(
-          `[ListingUseCase] Shopee item ${itemId} deleted successfully`,
+        await withRetry(
+          () =>
+            ShopeeApiService.deleteItem(
+              account.accessToken!,
+              account.shopId!,
+              itemId,
+            ),
+          { classify: classifyShopeeRemoveError },
         );
       } catch (deleteError) {
+        const c = classifyShopeeRemoveError(deleteError);
+        if (c.kind === "idempotent") {
+          console.log(
+            `[ListingUseCase] Shopee item ${itemId} já não existe (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+
         console.warn(
-          `[ListingUseCase] Could not delete Shopee item ${itemId}:`,
-          deleteError,
+          `[ListingUseCase] Falha ao deletar Shopee item ${itemId} (${c.kind}):`,
+          c.message,
         );
-        // Mesmo que a API externa recuse, prossegue com remoÃ§Ã£o local - paridade com removeMLListing
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
       }
 
+      console.log(
+        `[ListingUseCase] Shopee item ${itemId} deleted successfully`,
+      );
       await ListingRepository.deleteListing(listingId);
-
-      return { success: true };
+      return { success: true, closedOnMarketplace: true };
     } catch (error) {
       console.error("[ListingUseCase] Error removing Shopee listing:", error);
       return {
         success: false,
-        error:
-          error instanceof Error ? error.message : "Erro ao remover anÃºncio",
+        closedOnMarketplace: false,
+        error: error instanceof Error ? error.message : "Erro ao remover anúncio",
       };
     }
   }
 
   /**
-   * Dispatcher: remove um anÃºncio escolhendo o fluxo correto pela plataforma da conta vinculada
-   * @param listingId ID do vÃ­nculo local
+   * Dispatcher: remove um anúncio escolhendo o fluxo correto pela plataforma
+   * da conta vinculada. Propaga o resultado estendido (closedOnMarketplace,
+   * retryable). Plataforma desconhecida = só delete local (sem nada remoto).
    */
   static async removeListing(
     listingId: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
     const listing = await ListingRepository.findById(listingId);
     if (!listing) {
-      return { success: false, error: "VÃ­nculo nÃ£o encontrado" };
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error: "Vínculo não encontrado",
+      };
     }
 
     const platform = listing.marketplaceAccount?.platform;
@@ -3999,7 +4411,7 @@ export class ListingUseCase {
       `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
     );
     await ListingRepository.deleteListing(listingId);
-    return { success: true };
+    return { success: true, closedOnMarketplace: false };
   }
 
   /**
@@ -4067,7 +4479,7 @@ export class ListingUseCase {
     listingId: string,
     userId: string,
     status: "active" | "paused",
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; alreadyInState?: boolean }> {
     try {
       const listing = await ListingRepository.findById(listingId);
       if (!listing) {
@@ -4077,6 +4489,23 @@ export class ListingUseCase {
         return { success: false, error: "Acesso negado a este anúncio" };
       }
 
+      // Idempotência: se já está no status desejado, não chama API externa.
+      // Normaliza lowercase porque o DB historicamente recebe ambos os casings.
+      if (listing.status?.toLowerCase() === status) {
+        return { success: true, alreadyInState: true };
+      }
+
+      // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        return {
+          success: false,
+          error: "Anúncio ainda não foi publicado no marketplace",
+        };
+      }
+
       const platform = listing.marketplaceAccount?.platform;
 
       if (platform === Platform.MERCADO_LIVRE) {
@@ -4084,16 +4513,6 @@ export class ListingUseCase {
         const account = listing.marketplaceAccount;
         if (!account || !account.accessToken) {
           return { success: false, error: "Conta sem credenciais válidas" };
-        }
-
-        if (
-          !listing.externalListingId ||
-          listing.externalListingId.startsWith("PENDING_")
-        ) {
-          return {
-            success: false,
-            error: "Anúncio ainda não foi publicado no marketplace",
-          };
         }
 
         await MLApiService.updateItem(
@@ -4106,11 +4525,37 @@ export class ListingUseCase {
       }
 
       if (platform === Platform.SHOPEE) {
-        return {
-          success: false,
-          error:
-            "Pausar/reativar anúncios da Shopee ainda não está disponível. Use o painel da Shopee.",
-        };
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken || !account.shopId) {
+          return {
+            success: false,
+            error: "Conta Shopee sem credenciais válidas",
+          };
+        }
+
+        const itemId = Number(listing.externalListingId);
+        if (!Number.isFinite(itemId)) {
+          return {
+            success: false,
+            error: "ID externo do anúncio Shopee inválido",
+          };
+        }
+
+        const result = await ShopeeApiService.unlistItem(
+          account.accessToken,
+          account.shopId,
+          [{ itemId, unlist: status === "paused" }],
+        );
+
+        if (result.failure_list.length > 0) {
+          return {
+            success: false,
+            error: result.failure_list[0].failed_reason,
+          };
+        }
+
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
       }
 
       return {

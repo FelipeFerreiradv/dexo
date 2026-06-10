@@ -1,0 +1,11 @@
+rembg==2.0.59
+fastapi==0.115.0
+python-multipart==0.0.9
+uvicorn[standard]==0.32.0
+onnxruntime==1.19.2
+# Já vêm como deps transitivas do rembg, mas agora o app.py importa direto
+# (refino de borda + sombra) — pinadas p/ build reprodutível (regra 7).
+# Versões resolvidas pelo rembg 2.0.59; têm wheels cp311 (container py3.11).
+numpy==2.4.6
+opencv-python-headless==4.13.0.92
+pillow==12.2.0

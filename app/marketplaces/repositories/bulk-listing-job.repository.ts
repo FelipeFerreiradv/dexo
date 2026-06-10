@@ -29,6 +29,16 @@ export interface BulkOverrideTemplate {
   stockRule?: { type: "use_product" } | { type: "cap"; value: number };
   titleSuffix?: string;
   mlCategoryStrategy?: "auto" | "from_product";
+
+  // Aumento percentual escalonado entre contas ML. Enriquecido e persistido
+  // pelo endpoint POST /listings/bulk (o front envia apenas { enabled, percent }).
+  // `indexByAccountId` congela a ordem de seleção das contas ML para que o
+  // retry reproduza preços idênticos. Ver cross-account-price.service.
+  crossAccountIncrease?: {
+    enabled: boolean;
+    percent: number;
+    indexByAccountId?: Record<string, number>;
+  };
 }
 
 export interface BulkListingItemResult {

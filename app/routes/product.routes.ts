@@ -1,5 +1,8 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ProductUseCase } from "../usecases/product.usercase";
+import {
+  BULK_DELETE_MAX_IDS,
+  ProductUseCase,
+} from "../usecases/product.usercase";
 import {
   ProductCreate,
   ProductListFilters,
@@ -19,6 +22,12 @@ import { SystemLogService } from "../services/system-log.service";
 import CategoryRepository from "../marketplaces/repositories/category.repository";
 import { CategoryResolutionService } from "../marketplaces/services/category-resolution.service";
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
+import { getMeasurementsForCategory } from "../lib/ml-measurements";
+import { normalizeQuality, InvalidQualityError } from "../lib/quality";
+import {
+  parseNfeXml,
+  NfeParseError,
+} from "../fiscal/nfe-import/parse-nfe-xml";
 
 const PUBLICATION_STATUS_VALUES = new Set<ProductPublicationStatus>([
   "ACTIVE",
@@ -84,7 +93,12 @@ function parseDateBoundary(
   }
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    parsed.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+    parsed.setHours(
+      endOfDay ? 23 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 999 : 0,
+    );
   }
 
   return parsed;
@@ -113,9 +127,7 @@ function parseEnumValue<T extends string>(
  */
 function sanitizeProductAttributes(
   raw: unknown,
-):
-  | Record<string, { value_id?: string; value_name?: string }>
-  | undefined {
+): Record<string, { value_id?: string; value_name?: string }> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const out: Record<string, { value_id?: string; value_name?: string }> = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -157,6 +169,76 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao gerar SKU",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /products/nfe/parse
+   * Recebe o XML de uma NF-e de compra (modelo 55, multipart, campo `file`) e
+   * devolve os itens normalizados para PRÉ-PREENCHER o modal de criação de
+   * produto. NÃO persiste nada. O parsing é isolado e seguro contra XXE
+   * (ver app/fiscal/nfe-import/parse-nfe-xml.ts).
+   */
+  fastify.post(
+    "/nfe/parse",
+    {
+      preHandler: [
+        authMiddleware,
+        async (request: FastifyRequest, reply: FastifyReply) => {
+          if (!request.isMultipart()) {
+            return reply.status(400).send({
+              error: "Tipo de conteúdo inválido",
+              message: "Esperado multipart/form-data com o XML no campo `file`",
+            });
+          }
+        },
+      ],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        let buffer: Buffer | null = null;
+        for await (const part of request.parts()) {
+          if (part.type === "file") {
+            if (part.fieldname !== "file") {
+              // descarta outros arquivos para liberar o stream
+              await part.toBuffer().catch(() => undefined);
+              continue;
+            }
+            try {
+              buffer = await part.toBuffer();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
+                return reply.status(400).send({
+                  error: "Arquivo muito grande",
+                  message: "O tamanho máximo permitido é 5MB",
+                });
+              }
+              throw e;
+            }
+          }
+        }
+
+        if (!buffer) {
+          return reply.status(400).send({
+            error: "Arquivo não encontrado",
+            message: "Envie o XML da NF-e no campo `file`",
+          });
+        }
+
+        const result = parseNfeXml(buffer.toString("utf-8"));
+        return reply.status(200).send(result);
+      } catch (error) {
+        if (error instanceof NfeParseError) {
+          return reply.status(error.statusCode).send({ error: error.message });
+        }
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao ler o XML da NF-e",
         });
       }
     },
@@ -238,6 +320,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
       const user = (request as any).user;
 
+      // Valida o enum `quality` antes do sanitize. Sem isso, valores fora do
+      // enum (ex.: "USADO" vindo de cliente externo) chegavam ao Prisma e
+      // estouravam com uma mensagem crua que vazava o stack do ORM.
+      let normalizedQuality;
+      try {
+        normalizedQuality = normalizeQuality(quality);
+      } catch (err) {
+        if (err instanceof InvalidQualityError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
+      }
+
       // Sanitize / coerce incoming numeric fields to expected types to avoid Prisma/runtime errors
       const sanitized = {
         sku: sku as string,
@@ -255,7 +350,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         location: location ?? undefined,
         locationId: locationId ?? undefined,
         partNumber: partNumber ?? undefined,
-        quality: quality ?? undefined,
+        quality: normalizedQuality,
         isSecurityItem: Boolean(isSecurityItem),
         isTraceable: Boolean(isTraceable),
         sourceVehicle: sourceVehicle ?? undefined,
@@ -388,12 +483,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           : Promise.resolve(null),
         shopeeCategoryExternalToResolve
           ? (async () => {
-              const externalId =
-                shopeeCategoryExternalToResolve!.startsWith("SHP_")
-                  ? shopeeCategoryExternalToResolve!
-                  : `SHP_${shopeeCategoryExternalToResolve}`;
-              const cat =
-                await CategoryRepository.findByExternalId(externalId);
+              const externalId = shopeeCategoryExternalToResolve!.startsWith(
+                "SHP_",
+              )
+                ? shopeeCategoryExternalToResolve!
+                : `SHP_${shopeeCategoryExternalToResolve}`;
+              const cat = await CategoryRepository.findByExternalId(externalId);
               return { externalId, cat };
             })()
           : Promise.resolve(null),
@@ -452,6 +547,160 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           error:
             "Produto não possui categoria do Shopee. Selecione uma categoria antes de criar o anúncio.",
         });
+      }
+
+      // Auto-fill de dimensões para ML quando o payload veio sem elas.
+      // `createMLListing` faz hard-return `{success:false}` em dimensões null/0
+      // (linha ~965 de listing.usercase.ts) — o fallback artificial 10x10x10/1kg
+      // foi removido lá porque o ML detecta o padrão e suspende. Mas o frontend
+      // tem auto-sugestão via `getMeasurementsForCategory` baseada em CSV por
+      // categoria (app/lib/ml-measurements.ts). Replicamos esse lookup aqui no
+      // backend como rede de segurança: se o frontend não sugeriu (categoria
+      // fora do CSV, modal não disparou, ou criação via API direta), tentamos
+      // popular antes do create. Só falha com 400 se NEM o payload NEM o CSV
+      // tiverem dimensões — feedback útil em vez do dispatcher engolir silente.
+      if (requiresMlCategory) {
+        const needsHeight =
+          sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0);
+        const needsWidth =
+          sanitized.widthCm == null || !(Number(sanitized.widthCm) > 0);
+        const needsLength =
+          sanitized.lengthCm == null || !(Number(sanitized.lengthCm) > 0);
+        const needsWeight =
+          sanitized.weightKg == null || !(Number(sanitized.weightKg) > 0);
+
+        if (needsHeight || needsWidth || needsLength || needsWeight) {
+          // Tentativa 1: lookup por categoria no CSV (mesmo que o frontend usa).
+          const suggested = getMeasurementsForCategory(
+            resolvedMlCategoryPath || sanitized.category,
+            sanitized.name,
+          );
+          let filledSource:
+            | "csv"
+            | "weight_derived"
+            | "default_fallback"
+            | null = null;
+          if (suggested) {
+            if (needsHeight && typeof suggested.heightCm === "number")
+              sanitized.heightCm = suggested.heightCm;
+            if (needsWidth && typeof suggested.widthCm === "number")
+              sanitized.widthCm = suggested.widthCm;
+            if (needsLength && typeof suggested.lengthCm === "number")
+              sanitized.lengthCm = suggested.lengthCm;
+            if (needsWeight && typeof suggested.weightKg === "number")
+              sanitized.weightKg = suggested.weightKg;
+            filledSource = "csv";
+          }
+
+          // Tentativa 2: derivar dimensões a partir do weightKg do produto
+          // quando o CSV não cobre a categoria. Peso é a única medida que o
+          // operador costuma cadastrar com confiança (balança no desmonte);
+          // dimensões são "estimativa" e o ML aceita aproximação. Como o
+          // hash do SKU varia, evitamos um padrão fixo 10x10x10/1kg (que
+          // dispara a suspeita anti-fraude do ML que motivou a remoção do
+          // fallback antigo no createMLListing).
+          const stillMissingAfterCsv =
+            sanitized.heightCm == null ||
+            sanitized.widthCm == null ||
+            sanitized.lengthCm == null ||
+            sanitized.weightKg == null ||
+            !(Number(sanitized.heightCm) > 0) ||
+            !(Number(sanitized.widthCm) > 0) ||
+            !(Number(sanitized.lengthCm) > 0) ||
+            !(Number(sanitized.weightKg) > 0);
+
+          if (stillMissingAfterCsv && Number(sanitized.weightKg) > 0) {
+            const w = Number(sanitized.weightKg);
+            // Escala baseada em peso: peças leves cabem em embalagem
+            // menor, peças pesadas em embalagem maior. Faixas calibradas
+            // pra mediana de peças de autopeças.
+            let base: { h: number; w: number; l: number };
+            if (w < 0.5) base = { h: 8, w: 10, l: 12 };
+            else if (w < 2) base = { h: 12, w: 16, l: 20 };
+            else if (w < 5) base = { h: 18, w: 22, l: 28 };
+            else if (w < 15) base = { h: 25, w: 30, l: 40 };
+            else base = { h: 35, w: 40, l: 55 };
+
+            // Pequena variação determinística por SKU pra evitar padrão fixo.
+            const seed = (sanitized.sku || "")
+              .split("")
+              .reduce((acc, c) => acc + c.charCodeAt(0), 0);
+            const jitter = (mod: number) => (seed % mod) - Math.floor(mod / 2);
+
+            if (sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0))
+              sanitized.heightCm = Math.max(5, base.h + jitter(5));
+            if (sanitized.widthCm == null || !(Number(sanitized.widthCm) > 0))
+              sanitized.widthCm = Math.max(5, base.w + jitter(7));
+            if (sanitized.lengthCm == null || !(Number(sanitized.lengthCm) > 0))
+              sanitized.lengthCm = Math.max(5, base.l + jitter(9));
+            filledSource = "weight_derived";
+          }
+
+          if (filledSource) {
+            console.log(
+              JSON.stringify({
+                event: "product.create.dimensions_auto_filled",
+                sku: sanitized.sku,
+                category: resolvedMlCategoryPath || sanitized.category,
+                source: filledSource,
+                filled: {
+                  heightCm: sanitized.heightCm,
+                  widthCm: sanitized.widthCm,
+                  lengthCm: sanitized.lengthCm,
+                  weightKg: sanitized.weightKg,
+                },
+              }),
+            );
+          }
+
+          // Último recurso: se nem CSV nem weight-derived deram conta,
+          // aplica fallback DEFAULT de autopeça pequena com jitter por SKU
+          // pra evitar padrão fixo 10x10x10/1kg (que o ML usa pra suspeitar
+          // de listings em massa). O operador pode editar depois — o
+          // importante é o anúncio sair publicado, não bloquear o fluxo.
+          const stillMissing =
+            sanitized.heightCm == null ||
+            sanitized.widthCm == null ||
+            sanitized.lengthCm == null ||
+            sanitized.weightKg == null ||
+            !(Number(sanitized.heightCm) > 0) ||
+            !(Number(sanitized.widthCm) > 0) ||
+            !(Number(sanitized.lengthCm) > 0) ||
+            !(Number(sanitized.weightKg) > 0);
+          if (stillMissing) {
+            const seedFallback = (sanitized.sku || "default")
+              .split("")
+              .reduce((acc, c) => acc + c.charCodeAt(0), 0);
+            const jitter = (mod: number) =>
+              (seedFallback % mod) - Math.floor(mod / 2);
+
+            if (sanitized.heightCm == null || !(Number(sanitized.heightCm) > 0))
+              sanitized.heightCm = Math.max(5, 15 + jitter(5));
+            if (sanitized.widthCm == null || !(Number(sanitized.widthCm) > 0))
+              sanitized.widthCm = Math.max(5, 15 + jitter(7));
+            if (sanitized.lengthCm == null || !(Number(sanitized.lengthCm) > 0))
+              sanitized.lengthCm = Math.max(5, 10 + jitter(9));
+            if (sanitized.weightKg == null || !(Number(sanitized.weightKg) > 0))
+              // 0.5kg base + jitter 0-9 dezenas de grama → 0.5-0.99kg
+              sanitized.weightKg = 0.5 + (seedFallback % 50) / 100;
+
+            filledSource = "default_fallback";
+            console.warn(
+              JSON.stringify({
+                event: "product.create.dimensions_default_fallback",
+                sku: sanitized.sku,
+                category: resolvedMlCategoryPath || sanitized.category,
+                filled: {
+                  heightCm: sanitized.heightCm,
+                  widthCm: sanitized.widthCm,
+                  lengthCm: sanitized.lengthCm,
+                  weightKg: sanitized.weightKg,
+                },
+                note: "Fallback padrão aplicado — operador deve revisar.",
+              }),
+            );
+          }
+        }
       }
 
       try {
@@ -571,11 +820,33 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             });
           }
 
+          // Aumento percentual escalonado entre contas ML (se habilitado no
+          // modal). Monta o overrideTemplate a partir da ordem das contas ML
+          // em dispatchRequests (1ª = preço base). Sem isso, o dispatch segue
+          // idêntico ao de hoje (overrideTemplate undefined).
+          const mlListingCfg = (
+            bgListings as Array<{
+              platform?: string;
+              crossAccountIncrease?: { enabled?: boolean; percent?: number };
+            }>
+          ).find((l) => l.platform === "MERCADO_LIVRE");
+          const caCfg = mlListingCfg?.crossAccountIncrease;
+          const overrideTemplate = caCfg?.enabled
+            ? ListingDispatcher.buildCrossAccountOverride(
+                dispatchRequests,
+                await ListingDispatcher.resolveCrossAccountPercent(
+                  user.dataOwnerId as string,
+                  caCfg.percent,
+                ),
+              )
+            : null;
+
           if (dispatchRequests.length > 0) {
             ListingDispatcher.dispatch({
               userId: user.dataOwnerId as string,
               productId: data.id as string,
               requests: dispatchRequests,
+              overrideTemplate,
             });
           }
         }
@@ -725,9 +996,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           MARKETPLACE_VALUES,
           "Marketplace",
         );
-        const parsedListingCategory = parseProductListingCategoryValue(
-          listingCategory,
-        );
+        const parsedListingCategory =
+          parseProductListingCategoryValue(listingCategory);
 
         if (listingCategory && !parsedListingCategory) {
           throw new Error("Categoria publicada invÃ¡lida");
@@ -835,9 +1105,74 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error:
+            error instanceof Error ? error.message : "Erro ao buscar produto",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /products/bulk-delete
+   * Deleta múltiplos produtos em uma única chamada, respeitando rate limit
+   * dos marketplaces (semáforo por marketplaceAccountId). Política estrita:
+   * produto só é removido localmente se TODOS os anúncios fecharem OK no
+   * marketplace correspondente. Devolve relatório consolidado por produto.
+   *
+   * Limite de IDs por chamada: BULK_DELETE_MAX_IDS (50). Acima disso o
+   * frontend deve quebrar em chunks.
+   */
+  fastify.post(
+    "/bulk-delete",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const body = (request.body ?? {}) as { ids?: unknown };
+        const ids = Array.isArray(body.ids) ? body.ids : null;
+        if (!ids || ids.length === 0) {
+          return reply.status(400).send({
+            error: "Lista de IDs inválida",
+            message: "Envie um array `ids` com pelo menos 1 produto.",
+          });
+        }
+        if (
+          !ids.every(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          )
+        ) {
+          return reply.status(400).send({
+            error: "IDs inválidos",
+            message: "Todos os IDs devem ser strings não vazias.",
+          });
+        }
+        if (ids.length > BULK_DELETE_MAX_IDS) {
+          return reply.status(400).send({
+            error: "Limite excedido",
+            message: `Máximo de ${BULK_DELETE_MAX_IDS} produtos por chamada. Divida em lotes menores.`,
+          });
+        }
+
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        const user = (request as any).user;
+        const result = await productUseCase.bulkDelete(ids, userId);
+
+        // Log fire-and-forget por produto efetivamente deletado.
+        for (const r of result.results) {
+          if (r.deleted) {
+            void SystemLogService.logProductDelete(
+              user?.id,
+              r.productId,
+              "Produto",
+            );
+          }
+        }
+
+        return reply.status(200).send(result);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
             error instanceof Error
-              ? error.message
-              : "Erro ao buscar produto",
+              ? String(error.message)
+              : "Erro ao excluir produtos em lote",
         });
       }
     },
@@ -858,14 +1193,19 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
         const result = await productUseCase.delete(id, userId);
 
+        // Política estrita: success=false significa que algum anúncio não
+        // pôde ser encerrado no marketplace e o produto foi MANTIDO no banco.
+        // Devolvemos 409 (Conflict) com listingResults detalhado para que o
+        // frontend mostre o relatório por anúncio e ofereça reintentar.
         if (!result.success) {
-          return reply.status(500).send({
-            error: "Erro ao excluir produto",
+          return reply.status(409).send({
+            error: "Não foi possível excluir o produto",
             message: result.message,
+            listingResults: result.listingResults,
           });
         }
 
-        // Registrar log de exclusão do produto (fire-and-forget, non-blocking)
+        // Sucesso: produto deletado localmente. Log fire-and-forget.
         const user = (request as any).user;
         void SystemLogService.logProductDelete(user?.id, id, "Produto");
 
@@ -879,6 +1219,79 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? String(error.message)
               : "Erro ao excluir produto",
+        });
+      }
+    },
+  );
+
+  /**
+   * PATCH /products/:id/listings-status
+   * Pausa ou reativa todos os anúncios publicados de um produto.
+   * Body: { status: "active" | "paused" }.
+   * Espelha o DELETE /products/:id em estrutura, mas atua nos anúncios sem
+   * deletar o produto. Falhas parciais ficam visíveis em listingResults.
+   */
+  fastify.patch<{
+    Params: { id: string };
+    Body: { status: "active" | "paused" };
+  }>(
+    "/:id/listings-status",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      try {
+        const { id } = request.params;
+        const { status } = (request.body ?? {}) as { status?: string };
+
+        if (!id) {
+          return reply
+            .status(400)
+            .send({ error: "ID do produto é obrigatório" });
+        }
+        if (status !== "active" && status !== "paused") {
+          return reply.status(400).send({
+            error: "Status inválido",
+            message: 'Use "active" ou "paused"',
+          });
+        }
+
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const result = await productUseCase.pauseListings(id, userId, status);
+
+        // O usecase retorna "Produto não encontrado" explicitamente quando
+        // findById(id, userId) falha — cobre tanto produto inexistente quanto
+        // pertencente a outro usuário (ownership). 404 sem vazar distinção.
+        if (!result.success && result.message.includes("não encontrado")) {
+          return reply.status(404).send({
+            error: "Produto não encontrado",
+            message: result.message,
+          });
+        }
+
+        const user = (request as any).user;
+        void SystemLogService.logInfo("UPDATE_LISTING", result.message, {
+          userId: user?.id,
+          resource: "Product",
+          resourceId: id,
+          details: { status, listingResults: result.listingResults },
+        });
+
+        // Falhas parciais devolvem 200 (UI mostra detalhes via listingResults).
+        // 500 só quando TODOS os listings falharam.
+        return reply.status(result.success ? 200 : 500).send({
+          success: result.success,
+          message: result.message,
+          listingResults: result.listingResults,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? String(error.message)
+              : "Erro ao alterar status dos anúncios",
         });
       }
     },
@@ -958,6 +1371,18 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           });
         }
 
+        // Mesma validação do POST: aceita case-insensitive, rejeita com 400
+        // amigável se o cliente externo mandar fora do enum (ex.: "USADO").
+        let normalizedQuality;
+        try {
+          normalizedQuality = normalizeQuality(quality);
+        } catch (err) {
+          if (err instanceof InvalidQualityError) {
+            return reply.status(400).send({ error: err.message });
+          }
+          throw err;
+        }
+
         const userId = (request as any).user?.dataOwnerId as string | undefined;
         // Resolver mlCategory se fornecida
         let resolvedMlCategoryId: string | undefined;
@@ -982,10 +1407,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           // corrupções como mangueira → Gin voltem a ser persistidas.
           const normalizedSource = (mlCategorySource as any) || "manual";
           const hasVehicleSignals = !!(brand && model && year);
-          if (
-            hasVehicleSignals &&
-            normalizedSource !== "imported"
-          ) {
+          if (hasVehicleSignals && normalizedSource !== "imported") {
             const domainCheck =
               await CategoryResolutionService.assertWithinVehicleRoot(
                 cat.externalId,
@@ -1042,7 +1464,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             location,
             locationId,
             partNumber,
-            quality,
+            quality: normalizedQuality,
             isSecurityItem,
             isTraceable,
             sourceVehicle,
@@ -1092,7 +1514,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                         ? Number(c.yearTo)
                         : null,
                     version:
-                      typeof c.version === "string" && c.version.trim().length > 0
+                      typeof c.version === "string" &&
+                      c.version.trim().length > 0
                         ? c.version.trim()
                         : null,
                   }))

@@ -33,9 +33,12 @@ interface Summary {
 
 interface Props {
   refreshKey?: number;
+  // undefined = todas (sem parâmetro = comportamento atual byte-a-byte);
+  // "sem_unidade" = contas sem unidade; <id> = uma unidade.
+  unidadeId?: string;
 }
 
-export function FinanceOverview({ refreshKey }: Props) {
+export function FinanceOverview({ refreshKey, unidadeId }: Props) {
   const { data: session } = useSession();
   const [summary, setSummary] = useState<Summary | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -47,7 +50,10 @@ export function FinanceOverview({ refreshKey }: Props) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const res = await fetch(`${getApiBaseUrl()}/finance/summary`, {
+      const qs = unidadeId
+        ? `?unidadeId=${encodeURIComponent(unidadeId)}`
+        : "";
+      const res = await fetch(`${getApiBaseUrl()}/finance/summary${qs}`, {
         headers: { email },
         signal: ctrl.signal,
       });
@@ -57,7 +63,7 @@ export function FinanceOverview({ refreshKey }: Props) {
     } catch {
       // silent
     }
-  }, [session?.user?.email]);
+  }, [session?.user?.email, unidadeId]);
 
   useEffect(() => {
     fetchSummary();

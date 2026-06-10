@@ -7,6 +7,8 @@ vi.mock("@/app/lib/prisma", () => {
     productListing: { findMany: vi.fn() },
     stockSyncJob,
     $queryRaw: vi.fn().mockResolvedValue([]),
+    // advisory lock (pg_advisory_xact_lock) é executado via $executeRaw em prod
+    $executeRaw: vi.fn().mockResolvedValue([]),
     $transaction: vi.fn(),
   };
   mock.$transaction.mockImplementation(async (cb: any) => cb(mock));

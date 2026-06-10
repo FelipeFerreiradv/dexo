@@ -146,7 +146,7 @@ const categoryOverride = (categoryId?: string) =>
   categoryId && _categoryOverrideMap.has(categoryId) ? _categoryOverrideMap.get(categoryId) : undefined;
 
 // Pre-compiled regex for Shopee terminal error detection
-const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida/i;
+const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? another|duplicate.*shop|selecione uma categoria|categoria.*inv[aá]lida|n[ãa]o foi poss[ií]vel obter os atributos da categoria/i;
 
 export class ListingRetryService {
   private static running = false;

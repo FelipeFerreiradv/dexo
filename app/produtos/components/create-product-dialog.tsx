@@ -64,6 +64,7 @@ import {
   applyMlCatalogSuggestion,
   type CatalogApplyFormValues,
 } from "../lib/apply-ml-catalog-suggestion";
+import { nfeFieldEntries } from "../lib/nfe-import-mapping";
 import type { CatalogProductDetail } from "../../marketplaces/usecases/ml-catalog-suggestion.usecase";
 
 // NextAuth
@@ -129,6 +130,10 @@ const productSchema = z.object({
   mlLocalPickup: z.boolean().optional(),
   mlManufacturingTime: z.number().int().min(0).optional().nullable(),
   mlListingPrice: z.number().min(0).optional().nullable(),
+
+  // Aumento percentual escalonado entre contas ML (anti-penalização)
+  mlCrossAccountIncrease: z.boolean().optional(),
+  mlCrossAccountPercent: z.number().min(0).max(100).optional().nullable(),
 
   // Step 5: Anúncio Shopee (opcional)
   createShopeeListing: z.boolean().optional(),
@@ -226,6 +231,19 @@ type SuggestionResponse = {
 interface CreateProductDialogProps {
   onProductCreated: () => void;
   onToast: (message: string, type: "success" | "error" | "warning") => void;
+  // --- Props ADITIVAS (fluxo de importação de NF-e) ---
+  // Todas opcionais: quando ausentes, o modal se comporta EXATAMENTE como hoje
+  // (estado de abertura interno, botão "Novo Produto", sem pré-preenchimento).
+  /** Abertura controlada pelo pai. Se `undefined`, usa estado interno (atual). */
+  open?: boolean;
+  /** Notifica o pai quando a abertura muda (só relevante no modo controlado). */
+  onOpenChange?: (open: boolean) => void;
+  /** Valores iniciais p/ pré-preencher (apenas campos permitidos da NF-e). */
+  initialValues?: Partial<ProductFormData>;
+  /** Origem da abertura. "nfe" liga o pré-preenchimento e o aviso de imagem. */
+  source?: "manual" | "nfe";
+  /** Oculta o gatilho "Novo Produto" (quando o pai controla a abertura). */
+  hideTrigger?: boolean;
 }
 
 const qualityOptions = [
@@ -310,10 +328,22 @@ const TOTAL_STEPS = STEPS.length;
 export function CreateProductDialog({
   onProductCreated,
   onToast,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
+  initialValues,
+  source = "manual",
+  hideTrigger = false,
 }: CreateProductDialogProps) {
   const { data: session } = useSession();
   const backendBase = getApiBaseUrl();
-  const [open, setOpen] = useState(false);
+  // Abertura controlada (pai) OU não-controlada (estado interno = atual).
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlledOpen = controlledOpen !== undefined;
+  const open = isControlledOpen ? controlledOpen : internalOpen;
+  const setOpen = (next: boolean) => {
+    if (!isControlledOpen) setInternalOpen(next);
+    controlledOnOpenChange?.(next);
+  };
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSku, setIsLoadingSku] = useState(false);
@@ -385,6 +415,11 @@ export function CreateProductDialog({
     version?: string;
     sourceVehicle?: string;
   }>({});
+  // Espelha `initialValues` (NF-e) para os fetches assíncronos lerem sem virar dependência.
+  const initialValuesRef = useRef(initialValues);
+  initialValuesRef.current = initialValues;
+  // Garante que o pré-preenchimento da NF-e seja aplicado uma vez por abertura.
+  const nfeAppliedRef = useRef(false);
 
   const {
     register,
@@ -420,6 +455,8 @@ export function CreateProductDialog({
       mlLocalPickup: false,
       mlManufacturingTime: 0,
       mlListingPrice: null,
+      mlCrossAccountIncrease: false,
+      mlCrossAccountPercent: null,
       createShopeeListing: false,
       shopeeAccountIds: [],
       shopeeCategory: "",
@@ -586,11 +623,16 @@ export function CreateProductDialog({
               ? Number(user.defaultCostPrice)
               : null;
           setDefaultCostPrice(costPriceDefault);
-          if (costPriceDefault != null) {
+          // Não sobrescrever custo/estoque vindos da NF-e (fluxo de importação).
+          // Sem `initialValues` (fluxo manual), o comportamento é idêntico ao de hoje.
+          const nfeInit = initialValuesRef.current as
+            | Record<string, unknown>
+            | undefined;
+          if (costPriceDefault != null && nfeInit?.costPrice == null) {
             setValue("costPrice", costPriceDefault);
           }
 
-          if (user.defaultStock != null) {
+          if (user.defaultStock != null && nfeInit?.stock == null) {
             setValue("stock", Number(user.defaultStock));
           }
 
@@ -618,6 +660,14 @@ export function CreateProductDialog({
             setValue(
               "mlManufacturingTime",
               Number(user.defaultManufacturingTime),
+            );
+          if (
+            user.crossAccountPriceIncreasePercent != null &&
+            Number(user.crossAccountPriceIncreasePercent) > 0
+          )
+            setValue(
+              "mlCrossAccountPercent",
+              Number(user.crossAccountPriceIncreasePercent),
             );
         }
       }
@@ -753,6 +803,24 @@ export function CreateProductDialog({
     fetchAccounts,
     session?.user?.email,
   ]);
+
+  // Pré-preenche o form com os valores vindos da NF-e (fluxo de importação).
+  // ADITIVO: sem `initialValues` ou fora do source "nfe", não faz NADA — o fluxo
+  // manual segue idêntico. Roda 1x por abertura (nfeAppliedRef). Os campos
+  // permitidos (nfeFieldEntries) excluem imageUrl e sku de propósito. Os fetches
+  // on-open são guardados para não sobrescrever custo/estoque (ver fetchDefaultDescription).
+  useEffect(() => {
+    if (!open || source !== "nfe" || !initialValues) return;
+    if (nfeAppliedRef.current) return;
+    nfeAppliedRef.current = true;
+    for (const [field, value] of nfeFieldEntries(
+      initialValues as Record<string, unknown>,
+    )) {
+      setValue(field as keyof ProductFormData, value as never, {
+        shouldDirty: true,
+      });
+    }
+  }, [open, source, initialValues, setValue]);
 
   // Define descrição padrão quando carregada
   useEffect(() => {
@@ -1456,6 +1524,56 @@ export function CreateProductDialog({
           });
         }
 
+        // Fallback visível: quando o CSV não cobre a categoria, aplica valores
+        // razoáveis de autopeça pequena (mesmas faixas do backend Slice 2d:
+        // 15×15×10cm + 0.5kg + jitter por hash do SKU). User vê esses valores
+        // no modal e pode editar antes de submeter — em vez de ver campos
+        // em branco e ser surpreendido pelo fallback silencioso do backend.
+        if (!measurements) {
+          const skuValue = (getValues("sku") || "").toString();
+          const seed =
+            skuValue.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) ||
+            42;
+          const jitter = (mod: number) => (seed % mod) - Math.floor(mod / 2);
+
+          const stillEmptyHeight =
+            getValues("heightCm") === null ||
+            getValues("heightCm") === undefined;
+          const stillEmptyWidth =
+            getValues("widthCm") === null || getValues("widthCm") === undefined;
+          const stillEmptyLength =
+            getValues("lengthCm") === null ||
+            getValues("lengthCm") === undefined;
+          const stillEmptyWeight =
+            getValues("weightKg") === null ||
+            getValues("weightKg") === undefined;
+
+          if (stillEmptyHeight)
+            setValue("heightCm", Math.max(5, 15 + jitter(5)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyWidth)
+            setValue("widthCm", Math.max(5, 15 + jitter(7)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyLength)
+            setValue("lengthCm", Math.max(5, 10 + jitter(9)), {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+          if (stillEmptyWeight)
+            setValue("weightKg", 0.5 + (seed % 50) / 100, {
+              shouldDirty: true,
+              shouldTouch: true,
+              shouldValidate: true,
+            });
+        }
+
         // If category wasn't detected earlier, try to suggest a category from
         // the input title or from the measurement key that matched (best-effort).
         try {
@@ -1680,13 +1798,16 @@ export function CreateProductDialog({
       const shopeeBest = shopeeSuggestion?.suggestions?.[0];
       console.log("[SHP auto-detect]", {
         total: shopeeSuggestion?.suggestions?.length ?? 0,
-        best: shopeeBest ? { id: shopeeBest.categoryId, conf: shopeeBest.confidence, path: shopeeBest.fullPath?.substring(0, 60) } : null,
+        best: shopeeBest
+          ? {
+              id: shopeeBest.categoryId,
+              conf: shopeeBest.confidence,
+              path: shopeeBest.fullPath?.substring(0, 60),
+            }
+          : null,
         optionsLoaded: shopeeOptions.length,
       });
-      if (
-        shopeeBest &&
-        (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE
-      ) {
+      if (shopeeBest && (shopeeBest.confidence ?? 0) >= SHOPEE_MIN_CONFIDENCE) {
         const currentShopeeCategory = getValues("shopeeCategory");
         shopeeValue =
           shopeeOptions.find(
@@ -1696,11 +1817,12 @@ export function CreateProductDialog({
         const isPrevAutoShopee =
           prev.shopeeCategory &&
           norm(prev.shopeeCategory) === norm(currentShopeeCategory || "");
-        console.log("[SHP auto-detect] setValue?", { shopeeValue, currentShopeeCategory, isPrevAutoShopee });
-        if (
-          (!currentShopeeCategory || isPrevAutoShopee) &&
-          shopeeValue
-        ) {
+        console.log("[SHP auto-detect] setValue?", {
+          shopeeValue,
+          currentShopeeCategory,
+          isPrevAutoShopee,
+        });
+        if ((!currentShopeeCategory || isPrevAutoShopee) && shopeeValue) {
           setValue("shopeeCategory", shopeeValue, { shouldDirty: true });
         }
       }
@@ -2011,6 +2133,7 @@ export function CreateProductDialog({
         localPickup?: boolean;
         manufacturingTime?: number;
         listingPrice?: number;
+        crossAccountIncrease?: { enabled: boolean; percent?: number };
       }> = [];
 
       if (data.createMLListing && selectedMlAccounts.length > 0) {
@@ -2030,6 +2153,12 @@ export function CreateProductDialog({
           localPickup: data.mlLocalPickup || false,
           manufacturingTime: data.mlManufacturingTime ?? undefined,
           listingPrice: data.mlListingPrice ?? undefined,
+          crossAccountIncrease: data.mlCrossAccountIncrease
+            ? {
+                enabled: true,
+                percent: data.mlCrossAccountPercent ?? undefined,
+              }
+            : undefined,
         });
       }
 
@@ -2170,6 +2299,10 @@ export function CreateProductDialog({
     setCompatibilities([]);
     setSelectedScrap(null);
     scrapAutofilledRef.current = {};
+    // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
+    hasFetchedOnOpenRef.current = false;
+    // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
+    nfeAppliedRef.current = false;
     setOpen(false);
   };
 
@@ -2245,12 +2378,14 @@ export function CreateProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="size-4" />
-          Novo Produto
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="size-4" />
+            Novo Produto
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
@@ -2258,6 +2393,13 @@ export function CreateProductDialog({
             Preencha os dados do produto em {TOTAL_STEPS} etapas simples.
           </DialogDescription>
         </DialogHeader>
+        {source === "nfe" && (
+          <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
+            Dados importados da NF-e. Revise os valores e lembre de adicionar a{" "}
+            <strong>imagem</strong> (obrigatória) e a categoria antes de
+            finalizar.
+          </div>
+        )}
 
         {/* Progress Bar */}
         <div className="space-y-4">
@@ -2447,6 +2589,7 @@ export function CreateProductDialog({
                         console.error("Erro no upload:", error);
                         onToast("Erro ao fazer upload da imagem", "error");
                       }}
+                      onWarning={(warning) => onToast(warning, "warning")}
                       maxImages={10}
                     />
                   )}
@@ -2628,7 +2771,10 @@ export function CreateProductDialog({
                           setValue("model", "");
                         if (prev.year && getValues("year") === prev.year)
                           setValue("year", "");
-                        if (prev.version && getValues("version") === prev.version)
+                        if (
+                          prev.version &&
+                          getValues("version") === prev.version
+                        )
                           setValue("version", "");
                         if (
                           prev.sourceVehicle &&
@@ -3135,9 +3281,7 @@ export function CreateProductDialog({
                         <MLDynamicAttributesSection
                           categoryId={watchMlCategory || ""}
                           value={(field.value as any) || {}}
-                          onChange={(next) =>
-                            field.onChange(next as any)
-                          }
+                          onChange={(next) => field.onChange(next as any)}
                           email={session?.user?.email || undefined}
                         />
                       )}
@@ -3185,6 +3329,63 @@ export function CreateProductDialog({
                         Nenhuma conta Mercado Livre conectada. Conecte em
                         Integrações.
                       </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Aumento percentual escalonado entre contas ML */}
+                {watch("createMLListing") && mlAccounts.length > 1 && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={!!watch("mlCrossAccountIncrease")}
+                        onChange={(e) =>
+                          setValue("mlCrossAccountIncrease", e.target.checked, {
+                            shouldDirty: true,
+                          })
+                        }
+                      />
+                      Aumentar percentual nas demais contas (Mercado Livre)
+                    </label>
+                    {watch("mlCrossAccountIncrease") && (
+                      <div className="space-y-1 pl-6">
+                        <Label
+                          htmlFor="mlCrossAccountPercent"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Percentual de aumento composto entre contas
+                        </Label>
+                        <div className="relative w-40">
+                          <Input
+                            id="mlCrossAccountPercent"
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={watch("mlCrossAccountPercent") ?? ""}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setValue(
+                                "mlCrossAccountPercent",
+                                v === "" ? null : Number(v),
+                                { shouldDirty: true },
+                              );
+                            }}
+                            placeholder="Ex.: 10"
+                            className="pr-7"
+                          />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Aplicado em cascata: a 1ª conta selecionada mantém o
+                          preço base; cada conta seguinte recebe este % sobre o
+                          preço da anterior.
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}

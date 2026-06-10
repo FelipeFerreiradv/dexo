@@ -97,7 +97,7 @@ export class StockReconciliationService {
               targetStock: c.stock,
             },
           });
-        });
+        }, { timeout: 60_000, maxWait: 20_000 });
       } catch (err) {
         console.error(
           `[StockReconciliationService] upsert failed for listing ${c.listingId}:`,

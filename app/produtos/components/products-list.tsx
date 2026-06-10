@@ -16,7 +16,10 @@ import {
   Loader2,
   Megaphone,
   Package,
+  Pause,
+  PauseCircle,
   Pencil,
+  Play,
   QrCode,
   Search,
   Trash2,
@@ -44,6 +47,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -91,9 +100,22 @@ import {
   type EditProductDialogListingContext,
 } from "./edit-product-dialog";
 import { ImportExportProducts } from "./import-export-products";
+import { ImportNfeXml } from "./import-nfe-xml";
 import { MarketplaceListingsDialog } from "./marketplace-listings-dialog";
 import { ProductDetailSheet } from "./product-detail-sheet";
+import { ImageLightbox } from "./image-lightbox";
 import { ProductSkeleton } from "./product-skeleton";
+import {
+  BulkDeleteResultModal,
+  type BulkDeleteProductResultView,
+} from "./bulk-delete-result-modal";
+
+const BULK_DELETE_CHUNK_SIZE = 50;
+
+interface BulkDeleteResponseBody {
+  results: BulkDeleteProductResultView[];
+  summary: { total: number; deleted: number; failed: number };
+}
 
 type MarketplacePlatform = MarketplaceListingPlatform;
 type ProductListing = MarketplaceListingLinkInput & {
@@ -120,6 +142,7 @@ interface Product {
   category?: string | null;
   location?: string | null;
   locationId?: string | null;
+  locationPath?: string | null; // caminho completo (read-only, vem enriquecido do backend)
   partNumber?: string | null;
   quality?: Quality | null;
   isSecurityItem?: boolean;
@@ -129,6 +152,11 @@ interface Product {
   imageUrls?: string[] | null;
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
+  productLocation?: {
+    id: string;
+    code: string;
+    description?: string | null;
+  } | null;
   listings?: ProductListing[];
 }
 
@@ -362,6 +390,128 @@ async function loadProductFilterOptions(email: string, force = false) {
   return request;
 }
 
+type ProductPauseState =
+  | "all-active"
+  | "all-paused"
+  | "mixed"
+  | "no-actionable";
+
+// Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
+// app/lib/marketplace-listing-links.ts ("active" e "normal"). "paused"/"unlist"
+// contam como pausado. Outros (closed, under_review, error) caem em no-actionable.
+function computeProductPauseState(
+  listings: Product["listings"],
+): ProductPauseState {
+  if (!listings || listings.length === 0) return "no-actionable";
+
+  const publishable = listings.filter(
+    (l) =>
+      l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+  );
+
+  if (publishable.length === 0) return "no-actionable";
+
+  let active = 0;
+  let paused = 0;
+  for (const l of publishable) {
+    const s = l.status?.toLowerCase();
+    if (s === "active" || s === "normal") active++;
+    else if (s === "paused" || s === "unlist") paused++;
+  }
+
+  if (active === publishable.length) return "all-active";
+  if (paused === publishable.length) return "all-paused";
+  if (active > 0 && paused > 0) return "mixed";
+
+  return "no-actionable";
+}
+
+function PauseListingsButton({
+  product,
+  state,
+  isPausing,
+  onTogglePause,
+}: {
+  product: Product;
+  state: ProductPauseState;
+  isPausing: boolean;
+  onTogglePause: (product: Product, status: "active" | "paused") => void;
+}) {
+  if (state === "no-actionable") return null;
+
+  if (state === "mixed") {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Pausar/Despausar anúncios"
+            disabled={isPausing}
+          >
+            {isPausing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <PauseCircle className="size-4" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => onTogglePause(product, "paused")}>
+            <Pause className="mr-2 size-4" />
+            Pausar todos
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onTogglePause(product, "active")}>
+            <Play className="mr-2 size-4" />
+            Despausar todos
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  const targetStatus: "active" | "paused" =
+    state === "all-active" ? "paused" : "active";
+  const Icon = state === "all-active" ? Pause : Play;
+  const title = state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
+  const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
+  const description =
+    state === "all-active"
+      ? `Pausar todos os anúncios publicados de "${product.name}"? Eles ficarão invisíveis nos marketplaces até serem despausados.`
+      : `Reativar todos os anúncios publicados de "${product.name}"? Eles voltarão a aparecer nos marketplaces.`;
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title={title}
+          disabled={isPausing}
+        >
+          {isPausing ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Icon className="size-4" />
+          )}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`${confirmLabel} anúncios?`}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+          <AlertDialogAction onClick={() => onTogglePause(product, targetStatus)}>
+            {confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function MarketplaceBadges({
   listings,
   size = "md",
@@ -479,6 +629,18 @@ export function ProductsList() {
     done: number;
     total: number;
   } | null>(null);
+  const [bulkDeleteResult, setBulkDeleteResult] = useState<{
+    open: boolean;
+    results: BulkDeleteProductResultView[];
+    summary: { total: number; deleted: number; failed: number };
+    productNames: Record<string, string>;
+  } | null>(null);
+  const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
+  const [isBulkPausing, setIsBulkPausing] = useState(false);
+  const [bulkPauseProgress, setBulkPauseProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [bulkListingOpen, setBulkListingOpen] = useState(false);
   const [isBulkListing, setIsBulkListing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -490,6 +652,27 @@ export function ProductsList() {
     platform: MarketplaceListingPlatform;
   } | null>(null);
   const [viewProduct, setViewProduct] = useState<Product | null>(null);
+  const [lightboxProduct, setLightboxProduct] = useState<{
+    images: string[];
+    alt: string;
+  } | null>(null);
+
+  const openProductLightbox = (product: Product) => {
+    const seen = new Set<string>();
+    const images: string[] = [];
+    if (product.imageUrl) {
+      seen.add(product.imageUrl);
+      images.push(product.imageUrl);
+    }
+    for (const url of product.imageUrls ?? []) {
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        images.push(url);
+      }
+    }
+    if (images.length === 0) return;
+    setLightboxProduct({ images, alt: product.name });
+  };
   const locationOptionsRequestIdRef = useRef(0);
   const filterOptionsRequestIdRef = useRef(0);
   const productsRequestIdRef = useRef(0);
@@ -748,8 +931,11 @@ export function ProductsList() {
   };
 
   const handleDelete = async (id: string) => {
+    const productName =
+      products.find((p) => p.id === id)?.name ?? id;
     const previousProducts = products;
     const previousPagination = pagination;
+    // Optimistic remove apenas até confirmar o resultado do servidor.
     setProducts((prev) => prev.filter((product) => product.id !== id));
     setPagination((prev) => ({ ...prev, total: Math.max(0, prev.total - 1) }));
 
@@ -761,11 +947,44 @@ export function ProductsList() {
         },
       });
 
-      if (!response.ok) {
-        const data = await response.json();
+      if (response.status === 409) {
+        // Política estrita: produto NÃO foi removido porque algum anúncio
+        // não pôde ser encerrado. Restaura UI e mostra o modal de
+        // relatório com o produto único — permitindo reintentar.
         setProducts(previousProducts);
         setPagination(previousPagination);
-        throw new Error(data.error || "Erro ao excluir produto");
+        const data = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          listingResults?: BulkDeleteProductResultView["listingResults"];
+        };
+        setBulkDeleteResult({
+          open: true,
+          results: [
+            {
+              productId: id,
+              deleted: false,
+              message:
+                data.message ??
+                "Anúncio não pôde ser encerrado no marketplace.",
+              listingResults: data.listingResults ?? [],
+            },
+          ],
+          summary: { total: 1, deleted: 0, failed: 1 },
+          productNames: { [id]: productName },
+        });
+        return;
+      }
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          message?: string;
+        };
+        setProducts(previousProducts);
+        setPagination(previousPagination);
+        throw new Error(
+          data.error || data.message || "Erro ao excluir produto",
+        );
       }
 
       showToast("Produto excluído com sucesso!", "success");
@@ -782,10 +1001,268 @@ export function ProductsList() {
     }
   };
 
+  const handleTogglePause = async (
+    product: Product,
+    status: "active" | "paused",
+  ) => {
+    const id = product.id;
+    const previousProducts = products;
+
+    // Otimista: atualiza listings publicáveis para o novo status. Listings
+    // PENDING_/sem externalListingId ficam intactos (espelha o filtro do backend).
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === id
+          ? {
+              ...p,
+              listings: (p.listings ?? []).map((l) => {
+                const publishable =
+                  l.externalListingId &&
+                  !l.externalListingId.startsWith("PENDING_");
+                return publishable ? { ...l, status } : l;
+              }),
+            }
+          : p,
+      ),
+    );
+    setPausingIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/products/${id}/listings-status`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            email: session?.user?.email || "",
+          },
+          body: JSON.stringify({ status }),
+        },
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setProducts(previousProducts);
+        throw new Error(
+          data?.message || data?.error || "Erro ao alterar status",
+        );
+      }
+
+      // Mensagem agregada vem do backend: "X pausado(s), Y já estava(m), Z falha(s)".
+      const failed = (data?.listingResults ?? []).filter(
+        (r: { paused: boolean }) => !r.paused,
+      ).length;
+      showToast(
+        data?.message ?? "Status atualizado.",
+        failed > 0 ? "warning" : "success",
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : "Erro ao alterar status",
+        "error",
+      );
+    } finally {
+      setPausingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  /**
+   * Dispara o endpoint agregado POST /products/bulk-delete, fazendo
+   * chunking de BULK_DELETE_CHUNK_SIZE em BULK_DELETE_CHUNK_SIZE quando
+   * houver mais IDs do que o limite por chamada. Devolve a resposta
+   * consolidada (results + summary) já no shape esperado pelo modal.
+   */
+  const runBulkDelete = useCallback(
+    async (
+      ids: string[],
+      nameById: Record<string, string>,
+    ): Promise<BulkDeleteResponseBody | null> => {
+      if (ids.length === 0) return null;
+      const email = session?.user?.email || "";
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += BULK_DELETE_CHUNK_SIZE) {
+        chunks.push(ids.slice(i, i + BULK_DELETE_CHUNK_SIZE));
+      }
+
+      const allResults: BulkDeleteProductResultView[] = [];
+      let totalDeleted = 0;
+      let totalFailed = 0;
+
+      for (const chunk of chunks) {
+        const response = await fetch(`${getApiBaseUrl()}/products/bulk-delete`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email,
+          },
+          body: JSON.stringify({ ids: chunk }),
+        });
+
+        if (!response.ok) {
+          const data = (await response.json().catch(() => ({}))) as {
+            error?: string;
+            message?: string;
+          };
+          throw new Error(
+            data.message ||
+              data.error ||
+              `Erro ao excluir produtos (HTTP ${response.status})`,
+          );
+        }
+
+        const body = (await response.json()) as BulkDeleteResponseBody;
+        allResults.push(...body.results);
+        totalDeleted += body.summary.deleted;
+        totalFailed += body.summary.failed;
+
+        setBulkDeleteProgress((prev) =>
+          prev
+            ? { ...prev, done: Math.min(prev.done + chunk.length, prev.total) }
+            : prev,
+        );
+      }
+
+      // Atualiza estado local removendo apenas os produtos efetivamente
+      // deletados; os que falharam continuam na lista (alinha com a
+      // política estrita do backend).
+      const deletedIds = new Set(
+        allResults.filter((r) => r.deleted).map((r) => r.productId),
+      );
+      if (deletedIds.size > 0) {
+        setProducts((prev) =>
+          prev.filter((product) => !deletedIds.has(product.id)),
+        );
+        setPagination((prev) => ({
+          ...prev,
+          total: Math.max(0, prev.total - deletedIds.size),
+        }));
+        setSelectedIds((prev) => prev.filter((id) => !deletedIds.has(id)));
+        invalidateProductFilterOptionsCache(session?.user?.email);
+        fetchFilterOptions(true);
+      }
+
+      return {
+        results: allResults,
+        summary: {
+          total: ids.length,
+          deleted: totalDeleted,
+          failed: totalFailed,
+        },
+      };
+    },
+    [session?.user?.email, fetchFilterOptions],
+  );
+
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) {
+      showToast("Selecione pelo menos um produto para excluir.", "warning");
+      return;
+    }
+
+    const ids = [...selectedIds];
+    const nameById: Record<string, string> = {};
+    products.forEach((p) => {
+      nameById[p.id] = p.name;
+    });
+
+    setIsBulkDeleting(true);
+    setBulkDeleteProgress({ done: 0, total: ids.length });
+
+    try {
+      const body = await runBulkDelete(ids, nameById);
+      if (!body) return;
+
+      if (body.summary.failed === 0) {
+        showToast(
+          `${body.summary.deleted} produto(s) excluído(s) com sucesso!`,
+          "success",
+        );
+      } else {
+        setBulkDeleteResult({
+          open: true,
+          results: body.results,
+          summary: body.summary,
+          productNames: nameById,
+        });
+      }
+    } catch (error) {
       showToast(
-        "Selecione pelo menos um produto para excluir.",
+        error instanceof Error ? error.message : "Erro ao excluir produtos",
+        "error",
+      );
+    } finally {
+      setIsBulkDeleting(false);
+      setBulkDeleteProgress(null);
+    }
+  };
+
+  /**
+   * Reintenta apenas os produtos que falharam, mantendo o modal aberto e
+   * atualizando os results in-place. Usado pelo botão "Reintentar" do
+   * BulkDeleteResultModal — tanto para bulk quanto para individual.
+   */
+  const handleBulkRetry = useCallback(
+    async (failedIds: string[]) => {
+      if (failedIds.length === 0) return;
+      const nameById = bulkDeleteResult?.productNames ?? {};
+
+      setIsBulkDeleting(true);
+      setBulkDeleteProgress({ done: 0, total: failedIds.length });
+
+      try {
+        const body = await runBulkDelete(failedIds, nameById);
+        if (!body) return;
+
+        setBulkDeleteResult((prev) => {
+          if (!prev) return prev;
+          // Substitui os resultados anteriores dos IDs retentados pelos novos.
+          const retriedIndex = new Map(
+            body.results.map((r) => [r.productId, r]),
+          );
+          const merged = prev.results.map((r) =>
+            retriedIndex.get(r.productId) ?? r,
+          );
+          const deleted = merged.filter((r) => r.deleted).length;
+          const failed = merged.filter((r) => !r.deleted).length;
+          return {
+            ...prev,
+            results: merged,
+            summary: { total: merged.length, deleted, failed },
+          };
+        });
+
+        if (body.summary.failed === 0) {
+          showToast(
+            `${body.summary.deleted} produto(s) excluído(s) na nova tentativa.`,
+            "success",
+          );
+        }
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : "Erro ao reintentar",
+          "error",
+        );
+      } finally {
+        setIsBulkDeleting(false);
+        setBulkDeleteProgress(null);
+      }
+    },
+    [bulkDeleteResult?.productNames, runBulkDelete],
+  );
+
+  const handleBulkPauseToggle = async (status: "active" | "paused") => {
+    if (selectedIds.length === 0) {
+      showToast(
+        "Selecione pelo menos um produto para alterar.",
         "warning",
       );
       return;
@@ -794,10 +1271,9 @@ export function ProductsList() {
     const ids = [...selectedIds];
     const nameById = new Map(products.map((p) => [p.id, p.name]));
     const email = session?.user?.email || "";
-    const pageProductsCount = products.length;
 
-    setIsBulkDeleting(true);
-    setBulkDeleteProgress({ done: 0, total: ids.length });
+    setIsBulkPausing(true);
+    setBulkPauseProgress({ done: 0, total: ids.length });
 
     const succeeded: string[] = [];
     const failed: { id: string; name: string; message: string }[] = [];
@@ -811,22 +1287,24 @@ export function ProductsList() {
         if (index >= ids.length) return;
         const id = ids[index];
         try {
-          const response = await fetch(`${getApiBaseUrl()}/products/${id}`, {
-            method: "DELETE",
-            headers: { email },
-          });
+          const response = await fetch(
+            `${getApiBaseUrl()}/products/${id}/listings-status`,
+            {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/json",
+                email,
+              },
+              body: JSON.stringify({ status }),
+            },
+          );
+          const data = await response.json().catch(() => ({}));
           if (!response.ok) {
-            let message = "Erro ao excluir produto";
-            try {
-              const data = await response.json();
-              message = data?.message || data?.error || message;
-            } catch {
-              // ignore JSON parse errors
-            }
             failed.push({
               id,
               name: nameById.get(id) ?? id,
-              message,
+              message:
+                data?.message || data?.error || "Erro ao alterar status",
             });
           } else {
             succeeded.push(id);
@@ -836,10 +1314,12 @@ export function ProductsList() {
             id,
             name: nameById.get(id) ?? id,
             message:
-              error instanceof Error ? error.message : "Erro ao excluir produto",
+              error instanceof Error
+                ? error.message
+                : "Erro ao alterar status",
           });
         } finally {
-          setBulkDeleteProgress((prev) =>
+          setBulkPauseProgress((prev) =>
             prev ? { ...prev, done: prev.done + 1 } : prev,
           );
         }
@@ -851,52 +1331,47 @@ export function ProductsList() {
     );
 
     if (succeeded.length > 0) {
+      // Otimista: atualiza listings publicáveis dos produtos afetados.
       const succeededSet = new Set(succeeded);
       setProducts((prev) =>
-        prev.filter((product) => !succeededSet.has(product.id)),
+        prev.map((p) =>
+          succeededSet.has(p.id)
+            ? {
+                ...p,
+                listings: (p.listings ?? []).map((l) => {
+                  const publishable =
+                    l.externalListingId &&
+                    !l.externalListingId.startsWith("PENDING_");
+                  return publishable ? { ...l, status } : l;
+                }),
+              }
+            : p,
+        ),
       );
-      setPagination((prev) => ({
-        ...prev,
-        total: Math.max(0, prev.total - succeeded.length),
-      }));
-      setSelectedIds((prev) => prev.filter((id) => !succeededSet.has(id)));
-      invalidateProductFilterOptionsCache(session?.user?.email);
-      fetchFilterOptions(true);
-      if (
-        succeeded.length === pageProductsCount &&
-        pagination.page > 1
-      ) {
-        fetchProducts(pagination.page - 1, filters);
-      }
     }
 
+    const verb = status === "paused" ? "pausado(s)" : "reativado(s)";
     if (failed.length === 0) {
-      showToast(
-        `${succeeded.length} produto(s) excluído(s) com sucesso!`,
-        "success",
-      );
+      showToast(`${succeeded.length} produto(s) ${verb}.`, "success");
     } else if (succeeded.length === 0) {
       showToast(
         failed[0]?.message
-          ? `Erro ao excluir produtos: ${failed[0].message}`
-          : "Erro ao excluir produtos",
+          ? `Erro ao alterar produtos: ${failed[0].message}`
+          : "Erro ao alterar produtos",
         "error",
       );
     } else {
       showToast(
-        `${succeeded.length} excluído(s), ${failed.length} falharam.`,
+        `${succeeded.length} ${verb}, ${failed.length} falharam.`,
         "warning",
       );
       if (failed[0]?.message) {
-        showToast(
-          `"${failed[0].name}": ${failed[0].message}`,
-          "error",
-        );
+        showToast(`"${failed[0].name}": ${failed[0].message}`, "error");
       }
     }
 
-    setIsBulkDeleting(false);
-    setBulkDeleteProgress(null);
+    setIsBulkPausing(false);
+    setBulkPauseProgress(null);
   };
 
   const handleEditClick = (product: Product) => {
@@ -1397,6 +1872,17 @@ export function ProductsList() {
                 }}
                 onToast={showToast}
               />
+              {process.env.NEXT_PUBLIC_NFE_IMPORT_ENABLED === "true" && (
+                <ImportNfeXml
+                  email={session?.user?.email}
+                  onProductCreated={() => {
+                    fetchProducts(1, filters);
+                    invalidateProductFilterOptionsCache(session?.user?.email);
+                    fetchFilterOptions(true);
+                  }}
+                  onToast={showToast}
+                />
+              )}
               <CreateProductDialog
                 onProductCreated={() => {
                   fetchProducts(1, filters);
@@ -1425,7 +1911,7 @@ export function ProductsList() {
                           : false
                     }
                     onCheckedChange={toggleSelectAll}
-                    disabled={isBulkDeleting}
+                    disabled={isBulkDeleting || isBulkPausing}
                   />
                   <span className="whitespace-nowrap">Selecionar todos</span>
                   {selectionCount > 0 && (
@@ -1460,7 +1946,8 @@ export function ProductsList() {
                       selectionCount === 0 ||
                       isGeneratingLabels ||
                       isBulkDeleting ||
-                      isBulkListing
+                      isBulkListing ||
+                      isBulkPausing
                     }
                     className="gap-2"
                   >
@@ -1477,7 +1964,91 @@ export function ProductsList() {
                           selectionCount === 0 ||
                           isBulkDeleting ||
                           isGeneratingLabels ||
-                          isBulkListing
+                          isBulkListing ||
+                          isBulkPausing
+                        }
+                        className="gap-2"
+                      >
+                        <Pause className="size-4" />
+                        {isBulkPausing && bulkPauseProgress
+                          ? `Pausando... ${bulkPauseProgress.done}/${bulkPauseProgress.total}`
+                          : "Pausar selecionados"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {`Pausar anúncios de ${selectionCount} produto(s)?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Os anúncios publicados serão pausados nos
+                          marketplaces e ficarão invisíveis até serem
+                          despausados. Itens já pausados são ignorados.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleBulkPauseToggle("paused")}
+                        >
+                          {`Pausar ${selectionCount}`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          selectionCount === 0 ||
+                          isBulkDeleting ||
+                          isGeneratingLabels ||
+                          isBulkListing ||
+                          isBulkPausing
+                        }
+                        className="gap-2"
+                      >
+                        <Play className="size-4" />
+                        {isBulkPausing && bulkPauseProgress
+                          ? `Despausando... ${bulkPauseProgress.done}/${bulkPauseProgress.total}`
+                          : "Despausar selecionados"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {`Despausar anúncios de ${selectionCount} produto(s)?`}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Os anúncios pausados voltarão a aparecer nos
+                          marketplaces. Itens já ativos são ignorados.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction
+                          onClick={() => handleBulkPauseToggle("active")}
+                        >
+                          {`Despausar ${selectionCount}`}
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          selectionCount === 0 ||
+                          isBulkDeleting ||
+                          isGeneratingLabels ||
+                          isBulkListing ||
+                          isBulkPausing
                         }
                         className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       >
@@ -1536,7 +2107,7 @@ export function ProductsList() {
                                       : false
                                 }
                                 onCheckedChange={toggleSelectAll}
-                                disabled={isBulkDeleting}
+                                disabled={isBulkDeleting || isBulkPausing}
                               />
                             </TableHead>
                             <TableHead>Imagem</TableHead>
@@ -1576,21 +2147,30 @@ export function ProductsList() {
                                   onCheckedChange={(checked) =>
                                     toggleSelectOne(product.id, checked)
                                   }
-                                  disabled={isBulkDeleting}
+                                  disabled={isBulkDeleting || isBulkPausing}
                                 />
                               </TableCell>
                               <TableCell>
                                 {product.imageUrl ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    src={product.imageUrl}
-                                    alt={product.name}
-                                    className="h-24 w-24 rounded border object-cover"
-                                    onError={(event) => {
-                                      event.currentTarget.style.display =
-                                        "none";
-                                    }}
-                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => openProductLightbox(product)}
+                                    title="Ampliar imagem"
+                                    className="group relative h-24 w-24 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={product.imageUrl}
+                                      alt={product.name}
+                                      loading="lazy"
+                                      decoding="async"
+                                      className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
+                                      onError={(event) => {
+                                        event.currentTarget.style.display =
+                                          "none";
+                                      }}
+                                    />
+                                  </button>
                                 ) : (
                                   <div className="flex h-24 w-24 items-center justify-center rounded border bg-muted">
                                     <Package className="h-12 w-12 text-muted-foreground" />
@@ -1634,7 +2214,10 @@ export function ProductsList() {
                                 </Badge>
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {product.location ?? "—"}
+                                {product.locationPath ??
+                                  product.productLocation?.code ??
+                                  product.location ??
+                                  "—"}
                               </TableCell>
                               <TableCell className="hidden text-muted-foreground lg:table-cell">
                                 {formatDate(product.createdAt)}
@@ -1657,6 +2240,15 @@ export function ProductsList() {
                                   >
                                     <Pencil className="size-4" />
                                   </Button>
+
+                                  <PauseListingsButton
+                                    product={product}
+                                    state={computeProductPauseState(
+                                      product.listings,
+                                    )}
+                                    isPausing={pausingIds.has(product.id)}
+                                    onTogglePause={handleTogglePause}
+                                  />
 
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
@@ -1714,18 +2306,27 @@ export function ProductsList() {
                               onCheckedChange={(checked) =>
                                 toggleSelectOne(product.id, checked)
                               }
-                              disabled={isBulkDeleting}
+                              disabled={isBulkDeleting || isBulkPausing}
                             />
                             {product.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={product.imageUrl}
-                                alt={product.name}
-                                className="h-32 w-32 flex-shrink-0 rounded border object-cover"
-                                onError={(event) => {
-                                  event.currentTarget.style.display = "none";
-                                }}
-                              />
+                              <button
+                                type="button"
+                                onClick={() => openProductLightbox(product)}
+                                title="Ampliar imagem"
+                                className="group relative h-32 w-32 flex-shrink-0 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={product.imageUrl}
+                                  alt={product.name}
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
+                                  onError={(event) => {
+                                    event.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </button>
                             ) : (
                               <div className="flex h-32 w-32 flex-shrink-0 items-center justify-center rounded border bg-muted">
                                 <Package className="h-16 w-16 text-muted-foreground" />
@@ -1747,9 +2348,13 @@ export function ProductsList() {
                                       setListingsDialog({ product, platform })
                                     }
                                   />
-                                  {product.location && (
+                                  {(product.locationPath ||
+                                    product.location ||
+                                    product.productLocation?.code) && (
                                     <p className="text-xs text-muted-foreground">
-                                      {product.location}
+                                      {product.locationPath ??
+                                        product.productLocation?.code ??
+                                        product.location}
                                     </p>
                                   )}
                                 </div>
@@ -1791,6 +2396,15 @@ export function ProductsList() {
                               >
                                 <Pencil className="size-4" />
                               </Button>
+
+                              <PauseListingsButton
+                                product={product}
+                                state={computeProductPauseState(
+                                  product.listings,
+                                )}
+                                isPausing={pausingIds.has(product.id)}
+                                onTogglePause={handleTogglePause}
+                              />
 
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
@@ -1964,6 +2578,33 @@ export function ProductsList() {
           if (!open) setViewProduct(null);
         }}
       />
+
+      <ImageLightbox
+        images={lightboxProduct?.images ?? []}
+        open={!!lightboxProduct}
+        onOpenChange={(open) => {
+          if (!open) setLightboxProduct(null);
+        }}
+        alt={lightboxProduct?.alt}
+      />
+
+      {bulkDeleteResult && (
+        <BulkDeleteResultModal
+          open={bulkDeleteResult.open}
+          onOpenChange={(open) => {
+            if (open) {
+              setBulkDeleteResult((prev) => (prev ? { ...prev, open } : prev));
+            } else {
+              setBulkDeleteResult(null);
+            }
+          }}
+          results={bulkDeleteResult.results}
+          summary={bulkDeleteResult.summary}
+          productNames={bulkDeleteResult.productNames}
+          onRetry={handleBulkRetry}
+          isRetrying={isBulkDeleting}
+        />
+      )}
     </div>
   );
 }

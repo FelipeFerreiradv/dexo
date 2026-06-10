@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
 import {
   Customer,
@@ -6,6 +7,10 @@ import {
   CustomerListResult,
   CustomerUpdate,
 } from "../interfaces/customer.interface";
+
+// Aceita o client global OU um client de transação ($transaction). Default =
+// prisma global, então TODOS os callers atuais continuam idênticos.
+type Db = Prisma.TransactionClient;
 
 type PrismaCustomer = any;
 
@@ -27,8 +32,9 @@ function onlyDigits(v: string | null | undefined): string | null {
 }
 
 export class CustomerRepository {
-  async create(data: CustomerCreate): Promise<Customer> {
-    const created = await prisma.customer.create({
+  async create(data: CustomerCreate, tx?: Db): Promise<Customer> {
+    const db: Db = tx ?? prisma;
+    const created = await db.customer.create({
       data: {
         userId: data.userId,
         name: data.name,
@@ -111,10 +117,15 @@ export class CustomerRepository {
     return result ? toCustomer(result) : null;
   }
 
-  async findByCpf(cpf: string, userId: string): Promise<Customer | null> {
+  async findByCpf(
+    cpf: string,
+    userId: string,
+    tx?: Db,
+  ): Promise<Customer | null> {
+    const db: Db = tx ?? prisma;
     const clean = cpf.replace(/\D/g, "");
     if (!clean) return null;
-    const result = await prisma.customer.findFirst({
+    const result = await db.customer.findFirst({
       where: { userId, cpf: clean },
     });
     return result ? toCustomer(result) : null;

@@ -32,6 +32,17 @@ model User {
   defaultLocalPickup       Boolean? @default(false)
   defaultManufacturingTime Int?     @default(0)
 
+  // Aumento percentual escalonado de preço entre contas ML (anti-penalização
+  // por anúncios idênticos). Valor padrão usado para pré-preencher o toggle no
+  // wizard de anúncio em massa; 0 = desativado. Ver cross-account-price.service.
+  crossAccountPriceIncreasePercent Decimal? @default(0) @db.Decimal(5, 2)
+
+  // Contador do último SKU sequencial gerado pelo modal "Novo Produto".
+  // Importações de estoque escrevem direto em Product e NÃO tocam aqui —
+  // por isso o contador reflete só a sequência humana, sem contaminação
+  // de códigos externos de fornecedor (códigos de barra etc).
+  lastSkuSequential Int?
+
   // Hierarquia administrador → colaboradores (additive, default NULL).
   // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
   parentUserId String?
@@ -49,6 +60,7 @@ model User {
   companyFiscalConfig CompanyFiscalConfig?
   nfesEmitidas        NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
+  unidades            Unidade[]
 
   @@index([parentUserId])
 }
@@ -103,6 +115,7 @@ model Product {
   listings               ProductListing[]
   stockLogs              StockLog[]
   nfeItens               NfeItem[]
+  receivableItems        ReceivableItem[]
 
   @@unique([userId, sku])
   @@index([userId, skuNormalized])
@@ -233,6 +246,7 @@ model ProductListing {
   marketplaceAccount MarketplaceAccount    @relation(fields: [marketplaceAccountId], references: [id])
   product            Product               @relation(fields: [productId], references: [id])
   questions          MarketplaceQuestion[]
+  receivableItems    ReceivableItem[]
 
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
@@ -368,6 +382,21 @@ model MLCategoryAttributeCache {
   @@index([ttlExpiresAt])
 }
 
+model ShopeeCategoryAttribute {
+  id           String   @id @default(cuid())
+  region       String
+  categoryId   Int
+  locale       String
+  attributes   Json
+  source       String
+  fetchedAt    DateTime @default(now())
+  ttlExpiresAt DateTime
+
+  @@unique([region, categoryId, locale])
+  @@index([ttlExpiresAt])
+  @@index([categoryId])
+}
+
 model WebhookEventLog {
   id         String   @id @default(cuid())
   source     String
@@ -475,6 +504,15 @@ enum ScrapStatus {
   ARCHIVED
 }
 
+// Status logístico/físico do veículo no pátio (pipeline de desmembramento).
+// ORTOGONAL ao ScrapStatus (inventário): uma sucata pode estar IN_YARD e AVAILABLE.
+enum LogisticsStatus {
+  IN_TRANSIT // Em Trânsito: arrematado, em deslocamento para a loja
+  IN_YARD // No Pátio: chegou, veículo inteiro
+  ON_LIFT // No Elevador: em desmontagem ativa
+  DISMANTLED // Desmembrado: concluído, peças cadastradas
+}
+
 enum FinanceStatus {
   PENDENTE
   PAGA
@@ -539,9 +577,10 @@ model Customer {
 }
 
 model Receivable {
-  id         String @id @default(cuid())
+  id         String  @id @default(cuid())
   userId     String
   customerId String
+  unidadeId  String?
 
   document    String?
   reason      String?
@@ -565,17 +604,21 @@ model Receivable {
 
   user     User     @relation(fields: [userId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  items    ReceivableItem[]
 
   @@index([userId, dueDate])
   @@index([userId, status])
   @@index([customerId])
+  @@index([userId, unidadeId])
 }
 
 // Nota de negócio: Payable também referencia Customer por regra explícita do usuário.
 model Payable {
-  id         String @id @default(cuid())
+  id         String  @id @default(cuid())
   userId     String
   customerId String
+  unidadeId  String?
 
   document    String?
   reason      String?
@@ -599,10 +642,58 @@ model Payable {
 
   user     User     @relation(fields: [userId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
 
   @@index([userId, dueDate])
   @@index([userId, status])
   @@index([customerId])
+  @@index([userId, unidadeId])
+}
+
+// Item de venda balcão vinculado a uma Conta a Receber.
+// Snapshot do preço no momento da venda (unitPrice não acompanha mudanças em
+// Product.price). Cascade do Receivable: apagar receivable apaga seus itens
+// (no fluxo PENDENTE/sem-pagamento — o estorno de conta PAGA é via
+// FinanceUseCase.reverse, fora do cascade). Restrict no Product preserva
+// integridade do histórico para produtos vendidos no balcão (não regride o
+// delete atual: nenhum produto existente tem ReceivableItem).
+model ReceivableItem {
+  id           String   @id @default(cuid())
+  receivableId String
+  productId    String
+  listingId    String?
+  quantity     Int
+  unitPrice    Decimal  @db.Decimal(10, 2)
+  createdAt    DateTime @default(now())
+
+  receivable Receivable      @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+  product    Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  listing    ProductListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  @@index([receivableId])
+  @@index([productId])
+  @@index([listingId])
+}
+
+// Unidade (filial / loja física) — escopo por userId (= dataOwnerId), igual a
+// Customer/Location. Soft-delete via `active` porque Receivable/Payable têm FK
+// para cá; inativar preserva histórico e a semântica de "Sem unidade".
+model Unidade {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  code      String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  receivables Receivable[]
+  payables    Payable[]
+
+  @@unique([userId, code])
+  @@index([userId, name])
 }
 
 model Scrap {
@@ -624,6 +715,7 @@ model Scrap {
 
   // Custo e pagamento
   cost          Decimal? @db.Decimal(10, 2)
+  extraCosts    Decimal? @db.Decimal(10, 2) // transporte/guincho/taxas (Investimento = cost + extraCosts)
   paymentMethod String?
 
   // Localização (referência à entidade Location existente)
@@ -650,21 +742,40 @@ model Scrap {
   imageUrls String[] @default([])
 
   // Status e controle
-  status ScrapStatus @default(AVAILABLE)
-  notes  String?
+  status          ScrapStatus     @default(AVAILABLE)
+  logisticsStatus LogisticsStatus @default(IN_YARD)
+  notes           String?
 
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relacionamentos
-  user     User      @relation(fields: [userId], references: [id])
-  products Product[]
+  user         User               @relation(fields: [userId], references: [id])
+  products     Product[]
+  statusEvents ScrapStatusEvent[]
 
   @@index([userId, createdAt])
   @@index([userId, status])
+  @@index([userId, logisticsStatus])
   @@index([plate])
   @@index([chassis])
+}
+
+// Histórico de transições de estágio logístico (diferencial F). Aditivo:
+// gravado a cada transição; base para medir tempo por estágio e leilão→desmembrado.
+model ScrapStatusEvent {
+  id         String           @id @default(cuid())
+  scrapId    String
+  userId     String
+  fromStatus LogisticsStatus?
+  toStatus   LogisticsStatus
+  createdAt  DateTime         @default(now())
+
+  scrap Scrap @relation(fields: [scrapId], references: [id], onDelete: Cascade)
+
+  @@index([scrapId, createdAt])
+  @@index([userId, createdAt])
 }
 
 // =====================================================================

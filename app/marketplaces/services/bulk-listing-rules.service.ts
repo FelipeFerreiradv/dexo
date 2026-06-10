@@ -14,14 +14,16 @@ export interface BulkRulesProductInput {
   markup?: number | { toNumber(): number } | null;
 }
 
-function toNum(v: number | { toNumber(): number } | null | undefined): number {
+export function toNum(
+  v: number | { toNumber(): number } | null | undefined,
+): number {
   if (v === null || v === undefined) return 0;
   if (typeof v === "number") return v;
   if (typeof v === "object" && "toNumber" in v) return v.toNumber();
   return 0;
 }
 
-function round2(n: number): number {
+export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
@@ -144,7 +146,10 @@ export function previewWarnings(
     );
   }
 
-  if (template?.priceRule?.type === "markup_pct" && toNum(product.costPrice) <= 0) {
+  if (
+    template?.priceRule?.type === "markup_pct" &&
+    toNum(product.costPrice) <= 0
+  ) {
     out.push("Sem preço de custo — regra de markup será ignorada.");
   }
 

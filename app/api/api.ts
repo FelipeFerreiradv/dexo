@@ -1,5 +1,8 @@
-import dotenv from "dotenv";
-dotenv.config();
+// Side-effect import: roda dotenv.config() durante a FASE DE IMPORTS (ordenada),
+// antes do import do prisma. Com `dotenv.config()` como statement, o hoisting de
+// imports do esbuild/tsx avalia prisma.ts (que lê DATABASE_URL) ANTES do config,
+// quebrando o boot em shells sem as vars já no ambiente.
+import "dotenv/config";
 
 import { loadEnvOrExit } from "../lib/env";
 loadEnvOrExit();
@@ -26,6 +29,7 @@ import { compatibilityRoutes } from "../routes/compatibility.routes";
 import { scrapRoutes } from "../routes/scrap.routes";
 import { customerRoutes } from "../routes/customer.routes";
 import { financeRoutes } from "../routes/finance.routes";
+import { unidadeRoutes } from "../routes/unidade.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
@@ -110,6 +114,10 @@ api.register(customerRoutes, {
 
 api.register(financeRoutes, {
   prefix: "/finance",
+});
+
+api.register(unidadeRoutes, {
+  prefix: "/unidades",
 });
 
 api.register(fiscalRoutes, {

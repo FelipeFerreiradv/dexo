@@ -451,9 +451,14 @@ export class MLApiService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
+        const wrapped = new Error(
           `Erro ao obter detalhes do item: ${error.response?.data?.message || error.message}`,
         );
+        (wrapped as any).status = error.response?.status;
+        (wrapped as any).responseData = error.response?.data;
+        (wrapped as any).code = error.code;
+        (wrapped as any).cause = error;
+        throw wrapped;
       }
       throw error;
     }
@@ -810,7 +815,14 @@ export class MLApiService {
         } catch {
           /* ignore log errors */
         }
-        throw new Error(this.formatAxiosError("Erro ao atualizar item", error));
+        const wrapped = new Error(
+          this.formatAxiosError("Erro ao atualizar item", error),
+        );
+        (wrapped as any).status = error.response?.status;
+        (wrapped as any).responseData = error.response?.data;
+        (wrapped as any).code = error.code;
+        (wrapped as any).cause = error;
+        throw wrapped;
       }
       throw error;
     }
@@ -1165,6 +1177,7 @@ export class MLApiService {
     sellerId: string,
     days: number = 7,
     status: MLOrderStatus = "paid",
+    maxOrders: number = 500,
   ): Promise<MLOrderDetails[]> {
     const dateFrom = new Date();
     dateFrom.setDate(dateFrom.getDate() - days);
@@ -1172,7 +1185,8 @@ export class MLApiService {
     const allOrders: MLOrderDetails[] = [];
     let offset = 0;
     const limit = 50;
-    const maxOrders = 500; // safety cap
+    // safety cap parametrizado (default 500 mantém comportamento do sync loop;
+    // backfill manual pode subir p/ varrer janelas históricas grandes).
 
     while (allOrders.length < maxOrders) {
       const response = await this.getSellerOrders(accessToken, {

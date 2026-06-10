@@ -1,0 +1,32 @@
+# Compose adicional para serviços auxiliares do Dexo em DEV.
+#
+# Não cobre o deploy do app principal (que continua rodando como
+# `npm run dev` + `npm run api` localmente, ou via Vercel/etc em
+# produção). Apenas o sidecar de remoção de fundo.
+#
+# Subir:  docker compose up rembg --build
+# Parar:  docker compose down
+
+services:
+  rembg:
+    build: ./infra/rembg
+    container_name: dexo-rembg
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # Default 1 worker: o birefnet em CPU é memory-bound (mais workers não
+    # aceleraram o lote nos testes); 1 worker = imagem única mais rápida (todos
+    # os vCPUs) + menos RAM. Multi-worker fica disponível p/ tunar se o host
+    # tiver banda de memória sobrando: suba REMBG_WORKERS (x OMP_NUM_THREADS ~=
+    # vCPUs) e o mem_limit (~8.5GB/worker). Tunável aqui sem rebuild.
+    environment:
+      REMBG_WORKERS: "1"
+      OMP_NUM_THREADS: "8"
+    # Pico ~8.5GB (1 worker birefnet); 12g cobre c/ folga no KVM8/32GB.
+    mem_limit: 12g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

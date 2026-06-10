@@ -17,6 +17,7 @@ import {
   ShopeeItemListParams,
   ShopeeImageUploadResponse,
   ShopeeCategoryResponse,
+  ShopeeCategoryAttribute,
   ShopeeCategoryAttributeResponse,
 } from "../types/shopee-api.types";
 
@@ -481,10 +482,53 @@ export class ShopeeApiService {
     >("POST", apiPath, accessToken, shopId, { item_id: itemId });
 
     if (response.error) {
-      throw new Error(`Erro ao deletar item: ${response.message}`);
+      const err = new Error(`Erro ao deletar item: ${response.message}`);
+      (err as any).shopeeError = response.error;
+      (err as any).shopeeMessage = response.message;
+      throw err;
     }
 
     return response.response!;
+  }
+
+  /**
+   * Pausa (unlist=true) ou reativa (unlist=false) anuncios na Shopee.
+   * Endpoint /api/v2/product/unlist_item aceita ate 50 itens por chamada.
+   *
+   * Erros globais (auth, throttling) sao lancados como exception via
+   * makeAuthenticatedRequest. Falhas por-item vem em failure_list (lista vazia
+   * se todos OK).
+   *
+   * Doc: open.shopee.com -> Open API v2 -> product -> unlist_item
+   */
+  static async unlistItem(
+    accessToken: string,
+    shopId: number,
+    items: Array<{ itemId: number; unlist: boolean }>,
+  ): Promise<{
+    failure_list: Array<{ item_id: number; failed_reason: string }>;
+  }> {
+    if (items.length === 0) {
+      return { failure_list: [] };
+    }
+
+    const apiPath = "/api/v2/product/unlist_item";
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        failure_list?: Array<{ item_id: number; failed_reason: string }>;
+      }>
+    >("POST", apiPath, accessToken, shopId, {
+      item_list: items.map((i) => ({ item_id: i.itemId, unlist: i.unlist })),
+    });
+
+    if (response.error) {
+      throw new Error(
+        `Erro ao alterar visibilidade do(s) anuncio(s) Shopee: ${response.message}`,
+      );
+    }
+
+    return { failure_list: response.response?.failure_list ?? [] };
   }
 
   /**
@@ -817,7 +861,18 @@ export class ShopeeApiService {
   }
 
   /**
-   * Busca atributos de uma categoria
+   * Busca atributos de uma categoria.
+   *
+   * Migrado de `/api/v2/product/get_attributes` (descontinuado pela Shopee —
+   * "No APP type can call this API") para `/api/v2/product/get_attribute_tree`
+   * (substituto moderno disponivel para ERP System + outros app types).
+   *
+   * Endpoint novo aceita lista de categoryIds (max 20) e retorna estrutura
+   * em arvore com `name`/`mandatory` em vez de `attribute_name`/`is_mandatory`.
+   * Esta funcao MANTEM a assinatura e o shape do retorno antigo via
+   * mapeamento de campos — os consumers a jusante (ShopeeAttributeCatalogService,
+   * listing.usercase, sync script, testes existentes) continuam funcionando
+   * sem mudancas.
    */
   static async getCategoryAttributes(
     accessToken: string,
@@ -825,12 +880,54 @@ export class ShopeeApiService {
     categoryId: number,
     language?: string,
   ): Promise<ShopeeCategoryAttributeResponse> {
-    const apiPath = "/api/v2/product/get_attributes";
+    const apiPath = "/api/v2/product/get_attribute_tree";
 
-    const query = `?category_id=${categoryId}${language ? `&language=${language}` : ""}`;
+    // Novo endpoint usa category_id_list (pode pedir ate 20 por chamada);
+    // aqui consultamos uma so para preservar a assinatura existente.
+    const query = `?category_id_list=${categoryId}${language ? `&language=${language}` : ""}`;
+
+    interface AttributeTreeValue {
+      value_id: number;
+      name: string;
+      value_unit?: string;
+      child_attribute_list?: AttributeTreeNode[];
+    }
+    interface AttributeTreeNode {
+      attribute_id: number;
+      name: string;
+      mandatory: boolean;
+      attribute_value_list?: AttributeTreeValue[];
+      attribute_info?: {
+        input_type?: number;
+        attribute_unit_list?: string[];
+      };
+    }
+    interface AttributeTreeResponse {
+      list: Array<{
+        category_id: number;
+        attribute_tree: AttributeTreeNode[];
+      }>;
+    }
+
+    // true se escolher um valor introduz, em qualquer profundidade do
+    // child_attribute_list, um atributo OBRIGATORIO. Selecionar esse valor
+    // sem preencher os filhos faz a Shopee rejeitar o item com
+    // "Attribute X is mandatory required".
+    const hasMandatoryDescendant = (
+      children?: AttributeTreeNode[],
+    ): boolean => {
+      if (!children || children.length === 0) return false;
+      for (const child of children) {
+        if (child.mandatory === true) return true;
+        for (const v of child.attribute_value_list ?? []) {
+          if (hasMandatoryDescendant(v.child_attribute_list)) return true;
+        }
+      }
+      return false;
+    };
 
     const response = await this.makeAuthenticatedRequest<
-      ShopeeApiResponse<ShopeeCategoryAttributeResponse>
+      ShopeeApiResponse<AttributeTreeResponse>
     >("GET", `${apiPath}${query}`, accessToken, shopId);
 
     if (response.error) {
@@ -839,6 +936,28 @@ export class ShopeeApiService {
       );
     }
 
-    return response.response!;
+    const tree = response.response?.list?.[0]?.attribute_tree ?? [];
+
+    // Mapear formato novo (attribute_tree) -> formato antigo (attribute_list)
+    // que os consumers a jusante esperam. Preserva attribute_id intacto e
+    // converte apenas os nomes de campo divergentes. Anexa
+    // has_mandatory_children por valor pra o mapping evitar disparar
+    // atributos-filho obrigatorios que nao temos como preencher.
+    const attribute_list: ShopeeCategoryAttribute[] = tree.map((node) => ({
+      attribute_id: node.attribute_id,
+      attribute_name: node.name,
+      is_mandatory: node.mandatory === true,
+      input_type: String(node.attribute_info?.input_type ?? ""),
+      attribute_unit: node.attribute_info?.attribute_unit_list ?? [],
+      attribute_value_list: (node.attribute_value_list ?? []).map((v) => ({
+        value_id: v.value_id,
+        value_name: v.name,
+        parent_attribute_id: 0,
+        parent_value_id: 0,
+        has_mandatory_children: hasMandatoryDescendant(v.child_attribute_list),
+      })),
+    }));
+
+    return { attribute_list };
   }
 }
