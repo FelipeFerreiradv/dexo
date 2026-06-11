@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as https from "node:https";
+import * as tls from "node:tls";
 import axios, { type AxiosInstance } from "axios";
 
 import type { LoadedCertificate } from "../certificate/certificate-loader.service";
@@ -140,27 +141,59 @@ export class SoapClientService {
   }
 }
 
-function buildAgent(cert: LoadedCertificate, caBundlePath: string | null): https.Agent {
-  const ca: string[] = [...cert.caChainPem];
+/**
+ * Monta as opções TLS do https.Agent. Exportado para teste.
+ *
+ * Distinção crítica (a confusão entre as duas causava "unable to get local
+ * issuer certificate" para A1 que embute a cadeia ICP-Brasil):
+ *
+ *   - `cert`: a cadeia do NOSSO certificado cliente (A1) apresentada ao servidor
+ *     no handshake mTLS = certificado folha + intermediários (`caChainPem`).
+ *     Alguns endpoints SEFAZ exigem a cadeia completa para validar o cliente.
+ *
+ *   - `ca`: as CAs em que NÓS confiamos para verificar o certificado do SERVIDOR
+ *     SEFAZ. Deve ser o trust store padrão do Node (Mozilla/sistema) — NUNCA a
+ *     cadeia do nosso A1. Passar `ca` SUBSTITUI o trust store padrão; com a
+ *     cadeia do A1 ali, a verificação do servidor falha pois o emissor dele não
+ *     está na lista. Um bundle extra (SEFAZ_CA_BUNDLE_PATH) é ANEXADO ao padrão.
+ */
+export function buildAgentOptions(
+  cert: LoadedCertificate,
+  caBundlePath: string | null,
+): https.AgentOptions {
+  // Cadeia do cliente apresentada ao servidor: folha + intermediários.
+  const clientChain = [cert.certificatePem, ...cert.caChainPem]
+    .map((pem) => pem.trim())
+    .filter((pem) => pem.length > 0)
+    .join("\n");
+
+  let ca: string[] | undefined;
   if (caBundlePath) {
+    let extra: string;
     try {
-      ca.push(fs.readFileSync(caBundlePath, "utf8"));
+      extra = fs.readFileSync(caBundlePath, "utf8");
     } catch (error) {
       throw new Error(
         `Falha ao carregar SEFAZ_CA_BUNDLE_PATH=${caBundlePath}: ${(error as Error).message}`,
       );
     }
+    // Anexa ao bundle padrão (sem ele, setar `ca` perderia as CAs do sistema).
+    ca = [...tls.rootCertificates, extra];
   }
 
-  return new https.Agent({
-    cert: cert.certificatePem,
+  return {
+    cert: clientChain,
     key: cert.privateKeyPem,
-    ca: ca.length ? ca : undefined,
+    ca, // undefined → mantém o trust store padrão do Node
     keepAlive: true,
     // SEFAZ aceita TLS 1.2; alguns endpoints ainda têm problemas com TLS 1.3.
     minVersion: "TLSv1.2",
     rejectUnauthorized: true,
-  });
+  };
+}
+
+function buildAgent(cert: LoadedCertificate, caBundlePath: string | null): https.Agent {
+  return new https.Agent(buildAgentOptions(cert, caBundlePath));
 }
 
 function buildAgentKey(cert: LoadedCertificate, caBundlePath: string | null): string {
