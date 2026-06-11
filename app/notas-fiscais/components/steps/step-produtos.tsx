@@ -8,6 +8,7 @@ import {
   UseFormSetValue,
   UseFormGetValues,
   useFieldArray,
+  useWatch,
 } from "react-hook-form";
 import { Plus, Search, Trash2, Loader2, Package } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,12 @@ import { getApiBaseUrl } from "@/lib/api";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { EMPTY_NFE_ITEM, ORIGEM_LABELS } from "../../lib/nfe-defaults";
 import type { ProductLookup } from "@/app/interfaces/nfe.interface";
+import { CfopCombobox } from "../cfop-combobox";
+import { cfopTipoFromOperacao } from "@/app/fiscal/domain/cfop-catalog";
+
+// Combobox de CFOP atrás de flag — desligar volta ao input de texto livre atual.
+const CFOP_COMBOBOX_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_CFOP_COMBOBOX_ENABLED === "true";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -43,6 +50,10 @@ export function StepProdutos({
     control,
     name: "itens",
   });
+
+  // tipoOperacao vive no step de informações gerais; lemos via contexto do form
+  // para filtrar o combobox de CFOP (ENTRADA 1/2/3 vs SAIDA 5/6/7) reativamente.
+  const tipoOperacao = useWatch({ control, name: "tipoOperacao" });
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -259,15 +270,23 @@ export function StepProdutos({
                   <Controller
                     control={control}
                     name={`itens.${idx}.cfop`}
-                    render={({ field }) => (
-                      <Input
-                        {...field}
-                        value={field.value ?? ""}
-                        placeholder="4 dígitos"
-                        maxLength={4}
-                        className="h-8 text-sm"
-                      />
-                    )}
+                    render={({ field }) =>
+                      CFOP_COMBOBOX_ENABLED ? (
+                        <CfopCombobox
+                          value={field.value ?? ""}
+                          onChange={field.onChange}
+                          tipo={cfopTipoFromOperacao(tipoOperacao)}
+                        />
+                      ) : (
+                        <Input
+                          {...field}
+                          value={field.value ?? ""}
+                          placeholder="4 dígitos"
+                          maxLength={4}
+                          className="h-8 text-sm"
+                        />
+                      )
+                    }
                   />
                 </div>
 
@@ -403,7 +422,9 @@ export function StepProdutos({
           {/* Total */}
           <div className="flex justify-end border-t border-border/60 pt-3">
             <div className="text-sm">
-              <span className="text-muted-foreground">Total dos produtos: </span>
+              <span className="text-muted-foreground">
+                Total dos produtos:{" "}
+              </span>
               <span className="font-semibold">
                 R$ {totalProdutos.toFixed(2)}
               </span>
