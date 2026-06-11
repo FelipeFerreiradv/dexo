@@ -36,6 +36,17 @@ function arg(name: string): string | null {
   return a ? a.slice(p.length) : null;
 }
 
+/**
+ * Extrai o CNPJ (14 digitos) do CN do certificado A1. O CN de um e-CNPJ tem o
+ * formato "RAZAO SOCIAL:CNPJ" (ex.: "CENTRO DE DESMONTE JOTABE LTDA:51195502000156").
+ * Retorna o ultimo grupo de 14 digitos encontrado, ou null.
+ */
+function extractCnpjFromCN(cn: string | null): string | null {
+  if (!cn) return null;
+  const matches = cn.match(/\d{14}/g);
+  return matches && matches.length ? matches[matches.length - 1] : null;
+}
+
 async function main(): Promise<void> {
   const userId = arg("user-id");
   const pfxPath = arg("pfx");
@@ -84,6 +95,44 @@ async function main(): Promise<void> {
       `Certificado EXPIRADO em ${cert.notAfter.toISOString()}. Renove antes de usar.`,
     );
     process.exit(6);
+  }
+
+  // 2b. TRAVA: o CNPJ do certificado precisa pertencer ao emissor.
+  // A SEFAZ rejeita NFe assinada por certificado de CNPJ diferente do emitente
+  // (comparacao pela BASE de 8 digitos — matriz e filiais compartilham a base).
+  const certCnpj = extractCnpjFromCN(cert.subjectCN);
+  const configCnpj = String(config.cnpj ?? "").replace(/\D/g, "");
+  const forceMismatch = process.argv.includes("--force-cnpj-mismatch");
+
+  if (!certCnpj) {
+    console.warn(
+      `\n⚠ Nao consegui extrair o CNPJ do certificado (CN="${cert.subjectCN ?? "?"}").\n` +
+        "  Confirme manualmente que o certificado pertence ao emissor antes de emitir.\n",
+    );
+  } else if (certCnpj.slice(0, 8) !== configCnpj.slice(0, 8)) {
+    console.error(
+      `\n✗ CNPJ do CERTIFICADO (${certCnpj}) nao corresponde ao CNPJ do EMISSOR (${configCnpj || "(vazio)"}).`,
+    );
+    console.error(
+      "  A SEFAZ rejeita NFe assinada por certificado de CNPJ diferente do emitente (base de 8 digitos).",
+    );
+    console.error(
+      "  Corrija o CNPJ/IE/Razao na Configuracao Fiscal para os do certificado,\n" +
+        "  OU use o A1 do CNPJ que vai emitir.",
+    );
+    if (!forceMismatch) {
+      console.error(
+        "  (Para gravar mesmo assim, sob sua responsabilidade: --force-cnpj-mismatch)\n",
+      );
+      await prisma.$disconnect();
+      process.exit(7);
+    }
+    console.warn("  --force-cnpj-mismatch informado: gravando apesar da divergencia.\n");
+  } else if (certCnpj !== configCnpj) {
+    console.warn(
+      `\n⚠ Base do CNPJ confere (${certCnpj.slice(0, 8)}), mas a filial difere ` +
+        `(certificado ${certCnpj} x emissor ${configCnpj}). Matriz/filial — prosseguindo.\n`,
+    );
   }
 
   // 3. Copiar o .pfx para o local canonico FISCAL_STORAGE_PATH/certs/<userId>.pfx
