@@ -1,4 +1,5 @@
 import { SystemLogRepository } from "../repositories/system-log.repository";
+import prisma from "../lib/prisma";
 import {
   SystemLogCreate,
   LogAction,
@@ -358,6 +359,25 @@ export class SystemLogService {
   }
 
   /**
+   * Resolve o conjunto de `userId` que um usuário pode enxergar em logs.
+   * - Colaborador (tem parentUserId): só os próprios logs.
+   * - Admin (sem parentUserId): os próprios + os dos colaboradores (filhos).
+   *
+   * Usado para isolar a leitura de logs por tenant nas rotas (Fastify e Next).
+   */
+  static async getTenantUserIds(user: {
+    id: string;
+    parentUserId?: string | null;
+  }): Promise<string[]> {
+    if (user.parentUserId) return [user.id];
+    const children = await prisma.user.findMany({
+      where: { parentUserId: user.id },
+      select: { id: true },
+    });
+    return [user.id, ...children.map((c) => c.id)];
+  }
+
+  /**
    * Busca logs do sistema com filtros e paginação
    */
   static async getLogs(options: {
@@ -365,6 +385,7 @@ export class SystemLogService {
     limit?: number;
     filters?: {
       userId?: string;
+      userIds?: string[];
       action?: LogAction;
       resource?: string;
       level?: LogLevel;
@@ -377,6 +398,7 @@ export class SystemLogService {
 
     return SystemLogRepository.findMany({
       userId: filters.userId,
+      userIds: filters.userIds,
       action: filters.action,
       resource: filters.resource,
       level: filters.level,
@@ -394,11 +416,13 @@ export class SystemLogService {
     options: {
       startDate?: Date;
       endDate?: Date;
+      userIds?: string[];
     } = {},
   ) {
     const logs = await SystemLogRepository.findMany({
       startDate: options.startDate,
       endDate: options.endDate,
+      userIds: options.userIds,
       limit: 10000, // Buscar muitos logs para estatísticas
     });
 
@@ -441,9 +465,12 @@ export class SystemLogService {
   }
 
   /**
-   * Remove logs antigos
+   * Remove logs antigos. `userIds` (opcional) restringe ao tenant.
    */
-  static async cleanupOldLogs(daysOld: number): Promise<number> {
-    return SystemLogRepository.deleteOldLogs(daysOld);
+  static async cleanupOldLogs(
+    daysOld: number,
+    userIds?: string[],
+  ): Promise<number> {
+    return SystemLogRepository.deleteOldLogs(daysOld, userIds);
   }
 }

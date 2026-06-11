@@ -3,12 +3,24 @@ import { UserUseCase } from "../usecases/user.usercase";
 import { UserCreate, UserUpdate } from "../interfaces/user.interface";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
 import { SystemLogService } from "../services/system-log.service";
+import { authMiddleware } from "../middlewares/auth.middleware";
+import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
+import { toPublicUser } from "../lib/user-serializer";
 
 //Create User Routes, POST/GET
 export const userRoutes = async (fastify: FastifyInstance) => {
   const userUserCase = new UserUseCase();
+  const userRepository = new UserRepositoryPrisma();
+
+  /**
+   * POST /users — criação de usuário.
+   * SEGURANÇA: não há auto-cadastro público no Dexo; criar usuário/colaborador
+   * é operação administrativa. Exige admin autenticado (authMiddleware +
+   * blockCollaborator). Nunca devolve a senha (toPublicUser).
+   */
   fastify.post<{ Body: UserCreate }>(
     "/",
+    { preHandler: [authMiddleware, blockCollaborator] },
     async (
       request: FastifyRequest<{ Body: UserCreate }>,
       reply: FastifyReply,
@@ -34,12 +46,12 @@ export const userRoutes = async (fastify: FastifyInstance) => {
           },
         );
 
-        return reply.status(201).send(data);
+        return reply.status(201).send(toPublicUser(data));
       } catch (error) {
-        reply.status(500).send({
+        // Nunca devolver stack/erro cru ao cliente.
+        return reply.status(500).send({
           message:
             error instanceof Error ? error.message : "Internal server error",
-          stack: error instanceof Error ? error.stack : undefined,
         });
       }
     },
@@ -70,15 +82,33 @@ export const userRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  /**
+   * PUT /users/:id/settings — atualiza configurações de um usuário por id.
+   * SEGURANÇA: exige auth; só o próprio usuário ou o admin-pai do alvo pode
+   * alterar (antes: sem auth e sem checagem de posse = IDOR de escrita).
+   */
   fastify.put<{ Body: UserUpdate; Params: { id: string } }>(
     "/:id/settings",
+    { preHandler: [authMiddleware] },
     async (
       request: FastifyRequest<{ Body: UserUpdate; Params: { id: string } }>,
       reply: FastifyReply,
     ) => {
       const { id } = request.params;
+      const me = (request as any).user as {
+        id: string;
+        parentUserId?: string | null;
+      };
       const updateData = request.body;
       try {
+        const target = await userRepository.findById(id);
+        if (!target) {
+          return reply.status(404).send({ message: "User not found" });
+        }
+        if (target.id !== me.id && target.parentUserId !== me.id) {
+          return reply.status(403).send({ message: "Acesso negado" });
+        }
+
         const data = await userUserCase.updateSettings(id, updateData);
 
         // Registrar log de atualização de configurações
@@ -91,33 +121,44 @@ export const userRoutes = async (fastify: FastifyInstance) => {
           },
         );
 
-        return reply.status(200).send(data);
+        return reply.status(200).send(toPublicUser(data));
       } catch (error) {
-        reply.status(500).send({
+        return reply.status(500).send({
           message:
             error instanceof Error ? error.message : "Internal server error",
-          stack: error instanceof Error ? error.stack : undefined,
         });
       }
     },
   );
 
+  /**
+   * GET /users/:id — busca um usuário por id.
+   * SEGURANÇA: exige auth; só self ou admin-pai. Nunca devolve a senha.
+   * (Antes: sem auth e devolvia o objeto cru com `password` em texto plano.)
+   */
   fastify.get<{ Params: { id: string } }>(
     "/:id",
+    { preHandler: [authMiddleware] },
     async (
       request: FastifyRequest<{ Params: { id: string } }>,
       reply: FastifyReply,
     ) => {
       const { id } = request.params;
+      const me = (request as any).user as {
+        id: string;
+        parentUserId?: string | null;
+      };
       try {
-        const userRepository = new UserRepositoryPrisma();
         const user = await userRepository.findById(id);
         if (!user) {
           return reply.status(404).send({ message: "User not found" });
         }
-        return reply.status(200).send(user);
+        if (user.id !== me.id && user.parentUserId !== me.id) {
+          return reply.status(403).send({ message: "Acesso negado" });
+        }
+        return reply.status(200).send(toPublicUser(user));
       } catch (error) {
-        reply.status(500).send({
+        return reply.status(500).send({
           message:
             error instanceof Error ? error.message : "Internal server error",
         });
@@ -127,65 +168,54 @@ export const userRoutes = async (fastify: FastifyInstance) => {
 
   /**
    * GET /users/me
-   * Retorna o usuário identificado pelo header `email` (fallback para clientes que não têm o internal id)
+   * Retorna o usuário autenticado. Identidade resolvida pelo authMiddleware
+   * (não mais pelo header `email` cru). Nunca devolve a senha.
    */
-  fastify.get("/me", async (request: FastifyRequest, reply: FastifyReply) => {
-    const email = (request.headers as any).email as string | undefined;
-    if (!email) {
-      return reply.status(401).send({ message: "Email header é obrigatório" });
-    }
-
-    try {
-      const userRepository = new UserRepositoryPrisma();
-      const user = await userRepository.findByEmail(email);
-      if (!user) return reply.status(404).send({ message: "User not found" });
-      return reply.status(200).send(user);
-    } catch (error) {
-      return reply.status(500).send({
-        message:
-          error instanceof Error ? error.message : "Internal server error",
-      });
-    }
-  });
+  fastify.get(
+    "/me",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const me = (request as any).user as { id: string };
+      try {
+        const user = await userRepository.findById(me.id);
+        if (!user) return reply.status(404).send({ message: "User not found" });
+        return reply.status(200).send(toPublicUser(user));
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error ? error.message : "Internal server error",
+        });
+      }
+    },
+  );
 
   /**
    * PUT /users/me/settings
-   * Atualiza as configurações do usuário identificado pelo header `email` (mesmo contrato de /:id/settings)
+   * Atualiza as configurações do usuário autenticado (identidade da sessão,
+   * não mais do header `email` cru). Nunca devolve a senha.
    */
   fastify.put<{ Body: UserUpdate }>(
     "/me/settings",
+    { preHandler: [authMiddleware] },
     async (
       request: FastifyRequest<{ Body: UserUpdate }>,
       reply: FastifyReply,
     ) => {
-      const email = (request.headers as any).email as string | undefined;
-      if (!email)
-        return reply
-          .status(401)
-          .send({ message: "Email header é obrigatório" });
-
+      const me = (request as any).user as { id: string };
       try {
-        const userRepository = new UserRepositoryPrisma();
-        const user = await userRepository.findByEmail(email);
-        if (!user) return reply.status(404).send({ message: "User not found" });
-
-        const userUserCase = new UserUseCase();
-        const updated = await userUserCase.updateSettings(
-          user.id,
-          request.body,
-        );
+        const updated = await userUserCase.updateSettings(me.id, request.body);
 
         // Registrar log de atualização de configurações
         await SystemLogService.logUserActivity(
-          user.id,
+          me.id,
           `Configurações atualizadas`,
           {
             resource: "User",
-            resourceId: user.id,
+            resourceId: me.id,
           },
         );
 
-        return reply.status(200).send(updated);
+        return reply.status(200).send(toPublicUser(updated));
       } catch (error) {
         return reply.status(500).send({
           message:

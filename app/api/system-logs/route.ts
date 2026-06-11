@@ -1,17 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/lib/auth";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 export async function GET(request: NextRequest) {
   try {
+    // SEGURANÇA: exige sessão válida e escopa os logs ao tenant do usuário.
+    // Antes esta rota era pública e sem escopo — vazava logs (com PII no
+    // `details`) de todos os tenants para qualquer um.
+    const session = await getServerSession(authOptions);
+    const sessionUser = session?.user as
+      | { id?: string; parentUserId?: string | null }
+      | undefined;
+    if (!sessionUser?.id) {
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    }
+
+    const userIds = await SystemLogService.getTenantUserIds({
+      id: sessionUser.id,
+      parentUserId: sessionUser.parentUserId ?? null,
+    });
+
     const { searchParams } = new URL(request.url);
 
     // Parâmetros de paginação
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "20");
 
-    // Parâmetros de filtro
+    // Parâmetros de filtro (o escopo de tenant `userIds` é imposto pelo servidor
+    // e NÃO pode ser sobrescrito pelo cliente).
     const filters = {
-      userId: searchParams.get("userId") || undefined,
+      userIds,
       action: (searchParams.get("action") as any) || undefined, // Cast necessário pois vem como string da URL
       resource: searchParams.get("resource") || undefined,
       level: searchParams.get("level") as
