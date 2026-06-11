@@ -1,6 +1,9 @@
 import prisma from "../lib/prisma";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { CustomerRepository } from "../repositories/customer.repository";
+import { CustomerUseCase } from "./customer.usecase";
+import { mapDestinatarioToCustomer } from "./nfe-customer-mapping";
 import { NfeSequenceService } from "../fiscal/sequence/nfe-sequence.service";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { NfeXmlBuilderService } from "../fiscal/generators/nfe-xml-builder.service";
@@ -17,7 +20,12 @@ import {
   isAutoFallbackEnabled,
 } from "../fiscal/sefaz/contingencia.service";
 import type { UF } from "../fiscal/sefaz/endpoints";
-import type { NfeItemInput, RegimeTributario, NfeStatus, FiscalAmbiente } from "../fiscal/domain/nfe.types";
+import type {
+  NfeItemInput,
+  RegimeTributario,
+  NfeStatus,
+  FiscalAmbiente,
+} from "../fiscal/domain/nfe.types";
 import { canTransition } from "../fiscal/domain/nfe.types";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
@@ -53,6 +61,8 @@ export class NfeEmissionUseCase {
   private xmlBuilder: NfeXmlBuilderService;
   private danfeService: DanfePdfService;
   private storage: FiscalStorageService;
+  private customerUseCase: CustomerUseCase;
+  private customerRepo: CustomerRepository;
 
   constructor() {
     this.nfeRepo = new NfeRepository();
@@ -62,6 +72,8 @@ export class NfeEmissionUseCase {
     this.xmlBuilder = new NfeXmlBuilderService();
     this.danfeService = new DanfePdfService();
     this.storage = new FiscalStorageService();
+    this.customerUseCase = new CustomerUseCase();
+    this.customerRepo = new CustomerRepository();
   }
 
   async emit(userId: string, nfeId: string): Promise<EmissionResult> {
@@ -121,7 +133,8 @@ export class NfeEmissionUseCase {
         origem: (item.origem ?? 0) as any,
         cstIcms: item.cstIcms ?? (regime === "SIMPLES" ? "102" : "00"),
         cstPis: (item.cstPis ?? (regime === "SIMPLES" ? "49" : "01")) as any,
-        cstCofins: (item.cstCofins ?? (regime === "SIMPLES" ? "49" : "01")) as any,
+        cstCofins: (item.cstCofins ??
+          (regime === "SIMPLES" ? "49" : "01")) as any,
         aliquotaIcms: item.aliquotaIcms ?? null,
         aliquotaIpi: item.aliquotaIpi ?? null,
         aliquotaPis: item.aliquotaPis ?? null,
@@ -197,7 +210,12 @@ export class NfeEmissionUseCase {
         // Audit/storage: salvamos um snapshot legível do payload de entrada
         // (não é o XML assinado — esse fica em xmlAutorizadoPath após emit).
         xmlOriginalContent = JSON.stringify(
-          { providerName: "SEFAZ_DIRECT", numero, draft: nfeWithNumero, config: redactConfig(config) },
+          {
+            providerName: "SEFAZ_DIRECT",
+            numero,
+            draft: nfeWithNumero,
+            config: redactConfig(config),
+          },
           null,
           2,
         );
@@ -278,10 +296,15 @@ export class NfeEmissionUseCase {
           // Erro de rede/timeout: a NF-e PODE ter sido autorizada na origem e a
           // resposta se perdido. Consultar a chave ANTES de reenviar — reenvio
           // cego causaria DUPLA AUTORIZACAO (PRO-3/USE-1).
-          await this.nfeRepo.addAuditLog(nfeId, userId, "CONTINGENCIA_CONSULTA", {
-            motivo: decision.reason,
-            chaveAcesso: providerResult.chaveAcesso,
-          });
+          await this.nfeRepo.addAuditLog(
+            nfeId,
+            userId,
+            "CONTINGENCIA_CONSULTA",
+            {
+              motivo: decision.reason,
+              chaveAcesso: providerResult.chaveAcesso,
+            },
+          );
           const consulta = await (provider as any).consultar(
             providerResult.chaveAcesso,
             config.providerToken ?? "",
@@ -316,12 +339,17 @@ export class NfeEmissionUseCase {
           } else {
             // Consulta inconclusiva / SEFAZ ainda inacessivel → NAO reenviar.
             // Mantem em SENDING para reconciliacao (cai no branch 'erro' abaixo).
-            await this.nfeRepo.addAuditLog(nfeId, userId, "CONTINGENCIA_ADIADA", {
-              motivo:
-                "consulta inconclusiva apos timeout — emissao pendente de reconciliacao",
-              consultaStatus: consulta.status,
-              consultaCStat: consulta.codigoStatus,
-            });
+            await this.nfeRepo.addAuditLog(
+              nfeId,
+              userId,
+              "CONTINGENCIA_ADIADA",
+              {
+                motivo:
+                  "consulta inconclusiva apos timeout — emissao pendente de reconciliacao",
+                consultaStatus: consulta.status,
+                consultaCStat: consulta.codigoStatus,
+              },
+            );
           }
         }
       }
@@ -509,11 +537,17 @@ export class NfeEmissionUseCase {
       } else if (providerResult.chaveAcesso) {
         consulta = await provider.consultar(providerResult.chaveAcesso, token);
       } else {
-        return { status: "processando", mensagem: "Sem chave/recibo para consultar" };
+        return {
+          status: "processando",
+          mensagem: "Sem chave/recibo para consultar",
+        };
       }
       if (consulta.status !== "processando") return consulta;
     }
-    return { status: "processando", mensagem: "Ainda processando apos polling" };
+    return {
+      status: "processando",
+      mensagem: "Ainda processando apos polling",
+    };
   }
 
   private pendingResult(
@@ -632,7 +666,11 @@ export class NfeEmissionUseCase {
     } else if (provider.buscarXml) {
       const xml = await provider.buscarXml(nfeId, config.providerToken!);
       if (xml) {
-        xmlAutorizadoPath = await this.storage.saveXmlAutorizado(userId, nfeId, xml);
+        xmlAutorizadoPath = await this.storage.saveXmlAutorizado(
+          userId,
+          nfeId,
+          xml,
+        );
       }
     }
 
@@ -660,7 +698,8 @@ export class NfeEmissionUseCase {
       let pdfBytes: Uint8Array | null = null;
       if (xmlAutorizadoInline) {
         try {
-          pdfBytes = await this.danfeService.generateFromXml(xmlAutorizadoInline);
+          pdfBytes =
+            await this.danfeService.generateFromXml(xmlAutorizadoInline);
         } catch {
           // Parse falhou — cai no fallback DB
           pdfBytes = null;
@@ -697,6 +736,10 @@ export class NfeEmissionUseCase {
       protocolo,
     });
 
+    // Cadastro automático do destinatário como cliente — só após autorização
+    // bem-sucedida, best-effort (nunca falha a emissão). Atrás de flag.
+    await this.maybeAutoCreateCustomer(nfeId, userId);
+
     return {
       success: true,
       nfeId,
@@ -707,6 +750,64 @@ export class NfeEmissionUseCase {
       protocolo,
       mensagem: "NF-e autorizada com sucesso",
     };
+  }
+
+  /**
+   * Cria (ou vincula) o destinatário como Customer quando a NF-e é autorizada e
+   * ainda não há customerId. Best-effort: qualquer falha é registrada em
+   * auditoria e NÃO propaga (a NF-e já está autorizada na SEFAZ). Atrás da flag
+   * NEXT_PUBLIC_NFE_AUTO_CREATE_CUSTOMER (off = comportamento atual).
+   */
+  private async maybeAutoCreateCustomer(
+    nfeId: string,
+    userId: string,
+  ): Promise<void> {
+    if (process.env.NEXT_PUBLIC_NFE_AUTO_CREATE_CUSTOMER !== "true") return;
+    try {
+      const row = await (prisma as any).nfeEmitida.findUnique({
+        where: { id: nfeId },
+        select: { customerId: true, destinatarioJson: true },
+      });
+      // Já vinculado (cliente escolhido na busca) → não duplica.
+      if (!row || row.customerId) return;
+
+      const dest = row.destinatarioJson as any;
+      const doc = (dest?.cpfCnpj ?? "").toString().replace(/\D/g, "");
+      const nome = (dest?.nome ?? "").toString().trim();
+      // Exterior ou dados insuficientes → não cadastra.
+      if (!doc || !nome || dest?.tipoPessoa === "EXTERIOR") return;
+
+      const isPj = dest?.tipoPessoa === "PJ" || doc.length === 14;
+
+      // Anti-duplicação: documento já cadastrado → vincula em vez de criar.
+      const existing = isPj
+        ? await this.customerRepo.findByCnpj(doc, userId)
+        : await this.customerRepo.findByCpf(doc, userId);
+
+      let customerId: string;
+      if (existing) {
+        customerId = existing.id;
+      } else {
+        const created = await this.customerUseCase.create(
+          mapDestinatarioToCustomer(dest, userId),
+        );
+        customerId = created.id;
+      }
+
+      await (prisma as any).nfeEmitida.update({
+        where: { id: nfeId },
+        data: { customerId },
+      });
+      await this.nfeRepo.addAuditLog(nfeId, userId, "CLIENTE_VINCULADO", {
+        customerId,
+        criado: !existing,
+      });
+    } catch (error) {
+      // NF-e já autorizada — falha de cadastro é não-crítica; só registra.
+      await this.nfeRepo.addAuditLog(nfeId, userId, "CLIENTE_AUTO_FALHOU", {
+        erro: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async handleRejected(
@@ -860,7 +961,9 @@ export class NfeEmissionUseCase {
  * snapshot do xmlOriginal (SEFAZ direto). Mantém o que é útil para auditoria,
  * mascara/elimina senhas e tokens.
  */
-function redactConfig(config: CompanyFiscalConfig): Partial<CompanyFiscalConfig> {
+function redactConfig(
+  config: CompanyFiscalConfig,
+): Partial<CompanyFiscalConfig> {
   const { certificadoSenhaEnc, providerToken, ...rest } = config as any;
   void certificadoSenhaEnc;
   void providerToken;

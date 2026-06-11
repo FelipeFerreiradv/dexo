@@ -30,9 +30,33 @@ interface Props {
 }
 
 const UF_OPTIONS = [
-  "AC","AL","AM","AP","BA","CE","DF","ES","GO","MA",
-  "MG","MS","MT","PA","PB","PE","PI","PR","RJ","RN",
-  "RO","RR","RS","SC","SE","SP","TO",
+  "AC",
+  "AL",
+  "AM",
+  "AP",
+  "BA",
+  "CE",
+  "DF",
+  "ES",
+  "GO",
+  "MA",
+  "MG",
+  "MS",
+  "MT",
+  "PA",
+  "PB",
+  "PE",
+  "PI",
+  "PR",
+  "RJ",
+  "RN",
+  "RO",
+  "RR",
+  "RS",
+  "SC",
+  "SE",
+  "SP",
+  "TO",
 ];
 
 export function StepDestinatario({ control, errors, setValue, email }: Props) {
@@ -52,11 +76,17 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
       try {
         const addr = await fetchAddressByCep(clean);
         if (addr) {
-          setValue("destinatario.logradouro", addr.street, { shouldDirty: true });
-          setValue("destinatario.bairro", addr.neighborhood, { shouldDirty: true });
+          setValue("destinatario.logradouro", addr.street, {
+            shouldDirty: true,
+          });
+          setValue("destinatario.bairro", addr.neighborhood, {
+            shouldDirty: true,
+          });
           setValue("destinatario.municipio", addr.city, { shouldDirty: true });
           setValue("destinatario.uf", addr.state, { shouldDirty: true });
-          setValue("destinatario.codMunicipio", addr.ibge, { shouldDirty: true });
+          setValue("destinatario.codMunicipio", addr.ibge, {
+            shouldDirty: true,
+          });
         }
       } finally {
         setLoadingCep(false);
@@ -98,14 +128,16 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
   };
 
   const selectCustomer = (c: CustomerLookup) => {
-    const isPj = !!c.deliveryCnpj;
+    // PJ de 1ª classe (cnpj/razaoSocial) tem prioridade; cai no CNPJ de entrega
+    // legado para registros antigos.
+    const isPj = c.personType === "PJ" || !!c.cnpj || !!c.deliveryCnpj;
+    const doc = c.cnpj ?? c.deliveryCnpj ?? c.cpf ?? "";
+    const nome = c.razaoSocial ?? c.deliveryCorporateName ?? c.name;
     setValue("customerId", c.id);
     setValue("destinatario.tipoPessoa", isPj ? "PJ" : "PF");
-    setValue("destinatario.cpfCnpj", isPj ? c.deliveryCnpj! : c.cpf ?? "");
-    setValue(
-      "destinatario.nome",
-      isPj ? (c.deliveryCorporateName ?? c.name) : c.name,
-    );
+    setValue("destinatario.cpfCnpj", doc);
+    setValue("destinatario.nome", isPj ? nome : c.name);
+    setValue("destinatario.inscricaoEstadual", c.inscricaoEstadual ?? null);
     setValue("destinatario.email", c.email);
     setValue("destinatario.telefone", c.phone ?? c.mobile);
     setValue("destinatario.cep", c.cep);
@@ -166,25 +198,28 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
                 onClick={() => selectCustomer(c)}
                 className="w-full px-3 py-2 text-left text-sm hover:bg-accent/50 flex items-center gap-2"
               >
-                {c.deliveryCnpj ? (
+                {c.personType === "PJ" || c.cnpj || c.deliveryCnpj ? (
                   <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
                 ) : (
                   <User className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
                 <span className="font-medium truncate">{c.name}</span>
                 <span className="text-muted-foreground text-xs ml-auto shrink-0">
-                  {c.deliveryCnpj ?? c.cpf ?? ""}
+                  {c.cnpj ?? c.deliveryCnpj ?? c.cpf ?? ""}
                 </span>
               </button>
             ))}
           </div>
         )}
 
-        {showResults && searchQuery.length >= 2 && !searching && results.length === 0 && (
-          <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-popover shadow-lg px-3 py-3 text-sm text-muted-foreground">
-            Nenhum cliente encontrado
-          </div>
-        )}
+        {showResults &&
+          searchQuery.length >= 2 &&
+          !searching &&
+          results.length === 0 && (
+            <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-popover shadow-lg px-3 py-3 text-sm text-muted-foreground">
+              Nenhum cliente encontrado
+            </div>
+          )}
       </div>
 
       <div className="border-t border-border/60 pt-4">
@@ -250,9 +285,7 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
           </div>
 
           <div className="md:col-span-2 lg:col-span-3 space-y-1">
-            <label className="text-sm font-medium">
-              Nome / Razão social *
-            </label>
+            <label className="text-sm font-medium">Nome / Razão social *</label>
             <Controller
               control={control}
               name="destinatario.nome"
