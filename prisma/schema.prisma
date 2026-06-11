@@ -178,10 +178,10 @@ model MarketplaceAccount {
   appClientId     String?
   appClientSecret String?
   user            User                  @relation(fields: [userId], references: [id])
-  orders         Order[]
-  listings       ProductListing[]
-  syncLogs       SyncLog[]
-  questions      MarketplaceQuestion[]
+  orders          Order[]
+  listings        ProductListing[]
+  syncLogs        SyncLog[]
+  questions       MarketplaceQuestion[]
 
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
@@ -524,6 +524,9 @@ model Customer {
   id     String @id @default(cuid())
   userId String
 
+  // Tipo de pessoa. Default PF preserva todos os clientes existentes.
+  personType String @default("PF") // PF | PJ
+
   // Identificação PF
   name          String
   cpf           String?
@@ -531,9 +534,17 @@ model Customer {
   birthDate     DateTime?
   gender        String?
   maritalStatus String?
-  email         String?
-  phone         String?
-  mobile        String?
+
+  // Identificação PJ (quando personType = PJ)
+  cnpj              String?
+  razaoSocial       String?
+  nomeFantasia      String?
+  inscricaoEstadual String?
+  indicadorIE       String? @default("9") // 1=Contribuinte | 2=Isento | 9=Não contribuinte
+
+  email  String?
+  phone  String?
+  mobile String?
 
   // Endereço principal
   cep          String?
@@ -574,6 +585,7 @@ model Customer {
   @@unique([userId, cpf])
   @@index([userId, createdAt])
   @@index([userId, name])
+  @@index([userId, cnpj])
 }
 
 model Receivable {
@@ -602,9 +614,9 @@ model Receivable {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User     @relation(fields: [userId], references: [id])
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  unidade  Unidade? @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  user     User             @relation(fields: [userId], references: [id])
+  customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade  Unidade?         @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
 
   @@index([userId, dueDate])

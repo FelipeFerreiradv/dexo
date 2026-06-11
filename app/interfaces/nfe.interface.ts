@@ -147,12 +147,18 @@ export interface NfeDraftResponse {
 
 export interface CustomerLookup {
   id: string;
+  personType?: string | null;
   name: string;
   cpf: string | null;
+  cnpj?: string | null;
+  razaoSocial?: string | null;
+  nomeFantasia?: string | null;
+  inscricaoEstadual?: string | null;
+  indicadorIE?: string | null;
   email: string | null;
   phone: string | null;
   mobile: string | null;
-  // PJ fields
+  // Endereço de entrega legado (preenchido p/ PF que entrega a um CNPJ)
   deliveryCnpj: string | null;
   deliveryCorporateName: string | null;
   // Address

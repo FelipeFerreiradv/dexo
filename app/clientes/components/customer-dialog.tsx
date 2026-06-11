@@ -3,12 +3,7 @@
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import {
-  IdCard,
-  Phone,
-  MapPin,
-  Truck,
-} from "lucide-react";
+import { IdCard, Phone, MapPin, Truck } from "lucide-react";
 import { useSession } from "next-auth/react";
 
 import {
@@ -18,7 +13,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { StepperHeader, StepperStep } from "@/components/stepper/stepper-header";
+import {
+  StepperHeader,
+  StepperStep,
+} from "@/components/stepper/stepper-header";
 import { StepperFooter } from "@/components/stepper/stepper-footer";
 import { getApiBaseUrl } from "@/lib/api";
 import { onlyDigits } from "@/app/lib/masks";
@@ -39,7 +37,20 @@ const STEPS: (StepperStep & { fields: (keyof CustomerFormData)[] })[] = [
     title: "Identificação",
     description: "Dados pessoais",
     icon: IdCard,
-    fields: ["name", "cpf", "rg", "birthDate", "gender", "maritalStatus"],
+    fields: [
+      "personType",
+      "name",
+      "cpf",
+      "rg",
+      "birthDate",
+      "gender",
+      "maritalStatus",
+      "cnpj",
+      "razaoSocial",
+      "nomeFantasia",
+      "inscricaoEstadual",
+      "indicadorIE",
+    ],
   },
   {
     id: 2,
@@ -139,9 +150,7 @@ export function CustomerDialog({
     if (fields.length === 0) return true;
     const ok = await trigger(fields);
     if (!ok) {
-      const first = fields
-        .map((f) => errors[f]?.message)
-        .filter(Boolean)[0];
+      const first = fields.map((f) => errors[f]?.message).filter(Boolean)[0];
       if (first) onToast(first as string, "warning");
     }
     return ok;
@@ -166,6 +175,13 @@ export function CustomerDialog({
       const payload = {
         ...data,
         cpf: data.cpf ? onlyDigits(data.cpf) : null,
+        cnpj: data.cnpj ? onlyDigits(data.cnpj) : null,
+        // PJ: a coluna `name` (NOT NULL, alimenta listas/busca) recebe a razão
+        // social. PF mantém o nome digitado.
+        name:
+          data.personType === "PJ"
+            ? (data.razaoSocial || "").trim()
+            : data.name || "",
         phone: data.phone ? onlyDigits(data.phone) : null,
         mobile: data.mobile ? onlyDigits(data.mobile) : null,
         cep: data.cep ? onlyDigits(data.cep) : null,
@@ -229,7 +245,11 @@ export function CustomerDialog({
 
           <div>
             {currentStep === 1 && (
-              <IdentificationStep control={control} errors={errors} />
+              <IdentificationStep
+                control={control}
+                errors={errors}
+                setValue={setValue}
+              />
             )}
             {currentStep === 2 && (
               <ContactStep control={control} errors={errors} />

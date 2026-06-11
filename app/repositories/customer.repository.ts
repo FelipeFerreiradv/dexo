@@ -37,12 +37,18 @@ export class CustomerRepository {
     const created = await db.customer.create({
       data: {
         userId: data.userId,
+        personType: data.personType ?? "PF",
         name: data.name,
         cpf: onlyDigits(data.cpf),
         rg: data.rg ?? null,
         birthDate: parseDate(data.birthDate),
         gender: data.gender ?? null,
         maritalStatus: data.maritalStatus ?? null,
+        cnpj: onlyDigits(data.cnpj),
+        razaoSocial: data.razaoSocial ?? null,
+        nomeFantasia: data.nomeFantasia ?? null,
+        inscricaoEstadual: data.inscricaoEstadual ?? null,
+        indicadorIE: data.indicadorIE ?? null,
         email: data.email ?? null,
         phone: onlyDigits(data.phone),
         mobile: onlyDigits(data.mobile),
@@ -64,7 +70,9 @@ export class CustomerRepository {
         deliveryPhone: onlyDigits(data.deliveryPhone),
         deliveryCity: data.deliveryCity ?? null,
         deliveryNeighborhood: data.deliveryNeighborhood ?? null,
-        deliveryState: data.deliveryState ? data.deliveryState.toUpperCase() : null,
+        deliveryState: data.deliveryState
+          ? data.deliveryState.toUpperCase()
+          : null,
         deliveryStreet: data.deliveryStreet ?? null,
         deliveryComplement: data.deliveryComplement ?? null,
         deliveryNumber: data.deliveryNumber ?? null,
@@ -81,8 +89,10 @@ export class CustomerRepository {
   ): Promise<Customer> {
     const updateData: any = { ...data };
     if ("cpf" in updateData) updateData.cpf = onlyDigits(updateData.cpf);
+    if ("cnpj" in updateData) updateData.cnpj = onlyDigits(updateData.cnpj);
     if ("phone" in updateData) updateData.phone = onlyDigits(updateData.phone);
-    if ("mobile" in updateData) updateData.mobile = onlyDigits(updateData.mobile);
+    if ("mobile" in updateData)
+      updateData.mobile = onlyDigits(updateData.mobile);
     if ("cep" in updateData) updateData.cep = onlyDigits(updateData.cep);
     if ("deliveryCpf" in updateData)
       updateData.deliveryCpf = onlyDigits(updateData.deliveryCpf);
@@ -94,7 +104,8 @@ export class CustomerRepository {
       updateData.deliveryPhone = onlyDigits(updateData.deliveryPhone);
     if ("birthDate" in updateData)
       updateData.birthDate = parseDate(updateData.birthDate);
-    if (updateData.state) updateData.state = String(updateData.state).toUpperCase();
+    if (updateData.state)
+      updateData.state = String(updateData.state).toUpperCase();
     if (updateData.deliveryState)
       updateData.deliveryState = String(updateData.deliveryState).toUpperCase();
     delete updateData.userId;
@@ -131,6 +142,20 @@ export class CustomerRepository {
     return result ? toCustomer(result) : null;
   }
 
+  async findByCnpj(
+    cnpj: string,
+    userId: string,
+    tx?: Db,
+  ): Promise<Customer | null> {
+    const db: Db = tx ?? prisma;
+    const clean = cnpj.replace(/\D/g, "");
+    if (!clean) return null;
+    const result = await db.customer.findFirst({
+      where: { userId, cnpj: clean },
+    });
+    return result ? toCustomer(result) : null;
+  }
+
   async findAll(
     filters: CustomerListFilters,
     userId: string,
@@ -145,10 +170,13 @@ export class CustomerRepository {
       const termDigits = term.replace(/\D/g, "");
       const or: any[] = [
         { name: { contains: term, mode: "insensitive" } },
+        { razaoSocial: { contains: term, mode: "insensitive" } },
+        { nomeFantasia: { contains: term, mode: "insensitive" } },
         { email: { contains: term, mode: "insensitive" } },
       ];
       if (termDigits.length > 0) {
         or.push({ cpf: { contains: termDigits } });
+        or.push({ cnpj: { contains: termDigits } });
         or.push({ phone: { contains: termDigits } });
         or.push({ mobile: { contains: termDigits } });
       }
@@ -178,10 +206,13 @@ export class CustomerRepository {
     const termDigits = term.replace(/\D/g, "");
     const or: any[] = [
       { name: { contains: term, mode: "insensitive" } },
+      { razaoSocial: { contains: term, mode: "insensitive" } },
+      { nomeFantasia: { contains: term, mode: "insensitive" } },
       { email: { contains: term, mode: "insensitive" } },
     ];
     if (termDigits.length > 0) {
       or.push({ cpf: { contains: termDigits } });
+      or.push({ cnpj: { contains: termDigits } });
     }
     const items = await prisma.customer.findMany({
       where: { userId, OR: or },
