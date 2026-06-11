@@ -1,6 +1,7 @@
 import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
+import { verifyPassword } from "./password";
 
 const userRepository = new UserRepositoryPrisma();
 
@@ -24,9 +25,24 @@ export const authOptions: NextAuthOptions = {
           return null; // Usuário não existe
         }
 
-        // TODO: Validar senha com bcrypt (agora está em texto plano)
-        if (user.password !== credentials.password) {
+        // Validação com bcrypt + rehash transparente do legado em texto plano.
+        const { valid, needsRehash } = await verifyPassword(
+          credentials.password,
+          user.password,
+        );
+        if (!valid) {
           return null; // Senha incorreta
+        }
+        if (needsRehash) {
+          // Migra a senha legada para hash neste login (o repositório faz o hash).
+          // Falha aqui não pode bloquear o login válido.
+          try {
+            await userRepository.update(user.id, {
+              password: credentials.password,
+            });
+          } catch {
+            // best-effort: tenta de novo no próximo login.
+          }
         }
 
         // Retornar dados do usuário autenticado
@@ -59,7 +75,8 @@ export const authOptions: NextAuthOptions = {
         session.user.id = token.id as string;
         // @ts-expect-error - expose avatar url on session
         session.user.image = (token as any).image as string | undefined;
-        session.user.parentUserId = (token.parentUserId as string | null) ?? null;
+        session.user.parentUserId =
+          (token.parentUserId as string | null) ?? null;
         session.user.role = (token.role as string | null) ?? null;
       }
       return session;

@@ -5,6 +5,7 @@ import {
   UserUpdate,
 } from "../interfaces/user.interface";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
+import { verifyPassword } from "../lib/password";
 
 export class UserUseCase {
   private userRepository: UserRepository;
@@ -37,8 +38,21 @@ export class UserUseCase {
     const user = await this.userRepository.findByEmail(email);
     if (!user) {
       throw new Error("User not found");
-    } else if (user.password !== password) {
+    }
+    // Validação com bcrypt + rehash transparente do legado em texto plano.
+    const { valid, needsRehash } = await verifyPassword(
+      password,
+      user.password,
+    );
+    if (!valid) {
       throw new Error("Invalid password");
+    }
+    if (needsRehash) {
+      try {
+        await this.userRepository.update(user.id, { password });
+      } catch {
+        // best-effort: migra no próximo login.
+      }
     }
     return user;
   }
