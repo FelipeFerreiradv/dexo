@@ -13,7 +13,47 @@ import { CompanyFiscalRepository } from "../repositories/company-fiscal.reposito
 import { NfeRepository } from "../repositories/nfe.repository";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
 import { createNfeProvider } from "../fiscal/providers/provider-factory";
+import { extractCnpjFromCert } from "../fiscal/certificate/certificate-loader.service";
 import type { NfeItemInput, RegimeTributario } from "../fiscal/domain/nfe.types";
+
+/**
+ * Remove segredos do CompanyFiscalConfig antes de devolver ao cliente e deriva
+ * os campos que a UI precisa:
+ *   - certificadoSenhaEnc / certificadoPath: segredos/infra — nunca ao navegador.
+ *   - providerToken: segredo da API Focus — exposto só como booleano
+ *     `providerTokenConfigurado` (o form reenvia vazio = preserva o salvo).
+ *   - certificadoConfigurado: booleano de presença do A1.
+ *   - certificadoCnpjConfirmado: reconfere o CNPJ do cert (do CN persistido)
+ *     contra o emissor, para o aviso de risco sobreviver a um reload.
+ */
+function sanitizeFiscalConfig(
+  config: Awaited<ReturnType<CompanyFiscalUseCase["getByUserId"]>> | null,
+): Record<string, unknown> | null {
+  if (!config) return null;
+
+  // Tri-state: null = desconhecido (sem cert, ou cert antigo cadastrado antes
+  // de persistirmos o CN — não alarma); true = CNPJ do cert confere; false =
+  // CN presente mas o CNPJ não pôde ser confirmado (alarma e sobrevive a reload).
+  let certificadoCnpjConfirmado: boolean | null = null;
+  if (config.certificadoPath && config.certificadoSubjectCN) {
+    const certCnpj = extractCnpjFromCert(config.certificadoSubjectCN);
+    const emitter = (config.cnpj ?? "").replace(/\D/g, "");
+    certificadoCnpjConfirmado = Boolean(
+      certCnpj && emitter && certCnpj.slice(0, 8) === emitter.slice(0, 8),
+    );
+  }
+
+  const safe: Record<string, unknown> = {
+    ...config,
+    certificadoConfigurado: Boolean(config.certificadoPath),
+    certificadoCnpjConfirmado,
+    providerTokenConfigurado: Boolean(config.providerToken),
+  };
+  delete safe.certificadoSenhaEnc;
+  delete safe.certificadoPath;
+  delete safe.providerToken;
+  return safe;
+}
 
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
@@ -37,7 +77,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const config = await companyFiscal.getByUserId(userId);
-        return reply.status(200).send({ config });
+        return reply.status(200).send({ config: sanitizeFiscalConfig(config) });
       } catch (error) {
         return reply.status(500).send({
           error:
@@ -57,7 +97,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
         const config = await companyFiscal.upsert(userId, body);
-        return reply.status(200).send({ config });
+        return reply.status(200).send({ config: sanitizeFiscalConfig(config) });
       } catch (error) {
         const message =
           error instanceof Error
@@ -71,6 +111,97 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             ? 400
             : 500;
         return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  // Upload do certificado digital A1 (.pfx) para o provedor SEFAZ_DIRECT.
+  // Recebe multipart: campo `certificate` (arquivo .pfx) + campo `senha`.
+  fastify.post(
+    "/config/certificate",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        if (!request.isMultipart()) {
+          return reply.status(400).send({
+            error: "Envie o certificado como multipart/form-data.",
+          });
+        }
+        const userId = (request as any).user?.dataOwnerId as string;
+
+        let buffer: Buffer | null = null;
+        let filename = "";
+        let senha = "";
+
+        for await (const part of request.parts()) {
+          if (part.type === "file") {
+            if (part.fieldname !== "certificate") {
+              // Drena outros arquivos para liberar o stream.
+              await part.toBuffer().catch(() => undefined);
+              continue;
+            }
+            filename = part.filename ?? "";
+            try {
+              buffer = await part.toBuffer();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
+                return reply.status(400).send({
+                  error: "Arquivo muito grande. O limite é 5MB.",
+                });
+              }
+              throw e;
+            }
+          } else if (part.type === "field" && part.fieldname === "senha") {
+            senha =
+              typeof part.value === "string" ? part.value : String(part.value);
+          }
+        }
+
+        if (!buffer) {
+          return reply.status(400).send({
+            error: "Nenhum arquivo enviado no campo `certificate`.",
+          });
+        }
+        const lower = filename.toLowerCase();
+        if (!lower.endsWith(".pfx") && !lower.endsWith(".p12")) {
+          return reply.status(400).send({
+            error: "Formato inválido. Envie um certificado A1 (.pfx ou .p12).",
+          });
+        }
+
+        const result = await companyFiscal.uploadCertificate(
+          userId,
+          buffer,
+          senha,
+        );
+        if (!result.ok) {
+          return reply
+            .status(result.status ?? 400)
+            .send({ error: result.error });
+        }
+        return reply.status(200).send({
+          success: true,
+          subjectCN: result.subjectCN ?? null,
+          certCnpj: result.certCnpj ?? null,
+          validoAte: result.validoAte ?? null,
+          cnpjMatched: result.cnpjMatched ?? false,
+        });
+      } catch (error) {
+        request.log?.error?.(error);
+        // Limites do multipart (ex.: muitas partes) lançados pelo próprio
+        // iterador escapam o try interno: mapeamos para 413 em vez de 500.
+        const code = (error as { code?: string })?.code ?? "";
+        if (/FST_(PARTS|FIELDS|FILES)_LIMIT|FST_REQ_FILE_TOO_LARGE/.test(code)) {
+          return reply.status(413).send({
+            error: "Requisição excede os limites de upload (tamanho/quantidade).",
+          });
+        }
+        // Não ecoamos a mensagem crua (pode vazar caminho do storage / detalhes
+        // do Prisma). O erro real já foi logado acima para diagnóstico.
+        return reply.status(500).send({
+          error: "Erro ao processar o certificado. Tente novamente.",
+        });
       }
     },
   );

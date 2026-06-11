@@ -29,6 +29,7 @@ export interface CompanyFiscalConfig {
   certificadoPath: string | null;
   certificadoSenhaEnc: string | null;
   certificadoValidoAte: Date | null;
+  certificadoSubjectCN: string | null;
 
   providerName: string | null;
   providerToken: string | null;

@@ -27,24 +27,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import prisma from "../../app/lib/prisma";
-import { parsePfx } from "../../app/fiscal/certificate/certificate-loader.service";
+import {
+  parsePfx,
+  extractCnpjFromCert,
+} from "../../app/fiscal/certificate/certificate-loader.service";
 import { CertificateManagerService } from "../../app/fiscal/certificate/certificate-manager.service";
 
 function arg(name: string): string | null {
   const p = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(p));
   return a ? a.slice(p.length) : null;
-}
-
-/**
- * Extrai o CNPJ (14 digitos) do CN do certificado A1. O CN de um e-CNPJ tem o
- * formato "RAZAO SOCIAL:CNPJ" (ex.: "CENTRO DE DESMONTE JOTABE LTDA:51195502000156").
- * Retorna o ultimo grupo de 14 digitos encontrado, ou null.
- */
-function extractCnpjFromCN(cn: string | null): string | null {
-  if (!cn) return null;
-  const matches = cn.match(/\d{14}/g);
-  return matches && matches.length ? matches[matches.length - 1] : null;
 }
 
 async function main(): Promise<void> {
@@ -100,7 +92,7 @@ async function main(): Promise<void> {
   // 2b. TRAVA: o CNPJ do certificado precisa pertencer ao emissor.
   // A SEFAZ rejeita NFe assinada por certificado de CNPJ diferente do emitente
   // (comparacao pela BASE de 8 digitos — matriz e filiais compartilham a base).
-  const certCnpj = extractCnpjFromCN(cert.subjectCN);
+  const certCnpj = extractCnpjFromCert(cert.subjectCN);
   const configCnpj = String(config.cnpj ?? "").replace(/\D/g, "");
   const forceMismatch = process.argv.includes("--force-cnpj-mismatch");
 
@@ -153,6 +145,7 @@ async function main(): Promise<void> {
     certificadoPath: destPath,
     certificadoSenhaEnc: senhaEnc,
     certificadoValidoAte: cert.notAfter,
+    certificadoSubjectCN: cert.subjectCN ?? null,
     providerName: "SEFAZ_DIRECT",
   };
   if (uf) data.uf = uf;

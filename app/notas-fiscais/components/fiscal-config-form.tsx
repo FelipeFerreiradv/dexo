@@ -22,6 +22,7 @@ import {
 import { FiscalIdentificationStep } from "./steps/identification-step";
 import { FiscalAddressStep } from "./steps/address-step";
 import { FiscalEnvironmentStep } from "./steps/environment-step";
+import { type CertificateStatus } from "./steps/certificate-upload";
 
 const STEPS: (StepperStep & { fields: (keyof FiscalConfigFormData)[] })[] = [
   {
@@ -58,7 +59,7 @@ const STEPS: (StepperStep & { fields: (keyof FiscalConfigFormData)[] })[] = [
   {
     id: 3,
     title: "Ambiente & Provedor",
-    description: "Homologação e Focus NFe",
+    description: "Ambiente, provedor e certificado",
     icon: Settings2,
     fields: ["ambiente", "providerName", "providerToken"],
   },
@@ -80,6 +81,9 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
   const [toast, setToast] = useState<{ msg: string; type: ToastType } | null>(
     null,
   );
+  const [certStatus, setCertStatus] = useState<CertificateStatus | null>(null);
+  const [configExists, setConfigExists] = useState(false);
+  const [providerTokenConfigured, setProviderTokenConfigured] = useState(false);
 
   const form = useForm<FiscalConfigFormData>({
     resolver: zodResolver(fiscalConfigSchema) as any,
@@ -111,6 +115,18 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
         if (!res.ok) throw new Error("Erro ao carregar configuração");
         const data = await res.json();
         if (data?.config) {
+          setConfigExists(Boolean(data.config.cnpj));
+          setProviderTokenConfigured(
+            Boolean(data.config.providerTokenConfigurado),
+          );
+          setCertStatus({
+            configured: Boolean(data.config.certificadoConfigurado),
+            validoAte: data.config.certificadoValidoAte ?? null,
+            subjectCN: data.config.certificadoSubjectCN ?? null,
+            // null (sem cert) → undefined; false (cert não confirmado) → false,
+            // preservando o aviso de risco através de reloads.
+            cnpjMatched: data.config.certificadoCnpjConfirmado ?? undefined,
+          });
           reset({
             ...DEFAULT_FISCAL_CONFIG,
             ...data.config,
@@ -182,6 +198,10 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
       if (!res.ok) {
         throw new Error(result.error || "Erro ao salvar configuração");
       }
+      setConfigExists(true);
+      // Token salvo se já havia um ou se um novo foi digitado agora (o backend
+      // preserva o anterior quando o campo vai vazio).
+      setProviderTokenConfigured((prev) => prev || Boolean(payload.providerToken));
       showToast("Configuração fiscal salva com sucesso!", "success");
     } catch (e) {
       showToast(
@@ -226,6 +246,11 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
             control={control}
             errors={errors}
             productionUnlocked={productionUnlocked}
+            userEmail={session?.user?.email}
+            configExists={configExists}
+            certStatus={certStatus}
+            onCertUploaded={setCertStatus}
+            providerTokenConfigured={providerTokenConfigured}
           />
         )}
       </div>

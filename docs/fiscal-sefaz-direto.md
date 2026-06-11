@@ -236,6 +236,7 @@ direto, os campos obrigatórios:
 | `certificadoPath` | `C:/dexo-fiscal-storage/certs/abc.pfx` | Caminho absoluto |
 | `certificadoSenhaEnc` | `iv:tag:cipher` | Encriptada automaticamente pela UI |
 | `certificadoValidoAte` | `2027-05-14` | Extraído do `.pfx` |
+| `certificadoSubjectCN` | `EMPRESA:11222333000181` | CN do titular do A1 — exibição + reconferência do CNPJ |
 
 Para alterar via SQL (em vez de UI):
 
@@ -246,6 +247,38 @@ SET "providerName" = 'SEFAZ_DIRECT',
     "ambiente" = 'HOMOLOGACAO'
 WHERE "userId" = '<seu-user-id>';
 ```
+
+### 3.5 Upload de certificado pela UI (self-service)
+
+O stepper `/notas-fiscais/configuracao`, passo **Ambiente & Provedor**, permite:
+
+1. Selecionar o provedor **SEFAZ Direto** no dropdown (antes só Focus NFe).
+2. Enviar o `.pfx` + senha. A rota `POST /fiscal/config/certificate` (multipart:
+   campo `certificate` = arquivo, campo `senha`) valida o A1 (abre com a senha,
+   confere validade e o CNPJ pela base de 8 dígitos contra o emissor), grava em
+   `FISCAL_STORAGE_PATH/certs/<userId>.pfx` (escrita atômica), cifra a senha
+   (AES-256-GCM) e persiste `certificadoPath/SenhaEnc/ValidoAte/SubjectCN`.
+
+Pré-requisito: salvar antes os dados da empresa (CNPJ/endereço) — a trava de CNPJ
+precisa do emissor. O `setup-sefaz-direct.ts` continua válido para casos via CLI.
+
+> **Deploy — migration obrigatória (aplicar ANTES do código):** este feature
+> adiciona a coluna `certificadoSubjectCN`. Como o Prisma passa a selecioná-la,
+> rode o ALTER **antes** de subir o build, senão a leitura do
+> `CompanyFiscalConfig` quebra:
+>
+> ```sql
+> ALTER TABLE "CompanyFiscalConfig"
+>   ADD COLUMN IF NOT EXISTS "certificadoSubjectCN" TEXT;
+> ```
+>
+> Em seguida `npx prisma generate` e o `next build`/restart dos serviços.
+
+Segredos: `GET`/`PUT /fiscal/config` **não** devolvem mais `certificadoSenhaEnc`,
+`certificadoPath` nem `providerToken` ao navegador — apenas os booleanos
+`certificadoConfigurado` / `providerTokenConfigurado` + `certificadoValidoAte` /
+`certificadoSubjectCN`. O form Focus reenvia o token vazio para **manter** o
+salvo (só sobrescreve quando um novo é digitado).
 
 ---
 
