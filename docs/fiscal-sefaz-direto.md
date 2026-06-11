@@ -3,6 +3,11 @@
 > Substituição do provedor externo Focus NFe por comunicação direta com as
 > SEFAZ estaduais para emissão de NFe modelo 55 v4.00.
 
+> **Hardening (revisão adversarial multi-agente, Opus 4.8):** após a
+> implementação inicial, todo o módulo passou por uma auditoria adversarial
+> (84 + 11 agentes) que confirmou o núcleo criptográfico correto e identificou
+> bugs fiscais reais — todos corrigidos. Ver §11.
+
 ---
 
 ## 1. Visão geral
@@ -587,15 +592,76 @@ enviar, baixar PL_009_V4 do Portal Nacional e habilitar o validador
 
 ---
 
+## 11. Hardening — revisão adversarial (Opus 4.8)
+
+O módulo passou por uma revisão adversarial multi-agente (9 dimensões + críticos,
+com verificação independente de cada achado). **O núcleo criptográfico foi
+confirmado correto** (C14N inclusiva, RSA-SHA1, Reference URI, posição do
+`<Signature>`, X509 no KeyInfo, herança de namespace). Os bugs fiscais reais
+encontrados foram corrigidos:
+
+### Bloqueadores de emissão (corrigidos)
+- **Homologação:** o literal "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR
+  FISCAL" agora vai no `<dest><xNome>` (Rejeição 598), não no `infCpl`.
+- **Ceará:** mapeado para SVRS (migrou em jan/2022); endpoints próprios removidos.
+- **Fuso:** `dhEmi`/`dVenc`/`dhEvento` usam offset fixo `-03:00` (Brasília),
+  independente do TZ do servidor; a `AAMM` da chave deriva do mesmo horário.
+- **cNF (Rejeição 897):** geração e validação rejeitam dezenas repetidas e
+  sequências; `cNF` agora é CSPRNG.
+- **natOp** truncada a 60 com fallback.
+
+### Integridade de dados / anti dupla-emissão (corrigidos)
+- Transição `DRAFT→VALIDATING` **atômica** (anti duplo-clique/concorrência).
+- Sem rollback para `DRAFT` após o envio à SEFAZ (mantém `SENDING` para
+  reconciliação) — evita reemitir uma NF-e já autorizada.
+- Contingência SVC só em indisponibilidade **explícita** (cStat 108/109/280-289);
+  em timeout/rede ambíguo, **consulta a chave antes de reenviar** (só cai pra SVC
+  se "não consta", cStat 217).
+- Duplicidade (204/218/539) e `cStat 104` sem `protNFe` não viram mais
+  `AUTHORIZED` com protocolo nulo — entram em reconciliação por consulta.
+- Polling assíncrono por **recibo (nRec)** ou **chave**, nunca pelo `nfeId`
+  interno; `consultarRecibo` (NFeRetAutorizacao4) implementado.
+
+### Segurança (corrigido)
+- `FISCAL_CERT_ENC_KEY`: **fail-closed em produção** — sem chave válida (64 hex),
+  o boot aborta em vez de cair numa chave de dev hardcoded.
+
+### DANFE
+- Pagina automaticamente (não descarta itens); recusa gerar para XML não
+  autorizado; CRT 4 (MEI) tratado como Simples.
+
+### Limitações conhecidas (follow-ups, não bloqueiam emissão)
+- **Código de barras Code 128C** da chave no DANFE: ainda não impresso (precisa
+  de uma lib de Code128). O DANFE é documento auxiliar; o XML é o canônico.
+- **Reconciliação de NF-e em `SENDING`:** quando uma emissão fica pendente
+  (timeout/consulta inconclusiva), não há ainda um endpoint dedicado de
+  "reconsultar e finalizar" — hoje é via nova emissão/consulta manual. Eventos
+  no audit log: `ENVIO_INCERTO`, `CONTINGENCIA_ADIADA`, `XML_AUTORIZADO_PENDENTE`.
+- **XML canônico após reconciliação por consulta:** quando a autorização é
+  reconhecida só via consulta (sem `nfeProc` inline), o XML autorizado completo
+  não é recuperado automaticamente (precisaria de `NFeDistribuicaoDFe`). Fica
+  sinalizado por `XML_AUTORIZADO_PENDENTE`.
+- **`cNF` não persistido:** em reenvio, uma nova chave é gerada. Para
+  idempotência perfeita, persistir o `cNF`/chave da 1ª tentativa (requer campo
+  no schema — fora do escopo atual).
+- **Polling síncrono** (até ~9s) bloqueia o request de `/issue` quando a SEFAZ
+  responde assíncrono. Raro com `indSinc=1`.
+
+---
+
 ## Referências
 
 - Portal Nacional NFe: https://www.nfe.fazenda.gov.br/portal/principal.aspx
 - Webservices por UF: https://www.nfe.fazenda.gov.br/portal/webServices.aspx
 - NT 2014.002 v4.00 (esquema atual): https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=33ol5hhSYZk=
+- NT 2019.001 (Rejeição 897 — cNF): Portal Nacional NFe / Notas Técnicas
+- Comunicado SEFAZ-CE — Migração NFe para SVRS (10/01/2022)
 - xml-crypto: https://github.com/node-saml/xml-crypto
 - node-forge: https://github.com/digitalbazaar/forge
 
 ---
 
-**Última atualização:** após F-H (DANFE a partir do XML autorizado).
-325 testes fiscais verdes. Pronto para piloto em homologação real.
+**Última atualização:** após hardening da revisão adversarial Opus 4.8
+(commits 6c889db / 500a109 / f4154eb / 1df8456).
+344 testes fiscais verdes; 1106 na suíte completa; zero regressão.
+Pronto para piloto em homologação real.
