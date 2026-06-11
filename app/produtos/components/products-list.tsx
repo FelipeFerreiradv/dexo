@@ -1470,12 +1470,17 @@ export function ProductsList() {
     }
   };
 
+  // Mesmo limiar (>= 2) que normalizeProductFilters usa para enviar a busca ao
+  // backend: só trocamos a mensagem quando há de fato uma pesquisa textual.
+  const hasActiveSearch = filters.search.trim().length >= 2;
   const emptyStateTitle = activeFilters
     ? "Nenhum produto encontrado"
     : "Nenhum produto cadastrado";
-  const emptyStateMessage = activeFilters
-    ? "Nenhum produto corresponde aos filtros aplicados. Ajuste os critérios ou limpe os filtros para ampliar o catálogo."
-    : "Comece adicionando seu primeiro produto ao catálogo.";
+  const emptyStateMessage = hasActiveSearch
+    ? "Nenhum produto corresponde à sua pesquisa. Tente outras palavras."
+    : activeFilters
+      ? "Nenhum produto corresponde aos filtros aplicados. Ajuste os critérios ou limpe os filtros para ampliar o catálogo."
+      : "Comece adicionando seu primeiro produto ao catálogo.";
 
   const bulkListingProducts: BulkListingProduct[] = useMemo(
     () =>
