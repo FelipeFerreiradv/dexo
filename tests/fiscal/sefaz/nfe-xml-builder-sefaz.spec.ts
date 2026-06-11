@@ -215,7 +215,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
     expect(xml).toContain("<cProd>P3</cProd>");
   });
 
-  it("inclui observacao obrigatoria de homologacao em <infAdic>", () => {
+  it("homologacao forca o literal no xNome do DESTINATARIO (Rejeicao 598), nao no infCpl", () => {
     const { xml } = builder.build({
       draft: makeDraft({ ambiente: "HOMOLOGACAO" }),
       config: makeConfig(),
@@ -223,8 +223,58 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       dhEmi: FIXED_DH,
       cNF: "12345678",
     });
-    expect(xml).toContain("<infAdic>");
-    expect(xml).toContain("HOMOLOGACAO - SEM VALOR FISCAL");
+    // O literal DEVE estar no <dest><xNome>, dentro do bloco <dest>...</dest>
+    const destBloco = xml.match(/<dest>[\s\S]*?<\/dest>/)?.[0] ?? "";
+    expect(destBloco).toContain(
+      "<xNome>NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</xNome>",
+    );
+    // O nome real do destinatario NAO deve aparecer no XML de homologacao
+    expect(xml).not.toContain("CLIENTE TESTE LTDA");
+    // E o literal NAO deve estar no infCpl (lugar errado, nao exigido)
+    expect(xml).not.toMatch(/<infCpl>[^<]*HOMOLOGACAO[^<]*<\/infCpl>/);
+  });
+
+  it("dhEmi e dVenc usam offset fixo -03:00 independente do TZ do servidor (XML-5)", () => {
+    // Instante 18:00Z => 15:00 em Brasilia. Mesmo com server em qualquer TZ,
+    // o builder converte para -03:00.
+    const { xml } = builder.build({
+      draft: makeDraft({
+        duplicatasJson: [
+          { numero: "001", dataVencimento: "2026-06-14T12:00:00-03:00", valor: 100 },
+        ],
+      }),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: new Date("2026-05-14T18:00:00Z"),
+      cNF: "12345678",
+    });
+    expect(xml).toContain("<dhEmi>2026-05-14T15:00:00-03:00</dhEmi>");
+    expect(xml).toContain("<dVenc>2026-06-14</dVenc>");
+  });
+
+  it("AAMM da chave bate com dhEmi mesmo na virada de mes em servidor UTC (XML-5)", () => {
+    // 2026-07-01T01:30Z = 2026-06-30T22:30 em Brasilia. AAMM deve ser 2606, nao 2607.
+    const { xml, chaveAcesso } = builder.build({
+      draft: makeDraft(),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: new Date("2026-07-01T01:30:00Z"),
+      cNF: "12345678",
+    });
+    expect(xml).toContain("<dhEmi>2026-06-30T22:30:00-03:00</dhEmi>");
+    // chave: cUF(2)=35 + AAMM(4) ... → posicoes 2..6 sao o AAMM
+    expect(chaveAcesso.slice(2, 6)).toBe("2606");
+  });
+
+  it("natOp vazia recebe fallback 'VENDA' e e truncada a 60 (XML-19)", () => {
+    const { xml } = builder.build({
+      draft: makeDraft({ naturezaOperacao: "" }),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: FIXED_DH,
+      cNF: "12345678",
+    });
+    expect(xml).toContain("<natOp>VENDA</natOp>");
   });
 
   it("nao inclui aviso de homologacao em PRODUCAO", () => {

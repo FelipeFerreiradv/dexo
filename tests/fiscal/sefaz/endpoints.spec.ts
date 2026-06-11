@@ -56,6 +56,15 @@ describe("SEFAZ endpoints — cobertura", () => {
     }
   });
 
+  it("Ceara (CE) usa SVRS como autorizador, nao endpoint proprio (TRA-1)", () => {
+    // CE migrou para SVRS em 10/01/2022; endpoints sefaz.ce.gov.br desativados.
+    for (const ambiente of ["homologacao", "producao"] as const) {
+      const url = getSefazEndpoint("CE", ambiente, "NFeAutorizacao4");
+      expect(url, `CE/${ambiente}`).toContain("svrs.rs.gov.br");
+      expect(url).not.toContain("sefaz.ce.gov.br");
+    }
+  });
+
   it("getSefazEndpoint retorna URL correta para UFs conhecidas", () => {
     const url = getSefazEndpoint("SP", "homologacao", "NFeAutorizacao4");
     expect(url).toMatch(/^https:\/\/.+sp\.gov\.br/);

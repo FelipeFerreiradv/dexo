@@ -83,10 +83,15 @@ export class NfeXmlBuilderSefazService {
 
     const uf = config.uf as UF;
     const cnpj = onlyDigits(config.cnpj);
+    // A AAMM da chave de acesso DEVE bater com o ano/mes de dhEmi. Ambos sao
+    // derivados do MESMO horario de Brasilia (UTC-03:00), independentemente do
+    // fuso do servidor — senao um servidor em UTC viraria o mes na virada do dia
+    // e geraria divergencia AAMM x dhEmi (rejeicao). Ver brazilParts/formatDhEmi.
+    const bp = brazilParts(dhEmi);
     const partes = montarChave({
       uf,
-      ano: dhEmi.getFullYear(),
-      mes: dhEmi.getMonth() + 1,
+      ano: bp.year,
+      mes: bp.month,
       cnpj,
       modelo: "55",
       serie: draft.serie,
@@ -143,7 +148,8 @@ export class NfeXmlBuilderSefazService {
     const ide = parent.ele("ide");
     ide.ele("cUF").txt(partes.cUF).up();
     ide.ele("cNF").txt(partes.cNF).up();
-    ide.ele("natOp").txt(draft.naturezaOperacao).up();
+    // natOp e obrigatorio (1..60 chars). Trunca e usa fallback se vazio.
+    ide.ele("natOp").txt(truncate(draft.naturezaOperacao || "VENDA", 60)).up();
     ide.ele("mod").txt(partes.mod).up();
     ide.ele("serie").txt(String(draft.serie)).up();
     ide.ele("nNF").txt(String(Number(partes.nNF))).up();
@@ -221,7 +227,15 @@ export class NfeXmlBuilderSefazService {
       destEl.ele("CNPJ").txt(doc).up();
     }
 
-    destEl.ele("xNome").txt(truncate(dest.nome, 60)).up();
+    // Regra SEFAZ (Rejeicao 598): em HOMOLOGACAO o xNome do destinatario DEVE
+    // ser exatamente "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL".
+    // Sem isso, TODA emissao de homologacao e rejeitada — e e por homologacao que
+    // o emissor e credenciado. Em producao usa-se o nome real.
+    const xNomeDest =
+      draft.ambiente === "HOMOLOGACAO"
+        ? HOMOLOG_DEST_XNOME
+        : truncate(dest.nome, 60);
+    destEl.ele("xNome").txt(xNomeDest).up();
 
     if (
       dest.logradouro ||
@@ -341,19 +355,35 @@ export class NfeXmlBuilderSefazService {
     } else {
       // Regime normal: CST 00..90 → ICMSxx
       const cst = item.cstIcms ?? "00";
+      const TRIBUTADO = ["00", "10", "20", "70", "90"];
+      const DESONERADO = ["40", "41", "50"]; // isento / nao tributado / suspensao
+      // Grupo gerado por CST. Para CSTs nao explicitamente cobertos, caímos no
+      // grupo tributado (orig+CST+modBC+vBC+pICMS+vICMS) quando ha base/valor de
+      // ICMS calculado; senao tratamos como desonerado (orig+CST). Isso evita
+      // emitir um <ICMSxx> com apenas orig+CST quando o CST exige campos de
+      // valor (rejeicao de schema). O nucleo do negocio e Simples (CSOSN), entao
+      // o caminho CST e secundario.
+      const grupo = TRIBUTADO.includes(cst)
+        ? "tributado"
+        : DESONERADO.includes(cst)
+          ? "desonerado"
+          : trib.bcIcms > 0 || trib.valorIcms > 0
+            ? "tributado"
+            : "desonerado";
+
       const tag = `ICMS${cst}`;
       const node = icms.ele(tag);
       node.ele("orig").txt(orig).up();
       node.ele("CST").txt(cst).up();
 
-      if (cst === "00" || cst === "10" || cst === "20" || cst === "70" || cst === "90") {
+      if (grupo === "tributado") {
         node.ele("modBC").txt("3").up(); // 3 = valor da operação
         node.ele("vBC").txt(fmt2(trib.bcIcms)).up();
         node.ele("pICMS").txt(fmt2(trib.aliquotaIcms)).up();
         node.ele("vICMS").txt(fmt2(trib.valorIcms)).up();
-      } else if (cst === "40" || cst === "41" || cst === "50") {
-        // Isento / não tributado / suspensão — apenas orig + CST
       }
+      // desonerado: apenas orig + CST (vICMSDeson/motDesonICMS sao condicionais
+      // e so se aplicam quando ha desoneracao efetiva, que nao calculamos aqui).
       node.up();
     }
     icms.up();
@@ -552,12 +582,8 @@ export class NfeXmlBuilderSefazService {
     if (draft.numeroPedido) {
       obsCont.push(`Pedido: ${draft.numeroPedido}`);
     }
-    if (draft.ambiente === "HOMOLOGACAO") {
-      // SEFAZ exige observação obrigatória em homologação no infCpl
-      obsCont.push(
-        "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL",
-      );
-    }
+    // NOTA: o aviso de homologacao NAO vai aqui. A SEFAZ exige o literal no
+    // xNome do <dest> (tratado em buildDest, regra 598), nao no infCpl.
 
     if (obsCont.length === 0) return;
 
@@ -566,6 +592,10 @@ export class NfeXmlBuilderSefazService {
     infAdic.up();
   }
 }
+
+/** Literal obrigatorio no xNome do destinatario em homologacao (Rejeicao 598). */
+const HOMOLOG_DEST_XNOME =
+  "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL";
 
 // ── Helpers puros ──
 
@@ -586,26 +616,52 @@ function fmt4(n: number | null | undefined): string {
   return Number(n ?? 0).toFixed(4);
 }
 
+// Brasil = UTC-03:00, sem horario de verao desde 2019. A NFe usa a hora LOCAL
+// do estabelecimento emitente. Fixamos -03:00 em vez de derivar de
+// getTimezoneOffset() do runtime — senao um servidor em UTC (caso comum em
+// VPS/containers) carimbaria offset +00:00 e geraria dhEmi divergente da hora
+// real da operacao (e AAMM da chave inconsistente). Ver brazilParts.
+const BRAZIL_OFFSET_MIN = -180;
+
+interface BrazilParts {
+  year: number;
+  month: number; // 1-12
+  day: number;
+  hour: number;
+  min: number;
+  sec: number;
+}
+
+/**
+ * Converte um instante absoluto para os componentes de data/hora no fuso de
+ * Brasilia (UTC-03:00), independentemente do timezone do servidor. Desloca o
+ * instante por -3h e le os componentes em UTC.
+ */
+function brazilParts(d: Date): BrazilParts {
+  const shifted = new Date(d.getTime() + BRAZIL_OFFSET_MIN * 60_000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    min: shifted.getUTCMinutes(),
+    sec: shifted.getUTCSeconds(),
+  };
+}
+
 function formatDhEmi(d: Date): string {
-  // ISO 8601 com timezone offset ex.: 2026-05-14T12:00:00-03:00
+  // ISO 8601 com offset fixo -03:00, ex.: 2026-05-14T12:00:00-03:00
   const pad = (n: number) => String(n).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mi = pad(d.getMinutes());
-  const ss = pad(d.getSeconds());
-  // Brasil = -03:00 (sem horário de verão desde 2019). Para outros, derivar do TZ atual.
-  const offset = d.getTimezoneOffset(); // em minutos, sinal invertido em relação ao ISO
-  const offsetSign = offset > 0 ? "-" : "+";
-  const offsetH = pad(Math.floor(Math.abs(offset) / 60));
-  const offsetM = pad(Math.abs(offset) % 60);
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${offsetSign}${offsetH}:${offsetM}`;
+  const p = brazilParts(d);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.min)}:${pad(p.sec)}-03:00`;
 }
 
 function formatDateOnly(d: Date): string {
+  // Mesma logica de fuso do dhEmi: data no horario de Brasilia, independente
+  // do TZ do servidor (evita "virar o dia" em servidor UTC).
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const p = brazilParts(d);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
 }
 
 function crtFromRegime(regime: RegimeTributario): string {

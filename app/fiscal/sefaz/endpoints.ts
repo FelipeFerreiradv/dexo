@@ -343,41 +343,17 @@ const AM_PROD: SefazServicosPorAmbiente = {
     "https://nfe.sefaz.am.gov.br/services2/services/RecepcaoEvento4",
 };
 
-const CE_HOM: SefazServicosPorAmbiente = {
-  NFeAutorizacao4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeAutorizacao4",
-  NFeRetAutorizacao4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeRetAutorizacao4",
-  NfeConsultaProtocolo4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeConsultaProtocolo4",
-  NfeStatusServico4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeStatusServico4",
-  NfeInutilizacao4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeInutilizacao4",
-  RecepcaoEvento4:
-    "https://nfeh.sefaz.ce.gov.br/nfe4/services/NFeRecepcaoEvento4",
-};
-
-const CE_PROD: SefazServicosPorAmbiente = {
-  NFeAutorizacao4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeAutorizacao4",
-  NFeRetAutorizacao4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeRetAutorizacao4",
-  NfeConsultaProtocolo4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeConsultaProtocolo4",
-  NfeStatusServico4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeStatusServico4",
-  NfeInutilizacao4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeInutilizacao4",
-  RecepcaoEvento4:
-    "https://nfe.sefaz.ce.gov.br/nfe4/services/NFeRecepcaoEvento4",
-};
+// NOTA: o Ceara (CE) NAO tem mais autorizador proprio de NF-e modelo 55.
+// Desde 10/01/2022 a autorizacao e feita pela SVRS (Comunicado SEFAZ-CE
+// "Migracao para SVRS"). Os antigos endpoints nfe(h).sefaz.ce.gov.br foram
+// desativados como autorizador. CE entra no bloco SVRS abaixo. A contingencia
+// do CE permanece SVC-AN (ver SVC_FALLBACK).
 
 /**
  * Tabela mestre: UF → endpoints por ambiente.
  *
- * UFs que usam SVRS: AC, AL, AP, DF, ES, MA, PA, PB, PI, RJ, RN, RO, RR, SC,
- * SE, TO. (Reaproveitamos a referência SVRS_HOM/PROD.)
+ * UFs que usam SVRS: AC, AL, AP, CE, DF, ES, MA, PA, PB, PI, RJ, RN, RO, RR,
+ * SC, SE, TO. (Reaproveitamos a referência SVRS_HOM/PROD.)
  */
 export const SEFAZ_ENDPOINTS: Record<UF, SefazEndpointsUF> = {
   // SEFAZ próprios
@@ -391,8 +367,8 @@ export const SEFAZ_ENDPOINTS: Record<UF, SefazEndpointsUF> = {
   MT: { homologacao: MT_HOM, producao: MT_PROD },
   PE: { homologacao: PE_HOM, producao: PE_PROD },
   AM: { homologacao: AM_HOM, producao: AM_PROD },
-  CE: { homologacao: CE_HOM, producao: CE_PROD },
   // Atendidas pelo SVRS
+  CE: { homologacao: SVRS_HOM, producao: SVRS_PROD },
   AC: { homologacao: SVRS_HOM, producao: SVRS_PROD },
   AL: { homologacao: SVRS_HOM, producao: SVRS_PROD },
   AP: { homologacao: SVRS_HOM, producao: SVRS_PROD },

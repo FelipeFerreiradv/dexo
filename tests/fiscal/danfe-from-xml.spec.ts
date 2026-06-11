@@ -99,7 +99,10 @@ describe("projectParsedNfeToDraft — mapeamento XML → tipos de domínio", () 
   it("destinatario PF (CPF) e marcado como PF na projecao", () => {
     const builder = new NfeXmlBuilderSefazService();
     const built = builder.build({
+      // PRODUCAO para preservar o nome real do destinatario no XML (em
+      // homologacao o xNome e substituido pelo literal da Rejeicao 598).
       draft: makeDraft({
+        ambiente: "PRODUCAO",
         destinatarioJson: {
           tipoPessoa: "PF",
           cpfCnpj: "12345678901",
