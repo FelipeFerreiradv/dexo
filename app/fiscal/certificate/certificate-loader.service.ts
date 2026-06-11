@@ -167,3 +167,99 @@ function findPrimaryCert(
   }
   return null;
 }
+
+/**
+ * Extrai o CNPJ (14 dígitos) do CN de um certificado A1 e-CNPJ. O CN tem o
+ * formato "RAZAO SOCIAL:CNPJ" (ex.: "CENTRO DE DESMONTE JOTABE LTDA:51195502000156").
+ * Retorna o último grupo de 14 dígitos encontrado, ou null se não houver.
+ */
+export function extractCnpjFromCert(subjectCN: string | null): string | null {
+  if (!subjectCN) return null;
+  const matches = subjectCN.match(/\d{14}/g);
+  return matches && matches.length ? matches[matches.length - 1] : null;
+}
+
+export interface CertEmitterValidation {
+  ok: boolean;
+  /** Mensagem amigável quando ok=false. */
+  error?: string;
+  /** Validade extraída do X.509 (presente quando o .pfx abriu). */
+  notAfter?: Date;
+  subjectCN?: string | null;
+  /** CNPJ extraído do certificado (14 dígitos) ou null. */
+  certCnpj?: string | null;
+  /**
+   * true quando a base de 8 dígitos do CNPJ do certificado bate com a do
+   * emissor. false quando não foi possível confirmar (CN sem CNPJ ou emissor
+   * vazio) — nesse caso não bloqueamos, apenas sinalizamos.
+   */
+  cnpjMatched?: boolean;
+}
+
+/**
+ * Valida um .pfx para uso como certificado do emissor — função pura (sem I/O de
+ * disco nem banco), reusada pela rota de upload e pelos testes:
+ *   1. abre o PKCS#12 com a senha (prova que a senha está correta);
+ *   2. confere que o certificado não está expirado;
+ *   3. confere que o CNPJ do certificado pertence ao emissor pela BASE de 8
+ *      dígitos — a SEFAZ rejeita NFe assinada por certificado de CNPJ diferente
+ *      do emitente. Divergência de base é bloqueante; matriz/filial (mesma base,
+ *      sufixo diferente) é permitido.
+ */
+export function validateCertForEmitter(
+  pfxBuffer: Buffer,
+  senha: string,
+  emitterCnpj: string | null | undefined,
+): CertEmitterValidation {
+  let cert: LoadedCertificate;
+  try {
+    cert = parsePfx(pfxBuffer, senha);
+  } catch {
+    return {
+      ok: false,
+      error:
+        "Não foi possível abrir o certificado com a senha informada. " +
+        "Verifique a senha e se o arquivo é um A1 válido (.pfx / PKCS#12).",
+    };
+  }
+
+  if (cert.notAfter.getTime() < Date.now()) {
+    return {
+      ok: false,
+      error:
+        `Certificado expirado em ${cert.notAfter.toLocaleDateString("pt-BR")}. ` +
+        "Renove o A1 antes de enviar.",
+      notAfter: cert.notAfter,
+      subjectCN: cert.subjectCN,
+    };
+  }
+
+  const certCnpj = extractCnpjFromCert(cert.subjectCN);
+  const emitter = (emitterCnpj ?? "").replace(/\D/g, "");
+  const baseMatches = Boolean(
+    certCnpj && emitter && certCnpj.slice(0, 8) === emitter.slice(0, 8),
+  );
+
+  if (certCnpj && emitter && !baseMatches) {
+    return {
+      ok: false,
+      error:
+        `O certificado pertence ao CNPJ ${certCnpj}, diferente do CNPJ do ` +
+        `emissor (${emitter}). A SEFAZ rejeita NF-e assinada por certificado ` +
+        "de outro CNPJ. Use o A1 da empresa emitente ou corrija o CNPJ na " +
+        "aba Identificação.",
+      notAfter: cert.notAfter,
+      subjectCN: cert.subjectCN,
+      certCnpj,
+      cnpjMatched: false,
+    };
+  }
+
+  return {
+    ok: true,
+    notAfter: cert.notAfter,
+    subjectCN: cert.subjectCN,
+    certCnpj,
+    cnpjMatched: baseMatches,
+  };
+}

@@ -73,6 +73,27 @@ export class FiscalStorageService {
   }
 
   /**
+   * Salva o certificado A1 (.pfx) no caminho canônico
+   * {FISCAL_STORAGE_PATH}/certs/<userId>.pfx — mesmo local usado pelo script
+   * setup-sefaz-direct.ts e esperado por createNfeProviderFromConfig. Sobrescreve
+   * o certificado anterior do usuário. Retorna o caminho absoluto gravado.
+   */
+  async saveCertificate(userId: string, pfxBuffer: Buffer): Promise<string> {
+    const dir = path.join(this.basePath, "certs");
+    this.ensureDir(dir);
+    const filePath = path.join(dir, `${userId}.pfx`);
+    // Escrita atômica: grava num .tmp e renomeia (rename é atômico no mesmo
+    // filesystem). Garante que o .pfx canônico nunca fique parcial/corrompido
+    // se o processo morrer no meio — o registro no banco aponta para o path
+    // estável, então um arquivo truncado quebraria emissões futuras.
+    // mode 0o600: legível só pelo dono (no-op em Windows, defensivo em Linux).
+    const tmpPath = `${filePath}.tmp`;
+    fs.writeFileSync(tmpPath, pfxBuffer, { mode: 0o600 });
+    fs.renameSync(tmpPath, filePath);
+    return filePath;
+  }
+
+  /**
    * Lê arquivo do storage. Retorna null se não existir.
    */
   async readFile(filePath: string): Promise<Buffer | null> {

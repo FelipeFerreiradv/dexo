@@ -813,6 +813,7 @@ model CompanyFiscalConfig {
   certificadoPath      String?
   certificadoSenhaEnc  String?
   certificadoValidoAte DateTime?
+  certificadoSubjectCN String? // CN do titular do A1 (ex.: "RAZAO:CNPJ") — exibição + reconferência do CNPJ
 
   // Provedor fiscal
   providerName  String? // FOCUS_NFE | ...
