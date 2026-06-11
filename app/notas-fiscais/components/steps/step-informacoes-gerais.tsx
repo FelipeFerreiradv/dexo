@@ -1,6 +1,8 @@
 "use client";
 
-import { Control, Controller, FieldErrors } from "react-hook-form";
+import { useEffect, useState } from "react";
+import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
+import { useSession } from "next-auth/react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -9,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getApiBaseUrl } from "@/lib/api";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import {
   TIPO_OPERACAO_LABELS,
@@ -24,6 +27,45 @@ interface Props {
 }
 
 export function StepInformacoesGerais({ control, errors }: Props) {
+  const { data: session } = useSession();
+  const serie = useWatch({ control, name: "serie" });
+  const [proximoNumero, setProximoNumero] = useState<number | null>(null);
+  const [loadingNumero, setLoadingNumero] = useState(false);
+
+  // Preview do próximo número para a série selecionada. Read-only — o número
+  // definitivo é reservado atomicamente na emissão (pode mudar se outra nota
+  // for emitida na mesma série antes desta).
+  useEffect(() => {
+    const email = session?.user?.email;
+    const s = Number(serie);
+    if (!email || !Number.isInteger(s) || s < 0 || s > 999) {
+      setProximoNumero(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingNumero(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/fiscal/nfe/proximo-numero?serie=${s}`,
+          { headers: { email } },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) {
+          setProximoNumero(res.ok ? (data?.proximoNumero ?? null) : null);
+        }
+      } catch {
+        if (!cancelled) setProximoNumero(null);
+      } finally {
+        if (!cancelled) setLoadingNumero(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [serie, session?.user?.email]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -55,10 +97,19 @@ export function StepInformacoesGerais({ control, errors }: Props) {
           <div className="space-y-1">
             <label className="text-sm font-medium">Número</label>
             <Input
-              value="Gerado na emissão"
+              value={
+                loadingNumero
+                  ? "Calculando…"
+                  : proximoNumero != null
+                    ? `Próximo nº: ${proximoNumero}`
+                    : "Gerado na emissão"
+              }
               disabled
               className="text-muted-foreground"
             />
+            <p className="text-xs text-muted-foreground">
+              Sequencial automático por série — atribuído na emissão.
+            </p>
           </div>
 
           <div className="space-y-1">

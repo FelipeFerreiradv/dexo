@@ -144,6 +144,7 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
             uf: data.config.uf ?? "",
             providerName: data.config.providerName ?? "FOCUS_NFE",
             providerToken: data.config.providerToken ?? "",
+            serieNfe: data.config.serieNfe ?? 1,
           });
         }
       } catch (err) {

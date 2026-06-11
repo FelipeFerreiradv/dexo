@@ -50,6 +50,11 @@ export const fiscalConfigSchema = z.object({
   ambiente: z.enum(["HOMOLOGACAO", "PRODUCAO"]),
   providerName: optionalStr,
   providerToken: optionalStr,
+  serieNfe: z.coerce
+    .number()
+    .int("Série deve ser um número inteiro")
+    .min(1, "Série deve ser entre 1 e 999")
+    .max(999, "Série deve ser entre 1 e 999"),
 });
 
 export type FiscalConfigFormData = z.infer<typeof fiscalConfigSchema>;
@@ -73,4 +78,5 @@ export const DEFAULT_FISCAL_CONFIG: FiscalConfigFormData = {
   ambiente: "HOMOLOGACAO",
   providerName: "FOCUS_NFE",
   providerToken: "",
+  serieNfe: 1,
 };
