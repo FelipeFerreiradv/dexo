@@ -1,7 +1,10 @@
 import prisma from "../lib/prisma";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
-import { createNfeProvider } from "../fiscal/providers/provider-factory";
+import {
+  createNfeProvider,
+  createNfeProviderFromConfig,
+} from "../fiscal/providers/provider-factory";
 import type { NfeStatus, FiscalAmbiente } from "../fiscal/domain/nfe.types";
 import { canTransition } from "../fiscal/domain/nfe.types";
 
@@ -79,21 +82,28 @@ export class NfeCancelamentoUseCase {
     if (!config) {
       throw new Error("Configuracao fiscal nao encontrada");
     }
-    if (!config.providerToken) {
+    const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
+    if (!isSefazDirect && !config.providerToken) {
       throw new Error("Token do provedor fiscal nao configurado");
     }
 
     // ── 5. Call provider ──
-    const provider = createNfeProvider(
-      config.providerName,
-      config.ambiente as FiscalAmbiente,
-    );
+    const provider = isSefazDirect
+      ? await createNfeProviderFromConfig({
+          providerName: "SEFAZ_DIRECT",
+          ambiente: config.ambiente as FiscalAmbiente,
+          uf: config.uf,
+          certificadoPath: config.certificadoPath,
+          certificadoSenhaEnc: config.certificadoSenhaEnc,
+        })
+      : createNfeProvider(config.providerName, config.ambiente as FiscalAmbiente);
+
     const result = await provider.cancelar({
       ref: nfeId,
       chaveAcesso: nfe.chaveAcesso,
       protocolo: nfe.protocoloAutorizacao,
       justificativa: justificativa.trim(),
-      token: config.providerToken,
+      token: config.providerToken ?? "",
     });
 
     if (!result.success) {
