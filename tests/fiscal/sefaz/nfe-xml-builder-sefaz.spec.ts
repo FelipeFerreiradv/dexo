@@ -162,6 +162,41 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
     expect(xmlPJ).toContain("<indIEDest>2</indIEDest>"); // PJ isento
   });
 
+  it("emite <enderDest> para destinatario nacional mesmo sem alguns campos", () => {
+    // Rejeicao "NF-e sem a informacao de endereco do destinatario": enderDest
+    // e obrigatorio para PF/PJ. Deve sair sempre (a completude e checada no
+    // use case). Aqui garantimos que o bloco NAO e omitido.
+    const { xml } = builder.build({
+      draft: makeDraft({
+        destinatarioJson: {
+          tipoPessoa: "PJ",
+          cpfCnpj: "00000000000100",
+          nome: "CLIENTE",
+          inscricaoEstadual: "ISENTO",
+          email: null,
+          telefone: null,
+          cep: "30140071",
+          logradouro: "AV AFONSO PENA",
+          numero: "1000",
+          complemento: null,
+          bairro: "CENTRO",
+          municipio: "BELO HORIZONTE",
+          codMunicipio: "3106200",
+          uf: "MG",
+          codPais: "1058",
+          pais: "BRASIL",
+        },
+      }),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: FIXED_DH,
+      cNF: "87654321",
+    });
+    expect(xml).toContain("<enderDest>");
+    expect(xml).toContain("<cMun>3106200</cMun>");
+    expect(xml).toContain("<UF>MG</UF>");
+  });
+
   it("inclui <IE> apenas quando IE valida (nao isento)", () => {
     const xmlComIE = builder.build({
       draft: makeDraft({
