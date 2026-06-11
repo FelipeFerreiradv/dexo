@@ -64,11 +64,16 @@ export class NfeCartaCorrecaoUseCase {
       throw new Error("NFe sem chave de acesso — nao e possivel enviar CCe");
     }
 
-    // 3. Determinar próxima sequência (count + 1, máx 20)
-    const previousCount = await (prisma as any).nfeAuditLog.count({
-      where: { nfeId, evento: "CCE_ENVIADA" },
+    // 3. Determinar próxima sequência (count + 1, máx 20).
+    // Contamos apenas CCes EFETIVAMENTE REGISTRADAS na SEFAZ (evento
+    // CCE_REGISTRADA), nao todas as tentativas. Uma CCe que falhou (rede,
+    // rejeicao) NAO deve queimar um numero de sequencia — senao o cliente
+    // nunca consegue registrar (nSeqEvento com buraco gera rejeicao 573) e
+    // atinge o teto de 20 prematuramente (USE-5).
+    const registradas = await (prisma as any).nfeAuditLog.count({
+      where: { nfeId, evento: "CCE_REGISTRADA" },
     });
-    const sequencia = previousCount + 1;
+    const sequencia = registradas + 1;
     if (sequencia > 20) {
       throw new Error(
         "Limite de 20 Cartas de Correcao por NFe atingido (regra SEFAZ)",
@@ -112,7 +117,7 @@ export class NfeCartaCorrecaoUseCase {
       sequencia,
     });
 
-    // 7. Audit log
+    // 7. Audit log — CCE_ENVIADA registra TODA tentativa (sucesso ou falha).
     await this.nfeRepo.addAuditLog(nfeId, userId, "CCE_ENVIADA", {
       sequencia,
       success: result.success,
@@ -121,6 +126,15 @@ export class NfeCartaCorrecaoUseCase {
       mensagem: result.mensagem,
       correcao: correcaoTrimmed,
     });
+    // CCE_REGISTRADA so quando ACEITA pela SEFAZ — e a base da contagem de
+    // sequencia. Falhas nao consomem numero de sequencia.
+    if (result.success) {
+      await this.nfeRepo.addAuditLog(nfeId, userId, "CCE_REGISTRADA", {
+        sequencia,
+        cStat: result.cStat,
+        protocolo: result.protocolo,
+      });
+    }
 
     return {
       success: result.success,

@@ -18,13 +18,39 @@ export class CertificateManagerService {
   private encKey: Buffer;
 
   constructor() {
-    const keyHex = process.env.FISCAL_CERT_ENC_KEY;
-    if (keyHex && keyHex.length >= 64) {
-      this.encKey = Buffer.from(keyHex.slice(0, 64), "hex");
-    } else {
-      // Fallback para desenvolvimento — NÃO usar em produção
-      this.encKey = crypto.scryptSync("dev-fiscal-key", "salt", 32);
+    const keyHex = (process.env.FISCAL_CERT_ENC_KEY ?? "").trim();
+    // Aceita SOMENTE 64 chars hexadecimais (32 bytes). Buffer.from(...,'hex')
+    // ignora silenciosamente caracteres invalidos e truncaria a chave — por
+    // isso validamos o formato explicitamente.
+    const isValidKey = /^[0-9a-fA-F]{64}$/.test(keyHex);
+
+    if (isValidKey) {
+      this.encKey = Buffer.from(keyHex, "hex");
+      return;
     }
+
+    // FAIL-CLOSED em producao (SEG-1): sem chave valida, NAO caimos numa chave
+    // derivada hardcoded (que seria publicamente conhecida do codigo-fonte e
+    // permitiria decifrar a senha do certificado A1 de qualquer empresa via um
+    // dump do banco). Abortamos o boot. O fallback de dev so e permitido FORA
+    // de producao.
+    const isProd =
+      process.env.NODE_ENV === "production" ||
+      process.env.FISCAL_PRODUCTION_UNLOCKED === "true";
+    if (isProd) {
+      throw new Error(
+        "FISCAL_CERT_ENC_KEY ausente ou invalida (esperado 64 hex chars = 32 bytes). " +
+          "Em producao a chave de cifragem do certificado e OBRIGATORIA — boot abortado " +
+          "para nao cifrar segredos com chave conhecida.",
+      );
+    }
+
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[fiscal] FISCAL_CERT_ENC_KEY ausente/invalida — usando chave de DEV " +
+        "(insegura). NUNCA use isto em producao.",
+    );
+    this.encKey = crypto.scryptSync("dev-fiscal-key", "salt", 32);
   }
 
   /**

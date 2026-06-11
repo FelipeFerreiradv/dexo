@@ -9,6 +9,8 @@
  * dígitos, com pesos cíclicos 2..9 (da direita para a esquerda).
  */
 
+import { randomInt } from "node:crypto";
+
 import { COD_UF, type UF } from "./endpoints";
 
 export interface ChaveAcessoInput {
@@ -52,11 +54,19 @@ const pad = (value: number | string, len: number): string =>
 
 /**
  * Gera código cNF de 8 dígitos diferente de nNF.
+ *
+ * Usa CSPRNG (crypto.randomInt) — a SEFAZ recomenda um codigo numerico
+ * aleatorio e nao-previsivel; Math.random() e previsivel e nao deve gerar
+ * identificadores fiscais.
+ *
+ * NOTA: o cNF e gerado a cada chamada. Para emissao deterministica/idempotente
+ * (reaproveitar a MESMA chave num reenvio), passe `cNF` explicito em
+ * ChaveAcessoInput — o chamador (ex.: use case) deve persistir o cNF/chave da
+ * 1a tentativa e reusa-lo, em vez de regenerar.
  */
 export function gerarCnf(nNF: number): string {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const random = Math.floor(Math.random() * 100_000_000);
-    const candidate = pad(random, 8);
+    const candidate = pad(randomInt(0, 100_000_000), 8);
     if (candidate !== pad(nNF, 8)) return candidate;
   }
   return pad(nNF === 0 ? 1 : nNF + 1, 8);
