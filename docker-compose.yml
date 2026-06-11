@@ -12,7 +12,10 @@ services:
     build: ./infra/rembg
     container_name: dexo-rembg
     ports:
-      - "8000:8000"
+      # SEGURANÇA: bind APENAS em loopback. O sidecar não tem auth/rate-limit;
+      # antes "8000:8000" o expunha em 0.0.0.0 (qualquer um na internet podia
+      # mandar imagens => DoS). O app (mesmo host) acessa via 127.0.0.1:8000.
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
     # Default 1 worker: o birefnet em CPU é memory-bound (mais workers não
     # aceleraram o lote nos testes); 1 worker = imagem única mais rápida (todos
