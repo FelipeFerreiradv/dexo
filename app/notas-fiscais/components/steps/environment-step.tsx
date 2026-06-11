@@ -1,7 +1,7 @@
 "use client";
 
-import { Control, Controller, FieldErrors } from "react-hook-form";
-import { Info, Lock } from "lucide-react";
+import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
+import { Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,18 +11,36 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { FiscalConfigFormData } from "../../lib/fiscal-config-schema";
+import {
+  CertificateUploadCard,
+  type CertificateStatus,
+} from "./certificate-upload";
 
 interface Props {
   control: Control<FiscalConfigFormData>;
   errors: FieldErrors<FiscalConfigFormData>;
   productionUnlocked: boolean;
+  userEmail: string | null | undefined;
+  configExists: boolean;
+  certStatus: CertificateStatus | null;
+  onCertUploaded: (status: CertificateStatus) => void;
+  providerTokenConfigured: boolean;
 }
 
 export function FiscalEnvironmentStep({
   control,
   errors,
   productionUnlocked,
+  userEmail,
+  configExists,
+  certStatus,
+  onCertUploaded,
+  providerTokenConfigured,
 }: Props) {
+  const providerName = useWatch({ control, name: "providerName" });
+  const uf = useWatch({ control, name: "uf" });
+  const isSefazDirect = providerName === "SEFAZ_DIRECT";
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -66,60 +84,85 @@ export function FiscalEnvironmentStep({
                   <SelectValue placeholder="Selecione" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="SEFAZ_DIRECT">SEFAZ Direto</SelectItem>
                   <SelectItem value="FOCUS_NFE">Focus NFe</SelectItem>
                 </SelectContent>
               </Select>
             )}
           />
-        </div>
-
-        <div className="md:col-span-2 space-y-1">
-          <label className="text-sm font-medium">Token do provedor</label>
-          <Controller
-            control={control}
-            name="providerToken"
-            render={({ field }) => (
-              <Input
-                {...field}
-                value={field.value ?? ""}
-                type="password"
-                placeholder="Token de acesso à API Focus NFe"
-                autoComplete="off"
-              />
-            )}
-          />
           <p className="text-xs text-muted-foreground">
-            Gere em <span className="font-mono">focusnfe.com.br</span> → Painel
-            → Tokens de acesso.
+            {isSefazDirect
+              ? "Emissão direta à SEFAZ com seu certificado A1 (sem intermediário)."
+              : "Emissão via API Focus NFe (intermediário)."}
           </p>
         </div>
-      </div>
 
-      <div className="rounded-xl border border-amber-400/40 bg-amber-400/5 p-4 text-sm">
-        <div className="flex items-start gap-2">
-          <Lock className="h-4 w-4 mt-0.5 text-amber-500" />
-          <div className="space-y-1">
-            <p className="font-medium text-foreground">
-              Certificado digital A1
-            </p>
+        {/* Token Focus — só quando o provedor é Focus NFe */}
+        {!isSefazDirect && (
+          <div className="md:col-span-2 space-y-1">
+            <label className="text-sm font-medium">Token do provedor</label>
+            <Controller
+              control={control}
+              name="providerToken"
+              render={({ field }) => (
+                <Input
+                  {...field}
+                  value={field.value ?? ""}
+                  type="password"
+                  placeholder={
+                    providerTokenConfigured
+                      ? "•••••••• (token salvo — deixe em branco para manter)"
+                      : "Token de acesso à API Focus NFe"
+                  }
+                  autoComplete="off"
+                />
+              )}
+            />
             <p className="text-xs text-muted-foreground">
-              Upload do certificado .pfx e senha serão habilitados na próxima
-              etapa do módulo fiscal (emissão). Até lá, o provedor Focus NFe
-              armazena o certificado no painel dele.
+              {providerTokenConfigured
+                ? "Há um token salvo. Deixe o campo em branco para mantê-lo, ou digite um novo para substituir."
+                : "Gere em focusnfe.com.br → Painel → Tokens de acesso."}
             </p>
           </div>
-        </div>
+        )}
       </div>
+
+      {/* Certificado A1 — só quando o provedor é SEFAZ Direto */}
+      {isSefazDirect ? (
+        <CertificateUploadCard
+          userEmail={userEmail}
+          configExists={configExists}
+          uf={uf}
+          status={certStatus}
+          onUploaded={onCertUploaded}
+        />
+      ) : (
+        <div className="rounded-xl border border-border/60 bg-muted/30 p-4 text-sm">
+          <div className="flex items-start gap-2">
+            <Info className="mt-0.5 h-4 w-4 text-muted-foreground" />
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Certificado digital A1</p>
+              <p className="text-xs text-muted-foreground">
+                No provedor Focus NFe o certificado é cadastrado no painel deles.
+                Para enviar o .pfx aqui no Dexo, selecione o provedor{" "}
+                <span className="font-medium">SEFAZ Direto</span>.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl border border-border/60 bg-muted/30 p-4 text-sm">
         <div className="flex items-start gap-2">
-          <Info className="h-4 w-4 mt-0.5 text-muted-foreground" />
+          <Info className="mt-0.5 h-4 w-4 text-muted-foreground" />
           <div className="space-y-1">
-            <p className="font-medium text-foreground">MVP em homologação</p>
+            <p className="font-medium text-foreground">
+              Produção exige validação
+            </p>
             <p className="text-xs text-muted-foreground">
-              A emissão em produção permanece bloqueada até validação com
-              contador. Libere apenas após garantir que todos os dados do
-              emissor e do certificado estejam corretos.
+              Valide a emissão em homologação com seu contador antes de mudar o
+              ambiente para Produção. Garanta que todos os dados do emissor e o
+              certificado estejam corretos.
             </p>
           </div>
         </div>
