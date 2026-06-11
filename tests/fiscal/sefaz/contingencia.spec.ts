@@ -64,13 +64,16 @@ describe("shouldFallbackToSvc — falha de infra → fallback", () => {
     }
   });
 
-  it("cai pra SVC quando status=erro (rede / HTTP 5xx persistente)", () => {
+  it("status=erro (rede/timeout) NAO faz fallback cego — exige consulta antes (PRO-3)", () => {
     const r = makeResult({
       status: "erro",
       codigoStatus: null,
       mensagem: "ETIMEDOUT apos retry",
     });
-    expect(shouldFallbackToSvc(r).shouldFallback).toBe(true);
+    const d = shouldFallbackToSvc(r);
+    // Anti dupla-emissao: timeout pode ter autorizado; nao reenviar cegamente.
+    expect(d.shouldFallback).toBe(false);
+    expect(d.needsConsult).toBe(true);
   });
 });
 

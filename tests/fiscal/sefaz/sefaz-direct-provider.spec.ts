@@ -448,7 +448,7 @@ describe("SefazDirectProvider.emitir() — fluxo sincrono", () => {
     expect(fakeSoap.lastRequest?.envelope).toContain('versao="4.00"');
   });
 
-  it("rejeita quando cStat interno = 539 (duplicidade) — trata como sucesso logico (idempotente)", async () => {
+  it("cStat 539 (duplicidade) NAO marca autorizada — devolve 'processando' para reconciliar (PRO-2)", async () => {
     const fakeSoap = new FakeSoapClient({
       status: 200,
       body: REJEITADA_RESPONSE(
@@ -470,10 +470,15 @@ describe("SefazDirectProvider.emitir() — fluxo sincrono", () => {
       ref: "nfe-id-1",
     });
 
-    expect(result.status).toBe("autorizada");
-    expect(result.success).toBe(true);
+    // Duplicidade nao traz protocolo/XML validos da NF-e ja autorizada (e no
+    // 539 a chave correta e OUTRA). Marcar AUTHORIZED com protocolo null
+    // corromperia o registro. Devolvemos 'processando' para o use case
+    // reconciliar por consulta — nunca 'autorizada' aqui.
+    expect(result.status).toBe("processando");
+    expect(result.success).toBe(false);
     expect(result.codigoStatus).toBe(539);
-    expect(result.mensagem).toMatch(/Idempotencia/);
+    expect(result.protocolo).toBeNull();
+    expect(result.mensagem).toMatch(/Duplicidade|reconciliar/i);
   });
 
   it("retorna rejeitada quando lote falha por schema (225)", async () => {
@@ -1316,5 +1321,129 @@ describe("SefazDirectProvider.emitir() — modo contingencia SVC", () => {
     // O dígito tpEmis (pos 34 da chave, 35 do Id que tem "NFe" no início) muda
     expect(idNormal!.charAt(3 + 34)).toBe("1");
     expect(idSvc!.charAt(3 + 34)).toBe("6");
+  });
+});
+
+// ── Commit B: integridade de dados (PRO-2/PRO-4/PRO-5, erro carrega chave) ──
+
+const LOTE_104_SEM_PROTNFE = `
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+  <soap:Body>
+    <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4">
+      <retEnviNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+        <tpAmb>2</tpAmb>
+        <cStat>104</cStat>
+        <xMotivo>Lote processado</xMotivo>
+        <cUF>35</cUF>
+      </retEnviNFe>
+    </nfeResultMsg>
+  </soap:Body>
+</soap:Envelope>`;
+
+const RET_RECIBO_AUTORIZADA = (chave: string) => `
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">
+  <soap:Body>
+    <nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRetAutorizacao4">
+      <retConsReciNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+        <tpAmb>2</tpAmb>
+        <nRec>351000000000001</nRec>
+        <cStat>104</cStat>
+        <xMotivo>Lote processado</xMotivo>
+        <protNFe versao="4.00">
+          <infProt>
+            <chNFe>${chave}</chNFe>
+            <nProt>135260000000999</nProt>
+            <dhRecbto>2026-05-14T15:01:00-03:00</dhRecbto>
+            <cStat>100</cStat>
+            <xMotivo>Autorizado o uso da NF-e</xMotivo>
+          </infProt>
+        </protNFe>
+      </retConsReciNFe>
+    </nfeResultMsg>
+  </soap:Body>
+</soap:Envelope>`;
+
+describe("SefazDirectProvider — integridade pos-envio (Commit B)", () => {
+  let cert: LoadedCertificate;
+  const FIXED = new Date("2026-05-14T15:00:00-03:00");
+
+  beforeAll(() => {
+    const tc = generateTestCertificate();
+    cert = parsePfx(tc.pfxBuffer, tc.password);
+  });
+
+  function payload(): SefazEmitPayload {
+    return {
+      draft: makeDraft(),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: FIXED,
+      cNF: "12345678",
+    };
+  }
+
+  it("cStat 104 SEM protNFe vira 'processando' (nao 'rejeitada') — PRO-4", async () => {
+    const fakeSoap = new FakeSoapClient({
+      status: 200,
+      body: LOTE_104_SEM_PROTNFE,
+      headers: {},
+      durationMs: 10,
+    });
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+    const result = await provider.emitir({
+      nfeData: payload() as any,
+      token: "",
+      ref: "r",
+    });
+    expect(result.status).toBe("processando");
+    expect(result.codigoStatus).toBe(104);
+    expect(result.chaveAcesso).toMatch(/^\d{44}$/);
+  });
+
+  it("erro de rede no envio carrega a chave de acesso gerada (PRO-3/USE-1)", async () => {
+    const fakeSoap = new FakeSoapClient(new Error("ECONNRESET"));
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+    const result = await provider.emitir({
+      nfeData: payload() as any,
+      token: "",
+      ref: "r",
+    });
+    expect(result.status).toBe("erro");
+    // A chave precisa estar presente para o use case consultar antes de reenviar
+    expect(result.chaveAcesso).toMatch(/^\d{44}$/);
+  });
+
+  it("consultarRecibo(nRec) parseia protNFe autorizada (PRO-5)", async () => {
+    const chave = "35260511222333000181550010000000011120100012";
+    const fakeSoap = new FakeSoapClient({
+      status: 200,
+      body: RET_RECIBO_AUTORIZADA(chave),
+      headers: {},
+      durationMs: 10,
+    });
+    const provider = new SefazDirectProvider({
+      ambiente: "homologacao",
+      uf: "SP",
+      certificate: cert,
+      soapClient: fakeSoap,
+    });
+    const result = await (provider as any).consultarRecibo("351000000000001", chave);
+    expect(result.status).toBe("autorizada");
+    expect(result.protocolo).toBe("135260000000999");
+    expect(result.chaveAcesso).toBe(chave);
+    // Envelope correto: consReciNFe + endpoint RetAutorizacao
+    expect(fakeSoap.lastRequest?.envelope).toContain("<consReciNFe");
+    expect(fakeSoap.lastRequest?.envelope).toContain("<nRec>351000000000001</nRec>");
+    expect(fakeSoap.lastRequest?.soapAction).toMatch(/nfeRetAutorizacaoLote$/);
   });
 });

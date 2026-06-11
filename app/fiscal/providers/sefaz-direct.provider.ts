@@ -59,6 +59,7 @@ import {
 import {
   buildEnviNFeEnvelope,
   buildConsSitNFeEnvelope,
+  buildConsReciNFeEnvelope,
   buildEnvEventoEnvelope,
   buildInutNFeEnvelope,
   SOAP_ACTIONS,
@@ -194,6 +195,7 @@ export class SefazDirectProvider implements INfeProvider {
         "erro",
         `Falha ao assinar XML: ${(error as Error).message}`,
         input.ref,
+        built.chaveAcesso,
       );
     }
 
@@ -222,10 +224,14 @@ export class SefazDirectProvider implements INfeProvider {
         retryMax: this.retryMax,
       });
     } catch (error) {
+      // Erro de rede APOS o envio: a SEFAZ pode ou nao ter processado o lote.
+      // Carregamos a chave gerada para o use case poder consultar e reconciliar
+      // antes de qualquer reenvio (evita dupla emissao — ver PRO-3/USE-1).
       return makeEmitErrorResult(
         "erro",
         `Erro de rede ao enviar NFe: ${(error as Error).message}`,
         input.ref,
+        built.chaveAcesso,
       );
     }
 
@@ -234,6 +240,7 @@ export class SefazDirectProvider implements INfeProvider {
         "erro",
         `HTTP ${response.status} ao enviar NFe`,
         input.ref,
+        built.chaveAcesso,
       );
     }
 
@@ -301,6 +308,67 @@ export class SefazDirectProvider implements INfeProvider {
     }
 
     return parseRetConsSitNFe(response.body, chave);
+  }
+
+  /**
+   * Consulta o resultado de um lote ASSINCRONO pelo recibo (nRec), via
+   * NFeRetAutorizacao4. Usado pelo use case quando emitir() devolve cStat=103
+   * (lote recebido). NAO confundir com consultar(), que consulta por chave.
+   *
+   * @param nRec recibo retornado pela SEFAZ no envio do lote
+   * @param chaveAcesso chave da NFe enviada (para preencher o resultado)
+   */
+  async consultarRecibo(
+    nRec: string,
+    chaveAcesso: string,
+  ): Promise<NfeProviderConsultaResult> {
+    const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
+    const envelope = buildConsReciNFeEnvelope({ tpAmb, nRec });
+    const endpoint = getSefazEndpoint(
+      this.uf,
+      this.ambiente,
+      "NFeRetAutorizacao4",
+    );
+
+    let response: SoapResponse;
+    try {
+      response = await this.soapClient.send({
+        endpointUrl: endpoint,
+        envelope,
+        soapAction: SOAP_ACTIONS.NFeRetAutorizacao4,
+        certificate: this.certificate,
+        timeoutMs: this.timeoutMs,
+        retryMax: this.retryMax,
+      });
+    } catch (error) {
+      return {
+        status: "erro",
+        chaveAcesso,
+        protocolo: nRec,
+        dataAutorizacao: null,
+        codigoStatus: null,
+        mensagem:
+          error instanceof Error
+            ? `Erro de rede ao consultar recibo: ${error.message}`
+            : "Erro de rede ao consultar recibo",
+        xmlAutorizado: null,
+      };
+    }
+
+    if (response.status >= 400) {
+      return {
+        status: "erro",
+        chaveAcesso,
+        protocolo: nRec,
+        dataAutorizacao: null,
+        codigoStatus: null,
+        mensagem: `HTTP ${response.status} ao consultar recibo`,
+        xmlAutorizado: null,
+      };
+    }
+
+    // retConsReciNFe traz cStat do LOTE; o resultado por NFe vem em protNFe.
+    return parseRetConsReciNFe(response.body, chaveAcesso);
   }
 
   // ── CANCELAMENTO (evento 110111) ──
@@ -756,17 +824,23 @@ function parseRetEnviNFe(
         };
       }
 
-      // 110 = denegada (tratada como rejeição final)
-      // 218/539 = duplicidade — idempotente, tratar como sucesso lógico
+      // 110 = denegada → rejeição final.
+      // DUPLICIDADE (204/218/539): NAO marcar autorizada aqui. A resposta de
+      // rejeicao por duplicidade NAO traz nProt/dhRecbto/XML validos da NF-e ja
+      // autorizada (e no 539 a chave correta e OUTRA). Marcar AUTHORIZED com
+      // protocolo null corromperia o registro (DANFE/cancelamento/arquivamento
+      // quebrariam). Devolvemos "processando" para o use case RECONCILIAR via
+      // consulta por chave e obter chave/protocolo/XML reais — ou deixar pendente
+      // se nao encontrar (caso 539). Ver PRO-2 da revisao.
       if (lookup.categoria === "duplicidade") {
         return {
-          success: true,
+          success: false,
           chaveAcesso: chNFe,
-          protocolo: nProt,
-          dataAutorizacao: dhRecbto,
-          status: "autorizada",
+          protocolo: null,
+          dataAutorizacao: null,
+          status: "processando",
           codigoStatus: protCstat,
-          mensagem: `Idempotencia (cStat ${protCstat}): ${protXMotivo}`,
+          mensagem: `Duplicidade (cStat ${protCstat}) — reconciliar por consulta: ${protXMotivo}`,
           xmlAutorizado: null,
           providerRef: ref,
         };
@@ -784,9 +858,28 @@ function parseRetEnviNFe(
         providerRef: ref,
       };
     }
+
+    // 104 (lote processado) SEM protNFe extraivel: NAO e rejeicao. cStat 104 e
+    // status do LOTE, nunca da NF-e. Pode ter autorizado mas o protNFe nao foi
+    // extraido (namespace prefixado, XML truncado). Devolvemos "processando"
+    // para o use case reconciliar por consulta. Ver PRO-4 da revisao.
+    return {
+      success: false,
+      chaveAcesso: chaveAcessoEnviada,
+      protocolo: null,
+      dataAutorizacao: null,
+      status: "processando",
+      codigoStatus: 104,
+      mensagem:
+        loteXMotivo ||
+        "Lote processado (104) sem protNFe legivel — reconciliar por consulta",
+      xmlAutorizado: null,
+      providerRef: ref,
+    };
   }
 
-  // Caso 2: lote recebido (assíncrono) — não esperado no fluxo síncrono
+  // Caso 2: lote recebido (assíncrono). Use case deve consultar via nRec
+  // (consultarRecibo). codigoStatus=103 sinaliza o caminho de recibo.
   if (loteCstat === 103) {
     const nRec = extractTagValueNs(responseBody, "nRec");
     return {
@@ -802,17 +895,18 @@ function parseRetEnviNFe(
     };
   }
 
-  // Caso 3: erro de lote (duplicidade global, schema, etc.)
+  // Caso 3: duplicidade de LOTE (sem protNFe). Mesmo tratamento do PRO-2:
+  // nao marcar autorizada; reconciliar por consulta.
   const lookup = lookupCStat(loteCstat);
   if (lookup.categoria === "duplicidade") {
     return {
-      success: true,
+      success: false,
       chaveAcesso: chaveAcessoEnviada,
       protocolo: null,
       dataAutorizacao: null,
-      status: "autorizada",
+      status: "processando",
       codigoStatus: loteCstat,
-      mensagem: `Idempotencia (cStat ${loteCstat}): ${loteXMotivo}`,
+      mensagem: `Duplicidade (cStat ${loteCstat}) — reconciliar por consulta: ${loteXMotivo}`,
       xmlAutorizado: null,
       providerRef: ref,
     };
@@ -828,6 +922,63 @@ function parseRetEnviNFe(
     mensagem: loteXMotivo || "Retorno de lote sem cStat reconhecivel",
     xmlAutorizado: null,
     providerRef: ref,
+  };
+}
+
+/**
+ * Parseia retConsReciNFe (resposta de NFeRetAutorizacao4 ao consultar um lote
+ * assincrono pelo nRec). O cStat do nivel raiz e do LOTE; o resultado da NF-e
+ * esta no protNFe interno.
+ */
+function parseRetConsReciNFe(
+  responseBody: string,
+  chaveAcesso: string,
+): NfeProviderConsultaResult {
+  const protBlock = extractTagBlock(responseBody, "protNFe");
+  if (protBlock) {
+    const protCstat = extractIntValue(protBlock, "cStat");
+    const protXMotivo = extractTagValueNs(protBlock, "xMotivo") ?? "";
+    const nProt = extractTagValueNs(protBlock, "nProt");
+    const chNFe = extractTagValueNs(protBlock, "chNFe") ?? chaveAcesso;
+    const dhRecbto = extractDateValue(protBlock, "dhRecbto");
+    const lookup = lookupCStat(protCstat);
+
+    let status: NfeProviderConsultaResult["status"];
+    if (lookup.categoria === "autorizada") status = "autorizada";
+    else if (lookup.categoria === "denegada" || lookup.categoria === "rejeitada")
+      status = "rejeitada";
+    else status = "processando";
+
+    return {
+      status,
+      chaveAcesso: chNFe,
+      protocolo: nProt,
+      dataAutorizacao: dhRecbto,
+      codigoStatus: protCstat,
+      mensagem: protXMotivo,
+      xmlAutorizado: null,
+    };
+  }
+
+  // Sem protNFe → ainda em processamento (cStat 105) ou erro de lote.
+  const loteCstat = extractIntValue(responseBody, "cStat");
+  const loteXMotivo = extractTagValueNs(responseBody, "xMotivo") ?? "";
+  const lookup = lookupCStat(loteCstat);
+  const status: NfeProviderConsultaResult["status"] =
+    lookup.categoria === "lote_em_processamento" ||
+    lookup.categoria === "lote_recebido"
+      ? "processando"
+      : loteCstat === null
+        ? "erro"
+        : "rejeitada";
+  return {
+    status,
+    chaveAcesso,
+    protocolo: null,
+    dataAutorizacao: null,
+    codigoStatus: loteCstat,
+    mensagem: loteXMotivo || "Lote em processamento",
+    xmlAutorizado: null,
   };
 }
 
@@ -876,10 +1027,11 @@ function makeEmitErrorResult(
   status: NfeProviderEmitResult["status"],
   mensagem: string,
   ref: string,
+  chaveAcesso: string | null = null,
 ): NfeProviderEmitResult {
   return {
     success: false,
-    chaveAcesso: null,
+    chaveAcesso,
     protocolo: null,
     dataAutorizacao: null,
     status,

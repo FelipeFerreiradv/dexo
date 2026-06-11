@@ -32,55 +32,78 @@ import { lookupCStat } from "./cstat-mapper";
 export type SvcType = "SVC_AN" | "SVC_RS";
 
 export interface FallbackDecision {
+  /**
+   * true = seguro reenviar via SVC IMEDIATAMENTE: a SEFAZ origem sinalizou
+   * indisponibilidade explicita (cStat 108/109/280-289), o que garante que o
+   * lote NAO foi processado.
+   */
   shouldFallback: boolean;
+  /**
+   * true = a emissao falhou por rede/timeout/5xx (status "erro"), em que NAO
+   * sabemos se a SEFAZ processou ou nao o lote. O use case DEVE consultar a
+   * chave da 1a tentativa antes de decidir reenviar — reenvio cego causaria
+   * DUPLA AUTORIZACAO (PRO-3/USE-1). Mutuamente exclusivo com shouldFallback.
+   */
+  needsConsult: boolean;
   reason: string;
 }
 
 /**
- * Decide se devemos tentar reenviar via SVC após uma resposta de emit.
+ * Decide o que fazer apos uma resposta de emit malsucedida.
  *
- * Retorna false se a emissão foi sucesso (autorizada ou duplicidade) — não
- * faz sentido fallback nesse caso. Retorna true para falhas que cheirem a
- * problema de infraestrutura SEFAZ.
+ * REGRA DE SEGURANCA (anti dupla-emissao): so autorizamos fallback CEGO para
+ * SVC quando a SEFAZ origem disse explicitamente que esta fora (108/109/280-289)
+ * — nesse caso o lote comprovadamente nao foi processado. Para erro de
+ * rede/timeout/5xx (status "erro"), o lote PODE ter sido autorizado e a
+ * resposta se perdido; reenviar via SVC criaria uma 2a NF-e. Por isso
+ * sinalizamos needsConsult para o use case consultar a chave antes.
  */
 export function shouldFallbackToSvc(
   result: NfeProviderEmitResult,
 ): FallbackDecision {
-  // Sucesso explícito — não cair em contingência
+  // Sucesso explícito ou pendente — não cair em contingência
   if (result.success && result.status === "autorizada") {
-    return { shouldFallback: false, reason: "autorizada — nao precisa SVC" };
+    return { shouldFallback: false, needsConsult: false, reason: "autorizada" };
   }
   if (result.status === "processando") {
     return {
       shouldFallback: false,
-      reason: "processando (sincrono pendente) — nao precisa SVC",
+      needsConsult: false,
+      reason: "processando (reconciliar por consulta, nao por SVC)",
     };
   }
 
-  // Erro genérico (rede / HTTP 5xx / timeout) — provider já tentou retry,
-  // ainda assim falhou → infra
-  if (result.status === "erro") {
-    return { shouldFallback: true, reason: result.mensagem || "erro de infra" };
-  }
-
-  // Códigos de paralisação ou família infra
+  // Códigos de paralisação / família infra → SEFAZ explicitamente fora, lote
+  // NAO processado → SVC imediato e seguro.
   const cStat = result.codigoStatus ?? null;
   if (cStat === 108 || cStat === 109) {
     return {
       shouldFallback: true,
+      needsConsult: false,
       reason: `cStat ${cStat}: ${lookupCStat(cStat).descricao}`,
     };
   }
   if (cStat !== null && cStat >= 280 && cStat <= 289) {
     return {
       shouldFallback: true,
+      needsConsult: false,
       reason: `cStat ${cStat}: erro de comunicacao SEFAZ`,
     };
   }
 
-  // Rejeição "comum" — problema no XML, SVC não vai ajudar
+  // Erro de rede / HTTP 5xx / timeout: AMBIGUO. Pode ter autorizado.
+  if (result.status === "erro") {
+    return {
+      shouldFallback: false,
+      needsConsult: true,
+      reason: result.mensagem || "erro de rede/timeout — consultar antes de reenviar",
+    };
+  }
+
+  // Rejeição "comum" — problema no XML, SVC não ajuda.
   return {
     shouldFallback: false,
+    needsConsult: false,
     reason: `cStat ${cStat ?? "?"}: rejeicao de validacao (nao e infra)`,
   };
 }
