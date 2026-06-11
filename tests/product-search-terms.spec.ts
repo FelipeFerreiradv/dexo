@@ -66,6 +66,18 @@ describe("tokenizeSearch", () => {
     const huge = Array.from({ length: 40 }, (_, i) => `termo${i}`).join(" ");
     expect(tokenizeSearch(huge).length).toBe(MAX_TOKEN_GROUPS);
   });
+
+  // A contagem de grupos é a fronteira do "gate" do findAll: >= 2 grupos sem
+  // match exato no Tier 1 ⇒ empty state (não cai no fuzzy de frase inteira);
+  // exatamente 1 grupo ⇒ fuzzy preservado (tolerância a digitação).
+  it("contagem de grupos define a fronteira do gate de busca", () => {
+    expect(tokenizeSearch("mola dianteira gol")).toHaveLength(3); // gate
+    expect(tokenizeSearch("mola de gol")).toHaveLength(2); // gate ("de" é stopword)
+    expect(tokenizeSearch("fecha tras esq palio")).toHaveLength(4); // gate
+    expect(tokenizeSearch("molla")).toHaveLength(1); // fuzzy preservado
+    expect(tokenizeSearch("amortecedor")).toHaveLength(1); // fuzzy preservado
+    expect(tokenizeSearch("208")).toHaveLength(1); // numérico: 1 grupo
+  });
 });
 
 describe("reduceVariants", () => {

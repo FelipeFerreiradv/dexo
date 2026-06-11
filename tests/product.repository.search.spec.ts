@@ -664,4 +664,96 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     expect(result.products[0].sku).toBe("12345");
     expect(result.total).toBe(1);
   });
+
+  it("guarda multi-termo: 2+ grupos sem match exato no Tier 1 retornam vazio sem rodar o fuzzy", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    // Tier 1 (runTokenSearch): ranked ids vazio + total 0 → multi-termo.
+    mockQueryRaw
+      .mockResolvedValueOnce([]) // ranked ids
+      .mockResolvedValueOnce([{ count: BigInt(0) }]); // total
+
+    const result = await repo.findAll(
+      { search: "mola dianteira gol", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    // Só o Tier 1 rodou (2 queries). Se o fuzzy de frase inteira tivesse
+    // rodado, seriam 4 chamadas — é o ruído dos "763" que a guarda corta.
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
+    expect(mockFindMany).not.toHaveBeenCalled(); // sem hidratação (vazio)
+    expect(result).toEqual({ products: [], total: 0 });
+  });
+
+  it("termo único sem match exato no Tier 1 ainda cai no fuzzy (tolerância a digitação preservada)", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    mockQueryRaw
+      .mockResolvedValueOnce([]) // Tier 1 ranked ids vazio
+      .mockResolvedValueOnce([{ count: BigInt(0) }]) // Tier 1 total 0
+      .mockResolvedValueOnce([{ id: "prod-molla", score: 0.5 }]) // fuzzy ranked ids
+      .mockResolvedValueOnce([{ count: BigInt(1) }]); // fuzzy total
+
+    mockFindMany.mockResolvedValue([
+      {
+        ...baseProduct,
+        id: "prod-molla",
+        sku: "MOLA-1",
+        name: "Mola dianteira Gol",
+        price: money(80),
+        stock: 2,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-02"),
+      },
+    ]);
+
+    const result = await repo.findAll(
+      { search: "molla", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    // Tier 1 (2 queries) + fuzzy (2 queries) = 4; o fuzzy foi alcançado.
+    expect(mockQueryRaw).toHaveBeenCalledTimes(4);
+    expect(result.total).toBe(1);
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0]).toMatchObject({
+      id: "prod-molla",
+      sku: "MOLA-1",
+    });
+  });
+
+  it("busca numérica sem SKU exato cai para o Tier 1 (guarda não interfere)", async () => {
+    const repo = new ProductRepositoryPrisma();
+
+    // Tier 0 (SKU exato): nenhum match → cai para o Tier 1.
+    mockFindMany
+      .mockResolvedValueOnce([]) // findMany do match exato de SKU
+      .mockResolvedValueOnce([
+        {
+          ...baseProduct,
+          id: "prod-208",
+          sku: "PECA-208",
+          name: "Bico injetor",
+          partNumber: "208",
+          price: money(60),
+          stock: 4,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-02"),
+        },
+      ]); // hidratação do Tier 1
+    mockCount.mockResolvedValue(0); // count do SKU exato = 0
+
+    // Tier 1 (1 grupo: "208") acha por partNumber.
+    mockQueryRaw
+      .mockResolvedValueOnce([{ id: "prod-208", score: 3 }]) // ranked ids
+      .mockResolvedValueOnce([{ count: BigInt(1) }]); // total
+
+    const result = await repo.findAll(
+      { search: "208", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    expect(result.total).toBe(1);
+    expect(result.products[0]).toMatchObject({ id: "prod-208" });
+  });
 });

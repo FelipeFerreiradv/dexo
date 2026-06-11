@@ -1098,11 +1098,21 @@ class ProductRepositoryPrisma implements ProductRepository {
           if (tier1.total > 0) {
             return tier1;
           }
-          // total === 0 → termo fora do dicionário ou erro de digitação:
-          // cai para o fuzzy (recall) abaixo, em vez de devolver vazio.
+          // total === 0 com 2+ grupos de termos: busca multi-termo sem match
+          // exato (AND). NÃO cair no fuzzy de frase inteira (Tier 2) — ele
+          // descarta a estrutura de termos e, com threshold frouxo (0.22),
+          // traz qualquer item que só compartilhe UM termo comum (ex.: "mola
+          // dianteira gol" enchia a tela de "Fechadura/Botão ... Dianteira").
+          // Devolve o vazio do Tier 1 e a UI mostra o empty state.
+          if (tokenGroups.length >= 2) {
+            return tier1; // { products: [], total: 0 }
+          }
+          // 1 grupo (termo único) com total === 0 → digitação/vocábulo fora do
+          // dicionário: cai para o fuzzy (recall) abaixo, tolerando "molla"→"mola".
         }
 
         // Tier 2 — recall: fuzzy legado (frase inteira + similarity trigram).
+        // Alcançado só com 1 grupo de token (ou 0 grupos: ex.: só stopword).
         return await this.runLegacyFuzzySearch({
           search,
           baseSqlWhere,
