@@ -136,7 +136,9 @@ export const NFE_TRANSITIONS: Record<NfeStatus, NfeStatus[]> = {
   SIGNING: ["SENDING", "DRAFT"],
   SENDING: ["AUTHORIZED", "REJECTED", "DRAFT"],
   AUTHORIZED: ["CANCELLED"],
-  REJECTED: ["DRAFT"],
+  // REJECTED pode reabrir como DRAFT (edicao) ou ir direto a VALIDATING
+  // (reemissao apos correcao). Ver NfeEmissionUseCase.emit.
+  REJECTED: ["DRAFT", "VALIDATING"],
   CANCELLED: [],
   INUTILIZED: [],
 };

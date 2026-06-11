@@ -70,8 +70,9 @@ export class NfeEmissionUseCase {
     if (!draft) {
       throw new Error("Rascunho nao encontrado");
     }
-    if (draft.status !== "DRAFT") {
-      throw new Error(`NF-e nao esta em rascunho (status: ${draft.status})`);
+    // Emitivel a partir de DRAFT ou REJECTED (reemissao apos correcao).
+    if (draft.status !== "DRAFT" && draft.status !== "REJECTED") {
+      throw new Error(`NF-e nao pode ser emitida (status: ${draft.status})`);
     }
 
     // ── 2. Load config ──
@@ -79,25 +80,28 @@ export class NfeEmissionUseCase {
     if (!config) {
       throw new Error("Configuracao fiscal nao encontrada");
     }
-    if (!config.providerToken) {
+    const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
+    // SEFAZ direto autentica por mTLS (certificado), nao por token. So Focus
+    // exige providerToken.
+    if (!isSefazDirect && !config.providerToken) {
       throw new Error("Token do provedor fiscal nao configurado");
     }
 
     // ── 3. Validate ──
     this.validate(draft, config);
 
-    // ── Claim atomico DRAFT → VALIDATING (USE-7) ──
-    // updateMany condicional ao status DRAFT garante que duas chamadas
-    // concorrentes de emit() (duplo-clique, retry de cliente/fila) nao
-    // reservem dois numeros e enviem duas NF-e para a mesma venda. Apenas a
-    // primeira "ganha" o DRAFT; as demais abortam aqui.
+    // ── Claim atomico DRAFT|REJECTED → VALIDATING (USE-7) ──
+    // updateMany condicional ao status garante que duas chamadas concorrentes
+    // de emit() (duplo-clique, retry) nao reservem dois numeros e enviem duas
+    // NF-e. Apenas a primeira "ganha"; as demais abortam aqui. Limpa a rejeicao
+    // anterior ao reemitir.
     const claimed = await (prisma as any).nfeEmitida.updateMany({
-      where: { id: nfeId, userId, status: "DRAFT" },
-      data: { status: "VALIDATING" },
+      where: { id: nfeId, userId, status: { in: ["DRAFT", "REJECTED"] } },
+      data: { status: "VALIDATING", motivoRejeicao: null },
     });
     if (claimed.count === 0) {
       throw new Error(
-        "NF-e ja esta em processamento de emissao (status nao e mais DRAFT)",
+        "NF-e ja esta em processamento de emissao ou ja foi emitida",
       );
     }
 
@@ -177,7 +181,6 @@ export class NfeEmissionUseCase {
       // Reload with numero
       const nfeWithNumero = await this.loadNfe(nfeId);
 
-      const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
       let payload: any;
       let xmlOriginalContent: string;
 
@@ -567,9 +570,26 @@ export class NfeEmissionUseCase {
       throw new Error("Natureza da operacao nao informada");
     }
 
+    // CFOP x tipo de operacao: CFOP 1/2/3xxx = ENTRADA, 5/6/7xxx = SAIDA. O
+    // tpNF da nota tem que casar com a 1a posicao do CFOP, senao a SEFAZ rejeita
+    // ("CFOP de saida para NF-e de entrada" / vice-versa). Validamos localmente.
+    const ehSaida = draft.tipoOperacao === "SAIDA";
     for (const item of draft.itens) {
       if (!item.ncm) throw new Error(`Item "${item.descricao}" sem NCM`);
       if (!item.cfop) throw new Error(`Item "${item.descricao}" sem CFOP`);
+      const cfop1 = String(item.cfop).replace(/\D/g, "").charAt(0);
+      const cfopEhSaida = cfop1 === "5" || cfop1 === "6" || cfop1 === "7";
+      const cfopEhEntrada = cfop1 === "1" || cfop1 === "2" || cfop1 === "3";
+      if (ehSaida && !cfopEhSaida) {
+        throw new Error(
+          `Item "${item.descricao}": CFOP ${item.cfop} e de ENTRADA, mas a operacao e SAIDA. Use um CFOP 5/6/7xxx (ex.: 5102) ou mude o Tipo de Operacao.`,
+        );
+      }
+      if (!ehSaida && !cfopEhEntrada) {
+        throw new Error(
+          `Item "${item.descricao}": CFOP ${item.cfop} e de SAIDA, mas a operacao e ENTRADA. Use um CFOP 1/2/3xxx ou mude o Tipo de Operacao para Saida.`,
+        );
+      }
       if (Number(item.quantidade) <= 0)
         throw new Error(`Item "${item.descricao}" com quantidade invalida`);
       if (Number(item.valorUnitario) <= 0)

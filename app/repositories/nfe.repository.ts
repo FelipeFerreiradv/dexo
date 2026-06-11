@@ -114,8 +114,11 @@ export class NfeRepository {
     userId: string,
     id: string,
   ): Promise<NfeDraftResponse | null> {
+    // Aceita DRAFT e REJECTED: uma nota REJEITADA pela SEFAZ pode ser reaberta,
+    // corrigida e reemitida. Sem REJECTED, o wizard dava "Rascunho nao
+    // encontrado" ao voltar etapas apos uma rejeicao.
     const row = await (prisma as any).nfeEmitida.findFirst({
-      where: { id, userId, status: "DRAFT" },
+      where: { id, userId, status: { in: ["DRAFT", "REJECTED"] } },
       include: { itens: { orderBy: { numero: "asc" } } },
     });
     return row ? toDraftResponse(row) : null;
@@ -189,6 +192,12 @@ export class NfeRepository {
         });
       }
     }
+
+    // Editar reabre como DRAFT e limpa a rejeicao anterior. Como este metodo
+    // so e alcancado via findDraftById (DRAFT|REJECTED), e seguro/idempotente:
+    // numa nota ja DRAFT nao muda nada; numa REJECTED, reabre para reemissao.
+    data.status = "DRAFT";
+    data.motivoRejeicao = null;
 
     const row = await (prisma as any).nfeEmitida.update({
       where: { id },
