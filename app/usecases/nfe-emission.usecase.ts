@@ -8,6 +8,7 @@ import { NfeSequenceService } from "../fiscal/sequence/nfe-sequence.service";
 import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator.service";
 import { NfeXmlBuilderService } from "../fiscal/generators/nfe-xml-builder.service";
 import { DanfePdfService } from "../fiscal/generators/danfe-pdf.service";
+import type { DanfeAvatar } from "../fiscal/generators/danfe-v2-renderer";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
 import {
   createNfeProvider,
@@ -695,11 +696,15 @@ export class NfeEmissionUseCase {
     // não está disponível (cenário Focus NFe, ou retorno parcial).
     let danfePdfPath: string | null = null;
     try {
+      // Foto do usuário/emitente para o cabeçalho do DANFE (best-effort).
+      const danfeAvatar = await this.loadDanfeAvatar(userId);
       let pdfBytes: Uint8Array | null = null;
       if (xmlAutorizadoInline) {
         try {
-          pdfBytes =
-            await this.danfeService.generateFromXml(xmlAutorizadoInline);
+          pdfBytes = await this.danfeService.generateFromXml(
+            xmlAutorizadoInline,
+            danfeAvatar,
+          );
         } catch {
           // Parse falhou — cai no fallback DB
           pdfBytes = null;
@@ -712,6 +717,7 @@ export class NfeEmissionUseCase {
           config,
           chaveAcesso,
           protocolo,
+          danfeAvatar,
         );
       }
       danfePdfPath = await this.storage.saveDanfePdf(userId, nfeId, pdfBytes);
@@ -807,6 +813,55 @@ export class NfeEmissionUseCase {
       await this.nfeRepo.addAuditLog(nfeId, userId, "CLIENTE_AUTO_FALHOU", {
         erro: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  /**
+   * Carrega a foto do usuário (User.avatarUrl) em bytes para o cabeçalho do
+   * DANFE. Best-effort, com timeout curto: qualquer falha → null (o renderer
+   * cai nas iniciais). Só aceita PNG/JPG (pdf-lib não embute webp).
+   */
+  private async loadDanfeAvatar(userId: string): Promise<DanfeAvatar | null> {
+    try {
+      const user = await (prisma as any).user.findUnique({
+        where: { id: userId },
+        select: { avatarUrl: true },
+      });
+      const raw: string | null = user?.avatarUrl ?? null;
+      if (!raw) return null;
+      const base =
+        process.env.APP_BACKEND_URL ??
+        process.env.NEXT_PUBLIC_API_URL ??
+        "http://localhost:3333";
+      const url = raw.startsWith("http")
+        ? raw
+        : `${base}${raw.startsWith("/") ? "" : "/"}${raw}`;
+
+      const res = await (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        try {
+          return await fetch(url, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+      })();
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length < 4) return null;
+      if (bytes[0] === 0xff && bytes[1] === 0xd8)
+        return { bytes, format: "jpg" };
+      if (
+        bytes[0] === 0x89 &&
+        bytes[1] === 0x50 &&
+        bytes[2] === 0x4e &&
+        bytes[3] === 0x47
+      ) {
+        return { bytes, format: "png" };
+      }
+      return null; // webp/gif/etc — pdf-lib não embute
+    } catch {
+      return null;
     }
   }
 
