@@ -15,12 +15,25 @@ export class CustomerUseCase {
     this.repo = new CustomerRepository();
   }
 
+  // Nome efetivo: para PJ o "nome" do registro é a razão social (a coluna
+  // `name` é NOT NULL e alimenta listas/busca). PF usa o próprio nome.
+  private effectiveName(data: {
+    name?: string | null;
+    razaoSocial?: string | null;
+  }): string {
+    return (data.name || data.razaoSocial || "").trim();
+  }
+
   // Validações compartilhadas entre create() e createWithTx() — mesma regra
-  // de negócio (nome, CPF, duplicidade), sem duplicar lógica.
+  // de negócio (nome/razão social, duplicidade), sem duplicar lógica.
   private assertValidNew(data: CustomerCreate) {
     if (!data.userId) throw new Error("Usuário não encontrado");
-    if (!data.name || data.name.trim().length < 2) {
-      throw new Error("Nome é obrigatório");
+    if (this.effectiveName(data).length < 2) {
+      throw new Error(
+        data.personType === "PJ"
+          ? "Razão social é obrigatória"
+          : "Nome é obrigatório",
+      );
     }
   }
 
@@ -39,10 +52,38 @@ export class CustomerUseCase {
     }
   }
 
+  private async ensureCnpjUnique(
+    cnpj: string,
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const clean = cnpj.replace(/\D/g, "");
+    if (clean.length !== 14) {
+      throw new Error("CNPJ inválido");
+    }
+    const existing = await this.repo.findByCnpj(clean, userId, tx);
+    if (existing) {
+      throw new Error("Já existe um cliente com esse CNPJ");
+    }
+  }
+
+  // Unicidade pelo documento conforme o tipo de pessoa (PF=CPF, PJ=CNPJ).
+  private async ensureIdentifierUnique(
+    data: CustomerCreate,
+    userId: string,
+    tx?: Prisma.TransactionClient,
+  ) {
+    if (data.personType === "PJ") {
+      if (data.cnpj) await this.ensureCnpjUnique(data.cnpj, userId, tx);
+    } else if (data.cpf) {
+      await this.ensureCpfUnique(data.cpf, userId, tx);
+    }
+  }
+
   async create(data: CustomerCreate): Promise<Customer> {
     this.assertValidNew(data);
-    if (data.cpf) await this.ensureCpfUnique(data.cpf, data.userId);
-    return this.repo.create({ ...data, name: data.name.trim() });
+    await this.ensureIdentifierUnique(data, data.userId);
+    return this.repo.create({ ...data, name: this.effectiveName(data) });
   }
 
   // Mesma validação/criação de create(), mas dentro de uma transação Prisma.
@@ -52,8 +93,8 @@ export class CustomerUseCase {
     data: CustomerCreate,
   ): Promise<Customer> {
     this.assertValidNew(data);
-    if (data.cpf) await this.ensureCpfUnique(data.cpf, data.userId, tx);
-    return this.repo.create({ ...data, name: data.name.trim() }, tx);
+    await this.ensureIdentifierUnique(data, data.userId, tx);
+    return this.repo.create({ ...data, name: this.effectiveName(data) }, tx);
   }
 
   async update(
@@ -69,7 +110,24 @@ export class CustomerUseCase {
         throw new Error("Já existe um cliente com esse CPF");
       }
     }
-    return this.repo.update(id, userId, data);
+    if (data.cnpj) {
+      const clean = data.cnpj.replace(/\D/g, "");
+      if (clean.length !== 14) throw new Error("CNPJ inválido");
+      const existing = await this.repo.findByCnpj(clean, userId);
+      if (existing && existing.id !== id) {
+        throw new Error("Já existe um cliente com esse CNPJ");
+      }
+    }
+    // PJ sem nome explícito → sincroniza name = razão social (coluna NOT NULL).
+    const patch: CustomerUpdate = { ...data };
+    if (
+      data.personType === "PJ" &&
+      (!data.name || !data.name.trim()) &&
+      data.razaoSocial
+    ) {
+      patch.name = data.razaoSocial.trim();
+    }
+    return this.repo.update(id, userId, patch);
   }
 
   async findById(id: string, userId: string): Promise<Customer> {

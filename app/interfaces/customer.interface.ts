@@ -1,8 +1,12 @@
 export type Gender = "M" | "F" | "OUTRO";
 
+export type PersonType = "PF" | "PJ";
+
 export interface Customer {
   id: string;
   userId: string;
+
+  personType: string;
 
   name: string;
   cpf: string | null;
@@ -10,6 +14,13 @@ export interface Customer {
   birthDate: Date | null;
   gender: string | null;
   maritalStatus: string | null;
+
+  cnpj: string | null;
+  razaoSocial: string | null;
+  nomeFantasia: string | null;
+  inscricaoEstadual: string | null;
+  indicadorIE: string | null;
+
   email: string | null;
   phone: string | null;
   mobile: string | null;
@@ -47,12 +58,21 @@ export interface Customer {
 export interface CustomerCreate {
   userId: string;
 
+  personType?: string | null;
+
   name: string;
   cpf?: string | null;
   rg?: string | null;
   birthDate?: string | Date | null;
   gender?: string | null;
   maritalStatus?: string | null;
+
+  cnpj?: string | null;
+  razaoSocial?: string | null;
+  nomeFantasia?: string | null;
+  inscricaoEstadual?: string | null;
+  indicadorIE?: string | null;
+
   email?: string | null;
   phone?: string | null;
   mobile?: string | null;

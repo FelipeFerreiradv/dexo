@@ -95,7 +95,7 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
           error instanceof Error ? error.message : "Erro ao criar cliente";
         const status = message.includes("Já existe")
           ? 409
-          : message.includes("obrigatório") || message.includes("inválido")
+          : message.includes("obrigat") || message.includes("inválido")
             ? 400
             : 500;
         return reply.status(status).send({ error: message });

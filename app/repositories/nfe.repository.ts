@@ -67,9 +67,7 @@ function toDraftResponse(row: any): NfeDraftResponse {
 }
 
 export class NfeRepository {
-  async findExistingDraft(
-    userId: string,
-  ): Promise<NfeDraftResponse | null> {
+  async findExistingDraft(userId: string): Promise<NfeDraftResponse | null> {
     const row = await (prisma as any).nfeEmitida.findFirst({
       where: { userId, status: "DRAFT" },
       orderBy: { updatedAt: "desc" },
@@ -133,7 +131,8 @@ export class NfeRepository {
     const data: Record<string, any> = {};
 
     if (input.serie !== undefined) data.serie = input.serie;
-    if (input.tipoOperacao !== undefined) data.tipoOperacao = input.tipoOperacao;
+    if (input.tipoOperacao !== undefined)
+      data.tipoOperacao = input.tipoOperacao;
     if (input.finalidade !== undefined) data.finalidade = input.finalidade;
     if (input.destinoOperacao !== undefined)
       data.destinoOperacao = input.destinoOperacao;
@@ -142,7 +141,8 @@ export class NfeRepository {
     if (input.indPresenca !== undefined) data.indPresenca = input.indPresenca;
     if (input.intermediador !== undefined)
       data.intermediador = input.intermediador;
-    if (input.numeroPedido !== undefined) data.numeroPedido = input.numeroPedido;
+    if (input.numeroPedido !== undefined)
+      data.numeroPedido = input.numeroPedido;
     if (input.dataEmissao !== undefined)
       data.dataEmissao = input.dataEmissao ? new Date(input.dataEmissao) : null;
     if (input.dataSaida !== undefined)
@@ -242,7 +242,9 @@ export class NfeRepository {
         userId,
         OR: [
           { name: { contains: query, mode: "insensitive" } },
+          { razaoSocial: { contains: query, mode: "insensitive" } },
           { cpf: { contains: query } },
+          { cnpj: { contains: query } },
           { deliveryCnpj: { contains: query } },
           { email: { contains: query, mode: "insensitive" } },
         ],
@@ -251,8 +253,14 @@ export class NfeRepository {
       orderBy: { name: "asc" },
       select: {
         id: true,
+        personType: true,
         name: true,
         cpf: true,
+        cnpj: true,
+        razaoSocial: true,
+        nomeFantasia: true,
+        inscricaoEstadual: true,
+        indicadorIE: true,
         email: true,
         phone: true,
         mobile: true,
@@ -323,7 +331,8 @@ export class NfeRepository {
     if (query.dataInicio || query.dataFim) {
       where.createdAt = {};
       if (query.dataInicio) where.createdAt.gte = new Date(query.dataInicio);
-      if (query.dataFim) where.createdAt.lte = new Date(query.dataFim + "T23:59:59.999Z");
+      if (query.dataFim)
+        where.createdAt.lte = new Date(query.dataFim + "T23:59:59.999Z");
     }
     if (query.search && query.search.trim().length >= 2) {
       const term = query.search.trim();
@@ -422,7 +431,10 @@ export class NfeRepository {
     let autorizadas = 0;
     let rejeitadas = 0;
     let canceladas = 0;
-    for (const g of groups as Array<{ status: string; _count: { _all: number } }>) {
+    for (const g of groups as Array<{
+      status: string;
+      _count: { _all: number };
+    }>) {
       const count = g._count._all;
       total += count;
       if (g.status === "AUTHORIZED") autorizadas = count;
@@ -446,8 +458,10 @@ export class NfeRepository {
     if (filters.status) where.status = filters.status;
     if (filters.dataInicio || filters.dataFim) {
       where.createdAt = {};
-      if (filters.dataInicio) where.createdAt.gte = new Date(filters.dataInicio);
-      if (filters.dataFim) where.createdAt.lte = new Date(filters.dataFim + "T23:59:59.999Z");
+      if (filters.dataInicio)
+        where.createdAt.gte = new Date(filters.dataInicio);
+      if (filters.dataFim)
+        where.createdAt.lte = new Date(filters.dataFim + "T23:59:59.999Z");
     }
 
     return (prisma as any).nfeEmitida.findMany({

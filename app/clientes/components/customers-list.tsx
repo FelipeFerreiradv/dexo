@@ -41,7 +41,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { getApiBaseUrl } from "@/lib/api";
-import { maskCpf, maskPhone } from "@/app/lib/masks";
+import { maskCpf, maskCnpj, maskPhone } from "@/app/lib/masks";
 import { CustomerDialog } from "./customer-dialog";
 import type { CustomerFormData } from "../lib/customer-schema";
 
@@ -229,7 +229,7 @@ export function CustomersList() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Nome</TableHead>
-                  <TableHead>CPF</TableHead>
+                  <TableHead>CPF / CNPJ</TableHead>
                   <TableHead>E-mail</TableHead>
                   <TableHead>Telefone</TableHead>
                   <TableHead>Cidade/UF</TableHead>
@@ -250,13 +250,21 @@ export function CustomersList() {
                 {customers.map((c) => (
                   <TableRow key={c.id}>
                     <TableCell className="font-medium">{c.name}</TableCell>
-                    <TableCell>{c.cpf ? maskCpf(c.cpf) : "—"}</TableCell>
+                    <TableCell>
+                      {c.cnpj ? maskCnpj(c.cnpj) : c.cpf ? maskCpf(c.cpf) : "—"}
+                    </TableCell>
                     <TableCell>{c.email || "—"}</TableCell>
                     <TableCell>
-                      {c.mobile ? maskPhone(c.mobile) : c.phone ? maskPhone(c.phone) : "—"}
+                      {c.mobile
+                        ? maskPhone(c.mobile)
+                        : c.phone
+                          ? maskPhone(c.phone)
+                          : "—"}
                     </TableCell>
                     <TableCell>
-                      {c.city ? `${c.city}${c.state ? "/" + c.state : ""}` : "—"}
+                      {c.city
+                        ? `${c.city}${c.state ? "/" + c.state : ""}`
+                        : "—"}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
