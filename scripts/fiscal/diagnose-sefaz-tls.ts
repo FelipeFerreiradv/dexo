@@ -258,10 +258,34 @@ async function main(): Promise<void> {
         )
       : false;
 
-  // 3. Se a cadeia capturada resolve, salva o bundle e dá o comando do fix.
+  // Testa o bundle informado por --ca-bundle ou SEFAZ_CA_BUNDLE_PATH (é assim
+  // que confirmamos o fix ICP-Brasil antes de tentar emitir).
+  const bundleArg = arg("ca-bundle") ?? process.env.SEFAZ_CA_BUNDLE_PATH ?? null;
+  let okBundle = false;
+  if (bundleArg) {
+    try {
+      const bundlePem = fs.readFileSync(bundleArg, "utf8");
+      const n = (bundlePem.match(/BEGIN CERTIFICATE/g) ?? []).length;
+      okBundle = await tryVerify(
+        host,
+        port,
+        `padrão + bundle (${n} certs em ${bundleArg})`,
+        [...defaultRoots, bundlePem],
+        client,
+      );
+    } catch (e) {
+      console.log(`  [erro] não consegui ler o bundle ${bundleArg}: ${(e as Error).message}`);
+    }
+  }
+
+  // 3. Veredito + comando do fix.
   console.log("\n═══ Veredito ═══");
   if (okDefault) {
     console.log("  O store padrão já basta — pode ter sido intermitência de rede. Reteste a emissão.");
+  } else if (okBundle) {
+    console.log(`  ✅ FIX CONFIRMADO: o bundle ICP-Brasil em "${bundleArg}" autoriza o handshake.`);
+    console.log("  Garanta no .env (UMA linha):  SEFAZ_CA_BUNDLE_PATH=" + bundleArg);
+    console.log("  Depois: pm2 restart all --update-env && pm2 save  → e reemita a nota.");
   } else if (okCaptured) {
     const storageBase =
       process.env.FISCAL_STORAGE_PATH || path.join(process.cwd(), ".fiscal-storage");
@@ -281,8 +305,10 @@ async function main(): Promise<void> {
   } else if (okPlusA1) {
     console.log("  ANEXAR a cadeia do A1 ao trust store resolve — me avise que aplico no código.");
   } else {
-    console.log("  Nenhuma config autorizou e o servidor não forneceu cadeia utilizável.");
-    console.log("  Cole a saída inteira — vamos obter o bundle ICP-Brasil por outro caminho.");
+    console.log("  Nenhuma âncora local resolveu e o servidor não envia a cadeia (envia só o leaf).");
+    console.log("  AÇÃO: instalar o bundle ICP-Brasil e apontar SEFAZ_CA_BUNDLE_PATH para ele:");
+    console.log("    bash scripts/fiscal/install-icp-brasil-ca.sh");
+    console.log("  Depois rode este diagnóstico de novo para confirmar (veredito ✅).");
   }
 
   await prisma.$disconnect();
