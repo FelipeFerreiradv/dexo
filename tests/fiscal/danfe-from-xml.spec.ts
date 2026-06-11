@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { PDFDocument } from "pdf-lib";
 import {
   DanfePdfService,
   projectParsedNfeToDraft,
@@ -17,7 +18,7 @@ describe("DanfePdfService.generateFromXml — round-trip do nosso builder", () =
       config: makeConfig(),
       numero: 7,
       dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
 
     // Encapsula em nfeProc com um protNFe sintético, como a SEFAZ retornaria
@@ -40,7 +41,7 @@ describe("DanfePdfService.generateFromXml — round-trip do nosso builder", () =
       config,
       numero: 42,
       dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const nfeProcXml = wrapInProc(built.xml, built.chaveAcesso);
 
@@ -72,7 +73,7 @@ describe("projectParsedNfeToDraft — mapeamento XML → tipos de domínio", () 
       config: makeConfig(),
       numero: 99,
       dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const nfeProcXml = wrapInProc(built.xml, built.chaveAcesso);
     const parsed = parseNfeXml(nfeProcXml);
@@ -125,7 +126,7 @@ describe("projectParsedNfeToDraft — mapeamento XML → tipos de domínio", () 
       config: makeConfig(),
       numero: 1,
       dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const nfeProcXml = wrapInProc(built.xml, built.chaveAcesso);
     const parsed = parseNfeXml(nfeProcXml);
@@ -164,13 +165,66 @@ describe("projectParsedNfeToDraft — mapeamento XML → tipos de domínio", () 
       config: makeConfig({ regimeTributario: "LUCRO_PRESUMIDO" }),
       numero: 1,
       dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const nfeProcXml = wrapInProc(built.xml, built.chaveAcesso);
     const parsed = parseNfeXml(nfeProcXml);
     const { config } = projectParsedNfeToDraft(parsed);
 
     expect(config.regimeTributario).toBe("LUCRO_PRESUMIDO");
+  });
+});
+
+describe("DanfePdfService.generateFromXml — robustez (PAR-1, PAR-4)", () => {
+  const builder = new NfeXmlBuilderSefazService();
+  const FIXED = new Date("2026-05-14T15:00:00-03:00");
+
+  it("PAR-1: nota com muitos itens nao perde itens (pagina o DANFE)", async () => {
+    const itens = Array.from({ length: 60 }, (_, i) =>
+      makeItem({ codigo: `P${i + 1}`, descricao: `PRODUTO ${i + 1}` }),
+    );
+    const built = builder.build({
+      draft: makeDraft({ ambiente: "PRODUCAO", itens }),
+      config: makeConfig({ ambiente: "PRODUCAO" }),
+      numero: 1,
+      dhEmi: FIXED,
+      cNF: "87654321",
+    });
+    const service = new DanfePdfService();
+    const pdf = await service.generateFromXml(wrapInProc(built.xml, built.chaveAcesso));
+    expect(pdf).toBeInstanceOf(Uint8Array);
+    // 60 itens nao cabem em 1 pagina A4 → deve gerar multiplas paginas.
+    const doc = await PDFDocument.load(pdf);
+    expect(doc.getPageCount()).toBeGreaterThan(1);
+  });
+
+  it("PAR-4: recusa gerar DANFE de XML sem protNFe (nao autorizado)", async () => {
+    const built = builder.build({
+      draft: makeDraft({ ambiente: "PRODUCAO" }),
+      config: makeConfig({ ambiente: "PRODUCAO" }),
+      numero: 1,
+      dhEmi: FIXED,
+      cNF: "87654321",
+    });
+    const service = new DanfePdfService();
+    // XML sem nfeProc/protNFe (NFe assinada pre-envio)
+    await expect(service.generateFromXml(built.xml)).rejects.toThrow(/autoriz/i);
+  });
+
+  it("PAR-4: recusa gerar DANFE de XML com cStat de rejeicao/denegacao", async () => {
+    const built = builder.build({
+      draft: makeDraft({ ambiente: "PRODUCAO" }),
+      config: makeConfig({ ambiente: "PRODUCAO" }),
+      numero: 1,
+      dhEmi: FIXED,
+      cNF: "87654321",
+    });
+    const denegada = wrapInProc(built.xml, built.chaveAcesso).replace(
+      "<cStat>100</cStat>",
+      "<cStat>110</cStat>",
+    );
+    const service = new DanfePdfService();
+    await expect(service.generateFromXml(denegada)).rejects.toThrow(/110|autoriz/i);
   });
 });
 
@@ -200,6 +254,7 @@ function wrapInProc(nfeXml: string, chave: string): string {
     "</nfeProc>",
   ].join("");
 }
+
 
 function toAscii(bytes: Uint8Array): string {
   let s = "";

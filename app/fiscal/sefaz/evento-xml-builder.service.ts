@@ -155,17 +155,20 @@ function onlyDigits(s: string | null | undefined): string {
   return (s ?? "").replace(/\D/g, "");
 }
 
+// Brasil = UTC-03:00 (sem horario de verao desde 2019). Offset fixo, igual ao
+// nfe-xml-builder-sefaz — NAO derivar de getTimezoneOffset() do runtime, pois
+// um servidor em UTC carimbaria +00:00 (divergente da hora local da operacao e,
+// num servidor em fuso positivo, poderia bater na Rejeicao 578). Ver EVT-1.
+const BRAZIL_OFFSET_MIN = -180;
+
 function formatDhEvento(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mi = pad(d.getMinutes());
-  const ss = pad(d.getSeconds());
-  const offset = d.getTimezoneOffset();
-  const sign = offset > 0 ? "-" : "+";
-  const oH = pad(Math.floor(Math.abs(offset) / 60));
-  const oM = pad(Math.abs(offset) % 60);
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${sign}${oH}:${oM}`;
+  const shifted = new Date(d.getTime() + BRAZIL_OFFSET_MIN * 60_000);
+  const yyyy = shifted.getUTCFullYear();
+  const mm = pad(shifted.getUTCMonth() + 1);
+  const dd = pad(shifted.getUTCDate());
+  const hh = pad(shifted.getUTCHours());
+  const mi = pad(shifted.getUTCMinutes());
+  const ss = pad(shifted.getUTCSeconds());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}-03:00`;
 }

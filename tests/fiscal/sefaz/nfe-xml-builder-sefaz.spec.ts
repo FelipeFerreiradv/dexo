@@ -13,7 +13,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
 
     expect(xml).toContain('<NFe xmlns="http://www.portalfiscal.inf.br/nfe">');
@@ -34,11 +34,11 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 42,
       dhEmi: FIXED_DH,
-      cNF: "11111111",
+      cNF: "87654329",
     });
 
     expect(xml).toContain("<cUF>35</cUF>");
-    expect(xml).toContain("<cNF>11111111</cNF>");
+    expect(xml).toContain("<cNF>87654329</cNF>");
     expect(xml).toContain("<natOp>VENDA DE PECA USADA</natOp>");
     expect(xml).toContain("<mod>55</mod>");
     expect(xml).toContain("<serie>1</serie>");
@@ -61,7 +61,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig({ regimeTributario: "SIMPLES" }),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     }).xml;
     expect(xmlSimples).toContain("<CRT>1</CRT>");
 
@@ -70,7 +70,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig({ regimeTributario: "LUCRO_PRESUMIDO" }),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     }).xml;
     expect(xmlNormal).toContain("<CRT>3</CRT>");
   });
@@ -81,7 +81,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig({ regimeTributario: "SIMPLES" }),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<ICMSSN102>");
     expect(xml).toContain("<CSOSN>102</CSOSN>");
@@ -112,7 +112,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig({ regimeTributario: "LUCRO_PRESUMIDO" }),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<ICMS00>");
     expect(xml).toContain("<CST>00</CST>");
@@ -146,7 +146,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     }).xml;
     expect(xmlPF).toContain("<CPF>12345678901</CPF>");
     expect(xmlPF).toContain("<indIEDest>9</indIEDest>"); // PF não contribuinte
@@ -156,7 +156,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     }).xml;
     expect(xmlPJ).toContain("<CNPJ>00000000000100</CNPJ>");
     expect(xmlPJ).toContain("<indIEDest>2</indIEDest>"); // PJ isento
@@ -187,7 +187,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     }).xml;
     expect(xmlComIE).toContain("<indIEDest>1</indIEDest>");
     expect(xmlComIE).toContain("<IE>999888777</IE>");
@@ -205,7 +205,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain('<det nItem="1">');
     expect(xml).toContain('<det nItem="2">');
@@ -221,7 +221,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     // O literal DEVE estar no <dest><xNome>, dentro do bloco <dest>...</dest>
     const destBloco = xml.match(/<dest>[\s\S]*?<\/dest>/)?.[0] ?? "";
@@ -246,7 +246,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: new Date("2026-05-14T18:00:00Z"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<dhEmi>2026-05-14T15:00:00-03:00</dhEmi>");
     expect(xml).toContain("<dVenc>2026-06-14</dVenc>");
@@ -259,7 +259,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: new Date("2026-07-01T01:30:00Z"),
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<dhEmi>2026-06-30T22:30:00-03:00</dhEmi>");
     // chave: cUF(2)=35 + AAMM(4) ... → posicoes 2..6 sao o AAMM
@@ -272,7 +272,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<natOp>VENDA</natOp>");
   });
@@ -286,7 +286,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig({ ambiente: "PRODUCAO" }),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).not.toContain("HOMOLOGACAO");
     expect(xml).toContain("Pedido: PED-001");
@@ -299,7 +299,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const required = [
       "vBC", "vICMS", "vICMSDeson", "vFCP", "vBCST", "vST", "vFCPST",
@@ -319,7 +319,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<modFrete>9</modFrete>");
   });
@@ -330,7 +330,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<pag>");
     expect(xml).toContain("<tPag>90</tPag>");
@@ -348,7 +348,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toMatch(/<tPag>17<\/tPag>[\s\S]*<vPag>50\.00<\/vPag>/);
     expect(xml).toMatch(/<tPag>01<\/tPag>[\s\S]*<vPag>50\.00<\/vPag>/);
@@ -367,7 +367,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("<cobr>");
     expect(xml).toContain("<nDup>001</nDup>");
@@ -383,7 +383,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     expect(xml).toContain("P&amp;D");
     expect(xml).not.toContain("<ESPECIAL>");
@@ -399,7 +399,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED_DH,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const match = xml.match(/<xProd>([^<]+)<\/xProd>/);
     expect(match).not.toBeNull();
@@ -413,7 +413,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
         config: makeConfig({ uf: null }),
         numero: 1,
         dhEmi: FIXED_DH,
-        cNF: "12345678",
+        cNF: "87654321",
       }),
     ).toThrow(/uf/);
   });
@@ -425,7 +425,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
         config: makeConfig(),
         numero: 1,
         dhEmi: FIXED_DH,
-        cNF: "12345678",
+        cNF: "87654321",
       }),
     ).toThrow(/destinatario/);
   });
@@ -437,7 +437,7 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
         config: makeConfig(),
         numero: 1,
         dhEmi: FIXED_DH,
-        cNF: "12345678",
+        cNF: "87654321",
       }),
     ).toThrow(/itens/);
   });

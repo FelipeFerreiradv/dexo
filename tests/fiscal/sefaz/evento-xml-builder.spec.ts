@@ -38,6 +38,25 @@ describe("EventoXmlBuilderService — cancelamento (110111)", () => {
     expect(xml).toContain("<xJust>Cancelamento por erro de digitacao em quantidade</xJust>");
   });
 
+  it("dhEvento usa offset fixo -03:00 independente do TZ do servidor (EVT-1)", () => {
+    // 18:30Z = 15:30 em Brasilia. Mesmo em servidor UTC, sai -03:00.
+    const { xml } = builder.build({
+      chNFe: CHAVE,
+      uf: "SP",
+      ambiente: "homologacao",
+      cnpj: "11222333000181",
+      tpEvento: "110111",
+      nSeqEvento: 1,
+      dhEvento: new Date("2026-05-14T18:30:00Z"),
+      detalhe: {
+        kind: "cancelamento",
+        nProt: "135260000000999",
+        xJust: "Cancelamento por erro de digitacao em quantidade",
+      },
+    });
+    expect(xml).toContain("<dhEvento>2026-05-14T15:30:00-03:00</dhEvento>");
+  });
+
   it("inclui dhEvento em formato ISO com TZ", () => {
     const { xml } = builder.build({
       chNFe: CHAVE,

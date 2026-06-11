@@ -301,7 +301,7 @@ function makeEmitPayload(): SefazEmitPayload {
     config: makeConfig(),
     numero: 1,
     dhEmi: new Date("2026-05-14T15:00:00-03:00"),
-    cNF: "12345678",
+    cNF: "87654321",
   };
 }
 
@@ -1378,7 +1378,7 @@ describe("SefazDirectProvider — integridade pos-envio (Commit B)", () => {
       config: makeConfig(),
       numero: 1,
       dhEmi: FIXED,
-      cNF: "12345678",
+      cNF: "87654321",
     };
   }
 

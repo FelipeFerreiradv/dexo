@@ -41,6 +41,42 @@ describe("chave-acesso — calcularDV", () => {
     expect(() => calcularDV("123")).toThrow(/43 digitos/);
   });
 
+  it("rejeita cNF em padrao proibido pela Rejeicao 897 (CHV-1)", () => {
+    const base = {
+      uf: "SP" as const,
+      ano: 2026,
+      mes: 5,
+      cnpj: "11222333000181",
+      modelo: "55" as const,
+      serie: 1,
+      numero: 50,
+      tpEmis: 1 as const,
+    };
+    for (const cNF of ["00000000", "11111111", "99999999", "12345678", "23456789"]) {
+      expect(() => montarChave({ ...base, cNF }), `cNF=${cNF}`).toThrow(/897/);
+    }
+  });
+
+  it("gerarCnf nunca produz padrao proibido (amostragem)", () => {
+    for (let i = 0; i < 200; i++) {
+      const parts = montarChave({
+        uf: "SP",
+        ano: 2026,
+        mes: 5,
+        cnpj: "11222333000181",
+        modelo: "55",
+        serie: 1,
+        numero: 50,
+        tpEmis: 1,
+        // cNF omitido → gerarCnf
+      });
+      expect(parts.cNF).toMatch(/^\d{8}$/);
+      expect(/^(\d)\1{7}$/.test(parts.cNF), `repetido: ${parts.cNF}`).toBe(false);
+      expect(parts.cNF).not.toBe("12345678");
+      expect(parts.cNF).not.toBe("01234567");
+    }
+  });
+
   it("considera apenas digitos (ignora separadores apos limpeza pelo caller)", () => {
     const base43 = "3524041122233300018155001000000000112345678";
     const comMascara = base43
@@ -62,7 +98,7 @@ describe("chave-acesso — montarChave", () => {
       serie: 1,
       numero: 1,
       tpEmis: 1,
-      cNF: "12345678",
+      cNF: "87654321",
     });
 
     expect(parts.cUF).toBe("35");
@@ -72,7 +108,7 @@ describe("chave-acesso — montarChave", () => {
     expect(parts.serie).toBe("001");
     expect(parts.nNF).toBe("000000001");
     expect(parts.tpEmis).toBe("1");
-    expect(parts.cNF).toBe("12345678");
+    expect(parts.cNF).toBe("87654321");
 
     const chave = chaveToString(parts);
     expect(chave).toHaveLength(44);
@@ -223,7 +259,7 @@ describe("chave-acesso — parseChave", () => {
       serie: 1,
       numero: 1,
       tpEmis: 1,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const chave = chaveToString(parts);
     const comEspacos = chave.match(/.{1,4}/g)!.join(" ");
@@ -240,7 +276,7 @@ describe("chave-acesso — parseChave", () => {
       serie: 1,
       numero: 1,
       tpEmis: 1,
-      cNF: "12345678",
+      cNF: "87654321",
     });
     const chave = chaveToString(parts);
     // Inverte o DV

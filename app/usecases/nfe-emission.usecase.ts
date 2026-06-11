@@ -595,6 +595,21 @@ export class NfeEmissionUseCase {
       }
     }
 
+    // NR-1: quando a autorizacao foi reconhecida via CONSULTA (timeout/
+    // duplicidade reconciliados) o provedor devolve protocolo mas NAO o nfeProc
+    // completo — entao o XML canonico autorizado fica ausente. NAO falhamos a
+    // emissao (a NF-e esta autorizada), mas registramos para recuperacao
+    // posterior (ex.: via NFeDistribuicaoDFe). Sem isso o gap passaria
+    // silencioso (arquivamento/segunda-via do XML ficariam vazios).
+    if (!xmlAutorizadoPath) {
+      await this.nfeRepo.addAuditLog(nfeId, userId, "XML_AUTORIZADO_PENDENTE", {
+        chaveAcesso,
+        protocolo,
+        motivo:
+          "Autorizacao reconhecida sem nfeProc inline — recuperar XML autorizado posteriormente",
+      });
+    }
+
     // Generate DANFE PDF
     // Preferimos gerar a partir do XML autorizado (fonte canônica imutável
     // retornada pela SEFAZ). Fallback para o caminho DB quando XML inline

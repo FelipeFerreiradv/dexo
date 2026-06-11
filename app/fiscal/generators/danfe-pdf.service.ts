@@ -25,7 +25,8 @@ export class DanfePdfService {
     protocolo: string | null,
   ): Promise<Uint8Array> {
     const doc = await PDFDocument.create();
-    const page = doc.addPage([595.28, 841.89]); // A4
+    // `page` e mutavel: o DANFE pagina quando os itens nao cabem (PAR-1).
+    let page = doc.addPage([595.28, 841.89]); // A4
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
 
@@ -130,16 +131,27 @@ export class DanfePdfService {
 
     // Header da tabela
     const cols = [margin, margin + 30, margin + 230, margin + 290, margin + 350, margin + 420];
-    drawText("#", cols[0], y, 7, fontBold, gray);
-    drawText("Descricao", cols[1], y, 7, fontBold, gray);
-    drawText("Qtd", cols[2], y, 7, fontBold, gray);
-    drawText("Unit.", cols[3], y, 7, fontBold, gray);
-    drawText("Total", cols[4], y, 7, fontBold, gray);
-    drawText("NCM", cols[5], y, 7, fontBold, gray);
-    y -= lineHeight;
+    const drawItensHeader = () => {
+      drawText("#", cols[0], y, 7, fontBold, gray);
+      drawText("Descricao", cols[1], y, 7, fontBold, gray);
+      drawText("Qtd", cols[2], y, 7, fontBold, gray);
+      drawText("Unit.", cols[3], y, 7, fontBold, gray);
+      drawText("Total", cols[4], y, 7, fontBold, gray);
+      drawText("NCM", cols[5], y, 7, fontBold, gray);
+      y -= lineHeight;
+    };
+    drawItensHeader();
 
+    // PAR-1: pagina o DANFE quando os itens nao cabem, em vez de descarta-los
+    // silenciosamente. Reserva ~margin+80 da ultima pagina para os totais.
     for (const item of nfe.itens) {
-      if (y < margin + 80) break; // espaço para totais
+      if (y < margin + 60) {
+        page = doc.addPage([595.28, 841.89]);
+        y = height - margin;
+        drawText("PRODUTOS / SERVICOS (continuacao)", margin, y, 9, fontBold);
+        y -= lineHeight;
+        drawItensHeader();
+      }
 
       const desc =
         item.descricao.length > 35
@@ -153,6 +165,12 @@ export class DanfePdfService {
       drawText(Number(item.valorTotal).toFixed(2), cols[4], y, 7);
       drawText(item.ncm, cols[5], y, 7);
       y -= lineHeight;
+    }
+
+    // Garante espaco para os totais; se nao couber, nova pagina.
+    if (y < margin + 70) {
+      page = doc.addPage([595.28, 841.89]);
+      y = height - margin;
     }
 
     y -= 4;
@@ -201,6 +219,22 @@ export class DanfePdfService {
    */
   async generateFromXml(xml: string): Promise<Uint8Array> {
     const parsed = parseNfeXml(xml);
+    // PAR-4: DANFE so deve ser gerado para NF-e efetivamente AUTORIZADA. Se o
+    // XML traz protNFe com cStat que NAO e autorizacao (100/150), recusamos —
+    // gerar um "DANFE" de nota denegada (110) ou rejeitada induziria o operador
+    // a tratar como valida. (XML sem protNFe = NFe assinada pre-envio: tambem
+    // nao tem DANFE valido.)
+    const cStat = parsed.protNFe?.cStat ?? null;
+    if (cStat === null) {
+      throw new Error(
+        "DANFE exige XML autorizado (nfeProc com protNFe) — XML sem protocolo de autorizacao",
+      );
+    }
+    if (cStat !== 100 && cStat !== 150) {
+      throw new Error(
+        `DANFE so pode ser gerado para NF-e autorizada (cStat 100/150). Recebido cStat=${cStat}: ${parsed.protNFe?.xMotivo ?? ""}`,
+      );
+    }
     const projected = projectParsedNfeToDraft(parsed);
     return this.generate(
       projected.draft,
@@ -235,12 +269,12 @@ export function projectParsedNfeToDraft(parsed: ParsedNfe): {
     nomeFantasia: emit.xFant,
     inscricaoEstadual: emit.IE,
     inscricaoMunicipal: emit.IM,
+    // CRT: 1=Simples, 2=Simples Excesso, 4=MEI → todos sao "Simples" para o
+    // nosso enum de regime; 3=Regime Normal → LUCRO_PRESUMIDO (default normal).
     regimeTributario:
-      emit.CRT === "1"
+      emit.CRT === "1" || emit.CRT === "2" || emit.CRT === "4"
         ? "SIMPLES"
-        : emit.CRT === "2"
-          ? "SIMPLES"
-          : "LUCRO_PRESUMIDO",
+        : "LUCRO_PRESUMIDO",
     cnae: emit.CNAE,
     ambiente,
     cep: emit.ender.CEP,

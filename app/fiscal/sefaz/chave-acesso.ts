@@ -52,8 +52,23 @@ const onlyDigits = (s: string) => s.replace(/\D/g, "");
 const pad = (value: number | string, len: number): string =>
   String(value).padStart(len, "0");
 
+// Padroes de cNF vetados pela NT 2019.001 (Rejeicao 897 "Codigo numerico em
+// formato invalido"): dezenas repetidas e sequencias ascendentes de 8 digitos.
+const CNF_SEQUENCIAS_PROIBIDAS = new Set([
+  "12345678", "23456789", "34567890", "45678901", "56789012",
+  "67890123", "78901234", "89012345", "90123456", "01234567",
+]);
+
+/** true se o cNF (8 digitos) cai num padrao vetado pela Rejeicao 897. */
+export function isCnfProibido(cNF: string): boolean {
+  if (!/^\d{8}$/.test(cNF)) return true;
+  if (/^(\d)\1{7}$/.test(cNF)) return true; // dezenas repetidas (00000000..99999999)
+  return CNF_SEQUENCIAS_PROIBIDAS.has(cNF);
+}
+
 /**
- * Gera código cNF de 8 dígitos diferente de nNF.
+ * Gera código cNF de 8 dígitos diferente de nNF e fora dos padroes proibidos
+ * da Rejeicao 897 (NT 2019.001).
  *
  * Usa CSPRNG (crypto.randomInt) — a SEFAZ recomenda um codigo numerico
  * aleatorio e nao-previsivel; Math.random() e previsivel e nao deve gerar
@@ -65,11 +80,14 @@ const pad = (value: number | string, len: number): string =>
  * 1a tentativa e reusa-lo, em vez de regenerar.
  */
 export function gerarCnf(nNF: number): string {
-  for (let attempt = 0; attempt < 8; attempt++) {
+  const nNF8 = pad(nNF % 100_000_000, 8);
+  for (let attempt = 0; attempt < 16; attempt++) {
     const candidate = pad(randomInt(0, 100_000_000), 8);
-    if (candidate !== pad(nNF, 8)) return candidate;
+    if (candidate !== nNF8 && !isCnfProibido(candidate)) return candidate;
   }
-  return pad(nNF === 0 ? 1 : nNF + 1, 8);
+  // Fallback deterministico valido (8 digitos, nao proibido, != nNF).
+  const fallback = nNF8 === "10000007" ? "10000017" : "10000007";
+  return fallback;
 }
 
 /**
@@ -130,6 +148,11 @@ export function montarChave(input: ChaveAcessoInput): ChaveAcessoParts {
   // string-direta nunca dispararia.
   if (Number(cNF) === Number(nNF)) {
     throw new Error("cNF nao pode ser igual ao numero da NFe (Rejeicao 778)");
+  }
+  if (isCnfProibido(cNF)) {
+    throw new Error(
+      `cNF em formato invalido (dezena repetida ou sequencia): ${cNF} (Rejeicao 897)`,
+    );
   }
 
   const base43 = cUF + AAMM + CNPJ + mod + serie + nNF + tpEmis + cNF;
