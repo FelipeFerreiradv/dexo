@@ -5,10 +5,12 @@
  * acontece quando o Node não consegue validar a cadeia do certificado do
  * SERVIDOR SEFAZ. Isso varia por UF/autorizador (SEFAZ próprio, SVRS, SVAN) e
  * por quais CAs estão no trust store. Este script mostra, com dados reais:
- *   1. a cadeia que o servidor APRESENTA no handshake (quantos certs, emissores);
+ *   1. a cadeia que o servidor APRESENTA no handshake (apresentando o A1 como
+ *      cliente — alguns autorizadores, ex. SVRS, derrubam a conexão sem mTLS);
  *   2. a composição da cadeia do A1 do cliente;
- *   3. qual configuração de confiança AUTORIZA o handshake — assim o fix é
- *      cirúrgico (anexar a âncora certa via SEFAZ_CA_BUNDLE_PATH / NODE_EXTRA_CA_CERTS).
+ *   3. qual configuração de confiança AUTORIZA o handshake;
+ *   4. se a cadeia ICP-Brasil que o servidor envia resolve, salva-a num arquivo
+ *      e imprime o comando para confiar nela via SEFAZ_CA_BUNDLE_PATH.
  *
  * NÃO emite nada. Apenas abre conexões TLS e relata. Seguro para produção.
  *
@@ -19,6 +21,8 @@
  */
 
 import "dotenv/config";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as tls from "node:tls";
 import { URL } from "node:url";
 
@@ -30,6 +34,11 @@ import {
   type SefazServico,
   type UF,
 } from "../../app/fiscal/sefaz/endpoints";
+
+interface ClientCred {
+  cert: string;
+  key: string;
+}
 
 function arg(name: string): string | null {
   const p = `--${name}=`;
@@ -49,51 +58,59 @@ function derToPem(der: Buffer): string {
 }
 
 interface ServerChain {
+  /** PEM de cada cert apresentado, do leaf (0) ao topo. */
   pems: string[];
-  topIssuer: string;
+  /** "subject ⇐ issuer" por cert, para inspeção humana. */
+  descs: string[];
 }
 
-function inspectServerChain(host: string, port: number): Promise<ServerChain> {
+/**
+ * Apresenta o A1 como cliente (SVRS derruba sem mTLS) e captura a cadeia que o
+ * servidor envia, sem verificar (rejectUnauthorized:false) — só para ler.
+ */
+function inspectServerChain(
+  host: string,
+  port: number,
+  client: ClientCred,
+): Promise<ServerChain> {
   return new Promise((resolve) => {
     const pems: string[] = [];
-    let topIssuer = "?";
+    const descs: string[] = [];
     const socket = tls.connect(
-      { host, port, servername: host, rejectUnauthorized: false, minVersion: "TLSv1.2" },
+      {
+        host,
+        port,
+        servername: host,
+        rejectUnauthorized: false,
+        minVersion: "TLSv1.2",
+        cert: client.cert,
+        key: client.key,
+      },
       () => {
         let cert = socket.getPeerCertificate(true) as tls.DetailedPeerCertificate | null;
         const seen = new Set<string>();
-        console.log("\n── Cadeia que o SERVIDOR apresenta ──");
         let i = 0;
         while (cert && cert.subject && !seen.has(cert.fingerprint256)) {
           seen.add(cert.fingerprint256);
-          console.log(
-            `  [${i}] subject="${cnOf(cert.subject)}"  emissor="${cnOf(cert.issuer)}"`,
-          );
+          descs.push(`[${i}] subject="${cnOf(cert.subject)}"  ⇐ emissor="${cnOf(cert.issuer)}"`);
           if (cert.raw) pems.push(derToPem(cert.raw));
-          topIssuer = cnOf(cert.issuer);
           i++;
           const next = cert.issuerCertificate;
-          if (next && next.fingerprint256 !== cert.fingerprint256) {
-            cert = next;
-          } else {
-            break;
-          }
+          if (next && next.fingerprint256 !== cert.fingerprint256) cert = next;
+          else break;
         }
-        console.log(
-          `  → servidor enviou ${i} certificado(s). Emissor do topo (âncora necessária): "${topIssuer}"`,
-        );
         socket.end();
-        resolve({ pems, topIssuer });
+        resolve({ pems, descs });
       },
     );
     socket.on("error", (e) => {
-      console.log("  Erro ao conectar (sem verificação):", (e as Error).message);
-      resolve({ pems, topIssuer });
+      console.log("  Erro ao inspecionar a cadeia:", (e as Error).message);
+      resolve({ pems, descs });
     });
     socket.setTimeout(15000, () => {
-      console.log("  timeout ao inspecionar cadeia");
+      console.log("  timeout ao inspecionar a cadeia");
       socket.destroy();
-      resolve({ pems, topIssuer });
+      resolve({ pems, descs });
     });
   });
 }
@@ -103,7 +120,7 @@ function tryVerify(
   port: number,
   label: string,
   ca: string[] | undefined,
-  client: { cert: string; key: string },
+  client: ClientCred,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = tls.connect(
@@ -146,7 +163,6 @@ async function resolveUserId(): Promise<string | null> {
     console.error(`Usuário não encontrado para email=${email}`);
     return null;
   }
-  // Mesmo cálculo do authMiddleware: dono real = pai (se colaborador) ou ele mesmo.
   return (user.parentUserId ?? user.id) as string;
 }
 
@@ -198,28 +214,31 @@ async function main(): Promise<void> {
   console.log(`  endpoint:  ${endpoint}`);
   console.log(`  host:port: ${host}:${port}`);
   console.log(`  Node:      ${process.version}`);
-  console.log(`  NODE_EXTRA_CA_CERTS: ${process.env.NODE_EXTRA_CA_CERTS ?? "(não setado)"}`);
   console.log(`  SEFAZ_CA_BUNDLE_PATH: ${process.env.SEFAZ_CA_BUNDLE_PATH ?? "(não setado)"}`);
 
-  // 1. Cadeia que o servidor apresenta
-  const server = await inspectServerChain(host, port);
-
-  // 2. Cadeia do A1 do cliente
+  // Carrega o A1 (precisamos apresentá-lo até para inspecionar a SVRS).
   const loader = new CertificateLoaderService();
   const cert = await loader.load(config.certificadoPath, config.certificadoSenhaEnc);
-  console.log("\n── Cadeia do A1 do CLIENTE (caChainPem) ──");
-  console.log(`  folha:  subject CN ≈ "${cert.subjectCN ?? "?"}"`);
-  console.log(`  intermediários no .pfx: ${cert.caChainPem.length}`);
   const clientChainPem = [cert.certificatePem, ...cert.caChainPem]
     .map((p) => p.trim())
     .filter(Boolean)
     .join("\n");
-  const client = { cert: clientChainPem, key: cert.privateKeyPem };
+  const client: ClientCred = { cert: clientChainPem, key: cert.privateKeyPem };
 
-  // 3. Testa configurações de confiança (todas apresentando o A1 como cliente)
-  console.log("\n── Teste de verificação do servidor (com mTLS) ──");
+  console.log("\n── Cadeia do A1 do CLIENTE ──");
+  console.log(`  folha:  "${cert.subjectCN ?? "?"}"  | intermediários no .pfx: ${cert.caChainPem.length}`);
+
+  // 1. Cadeia que o servidor apresenta (com mTLS)
+  const server = await inspectServerChain(host, port, client);
+  console.log("\n── Cadeia que o SERVIDOR apresenta (com mTLS) ──");
+  if (server.descs.length) server.descs.forEach((d) => console.log(`  ${d}`));
+  else console.log("  (servidor não apresentou cadeia legível)");
+
+  const aboveLeaf = server.pems.slice(1); // intermediários + raiz que o servidor mandou
   const defaultRoots = [...tls.rootCertificates];
 
+  // 2. Testes de verificação
+  console.log("\n── Teste de verificação do servidor (com mTLS) ──");
   const okDefault = await tryVerify(host, port, "store padrão do Node", undefined, client);
   const okPlusA1 = await tryVerify(
     host,
@@ -228,35 +247,43 @@ async function main(): Promise<void> {
     [...defaultRoots, ...cert.caChainPem],
     client,
   );
-  const okServerSent =
-    server.pems.length > 1
+  const okCaptured =
+    aboveLeaf.length > 0
       ? await tryVerify(
           host,
           port,
-          "padrão + intermediários que o servidor enviou",
-          [...defaultRoots, ...server.pems.slice(1)],
+          "padrão + cadeia ICP-Brasil que o servidor enviou",
+          [...defaultRoots, ...aboveLeaf],
           client,
         )
       : false;
 
-  // 4. Veredito
+  // 3. Se a cadeia capturada resolve, salva o bundle e dá o comando do fix.
   console.log("\n═══ Veredito ═══");
   if (okDefault) {
-    console.log("  O store padrão já basta — o erro pode ser intermitente/rede. Reteste a emissão.");
+    console.log("  O store padrão já basta — pode ter sido intermitência de rede. Reteste a emissão.");
+  } else if (okCaptured) {
+    const storageBase =
+      process.env.FISCAL_STORAGE_PATH || path.join(process.cwd(), ".fiscal-storage");
+    fs.mkdirSync(storageBase, { recursive: true });
+    const bundlePath = path.join(storageBase, "sefaz-icp-trust.pem");
+    fs.writeFileSync(bundlePath, aboveLeaf.join("\n") + "\n", { mode: 0o644 });
+    console.log("  ✅ FIX: confiar na cadeia ICP-Brasil que o servidor envia resolve.");
+    console.log(`  Bundle salvo em: ${bundlePath}`);
+    console.log("  Aplique (sem deploy de código):");
+    console.log(`    1) Adicione ao .env:  SEFAZ_CA_BUNDLE_PATH=${bundlePath}`);
+    console.log("    2) pm2 restart all --update-env && pm2 save");
+    console.log("    3) Reemita a nota.");
+    console.log("\n  ↓↓↓ Cole também os PEMs abaixo na conversa p/ eu embutir o fix permanente ↓↓↓");
+    console.log("\n----- BEGIN CADEIA CAPTURADA (intermediários + raiz) -----");
+    console.log(aboveLeaf.join("\n"));
+    console.log("----- END CADEIA CAPTURADA -----");
   } else if (okPlusA1) {
-    console.log("  ANEXAR a cadeia do A1 ao trust store resolve.");
-    console.log("  Fix: incluir cert.caChainPem em `ca` (aditivo) no buildAgent — me avise que eu aplico.");
-  } else if (okServerSent) {
-    console.log("  O servidor ENVIA os intermediários, mas falta a RAIZ ICP-Brasil no trust store.");
-    console.log("  Fix: instalar o bundle ICP-Brasil e apontar NODE_EXTRA_CA_CERTS (ou SEFAZ_CA_BUNDLE_PATH) para ele.");
+    console.log("  ANEXAR a cadeia do A1 ao trust store resolve — me avise que aplico no código.");
   } else {
-    console.log("  Nenhuma config testada autorizou. Provável: servidor NÃO envia intermediários E");
-    console.log("  a raiz não está em lugar nenhum. Precisamos do bundle ICP-Brasil completo.");
-    console.log(`  Âncora faltante (emissor do topo da cadeia do servidor): "${server.topIssuer}"`);
+    console.log("  Nenhuma config autorizou e o servidor não forneceu cadeia utilizável.");
+    console.log("  Cole a saída inteira — vamos obter o bundle ICP-Brasil por outro caminho.");
   }
-  console.log(
-    "\n  Cole TODA esta saída na conversa — com ela aplico o fix exato (provavelmente o bundle ICP-Brasil + NODE_EXTRA_CA_CERTS).",
-  );
 
   await prisma.$disconnect();
 }
