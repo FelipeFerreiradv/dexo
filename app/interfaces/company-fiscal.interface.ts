@@ -34,6 +34,9 @@ export interface CompanyFiscalConfig {
   providerName: string | null;
   providerToken: string | null;
 
+  /** Série padrão das NF-e (o número é sequencial automático por série). */
+  serieNfe: number;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,4 +65,7 @@ export interface CompanyFiscalConfigUpsert {
 
   providerName?: string | null;
   providerToken?: string | null;
+
+  /** Série padrão das NF-e (inteiro 1–999). Default 1. */
+  serieNfe?: number | null;
 }

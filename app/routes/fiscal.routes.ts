@@ -12,9 +12,14 @@ import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NfeRepository } from "../repositories/nfe.repository";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
+import { NfeSequenceService } from "../fiscal/sequence/nfe-sequence.service";
 import { createNfeProvider } from "../fiscal/providers/provider-factory";
 import { extractCnpjFromCert } from "../fiscal/certificate/certificate-loader.service";
-import type { NfeItemInput, RegimeTributario } from "../fiscal/domain/nfe.types";
+import type {
+  FiscalAmbiente,
+  NfeItemInput,
+  RegimeTributario,
+} from "../fiscal/domain/nfe.types";
 
 /**
  * Remove segredos do CompanyFiscalConfig antes de devolver ao cliente e deriva
@@ -67,6 +72,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const configRepo = new CompanyFiscalRepository();
   const nfeRepo = new NfeRepository();
   const storage = new FiscalStorageService();
+  const nfeSequence = new NfeSequenceService();
 
   // ── Configuração ──
 
@@ -207,6 +213,43 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
   );
 
   // ── Rascunho NFe ──
+
+  // Preview (read-only) do próximo número para a série/ambiente — apenas
+  // visualização; o número definitivo é reservado atomicamente na emissão.
+  fastify.get(
+    "/nfe/proximo-numero",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const raw = (request.query as { serie?: string } | undefined)?.serie;
+        const serie = Number(raw);
+        if (!Number.isInteger(serie) || serie < 0 || serie > 999) {
+          return reply.status(400).send({ error: "Série inválida (0–999)." });
+        }
+        const config = await companyFiscal.getByUserId(userId);
+        if (!config) {
+          return reply
+            .status(409)
+            .send({ error: "Configuração fiscal não encontrada." });
+        }
+        const ambiente = config.ambiente as FiscalAmbiente;
+        const proximoNumero = await nfeSequence.consultarProximoNumero(
+          userId,
+          ambiente,
+          serie,
+        );
+        return reply.status(200).send({ serie, ambiente, proximoNumero });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao consultar próximo número",
+        });
+      }
+    },
+  );
 
   fastify.post(
     "/nfe/draft",

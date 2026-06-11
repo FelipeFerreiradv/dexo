@@ -819,6 +819,11 @@ model CompanyFiscalConfig {
   providerName  String? // FOCUS_NFE | ...
   providerToken String? // encriptado
 
+  // Numeração — série padrão das NF-e desta empresa (o número é sequencial
+  // automático por série/ambiente via NfeSequence). Default 1 preserva o
+  // comportamento anterior (série hardcoded 1).
+  serieNfe Int @default(1)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

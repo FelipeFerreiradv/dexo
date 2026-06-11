@@ -52,6 +52,10 @@ export class CompanyFiscalRepository {
       codPais: data.codPais?.trim() || "1058",
       pais: data.pais?.trim() || "BRASIL",
       providerName: data.providerName?.trim() || null,
+      serieNfe:
+        typeof data.serieNfe === "number" && Number.isInteger(data.serieNfe)
+          ? data.serieNfe
+          : 1,
     };
 
     // providerToken é segredo e NÃO trafega de volta ao cliente (ver
