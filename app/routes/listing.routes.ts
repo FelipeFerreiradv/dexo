@@ -294,6 +294,17 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
+        // SEGURANÇA (multi-tenant): só o dono do anúncio (via product.userId)
+        // pode alterar o estoque. Antes a rota não checava posse => IDOR.
+        const userId = request.user!.dataOwnerId;
+        const owned = await prisma.productListing.findFirst({
+          where: { id, product: { userId } },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({ error: "Anúncio não encontrado" });
+        }
+
         const result = await ListingUseCase.updateMLListingStock(id, quantity);
 
         if (!result.success) {
@@ -648,6 +659,17 @@ export async function listingRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
+
+        // SEGURANÇA (multi-tenant): só o dono do anúncio (via product.userId)
+        // pode removê-lo. Antes a rota não checava posse => IDOR de deleção.
+        const userId = request.user!.dataOwnerId;
+        const owned = await prisma.productListing.findFirst({
+          where: { id, product: { userId } },
+          select: { id: true },
+        });
+        if (!owned) {
+          return reply.status(404).send({ error: "Anúncio não encontrado" });
+        }
 
         const result = await ListingUseCase.removeListing(id);
 

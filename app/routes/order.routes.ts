@@ -241,8 +241,9 @@ export async function orderRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
+        const userId = request.user!.dataOwnerId;
 
-        const order = await OrderUseCase.getOrderById(id);
+        const order = await OrderUseCase.getOrderById(id, userId);
 
         if (!order) {
           return reply.status(404).send({
@@ -278,6 +279,7 @@ export async function orderRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params as { id: string };
+        const userId = request.user!.dataOwnerId;
         const { status } = request.body as { status: string };
 
         // Validar status
@@ -295,9 +297,13 @@ export async function orderRoutes(app: FastifyInstance) {
           });
         }
 
-        const order = await orderRepository.update(id, {
-          status: status as any,
-        });
+        const order = await orderRepository.update(
+          id,
+          {
+            status: status as any,
+          },
+          userId,
+        );
 
         return reply.status(200).send({
           success: true,
@@ -337,30 +343,31 @@ export async function orderRoutes(app: FastifyInstance) {
         }
 
         // Single groupBy + aggregate instead of 7 separate COUNT queries
-        const [statusCounts, revenue, platformCounts, userAccounts] = await Promise.all([
-          prisma.order.groupBy({
-            by: ["status"],
-            _count: { _all: true },
-            where: baseWhere,
-          }),
-          prisma.order.aggregate({
-            where: baseWhere,
-            _sum: { totalAmount: true },
-            _count: { _all: true },
-          }),
-          // Per-platform breakdown (always unfiltered by platform)
-          prisma.order.groupBy({
-            by: ["marketplaceAccountId"],
-            _count: { _all: true },
-            _sum: { totalAmount: true },
-            where: { marketplaceAccount: { userId } },
-          }),
-          // Fetch account→platform mapping in parallel
-          prisma.marketplaceAccount.findMany({
-            where: { userId },
-            select: { id: true, platform: true },
-          }),
-        ]);
+        const [statusCounts, revenue, platformCounts, userAccounts] =
+          await Promise.all([
+            prisma.order.groupBy({
+              by: ["status"],
+              _count: { _all: true },
+              where: baseWhere,
+            }),
+            prisma.order.aggregate({
+              where: baseWhere,
+              _sum: { totalAmount: true },
+              _count: { _all: true },
+            }),
+            // Per-platform breakdown (always unfiltered by platform)
+            prisma.order.groupBy({
+              by: ["marketplaceAccountId"],
+              _count: { _all: true },
+              _sum: { totalAmount: true },
+              where: { marketplaceAccount: { userId } },
+            }),
+            // Fetch account→platform mapping in parallel
+            prisma.marketplaceAccount.findMany({
+              where: { userId },
+              select: { id: true, platform: true },
+            }),
+          ]);
 
         const countMap: Record<string, number> = {};
         for (const row of statusCounts) {
@@ -380,17 +387,21 @@ export async function orderRoutes(app: FastifyInstance) {
           accountPlatformMap[acc.id] = acc.platform;
         }
 
-        const platformBreakdown: Record<string, { total: number; revenue: number }> = {};
+        const platformBreakdown: Record<
+          string,
+          { total: number; revenue: number }
+        > = {};
         for (const row of platformCounts) {
-          const platform = accountPlatformMap[row.marketplaceAccountId] || "UNKNOWN";
+          const platform =
+            accountPlatformMap[row.marketplaceAccountId] || "UNKNOWN";
           if (!platformBreakdown[platform]) {
             platformBreakdown[platform] = { total: 0, revenue: 0 };
           }
           platformBreakdown[platform].total += row._count._all;
           const rev = row._sum.totalAmount
-            ? (typeof (row._sum.totalAmount as any).toNumber === "function"
-                ? (row._sum.totalAmount as any).toNumber()
-                : Number(row._sum.totalAmount))
+            ? typeof (row._sum.totalAmount as any).toNumber === "function"
+              ? (row._sum.totalAmount as any).toNumber()
+              : Number(row._sum.totalAmount)
             : 0;
           platformBreakdown[platform].revenue += rev;
         }
@@ -418,4 +429,3 @@ export async function orderRoutes(app: FastifyInstance) {
     },
   );
 }
-

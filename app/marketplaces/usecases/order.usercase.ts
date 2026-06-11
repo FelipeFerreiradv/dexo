@@ -100,11 +100,10 @@ export class OrderUseCase {
       results: [],
     };
 
-    const accounts =
-      await MarketplaceRepository.findAllByUserIdAndPlatform(
-        userId,
-        Platform.MERCADO_LIVRE,
-      );
+    const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.MERCADO_LIVRE,
+    );
 
     const validAccounts =
       accounts?.filter((acc) => acc.accessToken && acc.externalUserId) ?? [];
@@ -282,11 +281,10 @@ export class OrderUseCase {
     days: number = 3,
     deductStock: boolean = true,
   ): Promise<ImportOrdersResult> {
-    const accounts =
-      await MarketplaceRepository.findAllByUserIdAndPlatform(
-        userId,
-        Platform.SHOPEE,
-      );
+    const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.SHOPEE,
+    );
 
     const validAccounts =
       accounts?.filter((acc) => acc.accessToken && acc.shopId) ?? [];
@@ -463,10 +461,16 @@ export class OrderUseCase {
         // Não repetir a decisão de baixa com base no status local mapeado.
         if (deductStock) {
           try {
-            await this.deductStockForOrder(created, `Venda Shopee #${externalOrderId}`);
+            await this.deductStockForOrder(
+              created,
+              `Venda Shopee #${externalOrderId}`,
+            );
             stockDeducted = true;
           } catch (err) {
-            console.error(`[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`, err);
+            console.error(
+              `[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
+              err,
+            );
           }
         }
 
@@ -610,7 +614,10 @@ export class OrderUseCase {
           await this.deductStockForOrder(order, `Venda ML #${externalOrderId}`);
           stockDeducted = true;
         } catch (err) {
-          console.error(`[OrderUseCase] Falha ao descontar estoque para pedido ML #${externalOrderId} (order=${order.id}). Estoque NÃO foi descontado.`, err);
+          console.error(
+            `[OrderUseCase] Falha ao descontar estoque para pedido ML #${externalOrderId} (order=${order.id}). Estoque NÃO foi descontado.`,
+            err,
+          );
         }
       }
 
@@ -1081,7 +1088,9 @@ export class OrderUseCase {
     if (uniqueProductIds.length === 0) return;
 
     const syncResults = await Promise.allSettled(
-      uniqueProductIds.map((productId) => SyncUseCase.syncProductStock(productId)),
+      uniqueProductIds.map((productId) =>
+        SyncUseCase.syncProductStock(productId),
+      ),
     );
 
     let totalListings = 0;
@@ -1103,7 +1112,9 @@ export class OrderUseCase {
 
       totalListings += result.value.length;
       successCount += result.value.filter((entry) => entry.success).length;
-      const failedListings = result.value.filter((entry) => !entry.success).length;
+      const failedListings = result.value.filter(
+        (entry) => !entry.success,
+      ).length;
       failureCount += failedListings;
 
       result.value
@@ -1236,10 +1247,12 @@ export class OrderUseCase {
   }
 
   /**
-   * Busca detalhes de um pedido
+   * Busca detalhes de um pedido (escopado pelo dono quando `userId` informado).
    */
-  static async getOrderById(orderId: string): Promise<Order | null> {
-    return orderRepository.findById(orderId);
+  static async getOrderById(
+    orderId: string,
+    userId?: string,
+  ): Promise<Order | null> {
+    return orderRepository.findById(orderId, userId);
   }
 }
-

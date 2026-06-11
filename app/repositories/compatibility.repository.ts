@@ -19,10 +19,28 @@ function mapPrismaToCompatibility(item: any): ProductCompatibility {
   };
 }
 
+/**
+ * Garante que o produto pertence ao tenant antes de qualquer operação de
+ * compatibilidade. Lança se não pertencer (ou não existir) — fecha o IDOR.
+ */
+async function assertProductOwned(
+  productId: string,
+  userId: string,
+): Promise<void> {
+  const owned = await prisma.product.findFirst({
+    where: { id: productId, userId },
+    select: { id: true },
+  });
+  if (!owned) throw new Error("Produto não encontrado");
+}
+
 export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilityRepository {
-  async findByProductId(productId: string): Promise<ProductCompatibility[]> {
+  async findByProductId(
+    productId: string,
+    userId: string,
+  ): Promise<ProductCompatibility[]> {
     const items = await prisma.productCompatibility.findMany({
-      where: { productId },
+      where: { productId, product: { userId } },
       orderBy: { createdAt: "asc" },
     });
     return items.map(mapPrismaToCompatibility);
@@ -31,7 +49,9 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
   async create(
     productId: string,
     data: ProductCompatibilityCreate,
+    userId: string,
   ): Promise<ProductCompatibility> {
+    await assertProductOwned(productId, userId);
     const item = await prisma.productCompatibility.create({
       data: {
         productId,
@@ -48,8 +68,10 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
   async createMany(
     productId: string,
     data: ProductCompatibilityCreate[],
+    userId: string,
   ): Promise<ProductCompatibility[]> {
     if (data.length === 0) return [];
+    await assertProductOwned(productId, userId);
 
     const items = await prisma.productCompatibility.createManyAndReturn({
       data: data.map((d) => ({
@@ -65,18 +87,26 @@ export class ProductCompatibilityRepositoryPrisma implements ProductCompatibilit
     return items.map(mapPrismaToCompatibility);
   }
 
-  async delete(id: string): Promise<void> {
-    await prisma.productCompatibility.delete({ where: { id } });
+  async delete(id: string, userId: string): Promise<void> {
+    // deleteMany com filtro pelo dono do produto: apaga 0 se for de outro
+    // tenant (sem vazar existência) e a compat correta se for do usuário.
+    await prisma.productCompatibility.deleteMany({
+      where: { id, product: { userId } },
+    });
   }
 
-  async deleteByProductId(productId: string): Promise<void> {
-    await prisma.productCompatibility.deleteMany({ where: { productId } });
+  async deleteByProductId(productId: string, userId: string): Promise<void> {
+    await prisma.productCompatibility.deleteMany({
+      where: { productId, product: { userId } },
+    });
   }
 
   async replaceAll(
     productId: string,
     data: ProductCompatibilityCreate[],
+    userId: string,
   ): Promise<ProductCompatibility[]> {
+    await assertProductOwned(productId, userId);
     return prisma.$transaction(async (tx) => {
       await tx.productCompatibility.deleteMany({ where: { productId } });
 

@@ -219,12 +219,18 @@ class OrderRepositoryPrisma implements OrderRepository {
   }
 
   /**
-   * Buscar pedido por ID interno
+   * Buscar pedido por ID interno.
+   * SEGURANÇA (multi-tenant): quando `userId` é informado, escopa pelo dono via
+   * `marketplaceAccount.userId` — impede ler pedido de outro tenant por id.
+   * As rotas HTTP SEMPRE passam o userId; chamadas internas de sync podem omitir.
    */
-  async findById(id: string): Promise<Order | null> {
+  async findById(id: string, userId?: string): Promise<Order | null> {
     try {
-      const result = await prisma.order.findUnique({
-        where: { id },
+      const result = await prisma.order.findFirst({
+        where: {
+          id,
+          ...(userId ? { marketplaceAccount: { userId } } : {}),
+        },
         include: {
           items: {
             include: {
@@ -504,10 +510,20 @@ class OrderRepositoryPrisma implements OrderRepository {
   }
 
   /**
-   * Atualizar pedido
+   * Atualizar pedido.
+   * SEGURANÇA (multi-tenant): quando `userId` é informado, verifica a posse via
+   * `marketplaceAccount.userId` antes de escrever — impede alterar pedido de
+   * outro tenant por id. Rotas HTTP SEMPRE passam o userId.
    */
-  async update(id: string, data: OrderUpdate): Promise<Order> {
+  async update(id: string, data: OrderUpdate, userId?: string): Promise<Order> {
     try {
+      if (userId) {
+        const owned = await prisma.order.findFirst({
+          where: { id, marketplaceAccount: { userId } },
+          select: { id: true },
+        });
+        if (!owned) throw new Error("Pedido não encontrado");
+      }
       const result = await prisma.order.update({
         where: { id },
         data: {

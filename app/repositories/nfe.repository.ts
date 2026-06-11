@@ -127,6 +127,15 @@ export class NfeRepository {
     id: string,
     input: NfeDraftUpdateInput,
   ): Promise<NfeDraftResponse> {
+    // SEGURANÇA (multi-tenant): garante que o rascunho pertence ao userId antes
+    // de qualquer escrita. Antes o `where` usava só `id` => qualquer usuário
+    // podia editar a NF-e de outro tenant conhecendo o id.
+    const owned = await (prisma as any).nfeEmitida.findFirst({
+      where: { id, userId },
+      select: { id: true },
+    });
+    if (!owned) throw new Error("Rascunho de NF-e não encontrado");
+
     // Build update data — only set fields that were provided
     const data: Record<string, any> = {};
 
@@ -208,6 +217,13 @@ export class NfeRepository {
   }
 
   async deleteDraft(userId: string, id: string): Promise<void> {
+    // SEGURANÇA (multi-tenant): só apaga se o rascunho for do próprio userId.
+    // Antes o `where` usava só `id` => deleção cross-tenant por id.
+    const owned = await (prisma as any).nfeEmitida.findFirst({
+      where: { id, userId },
+      select: { id: true },
+    });
+    if (!owned) throw new Error("Rascunho de NF-e não encontrado");
     // Items cascade via onDelete: Cascade
     await (prisma as any).nfeEmitida.delete({
       where: { id },
