@@ -97,6 +97,32 @@ export function FiscalEnvironmentStep({
           </p>
         </div>
 
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Série padrão da NF-e</label>
+          <Controller
+            control={control}
+            name="serieNfe"
+            render={({ field }) => (
+              <Input
+                type="number"
+                min={1}
+                max={999}
+                value={field.value ?? 1}
+                onChange={(e) => field.onChange(Number(e.target.value))}
+              />
+            )}
+          />
+          {errors.serieNfe && (
+            <p className="text-xs text-destructive">
+              {errors.serieNfe.message}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Toda nota nova já vem nesta série. O número é sequencial automático
+            por série — você não precisa controlar manualmente.
+          </p>
+        </div>
+
         {/* Token Focus — só quando o provedor é Focus NFe */}
         {!isSefazDirect && (
           <div className="md:col-span-2 space-y-1">

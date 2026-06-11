@@ -71,6 +71,8 @@ export interface NfeDraftCreateInput {
   orderId?: string | null;
   customerId?: string | null;
   ambiente?: "HOMOLOGACAO" | "PRODUCAO";
+  /** Série inicial do rascunho. Default 1 quando não informada. */
+  serie?: number;
 }
 
 export interface NfeDraftUpdateInput {

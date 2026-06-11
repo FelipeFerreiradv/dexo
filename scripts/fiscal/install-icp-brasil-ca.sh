@@ -20,6 +20,12 @@
 
 set -uo pipefail
 
+# Nota sobre -k no download: o próprio acraiz.icpbrasil.gov.br serve um cert
+# ICP-Brasil que o trust store do sistema ainda não conhece (mesmo problema que
+# estamos resolvendo) — então o curl precisa de --insecure para o bootstrap.
+# É aceitável: é o domínio oficial do governo, é um fetch único, e cada arquivo
+# baixado é validado como X.509 pelo openssl antes de entrar no bundle. Para
+# endurecer, confira o hashsha512.txt publicado pelo ITI no mesmo repositório.
 OUT="${1:-${FISCAL_STORAGE_PATH:-$(pwd)/.fiscal-storage}/sefaz-icp-trust.pem}"
 ACS_URL="https://acraiz.icpbrasil.gov.br/credenciadas/CertificadosAC-ICP-Brasil/ACcompactado.zip"
 RAIZ_BASE="https://acraiz.icpbrasil.gov.br/credenciadas/RAIZ"
@@ -35,13 +41,13 @@ trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
 
 echo "→ Baixando ACs intermediárias (ACcompactado.zip)..."
-curl -fsSL -o acs.zip "$ACS_URL" || { echo "ERRO ao baixar $ACS_URL (tente novamente; se persistir, rede/proxy)"; exit 2; }
+curl -fsSLk -o acs.zip "$ACS_URL" || { echo "ERRO ao baixar $ACS_URL (tente novamente; se persistir, rede/proxy)"; exit 2; }
 unzip -oq acs.zip -d acs || { echo "ERRO ao descompactar ACcompactado.zip"; exit 3; }
 
 echo "→ Baixando raízes AC-Raiz ICP-Brasil ($ROOTS)..."
 mkdir -p raiz
 for v in $ROOTS; do
-  curl -fsSL -o "raiz/ICP-Brasil${v}.crt" "${RAIZ_BASE}/ICP-Brasil${v}.crt" \
+  curl -fsSLk -o "raiz/ICP-Brasil${v}.crt" "${RAIZ_BASE}/ICP-Brasil${v}.crt" \
     || echo "  (aviso: raiz $v indisponível — seguindo)"
 done
 

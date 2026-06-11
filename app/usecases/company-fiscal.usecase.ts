@@ -99,6 +99,16 @@ export class CompanyFiscalUseCase {
         throw new Error("CEP deve ter 8 dígitos");
       }
     }
+    if (data.serieNfe !== undefined && data.serieNfe !== null) {
+      // Série da NF-e: inteiro 1–999 (SEFAZ aceita 0–999, mas o wizard usa ≥1).
+      if (
+        !Number.isInteger(data.serieNfe) ||
+        data.serieNfe < 1 ||
+        data.serieNfe > 999
+      ) {
+        throw new Error("Série da NF-e deve ser um inteiro entre 1 e 999");
+      }
+    }
 
     return this.repo.upsert(userId, data);
   }

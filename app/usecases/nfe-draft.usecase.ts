@@ -53,6 +53,9 @@ export class NfeDraftUseCase {
     const draft = await this.nfeRepo.createDraft(userId, {
       ...input,
       ambiente: (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO",
+      // Série padrão fixada na configuração fiscal (o usuário pode trocar no
+      // wizard). Default 1 quando a config ainda não tem série definida.
+      serie: input.serie ?? config.serieNfe ?? 1,
     });
 
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", {
@@ -135,6 +138,7 @@ export class NfeDraftUseCase {
     const draft = await this.nfeRepo.createDraft(userId, {
       customerId: input.customerId,
       ambiente,
+      serie: config.serieNfe ?? 1,
     });
 
     // 2. Popula tudo via updateDraft (replace strategy para itens, igual ao
