@@ -542,6 +542,27 @@ export class NfeEmissionUseCase {
       throw new Error("Destinatario incompleto (CPF/CNPJ e nome obrigatorios)");
     }
 
+    // Endereco do destinatario e OBRIGATORIO para NFe modelo 55 nacional
+    // (so dispensavel para EXTERIOR). Validamos localmente para dar uma
+    // mensagem clara em vez da rejeicao generica da SEFAZ "NF-e sem a
+    // informacao de endereco do destinatario". O cMun (codigo IBGE 7 digitos)
+    // costuma ser o campo faltante.
+    if (dest.tipoPessoa !== "EXTERIOR") {
+      const faltantes: string[] = [];
+      if (!dest.logradouro) faltantes.push("logradouro");
+      if (!dest.numero) faltantes.push("numero");
+      if (!dest.bairro) faltantes.push("bairro");
+      if (!dest.municipio) faltantes.push("municipio");
+      if (!dest.codMunicipio) faltantes.push("codigo IBGE do municipio (cMun)");
+      if (!dest.uf) faltantes.push("UF");
+      if (!dest.cep) faltantes.push("CEP");
+      if (faltantes.length > 0) {
+        throw new Error(
+          `Endereco do destinatario incompleto. Preencha no cadastro do cliente: ${faltantes.join(", ")}.`,
+        );
+      }
+    }
+
     if (!draft.naturezaOperacao) {
       throw new Error("Natureza da operacao nao informada");
     }

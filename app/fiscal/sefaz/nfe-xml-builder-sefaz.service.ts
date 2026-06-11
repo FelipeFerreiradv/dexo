@@ -237,13 +237,12 @@ export class NfeXmlBuilderSefazService {
         : truncate(dest.nome, 60);
     destEl.ele("xNome").txt(xNomeDest).up();
 
-    if (
-      dest.logradouro ||
-      dest.municipio ||
-      dest.uf ||
-      dest.cep ||
-      dest.numero
-    ) {
+    // <enderDest> e OBRIGATORIO para destinatario nacional (PF/PJ). So pode
+    // ser omitido em operacao com EXTERIOR (idEstrangeiro). Emitimos sempre
+    // para nacional — a completude dos campos e garantida pela validacao no
+    // use case (NfeEmissionUseCase.validate), que falha localmente com mensagem
+    // clara em vez de deixar a SEFAZ rejeitar com "sem endereco do destinatario".
+    if (dest.tipoPessoa !== "EXTERIOR") {
       const ender = destEl.ele("enderDest");
       ender.ele("xLgr").txt(truncate(dest.logradouro ?? "SEM ENDERECO", 60)).up();
       ender.ele("nro").txt(dest.numero ?? "S/N").up();
