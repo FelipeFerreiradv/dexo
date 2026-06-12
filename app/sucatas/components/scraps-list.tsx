@@ -138,6 +138,25 @@ export function ScrapsList() {
     return () => clearTimeout(id);
   }, [search, statusFilter]);
 
+  // A lista vem enxuta (sem fotos/notas/fiscais). Para editar, recarrega o
+  // registro COMPLETO via GET /scraps/:id — senão salvar apagaria imageUrls e
+  // os campos não exibidos. Só abre o modal após carregar.
+  const openEdit = async (scrap: Scrap) => {
+    if (!session?.user?.email) return;
+    try {
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(`${apiBase}/scraps/${scrap.id}`, {
+        headers: { email: session.user.email },
+      });
+      if (!res.ok) throw new Error("Erro ao carregar sucata");
+      const full = await res.json();
+      setEditScrap(full);
+    } catch (error) {
+      console.error("Erro ao carregar sucata para edição:", error);
+      alert("Não foi possível carregar a sucata para edição. Tente novamente.");
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!session?.user?.email) return;
     try {
@@ -289,7 +308,7 @@ export function ScrapsList() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => setEditScrap(scrap)}
+                                onClick={() => openEdit(scrap)}
                               >
                                 <Pencil className="h-4 w-4" />
                               </Button>
@@ -370,7 +389,7 @@ export function ScrapsList() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setEditScrap(scrap)}
+                          onClick={() => openEdit(scrap)}
                         >
                           <Pencil className="mr-1 h-3 w-3" />
                           Editar

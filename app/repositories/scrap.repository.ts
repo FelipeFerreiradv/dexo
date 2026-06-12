@@ -16,11 +16,31 @@ import {
   LogisticsStatus,
 } from "@prisma/client";
 
+// Campos omitidos na LISTAGEM/PIPELINE (findById os traz). O mapper os trata
+// como opcionais para aceitar tanto o registro completo quanto o enxuto.
+type ScrapListOmittedKey =
+  | "imageUrls"
+  | "notes"
+  | "ncm"
+  | "accessKey"
+  | "issueDate"
+  | "entryDate"
+  | "nfeNumber"
+  | "nfeProtocol"
+  | "operationNature"
+  | "nfeSeries"
+  | "fiscalModel"
+  | "icmsValue"
+  | "icmsCtValue"
+  | "freightMode"
+  | "issuePurpose";
+
 function mapPrismaToScrap(
-  item: PrismaScrap & {
-    _count?: { products: number };
-    location?: { code: string } | null;
-  },
+  item: Omit<PrismaScrap, ScrapListOmittedKey> &
+    Partial<Pick<PrismaScrap, ScrapListOmittedKey>> & {
+      _count?: { products: number };
+      location?: { code: string } | null;
+    },
 ): Scrap {
   return {
     id: item.id,
@@ -180,6 +200,27 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           skip,
           take: limit,
           orderBy: { createdAt: "desc" },
+          // EGRESS: a tabela não exibe fotos/notas/bloco fiscal. O Edit recarrega
+          // o registro completo via GET /scraps/:id (findById, sem omit) ao abrir
+          // — então a listagem não trafega essas colunas. imageUrls (array de URLs
+          // de fotos) é o maior ofensor. Campos exibidos passam intactos.
+          omit: {
+            imageUrls: true,
+            notes: true,
+            ncm: true,
+            accessKey: true,
+            issueDate: true,
+            entryDate: true,
+            nfeNumber: true,
+            nfeProtocol: true,
+            operationNature: true,
+            nfeSeries: true,
+            fiscalModel: true,
+            icmsValue: true,
+            icmsCtValue: true,
+            freightMode: true,
+            issuePurpose: true,
+          },
           include: {
             location: { select: { code: true } },
             _count: { select: { products: true } },
@@ -217,6 +258,26 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           where: { userId, logisticsStatus: stage },
           orderBy: { createdAt: "desc" },
           take: PER_STAGE,
+          // EGRESS: idem findAll — os cards do Kanban não mostram fotos/notas/
+          // fiscais; o Edit recarrega via GET /scraps/:id. Até 48 linhas (4x12),
+          // então o corte de imageUrls aqui é o maior ganho da página.
+          omit: {
+            imageUrls: true,
+            notes: true,
+            ncm: true,
+            accessKey: true,
+            issueDate: true,
+            entryDate: true,
+            nfeNumber: true,
+            nfeProtocol: true,
+            operationNature: true,
+            nfeSeries: true,
+            fiscalModel: true,
+            icmsValue: true,
+            icmsCtValue: true,
+            freightMode: true,
+            issuePurpose: true,
+          },
           include: {
             location: { select: { code: true } },
             _count: { select: { products: true } },
