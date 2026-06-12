@@ -6,6 +6,7 @@ import {
   processUploadedImage,
   type ProcessedImageFormat,
 } from "../marketplaces/services/image-resize.service";
+import { authMiddleware } from "../middlewares/auth.middleware";
 
 const ALLOWED_MIME = new Set([
   "image/jpeg",
@@ -65,14 +66,19 @@ export async function uploadRoutes(app: FastifyInstance) {
   app.post(
     "/image",
     {
-      preHandler: async (request, reply) => {
-        if (!request.isMultipart()) {
-          return reply.status(400).send({
-            error: "Tipo de conteúdo inválido",
-            message: "Esperado multipart/form-data",
-          });
-        }
-      },
+      // SEGURANÇA: exige autenticação (a ponte de auth do front injeta o Bearer
+      // nesta chamada também). Antes era anônima — abuso de disco/DoS.
+      preHandler: [
+        authMiddleware,
+        async (request, reply) => {
+          if (!request.isMultipart()) {
+            return reply.status(400).send({
+              error: "Tipo de conteúdo inválido",
+              message: "Esperado multipart/form-data",
+            });
+          }
+        },
+      ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -106,12 +112,16 @@ export async function uploadRoutes(app: FastifyInstance) {
           } else if (part.type === "field") {
             if (part.fieldname === "removeBackground") {
               removeBackground = parseBoolean(
-                typeof part.value === "string" ? part.value : String(part.value),
+                typeof part.value === "string"
+                  ? part.value
+                  : String(part.value),
                 true,
               );
             } else if (part.fieldname === "addShadow") {
               addShadow = parseBoolean(
-                typeof part.value === "string" ? part.value : String(part.value),
+                typeof part.value === "string"
+                  ? part.value
+                  : String(part.value),
                 false,
               );
             }

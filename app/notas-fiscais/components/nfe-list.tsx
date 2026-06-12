@@ -49,7 +49,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getApiBaseUrl } from "@/lib/api";
+import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { NfeStatusBadge } from "./nfe-status-badge";
 import { NfeDetailSheet } from "./nfe-detail-sheet";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
@@ -126,9 +126,15 @@ export function NfeList() {
   const [selectedNfeId, setSelectedNfeId] = useState<string | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<{ id: string; numero: number } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{
+    id: string;
+    numero: number;
+  } | null>(null);
   const [isCancelOpen, setIsCancelOpen] = useState(false);
-  const [emailTarget, setEmailTarget] = useState<{ id: string; numero: number } | null>(null);
+  const [emailTarget, setEmailTarget] = useState<{
+    id: string;
+    numero: number;
+  } | null>(null);
   const [isEmailOpen, setIsEmailOpen] = useState(false);
 
   // Debounce search
@@ -258,13 +264,30 @@ export function NfeList() {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const handleDownload = (nfeId: string, type: "xml" | "danfe") => {
+  const handleDownload = async (nfeId: string, type: "xml" | "danfe") => {
     if (!session?.user?.email) return;
-    const apiBase = getApiBaseUrl();
-    window.open(
-      `${apiBase}/fiscal/nfe/${nfeId}/${type}?email=${encodeURIComponent(session.user.email)}`,
-      "_blank",
-    );
+    // Baixa via fetch (a ponte de auth injeta o Bearer) + blob, em vez de
+    // window.open(?email=). Funciona no modo strict e não expõe credencial na URL.
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/fiscal/nfe/${nfeId}/${type}`,
+        {
+          headers: authHeaders(session),
+        },
+      );
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `nfe-${nfeId}.${type === "danfe" ? "pdf" : "xml"}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      // silencioso (mesmo comportamento de antes em caso de falha)
+    }
   };
 
   useEffect(() => {
@@ -338,9 +361,7 @@ export function NfeList() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.rejeitadas}</div>
-            <p className="text-xs text-muted-foreground">
-              Precisam de atencao
-            </p>
+            <p className="text-xs text-muted-foreground">Precisam de atencao</p>
           </CardContent>
         </Card>
 
@@ -351,9 +372,7 @@ export function NfeList() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.canceladas}</div>
-            <p className="text-xs text-muted-foreground">
-              Notas canceladas
-            </p>
+            <p className="text-xs text-muted-foreground">Notas canceladas</p>
           </CardContent>
         </Card>
       </div>
@@ -518,9 +537,7 @@ export function NfeList() {
                                 variant="ghost"
                                 size="icon"
                                 className="size-8"
-                                onClick={() =>
-                                  handleDownload(nota.id, "xml")
-                                }
+                                onClick={() => handleDownload(nota.id, "xml")}
                               >
                                 <FileText className="size-4" />
                               </Button>
@@ -530,20 +547,22 @@ export function NfeList() {
                                 variant="ghost"
                                 size="icon"
                                 className="size-8"
-                                onClick={() =>
-                                  handleDownload(nota.id, "danfe")
-                                }
+                                onClick={() => handleDownload(nota.id, "danfe")}
                               >
                                 <Download className="size-4" />
                               </Button>
                             )}
-                            {(nota.status === "AUTHORIZED" || nota.status === "CANCELLED") && (
+                            {(nota.status === "AUTHORIZED" ||
+                              nota.status === "CANCELLED") && (
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="size-8"
                                 onClick={() => {
-                                  setEmailTarget({ id: nota.id, numero: nota.numero });
+                                  setEmailTarget({
+                                    id: nota.id,
+                                    numero: nota.numero,
+                                  });
                                   setIsEmailOpen(true);
                                 }}
                               >
@@ -556,7 +575,10 @@ export function NfeList() {
                                 size="icon"
                                 className="size-8 text-destructive hover:text-destructive"
                                 onClick={() => {
-                                  setCancelTarget({ id: nota.id, numero: nota.numero });
+                                  setCancelTarget({
+                                    id: nota.id,
+                                    numero: nota.numero,
+                                  });
                                   setIsCancelOpen(true);
                                 }}
                               >
