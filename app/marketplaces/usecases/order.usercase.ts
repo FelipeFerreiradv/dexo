@@ -201,16 +201,24 @@ export class OrderUseCase {
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
-    const accountListings = await prisma.productListing.findMany({
-      where: { marketplaceAccountId: account.id },
-      include: { product: true },
-    });
-    const listingMap = new Map(
-      accountListings.map((l) => [
-        `${l.marketplaceAccountId}_${l.externalListingId}`,
-        l,
-      ]),
+    // EGRESS: o listingMap só é consumido por processOrder, que só roda para
+    // pedidos NOVOS. Em regime estável (nenhum pedido novo no ciclo) NÃO relemos
+    // todos os anúncios da conta (com product) — antes isso era feito a cada
+    // ciclo de 15 min por conta, relendo o catálogo inteiro = grosso do egress.
+    // Comportamento idêntico: quando há pedido novo, o mapa é montado igual.
+    const hasNewOrders = mlOrders.some(
+      (o) => !existingSet.has(o.id.toString()),
     );
+    const listingMap = new Map<string, any>();
+    if (hasNewOrders) {
+      const accountListings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        include: { product: true },
+      });
+      for (const l of accountListings) {
+        listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
+      }
+    }
 
     for (const mlOrder of mlOrders) {
       const extId = mlOrder.id.toString();
@@ -389,16 +397,21 @@ export class OrderUseCase {
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
-    const accountListings = await prisma.productListing.findMany({
-      where: { marketplaceAccountId: account.id },
-      include: { product: true },
-    });
-    const listingMap = new Map(
-      accountListings.map((l) => [
-        `${l.marketplaceAccountId}_${l.externalListingId}`,
-        l,
-      ]),
+    // EGRESS: idem ML — só relê todos os anúncios da conta (com product) se
+    // houver pedido novo no ciclo (listingMap só é usado em pedidos novos).
+    const hasNewOrders = (shopeeOrders as ShopeeOrderDetail[]).some(
+      (o) => !existingSet.has(o.order_sn),
     );
+    const listingMap = new Map<string, any>();
+    if (hasNewOrders) {
+      const accountListings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        include: { product: true },
+      });
+      for (const l of accountListings) {
+        listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
+      }
+    }
 
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const externalOrderId = shopeeOrder.order_sn;
