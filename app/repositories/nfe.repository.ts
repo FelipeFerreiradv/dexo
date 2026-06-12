@@ -431,16 +431,20 @@ export class NfeRepository {
   async getStats(userId: string): Promise<NfeStats> {
     // Single groupBy replaces 4 count() queries — Postgres resolves it from the
     // (userId, status) composite index in one pass.
-    const [groups, allAuthorized] = await Promise.all([
+    const [groups, sumRows] = await Promise.all([
       (prisma as any).nfeEmitida.groupBy({
         by: ["status"],
         where: { userId, status: { not: "DRAFT" } },
         _count: { _all: true },
       }),
-      (prisma as any).nfeEmitida.findMany({
-        where: { userId, status: "AUTHORIZED" },
-        select: { totaisJson: true },
-      }),
+      // EGRESS: soma o totalNota no Postgres em vez de puxar 1 linha por nota
+      // autorizada só para reduzir em JS. totaisJson é JSONB — extrai e soma
+      // direto (COALESCE p/ 0 quando não há notas). Usa o índice [userId,status].
+      prisma.$queryRaw<Array<{ valorTotal: number }>>`
+        SELECT COALESCE(SUM(("totaisJson"->>'totalNota')::numeric), 0)::float8 AS "valorTotal"
+        FROM "NfeEmitida"
+        WHERE "userId" = ${userId} AND "status" = 'AUTHORIZED'
+      `,
     ]);
 
     let total = 0;
@@ -458,10 +462,7 @@ export class NfeRepository {
       else if (g.status === "CANCELLED") canceladas = count;
     }
 
-    const valorTotal = allAuthorized.reduce((sum: number, r: any) => {
-      const totais = r.totaisJson as any;
-      return sum + (totais?.totalNota ?? 0);
-    }, 0);
+    const valorTotal = Number(sumRows[0]?.valorTotal ?? 0);
 
     return { total, autorizadas, rejeitadas, canceladas, valorTotal };
   }
@@ -480,10 +481,26 @@ export class NfeRepository {
         where.createdAt.lte = new Date(filters.dataFim + "T23:59:59.999Z");
     }
 
+    // EGRESS: o export (XLSX/PDF em nfe-listing.usecase) lê só estes campos —
+    // nunca `itens`. Select mínimo evita puxar os demais blocos JSON e os itens,
+    // cortando o payload pesado da exportação.
     return (prisma as any).nfeEmitida.findMany({
       where,
       orderBy: { createdAt: "desc" },
-      include: { itens: { orderBy: { numero: "asc" } } },
+      select: {
+        numero: true,
+        serie: true,
+        chaveAcesso: true,
+        status: true,
+        ambiente: true,
+        tipoOperacao: true,
+        naturezaOperacao: true,
+        destinatarioJson: true,
+        totaisJson: true,
+        protocoloAutorizacao: true,
+        dataEmissao: true,
+        dataAutorizacao: true,
+      },
     });
   }
 }
