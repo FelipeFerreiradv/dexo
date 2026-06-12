@@ -32,9 +32,17 @@ export function composeInfCpl(draft: {
   informacoesComplementares?: string | null;
   numeroPedido?: string | null;
 }): string {
-  const parts: string[] = [];
-  const obs = sanitizeFreeText(draft.informacoesComplementares);
-  if (obs) parts.push(obs);
-  if (draft.numeroPedido) parts.push(`Pedido: ${draft.numeroPedido}`);
+  const pedido = draft.numeroPedido ? `Pedido: ${draft.numeroPedido}` : "";
+  let obs = sanitizeFreeText(draft.informacoesComplementares);
+
+  // O "Pedido: N" tem prioridade no limite de 5000: se a soma estourar, quem
+  // cede espaço é a observação — nunca cortamos o número do pedido no meio.
+  if (obs && pedido) {
+    const maxObs = INF_CPL_MAX_LENGTH - pedido.length - " | ".length;
+    if (maxObs <= 0) obs = "";
+    else if (obs.length > maxObs) obs = obs.slice(0, maxObs);
+  }
+
+  const parts = [obs, pedido].filter(Boolean);
   return parts.join(" | ").slice(0, INF_CPL_MAX_LENGTH);
 }

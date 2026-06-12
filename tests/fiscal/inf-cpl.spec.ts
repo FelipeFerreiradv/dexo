@@ -36,6 +36,23 @@ describe("composeInfCpl", () => {
     });
     expect(out.length).toBe(INF_CPL_MAX_LENGTH);
   });
+
+  it("obs longa + pedido: o Pedido sobrevive inteiro, a obs cede espaco", () => {
+    const out = composeInfCpl({
+      informacoesComplementares: "x".repeat(4998),
+      numeroPedido: "PED-12345",
+    });
+    expect(out.length).toBeLessThanOrEqual(INF_CPL_MAX_LENGTH);
+    expect(out.endsWith(" | Pedido: PED-12345")).toBe(true);
+  });
+
+  it("soma abaixo do limite: nada e truncado", () => {
+    const out = composeInfCpl({
+      informacoesComplementares: "obs curta",
+      numeroPedido: "PED-1",
+    });
+    expect(out).toBe("obs curta | Pedido: PED-1");
+  });
 });
 
 describe("sanitizeFreeText", () => {
