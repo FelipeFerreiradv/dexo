@@ -1225,6 +1225,11 @@ class ProductRepositoryPrisma implements ProductRepository {
   async findPublishedCategories(
     userId: string,
   ): Promise<ProductPublishedCategoryFilterOption[]> {
+    // EGRESS: só precisamos dos pares distintos (conta, categoria) — não de uma
+    // linha por anúncio. `distinct` vira DISTINCT ON no Postgres, cortando de
+    // ~N anúncios (dezenas de milhares em contas grandes) para o nº de pares
+    // distintos. A dedup/normalização em JS abaixo continua igual (a categoria
+    // é determinada pela conta+categoria, então a saída é idêntica).
     const listings = await prisma.productListing.findMany({
       where: {
         requestedCategoryId: { not: null },
@@ -1237,7 +1242,9 @@ class ProductRepositoryPrisma implements ProductRepository {
           },
         },
       },
+      distinct: ["marketplaceAccountId", "requestedCategoryId"],
       select: {
+        marketplaceAccountId: true,
         requestedCategoryId: true,
         marketplaceAccount: {
           select: {

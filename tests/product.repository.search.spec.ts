@@ -612,7 +612,9 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
           },
         },
       },
+      distinct: ["marketplaceAccountId", "requestedCategoryId"],
       select: {
+        marketplaceAccountId: true,
         requestedCategoryId: true,
         marketplaceAccount: {
           select: {
