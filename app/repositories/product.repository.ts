@@ -381,7 +381,10 @@ class ProductRepositoryPrisma implements ProductRepository {
       weightKg: true,
       attributes: true,
       mlCatalogProductId: true,
-      mlCatalogSnapshot: true,
+      // mlCatalogSnapshot OMITIDO da lista: é um JSONB pesado (KB/linha) que a UI
+      // nunca lê (só usa mlCatalogProductId). O detalhe (findByIdDetailed) usa
+      // `include` e continua trazendo-o; o update guarda `!== undefined`, então
+      // salvar uma edição não o sobrescreve. EGRESS: corta o maior peso por linha.
       scrapId: true,
       listings: {
         select: {
