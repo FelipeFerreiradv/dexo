@@ -68,6 +68,9 @@ export function StepFinalizar({ getValues }: Props) {
           ["Destino", DESTINO_LABELS[data.destinoOperacao] ?? data.destinoOperacao],
           ["Natureza", data.naturezaOperacao],
           ...(data.numeroPedido ? [["N. Pedido", data.numeroPedido] as [string, string]] : []),
+          ...(data.informacoesComplementares
+            ? [["Observações", data.informacoesComplementares] as [string, string]]
+            : []),
         ]}
       />
 

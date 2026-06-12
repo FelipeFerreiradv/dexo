@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Control, Controller, FieldErrors, useWatch } from "react-hook-form";
 import { useSession } from "next-auth/react";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -260,6 +261,32 @@ export function StepInformacoesGerais({ control, errors }: Props) {
                 />
               )}
             />
+          </div>
+
+          <div className="space-y-1 md:col-span-2 lg:col-span-3">
+            <label className="text-sm font-medium">Observações</label>
+            <Controller
+              control={control}
+              name="informacoesComplementares"
+              render={({ field }) => (
+                <Textarea
+                  {...field}
+                  value={field.value ?? ""}
+                  onChange={(e) => field.onChange(e.target.value || null)}
+                  placeholder="Opcional"
+                  maxLength={5000}
+                  rows={3}
+                />
+              )}
+            />
+            <p className="text-xs text-muted-foreground">
+              Aparecem na NF-e e no DANFE, visíveis para o cliente
+            </p>
+            {errors.informacoesComplementares && (
+              <p className="text-xs text-destructive">
+                {errors.informacoesComplementares.message}
+              </p>
+            )}
           </div>
         </div>
       </div>

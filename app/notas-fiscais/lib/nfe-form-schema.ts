@@ -19,6 +19,12 @@ export const stepInfoGeralSchema = z.object({
   ]),
   intermediador: z.string().optional().nullable(),
   numeroPedido: z.string().optional().nullable(),
+  // Limite do infCpl no leiaute 4.00 da NF-e
+  informacoesComplementares: z
+    .string()
+    .max(5000, "Maximo de 5000 caracteres")
+    .optional()
+    .nullable(),
   dataEmissao: z.string().optional().nullable(),
   dataSaida: z.string().optional().nullable(),
 });
@@ -185,6 +191,7 @@ export const nfeDraftFormSchema = z.object({
   ]),
   intermediador: z.string().optional().nullable(),
   numeroPedido: z.string().optional().nullable(),
+  informacoesComplementares: z.string().max(5000).optional().nullable(),
   dataEmissao: z.string().optional().nullable(),
   dataSaida: z.string().optional().nullable(),
 
