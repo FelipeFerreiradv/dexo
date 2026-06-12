@@ -111,8 +111,35 @@ Erro vaza `message`/`stack` ao cliente ([api.ts:204-207](app/api/api.ts)); `fast
 
 ---
 
-## Estado da implementação (atualizado conforme os PRs avançam)
+## Estado da implementação (commits no branch `claude/keen-lederberg-2d5f37`)
 
-- **PR-A0 (fecha disclosure de senha + rotas sem auth):** ✅ implementado + testes verdes.
-- **PR-A1 (hashing bcrypt):** em andamento.
-- Demais PRs e artefatos de Frente B/C: ver `PLANO_SEGURANCA.md`.
+> Cada PR rodou `tsc` (baseline 105–107 erros pré-existentes, **0 novos**) e a suíte **vitest verde (1211 testes, 0 falhas)**. Todo fix tem teste de segurança dedicado em `tests/security/`.
+
+| PR               | O que fecha                                                            | Status                      |
+| ---------------- | ---------------------------------------------------------------------- | --------------------------- |
+| **A0** `1c4d4bd` | P0-1 disclosure de senha + P0-4 rotas sem auth (users/system-logs)     | ✅ feito + testes           |
+| **A1** `2ccd783` | P0-2 hashing bcrypt + rehash transparente                              | ✅ feito + testes           |
+| **A3** `d94336d` | P0-5 IDOR (order/compatibility/nfe/location/scrap/listings)            | ✅ feito + testes           |
+| **A4** `dbe3c56` | P1-2/3/4/7 helmet + rate-limit + CORS fail-closed + headers Next       | ✅ feito + testes           |
+| **A7** `29d9dc4` | P1-6 redação de PII/segredos nos logs                                  | ✅ feito + testes           |
+| **A8** `3460c18` | P2 erros 5xx genéricos em prod + .gitignore de certs                   | ✅ feito                    |
+| **A5** `56d15a6` | P1-1 infra de cifra de tokens (`SecretCipher`, no-op sem a chave)      | ✅ infra feita + testes     |
+| **A2** `760f1a2` | P0-3 bypass de auth — mecanismo de token (dual-mode `legacy`→`strict`) | ✅ mecanismo feito + testes |
+| **Frente B**     | RLS + revoke SQL idempotente + README                                  | ✅ `supabase/security/`     |
+| **Frente C**     | UFW/SSH/fail2ban/unattended-upgrades/runbook + rembg bind              | ✅ `infra/hardening/`       |
+
+### O que falta — passos finais (staged, exigem validação contra ML/Shopee/webhooks reais)
+
+Estes itens tocam **fluxos de receita** que não dá para validar fora de staging/produção; por isso entreguei a base e o plano, respeitando a regra **ZERO REGRESSÃO**:
+
+1. **A2 — fechar o bypass (cutover):** o mecanismo está pronto em modo `legacy` (zero mudança). Para fechar de fato:
+   1. Migrar os ~60 call sites do front de `headers: { email }` para `headers: authHeaders(session)` (helper em `lib/api.ts`). Lista de arquivos: `app/page.tsx`, `app/clientes/components/customers-list.tsx`, `app/financeiro/components/*`, `app/localizacoes/components/locations-list.tsx`, `app/sucatas/components/*`, `app/notas-fiscais/components/*`, `app/integracoes/**`, `app/produtos/components/*` (e o upload em `components/ui/image-upload.tsx`), etc. — todos os `getApiBaseUrl()` com `headers`.
+   2. Definir `API_JWT_SECRET` (32+ bytes aleatórios) na VPS e validar em staging que todas as telas mandam o Bearer (logar requisições sem token).
+   3. Virar `API_AUTH_MODE=strict` em produção → bypass fechado. Adicionar `authMiddleware` ao `POST /upload/image` nesse momento.
+2. **A5 — ligar a cifra de tokens:** `SecretCipher` pronto. Falta o wiring (encrypt-on-write + decrypt-on-read) cobrindo **todos** os caminhos de leitura — queries diretas do `MarketplaceRepository` **e** os `include: { marketplaceAccount }` em `listing.repository.ts`, `question.repository.ts`, `product.usecase.ts`, `listing.usecase.ts`. Definir `MARKETPLACE_TOKEN_ENC_KEY`, validar publish/sync/mensagens ML+Shopee em staging, depois prod (decrypt-on-read migra o legado sozinho).
+3. **A6 — webhooks (P1):** verificar assinatura HMAC dos webhooks Shopee (`partner_key` sobre o corpo cru) e allowlist de IP de origem para ML (ML não assina push). Implementar **flag log-only primeiro** (não derruba webhook legítimo), validar com conta sandbox, depois enforce. Risco: derrubar webhook legítimo = pedido não importado.
+4. **xlsx (P1-8):** avaliar upgrade do `xlsx@0.18.5` (CVEs). Uso atual é só em scripts admin confiáveis (não recebe arquivo de usuário final) → risco real baixo; upgrade quando conveniente.
+
+### Frentes B e C
+
+Aplicação manual pelo Felipe — ver `ACOES_MANUAIS_SEGURANCA.md` (priorizado) + `supabase/security/README.md` e `infra/hardening/RUNBOOK_VPS.md`.

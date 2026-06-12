@@ -94,6 +94,7 @@
 
 ## Resumo da divisão de trabalho
 
-- **Código (já feito/em PRs por mim):** auth, hashing, isolamento, headers, rate-limit, cifra de tokens, redação de logs, webhooks — ver `PLANO_SEGURANCA.md`.
+- **Código já feito + commitado (8 PRs, suíte verde):** disclosure de senha + rotas sem auth (A0), hashing bcrypt (A1), isolamento multi-tenant/IDOR (A3), headers+helmet+rate-limit+CORS (A4), redação de PII nos logs (A7), erros genéricos (A8), infra de cifra de tokens (A5), mecanismo de token de auth em modo `legacy` (A2). Ver tabela no `RELATORIO_SEGURANCA_DIAGNOSTICO.md`.
+- **Código — passos finais staged (eu deixei pronto + plano; precisam validar contra ML/Shopee/webhooks reais):** (a) **virar `API_AUTH_MODE=strict`** após migrar os call sites do front p/ `authHeaders(session)`; (b) **ligar a cifra de tokens** (`MARKETPLACE_TOKEN_ENC_KEY`); (c) **verificação de assinatura de webhooks** (A6). Detalhes na seção "O que falta" do relatório.
 - **Banco (você aplica):** itens 1–4, 7 + SQLs de `supabase/security/`.
 - **VPS/painéis (você executa):** itens 5–6, 8–13 + scripts de `infra/hardening/`.
