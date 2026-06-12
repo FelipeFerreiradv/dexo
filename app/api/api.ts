@@ -9,6 +9,8 @@ loadEnvOrExit();
 
 import { fastify } from "fastify";
 import fastifyCors from "@fastify/cors";
+import fastifyHelmet from "@fastify/helmet";
+import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import fastifyCompress from "@fastify/compress";
@@ -35,13 +37,47 @@ import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
-const api = fastify({ logger: true });
+// trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
+// para que request.ip seja o IP REAL do cliente (rate-limit + logs corretos).
+// Pré-requisito de segurança: a porta 3333 NÃO pode estar exposta na internet
+// (ver infra/hardening/ufw-setup.sh) — senão o X-Forwarded-For é forjável.
+const api = fastify({ logger: true, trustProxy: true });
+
+// Security headers (helmet). CSP/CORP desligados de propósito: a API serve
+// JSON + imagens em /uploads (consumidas cross-origin pelo app Next) + a doc
+// OpenAPI em /api-docs — uma CSP/CORP restritiva quebraria esses fluxos. Os
+// demais headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.) ficam
+// ativos. A CSP do FRONT vai no next.config.ts.
+api.register(fastifyHelmet, {
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false,
+});
+
+// Rate limit global por IP (anti brute-force / DoS). Generoso por padrão para
+// não atrapalhar o uso normal do dashboard; ajustável via RATE_LIMIT_MAX.
+// Health/readiness ficam isentos. Excede => 429.
+api.register(fastifyRateLimit, {
+  max: Number(process.env.RATE_LIMIT_MAX) || 300,
+  timeWindow: "1 minute",
+  allowList: (req) => req.url === "/health" || req.url === "/ready",
+});
 
 // Response compression (gzip/brotli) for faster API transfers
 api.register(fastifyCompress, { global: true });
 
+// CORS — falha fechado em produção: exige CORS_ORIGIN explícito (nunca o
+// fallback localhost em prod). Em dev mantém o default localhost:3000.
+const corsOrigin = process.env.CORS_ORIGIN;
+if (process.env.NODE_ENV === "production" && !corsOrigin) {
+  // eslint-disable-next-line no-console
+  console.error(
+    "[security] CORS_ORIGIN é obrigatório em produção (origem exata do app). Boot abortado.",
+  );
+  process.exit(1);
+}
 api.register(fastifyCors, {
-  origin: process.env.CORS_ORIGIN || "http://localhost:3000",
+  origin: corsOrigin || "http://localhost:3000",
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 });
