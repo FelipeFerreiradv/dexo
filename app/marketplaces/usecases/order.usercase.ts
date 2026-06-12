@@ -213,7 +213,17 @@ export class OrderUseCase {
     if (hasNewOrders) {
       const accountListings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
-        include: { product: true },
+        // EGRESS: select mínimo. mapOrderItems/mapShopeeOrderItems usam APENAS
+        // listing.id, listing.productId e checam se listing.product EXISTE —
+        // nenhum campo do product é lido. Antes o include puxava o product
+        // inteiro (name/description/imageUrl/...) de TODOS os anúncios.
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          externalListingId: true,
+          product: { select: { id: true } },
+        },
       });
       for (const l of accountListings) {
         listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
@@ -406,7 +416,17 @@ export class OrderUseCase {
     if (hasNewOrders) {
       const accountListings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
-        include: { product: true },
+        // EGRESS: select mínimo. mapOrderItems/mapShopeeOrderItems usam APENAS
+        // listing.id, listing.productId e checam se listing.product EXISTE —
+        // nenhum campo do product é lido. Antes o include puxava o product
+        // inteiro (name/description/imageUrl/...) de TODOS os anúncios.
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          externalListingId: true,
+          product: { select: { id: true } },
+        },
       });
       for (const l of accountListings) {
         listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
