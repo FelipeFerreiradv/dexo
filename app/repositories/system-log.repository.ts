@@ -51,6 +51,7 @@ export class SystemLogRepository {
     try {
       const {
         userId,
+        userIds,
         action,
         resource,
         level,
@@ -62,7 +63,10 @@ export class SystemLogRepository {
 
       const where: any = {};
 
-      if (userId) where.userId = userId;
+      // Escopo multi-tenant tem precedência: `userIds` (mesmo vazio = fail-closed,
+      // não retorna nada de outros tenants). Sem ele, mantém o filtro escalar.
+      if (userIds) where.userId = { in: userIds };
+      else if (userId) where.userId = userId;
       if (action) where.action = action;
       if (resource) where.resource = resource;
       if (level) where.level = level;
@@ -133,9 +137,11 @@ export class SystemLogRepository {
   }
 
   /**
-   * Remove logs antigos (para limpeza)
+   * Remove logs antigos (para limpeza).
+   * `userIds` (opcional) restringe a exclusão ao tenant — sem ele a operação
+   * é global e deve ser reservada a manutenção administrativa.
    */
-  static async deleteOldLogs(olderThanDays: number = 90) {
+  static async deleteOldLogs(olderThanDays: number = 90, userIds?: string[]) {
     try {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
@@ -145,6 +151,7 @@ export class SystemLogRepository {
           createdAt: {
             lt: cutoffDate,
           },
+          ...(userIds ? { userId: { in: userIds } } : {}),
         },
       });
 

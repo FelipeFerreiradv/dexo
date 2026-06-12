@@ -271,7 +271,9 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         ) AS counter,
         (SELECT COALESCE(SUM(p."price" * p."stock"), 0)::float8
            FROM "Product" p
+           JOIN "Scrap" s ON s."id" = p."scrapId"
            WHERE p."scrapId" = ${scrapId}
+             AND s."userId" = ${userId}
              AND p."stock" > 0
         ) AS potential
     `);
@@ -332,7 +334,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
 
     const soldBy = new Map<string, number>();
     for (const r of marketplaceSold) {
-      soldBy.set(r.productId, (r._sum.quantity ?? 0));
+      soldBy.set(r.productId, r._sum.quantity ?? 0);
     }
     for (const r of counterSold) {
       soldBy.set(

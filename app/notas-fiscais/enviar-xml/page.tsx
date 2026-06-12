@@ -3,13 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import {
-  Send,
-  Download,
-  FileText,
-  Mail,
-  CheckCircle2,
-} from "lucide-react";
+import { Send, Download, FileText, Mail, CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { getApiBaseUrl } from "@/lib/api";
+import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { NfeStatusBadge } from "../components/nfe-status-badge";
 import { NfeSendEmailDialog } from "../components/nfe-send-email-dialog";
 
@@ -90,15 +84,12 @@ export default function EnviarXmlPage() {
         limit: "50",
         status: "AUTHORIZED",
       });
-      const response = await fetch(
-        `${getApiBaseUrl()}/fiscal/nfe?${params}`,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            email: session.user.email,
-          },
+      const response = await fetch(`${getApiBaseUrl()}/fiscal/nfe?${params}`, {
+        headers: {
+          "Content-Type": "application/json",
+          email: session.user.email,
         },
-      );
+      });
       if (!response.ok) throw new Error("Erro ao buscar notas");
       const data = await response.json();
       setNotas(data.notas ?? []);
@@ -128,12 +119,30 @@ export default function EnviarXmlPage() {
     );
   }
 
-  const handleDownload = (nfeId: string, type: "xml" | "danfe") => {
+  const handleDownload = async (nfeId: string, type: "xml" | "danfe") => {
     if (!session?.user?.email) return;
-    window.open(
-      `${getApiBaseUrl()}/fiscal/nfe/${nfeId}/${type}?email=${encodeURIComponent(session.user.email)}`,
-      "_blank",
-    );
+    // fetch + blob (a ponte injeta o Bearer); funciona no modo strict e não
+    // expõe credencial na URL.
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/fiscal/nfe/${nfeId}/${type}`,
+        {
+          headers: authHeaders(session),
+        },
+      );
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `nfe-${nfeId}.${type === "danfe" ? "pdf" : "xml"}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      // silencioso
+    }
   };
 
   return (

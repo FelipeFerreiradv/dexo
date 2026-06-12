@@ -23,7 +23,14 @@
 
 # misc
 .DS_Store
+# Certificados/segredos: nunca versionar (cert A1 .pfx/.p12, chaves, etc.)
 *.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+*.der
 
 # debug
 npm-debug.log*

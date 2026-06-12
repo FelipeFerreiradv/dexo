@@ -16,7 +16,8 @@ export async function compatibilityRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { productId } = request.params as { productId: string };
-      const items = await useCase.getByProductId(productId);
+      const userId = request.user!.dataOwnerId;
+      const items = await useCase.getByProductId(productId, userId);
       return reply.status(200).send({ compatibilities: items });
     },
   );
@@ -45,13 +46,17 @@ export async function compatibilityRoutes(app: FastifyInstance) {
         });
       }
 
-      const item = await useCase.addOne(productId, {
-        brand: body.brand,
-        model: body.model,
-        yearFrom: body.yearFrom ?? null,
-        yearTo: body.yearTo ?? null,
-        version: body.version ?? null,
-      });
+      const item = await useCase.addOne(
+        productId,
+        {
+          brand: body.brand,
+          model: body.model,
+          yearFrom: body.yearFrom ?? null,
+          yearTo: body.yearTo ?? null,
+          version: body.version ?? null,
+        },
+        request.user!.dataOwnerId,
+      );
       return reply.status(201).send(item);
     },
   );
@@ -99,6 +104,7 @@ export async function compatibilityRoutes(app: FastifyInstance) {
           yearTo: i.yearTo ?? null,
           version: i.version ?? null,
         })),
+        request.user!.dataOwnerId,
       );
       return reply.status(201).send({ compatibilities: items });
     },
@@ -142,6 +148,7 @@ export async function compatibilityRoutes(app: FastifyInstance) {
           yearTo: i.yearTo ?? null,
           version: i.version ?? null,
         })),
+        request.user!.dataOwnerId,
       );
       return reply.status(200).send({ compatibilities: result });
     },
@@ -155,7 +162,7 @@ export async function compatibilityRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { productId: string; id: string };
-      await useCase.remove(id);
+      await useCase.remove(id, request.user!.dataOwnerId);
       return reply.status(204).send();
     },
   );
@@ -169,7 +176,7 @@ export async function compatibilityRoutes(app: FastifyInstance) {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { productId } = request.params as { productId: string };
-      await useCase.removeAll(productId);
+      await useCase.removeAll(productId, request.user!.dataOwnerId);
       return reply.status(204).send();
     },
   );

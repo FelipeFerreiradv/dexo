@@ -100,11 +100,10 @@ export class OrderUseCase {
       results: [],
     };
 
-    const accounts =
-      await MarketplaceRepository.findAllByUserIdAndPlatform(
-        userId,
-        Platform.MERCADO_LIVRE,
-      );
+    const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.MERCADO_LIVRE,
+    );
 
     const validAccounts =
       accounts?.filter((acc) => acc.accessToken && acc.externalUserId) ?? [];
@@ -202,16 +201,34 @@ export class OrderUseCase {
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
-    const accountListings = await prisma.productListing.findMany({
-      where: { marketplaceAccountId: account.id },
-      include: { product: true },
-    });
-    const listingMap = new Map(
-      accountListings.map((l) => [
-        `${l.marketplaceAccountId}_${l.externalListingId}`,
-        l,
-      ]),
+    // EGRESS: o listingMap só é consumido por processOrder, que só roda para
+    // pedidos NOVOS. Em regime estável (nenhum pedido novo no ciclo) NÃO relemos
+    // todos os anúncios da conta (com product) — antes isso era feito a cada
+    // ciclo de 15 min por conta, relendo o catálogo inteiro = grosso do egress.
+    // Comportamento idêntico: quando há pedido novo, o mapa é montado igual.
+    const hasNewOrders = mlOrders.some(
+      (o) => !existingSet.has(o.id.toString()),
     );
+    const listingMap = new Map<string, any>();
+    if (hasNewOrders) {
+      const accountListings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        // EGRESS: select mínimo. mapOrderItems/mapShopeeOrderItems usam APENAS
+        // listing.id, listing.productId e checam se listing.product EXISTE —
+        // nenhum campo do product é lido. Antes o include puxava o product
+        // inteiro (name/description/imageUrl/...) de TODOS os anúncios.
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          externalListingId: true,
+          product: { select: { id: true } },
+        },
+      });
+      for (const l of accountListings) {
+        listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
+      }
+    }
 
     for (const mlOrder of mlOrders) {
       const extId = mlOrder.id.toString();
@@ -282,11 +299,10 @@ export class OrderUseCase {
     days: number = 3,
     deductStock: boolean = true,
   ): Promise<ImportOrdersResult> {
-    const accounts =
-      await MarketplaceRepository.findAllByUserIdAndPlatform(
-        userId,
-        Platform.SHOPEE,
-      );
+    const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.SHOPEE,
+    );
 
     const validAccounts =
       accounts?.filter((acc) => acc.accessToken && acc.shopId) ?? [];
@@ -391,16 +407,31 @@ export class OrderUseCase {
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
-    const accountListings = await prisma.productListing.findMany({
-      where: { marketplaceAccountId: account.id },
-      include: { product: true },
-    });
-    const listingMap = new Map(
-      accountListings.map((l) => [
-        `${l.marketplaceAccountId}_${l.externalListingId}`,
-        l,
-      ]),
+    // EGRESS: idem ML — só relê todos os anúncios da conta (com product) se
+    // houver pedido novo no ciclo (listingMap só é usado em pedidos novos).
+    const hasNewOrders = (shopeeOrders as ShopeeOrderDetail[]).some(
+      (o) => !existingSet.has(o.order_sn),
     );
+    const listingMap = new Map<string, any>();
+    if (hasNewOrders) {
+      const accountListings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        // EGRESS: select mínimo. mapOrderItems/mapShopeeOrderItems usam APENAS
+        // listing.id, listing.productId e checam se listing.product EXISTE —
+        // nenhum campo do product é lido. Antes o include puxava o product
+        // inteiro (name/description/imageUrl/...) de TODOS os anúncios.
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          externalListingId: true,
+          product: { select: { id: true } },
+        },
+      });
+      for (const l of accountListings) {
+        listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
+      }
+    }
 
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const externalOrderId = shopeeOrder.order_sn;
@@ -463,10 +494,16 @@ export class OrderUseCase {
         // Não repetir a decisão de baixa com base no status local mapeado.
         if (deductStock) {
           try {
-            await this.deductStockForOrder(created, `Venda Shopee #${externalOrderId}`);
+            await this.deductStockForOrder(
+              created,
+              `Venda Shopee #${externalOrderId}`,
+            );
             stockDeducted = true;
           } catch (err) {
-            console.error(`[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`, err);
+            console.error(
+              `[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
+              err,
+            );
           }
         }
 
@@ -610,7 +647,10 @@ export class OrderUseCase {
           await this.deductStockForOrder(order, `Venda ML #${externalOrderId}`);
           stockDeducted = true;
         } catch (err) {
-          console.error(`[OrderUseCase] Falha ao descontar estoque para pedido ML #${externalOrderId} (order=${order.id}). Estoque NÃO foi descontado.`, err);
+          console.error(
+            `[OrderUseCase] Falha ao descontar estoque para pedido ML #${externalOrderId} (order=${order.id}). Estoque NÃO foi descontado.`,
+            err,
+          );
         }
       }
 
@@ -1081,7 +1121,9 @@ export class OrderUseCase {
     if (uniqueProductIds.length === 0) return;
 
     const syncResults = await Promise.allSettled(
-      uniqueProductIds.map((productId) => SyncUseCase.syncProductStock(productId)),
+      uniqueProductIds.map((productId) =>
+        SyncUseCase.syncProductStock(productId),
+      ),
     );
 
     let totalListings = 0;
@@ -1103,7 +1145,9 @@ export class OrderUseCase {
 
       totalListings += result.value.length;
       successCount += result.value.filter((entry) => entry.success).length;
-      const failedListings = result.value.filter((entry) => !entry.success).length;
+      const failedListings = result.value.filter(
+        (entry) => !entry.success,
+      ).length;
       failureCount += failedListings;
 
       result.value
@@ -1236,10 +1280,12 @@ export class OrderUseCase {
   }
 
   /**
-   * Busca detalhes de um pedido
+   * Busca detalhes de um pedido (escopado pelo dono quando `userId` informado).
    */
-  static async getOrderById(orderId: string): Promise<Order | null> {
-    return orderRepository.findById(orderId);
+  static async getOrderById(
+    orderId: string,
+    userId?: string,
+  ): Promise<Order | null> {
+    return orderRepository.findById(orderId, userId);
   }
 }
-

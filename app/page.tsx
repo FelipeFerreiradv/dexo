@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "./lib/auth";
-import { getApiBaseUrl } from "@/lib/api";
+import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
 import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
@@ -44,13 +44,12 @@ export const metadata: Metadata = {
 
 async function getMarketplaceIntegrations(
   userEmail: string,
+  apiToken?: string,
 ): Promise<MarketplaceIntegration[]> {
   try {
     const response = await fetch(`${getApiBaseUrl()}/dashboard/integrations`, {
       cache: "no-store",
-      headers: {
-        email: userEmail,
-      },
+      headers: authHeaders({ user: { email: userEmail }, apiToken }),
     });
     if (!response.ok) return [];
     const data = await response.json();
@@ -62,11 +61,15 @@ async function getMarketplaceIntegrations(
 
 async function getOrdersOverTime(
   userEmail: string,
+  apiToken?: string,
 ): Promise<OrderOverTimeItem[]> {
   try {
     const res = await fetch(
       `${getApiBaseUrl()}/dashboard/orders-over-time?days=180`,
-      { cache: "no-store", headers: { email: userEmail } },
+      {
+        cache: "no-store",
+        headers: authHeaders({ user: { email: userEmail }, apiToken }),
+      },
     );
     if (!res.ok) return [];
     return (await res.json()) as OrderOverTimeItem[];
@@ -77,11 +80,15 @@ async function getOrdersOverTime(
 
 async function getListingStats(
   userEmail: string,
+  apiToken?: string,
 ): Promise<ListingStats | null> {
   try {
     const res = await fetch(
       `${getApiBaseUrl()}/dashboard/listing-stats?days=180`,
-      { cache: "no-store", headers: { email: userEmail } },
+      {
+        cache: "no-store",
+        headers: authHeaders({ user: { email: userEmail }, apiToken }),
+      },
     );
     if (!res.ok) return null;
     return (await res.json()) as ListingStatsResponse;
@@ -92,11 +99,12 @@ async function getListingStats(
 
 async function getAccountStats(
   userEmail: string,
+  apiToken?: string,
 ): Promise<Record<string, { revenue: number; orders: number }>> {
   try {
     const res = await fetch(`${getApiBaseUrl()}/dashboard/account-stats`, {
       cache: "no-store",
-      headers: { email: userEmail },
+      headers: authHeaders({ user: { email: userEmail }, apiToken }),
     });
     if (!res.ok) return {};
     const data = await res.json();
@@ -160,17 +168,15 @@ export default async function Home() {
     redirect("/login");
   }
 
-  const [
-    integrations,
-    ordersOverTime,
-    listingStats,
-    accountStats,
-  ] = await Promise.all([
-    getMarketplaceIntegrations(userSession.user?.email || ""),
-    getOrdersOverTime(userSession.user?.email || ""),
-    getListingStats(userSession.user?.email || ""),
-    getAccountStats(userSession.user?.email || ""),
-  ]);
+  const email = userSession.user?.email || "";
+  const apiToken = (userSession as { apiToken?: string }).apiToken;
+  const [integrations, ordersOverTime, listingStats, accountStats] =
+    await Promise.all([
+      getMarketplaceIntegrations(email, apiToken),
+      getOrdersOverTime(email, apiToken),
+      getListingStats(email, apiToken),
+      getAccountStats(email, apiToken),
+    ]);
 
   const activeIntegrations = integrations.filter((i) => i.status === "ACTIVE");
   const sortedOrders = [...ordersOverTime].sort(

@@ -6,6 +6,7 @@ import {
   UserUpdate,
 } from "../interfaces/user.interface";
 import prisma from "../lib/prisma";
+import { hashPassword, isHashed } from "../lib/password";
 
 class UserRepositoryPrisma implements UserRepository {
   private mapUser(u: PrismaUser): User {
@@ -44,11 +45,13 @@ class UserRepositoryPrisma implements UserRepository {
 
   async create(data: UserCreate): Promise<User> {
     try {
+      // Senha SEMPRE armazenada como hash bcrypt (nunca texto plano).
+      const hashedPassword = await hashPassword(data.password);
       const result = await prisma.user.create({
         data: {
           name: data.name,
           email: data.email,
-          password: data.password,
+          password: hashedPassword,
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
           defaultCostPrice: data.defaultCostPrice,
@@ -110,11 +113,20 @@ class UserRepositoryPrisma implements UserRepository {
 
   async update(id: string, data: UserUpdate): Promise<User> {
     try {
+      // Hash da senha quando fornecida em texto plano (troca de senha ou rehash
+      // transparente). `undefined` => Prisma ignora o campo (não sobrescreve).
+      // Valor já hasheado (rehash vindo do login) é gravado como está.
+      const passwordToStore =
+        data.password === undefined
+          ? undefined
+          : isHashed(data.password)
+            ? data.password
+            : await hashPassword(data.password);
       const result = await prisma.user.update({
         where: { id },
         data: {
           name: data.name,
-          password: data.password,
+          password: passwordToStore,
           avatarUrl: data.avatarUrl,
           defaultProductDescription: data.defaultProductDescription,
           defaultCostPrice: data.defaultCostPrice,

@@ -80,6 +80,12 @@ export interface SystemLogCreate {
 
 export interface SystemLogFilters {
   userId?: string;
+  /**
+   * Escopo multi-tenant: quando presente, restringe os logs aos `userId` da
+   * lista (dono + colaboradores). Tem precedência sobre `userId`. Lista vazia
+   * = nenhum resultado (fail-closed). Usado para isolar logs por tenant.
+   */
+  userIds?: string[];
   action?: LogAction;
   resource?: string;
   level?: LogLevel;

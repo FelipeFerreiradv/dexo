@@ -20,6 +20,13 @@ vi.mock("../app/marketplaces/services/image-resize.service", () => ({
   processUploadedImage: (...args: any[]) => processUploadedImageMock(...args),
 }));
 
+// authMiddleware agora protege POST /upload/image. Aqui mockamos para um
+// no-op (passa direto) — o foco destes testes é o pipeline de imagem, não a
+// auth (coberta em tests/security/api-auth-token.spec.ts).
+vi.mock("../app/middlewares/auth.middleware", () => ({
+  authMiddleware: async () => {},
+}));
+
 import { uploadRoutes } from "../app/routes/upload.routes";
 
 async function makeImage(
@@ -178,7 +185,9 @@ describe("POST /upload/image", () => {
     expect(payload.success).toBe(true);
     expect(payload.removedBackground).toBe(false);
     expect(payload.format).toBe("webp");
-    expect(payload.imageUrl).toMatch(/^http:\/\/test\.local\/uploads\/.+\.webp$/);
+    expect(payload.imageUrl).toMatch(
+      /^http:\/\/test\.local\/uploads\/.+\.webp$/,
+    );
     expect(payload.originalUrl).toMatch(
       /^http:\/\/test\.local\/uploads\/.+\.orig\.jpg$/,
     );
@@ -234,7 +243,8 @@ describe("POST /upload/image", () => {
       processed,
       format: "webp",
       removedBackground: false,
-      warning: "Remoção de fundo indisponível; usamos a imagem otimizada original.",
+      warning:
+        "Remoção de fundo indisponível; usamos a imagem otimizada original.",
     });
 
     const { headers, body } = buildForm({

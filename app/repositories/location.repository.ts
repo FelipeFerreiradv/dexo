@@ -219,25 +219,29 @@ export class LocationRepositoryPrisma implements LocationRepository {
       if (!existing) throw new Error("Localização não encontrada");
     }
 
-    // Recursively delete children and unlink products
-    await this.deleteRecursive(id);
+    // Recursively delete children and unlink products (escopado pelo dono).
+    await this.deleteRecursive(id, userId);
   }
 
-  private async deleteRecursive(id: string): Promise<void> {
+  // SEGURANÇA (multi-tenant): quando `userId` é informado (sempre, vindo do
+  // delete que já validou a posse da raiz), a recursão só toca descendentes e
+  // produtos do MESMO dono — evita cascata cross-tenant caso um parentId tenha
+  // sido cruzado entre tenants.
+  private async deleteRecursive(id: string, userId?: string): Promise<void> {
     // Find all children
     const children = await prisma.location.findMany({
-      where: { parentId: id },
+      where: { parentId: id, ...(userId ? { userId } : {}) },
       select: { id: true },
     });
 
     // Recursively delete children
     for (const child of children) {
-      await this.deleteRecursive(child.id);
+      await this.deleteRecursive(child.id, userId);
     }
 
     // Unlink products from this location
     await prisma.product.updateMany({
-      where: { locationId: id },
+      where: { locationId: id, ...(userId ? { userId } : {}) },
       data: { locationId: null },
     });
 

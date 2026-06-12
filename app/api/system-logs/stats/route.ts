@@ -1,8 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/lib/auth";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 export async function GET(request: NextRequest) {
   try {
+    // SEGURANÇA: exige sessão e escopa estatísticas ao tenant do usuário.
+    const session = await getServerSession(authOptions);
+    const sessionUser = session?.user as
+      | { id?: string; parentUserId?: string | null }
+      | undefined;
+    if (!sessionUser?.id) {
+      return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    }
+
+    const userIds = await SystemLogService.getTenantUserIds({
+      id: sessionUser.id,
+      parentUserId: sessionUser.parentUserId ?? null,
+    });
+
     const { searchParams } = new URL(request.url);
 
     const startDate = searchParams.get("startDate")
@@ -13,6 +29,7 @@ export async function GET(request: NextRequest) {
       : undefined;
 
     const stats = await SystemLogService.getStats({
+      userIds,
       startDate,
       endDate,
     });

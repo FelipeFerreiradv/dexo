@@ -58,9 +58,9 @@ export const loggingMiddleware = async (
                 url,
                 statusCode,
                 duration,
-                query: request.query,
-                params: request.params,
-                body: sanitizeBody(request.body),
+                query: sanitizeDeep(request.query),
+                params: sanitizeDeep(request.params),
+                body: sanitizeDeep(request.body),
               },
             }).catch((error) => {
               // Em caso de erro no logging, não queremos quebrar a aplicação
@@ -162,8 +162,14 @@ function determineActionType(
       const id = extractIdFromUrl(cleanUrl);
       return { action: "CANCEL_NFE", resource: "NfeEmitida", resourceId: id };
     }
-    if (cleanUrl.includes("/config") && (method === "POST" || method === "PUT")) {
-      return { action: "UPDATE_FISCAL_CONFIG", resource: "CompanyFiscalConfig" };
+    if (
+      cleanUrl.includes("/config") &&
+      (method === "POST" || method === "PUT")
+    ) {
+      return {
+        action: "UPDATE_FISCAL_CONFIG",
+        resource: "CompanyFiscalConfig",
+      };
     }
   }
 
@@ -174,11 +180,19 @@ function determineActionType(
     }
     if (method === "PUT") {
       const id = extractIdFromUrl(cleanUrl);
-      return { action: "UPDATE_CUSTOMER", resource: "Customer", resourceId: id };
+      return {
+        action: "UPDATE_CUSTOMER",
+        resource: "Customer",
+        resourceId: id,
+      };
     }
     if (method === "DELETE") {
       const id = extractIdFromUrl(cleanUrl);
-      return { action: "DELETE_CUSTOMER", resource: "Customer", resourceId: id };
+      return {
+        action: "DELETE_CUSTOMER",
+        resource: "Customer",
+        resourceId: id,
+      };
     }
   }
 
@@ -189,11 +203,19 @@ function determineActionType(
     }
     if (method === "PUT") {
       const id = extractIdFromUrl(cleanUrl);
-      return { action: "UPDATE_LOCATION", resource: "Location", resourceId: id };
+      return {
+        action: "UPDATE_LOCATION",
+        resource: "Location",
+        resourceId: id,
+      };
     }
     if (method === "DELETE") {
       const id = extractIdFromUrl(cleanUrl);
-      return { action: "DELETE_LOCATION", resource: "Location", resourceId: id };
+      return {
+        action: "DELETE_LOCATION",
+        resource: "Location",
+        resourceId: id,
+      };
     }
   }
 
@@ -309,20 +331,59 @@ function createLogMessage(
 }
 
 /**
- * Remove dados sensíveis do body antes de logar
+ * Campos sensíveis (segredos + PII) que NUNCA devem ir para o SystemLog em
+ * claro. Comparação por substring case-insensitive no nome do campo, então
+ * cobre variações (accessToken, certificadoSenhaEnc, customerCpf, etc.).
+ * Como isto só afeta o CONTEÚDO do log (não o comportamento), redigir demais
+ * é seguro — preferimos pecar pelo excesso.
  */
-function sanitizeBody(body: any): any {
-  if (!body || typeof body !== "object") return body;
+const SENSITIVE_FIELD_PATTERNS = [
+  "password",
+  "senha",
+  "token",
+  "secret",
+  "apikey",
+  "api_key",
+  "authorization",
+  "cookie",
+  "cpf",
+  "cnpj",
+  "rg",
+  // PII de contato/endereço de clientes finais
+  "email",
+  "phone",
+  "mobile",
+  "telefone",
+  "celular",
+  "birthdate",
+  "datanascimento",
+];
 
-  const sanitized = { ...body };
+function isSensitiveKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return SENSITIVE_FIELD_PATTERNS.some((p) => k.includes(p));
+}
 
-  // Remover campos sensíveis
-  const sensitiveFields = ["password", "token", "secret", "key"];
-  sensitiveFields.forEach((field) => {
-    if (sanitized[field]) {
-      sanitized[field] = "[REDACTED]";
+/**
+ * Redige recursivamente campos sensíveis de qualquer objeto/array (body, query,
+ * params). Antes a função era rasa (só top-level) e não cobria PII (CPF/CNPJ/
+ * email/telefone) nem segredos aninhados.
+ */
+export function sanitizeDeep(value: any, depth = 0): any {
+  if (depth > 6) return "[TRUNCATED]"; // proteção contra estruturas profundas
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => sanitizeDeep(v, depth + 1));
+  }
+  if (typeof value !== "object") return value;
+
+  const out: Record<string, any> = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (isSensitiveKey(key)) {
+      out[key] = "[REDACTED]";
+    } else {
+      out[key] = sanitizeDeep(val, depth + 1);
     }
-  });
-
-  return sanitized;
+  }
+  return out;
 }

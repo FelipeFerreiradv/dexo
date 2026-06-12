@@ -33,6 +33,16 @@ const envSchema = z.object({
     .min(16, "NEXTAUTH_SECRET precisa ter ao menos 16 caracteres"),
   NEXTAUTH_URL: optionalUrlIsh,
 
+  // PR-A2 — token de API. API_JWT_SECRET opcional (fallback p/ NEXTAUTH_SECRET).
+  // API_AUTH_MODE: "legacy" (default, aceita token OU header email) ou "strict"
+  // (só token). Subir em legacy = zero regressão; virar strict após o front
+  // migrar para enviar o Bearer.
+  API_JWT_SECRET: z
+    .string()
+    .min(16, "API_JWT_SECRET precisa ter ao menos 16 caracteres")
+    .optional(),
+  API_AUTH_MODE: z.enum(["legacy", "strict"]).optional().default("legacy"),
+
   // Mercado Livre
   ML_CLIENT_ID: z.string().min(1, "ML_CLIENT_ID é obrigatória"),
   ML_CLIENT_SECRET: z.string().min(1, "ML_CLIENT_SECRET é obrigatória"),
@@ -48,6 +58,29 @@ const envSchema = z.object({
   APP_BACKEND_URL: urlIsh,
   NEXT_PUBLIC_API_URL: urlIsh,
   CORS_ORIGIN: optionalUrlIsh,
+
+  // Cifra de tokens de marketplace em repouso (PR-A5). OPCIONAL: sem ela, a
+  // cifra fica desligada (tokens em texto plano, comportamento atual). Quando
+  // presente, deve ser 64 chars hex (32 bytes). Ativar só após validar em
+  // staging (ver RELATORIO_SEGURANCA_DIAGNOSTICO.md).
+  MARKETPLACE_TOKEN_ENC_KEY: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^[0-9a-fA-F]{64}$/.test(v), {
+      message: "MARKETPLACE_TOKEN_ENC_KEY deve ter 64 chars hex (32 bytes)",
+    }),
+
+  // Rate limit da API (PR-A4). Opcional; default 300 req/min por IP.
+  RATE_LIMIT_MAX: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : undefined))
+    .refine((v) => v === undefined || (Number.isInteger(v) && v > 0), {
+      message: "RATE_LIMIT_MAX deve ser inteiro positivo",
+    }),
+
+  // CORS_ORIGIN: obrigatório em produção é validado no boot da API (api.ts);
+  // aqui permanece opcional para não quebrar dev/test.
 
   // Runtime
   PORT: z

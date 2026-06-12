@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
-import { Platform } from "@prisma/client";
+import { Platform, Prisma } from "@prisma/client";
 
 export const dashboardRoutes = async (fastify: FastifyInstance) => {
   /**
@@ -22,7 +22,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const since = new Date();
         since.setDate(since.getDate() - days);
 
-        const [accounts, created] = await Promise.all([
+        const [accounts, createdGrouped] = await Promise.all([
           prisma.marketplaceAccount.findMany({
             where: { userId },
             select: {
@@ -33,11 +33,21 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
               _count: { select: { listings: true } },
             },
           }),
-          prisma.productListing.findMany({
-            where: { createdAt: { gte: since }, marketplaceAccount: { userId } },
-            select: { createdAt: true, marketplaceAccountId: true },
-            orderBy: { createdAt: "asc" },
-          }),
+          // EGRESS: agrega a contagem por (conta, dia) NO BANCO em vez de puxar
+          // TODOS os anúncios de 180 dias para contar em JS. Mesmo resultado:
+          // to_char(createdAt,'YYYY-MM-DD') = createdAt.toISOString().slice(0,10)
+          // (createdAt é UTC), e COUNT(*) = soma de 1 por linha do código antigo.
+          prisma.$queryRaw<
+            Array<{ marketplaceAccountId: string; day: string; count: number }>
+          >(Prisma.sql`
+            SELECT pl."marketplaceAccountId" AS "marketplaceAccountId",
+                   to_char(pl."createdAt", 'YYYY-MM-DD') AS "day",
+                   COUNT(*)::int AS "count"
+            FROM "ProductListing" pl
+            JOIN "MarketplaceAccount" ma ON ma."id" = pl."marketplaceAccountId"
+            WHERE pl."createdAt" >= ${since} AND ma."userId" = ${userId}
+            GROUP BY pl."marketplaceAccountId", to_char(pl."createdAt", 'YYYY-MM-DD')
+          `),
         ]);
 
         const totalListings = accounts.reduce(
@@ -49,15 +59,15 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           .filter((acc) => acc.status === "ACTIVE")
           .reduce((sum, acc) => sum + (acc._count.listings ?? 0), 0);
 
-        const toDayKey = (d: Date) => d.toISOString().slice(0, 10);
         const globalMap: Record<string, number> = {};
         const perAccountMap: Record<string, Record<string, number>> = {};
 
-        for (const row of created) {
-          const day = toDayKey(row.createdAt);
-          globalMap[day] = (globalMap[day] ?? 0) + 1;
+        for (const row of createdGrouped) {
+          const day = row.day;
+          const c = Number(row.count);
+          globalMap[day] = (globalMap[day] ?? 0) + c;
           const acc = (perAccountMap[row.marketplaceAccountId] ||= {});
-          acc[day] = (acc[day] ?? 0) + 1;
+          acc[day] = (acc[day] ?? 0) + c;
         }
 
         const mapToSeries = (m: Record<string, number>) =>
@@ -228,25 +238,24 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
 
-        // Single query: fetch stock values and bucket in JS (avoids 5 separate COUNT queries)
-        const products = await prisma.product.findMany({
-          where: { userId },
-          select: { stock: true },
-        });
-
-        let zero = 0,
-          oneToThree = 0,
-          fourToTen = 0,
-          elevenToFifty = 0,
-          aboveFifty = 0;
-        for (const p of products) {
-          const s = p.stock;
-          if (s === 0) zero++;
-          else if (s <= 3) oneToThree++;
-          else if (s <= 10) fourToTen++;
-          else if (s <= 50) elevenToFifty++;
-          else aboveFifty++;
-        }
+        // EGRESS: conta cada faixa NO BANCO (5 COUNTs) em vez de puxar o stock
+        // de TODOS os produtos para o app e bucketizar em JS. Os predicados
+        // particionam EXATAMENTE como o if/else anterior (mesmo resultado):
+        //   0 | (!=0 e <=3) | (>3 e <=10) | (>10 e <=50) | (>50)
+        const [zero, oneToThree, fourToTen, elevenToFifty, aboveFifty] =
+          await Promise.all([
+            prisma.product.count({ where: { userId, stock: 0 } }),
+            prisma.product.count({
+              where: { userId, stock: { not: 0, lte: 3 } },
+            }),
+            prisma.product.count({
+              where: { userId, stock: { gt: 3, lte: 10 } },
+            }),
+            prisma.product.count({
+              where: { userId, stock: { gt: 10, lte: 50 } },
+            }),
+            prisma.product.count({ where: { userId, stock: { gt: 50 } } }),
+          ]);
 
         const distribution = [
           { range: "0", count: zero },
@@ -282,15 +291,20 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const startDate = new Date(now);
         startDate.setDate(now.getDate() - (isNaN(days) ? 30 : days));
 
-        // Only fetch the minimal fields needed for aggregation
-        const orders = await prisma.order.findMany({
-          where: {
-            createdAt: { gte: startDate },
-            marketplaceAccount: { userId },
-          },
-          select: { createdAt: true, totalAmount: true },
-          orderBy: { createdAt: "asc" },
-        });
+        // EGRESS: agrega contagem + soma por dia NO BANCO em vez de puxar todos
+        // os pedidos do período para somar em JS. Mesmos dias (UTC) e mesmos
+        // valores (COUNT e SUM exatos).
+        const grouped = await prisma.$queryRaw<
+          Array<{ day: string; orders: number; total: string | null }>
+        >(Prisma.sql`
+          SELECT to_char(o."createdAt", 'YYYY-MM-DD') AS "day",
+                 COUNT(*)::int AS "orders",
+                 COALESCE(SUM(o."totalAmount"), 0)::text AS "total"
+          FROM "Order" o
+          JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
+          WHERE o."createdAt" >= ${startDate} AND ma."userId" = ${userId}
+          GROUP BY to_char(o."createdAt", 'YYYY-MM-DD')
+        `);
 
         // Inicializar mapa de dias
         const map: Record<string, { orders: number; totalAmount: number }> = {};
@@ -301,19 +315,11 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           map[key] = { orders: 0, totalAmount: 0 };
         }
 
-        for (const o of orders) {
-          const key = o.createdAt.toISOString().slice(0, 10);
+        for (const g of grouped) {
+          const key = g.day;
           if (!map[key]) map[key] = { orders: 0, totalAmount: 0 };
-          map[key].orders += 1;
-          // totalAmount is Decimal in DB; prisma returns Decimal as Decimal.js-like object
-          const total = (o as any).totalAmount;
-          const num =
-            typeof total === "object" &&
-            total !== null &&
-            typeof total.toNumber === "function"
-              ? total.toNumber()
-              : Number(total) || 0;
-          map[key].totalAmount += num;
+          map[key].orders += Number(g.orders);
+          map[key].totalAmount += Number(g.total) || 0;
         }
 
         const result = Object.keys(map)
