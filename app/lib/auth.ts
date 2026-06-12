@@ -2,6 +2,7 @@ import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
 import { verifyPassword } from "./password";
+import { signApiToken } from "./api-token";
 
 const userRepository = new UserRepositoryPrisma();
 
@@ -78,6 +79,16 @@ export const authOptions: NextAuthOptions = {
         session.user.parentUserId =
           (token.parentUserId as string | null) ?? null;
         session.user.role = (token.role as string | null) ?? null;
+
+        // PR-A2: token HS256 assinado para o front enviar à API Fastify como
+        // Authorization: Bearer. A API verifica a assinatura (não confia mais
+        // só no header `email`). Exposto na sessão (lido via useSession).
+        (session as any).apiToken = signApiToken({
+          sub: token.id as string,
+          email: session.user.email ?? undefined,
+          role: (token.role as string | null) ?? null,
+          parentUserId: (token.parentUserId as string | null) ?? null,
+        });
       }
       return session;
     },

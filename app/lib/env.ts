@@ -33,6 +33,16 @@ const envSchema = z.object({
     .min(16, "NEXTAUTH_SECRET precisa ter ao menos 16 caracteres"),
   NEXTAUTH_URL: optionalUrlIsh,
 
+  // PR-A2 — token de API. API_JWT_SECRET opcional (fallback p/ NEXTAUTH_SECRET).
+  // API_AUTH_MODE: "legacy" (default, aceita token OU header email) ou "strict"
+  // (só token). Subir em legacy = zero regressão; virar strict após o front
+  // migrar para enviar o Bearer.
+  API_JWT_SECRET: z
+    .string()
+    .min(16, "API_JWT_SECRET precisa ter ao menos 16 caracteres")
+    .optional(),
+  API_AUTH_MODE: z.enum(["legacy", "strict"]).optional().default("legacy"),
+
   // Mercado Livre
   ML_CLIENT_ID: z.string().min(1, "ML_CLIENT_ID é obrigatória"),
   ML_CLIENT_SECRET: z.string().min(1, "ML_CLIENT_SECRET é obrigatória"),
