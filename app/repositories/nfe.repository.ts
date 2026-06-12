@@ -30,6 +30,7 @@ function toDraftResponse(row: any): NfeDraftResponse {
     indPresenca: row.indPresenca,
     intermediador: row.intermediador,
     numeroPedido: row.numeroPedido,
+    informacoesComplementares: row.informacoesComplementares,
     dataEmissao: row.dataEmissao,
     dataSaida: row.dataSaida,
     destinatarioJson: row.destinatarioJson as any,
@@ -152,6 +153,8 @@ export class NfeRepository {
       data.intermediador = input.intermediador;
     if (input.numeroPedido !== undefined)
       data.numeroPedido = input.numeroPedido;
+    if (input.informacoesComplementares !== undefined)
+      data.informacoesComplementares = input.informacoesComplementares;
     if (input.dataEmissao !== undefined)
       data.dataEmissao = input.dataEmissao ? new Date(input.dataEmissao) : null;
     if (input.dataSaida !== undefined)

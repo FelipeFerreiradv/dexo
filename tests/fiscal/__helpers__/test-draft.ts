@@ -111,6 +111,7 @@ export function makeDraft(
     indPresenca: "PRESENCIAL",
     intermediador: null,
     numeroPedido: null,
+    informacoesComplementares: null,
     dataEmissao: null,
     dataSaida: null,
     destinatarioJson: {

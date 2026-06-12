@@ -957,6 +957,7 @@ export class NfeEmissionUseCase {
       indPresenca: row.indPresenca,
       intermediador: row.intermediador,
       numeroPedido: row.numeroPedido,
+      informacoesComplementares: row.informacoesComplementares,
       dataEmissao: row.dataEmissao,
       dataSaida: row.dataSaida,
       destinatarioJson: row.destinatarioJson as any,
