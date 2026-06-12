@@ -230,9 +230,25 @@ export function OrdersList() {
     }
   };
 
-  const handleViewOrder = (order: Order) => {
+  const handleViewOrder = async (order: Order) => {
+    // Abre o sheet imediatamente (o cabeçalho já vem na lista). A lista agora
+    // NÃO traz os itens (egress enxuto), então recarrega o pedido COMPLETO via
+    // GET /orders/:id e preenche os itens quando chegam. O sheet trata
+    // order.items ausente (mostra "0 itens" por instantes). Sem perda de dados.
     setSelectedOrder(order);
     setIsDetailSheetOpen(true);
+    const email = session?.user?.email;
+    if (!email) return;
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/orders/${order.id}`, {
+        headers: { email },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.order) setSelectedOrder(data.order);
+    } catch {
+      /* mantém o pedido da lista (sem itens) se o refetch falhar */
+    }
   };
 
   const getStatusBadge = (status: string) => {

@@ -65,6 +65,24 @@ export function ScrapsPipeline() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editScrap, setEditScrap] = useState<PipelineScrap | null>(null);
 
+  // Os cards do Kanban vêm enxutos (sem fotos/notas/fiscais). Para editar,
+  // recarrega o registro COMPLETO via GET /scraps/:id — senão salvar apagaria
+  // imageUrls e os campos não exibidos. Só abre o modal após carregar.
+  const openEdit = async (scrap: PipelineScrap) => {
+    if (!email) return;
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/scraps/${scrap.id}`, {
+        headers: { email },
+      });
+      if (!res.ok) throw new Error("Erro ao carregar sucata");
+      const full = await res.json();
+      setEditScrap(full);
+    } catch (error) {
+      console.error("Erro ao carregar sucata para edição:", error);
+      alert("Não foi possível carregar a sucata para edição. Tente novamente.");
+    }
+  };
+
   const fetchPipeline = useCallback(async () => {
     if (!email) return;
     setLoading(true);
@@ -200,7 +218,7 @@ export function ScrapsPipeline() {
                           key={scrap.id}
                           scrap={scrap}
                           moving={movingId === scrap.id}
-                          onEdit={() => setEditScrap(scrap)}
+                          onEdit={() => openEdit(scrap)}
                           onMove={handleMove}
                         />
                       ))}
