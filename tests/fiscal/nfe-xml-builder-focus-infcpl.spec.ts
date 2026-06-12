@@ -16,9 +16,7 @@ describe("NfeXmlBuilderService (Focus) — informacoes_adicionais_contribuinte",
       makeConfig(),
       1,
     );
-    expect(payload.informacoes_adicionais_contribuinte).toBe(
-      "Pedido: PED-001",
-    );
+    expect(payload.informacoes_adicionais_contribuinte).toBe("Pedido: PED-001");
   });
 
   it("apenas observacao", () => {

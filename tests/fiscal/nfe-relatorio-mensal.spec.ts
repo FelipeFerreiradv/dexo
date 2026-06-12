@@ -105,7 +105,9 @@ describe("buildRelatorioMensalXml", () => {
       ano: 2026,
       mes: 4,
       geradoEm: GERADO_EM,
-      notas: [makeNota(7, { xmlAutorizado: proc.xml, chaveAcesso: proc.chave })],
+      notas: [
+        makeNota(7, { xmlAutorizado: proc.xml, chaveAcesso: proc.chave }),
+      ],
     });
 
     // conteudo embutido byte-a-byte e UMA unica declaracao XML (a do topo)
@@ -206,7 +208,7 @@ describe("stripXmlDeclaration", () => {
 });
 
 describe("helpers", () => {
-  it("escapeXmlAttr cobre & < > \"", () => {
+  it('escapeXmlAttr cobre & < > "', () => {
     expect(escapeXmlAttr('a&b<c>d"e')).toBe("a&amp;b&lt;c&gt;d&quot;e");
   });
 
