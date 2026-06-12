@@ -19,6 +19,8 @@ export interface ParsedNfe {
   total: ParsedTotal;
   transp: ParsedTransp | null;
   pag: ParsedPagamento[];
+  /** Conteúdo de <infAdic><infCpl> (informações complementares), se houver. */
+  infCpl: string | null;
   /** Carregado apenas quando o input é <nfeProc> (NFe já autorizada). */
   protNFe: ParsedProtNFe | null;
 }
@@ -187,6 +189,7 @@ export function parseNfeXml(xml: string): ParsedNfe {
   const total = parseTotal(infNFe.total?.ICMSTot);
   const transp = parseTransp(infNFe.transp);
   const pag = parsePag(infNFe.pag);
+  const infCpl = infNFe.infAdic?.infCpl ? str(infNFe.infAdic.infCpl) : null;
   const protNFe = nfeProc ? parseProtNFe(nfeProc.protNFe) : null;
 
   return {
@@ -199,6 +202,7 @@ export function parseNfeXml(xml: string): ParsedNfe {
     total,
     transp,
     pag,
+    infCpl,
     protNFe,
   };
 }

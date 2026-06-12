@@ -14,7 +14,8 @@ import {
 import type { NfeDraftResponse } from "../../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
 import type { NfeTotais } from "../domain/nfe.types";
-import { resolveCstCsosn } from "./danfe-helpers";
+import { resolveCstCsosn, toWinAnsiSafe, wrapTextLines } from "./danfe-helpers";
+import { composeInfCpl } from "../domain/inf-cpl";
 
 /** Avatar do usuário já carregado em bytes (PNG ou JPG) para embutir no PDF. */
 export interface DanfeAvatar {
@@ -430,6 +431,33 @@ export async function renderDanfeV2(
   text("TOTAL DA NOTA", margin + 16, y - 16, 9, bold, INK);
   right(money(totais.totalNota), margin + W - 16, y - 17, 14, bold, INK);
   y -= totalH + 14;
+
+  // ── Informações complementares (mesmo conteúdo do <infCpl> do XML) ──
+  const infCpl = toWinAnsiSafe(composeInfCpl(nfe));
+  if (infCpl) {
+    const infSize = 7.5;
+    const infLineH = 10;
+    const infLines = wrapTextLines(infCpl, W - 32, (s) => widthOf(s, infSize));
+    // O card é desenhado inteiro de uma vez (block não pagina): limita as
+    // linhas ao que cabe numa página cheia e quebra de página antes, se preciso.
+    const maxLines = Math.floor((height - 2 * margin - 40) / infLineH);
+    if (infLines.length > maxLines) {
+      infLines.length = maxLines;
+      infLines[maxLines - 1] += " …";
+    }
+    const contentH = infLines.length * infLineH + 6;
+    if (y < margin + 17 + contentH + 16) {
+      page = doc.addPage(pageSize);
+      y = height - margin;
+    }
+    block("INFORMAÇÕES COMPLEMENTARES", contentH, (top) => {
+      let ly = top - 10;
+      for (const line of infLines) {
+        text(line, margin + 16, ly, infSize, font, INK);
+        ly -= infLineH;
+      }
+    });
+  }
 
   // ── Rodapé ──
   if (y < margin + 16) {

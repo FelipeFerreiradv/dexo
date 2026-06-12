@@ -228,6 +228,80 @@ describe("DanfePdfService.generateFromXml — robustez (PAR-1, PAR-4)", () => {
   });
 });
 
+describe("infCpl — parse do XML e renderizacao no DANFE", () => {
+  const builder = new NfeXmlBuilderSefazService();
+  const FIXED = new Date("2026-05-14T15:00:00-03:00");
+
+  const buildXml = (overrides: Parameters<typeof makeDraft>[0] = {}) => {
+    const built = builder.build({
+      draft: makeDraft(overrides),
+      config: makeConfig(),
+      numero: 5,
+      dhEmi: FIXED,
+      cNF: "87654321",
+    });
+    return wrapInProc(built.xml, built.chaveAcesso);
+  };
+
+  it("parser extrai <infCpl> e a projecao o carrega em informacoesComplementares", () => {
+    const parsed = parseNfeXml(
+      buildXml({
+        informacoesComplementares: "Garantia de 90 dias",
+        numeroPedido: "PED-7",
+      }),
+    );
+    expect(parsed.infCpl).toBe("Garantia de 90 dias | Pedido: PED-7");
+
+    const { draft } = projectParsedNfeToDraft(parsed);
+    expect(draft.informacoesComplementares).toBe(
+      "Garantia de 90 dias | Pedido: PED-7",
+    );
+    // O infCpl parseado ja contem o "Pedido:" — numeroPedido fica null para
+    // composeInfCpl nao duplicar.
+    expect(draft.numeroPedido).toBeNull();
+  });
+
+  it("XML sem <infAdic> → infCpl null (sem regressao)", () => {
+    const parsed = parseNfeXml(buildXml());
+    expect(parsed.infCpl).toBeNull();
+    expect(
+      projectParsedNfeToDraft(parsed).draft.informacoesComplementares,
+    ).toBeNull();
+  });
+
+  it("DANFE legacy renderiza observacao longa multilinha sem erro", async () => {
+    const obs = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `Linha de observacao numero ${i + 1} com texto comprido para forcar a quebra de linha no PDF.`,
+    ).join(" ");
+    const service = new DanfePdfService();
+    const pdf = await service.generateFromXml(
+      buildXml({ informacoesComplementares: obs }),
+    );
+    expect(pdf).toBeInstanceOf(Uint8Array);
+    expect(pdf.byteLength).toBeGreaterThan(500);
+  });
+
+  it("DANFE v2 (flag ligada) renderiza observacao com emoji sem derrubar o pdf-lib", async () => {
+    const prev = process.env.NEXT_PUBLIC_DANFE_V2_ENABLED;
+    process.env.NEXT_PUBLIC_DANFE_V2_ENABLED = "true";
+    try {
+      const service = new DanfePdfService();
+      const pdf = await service.generateFromXml(
+        buildXml({
+          informacoesComplementares: "Entrega expressa \u{1F69A} ate sexta",
+        }),
+      );
+      expect(pdf).toBeInstanceOf(Uint8Array);
+      expect(pdf.byteLength).toBeGreaterThan(500);
+    } finally {
+      if (prev === undefined) delete process.env.NEXT_PUBLIC_DANFE_V2_ENABLED;
+      else process.env.NEXT_PUBLIC_DANFE_V2_ENABLED = prev;
+    }
+  });
+});
+
 /**
  * Embrulha um <NFe> assinado num <nfeProc> com protNFe sintético, como a
  * SEFAZ retornaria após autorização.
