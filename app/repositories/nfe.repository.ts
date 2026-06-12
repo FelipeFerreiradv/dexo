@@ -506,4 +506,40 @@ export class NfeRepository {
       },
     });
   }
+
+  /**
+   * Notas AUTORIZADAS do mês de competência fiscal, para o relatório mensal
+   * XML. Diferente de findAllForExport (que filtra por createdAt e serve o
+   * /nfe/export existente — intocado), aqui a janela é por dataEmissao:
+   * intervalo semiaberto [inicio, fim) calculado pelo usecase em horário de
+   * Brasília. Usa o índice (userId, dataEmissao).
+   */
+  async findAuthorizedByEmissionMonth(
+    userId: string,
+    inicio: Date,
+    fim: Date,
+  ): Promise<any[]> {
+    return (prisma as any).nfeEmitida.findMany({
+      where: {
+        userId,
+        status: "AUTHORIZED",
+        dataEmissao: { gte: inicio, lt: fim },
+      },
+      orderBy: { numero: "asc" },
+      select: {
+        id: true,
+        numero: true,
+        serie: true,
+        chaveAcesso: true,
+        status: true,
+        destinatarioJson: true,
+        emitenteJson: true,
+        totaisJson: true,
+        protocoloAutorizacao: true,
+        dataEmissao: true,
+        dataAutorizacao: true,
+        xmlAutorizadoPath: true,
+      },
+    });
+  }
 }

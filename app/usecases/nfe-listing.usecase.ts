@@ -1,4 +1,10 @@
 import { NfeRepository } from "../repositories/nfe.repository";
+import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
+import {
+  buildRelatorioMensalXml,
+  type RelatorioNota,
+} from "../fiscal/generators/relatorio-mensal-xml";
 import type {
   NfeListQuery,
   NfeListResponse,
@@ -7,6 +13,8 @@ import type {
 
 export class NfeListingUseCase {
   private repo = new NfeRepository();
+  private configRepo = new CompanyFiscalRepository();
+  private storage = new FiscalStorageService();
 
   async list(userId: string, query: NfeListQuery): Promise<NfeListResponse> {
     const page = Math.max(1, query.page || 1);
@@ -29,6 +37,76 @@ export class NfeListingUseCase {
       return this.buildXlsx(rows);
     }
     return this.buildPdfExport(rows);
+  }
+
+  /**
+   * Relatório mensal consolidado em XML (read-only): notas AUTORIZADAS do mês
+   * de competência (dataEmissao) com o nfeProc de cada uma embutido verbatim.
+   * A montagem do XML vive em buildRelatorioMensalXml (pura); aqui só a
+   * janela do mês, a busca e a leitura dos arquivos.
+   */
+  async relatorioMensalXml(
+    userId: string,
+    ano: number,
+    mes: number,
+  ): Promise<{ xml: string; quantidade: number }> {
+    // 00:00 de Brasília = 03:00 UTC (offset fixo -03:00, sem horário de verão
+    // desde 2019 — mesma convenção do dhEmi gravado na emissão).
+    const inicio = new Date(Date.UTC(ano, mes - 1, 1, 3, 0, 0));
+    const fim = new Date(Date.UTC(ano, mes, 1, 3, 0, 0));
+    const rows = await this.repo.findAuthorizedByEmissionMonth(
+      userId,
+      inicio,
+      fim,
+    );
+
+    const config = await this.configRepo.findByUserId(userId).catch(() => null);
+    const emitSnapshot = (rows[0]?.emitenteJson ?? {}) as any;
+    const emitente = {
+      cnpj: config?.cnpj ?? emitSnapshot.cnpj ?? "",
+      razaoSocial: config?.razaoSocial ?? emitSnapshot.razaoSocial ?? "",
+    };
+
+    const notas: RelatorioNota[] = [];
+    for (const r of rows) {
+      const dest = r.destinatarioJson as any;
+      const totais = r.totaisJson as any;
+
+      let xmlAutorizado: string | null = null;
+      if (r.xmlAutorizadoPath) {
+        const buf = await this.storage.readFile(r.xmlAutorizadoPath);
+        xmlAutorizado = buf ? buf.toString("utf8") : null;
+      }
+      if (!xmlAutorizado) {
+        console.warn(
+          "[relatorio-mensal] XML autorizado indisponivel em disco — nota entra no resumo com xmlIndisponivel",
+          { nfeId: r.id, numero: r.numero, path: r.xmlAutorizadoPath ?? null },
+        );
+      }
+
+      notas.push({
+        numero: r.numero,
+        serie: r.serie,
+        chaveAcesso: r.chaveAcesso,
+        status: r.status,
+        dataEmissao: r.dataEmissao,
+        dataAutorizacao: r.dataAutorizacao,
+        protocoloAutorizacao: r.protocoloAutorizacao,
+        destinatarioNome: dest?.nome ?? "",
+        destinatarioDocumento: dest?.cpfCnpj ?? "",
+        valorTotal: Number(totais?.totalNota ?? 0),
+        xmlAutorizado,
+      });
+    }
+
+    const xml = buildRelatorioMensalXml({
+      emitente,
+      ano,
+      mes,
+      geradoEm: new Date(),
+      notas,
+    });
+    return { xml, quantidade: notas.length };
   }
 
   private async buildXlsx(rows: any[]): Promise<Buffer> {

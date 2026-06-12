@@ -598,6 +598,48 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // ── Relatório mensal consolidado (XML) — read-only, para o contador ──
+
+  fastify.get(
+    "/nfe/relatorio-mensal",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const q = request.query as any;
+        const ano = Number(q.ano);
+        const mes = Number(q.mes);
+        if (!Number.isInteger(ano) || ano < 2006 || ano > 2099) {
+          return reply
+            .status(400)
+            .send({ error: "Parametro 'ano' invalido (2006-2099)" });
+        }
+        if (!Number.isInteger(mes) || mes < 1 || mes > 12) {
+          return reply
+            .status(400)
+            .send({ error: "Parametro 'mes' invalido (1-12)" });
+        }
+
+        const { xml } = await nfeListing.relatorioMensalXml(userId, ano, mes);
+        const mes2 = String(mes).padStart(2, "0");
+        return reply
+          .header("Content-Type", "application/xml; charset=utf-8")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="relatorio-nfe-${ano}-${mes2}.xml"`,
+          )
+          .send(xml);
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao gerar relatorio mensal",
+        });
+      }
+    },
+  );
+
   // ── Consulta de NF-e (qualquer status) ──
 
   fastify.get(
