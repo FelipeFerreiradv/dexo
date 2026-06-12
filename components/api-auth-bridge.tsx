@@ -12,11 +12,17 @@ import { getApiBaseUrl } from "@/lib/api";
  * os ~60 call sites um a um: eles continuam mandando `headers: { email }`
  * (legado) e esta ponte ADICIONA o token por cima.
  *
- * Robustez para o modo strict: o patch do `window.fetch` é instalado no
- * CARREGAMENTO DO MÓDULO (síncrono, client-side), ANTES de qualquer componente
- * montar — evita a janela em que o primeiro fetch de uma página sairia sem o
- * Bearer (o que daria 401 no strict). O token vem de uma variável de módulo que
- * o componente mantém atualizada conforme a sessão carrega.
+ * Robustez para o modo strict (DUAS garantias):
+ * 1) O patch do `window.fetch` é instalado no CARREGAMENTO DO MÓDULO (síncrono,
+ *    client-side), ANTES de qualquer componente montar.
+ * 2) Se uma chamada à API dispara enquanto a SESSÃO AINDA CARREGA (boot do app
+ *    shell: header/sidebar/dashboard chamam /users/me, /me/team, /orders/stats,
+ *    /messages/unread-count, /dashboard/notifications na montagem, antes do
+ *    useSession resolver), a ponte SEGURA a requisição até o token existir e só
+ *    então injeta o Bearer — em vez de deixá-la sair sem auth (o que daria 401
+ *    no modo strict). Espera no máx. ~8s; se a sessão terminar de carregar sem
+ *    token (deslogado), a chamada segue sem Bearer (rota pública continua ok;
+ *    rota protegida dá o 401 esperado de quem não está logado).
  *
  * Compatibilidade total:
  * - Só toca requisições cuja URL começa com a base da API.
@@ -24,8 +30,35 @@ import { getApiBaseUrl } from "@/lib/api";
  * - Qualquer erro na ponte cai no fetch original (nunca quebra a chamada).
  */
 
-// Token atual (atualizado pelo componente a cada mudança de sessão).
+type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+
+// Estado de auth compartilhado com o patch (atualizado pelo componente).
 let currentApiToken: string | undefined;
+let currentStatus: AuthStatus = "loading";
+
+// Requisições à API que chegaram antes do token resolver aguardam aqui.
+let tokenWaiters: Array<() => void> = [];
+function flushWaiters() {
+  const waiters = tokenWaiters;
+  tokenWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+// Resolve assim que houver token OU a sessão terminar de carregar (logado ou
+// não). Timeout de segurança evita travar o fetch para sempre num estado raro.
+function waitForToken(): Promise<void> {
+  if (currentApiToken || currentStatus !== "loading") return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    tokenWaiters.push(finish);
+    setTimeout(finish, 8000);
+  });
+}
 
 function installFetchPatch() {
   if (typeof window === "undefined") return;
@@ -41,23 +74,31 @@ function installFetchPatch() {
 
   const original = window.fetch.bind(window);
 
-  const patched: typeof window.fetch = (input, init) => {
+  const patched: typeof window.fetch = async (input, init) => {
     try {
-      const token = currentApiToken;
       const url =
         typeof input === "string"
           ? input
           : input instanceof URL
             ? input.href
             : (input as Request)?.url;
-      if (token && url && url.startsWith(apiBase)) {
-        const headers = new Headers(
-          init?.headers ??
-            (input instanceof Request ? input.headers : undefined),
-        );
-        if (!headers.has("authorization")) {
-          headers.set("authorization", `Bearer ${token}`);
-          return original(input, { ...(init ?? {}), headers });
+      if (url && url.startsWith(apiBase)) {
+        // Boot race: se a sessão ainda carrega e o token não chegou, segura a
+        // chamada até o token existir — senão sairia sem Bearer e tomaria 401
+        // no strict.
+        if (!currentApiToken && currentStatus === "loading") {
+          await waitForToken();
+        }
+        const token = currentApiToken;
+        if (token) {
+          const headers = new Headers(
+            init?.headers ??
+              (input instanceof Request ? input.headers : undefined),
+          );
+          if (!headers.has("authorization")) {
+            headers.set("authorization", `Bearer ${token}`);
+            return original(input, { ...(init ?? {}), headers });
+          }
         }
       }
     } catch {
@@ -74,10 +115,16 @@ function installFetchPatch() {
 installFetchPatch();
 
 export function ApiAuthBridge() {
-  const { data: session } = useSession();
-  // Mantém o token disponível para o patch (já instalado). Atribuição
-  // idempotente em render — padrão "valor mais recente".
+  const { data: session, status } = useSession();
+  // Mantém token/status disponíveis para o patch (padrão "valor mais recente").
   currentApiToken = (session as { apiToken?: string } | null)?.apiToken;
+  currentStatus = status as AuthStatus;
+
+  // Libera as requisições que aguardavam o token assim que ele chega (ou a
+  // sessão termina de carregar). Em effect p/ não chamar resolvers no render.
+  useEffect(() => {
+    if (currentApiToken || currentStatus !== "loading") flushWaiters();
+  }, [session, status]);
 
   // Garante o patch mesmo se o módulo só rodou no servidor (defensivo).
   useEffect(() => {
