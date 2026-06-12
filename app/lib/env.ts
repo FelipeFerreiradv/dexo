@@ -49,6 +49,29 @@ const envSchema = z.object({
   NEXT_PUBLIC_API_URL: urlIsh,
   CORS_ORIGIN: optionalUrlIsh,
 
+  // Cifra de tokens de marketplace em repouso (PR-A5). OPCIONAL: sem ela, a
+  // cifra fica desligada (tokens em texto plano, comportamento atual). Quando
+  // presente, deve ser 64 chars hex (32 bytes). Ativar só após validar em
+  // staging (ver RELATORIO_SEGURANCA_DIAGNOSTICO.md).
+  MARKETPLACE_TOKEN_ENC_KEY: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^[0-9a-fA-F]{64}$/.test(v), {
+      message: "MARKETPLACE_TOKEN_ENC_KEY deve ter 64 chars hex (32 bytes)",
+    }),
+
+  // Rate limit da API (PR-A4). Opcional; default 300 req/min por IP.
+  RATE_LIMIT_MAX: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Number(v) : undefined))
+    .refine((v) => v === undefined || (Number.isInteger(v) && v > 0), {
+      message: "RATE_LIMIT_MAX deve ser inteiro positivo",
+    }),
+
+  // CORS_ORIGIN: obrigatório em produção é validado no boot da API (api.ts);
+  // aqui permanece opcional para não quebrar dev/test.
+
   // Runtime
   PORT: z
     .string()
