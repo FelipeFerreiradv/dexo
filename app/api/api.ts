@@ -41,7 +41,25 @@ import { loggingMiddleware } from "../middlewares/logging.middleware";
 // para que request.ip seja o IP REAL do cliente (rate-limit + logs corretos).
 // Pré-requisito de segurança: a porta 3333 NÃO pode estar exposta na internet
 // (ver infra/hardening/ufw-setup.sh) — senão o X-Forwarded-For é forjável.
-const api = fastify({ logger: true, trustProxy: true });
+const api = fastify({
+  // redact: garante que, se algum serializer logar headers, segredos/PII não
+  // vazem para o stdout/arquivo de log (defesa em profundidade — o serializer
+  // padrão do Fastify já não loga headers, mas custom/erros podem).
+  logger: {
+    redact: {
+      paths: [
+        "req.headers.email",
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "headers.email",
+        "headers.authorization",
+        "headers.cookie",
+      ],
+      censor: "[REDACTED]",
+    },
+  },
+  trustProxy: true,
+});
 
 // Security headers (helmet). CSP/CORP desligados de propósito: a API serve
 // JSON + imagens em /uploads (consumidas cross-origin pelo app Next) + a doc
