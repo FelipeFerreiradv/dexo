@@ -22,6 +22,7 @@ import {
   type IndicadorPresenca,
   type MeioPagamento,
 } from "../domain/nfe.types";
+import { composeInfCpl } from "../domain/inf-cpl";
 
 export interface FocusNfePayload {
   [key: string]: any;
@@ -167,8 +168,9 @@ export class NfeXmlBuilderService {
     }
 
     // ── Informações adicionais ──
-    if (draft.numeroPedido) {
-      payload.informacoes_adicionais_contribuinte = `Pedido: ${draft.numeroPedido}`;
+    const infCpl = composeInfCpl(draft);
+    if (infCpl) {
+      payload.informacoes_adicionais_contribuinte = infCpl;
     }
 
     return payload;

@@ -477,3 +477,81 @@ describe("NfeXmlBuilderSefazService — estrutura", () => {
     ).toThrow(/itens/);
   });
 });
+
+describe("NfeXmlBuilderSefazService — <infAdic>/<infCpl> (observacoes)", () => {
+  const builder = new NfeXmlBuilderSefazService();
+  const FIXED_DH = new Date("2026-05-14T15:00:00-03:00");
+  const build = (overrides: Parameters<typeof makeDraft>[0] = {}) =>
+    builder.build({
+      draft: makeDraft(overrides),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: FIXED_DH,
+      cNF: "87654321",
+    });
+
+  it("TRAVA de regressao: sem observacao e sem numeroPedido NAO emite <infAdic>", () => {
+    const { xml } = build();
+    expect(xml).not.toContain("<infAdic");
+    expect(xml).not.toContain("<infCpl");
+  });
+
+  it("apenas numeroPedido: infCpl identico ao comportamento atual", () => {
+    const { xml } = build({ numeroPedido: "PED-001" });
+    expect(xml).toContain("<infCpl>Pedido: PED-001</infCpl>");
+  });
+
+  it("observacao preenchida vai ao <infCpl>", () => {
+    const { xml } = build({ informacoesComplementares: "Garantia de 90 dias" });
+    expect(xml).toContain("<infCpl>Garantia de 90 dias</infCpl>");
+  });
+
+  it("observacao + pedido: observacao primeiro, separador ' | '", () => {
+    const { xml } = build({
+      informacoesComplementares: "Troca em ate 7 dias",
+      numeroPedido: "PED-9",
+    });
+    expect(xml).toContain(
+      "<infCpl>Troca em ate 7 dias | Pedido: PED-9</infCpl>",
+    );
+  });
+
+  it("observacao so com espacos nao emite <infAdic>", () => {
+    const { xml } = build({ informacoesComplementares: "   " });
+    expect(xml).not.toContain("<infAdic");
+  });
+
+  it("escapa caracteres especiais da observacao (sem escape duplo)", () => {
+    const { xml } = build({
+      informacoesComplementares: 'P&D <TESTE> "fragil"',
+    });
+    expect(xml).toContain("P&amp;D");
+    expect(xml).toMatch(/&lt;TESTE&gt;/);
+    expect(xml).not.toContain("&amp;amp;");
+  });
+
+  it("normaliza CRLF e remove caracteres de controle da observacao", () => {
+    const { xml } = build({
+      informacoesComplementares: "linha1\r\nlinha2" + String.fromCharCode(7),
+    });
+    const match = xml.match(/<infCpl>([\s\S]*?)<\/infCpl>/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toContain("linha1\nlinha2");
+    expect(match![1]).not.toContain(String.fromCharCode(7));
+  });
+
+  it("trunca o infCpl em 5000 caracteres (limite do leiaute)", () => {
+    const { xml } = build({ informacoesComplementares: "A".repeat(6000) });
+    const match = xml.match(/<infCpl>([\s\S]*?)<\/infCpl>/);
+    expect(match).not.toBeNull();
+    expect(match![1].length).toBe(5000);
+  });
+
+  it("<infAdic> permanece como ultimo elemento do infNFe (apos <pag>)", () => {
+    const { xml } = build({ informacoesComplementares: "obs" });
+    const posPag = xml.indexOf("</pag>");
+    const posInfAdic = xml.indexOf("<infAdic>");
+    expect(posPag).toBeGreaterThan(-1);
+    expect(posInfAdic).toBeGreaterThan(posPag);
+  });
+});

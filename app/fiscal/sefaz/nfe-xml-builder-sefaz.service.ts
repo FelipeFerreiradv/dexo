@@ -34,6 +34,7 @@ import {
   DESTINO_OPERACAO_COD,
   MEIO_PAGAMENTO_COD,
 } from "../domain/nfe.types";
+import { composeInfCpl } from "../domain/inf-cpl";
 import { COD_UF, type UF } from "./endpoints";
 import { montarChave, chaveToString, type ChaveAcessoParts } from "./chave-acesso";
 
@@ -577,17 +578,15 @@ export class NfeXmlBuilderSefazService {
   // ── <infAdic> ──
 
   private buildInfAdic(parent: any, draft: NfeDraftResponse): void {
-    const obsCont: string[] = [];
-    if (draft.numeroPedido) {
-      obsCont.push(`Pedido: ${draft.numeroPedido}`);
-    }
+    // Observacoes do usuario primeiro, depois "Pedido: N" — composicao unica
+    // em composeInfCpl (compartilhada com o builder Focus e o DANFE).
     // NOTA: o aviso de homologacao NAO vai aqui. A SEFAZ exige o literal no
     // xNome do <dest> (tratado em buildDest, regra 598), nao no infCpl.
-
-    if (obsCont.length === 0) return;
+    const infCpl = composeInfCpl(draft);
+    if (!infCpl) return;
 
     const infAdic = parent.ele("infAdic");
-    infAdic.ele("infCpl").txt(obsCont.join(" | ")).up();
+    infAdic.ele("infCpl").txt(infCpl).up();
     infAdic.up();
   }
 }
