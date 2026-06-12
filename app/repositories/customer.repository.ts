@@ -189,6 +189,21 @@ export class CustomerRepository {
         skip,
         take: limit,
         orderBy: { createdAt: "desc" },
+        // EGRESS: a tabela só exibe estes campos. O modal de edição busca o
+        // registro completo via GET /customers/:id (findById) ao abrir, então
+        // a lista não precisa trafegar as ~46 colunas (endereço, delivery*,
+        // datas etc.). Saída visível idêntica.
+        select: {
+          id: true,
+          name: true,
+          cpf: true,
+          cnpj: true,
+          email: true,
+          phone: true,
+          mobile: true,
+          city: true,
+          state: true,
+        },
       }),
       prisma.customer.count({ where }),
     ]);

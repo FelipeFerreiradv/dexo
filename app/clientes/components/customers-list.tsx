@@ -141,12 +141,27 @@ export function CustomersList() {
     setDialogOpen(true);
   };
 
-  const handleEdit = (c: CustomerRow) => {
-    setEditing({
-      id: c.id,
-      ...(c as any),
-    });
-    setDialogOpen(true);
+  const handleEdit = async (c: CustomerRow) => {
+    const email = session?.user?.email;
+    if (!email) return;
+    // A lista agora traz só as colunas exibidas (egress enxuto). Para editar,
+    // busca o registro COMPLETO via GET /:id — senão o form abriria com os
+    // campos não-listados (endereço, entrega, etc.) vazios e salvar gravaria
+    // null (perda de dados). O detalhe completo carrega só ao abrir 1 cliente.
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/customers/${c.id}`, {
+        headers: { email },
+      });
+      if (!res.ok) throw new Error("Erro ao carregar cliente");
+      const data = await res.json();
+      setEditing({ id: c.id, ...(data.customer ?? data) });
+      setDialogOpen(true);
+    } catch (e) {
+      showToast(
+        e instanceof Error ? e.message : "Erro ao carregar cliente",
+        "error",
+      );
+    }
   };
 
   const handleDelete = async () => {
