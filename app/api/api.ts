@@ -255,9 +255,17 @@ api.setErrorHandler(async (error: any, request, reply) => {
   } catch {
     // swallow — não deixa falha de log derrubar o handler.
   }
+  // SEGURANÇA: em produção, NÃO devolver a mensagem crua de erros 5xx ao cliente
+  // (pode vazar query de banco, caminho de arquivo, nome de função). 4xx (erros
+  // de validação) continuam informativos. O detalhe completo fica no log +
+  // SystemLog, correlacionável pelo requestId.
+  const isProd = process.env.NODE_ENV === "production";
+  const clientMessage =
+    statusCode >= 500 && isProd ? "Erro interno do servidor" : message;
   reply.status(statusCode).send({
     error: "Erro interno do servidor",
-    message,
+    message: clientMessage,
+    requestId: request.id,
   });
 });
 
