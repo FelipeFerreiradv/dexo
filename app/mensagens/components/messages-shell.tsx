@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { MessageCircle } from "lucide-react";
+import { useSession } from "next-auth/react";
 
 import { getApiBaseUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -55,11 +56,21 @@ const POLL_MS = 30_000;
 
 export function MessagesShell({ userEmail }: MessagesShellProps) {
   const apiBase = getApiBaseUrl();
+  // Sessão do CLIENTE: a ponte (api-auth-bridge) só popula o Bearer depois que
+  // o useSession resolve. Como o primeiro fetch (contas) dispara na MONTAGEM
+  // usando o email vindo de prop do servidor, sem isto ele correria à frente da
+  // hidratação da sessão e sairia sem Bearer → 401 no modo strict. Anexamos o
+  // Bearer explicitamente (memoizado pela STRING do token p/ não re-disparar a
+  // cada refetch) e só disparamos os fetches quando a sessão está pronta.
+  const { data: session, status } = useSession();
+  const apiToken = (session as { apiToken?: string } | null)?.apiToken;
+  const isAuthenticated = status === "authenticated";
   const headers = React.useMemo<Record<string, string>>(() => {
     const h: Record<string, string> = {};
-    if (userEmail) h.email = userEmail;
+    if (userEmail) h.email = userEmail; // legado (removível ao virar strict)
+    if (apiToken) h.authorization = `Bearer ${apiToken}`;
     return h;
-  }, [userEmail]);
+  }, [userEmail, apiToken]);
 
   const [accounts, setAccounts] = React.useState<AccountSummary[] | null>(null);
   // Default "Todas as contas". Como não há persistência (URL/localStorage),
@@ -80,8 +91,9 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     return () => clearTimeout(id);
   }, [search]);
 
-  // Carrega contas
+  // Carrega contas — só após a sessão do cliente resolver, garantindo o Bearer.
   React.useEffect(() => {
+    if (!isAuthenticated) return;
     const controller = new AbortController();
     (async () => {
       try {
@@ -102,11 +114,11 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
       }
     })();
     return () => controller.abort();
-  }, [apiBase, headers]);
+  }, [apiBase, headers, isAuthenticated]);
 
   const loadConversations = React.useCallback(
     async (signal?: AbortSignal) => {
-      if (!accountId) return;
+      if (!isAuthenticated || !accountId) return;
       try {
         const params = new URLSearchParams({
           accountId,
@@ -132,7 +144,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
         setConversations([]);
       }
     },
-    [accountId, apiBase, filter, headers, debouncedSearch],
+    [accountId, apiBase, filter, headers, debouncedSearch, isAuthenticated],
   );
 
   // Skeleton (null) só em mudança "dura" — evita flicker em re-fetch por busca/poll.
