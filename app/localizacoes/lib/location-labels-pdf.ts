@@ -84,8 +84,8 @@ export async function generateLocationLabelsPdf({
 
   // Cores
   const black = rgb(0, 0, 0);
-  const accentBlue = rgb(0.13, 0.4, 0.85);
-  const white = rgb(1, 1, 1);
+  // Amarelo da identidade visual Dexo (--primary em app/globals.css ~ #F2CB05)
+  const accentYellow = rgb(0.949, 0.796, 0.02);
 
   locations.forEach((loc) => {
     const page = pdfDoc.addPage([pageWidth, pageHeight]);
@@ -105,7 +105,7 @@ export async function generateLocationLabelsPdf({
       height: qrSize,
     });
 
-    // Borda lateral azul para diferenciar visualmente da etiqueta de produto
+    // Borda lateral amarela para diferenciar visualmente da etiqueta de produto
     const sidebarX = qrX + qrSize + 10;
     const sidebarY = margin + 6;
     const sidebarH = height - margin - sidebarY;
@@ -114,7 +114,7 @@ export async function generateLocationLabelsPdf({
       y: sidebarY,
       width: 6,
       height: sidebarH,
-      color: accentBlue,
+      color: accentYellow,
     });
 
     const rightX = sidebarX + 6 + 14;
@@ -135,20 +135,36 @@ export async function generateLocationLabelsPdf({
       y: badgeY,
       width: badgeWidth,
       height: badgeHeight,
-      color: accentBlue,
+      color: accentYellow,
     });
     page.drawText(badgeText, {
       x: badgeX + badgePaddingX,
       y: badgeY + badgePaddingY + 1,
       size: badgeFontSize,
       font: fontBold,
-      color: white,
+      color: black,
     });
 
-    // Nome do usuario (lado direito do badge)
-    const userNameSize = 12;
-    const userNameWidth = font.widthOfTextAtSize(safeUserName, userNameSize);
-    page.drawText(safeUserName, {
+    // Nome do usuario: ocupa apenas o espaco a direita do badge.
+    // Reduz a fonte (ate um minimo) e trunca com "..." se ainda nao couber.
+    const userNameGap = 12;
+    const userNameMaxWidth =
+      pageWidth - margin - (badgeX + badgeWidth + userNameGap);
+    let userNameSize = 12;
+    let userNameText = safeUserName;
+    let userNameWidth = font.widthOfTextAtSize(userNameText, userNameSize);
+    if (userNameWidth > userNameMaxWidth) {
+      userNameSize = Math.max(
+        8,
+        (userNameMaxWidth / userNameWidth) * userNameSize,
+      );
+      userNameWidth = font.widthOfTextAtSize(userNameText, userNameSize);
+    }
+    while (userNameWidth > userNameMaxWidth && userNameText.length > 3) {
+      userNameText = `${userNameText.slice(0, -4).trimEnd()}...`;
+      userNameWidth = font.widthOfTextAtSize(userNameText, userNameSize);
+    }
+    page.drawText(userNameText, {
       x: pageWidth - margin - userNameWidth,
       y: badgeY + badgePaddingY + 1,
       size: userNameSize,
