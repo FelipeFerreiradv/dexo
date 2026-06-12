@@ -1275,7 +1275,10 @@ export class OrderUseCase {
       search: options?.search,
       page: options?.page,
       limit: options?.limit,
-      includeItems: true,
+      // EGRESS: a TABELA de pedidos não exibe itens — só o detalhe usa. O sheet
+      // recarrega o pedido completo via GET /orders/:id ao abrir, então a lista
+      // não precisa trafegar o grafo items->product->listing de cada pedido.
+      includeItems: false,
     });
   }
 
