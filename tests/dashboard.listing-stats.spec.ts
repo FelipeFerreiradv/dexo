@@ -4,17 +4,22 @@ import fastify from "fastify";
 import { dashboardRoutes } from "../app/routes/dashboard.routes";
 import { UserRepositoryPrisma } from "../app/repositories/user.repository";
 
+// EGRESS: o endpoint agora agrega a timeline via $queryRaw (GROUP BY conta,dia)
+// em vez de puxar todos os anúncios. O mock devolve as linhas JÁ agrupadas e o
+// teste prova que a saída (timeline) continua IDÊNTICA.
 vi.mock("../app/lib/prisma", () => ({
   default: {
     marketplaceAccount: { findMany: vi.fn() },
-    productListing: { findMany: vi.fn() },
+    product: { count: vi.fn() },
+    $queryRaw: vi.fn(),
   },
 }));
 
 vi.mock("@/app/lib/prisma", () => ({
   default: {
     marketplaceAccount: { findMany: vi.fn() },
-    productListing: { findMany: vi.fn() },
+    product: { count: vi.fn() },
+    $queryRaw: vi.fn(),
   },
 }));
 
@@ -41,7 +46,7 @@ describe("GET /dashboard/listing-stats", () => {
 
   it("returns empty stats when there are no accounts or listings", async () => {
     prisma.marketplaceAccount.findMany.mockResolvedValue([]);
-    prisma.productListing.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
 
     const res = await app.inject({
       method: "GET",
@@ -76,19 +81,11 @@ describe("GET /dashboard/listing-stats", () => {
       },
     ]);
 
-    prisma.productListing.findMany.mockResolvedValue([
-      {
-        createdAt: new Date("2024-01-01T00:00:00.000Z"),
-        marketplaceAccountId: "acc-1",
-      },
-      {
-        createdAt: new Date("2024-01-02T00:00:00.000Z"),
-        marketplaceAccountId: "acc-1",
-      },
-      {
-        createdAt: new Date("2024-01-02T00:00:00.000Z"),
-        marketplaceAccountId: "acc-2",
-      },
+    // Equivalente agrupado das 3 listagens (acc-1 em 01 e 02; acc-2 em 02).
+    prisma.$queryRaw.mockResolvedValue([
+      { marketplaceAccountId: "acc-1", day: "2024-01-01", count: 1 },
+      { marketplaceAccountId: "acc-1", day: "2024-01-02", count: 1 },
+      { marketplaceAccountId: "acc-2", day: "2024-01-02", count: 1 },
     ]);
 
     const res = await app.inject({
@@ -119,6 +116,52 @@ describe("GET /dashboard/listing-stats", () => {
     ]);
     expect(body.timeline.perAccount["acc-2"]).toEqual([
       { date: "2024-01-02", count: 1 },
+    ]);
+  });
+});
+
+describe("GET /dashboard/stock-distribution (agregação no banco)", () => {
+  let app: ReturnType<typeof fastify>;
+  let prisma: any;
+
+  beforeEach(async () => {
+    app = fastify();
+    await app.register(dashboardRoutes, { prefix: "/dashboard" });
+    prisma = (await import("../app/lib/prisma")).default as any;
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue({
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  it("os 5 COUNTs mapeiam para as faixas certas (0 | 1-3 | 4-10 | 11-50 | >50)", async () => {
+    // Ordem das contagens = ordem do Promise.all no route.
+    prisma.product.count
+      .mockResolvedValueOnce(10) // stock = 0
+      .mockResolvedValueOnce(5) // != 0 e <= 3
+      .mockResolvedValueOnce(7) // > 3 e <= 10
+      .mockResolvedValueOnce(3) // > 10 e <= 50
+      .mockResolvedValueOnce(2); // > 50
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/dashboard/stock-distribution",
+      headers: { email: "test@example.com" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toEqual([
+      { range: "0", count: 10 },
+      { range: "1-3", count: 5 },
+      { range: "4-10", count: 7 },
+      { range: "11-50", count: 3 },
+      { range: ">50", count: 2 },
     ]);
   });
 });
