@@ -101,6 +101,21 @@ interface Toast {
 const formatCurrency = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
+const MESES_LABELS = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+];
+
 export function NfeList() {
   const { data: session, status: authStatus } = useSession();
   const router = useRouter();
@@ -136,6 +151,17 @@ export function NfeList() {
     numero: number;
   } | null>(null);
   const [isEmailOpen, setIsEmailOpen] = useState(false);
+  // Relatório mensal (XML): default = mês corrente
+  const [reportMes, setReportMes] = useState(() =>
+    String(new Date().getMonth() + 1),
+  );
+  const [reportAno, setReportAno] = useState(() =>
+    String(new Date().getFullYear()),
+  );
+  const anosRelatorio = (() => {
+    const atual = new Date().getFullYear();
+    return Array.from({ length: 5 }, (_, i) => String(atual - i));
+  })();
 
   // Debounce search
   useEffect(() => {
@@ -250,6 +276,46 @@ export function NfeList() {
     } catch (error) {
       console.error("Erro ao exportar:", error);
       showToast("Erro ao exportar dados", "error");
+    }
+  };
+
+  const handleMonthlyReport = async () => {
+    if (!session?.user?.email) return;
+    try {
+      const params = new URLSearchParams({ ano: reportAno, mes: reportMes });
+      const response = await fetch(
+        `${getApiBaseUrl()}/fiscal/nfe/relatorio-mensal?${params}`,
+        {
+          headers: {
+            email: session.user.email,
+          },
+        },
+      );
+      if (!response.ok) throw new Error("Erro ao gerar relatorio");
+      // Lê como texto para detectar mês vazio (resumo quantidade="0") e ainda
+      // baixar o XML válido vazio.
+      const text = await response.text();
+      const blob = new Blob([text], { type: "application/xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `relatorio-nfe-${reportAno}-${reportMes.padStart(2, "0")}.xml`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      const mesLabel =
+        MESES_LABELS[Number(reportMes) - 1]?.toLowerCase() ?? reportMes;
+      if (text.includes('quantidade="0"')) {
+        showToast(
+          `Nenhuma nota autorizada em ${mesLabel}/${reportAno}`,
+          "error",
+        );
+      } else {
+        showToast("Relatório mensal gerado", "success");
+      }
+    } catch (error) {
+      console.error("Erro ao gerar relatorio mensal:", error);
+      showToast("Erro ao gerar relatório mensal", "error");
     }
   };
 
@@ -405,6 +471,34 @@ export function NfeList() {
         </div>
 
         <div className="flex items-center space-x-2">
+          <Select value={reportMes} onValueChange={setReportMes}>
+            <SelectTrigger className="h-9 w-[130px]">
+              <SelectValue placeholder="Mês" />
+            </SelectTrigger>
+            <SelectContent>
+              {MESES_LABELS.map((label, i) => (
+                <SelectItem key={label} value={String(i + 1)}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={reportAno} onValueChange={setReportAno}>
+            <SelectTrigger className="h-9 w-[92px]">
+              <SelectValue placeholder="Ano" />
+            </SelectTrigger>
+            <SelectContent>
+              {anosRelatorio.map((ano) => (
+                <SelectItem key={ano} value={ano}>
+                  {ano}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={handleMonthlyReport}>
+            <Download className="size-4 mr-1" />
+            Relatório mensal (XML)
+          </Button>
           <Button
             variant="outline"
             size="sm"

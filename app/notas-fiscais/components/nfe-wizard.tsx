@@ -155,6 +155,7 @@ export function NfeWizard() {
       indPresenca: draft.indPresenca ?? "NAO_SE_APLICA",
       intermediador: draft.intermediador,
       numeroPedido: draft.numeroPedido,
+      informacoesComplementares: draft.informacoesComplementares,
       dataEmissao: draft.dataEmissao
         ? new Date(draft.dataEmissao).toISOString().slice(0, 16)
         : null,
@@ -265,6 +266,7 @@ export function NfeWizard() {
         indPresenca: data.indPresenca,
         intermediador: data.intermediador,
         numeroPedido: data.numeroPedido,
+        informacoesComplementares: data.informacoesComplementares,
         dataEmissao: data.dataEmissao,
         dataSaida: data.dataSaida,
       });

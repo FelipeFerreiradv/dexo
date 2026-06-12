@@ -10,6 +10,7 @@ export const DEFAULT_NFE_DRAFT: NfeDraftFormData = {
   indPresenca: "NAO_SE_APLICA",
   intermediador: null,
   numeroPedido: null,
+  informacoesComplementares: null,
   dataEmissao: null,
   dataSaida: null,
 

@@ -8,6 +8,8 @@ import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interf
 import type { NfeTotais } from "../domain/nfe.types";
 import { parseNfeXml, type ParsedNfe } from "../sefaz/nfe-xml-parser.service";
 import { renderDanfeV2, type DanfeAvatar } from "./danfe-v2-renderer";
+import { composeInfCpl } from "../domain/inf-cpl";
+import { toWinAnsiSafe, wrapTextLines } from "./danfe-helpers";
 
 /**
  * Gerador de DANFE simplificado usando pdf-lib.
@@ -269,6 +271,31 @@ export class DanfePdfService {
       fontBold,
     );
 
+    // ── Informações complementares (mesmo conteúdo do <infCpl> do XML) ──
+    const infCpl = toWinAnsiSafe(composeInfCpl(nfe));
+    if (infCpl) {
+      y -= lineHeight;
+      if (y < margin + 40) {
+        page = doc.addPage([595.28, 841.89]);
+        y = height - margin;
+      }
+      drawLine(y);
+      y -= lineHeight;
+      drawText("INFORMACOES COMPLEMENTARES", margin, y, 9, fontBold);
+      y -= lineHeight;
+      const infLines = wrapTextLines(infCpl, width - 2 * margin, (s) =>
+        font.widthOfTextAtSize(s, 8),
+      );
+      for (const line of infLines) {
+        if (y < margin) {
+          page = doc.addPage([595.28, 841.89]);
+          y = height - margin;
+        }
+        drawText(line, margin, y, 8);
+        y -= 11;
+      }
+    }
+
     return doc.save();
   }
 
@@ -464,6 +491,9 @@ export function projectParsedNfeToDraft(parsed: ParsedNfe): {
     indPresenca: "PRESENCIAL",
     intermediador: null,
     numeroPedido: null,
+    // O infCpl do XML já vem composto (observações + "Pedido: N"); entra
+    // inteiro aqui e composeInfCpl o devolve como está (numeroPedido: null).
+    informacoesComplementares: parsed.infCpl,
     dataEmissao: ide.dhEmi ? new Date(ide.dhEmi) : null,
     dataSaida: ide.dhSaiEnt ? new Date(ide.dhSaiEnt) : null,
     destinatarioJson: destinatario,

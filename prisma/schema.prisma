@@ -873,6 +873,8 @@ model NfeEmitida {
   indPresenca      String // 0..9
   intermediador    String?
   numeroPedido     String?
+  // Observações nível-nota: vão ao <infAdic><infCpl> do XML e ao DANFE
+  informacoesComplementares String?
   dataEmissao      DateTime?
   dataSaida        DateTime?
 

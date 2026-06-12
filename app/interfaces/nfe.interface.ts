@@ -85,6 +85,7 @@ export interface NfeDraftUpdateInput {
   indPresenca?: IndicadorPresenca;
   intermediador?: string | null;
   numeroPedido?: string | null;
+  informacoesComplementares?: string | null;
   dataEmissao?: string | null;
   dataSaida?: string | null;
   notasReferenciadasJson?: any | null;
@@ -125,6 +126,7 @@ export interface NfeDraftResponse {
   indPresenca: IndicadorPresenca;
   intermediador: string | null;
   numeroPedido: string | null;
+  informacoesComplementares: string | null;
   dataEmissao: Date | null;
   dataSaida: Date | null;
   destinatarioJson: NfeDestinatario | null;
