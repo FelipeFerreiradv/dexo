@@ -76,6 +76,19 @@ export const authMiddleware = async (
   const queryEmail = (request.query as Record<string, unknown> | undefined)
     ?.email as string | undefined;
   const email = headerEmail ?? queryEmail;
+
+  // DIAGNÓSTICO (atrás de flag): em legacy, registra requisições que chegam SEM
+  // Bearer válido — exatamente as que dariam 401 ao virar strict. Rode com
+  // AUTH_DIAGNOSTIC=true por ~1 dia de uso real e confira o `pm2 logs dexo-api`
+  // por "auth-diag" para achar telas que ainda não enviam o token. Desligue
+  // depois. Não escreve no banco (sem egress) — só no log.
+  if (process.env.AUTH_DIAGNOSTIC === "true") {
+    request.log.warn(
+      { route: request.url, method: request.method, hasEmail: !!email },
+      "[auth-diag] requisição sem Bearer (cairia em 401 no modo strict)",
+    );
+  }
+
   if (!email) {
     return reply.status(401).send({ message: "Email is required" });
   }
