@@ -15,6 +15,7 @@ import {
   CheckCircle,
   Loader2,
   Save,
+  AlertTriangle,
 } from "lucide-react";
 import { getApiBaseUrl } from "@/lib/api";
 import { useSession } from "next-auth/react";
@@ -56,7 +57,18 @@ const STEPS: StepperStep[] = [
 
 const TOTAL_STEPS = 9;
 
+// Feature flag: banner do motivo da rejeição ao reabrir uma nota REJECTED.
+const REEMISSAO_REJEITADA_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
+
 type ToastType = "success" | "error" | "warning" | "info";
+
+interface RejeicaoInfo {
+  serie: number;
+  numero: number;
+  motivo: string;
+  reaproveitavel: boolean;
+}
 
 export function NfeWizard() {
   const { data: session } = useSession();
@@ -65,6 +77,7 @@ export function NfeWizard() {
   const [currentStep, setCurrentStep] = useState(1);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [rejeicaoInfo, setRejeicaoInfo] = useState<RejeicaoInfo | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: ToastType } | null>(
     null,
   );
@@ -113,6 +126,22 @@ export function NfeWizard() {
           if (draft) {
             setDraftId(existingId);
             populateFormFromDraft(draft);
+            // Reabrindo uma nota REJEITADA: guarda os dados para o banner do
+            // motivo (gated). Nao altera o formulario nem o fluxo de emissao.
+            if (
+              REEMISSAO_REJEITADA_ENABLED &&
+              draft.status === "REJECTED" &&
+              draft.motivoRejeicao
+            ) {
+              setRejeicaoInfo({
+                serie: draft.serie,
+                numero: draft.numero,
+                motivo: draft.motivoRejeicao,
+                reaproveitavel: draft.reaproveitavel === true,
+              });
+            } else {
+              setRejeicaoInfo(null);
+            }
             return;
           }
         }
@@ -403,6 +432,23 @@ export function NfeWizard() {
 
   return (
     <div className="space-y-6 rounded-2xl border border-border/60 bg-card/80 p-6 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+      {REEMISSAO_REJEITADA_ENABLED && rejeicaoInfo && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-4 text-destructive" />
+            <span className="text-sm font-medium text-destructive">
+              Esta nota foi rejeitada pela SEFAZ
+            </span>
+          </div>
+          <p className="mt-1 text-sm">«{rejeicaoInfo.motivo}»</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {rejeicaoInfo.reaproveitavel
+              ? `Corrija o que deu errado e emita novamente — o número ${rejeicaoInfo.serie}/${rejeicaoInfo.numero} será reaproveitado.`
+              : "Corrija o que deu errado e emita novamente."}
+          </p>
+        </div>
+      )}
+
       <StepperHeader
         steps={STEPS}
         currentStep={currentStep}

@@ -28,6 +28,10 @@ import type {
   FiscalAmbiente,
 } from "../fiscal/domain/nfe.types";
 import { canTransition } from "../fiscal/domain/nfe.types";
+import {
+  shouldReuseNumero,
+  isNfeReemissaoRejeitadaEnabled,
+} from "../fiscal/domain/nfe-number-reuse";
 import type { NfeDraftResponse } from "../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
 
@@ -103,14 +107,25 @@ export class NfeEmissionUseCase {
     // ── 3. Validate ──
     this.validate(draft, config);
 
+    // Feature flag (reemissao de rejeitada reaproveitando numero). Lida uma vez
+    // por emissao. Com a flag OFF, o fluxo abaixo e identico ao atual.
+    const reemissaoRejeitadaEnabled = isNfeReemissaoRejeitadaEnabled();
+
     // ── Claim atomico DRAFT|REJECTED → VALIDATING (USE-7) ──
     // updateMany condicional ao status garante que duas chamadas concorrentes
     // de emit() (duplo-clique, retry) nao reservem dois numeros e enviem duas
     // NF-e. Apenas a primeira "ganha"; as demais abortam aqui. Limpa a rejeicao
     // anterior ao reemitir.
+    const claimData: Record<string, any> = {
+      status: "VALIDATING",
+      motivoRejeicao: null,
+    };
+    // So quando a feature esta ligada (coluna ja existe no banco): limpa a
+    // categoria da rejeicao anterior para nao "vazar" para a nova tentativa.
+    if (reemissaoRejeitadaEnabled) claimData.cStatRejeicao = null;
     const claimed = await (prisma as any).nfeEmitida.updateMany({
       where: { id: nfeId, userId, status: { in: ["DRAFT", "REJECTED"] } },
-      data: { status: "VALIDATING", motivoRejeicao: null },
+      data: claimData,
     });
     if (claimed.count === 0) {
       throw new Error(
@@ -161,11 +176,28 @@ export class NfeEmissionUseCase {
 
       // ── 5. Reserve number ──
       const ambiente = config.ambiente as FiscalAmbiente;
-      const numero = await this.sequenceService.reservarProximoNumero(
-        userId,
+      // REAPROVEITAMENTO (feature flag): ao reemitir uma nota REJEITADA
+      // reaproveitavel (rejeicao comum — NAO denegada/duplicidade), no mesmo
+      // ambiente, reusa-se o numero JA reservado em vez de queimar um novo (a
+      // SEFAZ nao consome o numero numa rejeicao). Rascunho novo (numero<0) e
+      // flag off caem sempre na reserva normal — comportamento atual intacto.
+      const reusarNumero = shouldReuseNumero(
+        {
+          status: draft.status,
+          numero: draft.numero,
+          ambiente: draft.ambiente,
+          cStatRejeicao: draft.cStatRejeicao,
+        },
         ambiente,
-        draft.serie,
+        reemissaoRejeitadaEnabled,
       );
+      const numero = reusarNumero
+        ? draft.numero
+        : await this.sequenceService.reservarProximoNumero(
+            userId,
+            ambiente,
+            draft.serie,
+          );
 
       // Update numero on the NFe. The draft row was created with an initial
       // ambiente (hardcoded HOMOLOGACAO historically), but the user may have
@@ -180,6 +212,10 @@ export class NfeEmissionUseCase {
           ambiente,
           dataEmissao: new Date(),
           emitenteJson: this.buildEmitenteSnapshot(config),
+          // Higiene: ao reaproveitar, zera a chaveAcesso da tentativa rejeitada
+          // anterior (sera regravada com a chave nova apos o envio). Evita
+          // artefato orfao. So no ramo de reuso — DRAFT segue identico.
+          ...(reusarNumero ? { chaveAcesso: null } : {}),
         },
       });
 
@@ -391,6 +427,7 @@ export class NfeEmissionUseCase {
             numero,
             draft.serie,
             consultaResult.mensagem,
+            consultaResult.codigoStatus,
           );
         }
 
@@ -443,6 +480,7 @@ export class NfeEmissionUseCase {
         numero,
         draft.serie,
         providerResult.mensagem,
+        providerResult.codigoStatus,
       );
     } catch (error) {
       // Rollback para DRAFT SOMENTE se ainda NAO enviamos a SEFAZ. Apos o
@@ -871,12 +909,19 @@ export class NfeEmissionUseCase {
     numero: number,
     serie: number,
     mensagem: string,
+    cStat?: number | null,
   ): Promise<EmissionResult> {
     await this.forceStatus(nfeId, "REJECTED");
 
+    // Persiste o motivo (texto). Quando a feature esta ligada (coluna existe),
+    // grava tambem o cStat da rejeicao — necessario para, no retry, distinguir
+    // rejeicao reaproveitavel de denegada/duplicidade. Gated p/ manter o fluxo
+    // atual bit-a-bit identico com a flag off (e evitar erro pre-migration).
+    const rejData: Record<string, any> = { motivoRejeicao: mensagem };
+    if (isNfeReemissaoRejeitadaEnabled()) rejData.cStatRejeicao = cStat ?? null;
     await (prisma as any).nfeEmitida.update({
       where: { id: nfeId },
-      data: { motivoRejeicao: mensagem },
+      data: rejData,
     });
 
     await this.nfeRepo.addAuditLog(nfeId, userId, "REJEITADA", { mensagem });
@@ -971,6 +1016,8 @@ export class NfeEmissionUseCase {
       duplicatasJson: row.duplicatasJson as any,
       volumesJson: row.volumesJson as any,
       status: row.status,
+      motivoRejeicao: row.motivoRejeicao ?? null,
+      cStatRejeicao: row.cStatRejeicao ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       itens: (row.itens ?? []).map((item: any) => ({

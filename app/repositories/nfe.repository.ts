@@ -1,4 +1,6 @@
 import prisma from "../lib/prisma";
+import { lookupCStat } from "../fiscal/sefaz/cstat-mapper";
+import { isNfeReemissaoRejeitadaEnabled } from "../fiscal/domain/nfe-number-reuse";
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -44,6 +46,11 @@ function toDraftResponse(row: any): NfeDraftResponse {
     duplicatasJson: row.duplicatasJson as any,
     volumesJson: row.volumesJson as any,
     status: row.status,
+    motivoRejeicao: row.motivoRejeicao ?? null,
+    cStatRejeicao: row.cStatRejeicao ?? null,
+    reaproveitavel:
+      row.cStatRejeicao != null &&
+      lookupCStat(row.cStatRejeicao).categoria === "rejeitada",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     itens: (row.itens ?? []).map((item: any) => ({
@@ -365,6 +372,8 @@ export class NfeRepository {
       // Prisma doesn't support JSON field search well, so we add a path-based filter
     }
 
+    const reemissaoEnabled = isNfeReemissaoRejeitadaEnabled();
+
     const [rows, total] = await Promise.all([
       (prisma as any).nfeEmitida.findMany({
         where,
@@ -391,6 +400,9 @@ export class NfeRepository {
           xmlAutorizadoPath: true,
           xmlOriginalPath: true,
           danfePdfPath: true,
+          // So seleciona a coluna nova quando a feature esta ligada — com a flag
+          // OFF o app roda sem depender da migration (coluna pode nao existir).
+          ...(reemissaoEnabled ? { cStatRejeicao: true } : {}),
         },
       }),
       (prisma as any).nfeEmitida.count({ where }),
@@ -419,6 +431,13 @@ export class NfeRepository {
         createdAt: r.createdAt.toISOString(),
         hasXml: !!(r.xmlAutorizadoPath || r.xmlOriginalPath),
         hasDanfe: !!r.danfePdfPath,
+        // Elegivel ao "Tentar novamente": rejeicao reaproveitavel (numero nao
+        // consumido). Sempre false com a flag off. NAO expoe o texto do motivo.
+        reaproveitavel:
+          reemissaoEnabled &&
+          r.status === "REJECTED" &&
+          r.cStatRejeicao != null &&
+          lookupCStat(r.cStatRejeicao).categoria === "rejeitada",
       };
     });
 
