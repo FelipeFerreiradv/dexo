@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   Ban,
   Mail,
+  RotateCcw,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,11 @@ import { NfeDetailSheet } from "./nfe-detail-sheet";
 import { NfeCancelDialog } from "./nfe-cancel-dialog";
 import { NfeSendEmailDialog } from "./nfe-send-email-dialog";
 
+// Feature flag: botão "Tentar novamente" em notas rejeitadas reaproveitáveis.
+// Com a flag off, nenhum botão novo aparece — comportamento atual da lista.
+const REEMISSAO_REJEITADA_ENABLED =
+  process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
+
 interface NfeListItem {
   id: string;
   orderId: string | null;
@@ -75,6 +81,7 @@ interface NfeListItem {
   createdAt: string;
   hasXml: boolean;
   hasDanfe: boolean;
+  reaproveitavel?: boolean;
 }
 
 interface Pagination {
@@ -679,6 +686,30 @@ export function NfeList() {
                                 <Ban className="size-4" />
                               </Button>
                             )}
+                            {REEMISSAO_REJEITADA_ENABLED &&
+                              nota.status === "REJECTED" &&
+                              nota.reaproveitavel && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="size-8"
+                                      onClick={() =>
+                                        router.push(
+                                          `/notas-fiscais/nfe?draft=${nota.id}`,
+                                        )
+                                      }
+                                    >
+                                      <RotateCcw className="size-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Tentar novamente — reaproveita o nº{" "}
+                                    {nota.serie}/{nota.numero}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
                           </div>
                         </TableCell>
                       </TableRow>

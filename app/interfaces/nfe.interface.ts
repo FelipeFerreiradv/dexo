@@ -140,6 +140,13 @@ export interface NfeDraftResponse {
   duplicatasJson: any | null;
   volumesJson: any | null;
   status: NfeStatus;
+  // Rejeição (preenchidos quando a nota está/esteve REJECTED). Usados pelo
+  // banner de reemissão e pelo gate de reaproveitamento de número.
+  motivoRejeicao: string | null;
+  cStatRejeicao: number | null;
+  // Derivado (server-side): rejeição reaproveitável (≠ denegada/duplicidade).
+  // Só presente no retorno do draft-GET; usado pelo banner do wizard.
+  reaproveitavel?: boolean;
   createdAt: Date;
   updatedAt: Date;
   itens: NfeDraftItem[];
@@ -218,6 +225,8 @@ export interface NfeListItem {
   createdAt: string;
   hasXml: boolean;
   hasDanfe: boolean;
+  // Elegível ao "Tentar novamente" (rejeição reaproveitável). false com flag off.
+  reaproveitavel: boolean;
 }
 
 export interface NfeListResponse {

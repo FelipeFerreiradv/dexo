@@ -899,6 +899,9 @@ model NfeEmitida {
   protocoloAutorizacao String?
   dataAutorizacao      DateTime?
   motivoRejeicao       String?
+  // cStat da última rejeição (SEFAZ). Distingue rejeição reaproveitável (número
+  // não consumido) de denegada (110)/duplicidade (já consumido). null = legado.
+  cStatRejeicao        Int?
 
   // Artefatos
   xmlOriginalPath   String?
