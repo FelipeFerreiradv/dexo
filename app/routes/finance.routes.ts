@@ -59,8 +59,17 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { search, status, customerId, unidadeId, from, to, page, limit } =
-          request.query as any;
+        const {
+          search,
+          status,
+          customerId,
+          unidadeId,
+          paymentMethod,
+          from,
+          to,
+          page,
+          limit,
+        } = request.query as any;
         const data = await useCase.list(
           kind,
           {
@@ -68,6 +77,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             status: (status as FinanceStatus) || undefined,
             customerId: customerId || undefined,
             unidadeId: unidadeId || undefined,
+            paymentMethod: paymentMethod || undefined,
             from: from || undefined,
             to: to || undefined,
             page: page ? parseInt(page) : 1,

@@ -10,6 +10,7 @@ import {
 } from "pdf-lib";
 import type { FinanceEntry } from "../../interfaces/finance.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
+import { paymentMethodLabel } from "../../lib/payment-methods";
 import {
   maskCnpj,
   maskCpf,
@@ -677,6 +678,14 @@ function drawPayment(ctx: RenderCtx, y: number, entry: FinanceEntry) {
   if (entry.document) metaParts.push(`Documento: ${entry.document}`);
   if (entry.reason) metaParts.push(`Motivo: ${entry.reason}`);
   if (metaParts.length) bullets.push(metaParts.join("  ·  "));
+
+  // Forma de pagamento — só quando houver. Sem método => nenhum bullet extra,
+  // cupom byte-idêntico ao atual (zero regressão).
+  if (entry.paymentMethod) {
+    bullets.push(
+      `Forma de pagamento: ${paymentMethodLabel(entry.paymentMethod)}`,
+    );
+  }
 
   for (const b of bullets) {
     // bullet em primary

@@ -52,6 +52,7 @@ function toEntry(raw: any): FinanceEntry {
     dueDate: raw.dueDate,
     status: raw.status,
     paidAt: raw.paidAt,
+    paymentMethod: raw.paymentMethod ?? null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     customer: raw.customer
@@ -150,6 +151,7 @@ export class FinanceRepository {
         dueDate: parseDate(data.dueDate)!,
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
+        paymentMethod: data.paymentMethod ?? null,
       },
       include: {
         customer: { select: { id: true, name: true, cpf: true, email: true } },
@@ -192,6 +194,7 @@ export class FinanceRepository {
         dueDate: parseDate(data.dueDate)!,
         status: (data.status as FinanceStatus) ?? "PENDENTE",
         paidAt: parseDate(data.paidAt ?? null),
+        paymentMethod: data.paymentMethod ?? null,
       },
       // Não incluímos itens aqui (acabamos de criar e vamos preencher na
       // próxima query); a 2ª query traz o include completo.
@@ -377,6 +380,8 @@ export class FinanceRepository {
       where.unidadeId =
         filters.unidadeId === "sem_unidade" ? null : filters.unidadeId;
     }
+    // Filtro por forma de pagamento: ausente/"" => não filtra (idêntico ao atual).
+    if (filters.paymentMethod) where.paymentMethod = filters.paymentMethod;
     if (filters.from || filters.to) {
       where.dueDate = {};
       if (filters.from) where.dueDate.gte = new Date(filters.from);
@@ -414,6 +419,7 @@ export class FinanceRepository {
           dueDate: true,
           status: true,
           paidAt: true,
+          paymentMethod: true,
           createdAt: true,
           updatedAt: true,
           customer: {

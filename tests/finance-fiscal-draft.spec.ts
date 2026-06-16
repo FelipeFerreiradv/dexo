@@ -381,4 +381,82 @@ describe("Fase 8 — POST /finance/receivables/:id/fiscal-draft", () => {
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.payload).error).toMatch(/configuração fiscal/i);
   });
+
+  // ── Forma de pagamento → MeioPagamento (mapeamento Dexo → SEFAZ) ──
+  const oneItem = [
+    {
+      id: "ri-1",
+      productId: "p-1",
+      listingId: null,
+      quantity: 1,
+      unitPrice: "200.00",
+      createdAt: new Date(),
+      product: { id: "p-1", sku: "S", name: "N" },
+    },
+  ];
+
+  it("paymentMethod PIX => meio PIX no rascunho", async () => {
+    (prisma as any).receivable.findFirst.mockResolvedValue(
+      makeReceivableRaw({
+        paymentMethod: "PIX",
+        totalAmount: "200.00",
+        items: oneItem,
+      }),
+    );
+    (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/fiscal-draft",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createPopulatedMock.mock.calls[0][1].pagamentos).toEqual([
+      { meio: "PIX", valor: 200 },
+    ]);
+  });
+
+  it("paymentMethod CREDITO => meio CARTAO_CREDITO (mapeamento 1:1)", async () => {
+    (prisma as any).receivable.findFirst.mockResolvedValue(
+      makeReceivableRaw({
+        paymentMethod: "CREDITO",
+        totalAmount: "200.00",
+        items: oneItem,
+      }),
+    );
+    (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/fiscal-draft",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createPopulatedMock.mock.calls[0][1].pagamentos).toEqual([
+      { meio: "CARTAO_CREDITO", valor: 200 },
+    ]);
+  });
+
+  it("REGRESSÃO: sem paymentMethod => mantém meio DINHEIRO (fallback)", async () => {
+    (prisma as any).receivable.findFirst.mockResolvedValue(
+      makeReceivableRaw({ totalAmount: "200.00", items: oneItem }),
+    );
+    (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/fiscal-draft",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createPopulatedMock.mock.calls[0][1].pagamentos).toEqual([
+      { meio: "DINHEIRO", valor: 200 },
+    ]);
+  });
 });

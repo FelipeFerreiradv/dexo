@@ -611,6 +611,11 @@ model Receivable {
   status FinanceStatus @default(PENDENTE)
   paidAt DateTime?
 
+  // Forma de pagamento (opcional). Código estável de app/lib/payment-methods.ts
+  // (PIX/CREDITO/DEBITO/BOLETO/DINHEIRO/TRANSFERENCIA). Nulável: conta sem
+  // método é válida (zero regressão). String? em vez de enum p/ flexibilidade.
+  paymentMethod String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -648,6 +653,9 @@ model Payable {
 
   status FinanceStatus @default(PENDENTE)
   paidAt DateTime?
+
+  // Forma de pagamento (opcional). Ver Receivable.paymentMethod.
+  paymentMethod String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -23,6 +23,9 @@ export interface FinanceEntry {
   status: FinanceStatus;
   paidAt: Date | null;
 
+  // Forma de pagamento (código estável de app/lib/payment-methods.ts) ou null.
+  paymentMethod: string | null;
+
   createdAt: Date;
   updatedAt: Date;
 
@@ -91,6 +94,9 @@ export interface FinanceEntryCreate {
   status?: FinanceStatus;
   paidAt?: string | Date | null;
 
+  // Forma de pagamento (opcional/nulável). Ausente = fluxo atual inalterado.
+  paymentMethod?: string | null;
+
   // Itens de venda balcão — opcional, receivable-only. Ausente = fluxo atual
   // 100% inalterado (nada de estoque/produto). Persistido em `ReceivableItem`
   // na mesma transação da Receivable.
@@ -106,6 +112,8 @@ export interface FinanceListFilters {
   // undefined/ausente = todas (comportamento atual); "sem_unidade" = unidadeId NULL;
   // qualquer outro valor = filtra por aquela unidade.
   unidadeId?: string;
+  // Filtro por forma de pagamento (código). Ausente/"" = todas (atual).
+  paymentMethod?: string;
   from?: string;
   to?: string;
   page?: number;

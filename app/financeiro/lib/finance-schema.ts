@@ -18,6 +18,8 @@ export const financeEntrySchema = z
     document: z.string().max(100).optional().nullable(),
     reason: z.string().max(200).optional().nullable(),
     debtDetails: z.string().max(1000).optional().nullable(),
+    // Forma de pagamento (opcional). Código de app/lib/payment-methods ou null.
+    paymentMethod: z.string().optional().nullable(),
     totalAmount: z
       .number({ invalid_type_error: "Informe o valor total" })
       .positive("Valor deve ser maior que zero"),
@@ -99,6 +101,7 @@ export const DEFAULT_FINANCE_VALUES: FinanceEntryFormData = {
   document: "",
   reason: "",
   debtDetails: "",
+  paymentMethod: null,
   totalAmount: 0,
   fineAmount: null,
   finePercent: null,

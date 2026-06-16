@@ -8,6 +8,8 @@ import {
   FinanceSummary,
 } from "../interfaces/finance.interface";
 import type { ProductLookup } from "../interfaces/nfe.interface";
+import type { MeioPagamento } from "../fiscal/domain/nfe.types";
+import { PAYMENT_METHOD_CODES } from "../lib/payment-methods";
 import prisma from "../lib/prisma";
 import { CustomerRepository } from "../repositories/customer.repository";
 import { FinanceRepository } from "../repositories/finance.repository";
@@ -15,6 +17,25 @@ import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
+
+// Mapeamento código Dexo (paymentMethod) → MeioPagamento (domínio fiscal SEFAZ).
+// 1:1 e sem ambiguidade (decisão da Fase 1). Código nulo/desconhecido → null;
+// o caller aplica o fallback "DINHEIRO" para preservar 100% o comportamento
+// atual do rascunho de NF-e (que hoje usa "DINHEIRO" fixo).
+const PAYMENT_METHOD_TO_MEIO: Record<string, MeioPagamento> = {
+  PIX: "PIX",
+  CREDITO: "CARTAO_CREDITO",
+  DEBITO: "CARTAO_DEBITO",
+  BOLETO: "BOLETO",
+  DINHEIRO: "DINHEIRO",
+  TRANSFERENCIA: "TRANSFERENCIA",
+};
+
+function mapPaymentMethodToMeio(
+  code: string | null | undefined,
+): MeioPagamento | null {
+  return code ? (PAYMENT_METHOD_TO_MEIO[code] ?? null) : null;
+}
 
 export class FinanceUseCase {
   private repo: FinanceRepository;
@@ -109,6 +130,20 @@ export class FinanceUseCase {
     }
   }
 
+  // Valida a forma de pagamento APENAS quando presente. Ausente/null/""
+  // => no-op (preserva 100% o fluxo atual sem método). Mensagem contém
+  // "inválido" (masculino) para mapear a 400 no buildCreateHandler de
+  // finance.routes (mesma convenção de assertUnidade/validateItems).
+  private validatePaymentMethod(
+    data: FinanceEntryCreate | FinanceEntryUpdate,
+  ) {
+    const pm = (data as any).paymentMethod;
+    if (!pm) return; // ausente/null/"" => fluxo atual
+    if (!PAYMENT_METHOD_CODES.includes(pm)) {
+      throw new Error("Método de pagamento inválido");
+    }
+  }
+
   async create(
     kind: FinanceKind,
     data: FinanceEntryCreate,
@@ -118,6 +153,9 @@ export class FinanceUseCase {
     // Validação de itens vale para os DOIS fluxos (quick-create e padrão).
     // Quando `items` ausente, é no-op — preserva 100% o fluxo atual.
     this.validateItems(kind, data);
+    // Idem: no-op quando `paymentMethod` ausente/null. Cobre os dois fluxos
+    // de create por estar antes do branch newCustomer.
+    this.validatePaymentMethod(data);
 
     // ── Cadastro rápido: cria cliente + conta numa ÚNICA transação ──
     // Se a criação da conta falhar, o cliente também sofre rollback
@@ -167,6 +205,8 @@ export class FinanceUseCase {
     if (data.unidadeId) await this.assertUnidade(data.unidadeId, userId);
     // Validação de itens — no-op quando `items` ausente; preserva fluxo atual.
     this.validateItems(kind, data);
+    // Idem para forma de pagamento — no-op quando ausente/null.
+    this.validatePaymentMethod(data);
     return this.repo.update(kind, id, userId, data);
   }
 
@@ -496,9 +536,15 @@ export class FinanceUseCase {
       observacoes: null,
     }));
 
-    // Pagamento default — "DINHEIRO" (balcão típico). Usuário ajusta.
+    // Pagamento: usa a forma de pagamento da conta quando houver
+    // correspondência fiscal; senão mantém o fallback "DINHEIRO" (balcão
+    // típico) — comportamento 100% idêntico ao anterior para contas sem
+    // método. Usuário ajusta no editor fiscal de qualquer forma.
     const pagamentos = [
-      { meio: "DINHEIRO", valor: Number(entry.totalAmount) },
+      {
+        meio: mapPaymentMethodToMeio(entry.paymentMethod) ?? "DINHEIRO",
+        valor: Number(entry.totalAmount),
+      },
     ];
 
     return this.nfeDraftUseCase.createPopulatedFromReceivable(userId, {
