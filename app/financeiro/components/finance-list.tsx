@@ -34,6 +34,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -47,11 +54,16 @@ import { getApiBaseUrl } from "@/lib/api";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
+import {
+  PAYMENT_METHODS,
+  paymentMethodLabel,
+} from "@/app/lib/payment-methods";
 
 interface FinanceRow {
   id: string;
   document: string | null;
   reason: string | null;
+  paymentMethod?: string | null;
   totalAmount: number;
   installments: number;
   dueDate: string;
@@ -72,6 +84,10 @@ interface Props {
 
 const LIMIT = 20;
 
+// Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
+// "todas" = não envia o parâmetro => resultado idêntico ao atual.
+const METHOD_ALL = "__all__";
+
 const STATUS_STYLES: Record<FinanceRow["status"], string> = {
   PENDENTE: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
   PAGA: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
@@ -87,6 +103,10 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  // Filtro por forma de pagamento. undefined = todas (não envia parâmetro).
+  const [methodFilter, setMethodFilter] = useState<string | undefined>(
+    undefined,
+  );
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] =
@@ -129,6 +149,8 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       if (searchTerm) params.set("search", searchTerm);
       // unidadeId ausente => não envia o parâmetro => resultado idêntico ao atual.
       if (unidadeId) params.set("unidadeId", unidadeId);
+      // methodFilter ausente => não envia => resultado idêntico ao atual.
+      if (methodFilter) params.set("paymentMethod", methodFilter);
       const res = await fetch(`${getApiBaseUrl()}${basePath}?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -144,7 +166,15 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
     }
-  }, [session?.user?.email, page, searchTerm, unidadeId, basePath, onToast]);
+  }, [
+    session?.user?.email,
+    page,
+    searchTerm,
+    unidadeId,
+    methodFilter,
+    basePath,
+    onToast,
+  ]);
 
   useEffect(() => {
     fetchList();
@@ -163,6 +193,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       unidadeId: r.unidadeId ?? null,
       document: r.document,
       reason: r.reason,
+      paymentMethod: r.paymentMethod ?? null,
       totalAmount: r.totalAmount,
       installments: r.installments,
       dueDate: r.dueDate?.slice(0, 10),
@@ -238,20 +269,41 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Buscar por documento, motivo ou cliente..."
-              value={searchInput}
-              onChange={(e) => {
-                setSearchInput(e.target.value);
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative max-w-md flex-1">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por documento, motivo ou cliente..."
+                value={searchInput}
+                onChange={(e) => {
+                  setSearchInput(e.target.value);
+                  setPage(1);
+                }}
+                className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
+              />
+              {loading && (
+                <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            <Select
+              value={methodFilter ?? METHOD_ALL}
+              onValueChange={(v) => {
+                setMethodFilter(v === METHOD_ALL ? undefined : v);
                 setPage(1);
               }}
-              className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"
-            />
-            {loading && (
-              <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-            )}
+            >
+              <SelectTrigger className="h-10 w-full rounded-full border border-border/70 bg-muted/20 sm:w-[210px]">
+                <SelectValue placeholder="Todas as formas" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={METHOD_ALL}>Todas as formas</SelectItem>
+                {PAYMENT_METHODS.map((m) => (
+                  <SelectItem key={m.code} value={m.code}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="rounded-xl border border-border/70 overflow-hidden">
@@ -264,6 +316,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                   <TableHead>Valor</TableHead>
                   <TableHead>Parcelas</TableHead>
                   <TableHead>Vencimento</TableHead>
+                  <TableHead>Forma de pagamento</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
@@ -272,7 +325,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                 {rows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className="text-center py-8 text-muted-foreground"
                     >
                       Nenhum título encontrado.
@@ -292,6 +345,15 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                       {r.dueDate
                         ? new Date(r.dueDate).toLocaleDateString("pt-BR")
                         : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {r.paymentMethod ? (
+                        <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {paymentMethodLabel(r.paymentMethod)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
                     <TableCell>
                       <span

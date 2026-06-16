@@ -64,6 +64,7 @@ const STEPS: (StepperStep & { fields: (keyof FinanceEntryFormData)[] })[] = [
       "document",
       "reason",
       "debtDetails",
+      "paymentMethod",
       "totalAmount",
       "unidadeId",
       "items",
@@ -230,6 +231,7 @@ export function FinanceDialog({
         document: rest.document || null,
         reason: rest.reason || null,
         debtDetails: rest.debtDetails || null,
+        paymentMethod: rest.paymentMethod || null,
         unidadeId: rest.unidadeId || null,
         dueDate: new Date(rest.dueDate).toISOString(),
       };

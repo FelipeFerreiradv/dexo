@@ -4,12 +4,23 @@ import { Control, Controller, FieldErrors } from "react-hook-form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CurrencyInput } from "@/components/ui/currency-input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PAYMENT_METHODS } from "@/app/lib/payment-methods";
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
 import { UnidadeSelect } from "../shared/unidade-select";
 import {
   ProductPickerBlock,
   type ProductMeta,
 } from "../shared/product-picker-block";
+
+// Sentinela: Radix Select não aceita value="" — representa "Não informado".
+const PAYMENT_NONE = "__none__";
 
 interface Props {
   control: Control<FinanceEntryFormData>;
@@ -81,6 +92,37 @@ export function TitleStep({
             />
           )}
         />
+      </div>
+
+      <div className="space-y-1 md:col-span-2">
+        <label className="text-sm font-medium">Forma de pagamento</label>
+        <Controller
+          control={control}
+          name="paymentMethod"
+          render={({ field }) => (
+            <Select
+              value={field.value ? field.value : PAYMENT_NONE}
+              onValueChange={(v) =>
+                field.onChange(v === PAYMENT_NONE ? null : v)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Não informado" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={PAYMENT_NONE}>Não informado</SelectItem>
+                {PAYMENT_METHODS.map((m) => (
+                  <SelectItem key={m.code} value={m.code}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+        <p className="text-xs text-muted-foreground">
+          Opcional. Como esta conta foi/será paga (PIX, cartão, boleto, etc.).
+        </p>
       </div>
 
       <div className="space-y-1 md:col-span-2">
