@@ -316,6 +316,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         compatibilities,
         // Vínculo opcional a catalog product do Mercado Livre
         mlCatalogProductId,
+        // Opt-in: servidor atribui o SKU sequencial atomicamente ao salvar
+        autoSku,
       } = request.body as any;
 
       const user = (request as any).user;
@@ -380,6 +382,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         shopeeCategory: shopeeCategory ?? undefined,
         shopeeCategorySource: shopeeCategorySource ?? undefined,
         createListing: Boolean(createListing),
+        autoSku: Boolean(autoSku),
         createListingCategoryId: createListingCategoryId ?? undefined,
         listings: Array.isArray(listings) ? listings : undefined,
         scrapId: typeof scrapId === "string" && scrapId ? scrapId : undefined,
@@ -412,8 +415,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           : undefined,
       } as const;
 
-      // Server-side validation: reject clearly malformed requests before hitting usecase/DB
-      if (!sanitized.sku || typeof sanitized.sku !== "string")
+      // Server-side validation: reject clearly malformed requests before hitting usecase/DB.
+      // No modo autoSku o servidor atribui o SKU — não exigir um do cliente.
+      if (
+        !sanitized.autoSku &&
+        (!sanitized.sku || typeof sanitized.sku !== "string")
+      )
         return reply.status(400).send({ error: "SKU inválido" });
       if (!sanitized.name || typeof sanitized.name !== "string")
         return reply
@@ -705,7 +712,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
       try {
         const data = await productUseCase.create({
-          sku: sanitized.sku,
+          // No modo autoSku o usecase ignora e sobrescreve o sku; "" só
+          // satisfaz o tipo `string` exigido por ProductCreate.
+          sku: sanitized.autoSku ? "" : sanitized.sku,
+          autoSku: sanitized.autoSku,
           name: sanitized.name,
           description: sanitized.description,
           stock: sanitized.stock,
@@ -888,7 +898,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           return reply.status(401).send({ error: msg });
         if (
           msg.includes("Produto com esse sku já existe") ||
-          msg.includes("Unique constraint")
+          msg.includes("Unique constraint") ||
+          msg.includes("Não foi possível gerar SKU automático")
         )
           return reply.status(409).send({ error: msg });
         if (

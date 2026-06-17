@@ -168,6 +168,11 @@ export interface ProductCreate {
 
   scrapId?: string;
 
+  // Opt-in: quando true, o servidor reserva o próximo SKU sequencial de forma
+  // atômica no momento de salvar (ignorando qualquer `sku` enviado pelo
+  // cliente). Sem a flag, o comportamento é o de hoje (sku explícito).
+  autoSku?: boolean;
+
   createListing?: boolean;
   createListingCategoryId?: string;
 

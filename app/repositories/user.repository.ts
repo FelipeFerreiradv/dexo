@@ -204,6 +204,29 @@ class UserRepositoryPrisma implements UserRepository {
         AND ("lastSkuSequential" IS NULL OR "lastSkuSequential" < ${candidate})
     `;
   }
+
+  async reserveNextSkuSequential(id: string): Promise<number> {
+    // Reserva atômica: COALESCE(...,0)+1 numa única instrução UPDATE. Duas
+    // chamadas concorrentes serializam no lock da linha do User e recebem
+    // números DISTINTOS. O RETURNING devolve exatamente o valor que ESTA
+    // instrução gravou — sem segunda leitura, sem corrida.
+    const rows = await prisma.$queryRaw<
+      Array<{ lastSkuSequential: number | bigint }>
+    >(
+      Prisma.sql`
+        UPDATE "User"
+        SET "lastSkuSequential" = COALESCE("lastSkuSequential", 0) + 1
+        WHERE id = ${id}
+        RETURNING "lastSkuSequential"
+      `,
+    );
+    if (rows.length === 0 || rows[0].lastSkuSequential == null) {
+      throw new Error("Usuário não encontrado");
+    }
+    // Coerção obrigatória: int4 via $queryRaw pode chegar como number OU bigint
+    // dependendo do driver. Number() é lossless aqui (limite de 6 dígitos).
+    return Number(rows[0].lastSkuSequential);
+  }
 }
 
 export { UserRepositoryPrisma };

@@ -16,6 +16,7 @@ import {
   UserRepository,
   UserRepositoryPrisma,
 } from "../repositories/user.repository";
+import { User } from "../interfaces/user.interface";
 import prisma from "../lib/prisma";
 import { parseTitleToFields } from "../lib/product-parser";
 import { getVehicleBrands } from "../lib/vehicle-catalog";
@@ -58,6 +59,13 @@ export class ProductUseCase {
   }
 
   async create(productData: ProductCreate): Promise<Product> {
+    // Opt-in: atribuição atômica do SKU no servidor (ver createWithAutoSku).
+    // O corpo legado abaixo só roda quando autoSku é falso — comportamento
+    // de hoje preservado integralmente (sku explícito, importações, balcão).
+    if (productData.autoSku) {
+      return this.createWithAutoSku(productData);
+    }
+
     if (!productData.userId) {
       throw new Error("Usuário não encontrado");
     }
@@ -76,6 +84,23 @@ export class ProductUseCase {
       throw new Error("Produto com esse sku já existe");
     }
 
+    this.applyUserDefaults(productData, user);
+
+    // Persistência transacional única: o repositório grava produto + compatibilidades
+    // no mesmo prisma.product.create (nested write). Não duplicar aqui.
+    const created = await this.productRepository.create(productData);
+
+    // Mantém o contador de sequência humana atualizado. Só os fluxos da UI
+    // passam por aqui — importações de estoque chamam prisma.product.create
+    // direto, por isso o counter não recebe códigos externos.
+    await this.tryBumpSkuCounter(productData.userId, productData.sku);
+
+    return created;
+  }
+
+  // Enriquecimento aplicado a ambos os caminhos (custom e auto). Move 1:1 da
+  // lógica que antes era inline no create() — mesmas mutações, mesma ordem.
+  private applyUserDefaults(productData: ProductCreate, user: User): void {
     // Se descrição não foi fornecida, usar a padrão do usuário
     if (!productData.description && user.defaultProductDescription) {
       productData.description = user.defaultProductDescription;
@@ -95,17 +120,84 @@ export class ProductUseCase {
       // Não falhar a criação por causa da heurística
       console.error("Erro ao extrair campos do título:", err);
     }
+  }
 
-    // Persistência transacional única: o repositório grava produto + compatibilidades
-    // no mesmo prisma.product.create (nested write). Não duplicar aqui.
-    const created = await this.productRepository.create(productData);
+  // Caminho AUTO: o servidor decide o SKU sequencial atomicamente na hora de
+  // salvar, com retry em caso de colisão. Resolve a corrida de dois
+  // colaboradores do mesmo dataOwnerId recebendo o mesmo número.
+  private async createWithAutoSku(
+    productData: ProductCreate,
+  ): Promise<Product> {
+    if (!productData.userId) {
+      throw new Error("Usuário não encontrado");
+    }
 
-    // Mantém o contador de sequência humana atualizado. Só os fluxos da UI
-    // passam por aqui — importações de estoque chamam prisma.product.create
-    // direto, por isso o counter não recebe códigos externos.
-    await this.tryBumpSkuCounter(productData.userId, productData.sku);
+    const user = await this.userRepository.findById(productData.userId);
+    if (!user) {
+      throw new Error("Usuário não encontrado");
+    }
 
-    return created;
+    this.applyUserDefaults(productData, user);
+
+    // Seed sob demanda: se o contador é null mas já existem produtos, inicializa
+    // pelo maior SKU numérico existente — senão a reserva começaria em 1 e o
+    // loop teria que varrer milhares de números já tomados por importação
+    // (ex.: JOTABÊ com SKUs até 32762) antes de achar um livre.
+    const last = await this.userRepository.getLastSkuSequential(
+      productData.userId,
+    );
+    if (last == null) {
+      const seed = await this.productRepository.getMaxSkuNumber(
+        productData.userId,
+      );
+      if (seed > 0) {
+        // bumpLastSkuSequential é idempotente e nunca regride: um seed
+        // concorrente do mesmo valor é benigno (segundo no-op).
+        await this.userRepository.bumpLastSkuSequential(
+          productData.userId,
+          seed,
+        );
+      }
+    }
+
+    const MAX_ATTEMPTS = 25;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const n = await this.userRepository.reserveNextSkuSequential(
+        productData.userId,
+      );
+      const candidate = n.toString().padStart(3, "0");
+
+      // Pula números já ocupados por importação dentro da janela sequencial
+      // sem gastar um insert que falharia.
+      const taken = await this.productRepository.findBySku(
+        candidate,
+        productData.userId,
+      );
+      if (taken) continue;
+
+      try {
+        return await this.productRepository.create({
+          ...productData,
+          sku: candidate,
+        });
+      } catch (err) {
+        // Perdeu uma corrida entre o pre-check e o insert: reserva o próximo.
+        if (this.isSkuTaken(err)) continue;
+        throw err;
+      }
+    }
+
+    throw new Error(
+      "Não foi possível gerar SKU automático após várias tentativas",
+    );
+  }
+
+  private isSkuTaken(err: unknown): boolean {
+    // Detecção OBRIGATÓRIA por mensagem: productRepository.create captura o
+    // P2002 do Prisma e relança um Error simples, descartando .code/.meta.
+    return (
+      err instanceof Error && err.message === "Produto com esse sku já existe"
+    );
   }
 
   private async tryBumpSkuCounter(userId: string, sku: string): Promise<void> {
