@@ -224,7 +224,7 @@ export default function ConfigModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleOpenChange}>
-      <DialogContent className="w-full max-w-6xl md:max-w-7xl h-[88vh] max-h-[88vh] overflow-hidden border border-border/80 bg-card/95 p-0 shadow-2xl">
+      <DialogContent className="w-full max-w-[calc(100%-1.5rem)] sm:max-w-6xl md:max-w-7xl h-[88vh] max-h-[88vh] overflow-hidden border border-border/80 bg-card/95 p-0 shadow-2xl">
         <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="bg-sidebar text-sidebar-foreground hidden h-full min-h-0 flex-col border-r border-sidebar-border/60 md:flex">
             <div className="border-b border-sidebar-border/60 px-5 py-4">
