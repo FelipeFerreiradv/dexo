@@ -300,7 +300,7 @@ export function CollaboratorsTab() {
               </Select>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 lg:col-span-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:col-span-2">
               <div className="space-y-2">
                 <label className="text-sm font-medium">De</label>
                 <Input
@@ -347,7 +347,7 @@ export function CollaboratorsTab() {
               Nenhuma ação para exibir.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="min-w-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-muted-foreground">

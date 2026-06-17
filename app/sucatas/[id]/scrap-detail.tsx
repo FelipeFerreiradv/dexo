@@ -564,7 +564,7 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
               Nenhuma peça nesta situação.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="min-w-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">

@@ -435,7 +435,7 @@ export function ShopeeSyncTab() {
                 <span className="font-medium">Importação concluída</span>
               </div>
 
-              <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="grid grid-cols-1 gap-4 text-center sm:grid-cols-3">
                 <div className="rounded-md bg-muted p-3">
                   <div className="text-2xl font-bold">
                     {importResult.totalItems}
@@ -592,7 +592,7 @@ export function ShopeeSyncTab() {
               </div>
 
               {!syncResult.message && (
-              <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="grid grid-cols-1 gap-4 text-center sm:grid-cols-3">
                 <div className="rounded-md bg-muted p-3">
                   <div className="text-2xl font-bold">{syncResult.total}</div>
                   <div className="text-xs text-muted-foreground">Total</div>
