@@ -355,7 +355,7 @@ export function NfeDetailSheet({
                       <FileText className="size-4" />
                       Totais
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                    <div className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2 md:grid-cols-4">
                       <div>
                         <div className="text-xs text-muted-foreground">
                           Produtos

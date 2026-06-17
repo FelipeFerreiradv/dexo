@@ -255,7 +255,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   return (
     <>
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <CardTitle>Contas {label}</CardTitle>
             <CardDescription>

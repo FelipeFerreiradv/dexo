@@ -111,7 +111,7 @@ export function CfopCombobox({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-(--radix-popover-trigger-width) min-w-[340px] p-0"
+        className="w-(--radix-popover-trigger-width) min-w-[calc(100vw-1.5rem)] p-0 sm:min-w-[340px]"
       >
         <Command shouldFilter={false}>
           <CommandInput
