@@ -2457,7 +2457,7 @@ export function CreateProductDialog({
 
         <Separator />
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 min-w-0">
           {/* Step 1: Identificação */}
           {currentStep === 1 && (
             <div className="space-y-4">
@@ -2511,7 +2511,7 @@ export function CreateProductDialog({
                   titleSuggestion.toLowerCase() !==
                     watchName?.toLowerCase() && (
                     <div className="flex items-center justify-between rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-xs text-muted-foreground">
-                      <span className="truncate">
+                      <span className="min-w-0 truncate">
                         Sugestão:{" "}
                         <span className="font-medium">{titleSuggestion}</span>
                       </span>
