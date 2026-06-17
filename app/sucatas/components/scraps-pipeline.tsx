@@ -135,7 +135,7 @@ export function ScrapsPipeline() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">
           Acompanhe onde cada veículo está no fluxo do pátio.
         </p>

@@ -2386,7 +2386,7 @@ export function CreateProductDialog({
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
           <DialogDescription>
@@ -2406,7 +2406,7 @@ export function CreateProductDialog({
           <Progress value={progressPercentage} className="h-2" />
 
           {/* Step Indicators */}
-          <div className="flex justify-between gap-1">
+          <div className="flex justify-between gap-1 overflow-x-auto">
             {STEPS.map((step) => {
               const Icon = step.icon;
               const isActive = step.id === currentStep;
@@ -2424,7 +2424,7 @@ export function CreateProductDialog({
                   }`}
                 >
                   <div
-                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 transition-all ${
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
                       isActive
                         ? "border-primary bg-primary text-primary-foreground"
                         : isCompleted
@@ -2439,7 +2439,7 @@ export function CreateProductDialog({
                     )}
                   </div>
                   <span
-                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 ${
+                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
                       isActive
                         ? "text-primary"
                         : isCompleted

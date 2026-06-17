@@ -2109,7 +2109,7 @@ export function EditProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
         <DialogHeader>
           <DialogTitle>
             {listingContext
