@@ -206,7 +206,7 @@ export function CustomersList() {
       </div>
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
@@ -223,7 +223,7 @@ export function CustomersList() {
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="relative max-w-md">
+          <div className="relative w-full max-w-md">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Buscar por nome, CPF, e-mail ou telefone..."

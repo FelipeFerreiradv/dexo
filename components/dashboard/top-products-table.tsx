@@ -121,7 +121,7 @@ function DirectionPill({
   return (
     <span
       className={cn(
-        "inline-flex min-w-[86px] items-center justify-end gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+        "inline-flex sm:min-w-[86px] items-center justify-end gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold",
         isFlat && "border-border/60 bg-muted/40 text-muted-foreground",
         isUp && "border-primary/25 bg-primary/10 text-primary",
         !isUp &&

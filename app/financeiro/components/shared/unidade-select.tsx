@@ -126,7 +126,7 @@ export function UnidadeFilter({
         onChange(v === ALL ? undefined : v === SEM ? "sem_unidade" : v)
       }
     >
-      <SelectTrigger className="h-10 w-[210px] rounded-full border border-border/70 bg-muted/20">
+      <SelectTrigger className="h-10 w-full sm:w-[210px] rounded-full border border-border/70 bg-muted/20">
         <SelectValue placeholder="Todas as unidades" />
       </SelectTrigger>
       <SelectContent>

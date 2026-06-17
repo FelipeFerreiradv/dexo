@@ -451,19 +451,19 @@ export function NfeList() {
       </div>
 
       {/* Controls */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <div className="relative">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
+          <div className="relative w-full sm:w-auto">
             <Search className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
             <Input
               placeholder="Buscar por numero, chave, protocolo..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              className="h-10 w-[320px] rounded-full border border-border/70 bg-muted/20 pl-8"
+              className="h-10 w-full sm:w-[320px] rounded-full border border-border/70 bg-muted/20 pl-8"
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="h-10 w-[180px]">
+            <SelectTrigger className="h-10 w-full sm:w-[180px]">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
@@ -477,7 +477,7 @@ export function NfeList() {
           </Select>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Select value={reportMes} onValueChange={setReportMes}>
             <SelectTrigger className="h-9 w-[130px]">
               <SelectValue placeholder="Mês" />

@@ -2109,7 +2109,7 @@ export function EditProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
         <DialogHeader>
           <DialogTitle>
             {listingContext
@@ -2161,7 +2161,7 @@ export function EditProductDialog({
               Dados Básicos
             </h3>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="edit-sku">SKU</Label>
                 <Input
@@ -2291,7 +2291,7 @@ export function EditProductDialog({
               Preços e Estoque
             </h3>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="edit-costPrice">Preço de Custo</Label>
                 <Controller
@@ -2331,7 +2331,7 @@ export function EditProductDialog({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="edit-markup">Margem (%) - calculada</Label>
                 <Controller
@@ -2402,7 +2402,7 @@ export function EditProductDialog({
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent className="space-y-4 pt-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="edit-quality">Qualidade</Label>
                   <Controller
@@ -2445,7 +2445,7 @@ export function EditProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
                   <Label htmlFor="edit-model">Modelo</Label>
                   <Controller
@@ -2551,7 +2551,7 @@ export function EditProductDialog({
               </div>
 
               {/* Medidas (cm / kg) */}
-              <div className="mt-2 grid grid-cols-4 gap-4">
+              <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <div className="space-y-2">
                   <Label htmlFor="edit-heightCm">Altura (cm)</Label>
                   <Controller
@@ -3199,7 +3199,7 @@ export function EditProductDialog({
                       </Label>
                     </div>
                     {mlHasWarranty && (
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div className="space-y-1">
                           <Label className="text-xs">Garantia em</Label>
                           <Select

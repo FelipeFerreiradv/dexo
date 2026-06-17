@@ -239,7 +239,7 @@ export function MultiImageUpload({
 
       {/* Imagens já enviadas */}
       {hasImages && (
-        <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {value.map((url, index) => (
             <div
               key={`${url}-${index}`}

@@ -2386,7 +2386,7 @@ export function CreateProductDialog({
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
+      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
           <DialogDescription>
@@ -2406,7 +2406,7 @@ export function CreateProductDialog({
           <Progress value={progressPercentage} className="h-2" />
 
           {/* Step Indicators */}
-          <div className="flex justify-between gap-1">
+          <div className="flex justify-between gap-1 overflow-x-auto">
             {STEPS.map((step) => {
               const Icon = step.icon;
               const isActive = step.id === currentStep;
@@ -2424,7 +2424,7 @@ export function CreateProductDialog({
                   }`}
                 >
                   <div
-                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 transition-all ${
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
                       isActive
                         ? "border-primary bg-primary text-primary-foreground"
                         : isCompleted
@@ -2439,7 +2439,7 @@ export function CreateProductDialog({
                     )}
                   </div>
                   <span
-                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 ${
+                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
                       isActive
                         ? "text-primary"
                         : isCompleted
@@ -2457,11 +2457,11 @@ export function CreateProductDialog({
 
         <Separator />
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 min-w-0">
           {/* Step 1: Identificação */}
           {currentStep === 1 && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="sku">SKU (automático)</Label>
                   <Input
@@ -2511,7 +2511,7 @@ export function CreateProductDialog({
                   titleSuggestion.toLowerCase() !==
                     watchName?.toLowerCase() && (
                     <div className="flex items-center justify-between rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-xs text-muted-foreground">
-                      <span className="truncate">
+                      <span className="min-w-0 truncate">
                         Sugestão:{" "}
                         <span className="font-medium">{titleSuggestion}</span>
                       </span>
@@ -2610,7 +2610,7 @@ export function CreateProductDialog({
           {/* Step 3: Preços e Estoque */}
           {currentStep === 3 && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="costPrice">Preço de Custo</Label>
                   <Controller
@@ -2652,7 +2652,7 @@ export function CreateProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="price">Preço de Venda *</Label>
                   <Controller
@@ -2828,7 +2828,7 @@ export function CreateProductDialog({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="quality">Qualidade</Label>
                   <Controller
@@ -2871,7 +2871,7 @@ export function CreateProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
                   <Label htmlFor="model">Modelo</Label>
                   <Controller
@@ -2915,7 +2915,7 @@ export function CreateProductDialog({
               </div>
 
               {/* Medidas */}
-              <div className="mt-2 grid grid-cols-4 gap-4">
+              <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <div className="space-y-2">
                   <Label htmlFor="heightCm">Altura (cm)</Label>
                   <Controller
@@ -3401,7 +3401,7 @@ export function CreateProductDialog({
                       preferências padrão. Você pode alterar para este anúncio.
                     </p>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlListingType">
                           Listagem do anúncio
@@ -3480,7 +3480,7 @@ export function CreateProductDialog({
                       </div>
 
                       {watch("mlHasWarranty") && (
-                        <div className="grid grid-cols-2 gap-4 pl-7">
+                        <div className="grid grid-cols-1 gap-4 pl-7 sm:grid-cols-2">
                           <div className="space-y-2">
                             <Label htmlFor="mlWarrantyUnit">Garantia em</Label>
                             <Controller
@@ -3521,7 +3521,7 @@ export function CreateProductDialog({
                       )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlShippingMode">Frete</Label>
                         <Controller
@@ -3579,7 +3579,7 @@ export function CreateProductDialog({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlLocalPickup">
                           Retirar pessoalmente

@@ -235,10 +235,10 @@ export function ProductPickerBlock({
 
       {fields.length > 0 && (
         <div className="space-y-2">
-          <div className="grid grid-cols-12 gap-3 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            <div className="col-span-7">Produto</div>
-            <div className="col-span-2">Qtd</div>
-            <div className="col-span-2">Preço un.</div>
+          <div className="hidden grid-cols-12 gap-3 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:grid">
+            <div className="col-span-2 sm:col-span-7">Produto</div>
+            <div className="col-span-1 sm:col-span-2">Qtd</div>
+            <div className="col-span-1 sm:col-span-2">Preço un.</div>
             <div className="col-span-1" />
           </div>
           {fields.map((field, idx) => (
@@ -305,8 +305,8 @@ function ItemRow({
   onRemove,
 }: ItemRowProps) {
   return (
-    <div className="grid grid-cols-12 items-start gap-3">
-      <div className="col-span-7">
+    <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-12">
+      <div className="col-span-2 sm:col-span-7">
         {/* Card produto: altura adaptável; nome pode quebrar em até 2 linhas
             (line-clamp-2). SKU em fonte menor abaixo. Reservado para nomes
             longos comuns em autopeças. */}
@@ -321,7 +321,7 @@ function ItemRow({
           </span>
         </div>
       </div>
-      <div className="col-span-2">
+      <div className="col-span-1 sm:col-span-2">
         <Controller
           control={control}
           name={`items.${index}.quantity` as const}
@@ -334,7 +334,7 @@ function ItemRow({
           )}
         />
       </div>
-      <div className="col-span-2">
+      <div className="col-span-1 sm:col-span-2">
         <Controller
           control={control}
           name={`items.${index}.unitPrice` as const}
@@ -346,7 +346,7 @@ function ItemRow({
           )}
         />
       </div>
-      <div className="col-span-1 flex justify-end">
+      <div className="col-span-2 flex justify-end sm:col-span-1">
         <Button
           type="button"
           variant="ghost"

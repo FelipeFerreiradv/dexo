@@ -26,14 +26,14 @@ export function PageHeader({
         className,
       )}
     >
-      <div className="space-y-2">
+      <div className="min-w-0 space-y-2">
         {eyebrow && (
           <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
             {eyebrow}
           </p>
         )}
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold leading-tight text-foreground">
+          <h1 className="text-2xl font-semibold leading-tight text-foreground break-words">
             {title}
           </h1>
           {subtitle && (
@@ -43,7 +43,7 @@ export function PageHeader({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {pills}
         {actions}
       </div>

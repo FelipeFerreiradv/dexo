@@ -18,7 +18,7 @@ export function MainLayout({ children, session }: MainLayoutProps) {
       <AppSidebar session={session} />
       <SidebarInset>
         <AppHeader session={session} />
-        <main className="flex-1 p-4 md:p-6">{children}</main>
+        <main className="flex-1 min-w-0 p-4 md:p-6">{children}</main>
       </SidebarInset>
     </SidebarProvider>
   );

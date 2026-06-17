@@ -207,8 +207,10 @@ interface AppSidebarProps {
 export function AppSidebar({ session }: AppSidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { state, setOpen, open } = useSidebar();
-  const collapsed = state === "collapsed";
+  const { state, setOpen, open, isMobile, setOpenMobile } = useSidebar();
+  // No mobile a sidebar é um drawer (Sheet) e deve sempre exibir o conteúdo
+  // completo — nunca o modo "icon-only" (que é exclusivo do desktop recolhido).
+  const collapsed = !isMobile && state === "collapsed";
   const [query, setQuery] = React.useState("");
   const searchRef = React.useRef<HTMLInputElement>(null);
   const [openSections, setOpenSections] = React.useState<
@@ -391,7 +393,15 @@ export function AppSidebar({ session }: AppSidebarProps) {
 
   if (!session) return null;
 
-  const handleCollapse = () => setOpen(!open);
+  // Desktop: o botão recolhe/expande a sidebar (icon-only).
+  // Mobile: o mesmo botão fecha o drawer (mesmo efeito de clicar fora).
+  const handleCollapse = () => {
+    if (isMobile) {
+      setOpenMobile(false);
+    } else {
+      setOpen(!open);
+    }
+  };
 
   return (
     <Sidebar
