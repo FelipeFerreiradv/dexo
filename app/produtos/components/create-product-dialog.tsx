@@ -2461,7 +2461,7 @@ export function CreateProductDialog({
           {/* Step 1: Identificação */}
           {currentStep === 1 && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="sku">SKU (automático)</Label>
                   <Input
@@ -2610,7 +2610,7 @@ export function CreateProductDialog({
           {/* Step 3: Preços e Estoque */}
           {currentStep === 3 && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="costPrice">Preço de Custo</Label>
                   <Controller
@@ -2652,7 +2652,7 @@ export function CreateProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="price">Preço de Venda *</Label>
                   <Controller
@@ -2828,7 +2828,7 @@ export function CreateProductDialog({
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="quality">Qualidade</Label>
                   <Controller
@@ -2871,7 +2871,7 @@ export function CreateProductDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
                   <Label htmlFor="model">Modelo</Label>
                   <Controller
@@ -2915,7 +2915,7 @@ export function CreateProductDialog({
               </div>
 
               {/* Medidas */}
-              <div className="mt-2 grid grid-cols-4 gap-4">
+              <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <div className="space-y-2">
                   <Label htmlFor="heightCm">Altura (cm)</Label>
                   <Controller
@@ -3401,7 +3401,7 @@ export function CreateProductDialog({
                       preferências padrão. Você pode alterar para este anúncio.
                     </p>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlListingType">
                           Listagem do anúncio
@@ -3480,7 +3480,7 @@ export function CreateProductDialog({
                       </div>
 
                       {watch("mlHasWarranty") && (
-                        <div className="grid grid-cols-2 gap-4 pl-7">
+                        <div className="grid grid-cols-1 gap-4 pl-7 sm:grid-cols-2">
                           <div className="space-y-2">
                             <Label htmlFor="mlWarrantyUnit">Garantia em</Label>
                             <Controller
@@ -3521,7 +3521,7 @@ export function CreateProductDialog({
                       )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlShippingMode">Frete</Label>
                         <Controller
@@ -3579,7 +3579,7 @@ export function CreateProductDialog({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label htmlFor="mlLocalPickup">
                           Retirar pessoalmente

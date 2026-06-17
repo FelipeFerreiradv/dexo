@@ -712,7 +712,7 @@ export function ProductDetailSheet({
                   icon={<Ruler className="size-4" />}
                   title="Dimensões e peso"
                 />
-                <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
                   <InfoCard
                     icon={<Ruler className="size-4" />}
                     label="Altura"
@@ -807,7 +807,7 @@ export function ProductDetailSheet({
                   title="Imagens"
                   subtitle={`${allImages.length} foto${allImages.length === 1 ? "" : "s"}`}
                 />
-                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6">
                   {allImages.map((url, idx) => (
                     <button
                       key={url}

@@ -50,7 +50,7 @@ export function OrdersHeatmap({ data }: OrdersHeatmapProps) {
         </div>
       </CardHeader>
       <CardContent className="px-5 pb-5">
-        <div className="grid grid-cols-[72px_repeat(7,minmax(0,1fr))] gap-2">
+        <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] gap-1 sm:grid-cols-[72px_repeat(7,minmax(0,1fr))] sm:gap-2">
           <div />
           {dayOrder.map((day) => (
             <div
