@@ -74,4 +74,5 @@ export interface UserRepository {
   update(id: string, data: UserUpdate): Promise<User>;
   getLastSkuSequential(id: string): Promise<number | null>;
   bumpLastSkuSequential(id: string, candidate: number): Promise<void>;
+  reserveNextSkuSequential(id: string): Promise<number>;
 }

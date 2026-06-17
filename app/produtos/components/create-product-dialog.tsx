@@ -73,14 +73,15 @@ import { useSession } from "next-auth/react";
 // Schema de validação com campos de autopeças
 const productSchema = z.object({
   // Step 1: Identificação
+  // SKU é atribuído pelo servidor ao salvar (autoSku). O campo é apenas uma
+  // prévia: opcional e nunca bloqueia o submit. A regex segue valendo só para
+  // um valor não-vazio (nunca acionada no fluxo automático).
   sku: z
     .string()
-    .min(1, "SKU é obrigatório")
     .max(50, "SKU deve ter no máximo 50 caracteres")
-    .regex(
-      /^[A-Za-z0-9-_]+$/,
-      "SKU deve conter apenas letras, números, - ou _",
-    ),
+    .regex(/^[A-Za-z0-9-_]+$/, "SKU deve conter apenas letras, números, - ou _")
+    .optional()
+    .or(z.literal("")),
   name: z
     .string()
     .min(3, "Nome deve ter pelo menos 3 caracteres")
@@ -2181,6 +2182,10 @@ export function CreateProductDialog({
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
         ...data,
+        // O SKU é atribuído atomicamente pelo servidor. Não enviar o valor de
+        // prévia (sku: undefined é omitido pelo JSON.stringify).
+        autoSku: true,
+        sku: undefined,
         costPrice: data.costPrice || undefined,
         markup: data.markup || undefined,
         brand: data.brand || undefined,
@@ -2245,8 +2250,15 @@ export function CreateProductDialog({
         throw new Error(result.error || "Erro ao criar produto");
       }
 
-      // Mostrar feedback sobre criação do produto e (quando aplicável)
-      onToast("Produto criado com sucesso!", "success");
+      // Mostrar feedback sobre criação do produto e (quando aplicável).
+      // Exibe o SKU REALMENTE atribuído pelo servidor — pode diferir da prévia
+      // se outra pessoa salvou ao mesmo tempo.
+      onToast(
+        result?.sku
+          ? `Produto criado — SKU ${result.sku}`
+          : "Produto criado com sucesso!",
+        "success",
+      );
 
       // Se um anúncio foi solicitado, informar o usuário do resultado
       if (result.listing) {
@@ -2473,7 +2485,8 @@ export function CreateProductDialog({
                     className="bg-muted"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Gerado automaticamente
+                    Atribuído automaticamente ao salvar — pode variar se outra
+                    pessoa salvar ao mesmo tempo.
                   </p>
                 </div>
 

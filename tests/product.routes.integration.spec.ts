@@ -217,6 +217,71 @@ describe("POST /products (integration)", () => {
     expect(body).toHaveProperty("category", payload.category);
   });
 
+  it("autoSku=true: servidor atribui o SKU sequencial e o retorna (cliente não envia sku)", async () => {
+    const fakeUser = {
+      id: "user-1",
+      email: "test@example.com",
+      name: "Test User",
+    } as any;
+
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    // Contador já populado → pula o seed sob demanda.
+    vi.spyOn(
+      UserRepositoryPrisma.prototype,
+      "getLastSkuSequential",
+    ).mockResolvedValue(300);
+    // Reserva atômica: spy no prototype porque o $queryRaw cru NÃO está no
+    // mock de prisma deste suite (se executasse, estouraria).
+    vi.spyOn(
+      UserRepositoryPrisma.prototype,
+      "reserveNextSkuSequential",
+    ).mockResolvedValue(301);
+    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
+      null,
+    );
+    const createSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "create")
+      .mockImplementation(
+        async (data: any) =>
+          ({
+            id: "prod-auto",
+            sku: data.sku,
+            name: data.name,
+            stock: data.stock,
+            price: data.price,
+            imageUrl: data.imageUrl,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }) as any,
+      );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: {
+        // Sem `sku` — o servidor atribui.
+        autoSku: true,
+        name: "Roda Auto",
+        price: 100,
+        stock: 1,
+        imageUrl: "http://localhost/x.jpg",
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.payload);
+    expect(body).toHaveProperty("sku", "301");
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sku: "301" }),
+    );
+  });
+
   it("forwards compatibilities to repository exactly once on create", async () => {
     const fakeUser = {
       id: "user-1",
