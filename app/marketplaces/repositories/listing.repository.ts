@@ -98,12 +98,28 @@ export class ListingRepository {
           status: data.status,
         },
         update: {},
-        // EGRESS: o chamador só precisa saber que persistiu; não devolve a linha inteira.
-        select: { id: true },
+        // EGRESS: o chamador só precisa do id + productId (p/ detectar órfão).
+        select: { id: true, productId: true },
       });
     } catch (error: any) {
-      // Log completo (com stack/code/meta) — a causa raiz não pode se perder
-      // num erro de mensagem vazia. Vai pro stdout do dexo-api.
+      // Prisma upsert NÃO é atômico (faz SELECT→INSERT). Sob entregas
+      // concorrentes do MESMO anúncio (o ML dispara vários webhooks `items`
+      // quase simultâneos: criação + preço + estoque), duas execuções passam
+      // pelo "não existe" e dois inserts correm → o segundo estoura P2002 na
+      // unique key (marketplaceAccountId, externalListingId). Isso é exatamente
+      // o estado desejado (o listing já existe) → idempotente: relê e devolve.
+      if (error?.code === "P2002") {
+        return prisma.productListing.findUnique({
+          where: {
+            marketplaceAccountId_externalListingId: {
+              marketplaceAccountId: data.marketplaceAccountId,
+              externalListingId: data.externalListingId,
+            },
+          },
+          select: { id: true, productId: true },
+        });
+      }
+      // Outro erro qualquer: loga completo (a mensagem do Error vinha vazia).
       console.error(
         `[autodetect] Falha no upsert do listing (acct=${data.marketplaceAccountId}, item=${data.externalListingId}, product=${data.productId}):`,
         error,

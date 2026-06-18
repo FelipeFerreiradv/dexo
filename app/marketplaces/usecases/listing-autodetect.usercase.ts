@@ -85,9 +85,9 @@ export class ListingAutodetectUseCase {
       action = created.raced ? "raced" : "created_product";
     }
 
-    // 4. Cria/keep do listing — upsert idempotente na unique key
-    // (marketplaceAccountId, externalListingId). Corrida cai em update no-op.
-    await ListingRepository.upsertAutodetectedListing({
+    // 4. Cria/keep do listing — idempotente na unique key (trata P2002 de
+    // corrida no repositório, relendo o listing vencedor).
+    const listing = await ListingRepository.upsertAutodetectedListing({
       productId,
       marketplaceAccountId: account.id,
       externalListingId,
@@ -95,6 +95,25 @@ export class ListingAutodetectUseCase {
       permalink: item.permalink,
       status: item.status,
     });
+
+    // Corrida sem SKU: se criamos um produto novo agora mas o listing já existia
+    // apontando p/ OUTRO produto (uma entrega concorrente do mesmo anúncio
+    // venceu), o nosso virou órfão → remove p/ não duplicar no catálogo.
+    if (
+      action === "created_product" &&
+      listing &&
+      listing.productId !== productId
+    ) {
+      await prisma.product
+        .delete({ where: { id: productId } })
+        .catch((e) =>
+          console.error(
+            `[autodetect] Órfão não removido (product ${productId}):`,
+            e instanceof Error ? e.message : e,
+          ),
+        );
+      return { action: "raced", productId: listing.productId };
+    }
 
     return { action, productId };
   }

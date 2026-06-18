@@ -59,7 +59,7 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     const create = vi.spyOn(ProductUseCase.prototype, "create");
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
-      .mockResolvedValue({} as any);
+      .mockResolvedValue({ id: "l1", productId: "p-existing" } as any);
 
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ rawSku: "ABC-1" }),
@@ -89,7 +89,7 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
       .mockResolvedValue({ id: "p-new" } as any);
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
-      .mockResolvedValue({} as any);
+      .mockResolvedValue({ id: "l1", productId: "p-new" } as any);
 
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ platform: Platform.SHOPEE, rawSku: "NEW-1" }),
@@ -119,9 +119,10 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     const create = vi
       .spyOn(ProductUseCase.prototype, "create")
       .mockResolvedValue({ id: "p-auto" } as any);
-    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue(
-      {} as any,
-    );
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "l1",
+      productId: "p-auto",
+    } as any);
 
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ rawSku: null }),
@@ -152,7 +153,7 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     );
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
-      .mockResolvedValue({} as any);
+      .mockResolvedValue({ id: "l1", productId: "p-raced" } as any);
 
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ rawSku: "RACE-1" }),
@@ -165,7 +166,7 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     );
   });
 
-  it("(f) listing concorrente → upsert idempotente (no-op), sem lançar", async () => {
+  it("(f) corrida P2002 no listing (mesmo produto) → idempotente, sem lançar", async () => {
     vi.spyOn(
       ListingRepository,
       "findProductIdByExternalListingId",
@@ -174,15 +175,46 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     vi.spyOn(ProductUseCase.prototype, "create").mockResolvedValue({
       id: "p1",
     } as any);
+    // P2002 tratado no repo: relê e devolve o listing vencedor (MESMO produto).
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
-      .mockResolvedValue({ id: "l-existing" } as any);
+      .mockResolvedValue({ id: "l-existing", productId: "p1" } as any);
+    const del = vi.spyOn(prisma.product, "delete");
 
     const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
       item({ rawSku: null }),
     );
 
     expect(res.action).toBe("created_product");
+    expect(res.productId).toBe("p1");
     expect(upsert).toHaveBeenCalledTimes(1);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("(g) corrida sem SKU: listing vencedor aponta p/ OUTRO produto → apaga o órfão e devolve raced", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null);
+    vi.spyOn(ProductUseCase.prototype, "create").mockResolvedValue({
+      id: "p-orphan",
+    } as any);
+    // O upsert (após P2002) relê e o listing já aponta p/ o produto vencedor.
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "l-win",
+      productId: "p-winner",
+    } as any);
+    const del = vi
+      .spyOn(prisma.product, "delete")
+      .mockResolvedValue({ id: "p-orphan" } as any);
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ rawSku: null }),
+    );
+
+    expect(res.action).toBe("raced");
+    expect(res.productId).toBe("p-winner");
+    expect(del).toHaveBeenCalledWith({ where: { id: "p-orphan" } });
   });
 });
