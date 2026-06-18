@@ -1,6 +1,7 @@
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
+import { SyncUseCase } from "../app/marketplaces/usecases/sync.usercase";
 import { syncAllListingsMetrics } from "./sync-listing-metrics";
 
 const intervalMinutes = parseInt(process.env.SYNC_FULL_INTERVAL_MINUTES ?? "15", 10);
@@ -25,6 +26,40 @@ async function runOnce() {
       }
     } catch (err) {
       console.error(`[sync-loop] Falha ao importar pedidos para conta ${account.id}:`, err);
+    }
+
+    // Auto-detecção de anúncios novos da Shopee (polling incremental). Em
+    // try/catch próprio: uma falha aqui nunca aborta pedidos nem as métricas.
+    if (account.platform === Platform.SHOPEE) {
+      try {
+        const full = await prisma.marketplaceAccount.findUnique({
+          where: { id: account.id },
+          // EGRESS: só os campos que o poller usa, não a linha inteira.
+          select: {
+            id: true,
+            userId: true,
+            shopId: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+            autoImportListingsSince: true,
+            shopeeListingsSyncedThrough: true,
+          },
+        });
+        if (full) {
+          const r = await SyncUseCase.importNewShopeeItemsForAccount(full);
+          if (r.created || r.linked || r.errors) {
+            console.log(
+              `[sync-loop] Shopee auto-detect conta ${account.id}: +${r.created} criados, ${r.linked} vinculados, ${r.skipped} ignorados, ${r.errors} erros`,
+            );
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[sync-loop] Falha na auto-detecção de anúncios Shopee (conta ${account.id}):`,
+          err,
+        );
+      }
     }
   }
 

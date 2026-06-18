@@ -152,6 +152,9 @@ export class MarketplaceUseCase {
           accessToken: tokenData.accessToken,
           refreshToken: tokenData.refreshToken,
           expiresAt,
+          // Baseline "só novos": só anúncios criados a partir de agora viram
+          // produto na Dexo. Não importa o catálogo já existente da conta.
+          autoImportListingsSince: new Date(),
         });
       }
 
@@ -544,6 +547,9 @@ export class MarketplaceUseCase {
           refreshToken: tokenData.refresh_token,
           expiresAt,
           shopId: data.shopId,
+          // Baseline "só novos": só anúncios criados a partir de agora viram
+          // produto na Dexo. Não importa o catálogo já existente da loja.
+          autoImportListingsSince: new Date(),
         });
       }
 

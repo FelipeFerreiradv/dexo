@@ -310,6 +310,18 @@ small{color:#666}</style></head><body>
                   `[ML Webhook] Falha em pergunta: ${result.error}`,
                 );
               }
+            } else if (
+              body.topic === "items" &&
+              WebhookUseCase.validateItemWebhookPayload(body)
+            ) {
+              const result = await WebhookUseCase.processItemWebhook(body);
+              if (result.success) {
+                console.log(
+                  `[ML Webhook] Item processado: ${result.action} (item: ${result.itemId ?? "?"}${result.productId ? `, product: ${result.productId}` : ""})`,
+                );
+              } else {
+                console.warn(`[ML Webhook] Falha em item: ${result.error}`);
+              }
             } else if (WebhookUseCase.validateWebhookPayload(body)) {
               const result =
                 await WebhookUseCase.processOrderWebhook(body);

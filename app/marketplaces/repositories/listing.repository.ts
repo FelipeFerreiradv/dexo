@@ -66,6 +66,68 @@ export class ListingRepository {
     }
   }
 
+  /**
+   * Cria (ou reaproveita) o listing de um anúncio detectado automaticamente no
+   * marketplace. Upsert na unique key (marketplaceAccountId, externalListingId):
+   * idempotente e à prova de corrida — uma reentrega/polling repetido cai no
+   * `update` no-op em vez de estourar P2002. Espelha `upsertFromOrderFallback`,
+   * acrescentando `permalink` (o anúncio já vem com a URL pública).
+   */
+  static async upsertAutodetectedListing(data: {
+    productId: string;
+    marketplaceAccountId: string;
+    externalListingId: string;
+    externalSku?: string | null;
+    permalink?: string | null;
+    status: string;
+  }) {
+    try {
+      return await prisma.productListing.upsert({
+        where: {
+          marketplaceAccountId_externalListingId: {
+            marketplaceAccountId: data.marketplaceAccountId,
+            externalListingId: data.externalListingId,
+          },
+        },
+        create: {
+          productId: data.productId,
+          marketplaceAccountId: data.marketplaceAccountId,
+          externalListingId: data.externalListingId,
+          externalSku: data.externalSku || null,
+          permalink: data.permalink || null,
+          status: data.status,
+        },
+        update: {},
+        // EGRESS: o chamador só precisa saber que persistiu; não devolve a linha inteira.
+        select: { id: true },
+      });
+    } catch (error) {
+      throw new Error(
+        `Erro ao criar listing auto-detectado: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  /**
+   * EGRESS-light: só o `productId` do listing de (conta, anúncio), para a
+   * checagem de idempotência da auto-detecção. Evita puxar o Product inteiro
+   * (com JSONB de attributes/mlCatalogSnapshot) a cada webhook/polling.
+   */
+  static async findProductIdByExternalListingId(
+    marketplaceAccountId: string,
+    externalListingId: string,
+  ): Promise<{ productId: string } | null> {
+    return prisma.productListing.findUnique({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId,
+          externalListingId,
+        },
+      },
+      select: { productId: true },
+    });
+  }
+
   static async upsertFromOrderFallback(data: {
     productId: string;
     marketplaceAccountId: string;

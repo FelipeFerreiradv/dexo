@@ -106,6 +106,8 @@ model Product {
   attributes             Json?
   mlCatalogProductId     String?
   mlCatalogSnapshot      Json?
+  createdFromMarketplace Boolean                @default(false)
+  originPlatform         Platform?
   orderItems             OrderItem[]
   compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory?   @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
@@ -163,25 +165,27 @@ model Location {
 }
 
 model MarketplaceAccount {
-  id              String                @id @default(cuid())
-  userId          String
-  platform        Platform
-  accountName     String
-  accessToken     String
-  refreshToken    String
-  expiresAt       DateTime
-  externalUserId  String?
-  status          AccountStatus         @default(ACTIVE)
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
-  shopId          Int?
-  appClientId     String?
-  appClientSecret String?
-  user            User                  @relation(fields: [userId], references: [id])
-  orders          Order[]
-  listings        ProductListing[]
-  syncLogs        SyncLog[]
-  questions       MarketplaceQuestion[]
+  id                          String                @id @default(cuid())
+  userId                      String
+  platform                    Platform
+  accountName                 String
+  accessToken                 String
+  refreshToken                String
+  expiresAt                   DateTime
+  externalUserId              String?
+  status                      AccountStatus         @default(ACTIVE)
+  createdAt                   DateTime              @default(now())
+  updatedAt                   DateTime              @updatedAt
+  shopId                      Int?
+  appClientId                 String?
+  appClientSecret             String?
+  autoImportListingsSince     DateTime?
+  shopeeListingsSyncedThrough DateTime?
+  user                        User                  @relation(fields: [userId], references: [id])
+  orders                      Order[]
+  listings                    ProductListing[]
+  syncLogs                    SyncLog[]
+  questions                   MarketplaceQuestion[]
 
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
@@ -869,22 +873,22 @@ model NfeEmitida {
   customerId String?
 
   // Identificação
-  ambiente         String // HOMOLOGACAO | PRODUCAO
-  modelo           String    @default("55")
-  serie            Int
-  numero           Int
-  chaveAcesso      String?   @unique
-  tipoOperacao     String // ENTRADA | SAIDA
-  finalidade       String // NORMAL | COMPLEMENTAR | AJUSTE | DEVOLUCAO
-  destinoOperacao  String // INTERNA | INTERESTADUAL | EXTERIOR
-  naturezaOperacao String
-  indPresenca      String // 0..9
-  intermediador    String?
-  numeroPedido     String?
+  ambiente                  String // HOMOLOGACAO | PRODUCAO
+  modelo                    String    @default("55")
+  serie                     Int
+  numero                    Int
+  chaveAcesso               String?   @unique
+  tipoOperacao              String // ENTRADA | SAIDA
+  finalidade                String // NORMAL | COMPLEMENTAR | AJUSTE | DEVOLUCAO
+  destinoOperacao           String // INTERNA | INTERESTADUAL | EXTERIOR
+  naturezaOperacao          String
+  indPresenca               String // 0..9
+  intermediador             String?
+  numeroPedido              String?
   // Observações nível-nota: vão ao <infAdic><infCpl> do XML e ao DANFE
   informacoesComplementares String?
-  dataEmissao      DateTime?
-  dataSaida        DateTime?
+  dataEmissao               DateTime?
+  dataSaida                 DateTime?
 
   // Snapshots imutáveis pós-emissão
   destinatarioJson Json
