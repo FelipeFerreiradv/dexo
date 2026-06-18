@@ -2074,6 +2074,8 @@ export function CreateProductDialog({
   const progressPercentage = (currentStep / TOTAL_STEPS) * 100;
 
   const onSubmit = async (data: ProductFormData) => {
+    // Guarda dura: criacao so acontece na etapa de Revisao, nunca antes.
+    if (currentStep !== TOTAL_STEPS) return;
     setIsSubmitting(true);
     try {
       const selectedMlAccounts =
@@ -2469,7 +2471,7 @@ export function CreateProductDialog({
 
         <Separator />
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 min-w-0">
+        <form onSubmit={(e) => e.preventDefault()} className="space-y-6 min-w-0">
           {/* Step 1: Identificação */}
           {currentStep === 1 && (
             <div className="space-y-4">
@@ -4118,7 +4120,11 @@ export function CreateProductDialog({
                   <ChevronRight className="ml-1 h-4 w-4" />
                 </Button>
               ) : (
-                <Button type="submit" disabled={isSubmitting}>
+                <Button
+                  type="button"
+                  onClick={handleSubmit(onSubmit)}
+                  disabled={isSubmitting}
+                >
                   {isSubmitting ? (
                     <>
                       <Loader2 className="size-4 animate-spin" />
