@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Send, Download, FileText, Mail, CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import { Input } from "@/components/ui/input";
 import {
   Card,
@@ -272,16 +273,18 @@ export default function EnviarXmlPage() {
       />
 
       {/* Toasts */}
-      {toasts.map((toast) => (
-        <div
-          key={toast.id}
-          className={`fixed bottom-4 right-4 p-4 rounded-md shadow-lg z-50 ${
-            toast.type === "success" ? "bg-green-500" : "bg-red-500"
-          } text-white`}
-        >
-          {toast.message}
-        </div>
-      ))}
+      <ToastViewport>
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`fixed bottom-4 right-4 p-4 rounded-md shadow-lg z-[100] ${
+              toast.type === "success" ? "bg-green-500" : "bg-red-500"
+            } text-white`}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </ToastViewport>
     </div>
   );
 }

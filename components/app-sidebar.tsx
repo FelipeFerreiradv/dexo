@@ -426,7 +426,10 @@ export function AppSidebar({ session }: AppSidebarProps) {
             }}
             results={searchResults}
             loading={searchLoading}
-            onNavigate={(href) => router.push(href)}
+            onNavigate={(href) => {
+              if (isMobile) setOpenMobile(false);
+              router.push(href);
+            }}
           />
 
           <nav
@@ -902,9 +905,13 @@ function SidebarNavItem({
   active: boolean;
   collapsed: boolean;
 }) {
+  const { isMobile, setOpenMobile } = useSidebar();
   const node = (
     <Link
       href={item.href}
+      onClick={() => {
+        if (isMobile) setOpenMobile(false);
+      }}
       className={cn(
         "group/nav relative flex items-center gap-3 rounded-full px-3 py-2.5 text-sm transition-all duration-150",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-0",

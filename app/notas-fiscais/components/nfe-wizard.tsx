@@ -25,6 +25,7 @@ import {
   StepperStep,
 } from "@/components/stepper/stepper-header";
 import { StepperFooter } from "@/components/stepper/stepper-footer";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 
 import {
   nfeDraftFormSchema,
@@ -534,9 +535,9 @@ export function NfeWizard() {
       />
 
       {toast && (
-        <div
+        <ToastViewport
           className={
-            "fixed bottom-6 right-6 z-50 rounded-xl border px-4 py-3 text-sm shadow-lg " +
+            "fixed bottom-6 right-6 z-[100] rounded-xl border px-4 py-3 text-sm shadow-lg " +
             (toast.type === "success"
               ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
               : toast.type === "error"
@@ -547,7 +548,7 @@ export function NfeWizard() {
           }
         >
           {toast.msg}
-        </div>
+        </ToastViewport>
       )}
     </div>
   );

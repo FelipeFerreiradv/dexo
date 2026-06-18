@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import {
   Card,
   CardContent,
@@ -1525,7 +1526,7 @@ export function ProductsList() {
         onShowToast={showToast}
       />
 
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -1538,7 +1539,7 @@ export function ProductsList() {
             {toast.message}
           </div>
         ))}
-      </div>
+      </ToastViewport>
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>

@@ -27,6 +27,7 @@ import { HighlightText } from "./highlight-text";
 import { useLocationSearch } from "../hooks/use-location-search";
 
 import { Button } from "@/components/ui/button";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -1084,7 +1085,7 @@ export function LocationsList() {
   return (
     <div className="space-y-6">
       {/* Toast notifications */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -1099,7 +1100,7 @@ export function LocationsList() {
             {toast.message}
           </div>
         ))}
-      </div>
+      </ToastViewport>
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
