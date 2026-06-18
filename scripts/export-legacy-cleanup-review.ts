@@ -48,7 +48,9 @@ function csvEscape(v: unknown): string {
 }
 function writeCsv(file: string, header: string[], rows: string[][]) {
   const lines = [header.join(";"), ...rows.map((r) => r.map(csvEscape).join(";"))];
-  fs.writeFileSync(file, "﻿" + lines.join("\n"), "utf-8");
+  // BOM (acentos) + "sep=;" → o Excel separa as colunas mesmo quando o separador
+  // regional é vírgula (senão joga tudo na coluna A). \r\n para o Excel ficar feliz.
+  fs.writeFileSync(file, "﻿sep=;\r\n" + lines.join("\r\n"), "utf-8");
 }
 function ts(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
