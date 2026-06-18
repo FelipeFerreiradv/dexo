@@ -264,6 +264,8 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
         | null
         | undefined) ?? undefined,
     scrapId: (item as any).scrapId ?? undefined,
+    createdFromMarketplace: (item as any).createdFromMarketplace ?? false,
+    originPlatform: (item as any).originPlatform ?? undefined,
     productLocation: (item as any).productLocation
       ? {
           id: (item as any).productLocation.id,
@@ -386,6 +388,8 @@ class ProductRepositoryPrisma implements ProductRepository {
       // `include` e continua trazendo-o; o update guarda `!== undefined`, então
       // salvar uma edição não o sobrescreve. EGRESS: corta o maior peso por linha.
       scrapId: true,
+      createdFromMarketplace: true,
+      originPlatform: true,
       listings: {
         select: {
           marketplaceAccountId: true,
@@ -883,6 +887,8 @@ class ProductRepositoryPrisma implements ProductRepository {
               ? Prisma.DbNull
               : (data.mlCatalogSnapshot as Prisma.InputJsonValue),
           scrapId: data.scrapId ?? null,
+          createdFromMarketplace: data.createdFromMarketplace ?? false,
+          originPlatform: data.originPlatform ?? null,
           ...(compatInput.length > 0
             ? { compatibilities: { create: compatInput } }
             : {}),

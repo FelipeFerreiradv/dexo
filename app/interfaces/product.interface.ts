@@ -104,6 +104,12 @@ export interface Product {
   mlCatalogProductId?: string | null;
   mlCatalogSnapshot?: Record<string, unknown> | null;
 
+  // Origem do produto: quando true, foi criado automaticamente a partir de um
+  // anúncio detectado no marketplace (não criado direto na Dexo). Aditivo, default
+  // false — todo produto pré-existente continua false e idêntico ao de hoje.
+  createdFromMarketplace?: boolean;
+  originPlatform?: Platform;
+
   scrapId?: string;
   productLocation?: {
     id: string;
@@ -165,6 +171,11 @@ export interface ProductCreate {
   // Vínculo opcional ao catálogo do Mercado Livre
   mlCatalogProductId?: string | null;
   mlCatalogSnapshot?: Record<string, unknown> | null;
+
+  // Origem = anúncio do marketplace detectado automaticamente. Aditivo, default
+  // false; só o caminho de auto-detecção seta true. Ver ListingAutodetectUseCase.
+  createdFromMarketplace?: boolean;
+  originPlatform?: Platform;
 
   scrapId?: string;
 

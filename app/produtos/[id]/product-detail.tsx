@@ -106,6 +106,8 @@ interface ProductData {
   imageUrl?: string;
   imageUrls?: string[];
   scrapId?: string;
+  createdFromMarketplace?: boolean;
+  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | null;
   compatibilities?: Compatibility[];
 }
 
@@ -299,6 +301,14 @@ export function ProductDetail({ productId }: { productId: string }) {
               <Badge variant={getStockBadgeVariant(product.stock)}>
                 {product.stock} un.
               </Badge>
+              {product.createdFromMarketplace && product.originPlatform && (
+                <Badge variant="secondary">
+                  Origem: Anúncio{" "}
+                  {product.originPlatform === "SHOPEE"
+                    ? "Shopee"
+                    : "Mercado Livre"}
+                </Badge>
+              )}
               {product.quality && (
                 <Badge variant="secondary">
                   {QUALITY_LABELS[product.quality] || product.quality}

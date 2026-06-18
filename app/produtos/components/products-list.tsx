@@ -152,6 +152,8 @@ interface Product {
   imageUrls?: string[] | null;
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
+  createdFromMarketplace?: boolean;
+  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | null;
   productLocation?: {
     id: string;
     code: string;
@@ -2188,6 +2190,18 @@ export function ProductsList() {
                               <TableCell className="font-medium">
                                 <div>
                                   <p>{product.name}</p>
+                                  {product.createdFromMarketplace &&
+                                    product.originPlatform && (
+                                      <Badge
+                                        variant="secondary"
+                                        className="mt-0.5 font-normal"
+                                      >
+                                        Origem: Anúncio{" "}
+                                        {product.originPlatform === "SHOPEE"
+                                          ? "Shopee"
+                                          : "Mercado Livre"}
+                                      </Badge>
+                                    )}
                                   {product.description && (
                                     <p
                                       className="text-xs text-muted-foreground"
@@ -2346,6 +2360,18 @@ export function ProductsList() {
                                   <p className="font-mono text-xs text-muted-foreground">
                                     {product.sku}
                                   </p>
+                                  {product.createdFromMarketplace &&
+                                    product.originPlatform && (
+                                      <Badge
+                                        variant="secondary"
+                                        className="font-normal"
+                                      >
+                                        Origem: Anúncio{" "}
+                                        {product.originPlatform === "SHOPEE"
+                                          ? "Shopee"
+                                          : "Mercado Livre"}
+                                      </Badge>
+                                    )}
                                   <MarketplaceBadges
                                     listings={product.listings}
                                     size="sm"

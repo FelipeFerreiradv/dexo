@@ -1,11 +1,48 @@
 import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
-import { MLOrderWebhookPayload } from "../types/ml-order.types";
+import {
+  MLOrderWebhookPayload,
+  MLItemWebhookPayload,
+} from "../types/ml-order.types";
 import { MLQuestionWebhookPayload } from "../types/ml-questions.types";
 import { OrderUseCase } from "./order.usercase";
 import { MessagesUseCase } from "./messages.usecase";
+import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
+import { MLApiService } from "../services/ml-api.service";
+import { MLOAuthService } from "../services/ml-oauth.service";
 import { SystemLogService } from "@/app/services/system-log.service";
+
+const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
+
+/**
+ * Garante um accessToken ML válido para a conta, refrescando se estiver perto de
+ * expirar. Mantida local (sem import cruzado) espelhando messages.usecase.ts.
+ */
+async function ensureFreshMLToken(account: {
+  id: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+}): Promise<string> {
+  const expiresMs = new Date(account.expiresAt).getTime();
+  if (
+    Number.isFinite(expiresMs) &&
+    expiresMs - Date.now() > TOKEN_REFRESH_SAFETY_MS
+  ) {
+    return account.accessToken;
+  }
+  const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+    account.id,
+    account.refreshToken,
+  );
+  await MarketplaceRepository.updateTokens(account.id, {
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+  });
+  return refreshed.accessToken;
+}
 
 /**
  * Tenta registrar o evento no WebhookEventLog para garantir idempotência.
@@ -315,5 +352,159 @@ export class WebhookUseCase {
     }
 
     return true;
+  }
+
+  /**
+   * Valida payload de webhook de item. Aceita topic="items" e resource no
+   * formato "/items/{MLBxxxx}". Mantido separado dos demais validadores para
+   * não alterar o roteamento existente (pedidos/perguntas).
+   */
+  static validateItemWebhookPayload(
+    payload: any,
+  ): payload is MLItemWebhookPayload {
+    if (!payload || typeof payload !== "object") return false;
+    if (
+      !payload.resource ||
+      !payload.user_id ||
+      !payload.topic ||
+      !payload.application_id ||
+      typeof payload.attempts !== "number" ||
+      !payload.sent ||
+      !payload.received
+    ) {
+      return false;
+    }
+    if (payload.topic !== "items") return false;
+    if (!/^\/items\/[A-Za-z0-9]+$/.test(payload.resource)) return false;
+    return true;
+  }
+
+  /**
+   * Processa webhook de item (topic="items") do Mercado Livre.
+   *
+   * Detecta anúncios criados direto no painel do ML e cria na Dexo o Product
+   * vinculado (ProductListing) com flag de origem. Só age sobre anúncios NOVOS
+   * (date_created >= autoImportListingsSince da conta): o tópico "items" dispara
+   * a cada edição, então sem esse gate importaríamos anúncios antigos. Idempotente
+   * por (claimWebhookEvent + upsert do listing): reentrega/edição nunca duplica.
+   * Espelha processOrderWebhook; não toca o caminho de pedidos.
+   */
+  static async processItemWebhook(payload: MLItemWebhookPayload): Promise<{
+    success: boolean;
+    userId?: string;
+    itemId?: string;
+    action?: string;
+    productId?: string;
+    error?: string;
+  }> {
+    try {
+      const itemIdMatch = payload.resource.match(/^\/items\/([A-Za-z0-9]+)$/);
+      if (!itemIdMatch) {
+        return {
+          success: false,
+          error: `Formato de resource inválido: ${payload.resource}`,
+        };
+      }
+
+      const mlItemId = itemIdMatch[1];
+
+      // Idempotência: ignorar reentregas exatas do mesmo evento (mesmo `sent`).
+      const dedupKey = `${payload.resource}:${payload.user_id}:${payload.sent}`;
+      const isNew = await claimWebhookEvent("ML", dedupKey, payload);
+      if (!isNew) {
+        return { success: true, itemId: mlItemId, action: "duplicate_ignored" };
+      }
+
+      const accounts = await MarketplaceRepository.findAllByExternalUserId(
+        payload.user_id.toString(),
+        Platform.MERCADO_LIVRE,
+        true,
+      );
+
+      if (accounts.length === 0) {
+        return {
+          success: false,
+          error: `Conta do Mercado Livre não encontrada para user_id: ${payload.user_id}`,
+        };
+      }
+
+      if (accounts.length > 1) {
+        return {
+          success: false,
+          error: `Múltiplas contas ativas do Mercado Livre encontradas para user_id: ${payload.user_id}. Resolva a duplicidade antes de processar webhooks.`,
+        };
+      }
+
+      const [account] = accounts;
+
+      if (account.status !== "ACTIVE") {
+        return {
+          success: false,
+          error: `Conta do Mercado Livre não está ativa (status: ${account.status})`,
+        };
+      }
+
+      // Baseline "só novos": sem baseline a conta não importa nada (fail-safe).
+      if (!account.autoImportListingsSince) {
+        return {
+          success: true,
+          userId: account.userId,
+          itemId: mlItemId,
+          action: "no_baseline_skipped",
+        };
+      }
+
+      const accessToken = await ensureFreshMLToken(account);
+      const item = await MLApiService.getItemDetails(accessToken, mlItemId);
+
+      // Só anúncios novos: date_created < baseline = edição de anúncio antigo.
+      const createdAt = new Date(item.date_created);
+      if (
+        Number.isNaN(createdAt.getTime()) ||
+        createdAt < account.autoImportListingsSince
+      ) {
+        return {
+          success: true,
+          userId: account.userId,
+          itemId: mlItemId,
+          action: "not_new_ignored",
+        };
+      }
+
+      // Alinha com importMLItems: só itens ativos viram produto.
+      if (item.status !== "active") {
+        return {
+          success: true,
+          userId: account.userId,
+          itemId: mlItemId,
+          action: "inactive_ignored",
+        };
+      }
+
+      const normalized = ListingAutodetectUseCase.normalizeMLItem(
+        { id: account.id, userId: account.userId },
+        item,
+      );
+      const result =
+        await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+          normalized,
+        );
+
+      return {
+        success: true,
+        userId: account.userId,
+        itemId: mlItemId,
+        action: result.action,
+        productId: result.productId ?? undefined,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido no processamento do webhook de item",
+      };
+    }
   }
 }

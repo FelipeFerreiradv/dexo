@@ -17,6 +17,7 @@ import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingUseCase } from "./listing.usercase";
+import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
@@ -1561,6 +1562,216 @@ export class SyncUseCase {
     }
 
     return 0;
+  }
+
+  /**
+   * Wrappers públicos aditivos: reaproveitam a extração de SKU/estoque na
+   * auto-detecção de anúncios (ListingAutodetectUseCase) sem expor mutações.
+   * Delegam 1:1 aos privados acima — `importMLItems`/`importShopeeItems` ficam
+   * intactos.
+   */
+  static extractMLItemSku(item: MLItemDetails): string | null {
+    return this.extractSku(item);
+  }
+
+  static extractShopeeItemSku(
+    item: Partial<ShopeeItem>,
+    model?: { model_sku?: string | null },
+  ): string | null {
+    return this.extractShopeeSku(item, model);
+  }
+
+  static getShopeeItemAvailableStock(item: Partial<ShopeeItem> & any): number {
+    return this.getShopeeAvailableStock(item);
+  }
+
+  /**
+   * Polling incremental de anúncios NOVOS da Shopee (auto-detecção).
+   *
+   * A Shopee não entrega push confiável de "item criado", então varremos a loja
+   * por `update_time_from` (watermark) e, para cada item com `create_time >=
+   * autoImportListingsSince`, criamos na Dexo o Product vinculado via núcleo
+   * idempotente. Itens antigos apenas editados (create_time < baseline) são
+   * ignorados — sem backfill. Reexecução não duplica (listing_exists/upsert).
+   *
+   * Fail-safe: sem baseline ou sem shopId, não importa nada. Erros por item são
+   * contabilizados e nunca abortam o lote. Acoplado ao loop de sync de pedidos.
+   */
+  static async importNewShopeeItemsForAccount(account: {
+    id: string;
+    userId: string;
+    shopId: number | null;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+    autoImportListingsSince: Date | null;
+    shopeeListingsSyncedThrough: Date | null;
+  }): Promise<{
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const summary = { created: 0, linked: 0, skipped: 0, errors: 0 };
+
+    // Fail-safe: nunca importa sem baseline ou sem shopId.
+    if (!account.autoImportListingsSince || !account.shopId) {
+      return summary;
+    }
+    const shopId = account.shopId;
+
+    const baselineMs = account.autoImportListingsSince.getTime();
+    const since =
+      account.shopeeListingsSyncedThrough ?? account.autoImportListingsSince;
+    const updateTimeFrom = Math.floor(since.getTime() / 1000);
+    let maxUpdateTime = updateTimeFrom;
+
+    let accessToken = account.accessToken;
+    const refreshIfNeeded = async (err: any) => {
+      const status = err?.status;
+      if (
+        (status === 401 || status === 403) &&
+        account.refreshToken &&
+        account.shopId
+      ) {
+        const refreshed = await ShopeeOAuthService.refreshAccessToken(
+          account.refreshToken,
+          shopId,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          expiresAt: new Date(Date.now() + refreshed.expire_in * 1000),
+        });
+        accessToken = refreshed.access_token;
+        return true;
+      }
+      return false;
+    };
+
+    // 1. Coletar ids de itens atualizados desde o watermark (server-side filter).
+    const itemIds: number[] = [];
+    let offset = 0;
+    const pageSize = 100;
+    while (true) {
+      try {
+        const list = await ShopeeApiService.getItemList(accessToken, shopId, {
+          offset,
+          page_size: pageSize,
+          item_status: ["NORMAL"],
+          update_time_from: updateTimeFrom,
+          response_optional_fields: ["item_sku"],
+        });
+        const items = list?.item || [];
+        for (const it of items) {
+          itemIds.push(it.item_id);
+          if (
+            typeof it.update_time === "number" &&
+            it.update_time > maxUpdateTime
+          ) {
+            maxUpdateTime = it.update_time;
+          }
+        }
+        if (!list?.has_next_page) break;
+        offset = list.next_offset || offset + pageSize;
+      } catch (error: any) {
+        const refreshed = await refreshIfNeeded(error);
+        if (refreshed) continue;
+        throw error;
+      }
+    }
+
+    if (itemIds.length === 0) {
+      return summary;
+    }
+
+    // 2. Detalhes em lote + auto-detecção por item (gate de "só novos").
+    const batchSize = this.SHOPEE_IMPORT_BATCH_SIZE;
+    for (let i = 0; i < itemIds.length; i += batchSize) {
+      const slice = itemIds.slice(i, i + batchSize);
+
+      let details: ShopeeItem[];
+      try {
+        details = await ShopeeApiService.getItemsBaseInfo(
+          accessToken,
+          shopId,
+          slice,
+        );
+      } catch (error: any) {
+        const refreshed = await refreshIfNeeded(error);
+        if (!refreshed) {
+          summary.errors += slice.length;
+          continue;
+        }
+        try {
+          details = await ShopeeApiService.getItemsBaseInfo(
+            accessToken,
+            shopId,
+            slice,
+          );
+        } catch {
+          summary.errors += slice.length;
+          continue;
+        }
+      }
+
+      for (const item of details) {
+        try {
+          if (
+            typeof item.update_time === "number" &&
+            item.update_time > maxUpdateTime
+          ) {
+            maxUpdateTime = item.update_time;
+          }
+
+          // Gate "só novos": create_time < baseline = anúncio antigo (só editado).
+          const createMs = (item.create_time ?? 0) * 1000;
+          if (!Number.isFinite(createMs) || createMs < baselineMs) {
+            summary.skipped++;
+            continue;
+          }
+
+          const normalized = ListingAutodetectUseCase.normalizeShopeeItem(
+            { id: account.id, userId: account.userId },
+            item,
+          );
+          const res =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              normalized,
+            );
+          if (res.action === "created_product") {
+            summary.created++;
+          } else if (
+            res.action === "linked_existing_product" ||
+            res.action === "raced"
+          ) {
+            summary.linked++;
+          }
+          // res.action === "listing_exists" → no-op idempotente.
+        } catch (err) {
+          summary.errors++;
+          console.error(
+            `[AUTODETECT][Shopee] Falha no item ${item.item_id} (conta ${account.id}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+
+    // 3. Avançar o watermark (monotônico) p/ o próximo polling ser incremental.
+    try {
+      await MarketplaceRepository.advanceShopeeListingsWatermark(
+        account.id,
+        new Date(maxUpdateTime * 1000),
+      );
+    } catch (err) {
+      console.error(
+        `[AUTODETECT][Shopee] Falha ao avançar watermark da conta ${account.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    return summary;
   }
 
   /**

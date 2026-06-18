@@ -19,6 +19,10 @@ export class MarketplaceRepository {
     refreshToken: string;
     expiresAt: Date;
     shopId?: number;
+    // Baseline "só novos": quando informado, fixa o instante a partir do qual
+    // anúncios passam a ser auto-detectados. Aditivo — omitido (undefined) grava
+    // NULL e reproduz o comportamento de hoje (nada é auto-importado).
+    autoImportListingsSince?: Date;
   }) {
     try {
       const account = await prisma.marketplaceAccount.create({
@@ -32,6 +36,7 @@ export class MarketplaceRepository {
           expiresAt: data.expiresAt,
           shopId: data.shopId,
           status: AccountStatus.ACTIVE,
+          autoImportListingsSince: data.autoImportListingsSince ?? null,
         },
       });
 
@@ -44,6 +49,37 @@ export class MarketplaceRepository {
       }
       throw new Error(`Erro ao criar conta de marketplace: ${error}`);
     }
+  }
+
+  /**
+   * Define o baseline "só novos" da conta (autoImportListingsSince). Usado pelo
+   * backfill das contas já conectadas no deploy. Aditivo.
+   */
+  static async setAutoImportBaseline(accountId: string, when: Date) {
+    return prisma.marketplaceAccount.update({
+      where: { id: accountId },
+      data: { autoImportListingsSince: when },
+    });
+  }
+
+  /**
+   * Avança (monotonicamente) o watermark do polling de itens novos da Shopee.
+   * Nunca regride: só persiste quando `when` é mais recente que o valor atual —
+   * assim reexecuções/atrasos não fazem o polling reprocessar tudo de novo.
+   */
+  static async advanceShopeeListingsWatermark(accountId: string, when: Date) {
+    const account = await prisma.marketplaceAccount.findUnique({
+      where: { id: accountId },
+      select: { shopeeListingsSyncedThrough: true },
+    });
+    const current = account?.shopeeListingsSyncedThrough;
+    if (current && current.getTime() >= when.getTime()) {
+      return account;
+    }
+    return prisma.marketplaceAccount.update({
+      where: { id: accountId },
+      data: { shopeeListingsSyncedThrough: when },
+    });
   }
 
   /**
