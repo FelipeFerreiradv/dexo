@@ -114,11 +114,21 @@ async function main() {
 
   const stamp = ts();
   const fExcluir = path.join(OUT_DIR, `revisao-EXCLUIR-${stamp}.csv`);
+  const fSimples = path.join(OUT_DIR, `revisao-EXCLUIR-SIMPLES-${stamp}.csv`);
   const fMantidos = path.join(OUT_DIR, `revisao-MANTIDOS-${stamp}.csv`);
   writeCsv(
     fExcluir,
     ["status", "regra", "chave", "origem_vaapt", "sku", "nome", "caixa", "qtd_anuncios"],
     excluir.map((r) => [r.status, r.regra, r.chave, r.origem, r.sku, r.nome, r.caixa, r.anuncios]),
+  );
+  // versão enxuta p/ leitura rápida do cliente: só os que serão excluídos, 4 colunas, agrupado por origem
+  const simples = [...excluir].sort(
+    (a, b) => a.origem.localeCompare(b.origem) || a.sku.localeCompare(b.sku),
+  );
+  writeCsv(
+    fSimples,
+    ["sku", "nome", "caixa", "origem_vaapt"],
+    simples.map((r) => [r.sku, r.nome, r.caixa, r.origem]),
   );
   writeCsv(
     fMantidos,
@@ -140,7 +150,8 @@ async function main() {
   console.table(porRegra);
   console.log(`MANTIDOS / anomalias a confirmar: ${mantidos.length}`);
   console.log(`\nArquivos:`);
-  console.log(`  ${fExcluir}`);
+  console.log(`  ${fSimples}   <- ENXUTO p/ o cliente (sku, nome, caixa, origem)`);
+  console.log(`  ${fExcluir}   (completo, com status)`);
   console.log(`  ${fMantidos}`);
 }
 
