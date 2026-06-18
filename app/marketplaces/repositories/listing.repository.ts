@@ -101,10 +101,19 @@ export class ListingRepository {
         // EGRESS: o chamador só precisa saber que persistiu; não devolve a linha inteira.
         select: { id: true },
       });
-    } catch (error) {
-      throw new Error(
-        `Erro ao criar listing auto-detectado: ${error instanceof Error ? error.message : error}`,
+    } catch (error: any) {
+      // Log completo (com stack/code/meta) — a causa raiz não pode se perder
+      // num erro de mensagem vazia. Vai pro stdout do dexo-api.
+      console.error(
+        `[autodetect] Falha no upsert do listing (acct=${data.marketplaceAccountId}, item=${data.externalListingId}, product=${data.productId}):`,
+        error,
       );
+      const detail =
+        error?.message ||
+        error?.code ||
+        (error?.meta ? JSON.stringify(error.meta) : "") ||
+        (error ? String(error) : "erro desconhecido");
+      throw new Error(`Erro ao criar listing auto-detectado: ${detail}`);
     }
   }
 

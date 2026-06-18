@@ -1681,11 +1681,16 @@ export class SyncUseCase {
       }
     }
 
+    console.log(
+      `[autodetect][shopee] conta ${account.id}: ${itemIds.length} item(ns) na lista (update_time_from=${new Date(updateTimeFrom * 1000).toISOString()})`,
+    );
+
     if (itemIds.length === 0) {
       return summary;
     }
 
     // 2. Detalhes em lote + auto-detecção por item (gate de "só novos").
+    let skipSamplesLogged = 0;
     const batchSize = this.SHOPEE_IMPORT_BATCH_SIZE;
     for (let i = 0; i < itemIds.length; i += batchSize) {
       const slice = itemIds.slice(i, i + batchSize);
@@ -1727,6 +1732,12 @@ export class SyncUseCase {
           // Gate "só novos": create_time < baseline = anúncio antigo (só editado).
           const createMs = (item.create_time ?? 0) * 1000;
           if (!Number.isFinite(createMs) || createMs < baselineMs) {
+            if (skipSamplesLogged < 3) {
+              console.log(
+                `[autodetect][shopee] conta ${account.id}: item ${item.item_id} ignorado (create_time=${item.create_time}, baseline=${Math.floor(baselineMs / 1000)})`,
+              );
+              skipSamplesLogged++;
+            }
             summary.skipped++;
             continue;
           }
