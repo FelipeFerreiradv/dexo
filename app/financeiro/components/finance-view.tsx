@@ -9,6 +9,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import { FinanceOverview } from "./finance-overview";
 import { FinanceList } from "./finance-list";
 import { UnidadeFilter } from "./shared/unidade-select";
@@ -52,7 +53,7 @@ export function FinanceView() {
 
   return (
     <div className="space-y-6">
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
@@ -67,7 +68,7 @@ export function FinanceView() {
             {t.message}
           </div>
         ))}
-      </div>
+      </ToastViewport>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">

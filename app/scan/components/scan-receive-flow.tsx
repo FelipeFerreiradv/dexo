@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import {
   Card,
   CardContent,
@@ -423,7 +424,7 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
   return (
     <div className="space-y-6">
       {/* Toast notifications */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -438,7 +439,7 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
             {toast.message}
           </div>
         ))}
-      </div>
+      </ToastViewport>
 
       {phase === "select-location" && (
         <Card>
