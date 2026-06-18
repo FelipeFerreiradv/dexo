@@ -94,9 +94,11 @@ async function main() {
     // preservado/protegido_historico ficam de fora desta revisão (não excluídos)
   }
 
-  // Produtos já EXCLUÍDOS: ler dos backups
+  // Produtos JÁ EXCLUÍDOS = ids presentes nos backups E que NÃO existem mais no banco.
+  // (um id que falhou no marketplace e segue no banco NÃO conta como excluído.)
   const backupFiles = fs.readdirSync(OUT_DIR).filter((f) => f.startsWith("legacy-cleanup-backup-") && f.endsWith(".json"));
   const seen = new Set<string>();
+  const backupProducts: { id: string; sku: string; name?: string; location?: string; locationId?: string; listings?: unknown[] }[] = [];
   for (const bf of backupFiles) {
     const data = JSON.parse(fs.readFileSync(path.join(OUT_DIR, bf), "utf-8")) as {
       products: { id: string; sku: string; name?: string; location?: string; locationId?: string; listings?: unknown[] }[];
@@ -104,11 +106,27 @@ async function main() {
     for (const p of data.products ?? []) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
-      const ri = ruleInfo(p.sku);
-      const caixa = (p.locationId && codeById.get(p.locationId)) || p.location || "";
-      excluir.push({ status: "EXCLUIDO", ...ri, sku: p.sku, nome: p.name ?? "", caixa, anuncios: String(p.listings?.length ?? 0) });
+      backupProducts.push(p);
     }
   }
+  const aindaExiste = new Set(
+    backupProducts.length
+      ? (
+          await prisma.product.findMany({
+            where: { id: { in: backupProducts.map((p) => p.id) } },
+            select: { id: true },
+          })
+        ).map((p) => p.id)
+      : [],
+  );
+  const jaExcluidos = backupProducts
+    .filter((p) => !aindaExiste.has(p.id))
+    .map((p) => {
+      const ri = ruleInfo(p.sku);
+      const caixa = (p.locationId && codeById.get(p.locationId)) || p.location || "";
+      return { status: "EXCLUIDO" as const, ...ri, sku: p.sku, nome: p.name ?? "", caixa, anuncios: String(p.listings?.length ?? 0) };
+    });
+  excluir.push(...jaExcluidos);
 
   // Ordenar: regra, chave, sku
   excluir.sort((a, b) => a.regra.localeCompare(b.regra) || a.chave.localeCompare(b.chave) || a.sku.localeCompare(b.sku));
@@ -137,6 +155,14 @@ async function main() {
     ["motivo", "sku", "nome", "caixa"],
     mantidos.map((r) => [r.motivo, r.sku, r.nome, r.caixa]),
   );
+  // SÓ os que JÁ foram excluídos (apagados de fato), p/ o cliente conferir o que saiu.
+  const fJaExcluidos = path.join(OUT_DIR, `revisao-JA-EXCLUIDOS-${stamp}.csv`);
+  const jaSorted = [...jaExcluidos].sort((a, b) => a.origem.localeCompare(b.origem) || a.sku.localeCompare(b.sku));
+  writeCsv(
+    fJaExcluidos,
+    ["sku", "nome", "caixa", "origem_vaapt"],
+    jaSorted.map((r) => [r.sku, r.nome, r.caixa, r.origem]),
+  );
 
   // Resumo
   const porStatus: Record<string, number> = {};
@@ -150,9 +176,11 @@ async function main() {
   console.log(`A EXCLUIR (total ${excluir.length}):`);
   console.table(porStatus);
   console.table(porRegra);
+  console.log(`JÁ EXCLUÍDOS (apagados de fato): ${jaExcluidos.length}`);
   console.log(`MANTIDOS / anomalias a confirmar: ${mantidos.length}`);
   console.log(`\nArquivos:`);
-  console.log(`  ${fSimples}   <- ENXUTO p/ o cliente (sku, nome, caixa, origem)`);
+  console.log(`  ${fJaExcluidos}   <- SÓ OS JÁ EXCLUÍDOS (mandar p/ o cliente)`);
+  console.log(`  ${fSimples}   (todos os 3741 que serão excluídos, enxuto)`);
   console.log(`  ${fExcluir}   (completo, com status)`);
   console.log(`  ${fMantidos}`);
 }
