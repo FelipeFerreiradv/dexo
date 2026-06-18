@@ -48,11 +48,9 @@ async function runOnce() {
         });
         if (full) {
           const r = await SyncUseCase.importNewShopeeItemsForAccount(full);
-          if (r.created || r.linked || r.errors) {
-            console.log(
-              `[sync-loop] Shopee auto-detect conta ${account.id}: +${r.created} criados, ${r.linked} vinculados, ${r.skipped} ignorados, ${r.errors} erros`,
-            );
-          }
+          console.log(
+            `[sync-loop] Shopee auto-detect conta ${account.id}: criados=${r.created} vinculados=${r.linked} ignorados=${r.skipped} erros=${r.errors}`,
+          );
         }
       } catch (err) {
         console.error(
