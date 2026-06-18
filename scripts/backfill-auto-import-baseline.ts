@@ -12,6 +12,7 @@
  *
  * Uso:  npx tsx scripts/backfill-auto-import-baseline.ts
  */
+import "dotenv/config";
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 
