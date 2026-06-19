@@ -1,4 +1,20 @@
 import type { NextConfig } from "next";
+import { execSync } from "node:child_process";
+
+// Id único por build, agnóstico de deploy. Prioriza dados da Vercel; cai para
+// git short SHA; sempre concatena um timestamp para garantir que TODO rebuild
+// (mesmo do mesmo commit) gere um valor diferente — é isso que dispara o aviso
+// de "nova versão" no UpdateNotifier.
+const BUILD_COMMIT =
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
+  (() => {
+    try {
+      return execSync("git rev-parse --short HEAD").toString().trim();
+    } catch {
+      return "dev";
+    }
+  })();
+const BUILD_ID = `${BUILD_COMMIT}-${Date.now()}`;
 
 // Host do backend (serve as imagens em /uploads). Derivado das envs públicas;
 // usado para estreitar o remotePattern de imagem (em vez do antigo "**").
@@ -71,8 +87,11 @@ const securityHeaders = [
   { key: "X-Frame-Options", value: "SAMEORIGIN" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   {
+    // camera=(self): o scanner de código de barras (/scan, @zxing/browser) usa
+    // a câmera na PRÓPRIA origem. camera=() (allowlist vazia) bloquearia o
+    // getUserMedia e quebraria o scanner. Mantém microphone/geolocation off.
     key: "Permissions-Policy",
-    value: "geolocation=(), microphone=(), camera=()",
+    value: "geolocation=(), microphone=(), camera=(self)",
   },
   // Report-Only: não bloqueia nada ainda (ver comentário acima).
   { key: "Content-Security-Policy-Report-Only", value: csp },
@@ -83,10 +102,26 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   // Compress responses
   compress: true,
+  // Migrado do next.config.mjs legado (removido nesta unificação). O projeto
+  // tem ~107 erros de TS pré-existentes; sem ignoreBuildErrors o `next build`
+  // passaria a typecheckar e quebraria. Mantém o build idêntico ao de produção.
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  // Sinal de versão p/ o UpdateNotifier (poll em /api/version), inlinado em
+  // cliente e servidor. NÃO sobrescreve o build id interno do Next.
+  env: {
+    NEXT_PUBLIC_BUILD_ID: BUILD_ID,
+  },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },
   images: {
+    // Migrado do .mjs legado: imagens servidas sem otimização do Next. Evita
+    // quebrar imagens dinâmicas (product.imageUrl de Supabase/Shopee/ML) que
+    // NÃO estão nos remotePatterns abaixo. Habilitar a otimização (remover
+    // unoptimized) exige antes auditar/incluir todos os hosts => follow-up.
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: "http",
