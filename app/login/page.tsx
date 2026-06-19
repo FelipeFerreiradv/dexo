@@ -1,7 +1,8 @@
+import Image from "next/image";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 
-import { DexoHero } from "@/components/login/dexo-hero";
+import { DexoLoginAside } from "@/components/login/dexo-login-aside";
 import { DexoLoginForm } from "@/components/login/dexo-login-form";
 
 export const metadata = {
@@ -26,7 +27,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const { callbackUrl: rawCallback } = await searchParams;
   const callbackUrl = sanitizeCallbackUrl(rawCallback);
   return (
-    <main className="dark relative isolate flex min-h-screen w-full flex-col items-center overflow-hidden bg-background text-foreground">
+    <main className="dark relative isolate flex min-h-screen w-full items-center justify-center overflow-hidden bg-background px-4 py-8 text-foreground sm:px-6">
+      {/* Fundo ambiente: gradientes gold discretos atrás do cartão */}
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <div
           className="absolute inset-0 opacity-70"
@@ -45,35 +47,55 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(0,0,0,0.55),transparent_65%)]" />
       </div>
 
-      <div className="relative z-10 flex min-h-screen w-full max-w-[480px] flex-col items-center px-5 pb-10 pt-6 sm:px-7">
-        <header className="flex w-full items-center justify-start">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            aria-label="Voltar"
-          >
-            <ChevronLeft className="h-5 w-5" />
-            <span>Voltar</span>
-          </Link>
-        </header>
+      {/* Voltar (discreto) */}
+      <Link
+        href="/"
+        className="absolute left-4 top-4 z-20 inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        aria-label="Voltar"
+      >
+        <ChevronLeft className="h-5 w-5" />
+        <span className="max-sm:sr-only">Voltar</span>
+      </Link>
 
-        <div className="flex w-full flex-1 flex-wrap items-center justify-center gap-8 py-6 sm:gap-10 sm:flec-co">
-          <div className="flex w-full justify-center">
-            <DexoHero />
-          </div>
+      {/* Cartão split-screen */}
+      <div
+        className="relative z-10 w-full max-w-5xl overflow-hidden rounded-3xl border border-border/60 shadow-[0_60px_140px_-60px_rgba(0,0,0,0.9)]"
+        style={{
+          background: "color-mix(in oklab, var(--foreground) 4%, var(--background))",
+        }}
+      >
+        <div className="grid lg:grid-cols-2">
+          {/* Painel esquerdo (marca + destaques) — só em telas largas */}
+          <DexoLoginAside className="hidden lg:flex" />
 
-          <div className="space-y-2 text-center">
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-              Dexo
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Acesse com seguranca para continuar.
-            </p>
-          </div>
+          {/* Painel direito (formulário) */}
+          <section className="flex min-w-0 flex-col justify-center gap-6 p-6 sm:p-10">
+            {/* Marca compacta no mobile (substitui o painel esquerdo) */}
+            <div className="flex items-center gap-3 lg:hidden">
+              <div className="size-10 shrink-0 overflow-hidden rounded-lg bg-foreground ring-1 ring-border/40">
+                <Image
+                  src="/logo.jpg"
+                  alt="Dexo"
+                  width={40}
+                  height={40}
+                  className="size-full object-contain p-1"
+                  priority
+                />
+              </div>
+              <span className="text-lg font-semibold tracking-tight">Dexo</span>
+            </div>
 
-          <div className="w-full">
+            <div className="space-y-1.5">
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                Entrar na sua conta
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Acesse com seu e-mail e senha para continuar.
+              </p>
+            </div>
+
             <DexoLoginForm callbackUrl={callbackUrl} />
-          </div>
+          </section>
         </div>
       </div>
     </main>
