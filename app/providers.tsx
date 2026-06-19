@@ -3,6 +3,7 @@
 import { SessionProvider } from "next-auth/react";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ApiAuthBridge } from "@/components/api-auth-bridge";
+import { UpdateNotifier } from "@/components/system/update-notifier";
 import { ReactNode } from "react";
 
 interface ProvidersProps {
@@ -28,6 +29,9 @@ export function Providers({ children }: ProvidersProps) {
         enableSystem
         disableTransitionOnChange
       >
+        {/* Aviso global de nova versão + auto-recuperação de ChunkLoadError.
+            Sem update detectado, renderiza só um Dialog fechado (nada visível). */}
+        <UpdateNotifier />
         {children}
       </ThemeProvider>
     </SessionProvider>

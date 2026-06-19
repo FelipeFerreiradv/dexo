@@ -64,8 +64,8 @@ export const metadata: Metadata = {
     images: [
       {
         url: "/logo.jpg",
-        width: 1200,
-        height: 630,
+        width: 640,
+        height: 640,
         alt: "Dexo - Gestão de Estoque Centralizada",
       },
     ],
@@ -88,23 +88,9 @@ export const metadata: Metadata = {
       "max-snippet": -1,
     },
   },
-  icons: {
-    icon: [
-      {
-        url: "/icon-light-32x32.png",
-        media: "(prefers-color-scheme: light)",
-      },
-      {
-        url: "/icon-dark-32x32.png",
-        media: "(prefers-color-scheme: dark)",
-      },
-      {
-        url: "/icon.svg",
-        type: "image/svg+xml",
-      },
-    ],
-    apple: "/apple-icon.png",
-  },
+  // Ícones (favicon/apple-icon) são gerados automaticamente pelas convenções de
+  // arquivo do App Router: app/favicon.ico, app/icon.png e app/apple-icon.png
+  // (todos a partir do logo Dexo). Sem refs manuais => sem 404 de ícones.
 };
 
 export const viewport: Viewport = {
@@ -116,6 +102,33 @@ export const viewport: Viewport = {
   ],
 };
 
+// Dados estruturados (Schema.org) — ajudam mecanismos de busca a entender a
+// marca Dexo (e podem habilitar resultados ricos / favicon na SERP). Estático,
+// renderizado no servidor; não altera layout nem comportamento.
+const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://dexo.com.br";
+const structuredData = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${appUrl}/#organization`,
+      name: "Dexo",
+      url: appUrl,
+      logo: `${appUrl}/icon-512.png`,
+      description:
+        "Plataforma de gestão de estoque centralizada com integrações diretas ao Mercado Livre e Shopee.",
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${appUrl}/#website`,
+      name: "Dexo",
+      url: appUrl,
+      inLanguage: "pt-BR",
+      publisher: { "@id": `${appUrl}/#organization` },
+    },
+  ],
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -124,6 +137,10 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body className={`font-sans antialiased`}>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+        />
         <Providers>
           <MainLayoutWrapper>{children}</MainLayoutWrapper>
         </Providers>
