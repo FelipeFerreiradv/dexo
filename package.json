@@ -5,8 +5,8 @@
   "packageManager": "npm@9",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "vercel-build": "prisma generate && next build",
+    "build": "node scripts/generate-build-id.mjs && next build",
+    "vercel-build": "prisma generate && node scripts/generate-build-id.mjs && next build",
     "postinstall": "prisma generate",
     "start": "next start",
     "api": "tsx watch app/api/api.ts",

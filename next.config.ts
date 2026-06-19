@@ -1,20 +1,28 @@
 import type { NextConfig } from "next";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
-// Id único por build, agnóstico de deploy. Prioriza dados da Vercel; cai para
-// git short SHA; sempre concatena um timestamp para garantir que TODO rebuild
-// (mesmo do mesmo commit) gere um valor diferente — é isso que dispara o aviso
-// de "nova versão" no UpdateNotifier.
-const BUILD_COMMIT =
-  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ||
-  (() => {
-    try {
-      return execSync("git rev-parse --short HEAD").toString().trim();
-    } catch {
-      return "dev";
-    }
-  })();
-const BUILD_ID = `${BUILD_COMMIT}-${Date.now()}`;
+// O build id é gerado UMA vez por build (scripts/generate-build-id.mjs, antes do
+// `next build`) e gravado em .build-id. Lê-se SEMPRE desse arquivo para que
+// TODAS as avaliações do config (workers de build do cliente/servidor e o
+// próprio `next start`) usem o MESMO valor. Se usássemos Date.now() aqui, cada
+// avaliação geraria um timestamp diferente → o cliente embute um e o servidor
+// responde outro → o aviso de "nova versão" reaparece em loop. Fallback (ex.:
+// `next dev` sem prebuild): sha do git (estável entre avaliações); por fim "dev".
+function resolveBuildId(): string {
+  try {
+    const fromFile = readFileSync(".build-id", "utf8").trim();
+    if (fromFile) return fromFile;
+  } catch {
+    /* arquivo ausente (ex.: dev sem prebuild) */
+  }
+  try {
+    return execSync("git rev-parse --short HEAD").toString().trim();
+  } catch {
+    return "dev";
+  }
+}
+const BUILD_ID = resolveBuildId();
 
 // Host do backend (serve as imagens em /uploads). Derivado das envs públicas;
 // usado para estreitar o remotePattern de imagem (em vez do antigo "**").
