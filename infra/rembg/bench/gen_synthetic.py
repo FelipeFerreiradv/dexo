@@ -59,8 +59,9 @@ def draw_object(canvas, shape, rng):
     y0 = (h - oh) // 2
     # corpo com leve gradiente vertical + cor base
     body = rng.integers(60, 190, 3).astype(np.float64)
-    shade = np.linspace(1.15, 0.7, oh)[:, None, None]
-    block = np.clip(body[None, None, :] * shade, 0, 255)
+    shade = np.linspace(1.15, 0.7, oh)[:, None, None]  # (oh,1,1)
+    block = np.clip(body[None, None, :] * shade, 0, 255)  # (oh,1,3)
+    block = np.broadcast_to(block, (oh, ow, 3))  # (oh,ow,3) p/ indexar com `inside`
     # cantos arredondados (mascara)
     yy, xx = np.ogrid[:oh, :ow]
     rad = max(4, min(ow, oh) // 8)
@@ -95,7 +96,7 @@ def main():
                 rng = np.random.default_rng(args.seed + n)
                 canvas = make_bg(w, h, bg, rng)
                 canvas = draw_object(canvas, shape, rng)
-                img = Image.fromarray(canvas.astype(np.uint8), "RGB")
+                img = Image.fromarray(canvas.astype(np.uint8))
                 name = "syn_%s_%s_%s.jpg" % (sname, shape, bg)
                 img.save(os.path.join(args.out, name), quality=args.quality)
                 print("  %s (%dx%d)" % (name, w, h))
