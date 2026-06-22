@@ -51,7 +51,7 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
       {error && (
         <div
           role="alert"
-          className="rounded-2xl border border-destructive/40 bg-destructive/15 px-4 py-3 text-sm text-destructive shadow-[0_12px_40px_-28px_rgba(0,0,0,0.6)]"
+          className="rounded-xl border border-destructive/40 bg-destructive/15 px-4 py-3 text-sm text-destructive shadow-[0_12px_40px_-28px_rgba(0,0,0,0.6)]"
         >
           {error}
         </div>
@@ -78,9 +78,8 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
             onChange={(e) => setEmail(e.target.value)}
             disabled={isLoading}
             className={cn(
-              "h-12 rounded-full border border-border/70 bg-input/40 text-base text-foreground placeholder:text-muted-foreground/80 shadow-[0_18px_50px_-34px_rgba(0,0,0,0.85)] backdrop-blur-xl",
-              "focus-visible:border-ring/90 focus-visible:ring-ring/70",
-              "transition-[border,box-shadow,transform] duration-200 ease-out focus-visible:shadow-[0_18px_40px_-26px_color-mix(in_srgb,var(--ring)70%,transparent)] focus-visible:translate-y-[-1px]",
+              "h-16 rounded-xl border border-border/70 bg-input/40 pl-11 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
+              "focus-visible:border-ring focus-visible:ring-ring/50",
             )}
             required
           />
@@ -108,9 +107,8 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
             onChange={(e) => setPassword(e.target.value)}
             disabled={isLoading}
             className={cn(
-              "h-12 rounded-full border border-border/70 bg-input/40 pr-12 text-base text-foreground placeholder:text-muted-foreground/80 shadow-[0_18px_50px_-34px_rgba(0,0,0,0.85)] backdrop-blur-xl",
-              "focus-visible:border-ring/90 focus-visible:ring-ring/70",
-              "transition-[border,box-shadow,transform] duration-200 ease-out focus-visible:shadow-[0_18px_40px_-26px_color-mix(in_srgb,var(--ring)70%,transparent)] focus-visible:translate-y-[-1px]",
+              "h-16 rounded-xl border border-border/70 bg-input/40 pl-11 pr-12 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
+              "focus-visible:border-ring focus-visible:ring-ring/50",
             )}
             required
           />
@@ -133,7 +131,7 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
         <Button
           type="submit"
           disabled={isLoading}
-          className="h-12 w-full rounded-full bg-primary/90 text-base font-semibold uppercase tracking-tight text-primary-foreground shadow-[0_22px_70px_-38px_color-mix(in_srgb,var(--primary)85%,transparent)] transition-all duration-200 hover:bg-primary focus-visible:bg-primary focus-visible:ring-2 focus-visible:ring-ring/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="h-16 w-full rounded-xl bg-primary text-base font-semibold tracking-tight text-primary-foreground shadow-[0_22px_70px_-38px_color-mix(in_srgb,var(--primary)85%,transparent)] transition-all duration-200 hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           {isLoading ? (
             <>
