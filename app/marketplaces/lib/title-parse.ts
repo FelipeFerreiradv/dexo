@@ -216,6 +216,10 @@ const PART_TYPES: Array<{ label: string; phrases: string[] }> = [
     ],
   },
   {
+    label: "tampao-do-bagagito",
+    phrases: ["tampao bagagito", "tampao", "bagagito", "tampao bagageiro"],
+  },
+  {
     label: "portinhola",
     phrases: [
       "portinhola",
@@ -255,6 +259,10 @@ const PART_TYPES: Array<{ label: string; phrases: string[] }> = [
     phrases: ["lanterna", "lanternas", "lanterna traseira"],
   },
   {
+    label: "refletor",
+    phrases: ["refletor", "refletores", "olho de gato", "olho gato"],
+  },
+  {
     label: "farol-de-milha",
     phrases: ["farol milha", "farol neblina", "farol auxiliar"],
   },
@@ -273,8 +281,26 @@ const PART_TYPES: Array<{ label: string; phrases: string[] }> = [
   { label: "calota", phrases: ["calota", "calotas"] },
   { label: "roda", phrases: ["roda", "rodas", "aro", "aros"] },
   {
+    label: "trava-estepe",
+    phrases: [
+      "trava estepe",
+      "fixacao estepe",
+      "suporte estepe",
+      "porca estepe",
+    ],
+  },
+  {
     label: "defletor",
     phrases: ["defletor", "defletores", "defletor ar", "calha", "calha chuva"],
+  },
+  {
+    label: "cobertura-de-ar",
+    phrases: [
+      "cobertura entrada ar",
+      "cobertura ar",
+      "entrada de ar",
+      "tomada de ar",
+    ],
   },
   {
     label: "quebra-sol",
@@ -975,6 +1001,7 @@ const MODEL_BRAND: Record<string, string> = {
   courier: "Ford",
   escort: "Ford",
   belina: "Ford",
+  ka: "Ford",
   // Renault
   logan: "Renault",
   sandero: "Renault",
@@ -1005,6 +1032,7 @@ const MODEL_BRAND: Record<string, string> = {
   hrv: "Honda",
   wrv: "Honda",
   crv: "Honda",
+  city: "Honda",
   // Toyota
   corolla: "Toyota",
   etios: "Toyota",
@@ -1027,11 +1055,18 @@ const MODEL_BRAND: Record<string, string> = {
   outlander: "Mitsubishi",
   l200: "Mitsubishi",
   // Citroën
+  c3: "Citroën",
+  c4: "Citroën",
   cactus: "Citroën",
   aircross: "Citroën",
   xsara: "Citroën",
   picasso: "Citroën",
   berlingo: "Citroën",
+  // Land Rover
+  evoque: "Land Rover",
+  discovery: "Land Rover",
+  freelander: "Land Rover",
+  defender: "Land Rover",
   // Kia
   picanto: "Kia",
   cerato: "Kia",
@@ -1098,7 +1133,19 @@ export function detectBrandAndModel(text?: string | null): {
   }
   for (let i = 0; i < toks.length; i++) {
     const canon = BRAND_CANON[toks[i]];
-    if (canon) return { brand: canon, model: modelToken(toks[i + 1]) };
+    if (canon) {
+      let model = modelToken(toks[i + 1]);
+      // Padrão "modelos MARCA" (marca no fim): se o token após a marca não é
+      // modelo válido, procura um modelo icônico em qualquer posição.
+      if (!model) {
+        for (const t of toks)
+          if (MODEL_BRAND[t]) {
+            model = t.toUpperCase();
+            break;
+          }
+      }
+      return { brand: canon, model };
+    }
   }
   // Nenhuma marca escrita → inferir por modelo icônico (ex.: "Corsa Classic").
   for (const t of toks) {
