@@ -78,7 +78,7 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
             onChange={(e) => setEmail(e.target.value)}
             disabled={isLoading}
             className={cn(
-              "h-12 rounded-xl border border-border/70 bg-input/40 pl-11 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
+              "h-16 rounded-xl border border-border/70 bg-input/40 pl-11 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
               "focus-visible:border-ring focus-visible:ring-ring/50",
             )}
             required
@@ -107,7 +107,7 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
             onChange={(e) => setPassword(e.target.value)}
             disabled={isLoading}
             className={cn(
-              "h-12 rounded-xl border border-border/70 bg-input/40 pl-11 pr-12 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
+              "h-16 rounded-xl border border-border/70 bg-input/40 pl-11 pr-12 text-base text-foreground placeholder:text-muted-foreground/70 backdrop-blur-sm",
               "focus-visible:border-ring focus-visible:ring-ring/50",
             )}
             required
@@ -131,7 +131,7 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
         <Button
           type="submit"
           disabled={isLoading}
-          className="h-12 w-full rounded-xl bg-primary text-base font-semibold tracking-tight text-primary-foreground shadow-[0_22px_70px_-38px_color-mix(in_srgb,var(--primary)85%,transparent)] transition-all duration-200 hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="h-16 w-full rounded-xl bg-primary text-base font-semibold tracking-tight text-primary-foreground shadow-[0_22px_70px_-38px_color-mix(in_srgb,var(--primary)85%,transparent)] transition-all duration-200 hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring/80 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           {isLoading ? (
             <>
