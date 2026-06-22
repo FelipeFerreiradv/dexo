@@ -32,8 +32,8 @@ import { Prisma } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import {
   buildLookupColumns,
-  extractPartType,
   kebab,
+  parseTitleToParts,
   parseYearToNumber,
 } from "../app/marketplaces/lib/title-parse";
 import {
@@ -225,9 +225,13 @@ async function main() {
 
     for (const p of rows) {
       scanned++;
-      const partType = extractPartType(p.name);
-      const brand = kebab(p.brand);
-      const model = kebab(p.model);
+      // MESMA derivação do endpoint (parseTitleToParts sobre o texto) — garante
+      // que a chave gravada aqui case com a consultada na sugestão. Derivamos do
+      // `name` (não das colunas) para alinhar com o título que o usuário digita.
+      const parts = parseTitleToParts(p.name);
+      const partType = parts.partType;
+      const brand = kebab(parts.brand);
+      const model = kebab(parts.model);
       // Todos os níveis exigem partType + brand + model (alinhado à cascata).
       if (!partType || !brand || !model) continue;
       if (args.partTypeFilter && partType !== args.partTypeFilter) continue;
