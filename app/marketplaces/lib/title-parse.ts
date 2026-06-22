@@ -742,6 +742,18 @@ const PART_TYPES: Array<{ label: string; phrases: string[] }> = [
   },
   { label: "luz", phrases: ["luz", "luzes", "luz placa"] },
   { label: "cinzeiro", phrases: ["cinzeiro", "cinzeiros"] },
+  {
+    label: "acendedor",
+    phrases: [
+      "acendedor",
+      "acendedor cigarro",
+      "isqueiro",
+      "tomada acendedor",
+      "tomada 12v",
+      "acendedor 12v",
+      "tomada usb",
+    ],
+  },
   // ── Fixação / chaparia / genéricos (fallback — só vencem quando lideram) ──
   {
     label: "suporte",
