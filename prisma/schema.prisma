@@ -144,6 +144,70 @@ model ProductCompatibility {
   @@index([productId])
 }
 
+// Estatísticas agregadas (determinísticas) dos produtos vivos de TODOS os
+// usuários, recalculadas por um job noturno (scripts/build-catalog-stats.ts).
+// Alimenta a "sugestão da base interna" no cadastro de produto. Contém SOMENTE
+// agregados (mediana/moda/união/contagem) — NUNCA linha individual, userId,
+// loja, costPrice ou markup (privacidade/LGPD). Só persiste chaves com
+// sampleSize >= 5 (o limiar também é proteção contra expor um único concorrente).
+// Tabela 100% reproduzível por execução: upsert por matchKey + prune por computedAt.
+model CatalogStat {
+  id String @id @default(cuid())
+
+  // Identidade canônica/display: "partType|brand|model|version|yearFrom-yearTo".
+  // Usada só para upsert idempotente; os lookups vão pelas colunas indexadas.
+  matchKey String @unique
+
+  // Colunas de lookup (normalizadas). Sentinela "*" quando o campo não se aplica
+  // (ex.: linha version-agnóstica usa version = "*"). yearFrom/yearTo = faixa
+  // min/max dos anos dos membros do grupo; o endpoint casa por interseção.
+  partType String
+  brand    String @default("*")
+  model    String @default("*")
+  version  String @default("*")
+  yearFrom Int?
+  yearTo   Int?
+
+  // Tamanho da amostra. sampleSize = nº de membros do grupo (gate >= 5).
+  // priceSampleSize = sobreviventes após corte de outliers IQR (transparência).
+  sampleSize      Int
+  priceSampleSize Int?
+
+  // Medianas (preço usa SOMENTE `price` — nunca costPrice/markup).
+  priceMedian    Decimal? @db.Decimal(10, 2)
+  weightKgMedian Decimal? @db.Decimal(6, 2)
+  heightCmMedian Int?
+  widthCmMedian  Int?
+  lengthCmMedian Int?
+
+  // Modas (valor mais frequente + frequência). Só preenchidas quando freq >= 2.
+  qualityMode            String?
+  qualityModeCount       Int?
+  partNumberMode         String?
+  partNumberModeCount    Int?
+  versionMode            String?
+  versionModeCount       Int?
+  sourceVehicleMode      String?
+  sourceVehicleModeCount Int?
+  mlCategoryIdMode       String?
+  mlCategoryIdModeCount  Int?
+  shopeeCategoryIdMode      String?
+  shopeeCategoryIdModeCount Int?
+
+  // Ficha técnica: { [attrId]: { value_id?, value_name?, freq } } (valor mais
+  // frequente por chave de atributo). Compatibilidades: união deduplicada,
+  // ranqueada por frequência: [{ brand, model, yearFrom, yearTo, version, freq }].
+  attributes      Json?
+  compatibilities Json?
+
+  // Carimbo da execução do job; base da varredura de prune (deleteMany lt run).
+  computedAt DateTime @default(now())
+
+  @@index([partType, brand, model, version, sampleSize])
+  @@index([partType, brand, model, version, yearFrom, yearTo])
+  @@index([computedAt])
+}
+
 model Location {
   id          String     @id @default(cuid())
   userId      String
