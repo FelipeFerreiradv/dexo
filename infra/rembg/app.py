@@ -31,6 +31,7 @@ e' quase identidade, entao NAO regride o caso que ja sai perfeito hoje.
 
 import os
 from io import BytesIO
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -44,6 +45,11 @@ from rembg import new_session, remove
 #   protege o sidecar de payloads patologicos.
 MAX_BYTES = 10 * 1024 * 1024
 MODEL_NAME = os.getenv("REMBG_MODEL", "birefnet-general-lite")
+
+# Profiling opt-in (Fase 0): REMBG_PROFILE=true mede o tempo de cada estagio do
+# /remove-bg e expoe no header de resposta `X-Rembg-Timing` (+ log). Default OFF
+# => zero trabalho extra e nenhuma mudanca no corpo/contrato. So pra diagnostico.
+PROFILE_ENABLED = os.getenv("REMBG_PROFILE", "false").lower() == "true"
 
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
@@ -289,22 +295,54 @@ async def remove_bg(
     if len(raw) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="payload too large")
 
+    # Profiling opt-in: so preenche o dict de tempos quando PROFILE_ENABLED.
+    prof = PROFILE_ENABLED
+    timings: dict[str, float] = {}
+
     try:
         # Decodifica uma vez e passa PIL ao rembg — evita round-trip de PNG
         # (com bytes, o rembg encodaria o resultado em PNG e nos decodariamos
         # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
+        t0 = perf_counter() if prof else 0.0
         src = Image.open(BytesIO(raw)).convert("RGB")
+        if prof:
+            timings["decode"] = perf_counter() - t0
+            t0 = perf_counter()
         out = remove(src, session=_get_session(), post_process_mask=POST_PROCESS_MASK)
+        if prof:
+            timings["remove"] = perf_counter() - t0
+            t0 = perf_counter()
         rgba = _to_rgba_array(out)
+        if prof:
+            timings["to_rgba"] = perf_counter() - t0
+            t0 = perf_counter()
         if REFINE_ENABLED:
             rgba = _refine_edges(rgba)
+        if prof:
+            timings["refine"] = perf_counter() - t0
+            t0 = perf_counter()
         if add_shadow and SHADOW_GLOBAL_ENABLED:
             try:
                 rgba = _add_drop_shadow(rgba)
             except Exception:  # noqa: BLE001 — sombra best-effort, nao derruba o recorte
                 pass
+        if prof:
+            timings["shadow"] = perf_counter() - t0
+            t0 = perf_counter()
         png_bytes = _encode_png(rgba)
+        if prof:
+            timings["encode"] = perf_counter() - t0
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"rembg failed: {exc}") from exc
 
-    return Response(content=png_bytes, media_type="image/png")
+    headers = None
+    if prof:
+        header_val = ";".join(f"{k}={timings[k] * 1000:.1f}" for k in timings)
+        headers = {"X-Rembg-Timing": header_val}
+        print(
+            f"[rembg-profile] {header_val} shadow_req={add_shadow} "
+            f"out_bytes={len(png_bytes)}",
+            flush=True,
+        )
+
+    return Response(content=png_bytes, media_type="image/png", headers=headers)

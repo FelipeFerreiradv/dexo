@@ -25,6 +25,14 @@ const UPLOAD_MAX_LONG_EDGE_PX = 1600;
 const UPLOAD_WEBP_QUALITY = 88;
 const UPLOAD_PNG_COMPRESSION = 9;
 
+// Profiling opt-in (Fase 0): REMBG_PROFILE=true loga o tempo de cada estágio do
+// pipeline Node (metadata, resize→normalized, round-trip do sidecar, re-encode)
+// e o header X-Rembg-Timing do sidecar. Default OFF => zero trabalho extra e
+// nenhuma mudança de comportamento/resposta. Lido via process.env (consistente
+// com REMBG_SIDECAR_URL/REMBG_TIMEOUT_MS, que também não passam pelo env.ts aqui).
+const REMBG_PROFILE = (process.env.REMBG_PROFILE ?? "false").toLowerCase() === "true";
+const profNow = (): number => (REMBG_PROFILE ? performance.now() : 0);
+
 // Cache do módulo sharp — resolvido uma única vez
 let _sharp: any = null;
 
@@ -127,6 +135,8 @@ export async function processUploadedImage(
 ): Promise<ProcessUploadedImageResult> {
   const sharp = await getSharp();
 
+  const tStart = profNow();
+
   // 1) Auto-orient via EXIF e descarta metadata. sharp.rotate() sem args
   // lê o EXIF Orientation e gira a imagem; o encode final descarta
   // qualquer metadata por default.
@@ -135,6 +145,7 @@ export async function processUploadedImage(
   const meta = await sharp(buf, { failOnError: false }).metadata();
   const inputWidth = meta.width || 0;
   const inputHeight = meta.height || 0;
+  const tMeta = profNow();
 
   // 2) Resize para a janela [1000, 1600].
   if (inputWidth > 0 && inputHeight > 0) {
@@ -157,6 +168,7 @@ export async function processUploadedImage(
   }
 
   const normalized = await pipeline.toBuffer();
+  const tNorm = profNow();
 
   // 3) Caminho com remoção de fundo: tenta o sidecar; em falha, degrada.
   if (opts.removeBackground) {
@@ -165,6 +177,7 @@ export async function processUploadedImage(
         const fetcher = opts.rembgFetcher ?? defaultRembgFetcher;
         const addShadow = opts.addShadow === true;
         const cutout = await fetcher(normalized, { addShadow });
+        const tFetch = profNow();
 
         // Re-encode em PNG otimizado (preserva transparência).
         const encoded = await sharp(cutout)
@@ -175,6 +188,17 @@ export async function processUploadedImage(
           .toBuffer();
 
         const outMeta = await sharp(encoded).metadata();
+        if (REMBG_PROFILE) {
+          console.log(
+            `[node-profile] meta=${(tMeta - tStart).toFixed(1)} ` +
+              `resize=${(tNorm - tMeta).toFixed(1)} ` +
+              `roundtrip=${(tFetch - tNorm).toFixed(1)} ` +
+              `reencode=${(profNow() - tFetch).toFixed(1)} ` +
+              `total=${(profNow() - tStart).toFixed(1)}ms ` +
+              `shadow=${addShadow} in_bytes=${normalized.length} ` +
+              `out_bytes=${encoded.length}`,
+          );
+        }
         return {
           processed: encoded,
           format: "png",
@@ -276,6 +300,11 @@ async function defaultRembgFetcher(
     maxContentLength: 50 * 1024 * 1024,
     maxBodyLength: 50 * 1024 * 1024,
   });
+
+  if (REMBG_PROFILE) {
+    const timing = response.headers?.["x-rembg-timing"];
+    if (timing) console.log(`[sidecar-profile] ${timing}`);
+  }
 
   return Buffer.from(response.data);
 }
