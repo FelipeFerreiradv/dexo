@@ -8,6 +8,7 @@ import {
   extractPosition,
   extractPartType,
   parseTitleToParts,
+  normalizeBrand,
   buildLookupColumns,
   buildMatchKey,
   ANY,
@@ -143,6 +144,46 @@ describe("title-parse — vocabulário ampliado + leftmost-wins", () => {
     expect(extractPartType("caixa de direcao Palio")).toBe("caixa-de-direcao");
     // genérico só quando lidera sozinho
     expect(extractPartType("tampa lateral Uno")).toBe("tampa");
+  });
+});
+
+describe("title-parse — marca (token + aliases + inferência)", () => {
+  it("reconhece marcas que faltavam (Chery/Jeep/Citroën) e extrai o modelo", () => {
+    const chery = parseTitleToParts("Vareta Nivel Oleo Chery Tiggo 5X 2020");
+    expect(chery.brand).toBe("Chery");
+    expect(chery.model).toBe("TIGGO");
+    const jeep = parseTitleToParts(
+      "Suporte Maçaneta Traseira Esquerda Jeep Renegade",
+    );
+    expect(jeep.brand).toBe("Jeep");
+    expect(jeep.model).toBe("RENEGADE");
+    const citroen = parseTitleToParts(
+      "Tampa Reservatorio Agua Citroen C3 2006",
+    );
+    expect(citroen.brand).toBe("Citroën");
+    expect(citroen.model).toBe("C3");
+  });
+
+  it("alias 'Gm' é normalizado para Chevrolet (unifica a chave)", () => {
+    const gm = parseTitleToParts(
+      "Maquina Vidro Dianteira Direita Gm Corsa 1996",
+    );
+    expect(gm.brand).toBe("Chevrolet");
+    expect(gm.model).toBe("CORSA");
+  });
+
+  it("infere a marca por modelo icônico quando não há marca escrita", () => {
+    const p = parseTitleToParts("Haste Vareta Capo Corsa Classic 2002");
+    expect(p.brand).toBe("Chevrolet");
+    expect(p.model).toBe("CORSA");
+  });
+
+  it("normalizeBrand aplica aliases e preserva desconhecidas", () => {
+    expect(normalizeBrand("GM")).toBe("Chevrolet");
+    expect(normalizeBrand("vw")).toBe("Volkswagen");
+    expect(normalizeBrand("Chery")).toBe("Chery");
+    expect(normalizeBrand("MarcaXPTO")).toBe("MarcaXPTO");
+    expect(normalizeBrand("")).toBeNull();
   });
 });
 

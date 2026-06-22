@@ -841,6 +841,274 @@ export function extractPartType(text?: string | null): string | null {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Marca + modelo (detecção por TOKEN + aliases) — usados por endpoint e job
+// ──────────────────────────────────────────────────────────────────────────
+
+// Token normalizado → marca canônica (display). Inclui aliases (gm→Chevrolet,
+// vw→Volkswagen) para unificar a chave entre variações de escrita. Casamento é
+// por TOKEN inteiro (seguro p/ marcas curtas como "gm", que como substring
+// casaria "segmento").
+const BRAND_CANON: Record<string, string> = {
+  chevrolet: "Chevrolet",
+  gm: "Chevrolet",
+  chev: "Chevrolet",
+  chevy: "Chevrolet",
+  volkswagen: "Volkswagen",
+  vw: "Volkswagen",
+  fiat: "Fiat",
+  ford: "Ford",
+  renault: "Renault",
+  hyundai: "Hyundai",
+  honda: "Honda",
+  toyota: "Toyota",
+  nissan: "Nissan",
+  mitsubishi: "Mitsubishi",
+  peugeot: "Peugeot",
+  citroen: "Citroën",
+  kia: "Kia",
+  suzuki: "Suzuki",
+  bmw: "BMW",
+  mercedes: "Mercedes",
+  mb: "Mercedes",
+  mbz: "Mercedes",
+  chery: "Chery",
+  jeep: "Jeep",
+  ram: "RAM",
+  audi: "Audi",
+  volvo: "Volvo",
+  jac: "JAC",
+  iveco: "Iveco",
+  mini: "Mini",
+  caoa: "Caoa",
+  byd: "BYD",
+  gwm: "GWM",
+  troller: "Troller",
+  subaru: "Subaru",
+  dodge: "Dodge",
+  chrysler: "Chrysler",
+  ssangyong: "SsangYong",
+  effa: "Effa",
+};
+
+// Marcas escritas em 2 palavras (checadas como sequência de tokens).
+const MULTIWORD_BRANDS: Array<{ tokens: string[]; canon: string }> = [
+  { tokens: ["land", "rover"], canon: "Land Rover" },
+  { tokens: ["mercedes", "benz"], canon: "Mercedes" },
+];
+
+const POSITION_TOKENS = new Set(POSITION_GROUPS.flatMap((g) => g.terms));
+
+// Modelos icônicos → marca, para INFERIR a marca quando o título não a escreve
+// (ex.: "Capô Corsa Classic" → Chevrolet). Só tokens inequívocos (que não
+// colidem com palavras comuns: fox/up/ka/city/fit/soul/spin/classic ficam de
+// fora — esses dependem da marca estar escrita). Usado só quando nenhum token
+// de marca foi encontrado.
+const MODEL_BRAND: Record<string, string> = {
+  // Chevrolet
+  corsa: "Chevrolet",
+  celta: "Chevrolet",
+  prisma: "Chevrolet",
+  onix: "Chevrolet",
+  astra: "Chevrolet",
+  vectra: "Chevrolet",
+  meriva: "Chevrolet",
+  agile: "Chevrolet",
+  cruze: "Chevrolet",
+  cobalt: "Chevrolet",
+  montana: "Chevrolet",
+  tracker: "Chevrolet",
+  captiva: "Chevrolet",
+  zafira: "Chevrolet",
+  blazer: "Chevrolet",
+  camaro: "Chevrolet",
+  opala: "Chevrolet",
+  kadett: "Chevrolet",
+  monza: "Chevrolet",
+  chevette: "Chevrolet",
+  // Volkswagen
+  gol: "Volkswagen",
+  voyage: "Volkswagen",
+  parati: "Volkswagen",
+  saveiro: "Volkswagen",
+  crossfox: "Volkswagen",
+  spacefox: "Volkswagen",
+  polo: "Volkswagen",
+  virtus: "Volkswagen",
+  golf: "Volkswagen",
+  jetta: "Volkswagen",
+  passat: "Volkswagen",
+  tiguan: "Volkswagen",
+  nivus: "Volkswagen",
+  taos: "Volkswagen",
+  amarok: "Volkswagen",
+  kombi: "Volkswagen",
+  fusca: "Volkswagen",
+  santana: "Volkswagen",
+  // Fiat
+  uno: "Fiat",
+  palio: "Fiat",
+  siena: "Fiat",
+  punto: "Fiat",
+  idea: "Fiat",
+  stilo: "Fiat",
+  strada: "Fiat",
+  linea: "Fiat",
+  bravo: "Fiat",
+  toro: "Fiat",
+  argo: "Fiat",
+  cronos: "Fiat",
+  mobi: "Fiat",
+  fastback: "Fiat",
+  pulse: "Fiat",
+  doblo: "Fiat",
+  fiorino: "Fiat",
+  marea: "Fiat",
+  tempra: "Fiat",
+  // Ford
+  fiesta: "Ford",
+  ecosport: "Ford",
+  focus: "Ford",
+  fusion: "Ford",
+  ranger: "Ford",
+  territory: "Ford",
+  maverick: "Ford",
+  courier: "Ford",
+  escort: "Ford",
+  belina: "Ford",
+  // Renault
+  logan: "Renault",
+  sandero: "Renault",
+  duster: "Renault",
+  stepway: "Renault",
+  kwid: "Renault",
+  captur: "Renault",
+  oroch: "Renault",
+  clio: "Renault",
+  megane: "Renault",
+  scenic: "Renault",
+  fluence: "Renault",
+  symbol: "Renault",
+  kangoo: "Renault",
+  // Hyundai
+  hb20: "Hyundai",
+  hb20s: "Hyundai",
+  tucson: "Hyundai",
+  creta: "Hyundai",
+  ix35: "Hyundai",
+  i30: "Hyundai",
+  azera: "Hyundai",
+  elantra: "Hyundai",
+  veloster: "Hyundai",
+  // Honda
+  civic: "Honda",
+  accord: "Honda",
+  hrv: "Honda",
+  wrv: "Honda",
+  crv: "Honda",
+  // Toyota
+  corolla: "Toyota",
+  etios: "Toyota",
+  yaris: "Toyota",
+  hilux: "Toyota",
+  sw4: "Toyota",
+  rav4: "Toyota",
+  camry: "Toyota",
+  // Nissan
+  versa: "Nissan",
+  sentra: "Nissan",
+  kicks: "Nissan",
+  frontier: "Nissan",
+  livina: "Nissan",
+  tiida: "Nissan",
+  // Mitsubishi
+  lancer: "Mitsubishi",
+  pajero: "Mitsubishi",
+  asx: "Mitsubishi",
+  outlander: "Mitsubishi",
+  l200: "Mitsubishi",
+  // Citroën
+  cactus: "Citroën",
+  aircross: "Citroën",
+  xsara: "Citroën",
+  picasso: "Citroën",
+  berlingo: "Citroën",
+  // Kia
+  picanto: "Kia",
+  cerato: "Kia",
+  sportage: "Kia",
+  sorento: "Kia",
+  bongo: "Kia",
+  // Chery
+  tiggo: "Chery",
+  celer: "Chery",
+  arrizo: "Chery",
+  // Jeep
+  renegade: "Jeep",
+  compass: "Jeep",
+  commander: "Jeep",
+  wrangler: "Jeep",
+  cherokee: "Jeep",
+};
+
+/** Marca canônica a partir de um valor cru (coluna do Product ou marca extraída). */
+export function normalizeBrand(raw?: string | null): string | null {
+  const n = normalizeText(raw);
+  if (!n) return null;
+  if (BRAND_CANON[n]) return BRAND_CANON[n];
+  for (const t of n.split(" ")) if (BRAND_CANON[t]) return BRAND_CANON[t];
+  return (raw ?? "").trim() || null; // desconhecida → preserva o original
+}
+
+const indexOfSeq = (toks: string[], seq: string[]): number => {
+  for (let i = 0; i + seq.length <= toks.length; i++) {
+    let ok = true;
+    for (let j = 0; j < seq.length; j++) {
+      if (toks[i + j] !== seq[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i;
+  }
+  return -1;
+};
+
+/** Token de modelo válido (não vazio, não posição/stopword, formato curto). */
+function modelToken(tok?: string): string | null {
+  if (!tok) return null;
+  if (POSITION_TOKENS.has(tok) || STOPWORDS.has(tok)) return null;
+  if (!/^[a-z0-9]{1,20}$/.test(tok)) return null;
+  return tok.toUpperCase();
+}
+
+/** Detecta a marca (token/aliases) e o modelo logo após a marca. */
+export function detectBrandAndModel(text?: string | null): {
+  brand: string | null;
+  model: string | null;
+} {
+  const toks = normalizeText(text)
+    .replace(/-/g, " ")
+    .split(" ")
+    .filter(Boolean);
+  for (const mw of MULTIWORD_BRANDS) {
+    const i = indexOfSeq(toks, mw.tokens);
+    if (i >= 0) {
+      return { brand: mw.canon, model: modelToken(toks[i + mw.tokens.length]) };
+    }
+  }
+  for (let i = 0; i < toks.length; i++) {
+    const canon = BRAND_CANON[toks[i]];
+    if (canon) return { brand: canon, model: modelToken(toks[i + 1]) };
+  }
+  // Nenhuma marca escrita → inferir por modelo icônico (ex.: "Corsa Classic").
+  for (const t of toks) {
+    const inferred = MODEL_BRAND[t];
+    if (inferred) return { brand: inferred, model: t.toUpperCase() };
+  }
+  return { brand: null, model: null };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Parse completo do título (caminho do ENDPOINT)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -859,14 +1127,23 @@ export interface TitleParts {
   year: number | null;
 }
 
-/** Parse determinístico do título livre para o endpoint. */
+/**
+ * Parse determinístico do título livre. Usado pelo ENDPOINT (sobre o título
+ * digitado) E pelo JOB (sobre o `name` do produto) — mesma função nos dois lados
+ * garante que a chave gravada e a consultada sempre alinhem.
+ *
+ * Marca/modelo: detecção por token + aliases (detectBrandAndModel) primeiro;
+ * o parseTitleToFields legado entra só como fallback (cobre o caso "letra+dígito"
+ * como C3 quando a marca não foi reconhecida).
+ */
 export function parseTitleToParts(title: string): TitleParts {
   const fields = parseTitleToFields(title || "");
+  const det = detectBrandAndModel(title || "");
   return {
     partType: extractPartType(title),
     position: extractPosition(title),
-    brand: fields.brand ?? null,
-    model: fields.model ?? null,
+    brand: det.brand ?? normalizeBrand(fields.brand),
+    model: det.model ?? fields.model ?? null,
     version: null,
     year: parseYearToNumber(title),
   };
