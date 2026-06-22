@@ -102,6 +102,50 @@ describe("title-parse — posição e tipo de peça", () => {
   });
 });
 
+describe("title-parse — vocabulário ampliado + leftmost-wins", () => {
+  it("o tipo mais à esquerda vence (não o mais específico em qualquer lugar)", () => {
+    // "limitador de porta" é uma peça PRÓPRIA, não a porta.
+    expect(extractPartType("limitador porta dianteira Fiat Uno 2011")).toBe(
+      "limitador-de-porta-dianteiro",
+    );
+    // "suporte do parachoque" é um suporte, não o parachoque.
+    expect(extractPartType("suporte do parachoque dianteiro Gol")).toBe(
+      "suporte-dianteiro",
+    );
+  });
+
+  it("plural + agrupador (par/jogo) expõem o tipo real", () => {
+    expect(extractPartType("par de farois Corolla")).toBe("farol");
+    expect(extractPartType("jogo de molas Gol")).toBe("mola");
+  });
+
+  it("não confunde 'alto falante' com posição superior", () => {
+    expect(extractPartType("alto falante Civic")).toBe("alto-falante");
+  });
+
+  it("reconhece tipos novos minerados do catálogo", () => {
+    expect(extractPartType("fechadura eletrica porta traseira Onix")).toBe(
+      "fechadura-traseiro",
+    );
+    expect(extractPartType("sonda lambda HB20")).toBe("sonda-lambda");
+    expect(extractPartType("pedal acelerador Palio")).toBe("pedal");
+    expect(extractPartType("reservatorio de agua Uno")).toBe("reservatorio");
+    expect(extractPartType("compressor de ar condicionado Cruze")).toBe(
+      "compressor-de-ar",
+    );
+    expect(extractPartType("manga de eixo dianteira Gol")).toBe(
+      "manga-de-eixo-dianteiro",
+    );
+  });
+
+  it("frase específica vence o termo genérico na mesma posição", () => {
+    expect(extractPartType("tampa de tanque Fiesta")).toBe("tampa-de-tanque");
+    expect(extractPartType("caixa de direcao Palio")).toBe("caixa-de-direcao");
+    // genérico só quando lidera sozinho
+    expect(extractPartType("tampa lateral Uno")).toBe("tampa");
+  });
+});
+
 describe("title-parse — parseTitleToParts", () => {
   it("extrai partType/brand/model/year do título livre", () => {
     const p = parseTitleToParts("Cubo de Roda Dianteiro Fiat Uno 2010");

@@ -74,7 +74,18 @@ const STOPWORDS = new Set([
   "um",
   "uma",
   "peca",
+  "pç",
   "kit",
+  // Quantificadores/agrupadores: o tipo de peça real vem em seguida
+  // (ex.: "par de faróis", "jogo de molas" → "farois"/"molas").
+  "par",
+  "jogo",
+  "jg",
+  "conjunto",
+  "cjt",
+  "unidade",
+  "und",
+  "lado",
 ]);
 
 // Palavras compostas: formas que devem ser unidas ANTES da remoção de stopwords
@@ -141,21 +152,21 @@ const POSITION_GROUPS: Array<{ canonical: string; terms: string[] }> = [
   // Eixo
   {
     canonical: "dianteiro",
-    terms: ["dianteiro", "dianteira", "diant", "frontal", "frente"],
+    terms: ["dianteiro", "dianteira", "diant", "frontal"],
   },
-  { canonical: "traseiro", terms: ["traseiro", "traseira", "tras", "traz"] },
-  // Lado
+  { canonical: "traseiro", terms: ["traseiro", "traseira", "tras"] },
+  // Lado (abreviações curtas/ambíguas como "dir"=direção ficam de fora)
   {
     canonical: "esquerdo",
     terms: ["esquerdo", "esquerda", "esq", "le", "motorista"],
   },
   {
     canonical: "direito",
-    terms: ["direito", "direita", "dir", "ld", "passageiro", "carona"],
+    terms: ["direito", "direita", "ld", "passageiro", "carona"],
   },
-  // Altura
-  { canonical: "superior", terms: ["superior", "cima", "alto"] },
-  { canonical: "inferior", terms: ["inferior", "baixo", "fundo"] },
+  // Altura (só os termos inequívocos — "alto"/"baixo" colidem com peças)
+  { canonical: "superior", terms: ["superior"] },
+  { canonical: "inferior", terms: ["inferior"] },
 ];
 
 /** Posição canônica (ex.: "dianteiro-esquerdo") presente no texto, ou null. */
@@ -174,149 +185,594 @@ export function extractPosition(text?: string | null): string | null {
 // prioridade (casamento longest-first) para preferir o tipo mais específico.
 // ──────────────────────────────────────────────────────────────────────────
 
+// Curado a partir do catálogo real (mineração das peças cadastradas) + tipos
+// comuns do mercado BR de autopeças/desmonte. `label` é o kebab canônico; as
+// `phrases` (já em forma normalizada) incluem sinônimos, abreviações e plurais.
+// O casamento é por POSIÇÃO MAIS À ESQUERDA no título (o tipo de peça quase
+// sempre vem primeiro), com empate resolvido pela frase mais específica — então
+// frases multi-palavra ("caixa de direcao") vencem o termo genérico ("caixa").
 const PART_TYPES: Array<{ label: string; phrases: string[] }> = [
-  // Carroceria / lataria
-  { label: "parachoque", phrases: ["parachoque", "para choque"] },
-  { label: "paralama", phrases: ["paralama", "para lama"] },
+  // ── Carroceria / lataria / externo ──
+  {
+    label: "parachoque",
+    phrases: ["parachoque", "para choque", "parachoques"],
+  },
+  { label: "paralama", phrases: ["paralama", "para lama", "paralamas"] },
   { label: "parabrisa", phrases: ["parabrisa", "para brisa"] },
-  { label: "grade", phrases: ["grade", "grade dianteira", "grade radiador"] },
-  { label: "capo", phrases: ["capo"] },
-  { label: "porta", phrases: ["porta"] },
+  { label: "parabarro", phrases: ["parabarro", "para barro", "parabarros"] },
+  {
+    label: "grade",
+    phrases: ["grade", "grades", "grade dianteira", "grade radiador"],
+  },
+  { label: "capo", phrases: ["capo", "capos"] },
+  { label: "porta", phrases: ["porta", "portas"] },
   {
     label: "tampa-traseira",
-    phrases: ["tampa traseira", "porta malas", "tampa porta malas"],
+    phrases: [
+      "tampa traseira",
+      "porta malas",
+      "tampa porta malas",
+      "tampa bagageiro",
+    ],
   },
-  { label: "retrovisor", phrases: ["retrovisor", "espelho retrovisor"] },
-  { label: "macaneta", phrases: ["macaneta", "puxador porta"] },
-  { label: "lanterna", phrases: ["lanterna"] },
+  {
+    label: "portinhola",
+    phrases: [
+      "portinhola",
+      "portinholas",
+      "portinhola tanque",
+      "portinhola combustivel",
+    ],
+  },
+  {
+    label: "retrovisor",
+    phrases: ["retrovisor", "retrovisores", "espelho retrovisor"],
+  },
+  { label: "macaneta", phrases: ["macaneta", "macanetas", "puxador porta"] },
+  {
+    label: "limitador-de-porta",
+    phrases: [
+      "limitador porta",
+      "limitador de porta",
+      "limitador",
+      "tirante porta",
+      "tirante",
+    ],
+  },
+  {
+    label: "fechadura",
+    phrases: [
+      "fechadura",
+      "fechaduras",
+      "fechadura eletrica",
+      "fechadura porta",
+      "trava porta",
+      "trava eletrica",
+    ],
+  },
+  {
+    label: "lanterna",
+    phrases: ["lanterna", "lanternas", "lanterna traseira"],
+  },
   {
     label: "farol-de-milha",
     phrases: ["farol milha", "farol neblina", "farol auxiliar"],
   },
-  { label: "farol", phrases: ["farol"] },
-  { label: "spoiler", phrases: ["spoiler", "aerofolio"] },
-  { label: "friso", phrases: ["friso", "moldura"] },
-  { label: "soleira", phrases: ["soleira"] },
-  { label: "emblema", phrases: ["emblema", "logo", "logotipo"] },
-  { label: "calota", phrases: ["calota"] },
-  { label: "roda", phrases: ["roda", "aro"] },
-  // Vidros
-  { label: "vidro", phrases: ["vidro"] },
+  { label: "farol", phrases: ["farol", "farois", "farol dianteiro"] },
+  { label: "pisca", phrases: ["pisca", "piscas", "seta", "lanterna pisca"] },
+  { label: "spoiler", phrases: ["spoiler", "spoilers", "aerofolio"] },
+  {
+    label: "friso",
+    phrases: ["friso", "frisos", "moldura", "molduras", "aplique"],
+  },
+  { label: "soleira", phrases: ["soleira", "soleiras", "protetor soleira"] },
+  {
+    label: "emblema",
+    phrases: ["emblema", "emblemas", "logo", "logotipo", "simbolo", "letreiro"],
+  },
+  { label: "calota", phrases: ["calota", "calotas"] },
+  { label: "roda", phrases: ["roda", "rodas", "aro", "aros"] },
+  {
+    label: "defletor",
+    phrases: ["defletor", "defletores", "defletor ar", "calha", "calha chuva"],
+  },
+  {
+    label: "quebra-sol",
+    phrases: ["quebra sol", "tapa sol", "para sol", "parasol", "palheta sol"],
+  },
+  { label: "estribo", phrases: ["estribo", "estribos", "degrau"] },
+  { label: "longarina", phrases: ["longarina", "longarinas"] },
+  { label: "coluna", phrases: ["coluna", "colunas", "acabamento coluna"] },
+  // ── Vidros ──
+  { label: "vidro", phrases: ["vidro", "vidros", "vidro porta", "vigia"] },
   {
     label: "maquina-de-vidro",
-    phrases: ["maquina vidro", "maquina de vidro", "motor vidro"],
+    phrases: [
+      "maquina vidro",
+      "maquina de vidro",
+      "motor vidro",
+      "maquinas vidro",
+    ],
   },
-  // Suspensão / direção
-  { label: "amortecedor", phrases: ["amortecedor"] },
-  { label: "mola", phrases: ["mola", "mola suspensao"] },
-  { label: "bandeja", phrases: ["bandeja", "balanca"] },
-  { label: "pivo", phrases: ["pivo"] },
-  { label: "bieleta", phrases: ["bieleta"] },
-  { label: "batente", phrases: ["batente", "kit batente"] },
-  { label: "coifa", phrases: ["coifa"] },
-  { label: "bucha", phrases: ["bucha", "bucha bandeja"] },
-  { label: "cubo-de-roda", phrases: ["cubo roda", "cubo de roda", "cubo"] },
-  { label: "rolamento", phrases: ["rolamento", "rolamento roda"] },
-  { label: "terminal-de-direcao", phrases: ["terminal direcao", "terminal"] },
-  { label: "caixa-de-direcao", phrases: ["caixa direcao", "caixa de direcao"] },
+  { label: "pestana", phrases: ["pestana", "pestanas", "friso vidro"] },
+  {
+    label: "borracha",
+    phrases: [
+      "borracha",
+      "borrachas",
+      "guarnicao",
+      "guarnicoes",
+      "borracha porta",
+    ],
+  },
+  // ── Suspensão / direção ──
+  { label: "amortecedor", phrases: ["amortecedor", "amortecedores"] },
+  { label: "mola", phrases: ["mola", "molas", "mola suspensao"] },
+  { label: "bandeja", phrases: ["bandeja", "bandejas", "balanca", "balancas"] },
+  { label: "pivo", phrases: ["pivo", "pivos"] },
+  { label: "bieleta", phrases: ["bieleta", "bieletas"] },
+  {
+    label: "batente",
+    phrases: ["batente", "batentes", "kit batente", "coxim amortecedor"],
+  },
+  { label: "coifa", phrases: ["coifa", "coifas"] },
+  {
+    label: "bucha",
+    phrases: ["bucha", "buchas", "bucha bandeja", "bucha estabilizadora"],
+  },
+  {
+    label: "cubo-de-roda",
+    phrases: ["cubo roda", "cubo de roda", "cubo", "cubos"],
+  },
+  {
+    label: "rolamento",
+    phrases: ["rolamento", "rolamentos", "rolamento roda"],
+  },
+  {
+    label: "terminal-de-direcao",
+    phrases: [
+      "terminal direcao",
+      "terminal de direcao",
+      "terminal",
+      "terminais",
+    ],
+  },
+  {
+    label: "caixa-de-direcao",
+    phrases: [
+      "caixa direcao",
+      "caixa de direcao",
+      "setor direcao",
+      "cremalheira",
+    ],
+  },
+  {
+    label: "coluna-de-direcao",
+    phrases: ["coluna direcao", "coluna de direcao"],
+  },
+  {
+    label: "bomba-de-direcao",
+    phrases: ["bomba direcao", "bomba de direcao", "bomba hidraulica"],
+  },
   { label: "ponta-de-eixo", phrases: ["ponta eixo", "ponta de eixo"] },
-  { label: "semieixo", phrases: ["semieixo", "semi eixo"] },
-  { label: "homocinetica", phrases: ["homocinetica", "junta homocinetica"] },
-  // Freio
-  { label: "disco-de-freio", phrases: ["disco freio", "disco de freio"] },
+  {
+    label: "manga-de-eixo",
+    phrases: [
+      "manga eixo",
+      "manga de eixo",
+      "manga",
+      "montante manga",
+      "montante",
+    ],
+  },
+  { label: "semieixo", phrases: ["semieixo", "semi eixo", "semieixos"] },
+  {
+    label: "homocinetica",
+    phrases: ["homocinetica", "junta homocinetica", "trizeta"],
+  },
+  {
+    label: "barra-estabilizadora",
+    phrases: ["barra estabilizadora", "estabilizador", "barra"],
+  },
+  {
+    label: "braco-do-limpador",
+    phrases: ["braco limpador", "braco do limpador", "haste limpador"],
+  },
+  { label: "braco-oscilante", phrases: ["braco oscilante", "braco suspensao"] },
+  // ── Freio ──
+  {
+    label: "disco-de-freio",
+    phrases: ["disco freio", "disco de freio", "discos freio"],
+  },
   {
     label: "pastilha-de-freio",
-    phrases: ["pastilha freio", "pastilha de freio", "pastilha"],
+    phrases: ["pastilha freio", "pastilha de freio", "pastilha", "pastilhas"],
   },
   {
     label: "pinca-de-freio",
-    phrases: ["pinca freio", "pinca de freio", "pinca"],
+    phrases: ["pinca freio", "pinca de freio", "pinca", "pincas"],
   },
   {
     label: "cilindro-de-freio",
-    phrases: ["cilindro freio", "cilindro mestre"],
+    phrases: ["cilindro freio", "cilindro mestre", "cilindro roda"],
   },
-  { label: "tambor-de-freio", phrases: ["tambor freio", "tambor"] },
-  { label: "freio", phrases: ["freio"] },
-  // Motor / transmissão
-  { label: "motor", phrases: ["motor"] },
-  { label: "cabecote", phrases: ["cabecote"] },
+  { label: "tambor-de-freio", phrases: ["tambor freio", "tambor", "tambores"] },
+  {
+    label: "servo-freio",
+    phrases: ["servo freio", "servo de freio", "hidrovacuo"],
+  },
+  {
+    label: "abs",
+    phrases: ["abs", "modulo abs", "central abs", "bomba abs", "unidade abs"],
+  },
+  { label: "freio", phrases: ["freio", "freios", "freio mao", "freio de mao"] },
+  // ── Motor / transmissão ──
+  { label: "motor", phrases: ["motor", "motores"] },
+  { label: "cabecote", phrases: ["cabecote", "cabecotes"] },
   { label: "bloco-motor", phrases: ["bloco motor", "bloco"] },
-  { label: "biela", phrases: ["biela"] },
-  { label: "pistao", phrases: ["pistao"] },
+  { label: "biela", phrases: ["biela", "bielas"] },
+  { label: "pistao", phrases: ["pistao", "pistoes", "kit pistao"] },
   { label: "virabrequim", phrases: ["virabrequim"] },
   {
     label: "comando-de-valvulas",
-    phrases: ["comando valvulas", "comando de valvulas", "comando"],
+    phrases: [
+      "comando valvulas",
+      "comando de valvulas",
+      "comando",
+      "eixo comando",
+    ],
   },
-  { label: "valvula", phrases: ["valvula"] },
-  { label: "junta", phrases: ["junta", "junta cabecote"] },
-  { label: "carter", phrases: ["carter"] },
+  { label: "valvula", phrases: ["valvula", "valvulas"] },
+  { label: "balancim", phrases: ["balancim", "balancins"] },
+  {
+    label: "junta",
+    phrases: ["junta", "juntas", "junta cabecote", "jogo junta"],
+  },
+  { label: "carter", phrases: ["carter", "carteres"] },
   {
     label: "coletor",
-    phrases: ["coletor", "coletor admissao", "coletor escape"],
+    phrases: ["coletor", "coletores", "coletor admissao", "coletor escape"],
   },
-  { label: "turbo", phrases: ["turbo", "turbina"] },
-  { label: "embreagem", phrases: ["embreagem", "kit embreagem"] },
-  { label: "cambio", phrases: ["cambio", "caixa cambio", "transmissao"] },
-  { label: "diferencial", phrases: ["diferencial"] },
-  { label: "coxim", phrases: ["coxim", "coxim motor", "calco motor"] },
-  // Arrefecimento / escape
-  { label: "radiador", phrases: ["radiador"] },
-  { label: "ventoinha", phrases: ["ventoinha", "eletroventilador"] },
-  { label: "mangueira", phrases: ["mangueira"] },
+  { label: "turbo", phrases: ["turbo", "turbina", "turbinas"] },
+  {
+    label: "embreagem",
+    phrases: [
+      "embreagem",
+      "kit embreagem",
+      "plato",
+      "disco embreagem",
+      "atuador embreagem",
+    ],
+  },
+  {
+    label: "cambio",
+    phrases: [
+      "cambio",
+      "cambios",
+      "caixa cambio",
+      "caixa de cambio",
+      "transmissao",
+    ],
+  },
+  { label: "diferencial", phrases: ["diferencial", "diferenciais"] },
+  {
+    label: "coxim",
+    phrases: ["coxim", "coxins", "coxim motor", "calco motor", "coxim cambio"],
+  },
+  { label: "carburador", phrases: ["carburador", "carburadores"] },
+  { label: "distribuidor", phrases: ["distribuidor"] },
+  { label: "volante-motor", phrases: ["volante motor", "volante do motor"] },
+  {
+    label: "polia",
+    phrases: ["polia", "polias", "polia virabrequim", "polia alternador"],
+  },
+  { label: "bomba-de-oleo", phrases: ["bomba oleo", "bomba de oleo"] },
+  {
+    label: "vareta-de-oleo",
+    phrases: ["vareta oleo", "vareta de oleo", "vareta nivel"],
+  },
+  // ── Arrefecimento / escape ──
+  { label: "radiador", phrases: ["radiador", "radiadores"] },
+  {
+    label: "ventoinha",
+    phrases: ["ventoinha", "ventoinhas", "eletroventilador", "helice"],
+  },
+  { label: "mangueira", phrases: ["mangueira", "mangueiras"] },
+  { label: "duto", phrases: ["duto", "dutos", "duto ar", "duto turbo"] },
   {
     label: "valvula-termostatica",
-    phrases: ["valvula termostatica", "termostatica"],
+    phrases: ["valvula termostatica", "termostatica", "termostato"],
   },
-  { label: "bomba-dagua", phrases: ["bomba dagua", "bomba agua"] },
-  { label: "escapamento", phrases: ["escapamento", "silencioso"] },
-  { label: "catalisador", phrases: ["catalisador"] },
-  { label: "intercooler", phrases: ["intercooler"] },
-  // Elétrica
-  { label: "alternador", phrases: ["alternador"] },
   {
-    label: "motor-de-arranque",
-    phrases: ["motor arranque", "motor de arranque", "motor partida"],
+    label: "bomba-dagua",
+    phrases: ["bomba dagua", "bomba agua", "bomba de agua"],
   },
-  { label: "bobina", phrases: ["bobina", "bobina ignicao"] },
-  { label: "sensor", phrases: ["sensor"] },
-  { label: "modulo", phrases: ["modulo", "central"] },
-  { label: "vela", phrases: ["vela", "vela ignicao"] },
-  { label: "chicote", phrases: ["chicote"] },
-  { label: "rele", phrases: ["rele"] },
-  { label: "bateria", phrases: ["bateria"] },
-  // Combustível / filtros
+  {
+    label: "escapamento",
+    phrases: ["escapamento", "silencioso", "ponteira", "abafador"],
+  },
+  { label: "catalisador", phrases: ["catalisador", "catalisadores"] },
+  { label: "intercooler", phrases: ["intercooler"] },
+  {
+    label: "reservatorio",
+    phrases: [
+      "reservatorio",
+      "reservatorios",
+      "reservatorio agua",
+      "reservatorio expansao",
+      "reservatorio partida",
+    ],
+  },
+  {
+    label: "tampa-de-reservatorio",
+    phrases: ["tampa reservatorio", "tampa de reservatorio"],
+  },
+  {
+    label: "gargalo",
+    phrases: ["gargalo", "gargalos", "gargalo tanque", "gargalo abastecimento"],
+  },
+  { label: "condensador", phrases: ["condensador", "condensadores"] },
+  { label: "evaporador", phrases: ["evaporador", "caixa evaporadora"] },
+  {
+    label: "compressor-de-ar",
+    phrases: ["compressor ar", "compressor", "compressor ar condicionado"],
+  },
+  // ── Combustível / filtros ──
+  {
+    label: "tanque-de-combustivel",
+    phrases: [
+      "tanque combustivel",
+      "tanque de combustivel",
+      "tanque",
+      "tanques",
+    ],
+  },
   {
     label: "bomba-de-combustivel",
-    phrases: ["bomba combustivel", "bomba de combustivel"],
+    phrases: [
+      "bomba combustivel",
+      "bomba de combustivel",
+      "bomba gasolina",
+      "refil bomba",
+    ],
   },
-  { label: "bico-injetor", phrases: ["bico injetor", "injetor"] },
+  {
+    label: "flauta",
+    phrases: [
+      "flauta",
+      "flautas",
+      "flauta injecao",
+      "flauta combustivel",
+      "tubo distribuidor",
+    ],
+  },
+  {
+    label: "bico-injetor",
+    phrases: ["bico injetor", "injetor", "injetores", "bicos"],
+  },
   {
     label: "corpo-de-borboleta",
-    phrases: ["corpo borboleta", "corpo de borboleta", "tbi"],
+    phrases: ["corpo borboleta", "corpo de borboleta", "tbi", "corpo injecao"],
+  },
+  {
+    label: "sonda-lambda",
+    phrases: ["sonda lambda", "sonda", "sondas"],
   },
   {
     label: "filtro",
-    phrases: ["filtro", "filtro oleo", "filtro ar", "filtro combustivel"],
+    phrases: [
+      "filtro",
+      "filtros",
+      "filtro oleo",
+      "filtro ar",
+      "filtro combustivel",
+    ],
   },
-  // Correia / tensor
+  {
+    label: "tampa-de-tanque",
+    phrases: ["tampa tanque", "tampa de tanque", "tampa combustivel"],
+  },
+  // ── Correia / acessórios do motor ──
   {
     label: "correia",
-    phrases: ["correia", "correia dentada", "correia alternador"],
+    phrases: ["correia", "correias", "correia dentada", "correia alternador"],
   },
-  { label: "tensor", phrases: ["tensor", "tensor correia"] },
-  // Interior
-  { label: "painel", phrases: ["painel", "painel instrumentos"] },
-  { label: "banco", phrases: ["banco", "assento", "encosto"] },
-  { label: "volante", phrases: ["volante"] },
+  {
+    label: "tensor",
+    phrases: ["tensor", "tensores", "tensor correia", "esticador"],
+  },
+  // ── Elétrica / eletrônica ──
+  { label: "alternador", phrases: ["alternador", "alternadores"] },
+  {
+    label: "motor-de-arranque",
+    phrases: [
+      "motor arranque",
+      "motor de arranque",
+      "motor partida",
+      "arranque",
+    ],
+  },
+  { label: "bobina", phrases: ["bobina", "bobinas", "bobina ignicao"] },
+  { label: "sensor", phrases: ["sensor", "sensores"] },
+  {
+    label: "modulo",
+    phrases: [
+      "modulo",
+      "modulos",
+      "central",
+      "centralina",
+      "ecu",
+      "unidade comando",
+    ],
+  },
+  {
+    label: "vela",
+    phrases: ["vela", "velas", "vela ignicao", "vela aquecedora"],
+  },
+  { label: "chicote", phrases: ["chicote", "chicotes", "chicote eletrico"] },
+  { label: "rele", phrases: ["rele", "reles"] },
+  { label: "bateria", phrases: ["bateria", "baterias"] },
+  {
+    label: "caixa-de-fusivel",
+    phrases: ["caixa fusivel", "caixa de fusivel", "porta fusivel"],
+  },
+  { label: "fusivel", phrases: ["fusivel", "fusiveis"] },
+  {
+    label: "chave-de-seta",
+    phrases: [
+      "chave seta",
+      "chave de seta",
+      "comando seta",
+      "alavanca seta",
+      "manete seta",
+    ],
+  },
+  {
+    label: "botao",
+    phrases: [
+      "botao",
+      "botoes",
+      "botao pisca",
+      "botao vidro",
+      "interruptor",
+      "interruptores",
+    ],
+  },
+  {
+    label: "chave",
+    phrases: ["chave", "chaves", "comutador", "chave ignicao"],
+  },
+  { label: "buzina", phrases: ["buzina", "buzinas"] },
+  {
+    label: "alto-falante",
+    phrases: [
+      "alto falante",
+      "alto falantes",
+      "auto falante",
+      "falante",
+      "corneta",
+      "tweeter",
+    ],
+  },
+  { label: "antena", phrases: ["antena", "antenas"] },
+  { label: "atuador", phrases: ["atuador", "atuadores"] },
+  {
+    label: "cabo",
+    phrases: [
+      "cabo",
+      "cabos",
+      "cabo vela",
+      "cabo acelerador",
+      "cabo embreagem",
+      "cabo freio",
+    ],
+  },
+  { label: "soquete", phrases: ["soquete", "soquetes", "conector"] },
+  { label: "lampada", phrases: ["lampada", "lampadas"] },
+  // ── Interior ──
+  {
+    label: "painel",
+    phrases: ["painel", "paineis", "painel instrumentos", "tablier"],
+  },
+  {
+    label: "banco",
+    phrases: ["banco", "bancos", "assento", "assentos", "encosto", "encostos"],
+  },
+  { label: "volante", phrases: ["volante", "volantes"] },
   {
     label: "cinto-de-seguranca",
-    phrases: ["cinto seguranca", "cinto de seguranca", "cinto"],
+    phrases: ["cinto seguranca", "cinto de seguranca", "cinto", "cintos"],
   },
-  { label: "airbag", phrases: ["airbag", "air bag", "bolsa ar"] },
-  { label: "console", phrases: ["console"] },
-  { label: "porta-luvas", phrases: ["porta luvas", "portaluvas"] },
+  { label: "airbag", phrases: ["airbag", "airbags", "air bag", "bolsa ar"] },
+  { label: "console", phrases: ["console", "consoles", "console central"] },
+  {
+    label: "porta-luvas",
+    phrases: ["porta luvas", "portaluvas", "porta objetos"],
+  },
+  {
+    label: "forro",
+    phrases: ["forro", "forros", "forro porta", "forro teto", "revestimento"],
+  },
+  {
+    label: "acabamento",
+    phrases: ["acabamento", "acabamentos", "friso interno", "moldura interna"],
+  },
+  { label: "tapete", phrases: ["tapete", "tapetes", "carpete"] },
+  {
+    label: "pedal",
+    phrases: [
+      "pedal",
+      "pedais",
+      "pedal acelerador",
+      "pedal freio",
+      "pedal embreagem",
+    ],
+  },
+  {
+    label: "alavanca-de-marcha",
+    phrases: [
+      "alavanca marcha",
+      "alavanca de marcha",
+      "alavanca cambio",
+      "manopla cambio",
+      "trambulador",
+    ],
+  },
+  {
+    label: "alavanca",
+    phrases: ["alavanca", "alavancas", "manete", "manopla"],
+  },
+  {
+    label: "difusor-de-ar",
+    phrases: ["difusor ar", "difusor", "difusores", "saida ar", "aerador"],
+  },
+  {
+    label: "alca-de-teto",
+    phrases: ["alca teto", "alca de teto", "alca", "alcas", "pega mao"],
+  },
+  {
+    label: "luz-de-teto",
+    phrases: [
+      "luz teto",
+      "luz de teto",
+      "plafonier",
+      "lanterna teto",
+      "luz interna",
+    ],
+  },
+  { label: "luz", phrases: ["luz", "luzes", "luz placa"] },
+  { label: "cinzeiro", phrases: ["cinzeiro", "cinzeiros"] },
+  // ── Fixação / chaparia / genéricos (fallback — só vencem quando lideram) ──
+  {
+    label: "suporte",
+    phrases: ["suporte", "suportes", "mao francesa", "berco"],
+  },
+  {
+    label: "tampa-de-valvulas",
+    phrases: [
+      "tampa valvulas",
+      "tampa de valvulas",
+      "tampa cabecote",
+      "tampa motor",
+    ],
+  },
+  { label: "tampa", phrases: ["tampa", "tampas"] },
+  { label: "caixa", phrases: ["caixa", "caixas", "caixa ar"] },
+  {
+    label: "capa",
+    phrases: ["capa", "capas", "capa estepe", "capa retrovisor"],
+  },
+  { label: "tubo", phrases: ["tubo", "tubos", "cano", "canos"] },
+  {
+    label: "chapa",
+    phrases: [
+      "chapa",
+      "chapas",
+      "assoalho",
+      "painel dianteiro",
+      "painel traseiro",
+    ],
+  },
 ];
 
 // Índice plano (frase normalizada+stripada → label) ordenado por nº de palavras
@@ -334,23 +790,42 @@ const PART_TYPE_INDEX: Array<{ phrase: string; words: number; label: string }> =
 /**
  * Tipo de peça canônico (kebab), com a POSIÇÃO dobrada quando presente
  * (ex.: "cubo-de-roda-dianteiro"). null quando nenhum tipo conhecido casa.
- * Casamento por frase (substring em limites de palavra) no texto normalizado
- * e sem stopwords — robusto a "cubo de roda" vs "cubo roda".
+ *
+ * Estratégia: a frase conhecida MAIS À ESQUERDA vence (em título de autopeça o
+ * tipo quase sempre vem primeiro — "limitador de porta", "suporte do parachoque"
+ * → limitador/suporte, não porta/parachoque). Empate de posição → frase mais
+ * específica (mais palavras, depois mais longa). Robusto a "cubo de roda" vs
+ * "cubo roda" porque casa no texto normalizado e sem stopwords.
  */
 export function extractPartType(text?: string | null): string | null {
   const stripped = stripStopwords(text);
   if (!stripped) return null;
   const padded = ` ${stripped} `;
-  let base: string | null = null;
+  let best: { idx: number; words: number; len: number; label: string } | null =
+    null;
   for (const entry of PART_TYPE_INDEX) {
-    if (padded.includes(` ${entry.phrase} `)) {
-      base = entry.label;
-      break;
+    const idx = padded.indexOf(` ${entry.phrase} `);
+    if (idx === -1) continue;
+    const cand = {
+      idx,
+      words: entry.words,
+      len: entry.phrase.length,
+      label: entry.label,
+    };
+    if (
+      best === null ||
+      cand.idx < best.idx ||
+      (cand.idx === best.idx && cand.words > best.words) ||
+      (cand.idx === best.idx &&
+        cand.words === best.words &&
+        cand.len > best.len)
+    ) {
+      best = cand;
     }
   }
-  if (!base) return null;
+  if (!best) return null;
   const position = extractPosition(text);
-  return position ? `${base}-${position}` : base;
+  return position ? `${best.label}-${position}` : best.label;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
