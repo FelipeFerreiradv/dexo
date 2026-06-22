@@ -60,10 +60,16 @@ import { CurrencyInput } from "@/components/ui/currency-input";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
+import { InternalSuggestionPicker } from "./internal-suggestion-picker";
 import {
   applyMlCatalogSuggestion,
   type CatalogApplyFormValues,
 } from "../lib/apply-ml-catalog-suggestion";
+import {
+  applyInternalSuggestion,
+  type InternalApplyFormValues,
+  type InternalSuggestion,
+} from "../lib/apply-internal-suggestion";
 import { nfeFieldEntries } from "../lib/nfe-import-mapping";
 import type { CatalogProductDetail } from "../../marketplaces/usecases/ml-catalog-suggestion.usecase";
 
@@ -1081,6 +1087,121 @@ export function CreateProductDialog({
       } else {
         onToast(
           `Catálogo aplicado: ${appliedFields.length} campo(s) preenchidos`,
+          "success",
+        );
+      }
+    },
+    [compatibilities, getValues, onToast, setValue],
+  );
+
+  // Aplica uma sugestão da BASE INTERNA (CatalogStat agregado). Mesma regra do
+  // catálogo ML: preenche só campos vazios; conflitos viram toast informativo.
+  // Cobre os campos do MVP (preço/qualidade/medidas/peso/compat/part number/etc.).
+  const handleInternalSuggestionAccepted = useCallback(
+    (suggestion: InternalSuggestion) => {
+      const current = getValues();
+      const formView: InternalApplyFormValues = {
+        brand: current.brand || undefined,
+        model: current.model || undefined,
+        year: current.year || undefined,
+        version: current.version || undefined,
+        price: current.price ?? null,
+        quality: current.quality ?? null,
+        partNumber: current.partNumber || null,
+        sourceVehicle: current.sourceVehicle || null,
+        weightKg: current.weightKg ?? null,
+        heightCm: current.heightCm ?? null,
+        widthCm: current.widthCm ?? null,
+        lengthCm: current.lengthCm ?? null,
+        // quirks: o ID da categoria mora em mlCategory / shopeeCategory.
+        mlCategory: current.mlCategory || undefined,
+        shopeeCategory: current.shopeeCategory || undefined,
+        attributes: current.attributes || {},
+        compatibilities: compatibilities.map((c) => ({
+          brand: c.brand,
+          model: c.model,
+          yearFrom: c.yearFrom ?? null,
+          yearTo: c.yearTo ?? null,
+          version: c.version ?? null,
+        })),
+      };
+
+      const { next, applied, conflicts } = applyInternalSuggestion(
+        formView,
+        suggestion,
+      );
+
+      const setOpts = {
+        shouldDirty: true,
+        shouldValidate: true,
+        shouldTouch: true,
+      } as const;
+
+      if (applied.includes("brand") && next.brand)
+        setValue("brand", next.brand, setOpts);
+      if (applied.includes("model") && next.model)
+        setValue("model", next.model, setOpts);
+      if (applied.includes("year") && next.year)
+        setValue("year", next.year, setOpts);
+      if (applied.includes("version") && next.version)
+        setValue("version", next.version, setOpts);
+      if (applied.includes("quality") && next.quality)
+        setValue(
+          "quality",
+          next.quality as ProductFormData["quality"],
+          setOpts,
+        );
+      if (applied.includes("sourceVehicle") && next.sourceVehicle)
+        setValue("sourceVehicle", next.sourceVehicle, setOpts);
+      if (applied.includes("partNumber") && next.partNumber)
+        setValue("partNumber", next.partNumber, setOpts);
+      if (applied.includes("price") && next.price != null)
+        setValue("price", next.price, setOpts);
+      if (applied.includes("weightKg") && next.weightKg != null)
+        setValue("weightKg", next.weightKg, setOpts);
+      if (applied.includes("heightCm") && next.heightCm != null)
+        setValue("heightCm", next.heightCm, setOpts);
+      if (applied.includes("widthCm") && next.widthCm != null)
+        setValue("widthCm", next.widthCm, setOpts);
+      if (applied.includes("lengthCm") && next.lengthCm != null)
+        setValue("lengthCm", next.lengthCm, setOpts);
+      if (applied.includes("attributes") && next.attributes)
+        setValue("attributes", next.attributes, setOpts);
+      if (applied.includes("mlCategory") && next.mlCategory) {
+        setValue("mlCategory", next.mlCategory, setOpts);
+        autoDetectedRef.current = {
+          ...(autoDetectedRef.current || {}),
+          mlCategory: next.mlCategory,
+        };
+      }
+      if (applied.includes("shopeeCategory") && next.shopeeCategory)
+        setValue("shopeeCategory", next.shopeeCategory, setOpts);
+      if (applied.includes("compatibilities") && next.compatibilities) {
+        setCompatibilities(
+          next.compatibilities.map((c, i) => ({
+            _localId: `compat-internal-${i}`,
+            brand: c.brand,
+            model: c.model,
+            yearFrom: c.yearFrom ?? null,
+            yearTo: c.yearTo ?? null,
+            version: c.version ?? null,
+          })),
+        );
+      }
+
+      if (applied.length === 0 && conflicts.length === 0) {
+        onToast(
+          "Sugestão da base — todos os campos já estavam preenchidos",
+          "success",
+        );
+      } else if (conflicts.length > 0) {
+        onToast(
+          `Sugestão aplicada (${applied.length} campo(s)). ${conflicts.length} já preenchido(s) foram mantidos`,
+          "warning",
+        );
+      } else {
+        onToast(
+          `Sugestão da base aplicada: ${applied.length} campo(s) preenchidos`,
           "success",
         );
       }
@@ -2471,7 +2592,10 @@ export function CreateProductDialog({
 
         <Separator />
 
-        <form onSubmit={(e) => e.preventDefault()} className="space-y-6 min-w-0">
+        <form
+          onSubmit={(e) => e.preventDefault()}
+          className="space-y-6 min-w-0"
+        >
           {/* Step 1: Identificação */}
           {currentStep === 1 && (
             <div className="space-y-4">
@@ -2549,6 +2673,15 @@ export function CreateProductDialog({
                     {errors.name.message}
                   </p>
                 )}
+                {/* Base interna primeiro (prioridade): preço/peso/medidas/compat
+                    reais agregados. Ambos só preenchem vazios, então a ordem é
+                    natural; o catálogo ML segue logo abaixo p/ ficha técnica. */}
+                <InternalSuggestionPicker
+                  title={watchName || ""}
+                  onAccept={handleInternalSuggestionAccepted}
+                  disabled={isSubmitting}
+                  email={session?.user?.email}
+                />
                 <MLCatalogSuggestionPicker
                   title={watchName || ""}
                   selectedId={watch("mlCatalogProductId")}

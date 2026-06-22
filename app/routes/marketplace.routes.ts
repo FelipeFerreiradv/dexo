@@ -14,6 +14,7 @@ import { ListingRetryService } from "../marketplaces/services/listing-retry.serv
 import { MLAttributeCatalogService } from "../marketplaces/services/ml-attribute-catalog.service";
 import CategorySuggestionService from "../marketplaces/services/category-suggestion.service";
 import { MLCatalogSuggestionUseCase } from "../marketplaces/usecases/ml-catalog-suggestion.usecase";
+import { InternalSuggestionUseCase } from "../marketplaces/usecases/internal-suggestion.usecase";
 import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
@@ -615,6 +616,45 @@ small{color:#666}</style></head><body>
           error: "Erro ao buscar catalog product",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/internal/suggest?title=...
+   * Sugestão da BASE INTERNA: casa o título contra CatalogStat (agregados de
+   * todos os produtos) e devolve campos para preencher só os vazios do form.
+   * Fail-open: erros viram 200 com { suggestion: null }. Só agregados — nunca
+   * dado individual, userId, loja, costPrice ou markup. Herda o rate-limit global.
+   */
+  app.get(
+    "/internal/suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const title = (request.query as any)?.title as string | undefined;
+      if (!title || !title.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'title' é obrigatório" });
+      }
+
+      try {
+        const result = await InternalSuggestionUseCase.suggestFromTitle(
+          title.trim(),
+        );
+        console.log(
+          JSON.stringify({
+            event: "internal.suggest.served",
+            hasSuggestion: !!result.suggestion,
+            confidence: result.suggestion?.confidence ?? null,
+            sampleSize: result.suggestion?.sampleSize ?? null,
+          }),
+        );
+        reply.header("Cache-Control", "private, max-age=120");
+        return reply.send(result);
+      } catch {
+        // Fail-open: nunca derruba o cadastro por causa da sugestão.
+        return reply.send({ suggestion: null, reason: "insufficient_sample" });
       }
     },
   );

@@ -32,7 +32,8 @@
     "shopee:debug-cats": "tsx scripts/debug-shopee-categories.ts",
     "shopee:debug-attrs": "tsx scripts/debug-shopee-attrs.ts",
     "shopee:recategorize": "tsx scripts/recategorize-shopee-products.ts",
-    "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts"
+    "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts",
+    "stats:catalog": "tsx scripts/build-catalog-stats.ts"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",

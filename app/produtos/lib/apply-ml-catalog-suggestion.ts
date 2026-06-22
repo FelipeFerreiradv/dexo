@@ -1,4 +1,12 @@
 import type { CatalogProductDetail } from "../../marketplaces/usecases/ml-catalog-suggestion.usecase";
+import {
+  isEmptyScalar,
+  isEmptyString,
+  mergeAttributes,
+  mergeCompatibilities,
+  tryFillString,
+  type MergeCtx,
+} from "./suggestion-merge";
 
 /**
  * Forma mínima dos valores do form que este merge entende/toca.
@@ -42,30 +50,6 @@ export interface CatalogApplyResult {
   conflicts: CatalogApplyConflict[];
 }
 
-function isEmptyString(v: unknown): boolean {
-  return typeof v !== "string" || v.trim().length === 0;
-}
-
-function isEmptyScalar(v: unknown): boolean {
-  if (v == null) return true;
-  if (typeof v === "string") return v.trim().length === 0;
-  return false;
-}
-
-function compatKey(c: {
-  brand: string;
-  model: string;
-  yearFrom?: number | null;
-  yearTo?: number | null;
-}): string {
-  return [
-    c.brand.trim().toLowerCase(),
-    c.model.trim().toLowerCase(),
-    c.yearFrom ?? "",
-    c.yearTo ?? "",
-  ].join("|");
-}
-
 /**
  * Aplica uma sugestão de catálogo ML aos valores atuais do form.
  *
@@ -89,25 +73,18 @@ export function applyMlCatalogSuggestion(
   const applied: Array<keyof CatalogApplyFormValues | string> = [];
   const conflicts: CatalogApplyConflict[] = [];
 
-  const tryFillString = (
-    field: keyof CatalogApplyFormValues,
-    catalogValue: string | null | undefined,
-  ) => {
-    if (!catalogValue || catalogValue.trim().length === 0) return;
-    const cur = current[field];
-    if (isEmptyString(cur)) {
-      (next as any)[field] = catalogValue;
-      applied.push(field);
-    } else if (cur !== catalogValue) {
-      conflicts.push({ field, currentValue: cur, catalogValue });
-    }
+  const ctx: MergeCtx = {
+    current: current as Record<string, unknown>,
+    next: next as Record<string, unknown>,
+    applied: applied as string[],
+    conflicts,
   };
 
-  tryFillString("name", detail.name || null);
-  tryFillString("brand", detail.brand);
-  tryFillString("model", detail.model);
-  tryFillString("year", detail.year);
-  tryFillString("partNumber", detail.partNumber);
+  tryFillString(ctx, "name", detail.name || null);
+  tryFillString(ctx, "brand", detail.brand);
+  tryFillString(ctx, "model", detail.model);
+  tryFillString(ctx, "year", detail.year);
+  tryFillString(ctx, "partNumber", detail.partNumber);
 
   // Categoria: o valor "canônico" é o categoryId do ML. Gravamos em mlCategoryId
   // e em mlCategory (display) quando vazios. O campo `category` (local, texto
@@ -138,53 +115,21 @@ export function applyMlCatalogSuggestion(
   }
 
   // Ficha técnica: merge não destrutivo — chaves existentes ficam, novas entram.
-  const curAttrs = current.attributes ?? {};
-  const catAttrs = detail.attributes ?? {};
-  const mergedAttrs: Record<string, { value_id?: string; value_name?: string }> = {
-    ...curAttrs,
-  };
-  let attrsChanged = false;
-  for (const [attrId, val] of Object.entries(catAttrs)) {
-    if (mergedAttrs[attrId]) {
-      const a = mergedAttrs[attrId];
-      const hasValue =
-        (typeof a.value_id === "string" && a.value_id.length > 0) ||
-        (typeof a.value_name === "string" && a.value_name.length > 0);
-      if (hasValue) {
-        // Não sobrescreve — reporta conflito se divergir.
-        if (
-          (val.value_id && val.value_id !== a.value_id) ||
-          (val.value_name && val.value_name !== a.value_name)
-        ) {
-          conflicts.push({
-            field: `attributes.${attrId}`,
-            currentValue: a,
-            catalogValue: val,
-          });
-        }
-        continue;
-      }
-    }
-    mergedAttrs[attrId] = val;
-    attrsChanged = true;
-  }
-  if (attrsChanged) {
-    next.attributes = mergedAttrs;
+  const attrMerge = mergeAttributes(current.attributes, detail.attributes);
+  if (attrMerge.conflicts.length > 0) conflicts.push(...attrMerge.conflicts);
+  if (attrMerge.changed) {
+    next.attributes = attrMerge.merged;
     applied.push("attributes");
   }
 
   // Compatibilidades: merge por chave (brand, model, yearFrom, yearTo).
-  const hints = detail.compatibilities ?? [];
-  if (hints.length > 0) {
-    const existing = Array.isArray(current.compatibilities)
-      ? current.compatibilities
-      : [];
-    const seen = new Set(existing.map(compatKey));
-    const toAdd = hints.filter((h) => !seen.has(compatKey(h)));
-    if (toAdd.length > 0) {
-      next.compatibilities = [...existing, ...toAdd];
-      applied.push("compatibilities");
-    }
+  const compatMerge = mergeCompatibilities(
+    current.compatibilities,
+    detail.compatibilities,
+  );
+  if (compatMerge.added) {
+    next.compatibilities = compatMerge.next;
+    applied.push("compatibilities");
   }
 
   // Sempre grava o vínculo.
