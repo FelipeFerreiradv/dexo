@@ -51,6 +51,17 @@ MODEL_NAME = os.getenv("REMBG_MODEL", "birefnet-general-lite")
 # => zero trabalho extra e nenhuma mudanca no corpo/contrato. So pra diagnostico.
 PROFILE_ENABLED = os.getenv("REMBG_PROFILE", "false").lower() == "true"
 
+# Tuning opt-in do ONNX Runtime (Camada A): REMBG_ORT_TUNE=true troca o
+# new_session(MODEL_NAME) por uma sessao com SessionOptions explicito —
+# execution_mode SEQUENTIAL, inter_op=REMBG_INTER_OP_THREADS (default 1) e
+# intra_op=REMBG_INTRA_OP_THREADS — pra achar o "joelho" de saturacao de banda
+# numa CPU memory-bound. MESMO modelo, MESMA saida (so conta de thread); o gate
+# SSIM cobre qualquer drift de ponto-flutuante. Default OFF => comportamento
+# IDENTICO ao de hoje (o new_session le OMP_NUM_THREADS e seta intra=inter=OMP).
+ORT_TUNE = os.getenv("REMBG_ORT_TUNE", "false").lower() == "true"
+ORT_INTRA_OP = int(os.getenv("REMBG_INTRA_OP_THREADS", "0")) or (os.cpu_count() or 8)
+ORT_INTER_OP = int(os.getenv("REMBG_INTER_OP_THREADS", "1"))
+
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
 REFINE_ENABLED = os.getenv("REMBG_REFINE_EDGES", "true").lower() != "false"
@@ -107,11 +118,52 @@ app = FastAPI(title="Dexo rembg sidecar", version="2.1.0")
 _session = None
 
 
+def _build_tuned_session():
+    """Sessao do rembg com SessionOptions explicito (REMBG_ORT_TUNE).
+
+    Resolve a MESMA classe de modelo que o new_session resolveria (por nome),
+    so trocando a config de threads/exec-mode — nao muda o modelo nem a saida.
+    Pin em CPUExecutionProvider (o que ja computa hoje; o AzureEP listado nao
+    executa modelo local)."""
+    import onnxruntime as ort
+    from rembg.sessions import sessions_class
+
+    session_class = None
+    for sc in sessions_class:
+        if sc.name() == MODEL_NAME:
+            session_class = sc
+            break
+    if session_class is None:
+        raise RuntimeError(f"classe de sessao nao encontrada p/ {MODEL_NAME!r}")
+
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    so.intra_op_num_threads = ORT_INTRA_OP
+    so.inter_op_num_threads = ORT_INTER_OP
+    return session_class(MODEL_NAME, so, ["CPUExecutionProvider"])
+
+
 def _get_session():
     """Lazy-init da sessao do rembg (carrega o ONNX uma unica vez)."""
     global _session
     if _session is None:
-        _session = new_session(MODEL_NAME)
+        if ORT_TUNE:
+            try:
+                _session = _build_tuned_session()
+                print(
+                    f"[rembg] ORT tune ON: intra_op={ORT_INTRA_OP} "
+                    f"inter_op={ORT_INTER_OP} mode=SEQUENTIAL",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — fallback seguro p/ o padrao
+                print(
+                    f"[rembg] ORT tune FALHOU ({exc!r}); usando new_session padrao",
+                    flush=True,
+                )
+                _session = new_session(MODEL_NAME)
+        else:
+            _session = new_session(MODEL_NAME)
     return _session
 
 
@@ -128,6 +180,10 @@ def health():
         "model": MODEL_NAME,
         "refine": REFINE_ENABLED,
         "shadow": SHADOW_GLOBAL_ENABLED,
+        # Aditivo (diagnostico): config de threads quando REMBG_ORT_TUNE=true.
+        "ort_tune": ORT_TUNE,
+        "intra_op": ORT_INTRA_OP if ORT_TUNE else None,
+        "inter_op": ORT_INTER_OP if ORT_TUNE else None,
     }
 
 
