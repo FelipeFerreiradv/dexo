@@ -179,26 +179,45 @@ export async function processUploadedImage(
         const cutout = await fetcher(normalized, { addShadow });
         const tFetch = profNow();
 
-        // Re-encode em PNG otimizado (preserva transparência).
+        // A2: passthrough. O sidecar já devolve PNG RGBA pronto; re-encodar no
+        // sharp (compressionLevel 9 + adaptiveFiltering) custava ~290ms num RGBA
+        // ~1600px SEM mudar o pixel (PNG é lossless — medido: lvl9 só reduz ~9%
+        // o arquivo). Passamos o buffer adiante e só LEMOS o header pra
+        // width/height (decode de header, ~0.3ms). Guard: se não for um PNG com
+        // dimensões válidas, caímos no re-encode defensivo; se o buffer for
+        // ilegível, o sharp lança e o catch abaixo faz o fallback graceful.
+        const cutMeta = await sharp(cutout).metadata();
+        if (cutMeta.format === "png" && cutMeta.width && cutMeta.height) {
+          if (REMBG_PROFILE) {
+            console.log(
+              `[node-profile] meta=${(tMeta - tStart).toFixed(1)} ` +
+                `resize=${(tNorm - tMeta).toFixed(1)} ` +
+                `roundtrip=${(tFetch - tNorm).toFixed(1)} ` +
+                `passthrough=${(profNow() - tFetch).toFixed(1)} ` +
+                `total=${(profNow() - tStart).toFixed(1)}ms ` +
+                `shadow=${addShadow} in_bytes=${normalized.length} ` +
+                `out_bytes=${cutout.length}`,
+            );
+          }
+          return {
+            processed: cutout,
+            format: "png",
+            removedBackground: true,
+            shadowApplied: addShadow,
+            width: cutMeta.width,
+            height: cutMeta.height,
+          };
+        }
+
+        // Defensivo: sidecar devolveu algo que não é PNG c/ dimensões — re-encoda
+        // como antes pra garantir o contrato (format:"png", transparência).
         const encoded = await sharp(cutout)
           .png({
             compressionLevel: UPLOAD_PNG_COMPRESSION,
             adaptiveFiltering: true,
           })
           .toBuffer();
-
         const outMeta = await sharp(encoded).metadata();
-        if (REMBG_PROFILE) {
-          console.log(
-            `[node-profile] meta=${(tMeta - tStart).toFixed(1)} ` +
-              `resize=${(tNorm - tMeta).toFixed(1)} ` +
-              `roundtrip=${(tFetch - tNorm).toFixed(1)} ` +
-              `reencode=${(profNow() - tFetch).toFixed(1)} ` +
-              `total=${(profNow() - tStart).toFixed(1)}ms ` +
-              `shadow=${addShadow} in_bytes=${normalized.length} ` +
-              `out_bytes=${encoded.length}`,
-          );
-        }
         return {
           processed: encoded,
           format: "png",
