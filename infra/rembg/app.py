@@ -31,6 +31,7 @@ e' quase identidade, entao NAO regride o caso que ja sai perfeito hoje.
 
 import os
 from io import BytesIO
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -44,6 +45,22 @@ from rembg import new_session, remove
 #   protege o sidecar de payloads patologicos.
 MAX_BYTES = 10 * 1024 * 1024
 MODEL_NAME = os.getenv("REMBG_MODEL", "birefnet-general-lite")
+
+# Profiling opt-in (Fase 0): REMBG_PROFILE=true mede o tempo de cada estagio do
+# /remove-bg e expoe no header de resposta `X-Rembg-Timing` (+ log). Default OFF
+# => zero trabalho extra e nenhuma mudanca no corpo/contrato. So pra diagnostico.
+PROFILE_ENABLED = os.getenv("REMBG_PROFILE", "false").lower() == "true"
+
+# Tuning opt-in do ONNX Runtime (Camada A): REMBG_ORT_TUNE=true troca o
+# new_session(MODEL_NAME) por uma sessao com SessionOptions explicito —
+# execution_mode SEQUENTIAL, inter_op=REMBG_INTER_OP_THREADS (default 1) e
+# intra_op=REMBG_INTRA_OP_THREADS — pra achar o "joelho" de saturacao de banda
+# numa CPU memory-bound. MESMO modelo, MESMA saida (so conta de thread); o gate
+# SSIM cobre qualquer drift de ponto-flutuante. Default OFF => comportamento
+# IDENTICO ao de hoje (o new_session le OMP_NUM_THREADS e seta intra=inter=OMP).
+ORT_TUNE = os.getenv("REMBG_ORT_TUNE", "false").lower() == "true"
+ORT_INTRA_OP = int(os.getenv("REMBG_INTRA_OP_THREADS", "0")) or (os.cpu_count() or 8)
+ORT_INTER_OP = int(os.getenv("REMBG_INTER_OP_THREADS", "1"))
 
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
@@ -101,11 +118,52 @@ app = FastAPI(title="Dexo rembg sidecar", version="2.1.0")
 _session = None
 
 
+def _build_tuned_session():
+    """Sessao do rembg com SessionOptions explicito (REMBG_ORT_TUNE).
+
+    Resolve a MESMA classe de modelo que o new_session resolveria (por nome),
+    so trocando a config de threads/exec-mode — nao muda o modelo nem a saida.
+    Pin em CPUExecutionProvider (o que ja computa hoje; o AzureEP listado nao
+    executa modelo local)."""
+    import onnxruntime as ort
+    from rembg.sessions import sessions_class
+
+    session_class = None
+    for sc in sessions_class:
+        if sc.name() == MODEL_NAME:
+            session_class = sc
+            break
+    if session_class is None:
+        raise RuntimeError(f"classe de sessao nao encontrada p/ {MODEL_NAME!r}")
+
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    so.intra_op_num_threads = ORT_INTRA_OP
+    so.inter_op_num_threads = ORT_INTER_OP
+    return session_class(MODEL_NAME, so, ["CPUExecutionProvider"])
+
+
 def _get_session():
     """Lazy-init da sessao do rembg (carrega o ONNX uma unica vez)."""
     global _session
     if _session is None:
-        _session = new_session(MODEL_NAME)
+        if ORT_TUNE:
+            try:
+                _session = _build_tuned_session()
+                print(
+                    f"[rembg] ORT tune ON: intra_op={ORT_INTRA_OP} "
+                    f"inter_op={ORT_INTER_OP} mode=SEQUENTIAL",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — fallback seguro p/ o padrao
+                print(
+                    f"[rembg] ORT tune FALHOU ({exc!r}); usando new_session padrao",
+                    flush=True,
+                )
+                _session = new_session(MODEL_NAME)
+        else:
+            _session = new_session(MODEL_NAME)
     return _session
 
 
@@ -122,6 +180,10 @@ def health():
         "model": MODEL_NAME,
         "refine": REFINE_ENABLED,
         "shadow": SHADOW_GLOBAL_ENABLED,
+        # Aditivo (diagnostico): config de threads quando REMBG_ORT_TUNE=true.
+        "ort_tune": ORT_TUNE,
+        "intra_op": ORT_INTRA_OP if ORT_TUNE else None,
+        "inter_op": ORT_INTER_OP if ORT_TUNE else None,
     }
 
 
@@ -289,22 +351,54 @@ async def remove_bg(
     if len(raw) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="payload too large")
 
+    # Profiling opt-in: so preenche o dict de tempos quando PROFILE_ENABLED.
+    prof = PROFILE_ENABLED
+    timings: dict[str, float] = {}
+
     try:
         # Decodifica uma vez e passa PIL ao rembg — evita round-trip de PNG
         # (com bytes, o rembg encodaria o resultado em PNG e nos decodariamos
         # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
+        t0 = perf_counter() if prof else 0.0
         src = Image.open(BytesIO(raw)).convert("RGB")
+        if prof:
+            timings["decode"] = perf_counter() - t0
+            t0 = perf_counter()
         out = remove(src, session=_get_session(), post_process_mask=POST_PROCESS_MASK)
+        if prof:
+            timings["remove"] = perf_counter() - t0
+            t0 = perf_counter()
         rgba = _to_rgba_array(out)
+        if prof:
+            timings["to_rgba"] = perf_counter() - t0
+            t0 = perf_counter()
         if REFINE_ENABLED:
             rgba = _refine_edges(rgba)
+        if prof:
+            timings["refine"] = perf_counter() - t0
+            t0 = perf_counter()
         if add_shadow and SHADOW_GLOBAL_ENABLED:
             try:
                 rgba = _add_drop_shadow(rgba)
             except Exception:  # noqa: BLE001 — sombra best-effort, nao derruba o recorte
                 pass
+        if prof:
+            timings["shadow"] = perf_counter() - t0
+            t0 = perf_counter()
         png_bytes = _encode_png(rgba)
+        if prof:
+            timings["encode"] = perf_counter() - t0
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"rembg failed: {exc}") from exc
 
-    return Response(content=png_bytes, media_type="image/png")
+    headers = None
+    if prof:
+        header_val = ";".join(f"{k}={timings[k] * 1000:.1f}" for k in timings)
+        headers = {"X-Rembg-Timing": header_val}
+        print(
+            f"[rembg-profile] {header_val} shadow_req={add_shadow} "
+            f"out_bytes={len(png_bytes)}",
+            flush=True,
+        )
+
+    return Response(content=png_bytes, media_type="image/png", headers=headers)
