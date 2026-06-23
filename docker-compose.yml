@@ -25,6 +25,14 @@ services:
     environment:
       REMBG_WORKERS: "1"
       OMP_NUM_THREADS: "8"
+      # A1 (Camada A): sessao ONNX tunada. O rembg setava intra=inter=8 em 8
+      # vCPU memory-bound => oversubscription (jitter, ~11s/p95~16s). Com
+      # execution_mode SEQUENTIAL, inter_op=1 e intra_op=6 (joelho medido no
+      # KVM8): mediana ~9s e p95 colapsado (~9s isolado). Mesmo modelo/saida
+      # (gate SSIM 24/24 verde). Reverter = REMBG_ORT_TUNE=false. OMP_NUM_THREADS
+      # segue 8 (so afeta cv2/numpy do refino/sombra, intocados).
+      REMBG_ORT_TUNE: "true"
+      REMBG_INTRA_OP_THREADS: "6"
     # Pico ~8.5GB (1 worker birefnet); 12g cobre c/ folga no KVM8/32GB.
     mem_limit: 12g
     healthcheck:
