@@ -29,6 +29,7 @@ import {
   Image,
   ShoppingCart,
   Link2,
+  Eye,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -58,6 +59,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { CompatibilityTab, CompatibilityEntry } from "./compatibility-tab";
+import { StepPreview } from "./listing-preview/step-preview";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
 import { InternalSuggestionPicker } from "./internal-suggestion-picker";
@@ -323,6 +325,13 @@ const STEPS = [
   },
   {
     id: 8,
+    title: "Prévia",
+    description: "Veja como vai ficar",
+    icon: Eye,
+    fields: [],
+  },
+  {
+    id: 9,
     title: "Revisão",
     description: "Confirme os dados",
     icon: ClipboardCheck,
@@ -331,6 +340,13 @@ const STEPS = [
 ];
 
 const TOTAL_STEPS = STEPS.length;
+
+// Etapas nomeadas (sem literais soltos). A Revisão DEVE continuar sendo a ÚLTIMA
+// etapa: o botão "Criar Produto" só renderiza em currentStep === TOTAL_STEPS e o
+// onSubmit aborta fora dela — logo a Prévia, inserida imediatamente ANTES da
+// Revisão, jamais dispara a criação.
+const PREVIEW_STEP = TOTAL_STEPS - 1; // 8
+const REVIEW_STEP = TOTAL_STEPS; // 9
 
 export function CreateProductDialog({
   onProductCreated,
@@ -491,9 +507,10 @@ export function CreateProductDialog({
     },
   });
 
-  // Watch all form values only on review step to avoid re-renders on other steps
+  // Observa os valores completos na Prévia E na Revisão (as duas últimas etapas);
+  // nas demais mantém {} para evitar re-render desnecessário (otimização original).
   const formValues =
-    currentStep === TOTAL_STEPS ? watch() : ({} as ProductFormData);
+    currentStep >= PREVIEW_STEP ? watch() : ({} as ProductFormData);
 
   // Watch específicos para cálculos automáticos
   const watchName = watch("name");
@@ -2521,7 +2538,7 @@ export function CreateProductDialog({
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-5xl sm:p-6">
+      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-6xl sm:p-6">
         <DialogHeader>
           <DialogTitle>Criar Novo Produto</DialogTitle>
           <DialogDescription>
@@ -3984,8 +4001,23 @@ export function CreateProductDialog({
             </div>
           )}
 
-          {/* Step 8: Revisão */}
-          {currentStep === 8 && (
+          {/* Step 8: Prévia */}
+          {currentStep === PREVIEW_STEP && (
+            <StepPreview
+              values={formValues}
+              compatibilities={compatibilities}
+              mlAccounts={mlAccounts}
+              shopeeAccounts={shopeeAccounts}
+              selectedMlAccountIds={watchMlAccountIds}
+              selectedShopeeAccountIds={watchShopeeAccountIds}
+              mlOptions={mlOptions}
+              shopeeOptions={shopeeOptions}
+              formatCurrency={formatCurrency}
+            />
+          )}
+
+          {/* Step 9: Revisão */}
+          {currentStep === REVIEW_STEP && (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/30 p-4">
                 <h4 className="mb-3 font-medium">Identificação</h4>
