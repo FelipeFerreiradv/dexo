@@ -61,6 +61,14 @@ export const authMiddleware = async (
     if (!user) {
       return reply.status(401).send({ message: "User not found in database" });
     }
+    // Bloqueio de acesso (soft disable). 403 (≠ 401) p/ diferenciar "bloqueado"
+    // de "não autenticado". effectiveActive já considera o admin pai. Cache de
+    // 60s: ao bloquear, sessões ativas levam ATÉ 60s p/ serem barradas (cache
+    // expira e recarrega do banco). Bloqueado NUNCA é cacheado (return antes do
+    // setCached) => barrado em toda request subsequente.
+    if (user.effectiveActive === false) {
+      return reply.status(403).send({ message: "Conta desativada" });
+    }
     setCached(cacheKey, user);
     attachAuth(request, user);
     return;
@@ -103,6 +111,11 @@ export const authMiddleware = async (
   const user = await userRepository.findByEmail(email);
   if (!user) {
     return reply.status(401).send({ message: "User not found in database" });
+  }
+  // Bloqueio de acesso (soft disable) — mesmo critério do caminho Bearer.
+  // effectiveActive já considera o admin pai; bloqueado não é cacheado.
+  if (user.effectiveActive === false) {
+    return reply.status(403).send({ message: "Conta desativada" });
   }
   setCached(cacheKey, user);
   attachAuth(request, user);

@@ -43,6 +43,11 @@ model User {
   // de códigos externos de fornecedor (códigos de barra etc).
   lastSkuSequential Int?
 
+  // Acesso ao sistema. true = liberado (default), false = BLOQUEADO (ex.: falta
+  // de pagamento). Bloquear NÃO apaga dados — é um "soft disable" reversível.
+  // Default true => migração não bloqueia ninguém (zero regressão).
+  isActive Boolean @default(true)
+
   // Hierarquia administrador → colaboradores (additive, default NULL).
   // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
   parentUserId String?

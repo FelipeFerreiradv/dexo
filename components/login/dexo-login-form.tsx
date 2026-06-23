@@ -34,7 +34,13 @@ export function DexoLoginForm({ callbackUrl = "/" }: DexoLoginFormProps) {
       });
 
       if (result?.error) {
-        setError("E-mail ou senha invalidos. Verifique seus dados.");
+        // authorize() lança "ACCOUNT_DISABLED" p/ contas bloqueadas (soft
+        // disable). Demais erros caem na mensagem genérica de credenciais.
+        if (result.error === "ACCOUNT_DISABLED") {
+          setError("Seu acesso está desativado. Entre em contato com o suporte.");
+        } else {
+          setError("E-mail ou senha invalidos. Verifique seus dados.");
+        }
       } else {
         router.push(callbackUrl);
         router.refresh();

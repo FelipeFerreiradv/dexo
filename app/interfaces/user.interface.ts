@@ -26,6 +26,12 @@ export interface User {
   // Aumento percentual escalonado entre contas ML (default 0 = desativado)
   crossAccountPriceIncreasePercent?: number | null;
 
+  // Acesso liberado (raw). false = bloqueado; default true. Ver isActive no schema.
+  isActive: boolean;
+  // Efetivo: considera o admin pai. false se o próprio OU o pai estiver bloqueado.
+  // Calculado em mapUser; é o que as checagens de bloqueio devem usar.
+  effectiveActive: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,6 +68,9 @@ export interface UserUpdate {
 
   // Aumento percentual escalonado entre contas ML (default 0 = desativado)
   crossAccountPriceIncreasePercent?: number | null;
+
+  // Acesso liberado. Permite (re)ativar/bloquear via código. undefined => Prisma ignora.
+  isActive?: boolean;
 
   role?: Role;
 }
