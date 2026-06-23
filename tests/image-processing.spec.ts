@@ -114,6 +114,24 @@ describe("processUploadedImage", () => {
     expect(meta.hasAlpha).toBe(true);
   });
 
+  it("A2: passthrough — devolve o PNG do sidecar sem re-encodar (bytes idênticos)", async () => {
+    const buf = await makeImage(1200, 900);
+    // PNG RGBA válido simulando a saída do sidecar.
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+    const fetcher = vi.fn().mockResolvedValue(cutout);
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+    });
+
+    // O buffer devolvido é EXATAMENTE o do sidecar (sem re-encode no Node).
+    expect(result.processed.equals(cutout)).toBe(true);
+    expect(result.format).toBe("png");
+    expect(result.width).toBe(800);
+    expect(result.height).toBe(600);
+  });
+
   it("faz fallback graceful para WebP + warning quando sidecar falha", async () => {
     const buf = await makeImage(1200, 900);
     const fetcher = vi.fn().mockRejectedValue(new Error("sidecar offline"));
