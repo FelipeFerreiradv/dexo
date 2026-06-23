@@ -9,7 +9,12 @@ import prisma from "../lib/prisma";
 import { hashPassword, isHashed } from "../lib/password";
 
 class UserRepositoryPrisma implements UserRepository {
-  private mapUser(u: PrismaUser): User {
+  private mapUser(
+    u: PrismaUser & { parent?: { isActive: boolean } | null },
+  ): User {
+    // default-safe: só `false` explícito bloqueia; null/undefined/true => liberado.
+    const ownActive = u.isActive ?? true;
+    const parentActive = u.parent?.isActive ?? true;
     return {
       id: u.id,
       email: u.email,
@@ -37,6 +42,10 @@ class UserRepositoryPrisma implements UserRepository {
       crossAccountPriceIncreasePercent: u.crossAccountPriceIncreasePercent
         ? Number(u.crossAccountPriceIncreasePercent)
         : 0,
+
+      isActive: ownActive,
+      // Cascata: colaborador cai junto quando o admin pai é bloqueado.
+      effectiveActive: ownActive && parentActive,
 
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
@@ -79,6 +88,9 @@ class UserRepositoryPrisma implements UserRepository {
         where: {
           email,
         },
+        // Status do admin pai junto (1 query, sem round-trip extra) p/ a
+        // checagem de bloqueio em cascata. mapUser ignora `parent` fora disso.
+        include: { parent: { select: { isActive: true } } },
       });
       return data ? this.mapUser(data) : null;
     } catch (error) {
@@ -92,6 +104,9 @@ class UserRepositoryPrisma implements UserRepository {
         where: {
           id,
         },
+        // Status do admin pai junto (1 query, sem round-trip extra) p/ a
+        // checagem de bloqueio em cascata. mapUser ignora `parent` fora disso.
+        include: { parent: { select: { isActive: true } } },
       });
       return data ? this.mapUser(data) : null;
     } catch (error) {
@@ -170,6 +185,9 @@ class UserRepositoryPrisma implements UserRepository {
             crossAccountPriceIncreasePercent:
               data.crossAccountPriceIncreasePercent,
           }),
+
+          // Acesso liberado/bloqueado (somente se fornecido)
+          ...(data.isActive !== undefined && { isActive: data.isActive }),
         },
       });
       return this.mapUser(result);

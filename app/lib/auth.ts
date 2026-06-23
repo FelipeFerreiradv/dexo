@@ -34,6 +34,15 @@ export const authOptions: NextAuthOptions = {
         if (!valid) {
           return null; // Senha incorreta
         }
+
+        // Acesso desativado (soft disable). effectiveActive já inclui o admin
+        // pai: colaborador é barrado quando o próprio OU o admin está bloqueado.
+        // Só `=== false` bloqueia (default-safe). throw => o form mostra msg
+        // específica. Antes do rehash p/ não gravar nada de conta bloqueada.
+        if (user.effectiveActive === false) {
+          throw new Error("ACCOUNT_DISABLED");
+        }
+
         if (needsRehash) {
           // Migra a senha legada para hash neste login (o repositório faz o hash).
           // Falha aqui não pode bloquear o login válido.
