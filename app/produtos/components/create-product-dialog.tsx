@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
 import {
   parseTitleToFields,
   suggestCategoryFromTitle,
@@ -13,14 +19,18 @@ import {
   getMeasurementsForCategory,
   ML_MEASUREMENTS_MAP,
 } from "../../lib/ml-measurements";
-import { useForm, Controller } from "react-hook-form";
+import {
+  useForm,
+  Controller,
+  useWatch,
+  type Control,
+  type FieldErrors,
+} from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Plus,
   Loader2,
-  ChevronLeft,
-  ChevronRight,
   Check,
   Package,
   DollarSign,
@@ -348,6 +358,56 @@ const TOTAL_STEPS = STEPS.length;
 const PREVIEW_STEP = TOTAL_STEPS - 1; // 8
 const REVIEW_STEP = TOTAL_STEPS; // 9
 
+// Mapa campo do formulário → etapa que o contém. Usado pelo scroll-to-erro no
+// submit; inclui chaves aninhadas/derivadas que não aparecem em STEPS[].fields.
+const FIELD_TO_STEP: Record<string, number> = (() => {
+  const map: Record<string, number> = {};
+  for (const step of STEPS) {
+    for (const field of step.fields) map[field as string] = step.id;
+  }
+  map.imageUrls = 2;
+  map.heightCm = 4;
+  map.widthCm = 4;
+  map.lengthCm = 4;
+  map.weightKg = 4;
+  map.attributes = 6;
+  map.mlAccountIds = 6;
+  map.mlCatalogProductId = 6;
+  map.shopeeCategory = 7;
+  return map;
+})();
+
+// Assina o formulário inteiro via useWatch e entrega os valores por render-prop.
+// Isola o re-render do StepPreview (Prévia) e da Revisão das demais seções:
+// digitar num campo não-observado pelo pai não re-renderiza o pai inteiro.
+function LiveFormValues({
+  control,
+  children,
+}: {
+  control: Control<ProductFormData>;
+  children: (values: ProductFormData) => ReactNode;
+}) {
+  const values = useWatch({ control }) as ProductFormData;
+  return <>{children(values)}</>;
+}
+
+// Cabeçalho visual de cada seção no scroll: ícone + título + descrição (mesma
+// fonte dos indicadores). Subdivide claramente o formulário empilhado.
+function SectionHeading({ step }: { step: (typeof STEPS)[number] }) {
+  const Icon = step.icon;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0">
+        <h3 className="text-sm font-semibold sm:text-base">{step.title}</h3>
+        <p className="text-xs text-muted-foreground">{step.description}</p>
+      </div>
+    </div>
+  );
+}
+
 export function CreateProductDialog({
   onProductCreated,
   onToast,
@@ -368,6 +428,12 @@ export function CreateProductDialog({
     controlledOnOpenChange?.(next);
   };
   const [currentStep, setCurrentStep] = useState(1);
+  // O corpo rolável (o próprio <form>) é o root do IntersectionObserver; os
+  // refs das seções permitem o observer dirigir `currentStep` pelo scroll e o
+  // scrollToSection rolar suavemente ao clicar num indicador / num erro.
+  const scrollContainerRef = useRef<HTMLFormElement>(null);
+  const sectionRefs = useRef<Record<number, HTMLElement | null>>({});
+  const scrollRafRef = useRef(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSku, setIsLoadingSku] = useState(false);
   const [defaultDescription, setDefaultDescription] = useState("");
@@ -506,11 +572,6 @@ export function CreateProductDialog({
       weightKg: undefined,
     },
   });
-
-  // Observa os valores completos na Prévia E na Revisão (as duas últimas etapas);
-  // nas demais mantém {} para evitar re-render desnecessário (otimização original).
-  const formValues =
-    currentStep >= PREVIEW_STEP ? watch() : ({} as ProductFormData);
 
   // Watch específicos para cálculos automáticos
   const watchName = watch("name");
@@ -865,7 +926,7 @@ export function CreateProductDialog({
   const mlCategoriesLoadedRef = useRef(false);
   useEffect(() => {
     if (
-      currentStep === 6 &&
+      (currentStep === 6 || watchCreateMLListing) &&
       mlOptions.length === 0 &&
       !mlCategoriesLoadedRef.current
     ) {
@@ -890,7 +951,12 @@ export function CreateProductDialog({
         }
       })();
     }
-  }, [currentStep, mlOptions.length, session?.user?.email]);
+  }, [
+    currentStep,
+    watchCreateMLListing,
+    mlOptions.length,
+    session?.user?.email,
+  ]);
 
   // Reset lazy-load flag when dialog closes
   useEffect(() => {
@@ -904,7 +970,7 @@ export function CreateProductDialog({
   const shopeeCategoriesLoadedRef = useRef(false);
   useEffect(() => {
     if (
-      currentStep === 7 &&
+      (currentStep === 7 || watchCreateShopeeListing) &&
       shopeeOptions.length === 0 &&
       !shopeeCategoriesLoadedRef.current
     ) {
@@ -929,7 +995,12 @@ export function CreateProductDialog({
         }
       })();
     }
-  }, [currentStep, shopeeOptions.length, session?.user?.email]);
+  }, [
+    currentStep,
+    watchCreateShopeeListing,
+    shopeeOptions.length,
+    session?.user?.email,
+  ]);
 
   // AUTO-FILL A PARTIR DAS COMPATIBILIDADES (fonte primária)
   // Quando o usuário adiciona/altera compatibilidades, preenche marca/modelo/ano/versão
@@ -2212,8 +2283,9 @@ export function CreateProductDialog({
   const progressPercentage = (currentStep / TOTAL_STEPS) * 100;
 
   const onSubmit = async (data: ProductFormData) => {
-    // Guarda dura: criacao so acontece na etapa de Revisao, nunca antes.
-    if (currentStep !== TOTAL_STEPS) return;
+    // No modo scroll a criação dispara SÓ pelo clique em "Criar Produto"
+    // (handleSubmit no onClick; o <form> faz preventDefault e não há submit por
+    // Enter), então a antiga guarda por etapa não é mais necessária.
     setIsSubmitting(true);
     try {
       const selectedMlAccounts =
@@ -2455,6 +2527,8 @@ export function CreateProductDialog({
     hasFetchedOnOpenRef.current = false;
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
+    // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
+    scrollContainerRef.current?.scrollTo({ top: 0 });
     setOpen(false);
   };
 
@@ -2465,51 +2539,50 @@ export function CreateProductDialog({
     setOpen(newOpen);
   };
 
-  // Validar campos do step atual antes de avançar
-  const validateCurrentStep = async () => {
-    const currentStepConfig = STEPS[currentStep - 1];
-    const fieldsToValidate =
-      currentStepConfig.fields as (keyof ProductFormData)[];
+  // Rola suavemente até a seção (índice clicável no topo + scroll-to-erro no
+  // submit). O root da rolagem é o próprio <form> (scrollContainerRef).
+  const scrollToSection = (id: number) => {
+    sectionRefs.current[id]?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
 
-    if (fieldsToValidate.length === 0) return true;
-
-    try {
-      const isValid = await trigger(fieldsToValidate);
-      if (!isValid) {
-        // Mostrar quais campos falharam para evitar travamento silencioso
-        const fieldErrors = fieldsToValidate
-          .map((f) => errors[f]?.message)
-          .filter(Boolean);
-        if (fieldErrors.length > 0) {
-          console.warn(`[Step ${currentStep}] Validação falhou:`, fieldErrors);
-          onToast(fieldErrors[0] as string, "warning");
-        }
+  // Dirige `currentStep` pelo SCROLL do corpo (o próprio <form>), via onScroll
+  // declarativo do React (anexa de forma garantida, sem depender do timing do
+  // ref). Debounce por rAF; a seção cuja borda superior cruza ~30% do topo vira
+  // a ativa; ao chegar no fim, ativa a Revisão (última seção, mesmo curta).
+  const handleBodyScroll = () => {
+    const root = scrollContainerRef.current;
+    if (!root) return;
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      if (root.scrollTop + root.clientHeight >= root.scrollHeight - 4) {
+        setCurrentStep((prev) => (prev === REVIEW_STEP ? prev : REVIEW_STEP));
+        return;
       }
-      return isValid;
-    } catch (err) {
-      console.error("Erro na validação do step:", err);
-      return true; // Não bloquear navegação por erro interno
-    }
+      const line = root.getBoundingClientRect().top + root.clientHeight * 0.3;
+      let candidate = 1;
+      for (let id = 1; id <= TOTAL_STEPS; id++) {
+        const el = sectionRefs.current[id];
+        if (el && el.getBoundingClientRect().top <= line) candidate = id;
+      }
+      setCurrentStep((prev) => (prev === candidate ? prev : candidate));
+    });
   };
 
-  const handleNext = async () => {
-    const isValid = await validateCurrentStep();
-    if (isValid && currentStep < TOTAL_STEPS) {
-      setCurrentStep((prev) => prev + 1);
-    }
-  };
-
-  const handleBack = () => {
-    if (currentStep > 1) {
-      setCurrentStep((prev) => prev - 1);
-    }
-  };
-
-  const goToStep = (step: number) => {
-    // Permite voltar para qualquer step anterior
-    if (step < currentStep) {
-      setCurrentStep(step);
-    }
+  // Feedback de validação no submit (substitui a antiga validação por etapa):
+  // toast da 1ª mensagem de erro + rola até a seção do 1º campo inválido.
+  const onInvalid = (formErrors: FieldErrors<ProductFormData>) => {
+    const firstKey = Object.keys(formErrors)[0];
+    const err = firstKey
+      ? (formErrors as Record<string, { message?: unknown }>)[firstKey]
+      : undefined;
+    const message =
+      (err && typeof err.message === "string" && err.message) ||
+      "Verifique os campos destacados antes de criar o produto.";
+    onToast(message, "warning");
+    scrollToSection((firstKey && FIELD_TO_STEP[firstKey]) || 1);
   };
 
   // Função para formatar valor monetário
@@ -2538,83 +2611,90 @@ export function CreateProductDialog({
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto p-4 sm:max-w-6xl sm:p-6">
-        <DialogHeader>
-          <DialogTitle>Criar Novo Produto</DialogTitle>
-          <DialogDescription>
-            Preencha os dados do produto em {TOTAL_STEPS} etapas simples.
-          </DialogDescription>
-        </DialogHeader>
-        {source === "nfe" && (
-          <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
-            Dados importados da NF-e. Revise os valores e lembre de adicionar a{" "}
-            <strong>imagem</strong> (obrigatória) e a categoria antes de
-            finalizar.
-          </div>
-        )}
+      <DialogContent className="flex h-[96vh] max-h-[96vh] w-[98vw] max-w-[1600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[98vw]">
+        {/* ===== TOPO FIXO: cabeçalho + progress + indicadores ===== */}
+        <div className="shrink-0 border-b px-4 py-3 sm:px-6">
+          <DialogHeader>
+            <DialogTitle>Criar Novo Produto</DialogTitle>
+            <DialogDescription>
+              Role a tela para preencher todas as informações do produto.
+            </DialogDescription>
+          </DialogHeader>
+          {source === "nfe" && (
+            <div className="mt-3 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
+              Dados importados da NF-e. Revise os valores e lembre de adicionar
+              a <strong>imagem</strong> (obrigatória) e a categoria antes de
+              finalizar.
+            </div>
+          )}
 
-        {/* Progress Bar */}
-        <div className="space-y-4">
-          <Progress value={progressPercentage} className="h-2" />
+          {/* Progress Bar + indicadores (reativos ao scroll) */}
+          <div className="mt-4 space-y-4">
+            <Progress value={progressPercentage} className="h-2" />
 
-          {/* Step Indicators */}
-          <div className="flex justify-between gap-1 overflow-x-auto">
-            {STEPS.map((step) => {
-              const Icon = step.icon;
-              const isActive = step.id === currentStep;
-              const isCompleted = step.id < currentStep;
-              const isClickable = step.id < currentStep;
+            {/* Indicadores = índice clicável: clicar rola até a seção */}
+            <div className="flex justify-between gap-1 overflow-x-auto">
+              {STEPS.map((step) => {
+                const Icon = step.icon;
+                const isActive = step.id === currentStep;
+                const isCompleted = step.id < currentStep;
 
-              return (
-                <button
-                  key={step.id}
-                  type="button"
-                  onClick={() => goToStep(step.id)}
-                  disabled={!isClickable}
-                  className={`flex flex-col items-center gap-1 transition-colors min-w-0 flex-1 ${
-                    isClickable ? "cursor-pointer" : "cursor-default"
-                  }`}
-                >
-                  <div
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
-                      isActive
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : isCompleted
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-muted-foreground/30 text-muted-foreground/50"
-                    }`}
+                return (
+                  <button
+                    key={step.id}
+                    type="button"
+                    onClick={() => scrollToSection(step.id)}
+                    className="flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 transition-colors"
                   >
-                    {isCompleted ? (
-                      <Check className="h-5 w-5" />
-                    ) : (
-                      <Icon className="h-5 w-5" />
-                    )}
-                  </div>
-                  <span
-                    className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
-                      isActive
-                        ? "text-primary"
-                        : isCompleted
-                          ? "text-primary/80"
-                          : "text-muted-foreground/50"
-                    }`}
-                  >
-                    {step.title}
-                  </span>
-                </button>
-              );
-            })}
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
+                        isActive
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : isCompleted
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-muted-foreground/30 text-muted-foreground/50"
+                      }`}
+                    >
+                      {isCompleted ? (
+                        <Check className="h-5 w-5" />
+                      ) : (
+                        <Icon className="h-5 w-5" />
+                      )}
+                    </div>
+                    <span
+                      className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
+                        isActive
+                          ? "text-primary"
+                          : isCompleted
+                            ? "text-primary/80"
+                            : "text-muted-foreground/50"
+                      }`}
+                    >
+                      {step.title}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        <Separator />
-
+        {/* ===== CORPO ROLÁVEL: o próprio <form> é o root do observer ===== */}
         <form
+          ref={scrollContainerRef}
+          onScroll={handleBodyScroll}
           onSubmit={(e) => e.preventDefault()}
-          className="space-y-6 min-w-0"
+          className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 sm:px-6"
         >
           {/* Step 1: Identificação */}
-          {currentStep === 1 && (
+          <section
+            data-step={1}
+            ref={(el) => {
+              sectionRefs.current[1] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[0]} />
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
@@ -2732,10 +2812,17 @@ export function CreateProductDialog({
                 )}
               </div>
             </div>
-          )}
+          </section>
 
           {/* Step 2: Imagem */}
-          {currentStep === 2 && (
+          <section
+            data-step={2}
+            ref={(el) => {
+              sectionRefs.current[2] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[1]} />
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Fotos do Produto *</Label>
@@ -2770,10 +2857,17 @@ export function CreateProductDialog({
                 </p>
               </div>
             </div>
-          )}
+          </section>
 
           {/* Step 3: Preços e Estoque */}
-          {currentStep === 3 && (
+          <section
+            data-step={3}
+            ref={(el) => {
+              sectionRefs.current[3] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[2]} />
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
@@ -2915,10 +3009,17 @@ export function CreateProductDialog({
                 </p>
               </div>
             </div>
-          )}
+          </section>
 
           {/* Step 4: Veículo e Peça */}
-          {currentStep === 4 && (
+          <section
+            data-step={4}
+            ref={(el) => {
+              sectionRefs.current[4] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[3]} />
             <div className="space-y-4">
               {/* Seleção de Sucata (opcional) */}
               {availableScraps.length > 0 && (
@@ -3249,18 +3350,32 @@ export function CreateProductDialog({
                 </div>
               </div>
             </div>
-          )}
+          </section>
 
           {/* Step 5: Compatibilidade */}
-          {currentStep === 5 && (
+          <section
+            data-step={5}
+            ref={(el) => {
+              sectionRefs.current[5] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[4]} />
             <CompatibilityTab
               value={compatibilities}
               onChange={setCompatibilities}
             />
-          )}
+          </section>
 
           {/* Step 6: Mercado Livre */}
-          {currentStep === 6 && (
+          <section
+            data-step={6}
+            ref={(el) => {
+              sectionRefs.current[6] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[5]} />
             <div className="space-y-4">
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -3812,10 +3927,17 @@ export function CreateProductDialog({
                 )}
               </div>
             </div>
-          )}
+          </section>
 
           {/* Step 7: Shopee */}
-          {currentStep === 7 && (
+          <section
+            data-step={7}
+            ref={(el) => {
+              sectionRefs.current[7] = el;
+            }}
+            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          >
+            <SectionHeading step={STEPS[6]} />
             <div className="space-y-4">
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -3999,313 +4121,341 @@ export function CreateProductDialog({
                 )}
               </div>
             </div>
-          )}
+          </section>
 
-          {/* Step 8: Prévia */}
-          {currentStep === PREVIEW_STEP && (
-            <StepPreview
-              values={formValues}
-              compatibilities={compatibilities}
-              mlAccounts={mlAccounts}
-              shopeeAccounts={shopeeAccounts}
-              selectedMlAccountIds={watchMlAccountIds}
-              selectedShopeeAccountIds={watchShopeeAccountIds}
-              mlOptions={mlOptions}
-              shopeeOptions={shopeeOptions}
-              formatCurrency={formatCurrency}
-            />
-          )}
-
-          {/* Step 9: Revisão */}
-          {currentStep === REVIEW_STEP && (
-            <div className="space-y-4">
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Identificação</h4>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">SKU:</span>{" "}
-                    <span className="font-medium">{formValues.sku || "—"}</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Part Number:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.partNumber || "—"}
-                    </span>
-                  </div>
-                  <div className="col-span-2">
-                    <span className="text-muted-foreground">Nome:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.name || "—"}
-                    </span>
-                  </div>
-                  {formValues.description && (
-                    <div className="col-span-2">
-                      <span className="text-muted-foreground">Descrição:</span>{" "}
-                      <span className="font-medium">
-                        {formValues.description}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Imagem</h4>
-                <div className="text-sm">
-                  {formValues.imageUrls && formValues.imageUrls.length > 0 ? (
-                    <div className="space-y-2">
-                      <div className="flex gap-2 flex-wrap">
-                        {formValues.imageUrls.map((url, idx) => (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            key={`${url}-${idx}`}
-                            src={url}
-                            alt={`Produto ${idx + 1}`}
-                            className="h-20 w-20 rounded-lg object-cover border"
-                          />
-                        ))}
-                      </div>
-                      <p className="text-muted-foreground">
-                        {formValues.imageUrls.length} imagem(ns) carregada(s)
-                      </p>
-                    </div>
-                  ) : formValues.imageUrl ? (
-                    <div className="space-y-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={formValues.imageUrl}
-                        alt="Produto"
-                        className="h-24 w-24 rounded-lg object-cover border"
-                      />
-                      <p className="text-muted-foreground">Imagem carregada</p>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">Nenhuma imagem</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Preços e Estoque</h4>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">Preço Custo:</span>{" "}
-                    <span className="font-medium">
-                      {formatCurrency(formValues.costPrice)}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Margem:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.markup ? `${formValues.markup}%` : "—"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Preço Venda:</span>{" "}
-                    <span className="font-medium text-primary">
-                      {formatCurrency(formValues.price)}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Estoque:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.stock} unidades
-                    </span>
-                  </div>
-                  <div className="col-span-2">
-                    <span className="text-muted-foreground">Localização:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.location || "—"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Veículo e Peça</h4>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">Qualidade:</span>{" "}
-                    <span className="font-medium">
-                      {formatQuality(formValues.quality)}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Marca:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.brand || "—"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Modelo:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.model || "—"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Ano:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.year || "—"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Versão:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.version || "—"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Categoria:</span>{" "}
-                    <span className="font-medium">
-                      {formValues.category || "—"}
-                    </span>
-                  </div>
-                  {formValues.sourceVehicle && (
-                    <div className="col-span-2">
-                      <span className="text-muted-foreground">
-                        Veículo Origem:
-                      </span>{" "}
-                      <span className="font-medium">
-                        {formValues.sourceVehicle}
-                      </span>
-                    </div>
-                  )}
-                  <div className="col-span-2 flex gap-4 pt-2">
-                    {formValues.isSecurityItem && (
-                      <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
-                        Item de Segurança
-                      </span>
-                    )}
-                    {formValues.isTraceable && (
-                      <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                        Rastreável
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Compatibilidade</h4>
-                <div className="text-sm">
-                  {compatibilities.length > 0 ? (
-                    <div className="space-y-1">
-                      <p className="text-muted-foreground mb-2">
-                        {compatibilities.length} veículo(s) compatível(is)
-                      </p>
-                      {compatibilities.slice(0, 5).map((c, i) => (
-                        <div key={c._localId || i} className="text-sm">
-                          <span className="font-medium">{c.brand}</span>{" "}
-                          {c.model}
-                          {c.yearFrom
-                            ? ` (${c.yearFrom}${c.yearTo && c.yearTo !== c.yearFrom ? `–${c.yearTo}` : ""})`
-                            : ""}
-                          {c.version ? ` ${c.version}` : ""}
-                        </div>
-                      ))}
-                      {compatibilities.length > 5 && (
-                        <p className="text-muted-foreground text-xs">
-                          ... e mais {compatibilities.length - 5}
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      Nenhuma compatibilidade adicionada
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <h4 className="mb-3 font-medium">Mercado Livre</h4>
-                <div className="text-sm">
-                  {formValues.createMLListing ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                          Anúncio será criado
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">
-                          Categoria:
-                        </span>{" "}
-                        <span className="font-medium">
-                          {(formValues.mlCategory &&
-                            (mlOptions.find(
-                              (c) => c.id === formValues.mlCategory,
-                            )?.value ||
-                              ML_CATEGORIES.find(
-                                (c) => c.id === formValues.mlCategory,
-                              )?.value)) ||
-                            formValues.category ||
-                            "Não especificada"}
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">
-                      Anúncio não será criado
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Footer com navegação */}
-          <div className="flex items-center justify-between pt-4">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={
-                currentStep === 1 ? () => handleOpenChange(false) : handleBack
-              }
-              disabled={isSubmitting}
-            >
-              {currentStep === 1 ? (
-                "Cancelar"
-              ) : (
-                <>
-                  <ChevronLeft className="mr-1 h-4 w-4" />
-                  Voltar
-                </>
-              )}
-            </Button>
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">
-                Etapa {currentStep} de {TOTAL_STEPS}
-              </span>
-
-              {currentStep < TOTAL_STEPS ? (
-                <Button type="button" onClick={handleNext}>
-                  Próximo
-                  <ChevronRight className="ml-1 h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  onClick={handleSubmit(onSubmit)}
-                  disabled={isSubmitting}
+          {/* Prévia + Revisão: sempre montadas; assinam o formulário via
+              useWatch, isolando o re-render do StepPreview (pesado) e da Revisão
+              das demais seções (digitar nos outros campos não re-renderiza tudo). */}
+          <LiveFormValues control={control}>
+            {(formValues) => (
+              <>
+                {/* Seção 8: Prévia */}
+                <section
+                  data-step={PREVIEW_STEP}
+                  ref={(el) => {
+                    sectionRefs.current[PREVIEW_STEP] = el;
+                  }}
+                  className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
                 >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin" />
-                      Criando...
-                    </>
-                  ) : (
-                    <>
-                      <Check className="mr-1 h-4 w-4" />
-                      Criar Produto
-                    </>
-                  )}
-                </Button>
-              )}
-            </div>
-          </div>
+                  <SectionHeading step={STEPS[PREVIEW_STEP - 1]} />
+                  <StepPreview
+                    values={formValues}
+                    compatibilities={compatibilities}
+                    mlAccounts={mlAccounts}
+                    shopeeAccounts={shopeeAccounts}
+                    selectedMlAccountIds={
+                      (formValues.mlAccountIds ?? []) as string[]
+                    }
+                    selectedShopeeAccountIds={
+                      (formValues.shopeeAccountIds ?? []) as string[]
+                    }
+                    mlOptions={mlOptions}
+                    shopeeOptions={shopeeOptions}
+                    formatCurrency={formatCurrency}
+                  />
+                </section>
+
+                {/* Seção 9: Revisão */}
+                <section
+                  data-step={REVIEW_STEP}
+                  ref={(el) => {
+                    sectionRefs.current[REVIEW_STEP] = el;
+                  }}
+                  className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+                >
+                  <SectionHeading step={STEPS[REVIEW_STEP - 1]} />
+                  <div className="space-y-4">
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Identificação</h4>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">SKU:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.sku || "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">
+                            Part Number:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formValues.partNumber || "—"}
+                          </span>
+                        </div>
+                        <div className="col-span-2">
+                          <span className="text-muted-foreground">Nome:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.name || "—"}
+                          </span>
+                        </div>
+                        {formValues.description && (
+                          <div className="col-span-2">
+                            <span className="text-muted-foreground">
+                              Descrição:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.description}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Imagem</h4>
+                      <div className="text-sm">
+                        {formValues.imageUrls &&
+                        formValues.imageUrls.length > 0 ? (
+                          <div className="space-y-2">
+                            <div className="flex gap-2 flex-wrap">
+                              {formValues.imageUrls.map((url, idx) => (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img
+                                  key={`${url}-${idx}`}
+                                  src={url}
+                                  alt={`Produto ${idx + 1}`}
+                                  className="h-20 w-20 rounded-lg object-cover border"
+                                />
+                              ))}
+                            </div>
+                            <p className="text-muted-foreground">
+                              {formValues.imageUrls.length} imagem(ns)
+                              carregada(s)
+                            </p>
+                          </div>
+                        ) : formValues.imageUrl ? (
+                          <div className="space-y-2">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={formValues.imageUrl}
+                              alt="Produto"
+                              className="h-24 w-24 rounded-lg object-cover border"
+                            />
+                            <p className="text-muted-foreground">
+                              Imagem carregada
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground">
+                            Nenhuma imagem
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Preços e Estoque</h4>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">
+                            Preço Custo:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formatCurrency(formValues.costPrice)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Margem:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.markup ? `${formValues.markup}%` : "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">
+                            Preço Venda:
+                          </span>{" "}
+                          <span className="font-medium text-primary">
+                            {formatCurrency(formValues.price)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">
+                            Estoque:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formValues.stock} unidades
+                          </span>
+                        </div>
+                        <div className="col-span-2">
+                          <span className="text-muted-foreground">
+                            Localização:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formValues.location || "—"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Veículo e Peça</h4>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">
+                            Qualidade:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formatQuality(formValues.quality)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Marca:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.brand || "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Modelo:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.model || "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Ano:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.year || "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Versão:</span>{" "}
+                          <span className="font-medium">
+                            {formValues.version || "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">
+                            Categoria:
+                          </span>{" "}
+                          <span className="font-medium">
+                            {formValues.category || "—"}
+                          </span>
+                        </div>
+                        {formValues.sourceVehicle && (
+                          <div className="col-span-2">
+                            <span className="text-muted-foreground">
+                              Veículo Origem:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.sourceVehicle}
+                            </span>
+                          </div>
+                        )}
+                        <div className="col-span-2 flex gap-4 pt-2">
+                          {formValues.isSecurityItem && (
+                            <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+                              Item de Segurança
+                            </span>
+                          )}
+                          {formValues.isTraceable && (
+                            <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                              Rastreável
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Compatibilidade</h4>
+                      <div className="text-sm">
+                        {compatibilities.length > 0 ? (
+                          <div className="space-y-1">
+                            <p className="text-muted-foreground mb-2">
+                              {compatibilities.length} veículo(s) compatível(is)
+                            </p>
+                            {compatibilities.slice(0, 5).map((c, i) => (
+                              <div key={c._localId || i} className="text-sm">
+                                <span className="font-medium">{c.brand}</span>{" "}
+                                {c.model}
+                                {c.yearFrom
+                                  ? ` (${c.yearFrom}${c.yearTo && c.yearTo !== c.yearFrom ? `–${c.yearTo}` : ""})`
+                                  : ""}
+                                {c.version ? ` ${c.version}` : ""}
+                              </div>
+                            ))}
+                            {compatibilities.length > 5 && (
+                              <p className="text-muted-foreground text-xs">
+                                ... e mais {compatibilities.length - 5}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground">
+                            Nenhuma compatibilidade adicionada
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="mb-3 font-medium">Mercado Livre</h4>
+                      <div className="text-sm">
+                        {formValues.createMLListing ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                                Anúncio será criado
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">
+                                Categoria:
+                              </span>{" "}
+                              <span className="font-medium">
+                                {(formValues.mlCategory &&
+                                  (mlOptions.find(
+                                    (c) => c.id === formValues.mlCategory,
+                                  )?.value ||
+                                    ML_CATEGORIES.find(
+                                      (c) => c.id === formValues.mlCategory,
+                                    )?.value)) ||
+                                  formValues.category ||
+                                  "Não especificada"}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground">
+                            Anúncio não será criado
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </>
+            )}
+          </LiveFormValues>
         </form>
+
+        {/* ===== FOOTER FIXO: só Cancelar + Criar Produto ===== */}
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-3 sm:px-6">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => handleOpenChange(false)}
+            disabled={isSubmitting}
+          >
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            onClick={handleSubmit(onSubmit, onInvalid)}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Criando...
+              </>
+            ) : (
+              <>
+                <Check className="mr-1 h-4 w-4" />
+                Criar Produto
+              </>
+            )}
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );

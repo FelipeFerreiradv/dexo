@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -11,6 +11,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { getApiBaseUrl } from "@/lib/api";
 
 export type MLAttributeValue = {
@@ -76,6 +81,8 @@ export function MLDynamicAttributesSection({
   const [attrs, setAttrs] = useState<MLDynamicAttribute[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A ficha técnica começa RECOLHIDA: só abre quando o usuário clica no cabeçalho.
+  const [fichaOpen, setFichaOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,24 +150,84 @@ export function MLDynamicAttributesSection({
   };
 
   return (
-    <div className="mt-4 space-y-3 rounded-md border border-dashed p-4">
-      <div className="text-sm font-medium">Ficha técnica (Mercado Livre)</div>
-      <div className="text-xs text-muted-foreground">
-        Campos oficiais desta categoria. Os obrigatórios são marcados com{" "}
-        <span className="text-red-600">*</span>.
-      </div>
+    <Collapsible
+      open={fichaOpen}
+      onOpenChange={setFichaOpen}
+      className="mt-4 rounded-md border border-dashed p-4"
+    >
+      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 text-left">
+        <div>
+          <div className="text-sm font-medium">
+            Ficha técnica (Mercado Livre){" "}
+            <span className="font-normal text-muted-foreground">
+              · {visible.length} campos
+            </span>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Campos oficiais desta categoria. Os obrigatórios são marcados com{" "}
+            <span className="text-red-600">*</span>.
+          </div>
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 transition-transform ${fichaOpen ? "rotate-180" : ""}`}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {visible.map((attr) => {
+            const current = value[attr.id] || {};
+            const isList =
+              (attr.valueType === "list" ||
+                attr.valueType === "boolean" ||
+                !!attr.allowedValues) &&
+              Array.isArray(attr.allowedValues) &&
+              attr.allowedValues.length > 0;
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {visible.map((attr) => {
-          const current = value[attr.id] || {};
-          const isList =
-            (attr.valueType === "list" ||
-              attr.valueType === "boolean" ||
-              !!attr.allowedValues) &&
-            Array.isArray(attr.allowedValues) &&
-            attr.allowedValues.length > 0;
+            if (isList) {
+              return (
+                <div key={attr.id} className="space-y-1">
+                  <Label htmlFor={`ml-attr-${attr.id}`}>
+                    {attr.name}
+                    {attr.required && (
+                      <span className="ml-0.5 text-red-600">*</span>
+                    )}
+                  </Label>
+                  <Select
+                    value={current.value_id || ""}
+                    onValueChange={(v) => {
+                      if (!v) {
+                        updateAttr(attr.id, null);
+                        return;
+                      }
+                      const opt = attr.allowedValues?.find((o) => o.id === v);
+                      updateAttr(attr.id, {
+                        value_id: v,
+                        value_name: opt?.name,
+                      });
+                    }}
+                    disabled={disabled}
+                  >
+                    <SelectTrigger id={`ml-attr-${attr.id}`}>
+                      <SelectValue
+                        placeholder={`Selecione ${attr.name.toLowerCase()}`}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attr.allowedValues?.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            }
 
-          if (isList) {
+            const inputType =
+              attr.valueType === "number" || attr.valueType === "number_unit"
+                ? "number"
+                : "text";
             return (
               <div key={attr.id} className="space-y-1">
                 <Label htmlFor={`ml-attr-${attr.id}`}>
@@ -169,71 +236,28 @@ export function MLDynamicAttributesSection({
                     <span className="ml-0.5 text-red-600">*</span>
                   )}
                 </Label>
-                <Select
-                  value={current.value_id || ""}
-                  onValueChange={(v) => {
-                    if (!v) {
+                <Input
+                  id={`ml-attr-${attr.id}`}
+                  type={inputType}
+                  value={current.value_name ?? ""}
+                  onChange={(e) => {
+                    const text = e.target.value;
+                    if (!text || !text.trim()) {
                       updateAttr(attr.id, null);
                       return;
                     }
-                    const opt = attr.allowedValues?.find((o) => o.id === v);
-                    updateAttr(attr.id, {
-                      value_id: v,
-                      value_name: opt?.name,
-                    });
+                    updateAttr(attr.id, { value_name: text });
                   }}
+                  maxLength={attr.valueMaxLength}
                   disabled={disabled}
-                >
-                  <SelectTrigger id={`ml-attr-${attr.id}`}>
-                    <SelectValue
-                      placeholder={`Selecione ${attr.name.toLowerCase()}`}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {attr.allowedValues?.map((o) => (
-                      <SelectItem key={o.id} value={o.id}>
-                        {o.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder={attr.required ? "Obrigatório" : "Opcional"}
+                />
               </div>
             );
-          }
-
-          const inputType =
-            attr.valueType === "number" || attr.valueType === "number_unit"
-              ? "number"
-              : "text";
-          return (
-            <div key={attr.id} className="space-y-1">
-              <Label htmlFor={`ml-attr-${attr.id}`}>
-                {attr.name}
-                {attr.required && (
-                  <span className="ml-0.5 text-red-600">*</span>
-                )}
-              </Label>
-              <Input
-                id={`ml-attr-${attr.id}`}
-                type={inputType}
-                value={current.value_name ?? ""}
-                onChange={(e) => {
-                  const text = e.target.value;
-                  if (!text || !text.trim()) {
-                    updateAttr(attr.id, null);
-                    return;
-                  }
-                  updateAttr(attr.id, { value_name: text });
-                }}
-                maxLength={attr.valueMaxLength}
-                disabled={disabled}
-                placeholder={attr.required ? "Obrigatório" : "Opcional"}
-              />
-            </div>
-          );
-        })}
-      </div>
-    </div>
+          })}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
