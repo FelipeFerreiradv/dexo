@@ -10,6 +10,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
+import { formatToBRL } from "@/components/ui/currency-input";
 import {
   TIPO_OPERACAO_LABELS,
   FINALIDADE_LABELS,
@@ -49,9 +50,9 @@ export function StepFinalizar({ getValues }: Props) {
           <div className="text-sm text-amber-700">
             <p className="font-medium">Divergencia nos valores</p>
             <p className="text-xs mt-1">
-              Total dos produtos (R$ {totalProdutos.toFixed(2)}) difere do total
-              dos pagamentos (R$ {totalPagamentos.toFixed(2)}). Diferenca: R${" "}
-              {diff.toFixed(2)}.
+              Total dos produtos (R$ {formatToBRL(totalProdutos)}) difere do
+              total dos pagamentos (R$ {formatToBRL(totalPagamentos)}).
+              Diferenca: R$ {formatToBRL(diff)}.
             </p>
           </div>
         </div>
@@ -120,14 +121,14 @@ export function StepFinalizar({ getValues }: Props) {
               </span>
               <span>
                 {Number(item.quantidade)} x R${" "}
-                {Number(item.valorUnitario).toFixed(2)} = R${" "}
-                {Number(item.valorTotal).toFixed(2)}
+                {formatToBRL(Number(item.valorUnitario))} = R${" "}
+                {formatToBRL(Number(item.valorTotal))}
               </span>
             </div>
           ))}
         </div>
         <div className="flex justify-end pt-1 text-sm font-semibold">
-          Total: R$ {totalProdutos.toFixed(2)}
+          Total: R$ {formatToBRL(totalProdutos)}
         </div>
       </div>
 
@@ -161,12 +162,12 @@ export function StepFinalizar({ getValues }: Props) {
               <span className="text-muted-foreground">
                 {MEIO_PAGAMENTO_LABELS[p.meio] ?? p.meio}
               </span>
-              <span>R$ {Number(p.valor).toFixed(2)}</span>
+              <span>R$ {formatToBRL(Number(p.valor))}</span>
             </div>
           ))}
         </div>
         <div className="flex justify-end pt-1 text-sm font-semibold">
-          Total: R$ {totalPagamentos.toFixed(2)}
+          Total: R$ {formatToBRL(totalPagamentos)}
         </div>
       </div>
 

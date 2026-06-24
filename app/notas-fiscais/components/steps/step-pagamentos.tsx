@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MEIO_PAGAMENTO_LABELS } from "../../lib/nfe-defaults";
-import { CurrencyInput } from "@/components/ui/currency-input";
+import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -159,18 +159,18 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
             <div className="text-sm">
               <span className="text-muted-foreground">Total produtos: </span>
               <span className="font-semibold">
-                R$ {totalProdutos.toFixed(2)}
+                R$ {formatToBRL(totalProdutos)}
               </span>
             </div>
             <div className="text-sm">
               <span className="text-muted-foreground">Total pagamentos: </span>
               <span className="font-semibold">
-                R$ {totalPagamentos.toFixed(2)}
+                R$ {formatToBRL(totalPagamentos)}
               </span>
             </div>
             {Math.abs(diff) > 0.01 && (
               <div className="text-sm text-amber-600">
-                Diferenca: R$ {diff.toFixed(2)}
+                Diferenca: R$ {formatToBRL(diff)}
               </div>
             )}
           </div>

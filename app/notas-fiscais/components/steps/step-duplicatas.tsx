@@ -9,7 +9,7 @@ import {
 } from "react-hook-form";
 import { Plus, Trash2, Receipt } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { CurrencyInput } from "@/components/ui/currency-input";
+import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 import { Button } from "@/components/ui/button";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 
@@ -164,7 +164,7 @@ export function StepDuplicatas({ control, errors, getValues }: Props) {
             <div className="text-sm">
               <span className="text-muted-foreground">Total duplicatas: </span>
               <span className="font-semibold">
-                R$ {totalDuplicatas.toFixed(2)}
+                R$ {formatToBRL(totalDuplicatas)}
               </span>
             </div>
           </div>

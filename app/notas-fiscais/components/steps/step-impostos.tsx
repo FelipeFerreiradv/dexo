@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { UseFormGetValues } from "react-hook-form";
 import { Calculator, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import type { NfeTotais } from "@/app/fiscal/domain/nfe.types";
@@ -57,7 +58,7 @@ export function StepImpostos({
   }, []);
 
   const fmt = (v: number | undefined | null) =>
-    `R$ ${(v ?? 0).toFixed(2)}`;
+    `R$ ${formatToBRL(v ?? 0)}`;
 
   if (loading && !totais) {
     return (
