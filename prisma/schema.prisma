@@ -370,10 +370,34 @@ model Order {
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
   items                OrderItem[]
   nfesEmitidas         NfeEmitida[]
+  shipmentLabel        ShipmentLabel?
 
   @@unique([marketplaceAccountId, externalOrderId])
   @@index([marketplaceAccountId, createdAt])
   @@index([status, updatedAt])
+}
+
+// Etiqueta de envio (AWB/Mercado Envios) de um pedido. ADITIVO e 1:1 com Order
+// (orderId @unique). Order não ganha colunas — só a relação virtual acima, que
+// não gera DDL. Persiste o estado do fluxo: NF-e enviada ao marketplace →
+// liberação → etiqueta gerada. labelStatus segue NONE|INVOICE_SENT|
+// READY_TO_PRINT|GENERATED|ERROR. provider = "MERCADO_LIVRE" | "SHOPEE".
+model ShipmentLabel {
+  id             String    @id @default(cuid())
+  orderId        String    @unique
+  provider       String
+  shipmentId     String?
+  trackingNumber String?
+  labelStatus    String    @default("NONE")
+  labelSize      String?
+  labelPdfPath   String?
+  labelError     String?
+  invoiceSentAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  order          Order     @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
 }
 
 model OrderItem {

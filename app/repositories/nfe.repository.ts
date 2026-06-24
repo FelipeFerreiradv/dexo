@@ -561,4 +561,42 @@ export class NfeRepository {
       },
     });
   }
+
+  /**
+   * NF-e AUTORIZADA de um pedido — para o módulo de Etiqueta de Envio. ADITIVO:
+   * não altera `findEmitted` (listagem da tela F6). Escopo multi-tenant por
+   * `userId`. Quando `ambiente` é informado, filtra PRODUCAO/HOMOLOGACAO — o
+   * módulo de etiqueta exige PRODUCAO. Retorna a autorizada mais recente.
+   */
+  async findAuthorizedByOrderId(
+    userId: string,
+    orderId: string,
+    ambiente?: "PRODUCAO" | "HOMOLOGACAO",
+  ): Promise<{
+    id: string;
+    chaveAcesso: string | null;
+    xmlAutorizadoPath: string | null;
+    ambiente: string;
+    modelo: string;
+    status: string;
+  } | null> {
+    const row = await (prisma as any).nfeEmitida.findFirst({
+      where: {
+        userId,
+        orderId,
+        status: "AUTHORIZED",
+        ...(ambiente ? { ambiente } : {}),
+      },
+      orderBy: { dataAutorizacao: "desc" },
+      select: {
+        id: true,
+        chaveAcesso: true,
+        xmlAutorizadoPath: true,
+        ambiente: true,
+        modelo: true,
+        status: true,
+      },
+    });
+    return row ?? null;
+  }
 }
