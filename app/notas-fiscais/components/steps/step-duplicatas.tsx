@@ -9,6 +9,7 @@ import {
 } from "react-hook-form";
 import { Plus, Trash2, Receipt } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import { Button } from "@/components/ui/button";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 
@@ -139,13 +140,12 @@ export function StepDuplicatas({ control, errors, getValues }: Props) {
                     control={control}
                     name={`duplicatas.${idx}.valor`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.01"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) => field.onChange(Number(e.target.value))}
+                      <CurrencyInput
+                        ref={field.ref}
+                        name={field.name}
+                        value={field.value}
+                        onChange={(v) => field.onChange(v ?? 0)}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}

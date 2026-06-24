@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MEIO_PAGAMENTO_LABELS } from "../../lib/nfe-defaults";
-import { ValorInput } from "../valor-input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -135,11 +135,11 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
                     control={control}
                     name={`pagamentos.${idx}.valor`}
                     render={({ field }) => (
-                      <ValorInput
-                        name={field.name}
+                      <CurrencyInput
                         ref={field.ref}
+                        name={field.name}
                         value={field.value}
-                        onChange={field.onChange}
+                        onChange={(v) => field.onChange(v ?? 0)}
                         onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />

@@ -27,6 +27,7 @@ import type { ProductLookup } from "@/app/interfaces/nfe.interface";
 import { CfopCombobox } from "../cfop-combobox";
 import { cfopTipoFromOperacao } from "@/app/fiscal/domain/cfop-catalog";
 import { ValorInput } from "../valor-input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 
 // Combobox de CFOP atrás de flag — desligar volta ao input de texto livre atual.
 const CFOP_COMBOBOX_ENABLED =
@@ -361,12 +362,12 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.valorUnitario`}
                     render={({ field }) => (
-                      <ValorInput
-                        name={field.name}
+                      <CurrencyInput
                         ref={field.ref}
+                        name={field.name}
                         value={field.value}
                         onChange={(v) => {
-                          field.onChange(v);
+                          field.onChange(v ?? 0);
                           setTimeout(() => recalcItemTotal(idx), 0);
                         }}
                         onBlur={field.onBlur}
@@ -382,9 +383,9 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.desconto`}
                     render={({ field }) => (
-                      <ValorInput
-                        name={field.name}
+                      <CurrencyInput
                         ref={field.ref}
+                        name={field.name}
                         value={field.value}
                         onChange={(v) => {
                           field.onChange(v);
