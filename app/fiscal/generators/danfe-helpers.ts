@@ -80,3 +80,20 @@ export function wrapTextLines(
   while (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
+
+/**
+ * Formata um número no padrão monetário brasileiro, SEM o prefixo "R$":
+ *   1234.5 → "1.234,50"   |   50 → "50,00"   |   0/null → "0,00"
+ *
+ * Uso exclusivo das EXIBIÇÕES do DANFE (PDF). NÃO usar no XML da NF-e: o leiaute
+ * SEFAZ exige ponto como separador decimal (ex.: "50.00"); vírgula faria a nota
+ * ser rejeitada. Caracteres "." e "," são WinAnsi-safe (pdf-lib desenha ok).
+ */
+export function formatBRLNumber(value: number | null | undefined): string {
+  const n = Number(value) || 0;
+  // Implementação manual (não depende de ICU/Intl, que pode faltar no Node do
+  // servidor): 2 casas, ponto como separador de milhar, vírgula no decimal.
+  const [intPart, decPart] = Math.abs(n).toFixed(2).split(".");
+  const withThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${n < 0 ? "-" : ""}${withThousands},${decPart}`;
+}

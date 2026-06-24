@@ -14,7 +14,12 @@ import {
 import type { NfeDraftResponse } from "../../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
 import type { NfeTotais } from "../domain/nfe.types";
-import { resolveCstCsosn, toWinAnsiSafe, wrapTextLines } from "./danfe-helpers";
+import {
+  resolveCstCsosn,
+  toWinAnsiSafe,
+  wrapTextLines,
+  formatBRLNumber,
+} from "./danfe-helpers";
 import { composeInfCpl } from "../domain/inf-cpl";
 
 /** Avatar do usuário já carregado em bytes (PNG ou JPG) para embutir no PDF. */
@@ -301,7 +306,7 @@ export async function renderDanfeV2(
 
   // ── Cálculo do imposto (grid de valores) ──
   const totais = (nfe.totaisJson ?? {}) as NfeTotais;
-  const money = (n: unknown) => `R$ ${(Number(n) || 0).toFixed(2)}`;
+  const money = (n: unknown) => `R$ ${formatBRLNumber(Number(n) || 0)}`;
   const taxCells = [
     { l: "BASE ICMS", v: money(totais.totalBcIcms) },
     { l: "VALOR ICMS", v: money(totais.totalIcms) },
@@ -407,10 +412,10 @@ export async function renderDanfeV2(
     text(cst, xCst + 2, ry - 9, 6.5);
     text(item.cfop, xCfop + 2, ry - 9, 6.5);
     text(fit(item.unidade, wUn - 4, 6.5), xUn + 2, ry - 9, 6.5);
-    right(Number(item.quantidade).toFixed(2), xUnit - 4, ry - 9, 6.5);
-    right(Number(item.valorUnitario).toFixed(2), xTot - 4, ry - 9, 6.5);
+    right(formatBRLNumber(Number(item.quantidade)), xUnit - 4, ry - 9, 6.5);
+    right(formatBRLNumber(Number(item.valorUnitario)), xTot - 4, ry - 9, 6.5);
     right(
-      Number(item.valorTotal).toFixed(2),
+      formatBRLNumber(Number(item.valorTotal)),
       margin + W - 6,
       ry - 9,
       6.5,
