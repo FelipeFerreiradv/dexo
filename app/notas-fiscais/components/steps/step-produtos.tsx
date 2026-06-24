@@ -338,16 +338,15 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.quantidade`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        value={field.value ?? ""}
-                        onChange={(e) => {
-                          field.onChange(Number(e.target.value));
+                      <ValorInput
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onChange={(v) => {
+                          field.onChange(v);
                           setTimeout(() => recalcItemTotal(idx), 0);
                         }}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}

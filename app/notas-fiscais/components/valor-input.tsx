@@ -87,6 +87,16 @@ export const ValorInput = React.forwardRef<HTMLInputElement, ValorInputProps>(
         }}
         onFocus={(e) => {
           setFocused(true);
+          // Seleciona tudo para que digitar SUBSTITUA o valor pré-preenchido
+          // (ex.: Quantidade default 1 → digitar 5 dá 5, não "15").
+          const el = e.target;
+          setTimeout(() => {
+            try {
+              el.select();
+            } catch {
+              /* no-op */
+            }
+          }, 0);
           onFocus?.(e);
         }}
         onBlur={(e) => {
