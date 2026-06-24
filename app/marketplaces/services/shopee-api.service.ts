@@ -960,4 +960,280 @@ export class ShopeeApiService {
 
     return { attribute_list };
   }
+
+  // ====================================================================
+  // LOGÍSTICA / ETIQUETA DE ENVIO (módulo aditivo — Fase 4)
+  //
+  // makeAuthenticatedRequest é private; por isso estes métodos vivem AQUI,
+  // públicos, ao lado de getLogisticsChannelList. Os endpoints JSON usam
+  // makeAuthenticatedRequest; upload (multipart) e download (binário) assinam
+  // inline (mesmo padrão de uploadImage). NÃO alteram nada existente.
+  // Shapes a confirmar em homologação (SHOPEE_SANDBOX=true).
+  // ====================================================================
+
+  /** Monta a URL assinada de um endpoint (mesmo esquema de uploadImage). */
+  private static buildSignedUrl(
+    apiPath: string,
+    accessToken: string,
+    shopId: number,
+  ): string {
+    this.validateConfig();
+    const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = ShopeeOAuthService.generateSignature({
+      partner_id: partnerId,
+      api_path: apiPath,
+      timestamp,
+      access_token: accessToken,
+      shop_id: shopId,
+    });
+    const url = new URL(apiPath, SHOPEE_CONSTANTS.API_URL);
+    url.searchParams.set("partner_id", partnerId.toString());
+    url.searchParams.set("timestamp", timestamp.toString());
+    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("shop_id", shopId.toString());
+    url.searchParams.set("sign", signature);
+    return url.toString();
+  }
+
+  /**
+   * Envia/atualiza a NF-e do pedido (passo fiscal do Brasil). Multipart com o
+   * XML autorizado. A loja precisa estar configurada como emissor externo de
+   * NF-e no Seller Center.
+   */
+  static async uploadInvoiceDoc(
+    accessToken: string,
+    shopId: number,
+    orderSn: string,
+    xml: string,
+    fileType = "normal_invoice",
+  ): Promise<void> {
+    const url = this.buildSignedUrl(
+      "/api/v2/logistics/upload_invoice_doc",
+      accessToken,
+      shopId,
+    );
+    const form = new FormData();
+    form.append("order_sn", orderSn);
+    form.append("file_type", fileType);
+    form.append("file", Buffer.from(xml, "utf-8"), {
+      filename: `${orderSn}.xml`,
+      contentType: "application/xml",
+    });
+    try {
+      const resp = await axios.post(url, form, {
+        headers: { ...form.getHeaders() },
+        timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
+        maxContentLength: 10 * 1024 * 1024,
+        maxBodyLength: 10 * 1024 * 1024,
+      });
+      const data = resp.data as ShopeeApiResponse<unknown>;
+      if (data?.error) {
+        throw new Error(
+          `Erro ao enviar NF-e à Shopee: ${data.message ?? data.error}`,
+        );
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const message =
+          (error.response?.data as { message?: string })?.message ||
+          error.message;
+        const err = new Error(`Shopee upload_invoice_doc ${status ?? ""}: ${message}`);
+        (err as { status?: number }).status = status;
+        throw err;
+      }
+      throw error;
+    }
+  }
+
+  /** GET /api/v2/logistics/get_shipping_parameter?order_sn=... */
+  static async getShippingParameter(
+    accessToken: string,
+    shopId: number,
+    orderSn: string,
+  ): Promise<Record<string, any>> {
+    const apiPath = `/api/v2/logistics/get_shipping_parameter?order_sn=${encodeURIComponent(
+      orderSn,
+    )}`;
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<Record<string, any>>
+    >("GET", apiPath, accessToken, shopId);
+    if (response.error) {
+      throw new Error(
+        `Erro ao obter parâmetros de envio Shopee: ${response.message ?? response.error}`,
+      );
+    }
+    return response.response ?? {};
+  }
+
+  /** GET /api/v2/logistics/get_address_list */
+  static async getAddressList(
+    accessToken: string,
+    shopId: number,
+  ): Promise<any[]> {
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{ address_list?: any[] }>
+    >("GET", "/api/v2/logistics/get_address_list", accessToken, shopId);
+    if (response.error) {
+      throw new Error(
+        `Erro ao listar endereços Shopee: ${response.message ?? response.error}`,
+      );
+    }
+    return response.response?.address_list ?? [];
+  }
+
+  /** POST /api/v2/logistics/ship_order (pickup ou dropoff). */
+  static async shipOrder(
+    accessToken: string,
+    shopId: number,
+    body: { order_sn: string; pickup?: any; dropoff?: any },
+  ): Promise<void> {
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<unknown>
+    >("POST", "/api/v2/logistics/ship_order", accessToken, shopId, body);
+    if (response.error) {
+      const err = new Error(
+        `Erro ao arranjar envio Shopee: ${response.message ?? response.error}`,
+      );
+      (err as { shopeeError?: string }).shopeeError = response.error ?? undefined;
+      (err as { shopeeMessage?: string }).shopeeMessage =
+        response.message ?? undefined;
+      throw err;
+    }
+  }
+
+  /** GET /api/v2/logistics/get_tracking_number?order_sn=... */
+  static async getTrackingNumber(
+    accessToken: string,
+    shopId: number,
+    orderSn: string,
+  ): Promise<string | null> {
+    const apiPath = `/api/v2/logistics/get_tracking_number?order_sn=${encodeURIComponent(
+      orderSn,
+    )}`;
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{ tracking_number?: string }>
+    >("GET", apiPath, accessToken, shopId);
+    if (response.error) {
+      throw new Error(
+        `Erro ao obter tracking Shopee: ${response.message ?? response.error}`,
+      );
+    }
+    return response.response?.tracking_number ?? null;
+  }
+
+  /** POST /api/v2/logistics/create_shipping_document (assíncrono). */
+  static async createShippingDocument(
+    accessToken: string,
+    shopId: number,
+    orderList: Array<{ order_sn: string }>,
+    docType: string,
+  ): Promise<void> {
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        result_list?: Array<{
+          order_sn: string;
+          fail_error?: string;
+          fail_message?: string;
+        }>;
+      }>
+    >("POST", "/api/v2/logistics/create_shipping_document", accessToken, shopId, {
+      order_list: orderList.map((o) => ({
+        order_sn: o.order_sn,
+        shipping_document_type: docType,
+      })),
+    });
+    if (response.error) {
+      throw new Error(
+        `Erro ao criar documento de envio Shopee: ${response.message ?? response.error}`,
+      );
+    }
+    const failed = (response.response?.result_list ?? []).find(
+      (r) => r.fail_error || r.fail_message,
+    );
+    if (failed) {
+      throw new Error(
+        `Shopee rejeitou create_shipping_document (${failed.order_sn}): ${failed.fail_message ?? failed.fail_error}`,
+      );
+    }
+  }
+
+  /** POST /api/v2/logistics/get_shipping_document_result → status por pedido. */
+  static async getShippingDocumentResult(
+    accessToken: string,
+    shopId: number,
+    orderList: Array<{ order_sn: string }>,
+    docType: string,
+  ): Promise<Array<{ order_sn: string; status: string }>> {
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        result_list?: Array<{ order_sn: string; status: string }>;
+      }>
+    >(
+      "POST",
+      "/api/v2/logistics/get_shipping_document_result",
+      accessToken,
+      shopId,
+      {
+        order_list: orderList.map((o) => ({
+          order_sn: o.order_sn,
+          shipping_document_type: docType,
+        })),
+      },
+    );
+    if (response.error) {
+      throw new Error(
+        `Erro ao consultar documento de envio Shopee: ${response.message ?? response.error}`,
+      );
+    }
+    return (response.response?.result_list ?? []).map((r) => ({
+      order_sn: r.order_sn,
+      status: r.status,
+    }));
+  }
+
+  /**
+   * POST /api/v2/logistics/download_shipping_document → PDF (binário).
+   * Assina inline (makeAuthenticatedRequest assume JSON; aqui é arraybuffer).
+   */
+  static async downloadShippingDocument(
+    accessToken: string,
+    shopId: number,
+    orderList: Array<{ order_sn: string }>,
+    docType: string,
+  ): Promise<Buffer> {
+    const url = this.buildSignedUrl(
+      "/api/v2/logistics/download_shipping_document",
+      accessToken,
+      shopId,
+    );
+    try {
+      const resp = await axios.post(
+        url,
+        {
+          order_list: orderList.map((o) => ({
+            order_sn: o.order_sn,
+            shipping_document_type: docType,
+          })),
+          shipping_document_type: docType,
+        },
+        {
+          responseType: "arraybuffer",
+          timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+      return Buffer.from(resp.data as ArrayBuffer);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const err = new Error(
+          `Shopee download_shipping_document ${status ?? ""}`,
+        );
+        (err as { status?: number }).status = status;
+        throw err;
+      }
+      throw error;
+    }
+  }
 }
