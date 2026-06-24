@@ -13,6 +13,7 @@ import {
   FileText,
   Loader2,
   MapPin,
+  Printer,
 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -39,6 +40,9 @@ import { getApiBaseUrl } from "@/lib/api";
 
 const isFiscalEnabled =
   process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED === "true";
+
+const isEtiquetasEnabled =
+  process.env.NEXT_PUBLIC_ETIQUETAS_MODULE_ENABLED === "true";
 
 interface OrderDetailSheetProps {
   order: Order | null;
@@ -78,6 +82,10 @@ export function OrderDetailSheet({
   const [isUpdating, setIsUpdating] = useState(false);
   const [isCreatingNfe, setIsCreatingNfe] = useState(false);
   const [nfeError, setNfeError] = useState<string | null>(null);
+  const [labelLoading, setLabelLoading] = useState(false);
+  const [labelSize, setLabelSize] = useState<"A4" | "THERMAL">("A4");
+  const [labelMsg, setLabelMsg] = useState<string | null>(null);
+  const [labelError, setLabelError] = useState<string | null>(null);
   const { data: session } = useSession();
   const router = useRouter();
 
@@ -88,6 +96,12 @@ export function OrderDetailSheet({
       router.prefetch("/notas-fiscais/nfe");
     }
   }, [open, router]);
+
+  // Limpa o estado da etiqueta ao trocar de pedido.
+  useEffect(() => {
+    setLabelMsg(null);
+    setLabelError(null);
+  }, [order?.id]);
 
   const handleEmitirNfe = async () => {
     if (!order || !session?.user?.email || isCreatingNfe) return;
@@ -148,6 +162,75 @@ export function OrderDetailSheet({
       setNfeError("Erro de conexão ao iniciar emissão de NF-e.");
     } finally {
       setIsCreatingNfe(false);
+    }
+  };
+
+  // Abre o PDF da etiqueta já gerada numa nova aba (busca com auth → blob).
+  const openLabelPdf = async (): Promise<boolean> => {
+    if (!order || !session?.user?.email) return false;
+    const res = await fetch(
+      `${getApiBaseUrl()}/orders/${order.id}/shipping-label`,
+      { headers: { email: session.user.email } },
+    );
+    if (!res.ok) return false;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return true;
+  };
+
+  const handleEmitirEtiqueta = async () => {
+    if (!order || !session?.user?.email || labelLoading) return;
+    setLabelLoading(true);
+    setLabelMsg(null);
+    setLabelError(null);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/orders/${order.id}/shipping-label`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
+          body: JSON.stringify({ size: labelSize }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLabelError(
+          data?.message ||
+            "Não foi possível gerar a etiqueta. Tente novamente.",
+        );
+        return;
+      }
+      setLabelMsg(
+        data?.reused
+          ? "Etiqueta já gerada — abrindo para impressão."
+          : "Etiqueta gerada — abrindo para impressão.",
+      );
+      const opened = await openLabelPdf();
+      if (!opened) {
+        setLabelError(
+          "Etiqueta gerada, mas falhou ao abrir o PDF. Use 'Baixar'.",
+        );
+      }
+    } catch {
+      setLabelError("Erro de conexão ao gerar a etiqueta.");
+    } finally {
+      setLabelLoading(false);
+    }
+  };
+
+  const handleBaixarEtiqueta = async () => {
+    if (!order || labelLoading) return;
+    setLabelError(null);
+    const ok = await openLabelPdf();
+    if (!ok) {
+      setLabelError(
+        "Nenhuma etiqueta gerada ainda. Clique em 'Emitir etiqueta'.",
+      );
     }
   };
 
@@ -278,6 +361,59 @@ export function OrderDetailSheet({
                   <p className="max-w-65 text-xs text-destructive">
                     {nfeError}
                   </p>
+                )}
+                {isEtiquetasEnabled && (
+                  <div className="flex flex-col items-end gap-1.5">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Select
+                        value={labelSize}
+                        onValueChange={(value) =>
+                          setLabelSize(value as "A4" | "THERMAL")
+                        }
+                        disabled={labelLoading}
+                      >
+                        <SelectTrigger className="min-w-[140px] border-border/70 bg-card/80 shadow-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="A4">Etiqueta A4</SelectItem>
+                          <SelectItem value="THERMAL">Térmica 10×15</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleEmitirEtiqueta}
+                        disabled={labelLoading}
+                        className="gap-1.5"
+                      >
+                        {labelLoading ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Printer className="size-4" />
+                        )}
+                        {labelLoading ? "Gerando..." : "Emitir etiqueta"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleBaixarEtiqueta}
+                        disabled={labelLoading}
+                      >
+                        Baixar
+                      </Button>
+                    </div>
+                    {labelMsg && (
+                      <p className="max-w-65 text-xs text-emerald-600 dark:text-emerald-400">
+                        {labelMsg}
+                      </p>
+                    )}
+                    {labelError && (
+                      <p className="max-w-65 text-xs text-destructive">
+                        {labelError}
+                      </p>
+                    )}
+                  </div>
                 )}
                 <div>
                   <p className="text-xs uppercase tracking-[0.08em] text-muted-foreground">

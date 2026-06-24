@@ -3,9 +3,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import { Search, Download, ChevronLeft, ChevronRight, Eye } from "lucide-react";
+import {
+  Search,
+  Download,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  Printer,
+  Loader2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
 import { Input } from "@/components/ui/input";
@@ -36,6 +45,9 @@ import {
 import type { Order, OrderFindResult } from "@/app/interfaces/order.interface";
 import { OrderSkeleton } from "./order-skeleton";
 import { OrderDetailSheet } from "./order-detail-sheet";
+
+const isEtiquetasEnabled =
+  process.env.NEXT_PUBLIC_ETIQUETAS_MODULE_ENABLED === "true";
 
 interface Pagination {
   page: number;
@@ -81,6 +93,9 @@ export function OrdersList() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<string>("ALL");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkSize, setBulkSize] = useState<"A4" | "THERMAL">("A4");
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
@@ -90,6 +105,11 @@ export function OrdersList() {
   useEffect(() => {
     setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   }, [debouncedSearch, platformFilter]);
+
+  // Limpa a seleção ao mudar de página/filtro/busca (ids podem sair da lista).
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [pagination.page, platformFilter, debouncedSearch]);
 
   useEffect(() => {
     const param = searchParams?.get("search") ?? "";
@@ -252,6 +272,74 @@ export function OrdersList() {
     }
   };
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllOnPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = orders.every((o) => next.has(o.id));
+      if (allSelected) orders.forEach((o) => next.delete(o.id));
+      else orders.forEach((o) => next.add(o.id));
+      return next;
+    });
+  };
+
+  // Gera etiquetas em lote (loop client-side sobre a rota individual). O PDF
+  // único combinado para impressão entra na Fase 6 (rota /batch + merge).
+  const handleBulkLabels = async () => {
+    if (!session?.user?.email || bulkLoading) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const id of ids) {
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/orders/${id}/shipping-label`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              email: session.user.email,
+            },
+            body: JSON.stringify({ size: bulkSize }),
+          },
+        );
+        if (res.ok) {
+          ok++;
+        } else {
+          const data = await res.json().catch(() => ({}));
+          failures.push(data?.message || `Pedido ${id}`);
+        }
+      } catch {
+        failures.push(`Pedido ${id} (conexão)`);
+      }
+    }
+    if (ok > 0) {
+      showToast(
+        `${ok} etiqueta(s) gerada(s)${
+          failures.length ? `, ${failures.length} falhou(aram)` : ""
+        }. Abra cada pedido para imprimir.`,
+        failures.length ? "error" : "success",
+      );
+    } else {
+      showToast(
+        `Nenhuma etiqueta gerada (${failures.length} falha(s)).`,
+        "error",
+      );
+    }
+    setSelectedIds(new Set());
+    setBulkLoading(false);
+  };
+
   const getStatusBadge = (status: string) => {
     const variants: Record<
       string,
@@ -408,6 +496,49 @@ export function OrdersList() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {isEtiquetasEnabled && selectedIds.size > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+              <span className="text-sm text-muted-foreground">
+                {selectedIds.size} selecionado(s)
+              </span>
+              <Select
+                value={bulkSize}
+                onValueChange={(value) =>
+                  setBulkSize(value as "A4" | "THERMAL")
+                }
+                disabled={bulkLoading}
+              >
+                <SelectTrigger className="h-9 w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="A4">Etiqueta A4</SelectItem>
+                  <SelectItem value="THERMAL">Térmica 10×15</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                onClick={handleBulkLabels}
+                disabled={bulkLoading}
+                className="gap-1.5"
+              >
+                {bulkLoading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Printer className="size-4" />
+                )}
+                {bulkLoading ? "Gerando..." : "Emitir etiquetas (lote)"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedIds(new Set())}
+                disabled={bulkLoading}
+              >
+                Limpar
+              </Button>
+            </div>
+          )}
           {isLoading ? (
             <OrderSkeleton />
           ) : (
@@ -415,6 +546,18 @@ export function OrdersList() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {isEtiquetasEnabled && (
+                      <TableHead className="w-[40px]">
+                        <Checkbox
+                          checked={
+                            orders.length > 0 &&
+                            orders.every((o) => selectedIds.has(o.id))
+                          }
+                          onCheckedChange={toggleSelectAllOnPage}
+                          aria-label="Selecionar todos os pedidos da página"
+                        />
+                      </TableHead>
+                    )}
                     <TableHead>ID Externo</TableHead>
                     <TableHead>Plataforma</TableHead>
                     <TableHead>Cliente</TableHead>
@@ -427,6 +570,15 @@ export function OrdersList() {
                 <TableBody>
                   {orders.map((order) => (
                     <TableRow key={order.id}>
+                      {isEtiquetasEnabled && (
+                        <TableCell className="w-[40px]">
+                          <Checkbox
+                            checked={selectedIds.has(order.id)}
+                            onCheckedChange={() => toggleSelect(order.id)}
+                            aria-label={`Selecionar pedido ${order.externalOrderId}`}
+                          />
+                        </TableCell>
+                      )}
                       <TableCell className="font-mono text-sm">
                         {order.externalOrderId}
                       </TableCell>
