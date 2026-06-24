@@ -8,7 +8,6 @@ import {
   useFieldArray,
 } from "react-hook-form";
 import { Plus, Trash2, CreditCard } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -19,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MEIO_PAGAMENTO_LABELS } from "../../lib/nfe-defaults";
+import { ValorInput } from "../valor-input";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -135,13 +135,12 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
                     control={control}
                     name={`pagamentos.${idx}.valor`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.01"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) => field.onChange(Number(e.target.value))}
+                      <ValorInput
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onChange={field.onChange}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}
