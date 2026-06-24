@@ -9,6 +9,31 @@ import type { ImportOrdersResult } from "../marketplaces/usecases/order.usercase
 import { orderRepository } from "../repositories/order.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
+import { ShippingLabelUseCase } from "../marketplaces/usecases/shipping-label.usecase";
+import {
+  ShippingLabelError,
+  type LabelSize,
+} from "../marketplaces/shipping/shipping-label.types";
+
+/** Mapeia o code de ShippingLabelError para um status HTTP legível. */
+function shippingErrorStatus(code?: string): number {
+  switch (code) {
+    case "ORDER_NOT_FOUND":
+      return 404;
+    case "NFE_NOT_FOUND":
+    case "NFE_HOMOLOGACAO":
+    case "NFE_XML_MISSING":
+    case "NOT_READY":
+    case "SHIPMENT_NOT_FOUND":
+      return 409;
+    case "UNSUPPORTED_PLATFORM":
+      return 400;
+    case "PROVIDER_ERROR":
+      return 502;
+    default:
+      return 500;
+  }
+}
 
 export async function orderRoutes(app: FastifyInstance) {
   // ====================================================================
@@ -423,6 +448,106 @@ export async function orderRoutes(app: FastifyInstance) {
         console.error("[Orders] Stats error:", error);
         return reply.status(500).send({
           error: "Erro ao buscar estatísticas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  // ====================================================================
+  // ROTAS DE ETIQUETA DE ENVIO (módulo aditivo — ML + Shopee)
+  // ====================================================================
+
+  /**
+   * POST /orders/:id/shipping-label
+   * Orquestra o fluxo: envia a NF-e ao marketplace → aguarda liberação →
+   * gera/baixa a etiqueta. Idempotente (reaproveita etiqueta já gerada).
+   * Body: { size?: "A4" | "THERMAL" } (default A4).
+   */
+  app.post<{
+    Params: { id: string };
+    Body: { size?: string };
+  }>(
+    "/:id/shipping-label",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const userId = request.user!.dataOwnerId;
+        const body = request.body as { size?: string };
+        const size: LabelSize = body?.size === "THERMAL" ? "THERMAL" : "A4";
+
+        const result = await ShippingLabelUseCase.generateLabelForOrder(
+          userId,
+          id,
+          size,
+        );
+
+        return reply.status(200).send({
+          success: true,
+          reused: result.reused,
+          labelStatus: result.record.labelStatus,
+          labelSize: result.record.labelSize,
+          trackingNumber: result.record.trackingNumber,
+          labelPdfUrl: `/orders/${id}/shipping-label`,
+        });
+      } catch (error) {
+        if (error instanceof ShippingLabelError) {
+          return reply.status(shippingErrorStatus(error.code)).send({
+            error: "Não foi possível gerar a etiqueta",
+            code: error.code,
+            message: error.message,
+          });
+        }
+        console.error("[Orders] Shipping label error:", error);
+        return reply.status(500).send({
+          error: "Erro ao gerar etiqueta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /orders/:id/shipping-label
+   * Faz stream do PDF da etiqueta já gerada (application/pdf). 404 se não houver.
+   */
+  app.get<{
+    Params: { id: string };
+  }>(
+    "/:id/shipping-label",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const userId = request.user!.dataOwnerId;
+
+        const stored = await ShippingLabelUseCase.getStoredLabelPdf(userId, id);
+        if (!stored) {
+          return reply.status(404).send({
+            error: "Etiqueta não encontrada",
+            message: "Gere a etiqueta antes de baixar.",
+          });
+        }
+
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            `inline; filename="etiqueta-${id}.pdf"`,
+          )
+          .send(stored.pdf);
+      } catch (error) {
+        if (error instanceof ShippingLabelError) {
+          return reply.status(shippingErrorStatus(error.code)).send({
+            error: "Não foi possível baixar a etiqueta",
+            code: error.code,
+            message: error.message,
+          });
+        }
+        console.error("[Orders] Shipping label download error:", error);
+        return reply.status(500).send({
+          error: "Erro ao baixar etiqueta",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
