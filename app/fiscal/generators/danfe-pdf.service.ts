@@ -9,7 +9,7 @@ import type { NfeTotais } from "../domain/nfe.types";
 import { parseNfeXml, type ParsedNfe } from "../sefaz/nfe-xml-parser.service";
 import { renderDanfeV2, type DanfeAvatar } from "./danfe-v2-renderer";
 import { composeInfCpl } from "../domain/inf-cpl";
-import { toWinAnsiSafe, wrapTextLines } from "./danfe-helpers";
+import { toWinAnsiSafe, wrapTextLines, formatBRLNumber } from "./danfe-helpers";
 
 /**
  * Gerador de DANFE simplificado usando pdf-lib.
@@ -215,9 +215,9 @@ export class DanfePdfService {
 
       drawText(String(item.numero), cols[0], y, 7);
       drawText(desc, cols[1], y, 7);
-      drawText(String(item.quantidade), cols[2], y, 7);
-      drawText(Number(item.valorUnitario).toFixed(2), cols[3], y, 7);
-      drawText(Number(item.valorTotal).toFixed(2), cols[4], y, 7);
+      drawText(formatBRLNumber(Number(item.quantidade)), cols[2], y, 7);
+      drawText(formatBRLNumber(Number(item.valorUnitario)), cols[3], y, 7);
+      drawText(formatBRLNumber(Number(item.valorTotal)), cols[4], y, 7);
       drawText(item.ncm, cols[5], y, 7);
       y -= lineHeight;
     }
@@ -237,34 +237,34 @@ export class DanfePdfService {
     drawText("TOTAIS", margin, y, 9, fontBold);
     y -= lineHeight;
     drawText(
-      `Total Produtos: R$ ${(totais.totalProdutos ?? 0).toFixed(2)}`,
+      `Total Produtos: R$ ${formatBRLNumber(totais.totalProdutos ?? 0)}`,
       margin,
       y,
       8,
     );
     drawText(
-      `Desconto: R$ ${(totais.totalDesconto ?? 0).toFixed(2)}`,
+      `Desconto: R$ ${formatBRLNumber(totais.totalDesconto ?? 0)}`,
       margin + 200,
       y,
       8,
     );
     y -= lineHeight;
-    drawText(`ICMS: R$ ${(totais.totalIcms ?? 0).toFixed(2)}`, margin, y, 8);
+    drawText(`ICMS: R$ ${formatBRLNumber(totais.totalIcms ?? 0)}`, margin, y, 8);
     drawText(
-      `PIS: R$ ${(totais.totalPis ?? 0).toFixed(2)}`,
+      `PIS: R$ ${formatBRLNumber(totais.totalPis ?? 0)}`,
       margin + 150,
       y,
       8,
     );
     drawText(
-      `COFINS: R$ ${(totais.totalCofins ?? 0).toFixed(2)}`,
+      `COFINS: R$ ${formatBRLNumber(totais.totalCofins ?? 0)}`,
       margin + 300,
       y,
       8,
     );
     y -= lineHeight;
     drawText(
-      `TOTAL DA NOTA: R$ ${(totais.totalNota ?? 0).toFixed(2)}`,
+      `TOTAL DA NOTA: R$ ${formatBRLNumber(totais.totalNota ?? 0)}`,
       margin,
       y,
       11,
