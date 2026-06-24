@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getApiBaseUrl } from "@/lib/api";
 import type { NfeDraftFormData } from "../lib/nfe-form-schema";
+import type { NfeDraftResponse } from "@/app/interfaces/nfe.interface";
 
 interface UseNfeDraftOptions {
   email: string;
@@ -24,7 +25,7 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
   );
 
   const createDraft = useCallback(
-    async (orderId?: string | null): Promise<string | null> => {
+    async (orderId?: string | null): Promise<NfeDraftResponse | null> => {
       try {
         const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft`, {
           method: "POST",
@@ -37,7 +38,10 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
           return null;
         }
         const data = await res.json();
-        return data.draft?.id ?? null;
+        // Retorna o draft COMPLETO (não só o id): o wizard precisa da `serie`
+        // já resolvida pelo backend (CompanyFiscalConfig.serieNfe) para
+        // preencher o campo na emissão nova.
+        return data.draft ?? null;
       } catch (e) {
         console.error("[NfeDraft] createDraft error:", e);
         return null;

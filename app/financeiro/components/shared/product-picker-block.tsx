@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CurrencyInput } from "@/components/ui/currency-input";
+import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 import { getApiBaseUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -218,7 +218,7 @@ export function ProductPickerBlock({
                     </span>
                   </span>
                   <span className="whitespace-nowrap text-xs text-muted-foreground">
-                    R$ {Number(opt.price).toFixed(2)}
+                    R$ {formatToBRL(Number(opt.price))}
                   </span>
                 </button>
               ))}
@@ -281,7 +281,7 @@ function ItemSubtotalLine({
     <div className="flex justify-end px-1 pt-1 text-xs text-muted-foreground">
       Subtotal dos itens:
       <span className="ml-2 font-medium text-foreground">
-        R$ {subtotal.toFixed(2).replace(".", ",")}
+        R$ {formatToBRL(subtotal)}
       </span>
     </div>
   );

@@ -26,6 +26,8 @@ import { EMPTY_NFE_ITEM, ORIGEM_LABELS } from "../../lib/nfe-defaults";
 import type { ProductLookup } from "@/app/interfaces/nfe.interface";
 import { CfopCombobox } from "../cfop-combobox";
 import { cfopTipoFromOperacao } from "@/app/fiscal/domain/cfop-catalog";
+import { ValorInput } from "../valor-input";
+import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
 // Combobox de CFOP atrás de flag — desligar volta ao input de texto livre atual.
 const CFOP_COMBOBOX_ENABLED =
@@ -171,7 +173,7 @@ export function StepProdutos({
                     <Package className="h-4 w-4 text-muted-foreground shrink-0" />
                     <span className="font-medium truncate">{p.name}</span>
                     <span className="text-muted-foreground text-xs ml-auto shrink-0">
-                      {p.sku} | R$ {p.price.toFixed(2)} | Est: {p.stock}
+                      {p.sku} | R$ {formatToBRL(p.price)} | Est: {p.stock}
                     </span>
                   </button>
                 ))}
@@ -337,16 +339,15 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.quantidade`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        value={field.value ?? ""}
-                        onChange={(e) => {
-                          field.onChange(Number(e.target.value));
+                      <ValorInput
+                        name={field.name}
+                        ref={field.ref}
+                        value={field.value}
+                        onChange={(v) => {
+                          field.onChange(v);
                           setTimeout(() => recalcItemTotal(idx), 0);
                         }}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}
@@ -361,16 +362,15 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.valorUnitario`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={field.value ?? ""}
-                        onChange={(e) => {
-                          field.onChange(Number(e.target.value));
+                      <CurrencyInput
+                        ref={field.ref}
+                        name={field.name}
+                        value={field.value}
+                        onChange={(v) => {
+                          field.onChange(v ?? 0);
                           setTimeout(() => recalcItemTotal(idx), 0);
                         }}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}
@@ -383,18 +383,15 @@ export function StepProdutos({
                     control={control}
                     name={`itens.${idx}.desconto`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={field.value ?? ""}
-                        onChange={(e) => {
-                          field.onChange(
-                            e.target.value ? Number(e.target.value) : null,
-                          );
+                      <CurrencyInput
+                        ref={field.ref}
+                        name={field.name}
+                        value={field.value}
+                        onChange={(v) => {
+                          field.onChange(v);
                           setTimeout(() => recalcItemTotal(idx), 0);
                         }}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}
@@ -408,7 +405,7 @@ export function StepProdutos({
                     name={`itens.${idx}.valorTotal`}
                     render={({ field }) => (
                       <Input
-                        value={`R$ ${(Number(field.value) || 0).toFixed(2)}`}
+                        value={`R$ ${formatToBRL(Number(field.value) || 0)}`}
                         disabled
                         className="h-8 text-sm bg-muted/50"
                       />
@@ -426,7 +423,7 @@ export function StepProdutos({
                 Total dos produtos:{" "}
               </span>
               <span className="font-semibold">
-                R$ {totalProdutos.toFixed(2)}
+                R$ {formatToBRL(totalProdutos)}
               </span>
             </div>
           </div>

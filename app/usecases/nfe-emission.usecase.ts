@@ -9,6 +9,7 @@ import { FiscalCalculatorService } from "../fiscal/calculators/fiscal-calculator
 import { NfeXmlBuilderService } from "../fiscal/generators/nfe-xml-builder.service";
 import { DanfePdfService } from "../fiscal/generators/danfe-pdf.service";
 import type { DanfeAvatar } from "../fiscal/generators/danfe-v2-renderer";
+import { normalizeAvatarBytes } from "../fiscal/generators/danfe-avatar";
 import { FiscalStorageService } from "../fiscal/storage/fiscal-storage.service";
 import {
   createNfeProvider,
@@ -884,21 +885,26 @@ export class NfeEmissionUseCase {
           clearTimeout(timer);
         }
       })();
-      if (!res.ok) return null;
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.length < 4) return null;
-      if (bytes[0] === 0xff && bytes[1] === 0xd8)
-        return { bytes, format: "jpg" };
-      if (
-        bytes[0] === 0x89 &&
-        bytes[1] === 0x50 &&
-        bytes[2] === 0x4e &&
-        bytes[3] === 0x47
-      ) {
-        return { bytes, format: "png" };
+      if (!res.ok) {
+        console.warn(`[DANFE avatar] fetch falhou (HTTP ${res.status}) url=${url}`);
+        return null;
       }
-      return null; // webp/gif/etc — pdf-lib não embute
-    } catch {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      // Normaliza para PNG/JPG (transcoda WebP/GIF/etc. via sharp). O upload do
+      // app gera WebP quando "remover fundo" está off — sem transcode a logo
+      // nunca embarcaria no DANFE.
+      const avatar = await normalizeAvatarBytes(bytes);
+      if (!avatar) {
+        console.warn(
+          `[DANFE avatar] imagem não embutível (transcode falhou) url=${url}`,
+        );
+      }
+      return avatar;
+    } catch (e) {
+      console.warn(
+        "[DANFE avatar] erro ao carregar:",
+        e instanceof Error ? e.message : String(e),
+      );
       return null;
     }
   }

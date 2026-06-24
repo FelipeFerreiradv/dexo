@@ -8,7 +8,6 @@ import {
   useFieldArray,
 } from "react-hook-form";
 import { Plus, Trash2, CreditCard } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -19,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import { MEIO_PAGAMENTO_LABELS } from "../../lib/nfe-defaults";
+import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -135,13 +135,12 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
                     control={control}
                     name={`pagamentos.${idx}.valor`}
                     render={({ field }) => (
-                      <Input
-                        {...field}
-                        type="number"
-                        step="0.01"
-                        min={0}
-                        value={field.value ?? ""}
-                        onChange={(e) => field.onChange(Number(e.target.value))}
+                      <CurrencyInput
+                        ref={field.ref}
+                        name={field.name}
+                        value={field.value}
+                        onChange={(v) => field.onChange(v ?? 0)}
+                        onBlur={field.onBlur}
                         className="h-8 text-sm"
                       />
                     )}
@@ -160,18 +159,18 @@ export function StepPagamentos({ control, errors, getValues }: Props) {
             <div className="text-sm">
               <span className="text-muted-foreground">Total produtos: </span>
               <span className="font-semibold">
-                R$ {totalProdutos.toFixed(2)}
+                R$ {formatToBRL(totalProdutos)}
               </span>
             </div>
             <div className="text-sm">
               <span className="text-muted-foreground">Total pagamentos: </span>
               <span className="font-semibold">
-                R$ {totalPagamentos.toFixed(2)}
+                R$ {formatToBRL(totalPagamentos)}
               </span>
             </div>
             {Math.abs(diff) > 0.01 && (
               <div className="text-sm text-amber-600">
-                Diferenca: R$ {diff.toFixed(2)}
+                Diferenca: R$ {formatToBRL(diff)}
               </div>
             )}
           </div>

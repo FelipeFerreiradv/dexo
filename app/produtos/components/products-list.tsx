@@ -55,6 +55,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import {
   Select,
   SelectContent,
@@ -1654,28 +1655,20 @@ export function ProductsList() {
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Preço mínimo</label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0,00"
-                value={filters.priceMin}
-                onChange={(event) =>
-                  updateFilter("priceMin", event.target.value)
+              <CurrencyInput
+                value={filters.priceMin ? Number(filters.priceMin) : null}
+                onChange={(v) =>
+                  updateFilter("priceMin", v == null ? "" : String(v))
                 }
               />
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Preço máximo</label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0,00"
-                value={filters.priceMax}
-                onChange={(event) =>
-                  updateFilter("priceMax", event.target.value)
+              <CurrencyInput
+                value={filters.priceMax ? Number(filters.priceMax) : null}
+                onChange={(v) =>
+                  updateFilter("priceMax", v == null ? "" : String(v))
                 }
               />
             </div>

@@ -37,6 +37,7 @@ import { StepperFooter } from "@/components/stepper/stepper-footer";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -810,10 +811,19 @@ function StepRules({
             </SelectItem>
           </SelectContent>
         </Select>
-        {rules.priceRuleType !== "keep" && (
+        {rules.priceRuleType === "fixed" ? (
+          // Preço fixo é monetário → CurrencyInput (BRL), igual ao "Preço de venda".
+          <CurrencyInput
+            value={rules.priceRuleValue || null}
+            onChange={(v) =>
+              setRules((r) => ({ ...r, priceRuleValue: v ?? 0 }))
+            }
+          />
+        ) : rules.priceRuleType !== "keep" ? (
+          // Markup/Delta são percentuais → input numérico normal (sem R$).
           <Input
             type="number"
-            step={rules.priceRuleType === "fixed" ? "0.01" : "1"}
+            step="1"
             value={rules.priceRuleValue || ""}
             onChange={(e) =>
               setRules((r) => ({
@@ -821,13 +831,9 @@ function StepRules({
                 priceRuleValue: Number(e.target.value) || 0,
               }))
             }
-            placeholder={
-              rules.priceRuleType === "fixed"
-                ? "Ex.: 199.90"
-                : "Ex.: 30 (significa 30%)"
-            }
+            placeholder="Ex.: 30 (significa 30%)"
           />
-        )}
+        ) : null}
       </div>
 
       {/* Estoque (somente leitura — explicação) */}

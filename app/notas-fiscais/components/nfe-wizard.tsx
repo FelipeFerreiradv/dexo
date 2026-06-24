@@ -147,10 +147,15 @@ export function NfeWizard() {
           }
         }
 
-        const newId = await createDraft();
+        const newDraft = await createDraft();
         if (cancelled) return;
-        if (newId) {
-          setDraftId(newId);
+        if (newDraft) {
+          setDraftId(newDraft.id);
+          // A série padrão vem da configuração fiscal (CompanyFiscalConfig.
+          // serieNfe), já resolvida pelo backend ao criar o draft. Sem isto o
+          // form ficaria preso no default hardcoded (série 1). Toca SÓ a série;
+          // os demais campos seguem em DEFAULT_NFE_DRAFT.
+          setValue("serie", newDraft.serie ?? DEFAULT_NFE_DRAFT.serie);
         } else {
           showToast(
             "Configure o emissor antes de criar uma NF-e.",
