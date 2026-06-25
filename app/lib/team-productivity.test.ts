@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   aggregateTeamProductivity,
   resolveProductivityRange,
-  type ProductivityLogRow,
+  type ProductivityGroupRow,
 } from "./team-productivity";
 
 const collaborators = [
@@ -11,31 +11,27 @@ const collaborators = [
   { id: "u3", name: "Carla", email: "carla@x.com", avatarUrl: null },
 ];
 
-function row(
+function grp(
   userId: string,
   action: string,
-  createdAt: string,
-  marketplace?: string,
-): ProductivityLogRow {
-  return {
-    userId,
-    action,
-    details: marketplace ? { marketplace } : { productData: {} },
-    createdAt: new Date(createdAt),
-  };
+  day: string,
+  marketplace: string | null = null,
+  count = 1,
+): ProductivityGroupRow {
+  return { userId, action, day, marketplace, count };
 }
 
-describe("aggregateTeamProductivity", () => {
+describe("aggregateTeamProductivity (grupos agregados no banco)", () => {
   it("conta produtos e split de anúncios por plataforma normalizada", () => {
-    const rows: ProductivityLogRow[] = [
-      row("u1", "CREATE_PRODUCT", "2026-06-10T12:00:00Z"),
-      row("u1", "CREATE_LISTING", "2026-06-10T13:00:00Z", "MercadoLivre"),
-      row("u1", "CREATE_LISTING", "2026-06-10T14:00:00Z", "SHOPEE"),
-      row("u2", "CREATE_LISTING", "2026-06-11T10:00:00Z", "Shopee"),
-      row("u2", "CREATE_LISTING", "2026-06-11T11:00:00Z", "MERCADO_LIVRE"),
-      row("u2", "CREATE_LISTING", "2026-06-11T12:00:00Z", "Amazon"), // → outro
+    const groups: ProductivityGroupRow[] = [
+      grp("u1", "CREATE_PRODUCT", "2026-06-10"),
+      grp("u1", "CREATE_LISTING", "2026-06-10", "MercadoLivre"),
+      grp("u1", "CREATE_LISTING", "2026-06-10", "SHOPEE"),
+      grp("u2", "CREATE_LISTING", "2026-06-11", "Shopee"),
+      grp("u2", "CREATE_LISTING", "2026-06-11", "MERCADO_LIVRE"),
+      grp("u2", "CREATE_LISTING", "2026-06-11", "Amazon"), // → outro
     ];
-    const res = aggregateTeamProductivity(rows, collaborators, {
+    const res = aggregateTeamProductivity(groups, collaborators, {
       startDate: new Date("2026-06-10T00:00:00Z"),
       endDate: new Date("2026-06-11T23:59:59Z"),
     });
@@ -47,18 +43,35 @@ describe("aggregateTeamProductivity", () => {
       shopee: 2,
       outro: 1,
     });
-    // soma dos buckets de plataforma = total (nada é descartado)
     const { ml, shopee, outro, total } = res.totals.anuncios;
     expect(ml + shopee + outro).toBe(total);
   });
 
-  it("inclui o bucket 'outro' e nunca descarta anúncio sem plataforma", () => {
-    const rows = [
-      row("u1", "CREATE_LISTING", "2026-06-10T13:00:00Z", "MercadoLivre"),
-      row("u1", "CREATE_LISTING", "2026-06-10T14:00:00Z"), // sem marketplace
-    ];
+  it("soma o count de cada grupo (não conta 1 por linha)", () => {
     const res = aggregateTeamProductivity(
-      rows as ProductivityLogRow[],
+      [
+        grp("u1", "CREATE_LISTING", "2026-06-10", "MercadoLivre", 7),
+        grp("u1", "CREATE_PRODUCT", "2026-06-10", null, 3),
+      ],
+      collaborators,
+      {
+        startDate: new Date("2026-06-10T00:00:00Z"),
+        endDate: new Date("2026-06-10T23:59:59Z"),
+      },
+    );
+    expect(res.totals.produtos).toBe(3);
+    expect(res.totals.anuncios.ml).toBe(7);
+    const ana = res.byCollaborator.find((c) => c.id === "u1")!;
+    expect(ana.produtos).toBe(3);
+    expect(ana.anuncios.ml).toBe(7);
+  });
+
+  it("inclui o bucket 'outro' e nunca descarta anúncio sem plataforma", () => {
+    const res = aggregateTeamProductivity(
+      [
+        grp("u1", "CREATE_LISTING", "2026-06-10", "MercadoLivre"),
+        grp("u1", "CREATE_LISTING", "2026-06-10", null), // sem marketplace
+      ],
       collaborators,
       {
         startDate: new Date("2026-06-10T00:00:00Z"),
@@ -71,15 +84,17 @@ describe("aggregateTeamProductivity", () => {
   });
 
   it("ranqueia por anúncios desc e inclui colaboradores sem atividade (zero)", () => {
-    const rows = [
-      row("u2", "CREATE_LISTING", "2026-06-10T10:00:00Z", "MercadoLivre"),
-      row("u2", "CREATE_LISTING", "2026-06-10T11:00:00Z", "MercadoLivre"),
-      row("u1", "CREATE_LISTING", "2026-06-10T12:00:00Z", "SHOPEE"),
-    ];
-    const res = aggregateTeamProductivity(rows, collaborators, {
-      startDate: new Date("2026-06-10T00:00:00Z"),
-      endDate: new Date("2026-06-10T23:59:59Z"),
-    });
+    const res = aggregateTeamProductivity(
+      [
+        grp("u2", "CREATE_LISTING", "2026-06-10", "MercadoLivre", 2),
+        grp("u1", "CREATE_LISTING", "2026-06-10", "SHOPEE", 1),
+      ],
+      collaborators,
+      {
+        startDate: new Date("2026-06-10T00:00:00Z"),
+        endDate: new Date("2026-06-10T23:59:59Z"),
+      },
+    );
     expect(res.byCollaborator.map((c) => c.id)).toEqual(["u2", "u1", "u3"]);
     const carla = res.byCollaborator.find((c) => c.id === "u3")!;
     expect(carla.anuncios.total).toBe(0);
@@ -88,14 +103,17 @@ describe("aggregateTeamProductivity", () => {
   });
 
   it("timeseries cobre todos os dias do intervalo (zeros incluídos)", () => {
-    const rows = [
-      row("u1", "CREATE_PRODUCT", "2026-06-10T12:00:00Z"),
-      row("u1", "CREATE_LISTING", "2026-06-12T12:00:00Z", "SHOPEE"),
-    ];
-    const res = aggregateTeamProductivity(rows, collaborators, {
-      startDate: new Date("2026-06-10T00:00:00Z"),
-      endDate: new Date("2026-06-12T23:59:59Z"),
-    });
+    const res = aggregateTeamProductivity(
+      [
+        grp("u1", "CREATE_PRODUCT", "2026-06-10"),
+        grp("u1", "CREATE_LISTING", "2026-06-12", "SHOPEE"),
+      ],
+      collaborators,
+      {
+        startDate: new Date("2026-06-10T00:00:00Z"),
+        endDate: new Date("2026-06-12T23:59:59Z"),
+      },
+    );
     expect(res.timeseries.map((p) => p.date)).toEqual([
       "2026-06-10",
       "2026-06-11",
@@ -106,14 +124,15 @@ describe("aggregateTeamProductivity", () => {
     expect(res.timeseries[2]).toMatchObject({ shopee: 1 });
   });
 
-  it("ignora linhas de userId desconhecido (defensivo)", () => {
-    const rows = [
-      row("intruso", "CREATE_LISTING", "2026-06-10T10:00:00Z", "MercadoLivre"),
-    ];
-    const res = aggregateTeamProductivity(rows, collaborators, {
-      startDate: new Date("2026-06-10T00:00:00Z"),
-      endDate: new Date("2026-06-10T23:59:59Z"),
-    });
+  it("ignora grupos de userId desconhecido (defensivo)", () => {
+    const res = aggregateTeamProductivity(
+      [grp("intruso", "CREATE_LISTING", "2026-06-10", "MercadoLivre")],
+      collaborators,
+      {
+        startDate: new Date("2026-06-10T00:00:00Z"),
+        endDate: new Date("2026-06-10T23:59:59Z"),
+      },
+    );
     expect(res.totals.anuncios.total).toBe(0);
   });
 });

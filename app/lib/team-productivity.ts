@@ -1,20 +1,23 @@
 import { canonPlatform } from "./marketplace-platform";
 
 /**
- * Agregação PURA (sem DB) da produtividade da equipe a partir das linhas de
- * `SystemLog` já filtradas/deduplicadas pela camada de rota (apenas a linha do
- * SERVIÇO: `action ∈ {CREATE_PRODUCT,CREATE_LISTING}`, `resourceId != null`,
- * `level = INFO`). Conta produtos (entidade interna, sem plataforma) e anúncios
- * (total + split ML/Shopee/Outro via `canonPlatform` sobre `details.marketplace`).
- * Toda a lógica fica aqui para ser testável sem banco. Usada pela Entrega A
- * (tela) e reaproveitada nos relatórios PDF (Entregas B/C).
+ * Agregação PURA (sem DB) da produtividade da equipe. EGRESS: a contagem é feita
+ * NO BANCO (GROUP BY userId, action, dia, marketplace + COUNT) — esta função
+ * recebe os GRUPOS já contados, não as linhas cruas, evitando puxar milhares de
+ * `SystemLog` para a memória (mesmo padrão das rotas /dashboard/*). A linha do
+ * SERVIÇO já é isolada no `where` da rota (`action ∈ {CREATE_PRODUCT,
+ * CREATE_LISTING}`, `resourceId != null`, `level = INFO`). Produtos = entidade
+ * interna (sem plataforma); anúncios = total + split ML/Shopee/Outro via
+ * `canonPlatform` sobre o `marketplace` extraído de `details`. Usada pela
+ * Entrega A (tela) e reaproveitada nos relatórios PDF (Entregas B/C).
  */
 
-export interface ProductivityLogRow {
+export interface ProductivityGroupRow {
   userId: string | null;
-  action: string;
-  details: unknown;
-  createdAt: Date;
+  action: string; // CREATE_PRODUCT | CREATE_LISTING
+  day: string; // "YYYY-MM-DD" (UTC) — to_char(createdAt)
+  marketplace: string | null; // details->>'marketplace' (só p/ CREATE_LISTING)
+  count: number;
 }
 
 export interface ProductivityCollaboratorInput {
@@ -148,7 +151,7 @@ function buildTimeseries(
 }
 
 export function aggregateTeamProductivity(
-  rows: ProductivityLogRow[],
+  groups: ProductivityGroupRow[],
   collaborators: ProductivityCollaboratorInput[],
   range: { startDate: Date; endDate: Date },
 ): ProductivityResult {
@@ -159,59 +162,55 @@ export function aggregateTeamProductivity(
     {
       produtos: number;
       anuncios: AnunciosBreakdown;
-      lastActivityAt: Date | null;
+      lastDay: string | null;
     }
   >();
   for (const c of collaborators) {
     perCollab.set(c.id, {
       produtos: 0,
       anuncios: newAnuncios(),
-      lastActivityAt: null,
+      lastDay: null,
     });
   }
 
   const dayMap = new Map<string, ProductivityTimeseriesPoint>();
 
-  for (const row of rows) {
-    if (!row.userId) continue;
-    const c = perCollab.get(row.userId);
+  for (const g of groups) {
+    if (!g.userId) continue;
+    const c = perCollab.get(g.userId);
     if (!c) continue; // fora do escopo de colaboradores conhecidos (defensivo)
+    const cnt = g.count || 0;
 
-    if (!c.lastActivityAt || row.createdAt > c.lastActivityAt) {
-      c.lastActivityAt = row.createdAt;
-    }
+    if (!c.lastDay || g.day > c.lastDay) c.lastDay = g.day;
 
-    const dayKey = toISODate(row.createdAt);
-    let bucket = dayMap.get(dayKey);
+    let bucket = dayMap.get(g.day);
     if (!bucket) {
-      bucket = { date: dayKey, produtos: 0, ml: 0, shopee: 0 };
-      dayMap.set(dayKey, bucket);
+      bucket = { date: g.day, produtos: 0, ml: 0, shopee: 0 };
+      dayMap.set(g.day, bucket);
     }
 
-    if (row.action === "CREATE_PRODUCT") {
-      totals.produtos++;
-      c.produtos++;
-      bucket.produtos++;
+    if (g.action === "CREATE_PRODUCT") {
+      totals.produtos += cnt;
+      c.produtos += cnt;
+      bucket.produtos += cnt;
       continue;
     }
 
     // CREATE_LISTING — split por plataforma (normalizada na leitura).
-    const platform = canonPlatform(
-      (row.details as { marketplace?: string | null } | null)?.marketplace,
-    );
-    totals.anuncios.total++;
-    c.anuncios.total++;
+    const platform = canonPlatform(g.marketplace);
+    totals.anuncios.total += cnt;
+    c.anuncios.total += cnt;
     if (platform === "ML") {
-      totals.anuncios.ml++;
-      c.anuncios.ml++;
-      bucket.ml++;
+      totals.anuncios.ml += cnt;
+      c.anuncios.ml += cnt;
+      bucket.ml += cnt;
     } else if (platform === "SHOPEE") {
-      totals.anuncios.shopee++;
-      c.anuncios.shopee++;
-      bucket.shopee++;
+      totals.anuncios.shopee += cnt;
+      c.anuncios.shopee += cnt;
+      bucket.shopee += cnt;
     } else {
-      totals.anuncios.outro++;
-      c.anuncios.outro++;
+      totals.anuncios.outro += cnt;
+      c.anuncios.outro += cnt;
     }
   }
 
@@ -225,9 +224,9 @@ export function aggregateTeamProductivity(
         avatarUrl: c.avatarUrl ?? null,
         produtos: agg.produtos,
         anuncios: agg.anuncios,
-        lastActivityAt: agg.lastActivityAt
-          ? agg.lastActivityAt.toISOString()
-          : null,
+        // lastActivityAt = último dia com atividade (a contagem é por dia no
+        // banco; o campo é informativo e não é exibido na tela/PDF).
+        lastActivityAt: agg.lastDay ? `${agg.lastDay}T00:00:00.000Z` : null,
       };
     })
     .sort(

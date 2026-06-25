@@ -8,14 +8,10 @@ import {
   aggregateTeamProductivity,
   resolveProductivityRange,
 } from "../lib/team-productivity";
+import { fetchProductivityGroups } from "../lib/team-productivity.query";
 import { renderTeamProductivityReport } from "../reports/team-productivity-report";
 
 const userRepository = new UserRepositoryPrisma();
-
-// Teto de segurança da agregação de produtividade: a janela da UI é curta e o
-// escopo é só dos filhos, então o filtro (childIds + período + action +
-// resourceId) é seletivo e usa os índices de userId/createdAt. Backstop improvável.
-const PRODUCTIVITY_MAX_ROWS = 20000;
 
 function fmtDateTimeBR(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -56,26 +52,15 @@ async function loadTeamProductivity(
   }
 
   const childIds = children.map((c) => c.id);
-  const rows = await prisma.systemLog.findMany({
-    where: {
-      userId: { in: childIds },
-      action: { in: ["CREATE_PRODUCT", "CREATE_LISTING"] },
-      resourceId: { not: null },
-      level: "INFO",
-      createdAt: { gte: range.startDate, lte: range.endDate },
-    },
-    select: { userId: true, action: true, details: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
-    take: PRODUCTIVITY_MAX_ROWS,
-  });
-  if (rows.length === PRODUCTIVITY_MAX_ROWS) {
-    console.warn(
-      `[team/productivity] teto de ${PRODUCTIVITY_MAX_ROWS} linhas atingido (admin=${adminId}); considere um período menor.`,
-    );
-  }
+  // EGRESS: contagem agregada no banco (não puxa as linhas do período).
+  const groups = await fetchProductivityGroups(
+    childIds,
+    range.startDate,
+    range.endDate,
+  );
 
   const result = aggregateTeamProductivity(
-    rows,
+    groups,
     children.map((c) => ({
       id: c.id,
       name: c.name,
@@ -381,9 +366,11 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
         }
 
         const q = request.query as Record<string, string | undefined>;
-        const { rangeOut, result } = await loadTeamProductivity(me.id, q);
-
-        const admin = await userRepository.findById(me.id);
+        // Independentes ⇒ em paralelo (a empresa não depende da produtividade).
+        const [{ rangeOut, result }, admin] = await Promise.all([
+          loadTeamProductivity(me.id, q),
+          userRepository.findById(me.id),
+        ]);
         const company = admin?.name || admin?.email || "Sua empresa";
 
         const pdf = await renderTeamProductivityReport({

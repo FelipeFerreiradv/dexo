@@ -6,6 +6,7 @@ import {
   aggregateTeamProductivity,
   resolveProductivityRange,
 } from "../lib/team-productivity";
+import { fetchProductivityGroups } from "../lib/team-productivity.query";
 import { renderDashboardReport } from "../reports/dashboard-report";
 
 function fmtDateTimeBR(d: Date): string {
@@ -945,7 +946,9 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const ownerId = (request as any).user?.dataOwnerId as string | undefined;
+        const ownerId = (request as any).user?.dataOwnerId as
+          | string
+          | undefined;
         if (!ownerId) {
           return reply.status(401).send({ error: "Usuário não autenticado" });
         }
@@ -994,7 +997,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           produtosCriadosPeriodo,
           anunciosCriadosPeriodo,
           topProdutosRaw,
-          teamRows,
+          teamGroups,
         ] = await Promise.all([
           prisma.$queryRaw<
             Array<{ day: string; orders: number; total: string | null }>
@@ -1050,23 +1053,8 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
             orderBy: { listings: { _count: "desc" } },
             take: 5,
           }),
-          prisma.systemLog.findMany({
-            where: {
-              userId: { in: tenantIds },
-              action: { in: ["CREATE_PRODUCT", "CREATE_LISTING"] },
-              resourceId: { not: null },
-              level: "INFO",
-              createdAt: { gte: range.startDate, lte: range.endDate },
-            },
-            select: {
-              userId: true,
-              action: true,
-              details: true,
-              createdAt: true,
-            },
-            orderBy: { createdAt: "asc" },
-            take: 20000,
-          }),
+          // EGRESS: produtividade da equipe agregada no banco (GROUP BY+COUNT).
+          fetchProductivityGroups(tenantIds, range.startDate, range.endDate),
         ]);
 
         // Série diária de receita (zeros incluídos).
@@ -1110,10 +1098,19 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
             guard++;
           }
         }
-        const receitaPeriodo = timeseries.reduce((acc, t) => acc + t.receita, 0);
-        const pedidosPeriodo = timeseries.reduce((acc, t) => acc + t.pedidos, 0);
+        const receitaPeriodo = timeseries.reduce(
+          (acc, t) => acc + t.receita,
+          0,
+        );
+        const pedidosPeriodo = timeseries.reduce(
+          (acc, t) => acc + t.pedidos,
+          0,
+        );
 
-        const accountRevMap = new Map<string, { revenue: number; orders: number }>();
+        const accountRevMap = new Map<
+          string,
+          { revenue: number; orders: number }
+        >();
         for (const r of accountRevenue) {
           const rev = r._sum.totalAmount
             ? typeof (r._sum.totalAmount as any).toNumber === "function"
@@ -1153,7 +1150,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           }));
 
         // --- Resumo de produtividade da equipe (tenant) ---
-        const team = aggregateTeamProductivity(teamRows, tenantUsers, range);
+        const team = aggregateTeamProductivity(teamGroups, tenantUsers, range);
 
         const pdf = await renderDashboardReport({
           company: owner?.name || owner?.email || "Sua empresa",
