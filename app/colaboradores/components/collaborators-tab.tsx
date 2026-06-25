@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getApiBaseUrl } from "@/lib/api";
+import { TeamProductivity } from "./team-productivity";
 
 type Collaborator = {
   id: string;
@@ -327,6 +328,9 @@ export function CollaboratorsTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Bloco de produtividade (Entrega A) — aditivo, acima da auditoria. */}
+      <TeamProductivity />
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>

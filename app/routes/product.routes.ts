@@ -857,6 +857,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               productId: data.id as string,
               requests: dispatchRequests,
               overrideTemplate,
+              actorId: user.id as string,
             });
           }
         }

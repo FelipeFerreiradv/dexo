@@ -2,18 +2,14 @@
 
 import { useCallback, useState } from "react";
 import { Building2 } from "lucide-react";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { FinanceOverview } from "./finance-overview";
 import { FinanceList } from "./finance-list";
 import { UnidadeFilter } from "./shared/unidade-select";
 import { UnidadesDialog } from "./unidades-dialog";
+import { FinanceReportButton } from "./finance-report-button";
 
 interface Toast {
   id: string;
@@ -79,10 +75,13 @@ export function FinanceView() {
             refreshKey={unidadeRefreshKey}
           />
         </div>
-        <Button variant="outline" onClick={() => setUnidadesOpen(true)}>
-          <Building2 className="h-4 w-4" />
-          Gerenciar unidades
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <FinanceReportButton unidadeId={unidadeFilter} />
+          <Button variant="outline" onClick={() => setUnidadesOpen(true)}>
+            <Building2 className="h-4 w-4" />
+            Gerenciar unidades
+          </Button>
+        </div>
       </div>
 
       <FinanceOverview refreshKey={refreshKey} unidadeId={unidadeFilter} />

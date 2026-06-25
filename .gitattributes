@@ -1,0 +1,6 @@
+# Arquivos de fonte (gerador de PDF dos relatórios) são binários — nunca
+# normalizar fim de linha (CRLF/LF), senão a fonte corrompe e o PDF quebra.
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
