@@ -80,6 +80,40 @@ export function DonutSplit({
   );
 }
 
+/** Donut genérico de N segmentos (cor por segmento). */
+export function DonutGeneric({
+  segments,
+  size = 132,
+}: {
+  segments: { value: number; color: string }[];
+  size?: number;
+}) {
+  const total = segments.reduce((acc, s) => acc + Math.max(0, s.value), 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const rOuter = size / 2 - 4;
+  const rInner = rOuter * 0.62;
+  let angle = 0;
+  return (
+    <Svg width={size} height={size}>
+      {total === 0 ? (
+        <Path
+          d={donutSegment(cx, cy, rOuter, rInner, 0, 359.999)}
+          fill={DEXO.bege}
+        />
+      ) : (
+        segments.map((s, i) => {
+          if (s.value <= 0) return null;
+          const span = (s.value / total) * 360;
+          const d = donutSegment(cx, cy, rOuter, rInner, angle, angle + span);
+          angle += span;
+          return <Path key={i} d={d} fill={s.color} />;
+        })
+      )}
+    </Svg>
+  );
+}
+
 /**
  * Área temporal (volume/dia) com gradiente assinatura Petróleo→Amarelo, mais uma
  * linha pontilhada para a 2ª série. `series` = valores por dia (anúncios);
