@@ -4,6 +4,10 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
 import { SystemLogService } from "../services/system-log.service";
 import type { LogAction } from "../interfaces/system-log.interface";
+import {
+  aggregateTeamProductivity,
+  resolveProductivityRange,
+} from "../lib/team-productivity";
 
 const userRepository = new UserRepositoryPrisma();
 
@@ -229,6 +233,109 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao carregar atividade da equipe",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /me/team/productivity
+   * Produtividade (produtos e anúncios criados) por colaborador no período.
+   * Admin-only (403 p/ colaborador, igual /activity); escopo = filhos do admin
+   * (childIds). Leitura PURA de SystemLog, deduplicada NA ORIGEM (só a linha do
+   * serviço: `resourceId != null` + `level = INFO`, descartando a linha do
+   * middleware de logging e tentativas falhas). Split de plataforma via
+   * canonPlatform sobre `details.marketplace`.
+   * Querystring: startDate, endDate (ISO ou "YYYY-MM-DD"). Default: 30 dias.
+   */
+  fastify.get(
+    "/productivity",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const me = (request as any).user as {
+          id: string;
+          parentUserId?: string | null;
+        };
+
+        if (me.parentUserId) {
+          return reply.status(403).send({
+            message:
+              "Apenas administradores podem visualizar a produtividade da equipe.",
+            code: "ADMIN_ONLY",
+          });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveProductivityRange(q.startDate, q.endDate);
+        const rangeOut = {
+          startDate: range.startDate.toISOString(),
+          endDate: range.endDate.toISOString(),
+          label: range.label,
+        };
+
+        const children = await userRepository.findChildren(me.id);
+
+        // Fail-closed: admin sem colaboradores ⇒ resposta vazia (nunca outro tenant).
+        if (children.length === 0) {
+          return reply.send({
+            range: rangeOut,
+            totals: {
+              produtos: 0,
+              anuncios: { total: 0, ml: 0, shopee: 0, outro: 0 },
+            },
+            byCollaborator: [],
+            timeseries: [],
+          });
+        }
+
+        const childIds = children.map((c) => c.id);
+
+        // Teto de segurança: a janela da UI é curta e o escopo é só dos filhos,
+        // então o filtro (childIds + período + action + resourceId) é seletivo e
+        // usa os índices de userId/createdAt. O teto é um backstop improvável.
+        const MAX_ROWS = 20000;
+        const rows = await prisma.systemLog.findMany({
+          where: {
+            userId: { in: childIds },
+            action: { in: ["CREATE_PRODUCT", "CREATE_LISTING"] },
+            resourceId: { not: null },
+            level: "INFO",
+            createdAt: { gte: range.startDate, lte: range.endDate },
+          },
+          select: {
+            userId: true,
+            action: true,
+            details: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "asc" },
+          take: MAX_ROWS,
+        });
+        if (rows.length === MAX_ROWS) {
+          console.warn(
+            `[team/productivity] resultado atingiu o teto de ${MAX_ROWS} linhas (admin=${me.id}); considere um período menor.`,
+          );
+        }
+
+        const result = aggregateTeamProductivity(
+          rows,
+          children.map((c) => ({
+            id: c.id,
+            name: c.name,
+            email: c.email,
+            avatarUrl: c.avatarUrl,
+          })),
+          range,
+        );
+
+        return reply.send({ range: rangeOut, ...result });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Erro ao carregar produtividade da equipe",
         });
       }
     },
