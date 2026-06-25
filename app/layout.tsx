@@ -6,26 +6,27 @@ import "./globals.css";
 import { Providers } from "./providers";
 import { MainLayoutWrapper } from "@/components/main-layout-wrapper";
 
-import {
-  Geist,
-  Geist_Mono,
-  Geist as V0_Font_Geist,
-  Geist_Mono as V0_Font_Geist_Mono,
-  Source_Serif_4 as V0_Font_Source_Serif_4,
-} from "next/font/google";
+import { Inter, JetBrains_Mono, Bricolage_Grotesque } from "next/font/google";
 
-// Initialize fonts
-const _geist = V0_Font_Geist({
+// Fontes da identidade visual Dexo (Manual de Marca):
+// Inter = corpo/UI · JetBrains Mono = SKU/códigos/valores · Bricolage = títulos.
+// Carregadas como CSS variables e expostas ao <html> (cobre portais de
+// dialog/sheet). Os tokens --font-sans/--font-mono/--font-display em globals.css
+// apontam para estas variáveis.
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+  variable: "--font-inter",
+  display: "swap",
 });
-const _geistMono = V0_Font_Geist_Mono({
+const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
-  weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+  variable: "--font-jetbrains-mono",
+  display: "swap",
 });
-const _sourceSerif_4 = V0_Font_Source_Serif_4({
+const bricolage = Bricolage_Grotesque({
   subsets: ["latin"],
-  weight: ["200", "300", "400", "500", "600", "700", "800", "900"],
+  variable: "--font-bricolage",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -97,8 +98,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#f2ede2" },
+    { media: "(prefers-color-scheme: dark)", color: "#070d12" },
   ],
 };
 
@@ -135,7 +136,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR" suppressHydrationWarning>
+    <html
+      lang="pt-BR"
+      className={`${inter.variable} ${jetbrainsMono.variable} ${bricolage.variable}`}
+      suppressHydrationWarning
+    >
       <body className={`font-sans antialiased`}>
         <script
           type="application/ld+json"
