@@ -382,7 +382,7 @@ export function TeamProductivity({
                                 </div>
                                 <div className="truncate text-xs text-muted-foreground">
                                   {nf.format(c.produtos)} produto(s) ·{" "}
-                                  {share.toFixed(0)}% dos anúncios
+                                  {share.toFixed(0)}% dos anúnc.
                                 </div>
                               </div>
                               <div className="shrink-0 text-right">
@@ -572,24 +572,25 @@ function KpiCard({
   dotColor?: string;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card/90 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+    <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card/90 p-3.5 sm:p-4">
+      <div className="flex items-start justify-between gap-2 sm:gap-3">
+        <div className="min-w-0 space-y-1 sm:space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground sm:text-sm">
             {dotColor ? (
               <span
-                className="inline-block size-2 rounded-full"
+                className="inline-block size-2 shrink-0 rounded-full"
                 style={{ backgroundColor: dotColor }}
                 aria-hidden
               />
             ) : null}
-            {title}
+            <span className="leading-tight">{title}</span>
           </div>
-          <div className="text-3xl font-semibold leading-none tracking-tight tabular-nums">
+          <div className="text-2xl font-semibold leading-none tracking-tight tabular-nums sm:text-3xl">
             {nf.format(value)}
           </div>
         </div>
-        <div className="flex size-10 items-center justify-center rounded-xl border border-border/60 bg-muted/40 text-muted-foreground">
+        {/* Ícone só a partir de sm: — no retrato (≤640px) ele apertava o card. */}
+        <div className="hidden size-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-muted/40 text-muted-foreground sm:flex">
           <Icon className="size-5" />
         </div>
       </div>
