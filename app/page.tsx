@@ -7,6 +7,7 @@ import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
 import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
+import { DashboardReportButton } from "@/components/dashboard/dashboard-report-button";
 import {
   CountryGrid,
   type AccountStat,
@@ -259,13 +260,14 @@ export default async function Home() {
             Visão de desempenho
           </h1>
         </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="rounded-full border border-border/60 bg-muted/30 px-3 py-1 font-medium text-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 font-medium text-foreground sm:inline">
             Dados em tempo real
           </span>
-          <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 sm:inline">
+          <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 lg:inline">
             {activeIntegrations.length} integrações
           </span>
+          <DashboardReportButton />
         </div>
       </header>
 

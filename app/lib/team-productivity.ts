@@ -92,7 +92,10 @@ export function resolveProductivityRange(
   // entre máquinas (CI=UTC, dev=BRT) e consistente com /me/team/activity, que
   // parseia date-only como UTC (spec ES). Janelas curtas da UI toleram o leve
   // deslocamento de fuso na borda do dia.
-  const parse = (s: string | null | undefined, endOfDay: boolean): Date | null => {
+  const parse = (
+    s: string | null | undefined,
+    endOfDay: boolean,
+  ): Date | null => {
     if (!s) return null;
     const iso = DATE_ONLY.test(s)
       ? `${s}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`
@@ -109,7 +112,9 @@ export function resolveProductivityRange(
   if (!start) start = new Date(end.getTime() - 30 * MS_PER_DAY);
   if (start > end) start = new Date(end.getTime() - 30 * MS_PER_DAY);
 
-  const label = usedDefault ? "Últimos 30 dias" : `${fmtBR(start)} a ${fmtBR(end)}`;
+  const label = usedDefault
+    ? "Últimos 30 dias"
+    : `${fmtBR(start)} a ${fmtBR(end)}`;
   return { startDate: start, endDate: end, label };
 }
 
@@ -151,7 +156,11 @@ export function aggregateTeamProductivity(
 
   const perCollab = new Map<
     string,
-    { produtos: number; anuncios: AnunciosBreakdown; lastActivityAt: Date | null }
+    {
+      produtos: number;
+      anuncios: AnunciosBreakdown;
+      lastActivityAt: Date | null;
+    }
   >();
   for (const c of collaborators) {
     perCollab.set(c.id, {

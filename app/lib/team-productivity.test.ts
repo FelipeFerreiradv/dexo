@@ -57,10 +57,14 @@ describe("aggregateTeamProductivity", () => {
       row("u1", "CREATE_LISTING", "2026-06-10T13:00:00Z", "MercadoLivre"),
       row("u1", "CREATE_LISTING", "2026-06-10T14:00:00Z"), // sem marketplace
     ];
-    const res = aggregateTeamProductivity(rows as ProductivityLogRow[], collaborators, {
-      startDate: new Date("2026-06-10T00:00:00Z"),
-      endDate: new Date("2026-06-10T23:59:59Z"),
-    });
+    const res = aggregateTeamProductivity(
+      rows as ProductivityLogRow[],
+      collaborators,
+      {
+        startDate: new Date("2026-06-10T00:00:00Z"),
+        endDate: new Date("2026-06-10T23:59:59Z"),
+      },
+    );
     expect(res.totals.anuncios.total).toBe(2);
     expect(res.totals.anuncios.ml).toBe(1);
     expect(res.totals.anuncios.outro).toBe(1);
@@ -121,7 +125,9 @@ describe("resolveProductivityRange", () => {
     const r = resolveProductivityRange(undefined, undefined, now);
     expect(r.label).toBe("Últimos 30 dias");
     expect(r.endDate.getTime()).toBe(now.getTime());
-    expect(Math.round((r.endDate.getTime() - r.startDate.getTime()) / 86400000)).toBe(30);
+    expect(
+      Math.round((r.endDate.getTime() - r.startDate.getTime()) / 86400000),
+    ).toBe(30);
   });
 
   it("datas YYYY-MM-DD viram início e fim do dia", () => {

@@ -13,7 +13,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { BoxIcon, PackageIcon, ShoppingBagIcon, StoreIcon } from "lucide-react";
+import {
+  BoxIcon,
+  DownloadIcon,
+  PackageIcon,
+  ShoppingBagIcon,
+  StoreIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
@@ -23,6 +29,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getApiBaseUrl } from "@/lib/api";
 
@@ -169,6 +176,37 @@ export function TeamProductivity({
     fetchData();
   }, [fetchData]);
 
+  const [downloading, setDownloading] = useState(false);
+  const handleDownloadPdf = useCallback(async () => {
+    if (!email) return;
+    if (preset === "custom" && (!customStart || !customEnd)) return;
+    setDownloading(true);
+    try {
+      const params = new URLSearchParams();
+      if (period.startDate) params.set("startDate", period.startDate);
+      if (period.endDate) params.set("endDate", period.endDate);
+      const apiBase = getApiBaseUrl();
+      const res = await fetch(
+        `${apiBase}/me/team/productivity/report.pdf?${params.toString()}`,
+        { headers: { email } },
+      );
+      if (!res.ok) throw new Error(`Erro ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "produtividade-equipe-dexo.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      console.error("[TeamProductivity] pdf error", err);
+    } finally {
+      setDownloading(false);
+    }
+  }, [email, period.startDate, period.endDate, preset, customStart, customEnd]);
+
   const totals = data?.totals;
   const hasActivity =
     !!totals && (totals.produtos > 0 || totals.anuncios.total > 0);
@@ -192,6 +230,16 @@ export function TeamProductivity({
               {data?.range?.label ? ` · ${data.range.label}` : ""}.
             </CardDescription>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownloadPdf}
+            disabled={downloading || loading}
+            className="shrink-0"
+          >
+            <DownloadIcon className="mr-1.5 h-4 w-4" />
+            {downloading ? "Gerando..." : "Gerar relatório (PDF)"}
+          </Button>
         </div>
 
         {/* Seletor de período (presets + personalizado) */}
@@ -467,7 +515,9 @@ export function TeamProductivity({
                             borderRadius: 12,
                           }}
                           labelFormatter={(l) => shortDate(String(l))}
-                          formatter={(value: any) => nf.format(Number(value) || 0)}
+                          formatter={(value: any) =>
+                            nf.format(Number(value) || 0)
+                          }
                         />
                         <Legend wrapperStyle={{ fontSize: 12 }} />
                         <Area

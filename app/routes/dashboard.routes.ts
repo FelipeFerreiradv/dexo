@@ -2,6 +2,24 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { Platform, Prisma } from "@prisma/client";
+import {
+  aggregateTeamProductivity,
+  resolveProductivityRange,
+} from "../lib/team-productivity";
+import { renderDashboardReport } from "../reports/dashboard-report";
+
+function fmtDateTimeBR(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(
+    d.getHours(),
+  )}:${p(d.getMinutes())}`;
+}
+
+function canonFromPlatform(p: Platform): "ML" | "SHOPEE" | "OUTRO" {
+  if (p === "MERCADO_LIVRE") return "ML";
+  if (p === "SHOPEE") return "SHOPEE";
+  return "OUTRO";
+}
 
 export const dashboardRoutes = async (fastify: FastifyInstance) => {
   /**
@@ -910,6 +928,272 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         console.error("Erro notifications:", error);
         return reply.status(500).send({ error: "Erro ao buscar notificações" });
+      }
+    },
+  );
+
+  /**
+   * GET /dashboard/report.pdf
+   * Relatório PDF (A4) com a visão de negócio do período + resumo de
+   * produtividade da equipe. Escopo de negócio = dono (dataOwnerId), igual aos
+   * demais /dashboard/*. Escopo da equipe = tenant inteiro (dono + filhos).
+   * Leitura PURA + render @react-pdf; streama como download.
+   * Querystring: startDate, endDate (ISO/"YYYY-MM-DD") ou days. Default: 30 dias.
+   */
+  fastify.get(
+    "/report.pdf",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const ownerId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!ownerId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        let startStr = q.startDate;
+        const endStr = q.endDate;
+        if (!startStr && !endStr && q.days) {
+          const n = parseInt(q.days, 10);
+          if (Number.isFinite(n)) {
+            const sd = new Date();
+            sd.setDate(sd.getDate() - n);
+            startStr = sd.toISOString();
+          }
+        }
+        const range = resolveProductivityRange(startStr, endStr);
+        const rangeOut = {
+          startDate: range.startDate.toISOString(),
+          endDate: range.endDate.toISOString(),
+          label: range.label,
+        };
+
+        // Usuários do tenant (dono + filhos) p/ o resumo de produtividade.
+        const [owner, children] = await Promise.all([
+          prisma.user.findUnique({
+            where: { id: ownerId },
+            select: { id: true, name: true, email: true },
+          }),
+          prisma.user.findMany({
+            where: { parentUserId: ownerId },
+            select: { id: true, name: true, email: true },
+          }),
+        ]);
+        const tenantUsers = [
+          ...(owner ? [owner] : [{ id: ownerId, name: null, email: "" }]),
+          ...children,
+        ];
+        const tenantIds = tenantUsers.map((u) => u.id);
+
+        // --- Dados de negócio (escopo dono) ---
+        const [
+          ordersGrouped,
+          accounts,
+          accountRevenue,
+          produtosTotal,
+          produtosCriadosPeriodo,
+          anunciosCriadosPeriodo,
+          topProdutosRaw,
+          teamRows,
+        ] = await Promise.all([
+          prisma.$queryRaw<
+            Array<{ day: string; orders: number; total: string | null }>
+          >(Prisma.sql`
+            SELECT to_char(o."createdAt", 'YYYY-MM-DD') AS "day",
+                   COUNT(*)::int AS "orders",
+                   COALESCE(SUM(o."totalAmount"), 0)::text AS "total"
+            FROM "Order" o
+            JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
+            WHERE o."createdAt" >= ${range.startDate} AND o."createdAt" <= ${range.endDate}
+              AND ma."userId" = ${ownerId}
+            GROUP BY to_char(o."createdAt", 'YYYY-MM-DD')
+          `),
+          prisma.marketplaceAccount.findMany({
+            where: { userId: ownerId },
+            select: {
+              id: true,
+              platform: true,
+              accountName: true,
+              status: true,
+              _count: { select: { listings: true } },
+            },
+          }),
+          prisma.order.groupBy({
+            by: ["marketplaceAccountId"],
+            _count: { _all: true },
+            _sum: { totalAmount: true },
+            where: {
+              marketplaceAccount: { userId: ownerId },
+              createdAt: { gte: range.startDate, lte: range.endDate },
+            },
+          }),
+          prisma.product.count({ where: { userId: ownerId } }),
+          prisma.product.count({
+            where: {
+              userId: ownerId,
+              createdAt: { gte: range.startDate, lte: range.endDate },
+            },
+          }),
+          prisma.productListing.count({
+            where: {
+              marketplaceAccount: { userId: ownerId },
+              createdAt: { gte: range.startDate, lte: range.endDate },
+            },
+          }),
+          prisma.product.findMany({
+            where: { userId: ownerId },
+            select: {
+              name: true,
+              sku: true,
+              _count: { select: { listings: true } },
+            },
+            orderBy: { listings: { _count: "desc" } },
+            take: 5,
+          }),
+          prisma.systemLog.findMany({
+            where: {
+              userId: { in: tenantIds },
+              action: { in: ["CREATE_PRODUCT", "CREATE_LISTING"] },
+              resourceId: { not: null },
+              level: "INFO",
+              createdAt: { gte: range.startDate, lte: range.endDate },
+            },
+            select: {
+              userId: true,
+              action: true,
+              details: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: "asc" },
+            take: 20000,
+          }),
+        ]);
+
+        // Série diária de receita (zeros incluídos).
+        const dayMap = new Map<string, { receita: number; pedidos: number }>();
+        for (const g of ordersGrouped) {
+          dayMap.set(g.day, {
+            receita: Number(g.total) || 0,
+            pedidos: Number(g.orders) || 0,
+          });
+        }
+        const timeseries: Array<{
+          date: string;
+          receita: number;
+          pedidos: number;
+        }> = [];
+        {
+          const cur = new Date(
+            Date.UTC(
+              range.startDate.getUTCFullYear(),
+              range.startDate.getUTCMonth(),
+              range.startDate.getUTCDate(),
+            ),
+          );
+          const last = new Date(
+            Date.UTC(
+              range.endDate.getUTCFullYear(),
+              range.endDate.getUTCMonth(),
+              range.endDate.getUTCDate(),
+            ),
+          );
+          let guard = 0;
+          while (cur <= last && guard < 800) {
+            const key = cur.toISOString().slice(0, 10);
+            const v = dayMap.get(key);
+            timeseries.push({
+              date: key,
+              receita: v?.receita ?? 0,
+              pedidos: v?.pedidos ?? 0,
+            });
+            cur.setUTCDate(cur.getUTCDate() + 1);
+            guard++;
+          }
+        }
+        const receitaPeriodo = timeseries.reduce((acc, t) => acc + t.receita, 0);
+        const pedidosPeriodo = timeseries.reduce((acc, t) => acc + t.pedidos, 0);
+
+        const accountRevMap = new Map<string, { revenue: number; orders: number }>();
+        for (const r of accountRevenue) {
+          const rev = r._sum.totalAmount
+            ? typeof (r._sum.totalAmount as any).toNumber === "function"
+              ? (r._sum.totalAmount as any).toNumber()
+              : Number(r._sum.totalAmount)
+            : 0;
+          accountRevMap.set(r.marketplaceAccountId, {
+            revenue: rev,
+            orders: r._count._all,
+          });
+        }
+
+        const anunciosAtivos = accounts
+          .filter((a) => a.status === "ACTIVE")
+          .reduce((sum, a) => sum + (a._count.listings ?? 0), 0);
+
+        const contas = accounts
+          .map((a) => {
+            const rev = accountRevMap.get(a.id);
+            return {
+              id: a.id,
+              nome: a.accountName,
+              plataforma: canonFromPlatform(a.platform),
+              receita: rev?.revenue ?? 0,
+              pedidos: rev?.orders ?? 0,
+              anuncios: a._count.listings ?? 0,
+            };
+          })
+          .sort((x, y) => y.receita - x.receita);
+
+        const topProdutos = topProdutosRaw
+          .filter((p) => (p._count.listings ?? 0) > 0)
+          .map((p) => ({
+            nome: p.name,
+            sku: p.sku ?? null,
+            anuncios: p._count.listings ?? 0,
+          }));
+
+        // --- Resumo de produtividade da equipe (tenant) ---
+        const team = aggregateTeamProductivity(teamRows, tenantUsers, range);
+
+        const pdf = await renderDashboardReport({
+          company: owner?.name || owner?.email || "Sua empresa",
+          generatedAtLabel: fmtDateTimeBR(new Date()),
+          range: rangeOut,
+          business: {
+            receita: receitaPeriodo,
+            pedidos: pedidosPeriodo,
+            anunciosAtivos,
+            anunciosCriadosPeriodo,
+            produtosTotal,
+            produtosCriadosPeriodo,
+            timeseries,
+            contas,
+            topProdutos,
+          },
+          equipe: {
+            produtos: team.totals.produtos,
+            anuncios: team.totals.anuncios,
+            top: team.byCollaborator
+              .filter((c) => c.produtos > 0 || c.anuncios.total > 0)
+              .slice(0, 3)
+              .map((c) => ({
+                nome: c.name || c.email,
+                produtos: c.produtos,
+                anuncios: c.anuncios.total,
+              })),
+          },
+        });
+
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            'attachment; filename="relatorio-geral-dexo.pdf"',
+          )
+          .send(pdf);
+      } catch (error) {
+        console.error("Erro dashboard report:", error);
+        return reply.status(500).send({ error: "Erro ao gerar o relatório" });
       }
     },
   );
