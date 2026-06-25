@@ -162,10 +162,13 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
-        // Registrar log de criação de anúncio
+        // Registrar log de criação de anúncio.
+        // Atribuição ao ATOR (colaborador que criou), não ao dono — alimenta os
+        // relatórios de produtividade. A criação do anúncio em si segue com
+        // `userId` (dataOwnerId): os dados pertencem ao dono.
         if (result.listingId) {
           await SystemLogService.logListingCreate(
-            userId,
+            request.user!.id,
             result.listingId,
             body.productId,
             "MercadoLivre",
@@ -247,9 +250,10 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
+        // Atribuição ao ATOR (colaborador que criou), não ao dono — ver rota ML.
         if (result.listingId) {
           await SystemLogService.logListingCreate(
-            userId,
+            request.user!.id,
             result.listingId,
             body.productId,
             Platform.SHOPEE,
@@ -857,6 +861,7 @@ export async function listingRoutes(app: FastifyInstance) {
           productId: body.productId,
           requests: body.requests,
           overrideTemplate,
+          actorId: request.user!.id,
         });
 
         return reply.status(202).send({
@@ -991,6 +996,7 @@ export async function listingRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
+        const actorId = request.user!.id;
         const body = request.body as {
           productIds?: string[];
           requests?: Array<{
@@ -1060,6 +1066,7 @@ export async function listingRoutes(app: FastifyInstance) {
             await BulkListingJobRepository.markRunning(job.id);
             const summary = await ListingDispatcher.dispatchBatch({
               userId,
+              actorId,
               productIds: body.productIds!,
               requests: body.requests!.map((r) => ({
                 platform: r.platform,
@@ -1246,6 +1253,7 @@ export async function listingRoutes(app: FastifyInstance) {
             await BulkListingJobRepository.markRunning(newJob.id);
             const summary = await ListingDispatcher.dispatchBatch({
               userId,
+              actorId: request.user!.id,
               productIds: Array.from(productIdsSet),
               requests: Array.from(requestsKey.values()),
               overrideTemplate:
