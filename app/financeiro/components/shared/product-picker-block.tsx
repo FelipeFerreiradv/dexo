@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { Control, Controller, useFieldArray } from "react-hook-form";
-import { AlertTriangle, Loader2, Plus, Search, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Car,
+  Link2,
+  Loader2,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 
 import {
   Popover,
@@ -44,12 +53,37 @@ export interface ProductLookupResult {
   name: string;
   price: number;
   stock: number;
+  // Sucata de origem (aditivo) — pré-preenche o vínculo do item cadastrado.
+  scrapId?: string | null;
+  scrapLabel?: string | null;
 }
 
 export interface ProductMeta {
   sku: string;
   name: string;
   stock: number;
+}
+
+// Resultado da busca de sucata (GET /scraps?search=) — só o necessário p/ rótulo.
+interface ScrapSearchResult {
+  id: string;
+  brand: string;
+  model: string;
+  year?: string | null;
+  plate?: string | null;
+}
+
+// Rótulo legível de uma sucata. Mesmo formato do backend (lookup) p/
+// consistência: "VW Gol · 2006 · ABC1D23".
+export function scrapLabelFrom(s: {
+  brand: string;
+  model: string;
+  year?: string | null;
+  plate?: string | null;
+}): string {
+  return [`${s.brand} ${s.model}`.trim(), s.year || null, s.plate || null]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 interface Props {
@@ -63,6 +97,12 @@ interface Props {
   setProductMeta: (
     updater: (m: Record<string, ProductMeta>) => Record<string, ProductMeta>,
   ) => void;
+  // ScrapMeta (scrapId → rótulo legível). Mesmo motivo do productMeta: vive no
+  // pai para sobreviver à navegação entre steps.
+  scrapMeta: Record<string, string>;
+  setScrapMeta: (
+    updater: (m: Record<string, string>) => Record<string, string>,
+  ) => void;
 }
 
 export function ProductPickerBlock({
@@ -71,8 +111,13 @@ export function ProductPickerBlock({
   getValues,
   productMeta,
   setProductMeta,
+  scrapMeta,
+  setScrapMeta,
 }: Props) {
   const { data: session } = useSession();
+  // Sucata "da venda" (default no cabeçalho): só pré-preenche NOVAS linhas
+  // manuais/cadastradas sem sucata própria. Não altera linhas já adicionadas.
+  const [accountScrapId, setAccountScrapId] = useState<string | null>(null);
   const { fields, append, remove } = useFieldArray({
     control,
     name: "items",
@@ -134,9 +179,15 @@ export function ProductPickerBlock({
       return;
     }
 
+    // Sucata efetiva: a de origem do produto (Product.scrapId) tem prioridade;
+    // senão, o default da venda (cabeçalho). Editável por linha depois.
+    const scrapId = p.scrapId ?? accountScrapId ?? null;
+
     // Adiciona com qty=1 e preço corrente (snapshot ao salvar).
     append({
       productId: p.id,
+      description: null,
+      scrapId,
       listingId: null,
       quantity: 1,
       unitPrice: p.price,
@@ -146,6 +197,14 @@ export function ProductPickerBlock({
       ...m,
       [p.id]: { sku: p.sku, name: p.name, stock: p.stock },
     }));
+
+    // Registra o rótulo da sucata de origem do produto (o default da venda já
+    // está no scrapMeta quando foi escolhido no cabeçalho).
+    if (p.scrapId && p.scrapLabel) {
+      const sid = p.scrapId;
+      const slabel = p.scrapLabel;
+      setScrapMeta((m) => ({ ...m, [sid]: slabel }));
+    }
 
     // Pré-preenche totalAmount com o NOVO subtotal (existente + 1×preço).
     const prevSubtotal = computeSubtotal(items);
@@ -163,6 +222,22 @@ export function ProductPickerBlock({
     setQuery("");
   };
 
+  // Adiciona uma linha de item MANUAL (texto livre, sem produto cadastrado).
+  // productId null sinaliza item manual; description é o texto livre. Não mexe
+  // em totalAmount (preço começa 0 — o usuário digita; pode sincronizar via
+  // "Usar no total").
+  const handleAddManual = (initialDescription = "") => {
+    append({
+      productId: null,
+      description: initialDescription,
+      // Default da venda (cabeçalho) pré-preenche a linha manual; editável.
+      scrapId: accountScrapId ?? null,
+      listingId: null,
+      quantity: 1,
+      unitPrice: 0,
+    } as any);
+  };
+
   return (
     <div className="space-y-3 rounded-xl border border-border/60 bg-muted/20 p-4 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
@@ -173,63 +248,119 @@ export function ProductPickerBlock({
             (pagamento).
           </p>
         </div>
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm">
-              <Plus className="size-4" />
-              Adicionar produto
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-80 p-0">
-            <div className="relative border-b border-border/60 p-2">
-              <Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Buscar por SKU ou nome..."
-                className="h-9 pl-8"
-              />
-              {loading && (
-                <Loader2 className="absolute right-4 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-              )}
-            </div>
-            <div className="max-h-64 overflow-y-auto py-1">
-              {options.length === 0 && !loading && (
-                <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-                  {debounced.length < 2
-                    ? "Digite ao menos 2 caracteres..."
-                    : "Nenhum produto encontrado."}
-                </p>
-              )}
-              {options.map((opt) => (
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => handleAddManual()}
+          >
+            <Plus className="size-4" />
+            Item manual
+          </Button>
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" size="sm">
+                <Plus className="size-4" />
+                Adicionar produto
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-80 p-0">
+              <div className="relative border-b border-border/60 p-2">
+                <Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Buscar por SKU ou nome..."
+                  className="h-9 pl-8"
+                />
+                {loading && (
+                  <Loader2 className="absolute right-4 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                )}
+              </div>
+              <div className="max-h-64 overflow-y-auto py-1">
+                {options.length === 0 && !loading && (
+                  <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                    {debounced.length < 2
+                      ? "Digite ao menos 2 caracteres..."
+                      : "Nenhum produto encontrado."}
+                  </p>
+                )}
+                {options.map((opt) => (
+                  <button
+                    type="button"
+                    key={opt.id}
+                    onClick={() => handlePick(opt)}
+                    className={cn(
+                      "flex w-full items-start justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted",
+                    )}
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate font-medium">{opt.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        SKU: {opt.sku} · Estoque: {opt.stock}
+                      </span>
+                    </span>
+                    <span className="whitespace-nowrap text-xs text-muted-foreground">
+                      R$ {formatToBRL(Number(opt.price))}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {/* Atalho: não encontrou? adiciona o texto digitado como item manual. */}
+              {debounced.length >= 2 && (
                 <button
                   type="button"
-                  key={opt.id}
-                  onClick={() => handlePick(opt)}
-                  className={cn(
-                    "flex w-full items-start justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted",
-                  )}
+                  onClick={() => {
+                    handleAddManual(query.trim());
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                  className="flex w-full items-center gap-2 border-t border-border/60 px-3 py-2 text-left text-sm hover:bg-muted"
                 >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate font-medium">{opt.name}</span>
-                    <span className="text-xs text-muted-foreground">
-                      SKU: {opt.sku} · Estoque: {opt.stock}
-                    </span>
-                  </span>
-                  <span className="whitespace-nowrap text-xs text-muted-foreground">
-                    R$ {formatToBRL(Number(opt.price))}
+                  <Plus className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 truncate">
+                    Adicionar{" "}
+                    <span className="font-medium">
+                      &ldquo;{query.trim()}&rdquo;
+                    </span>{" "}
+                    manualmente
                   </span>
                 </button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
+              )}
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
+
+      {/* Sucata da venda (default no cabeçalho) — pré-preenche novas linhas. */}
+      <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-background/40 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">Sucata da venda (opcional)</p>
+          <p className="text-[11px] text-muted-foreground">
+            Pré-preenche o vínculo de novas linhas; não altera as já
+            adicionadas.
+          </p>
+        </div>
+        <ScrapCombobox
+          session={session}
+          valueLabel={
+            accountScrapId ? (scrapMeta[accountScrapId] ?? "Sucata") : null
+          }
+          onSelect={(id, label) => {
+            setAccountScrapId(id);
+            setScrapMeta((m) => ({ ...m, [id]: label }));
+          }}
+          onClear={() => setAccountScrapId(null)}
+          placeholder="Vincular sucata"
+        />
       </div>
 
       {fields.length === 0 && (
         <p className="rounded-md border border-dashed border-border/60 px-3 py-4 text-center text-xs text-muted-foreground">
-          Nenhum produto adicionado. Use "Adicionar produto" para selecionar.
+          Nenhum item adicionado. Use "Adicionar produto" (catálogo) ou "Item
+          manual" (texto livre).
         </p>
       )}
 
@@ -250,9 +381,12 @@ export function ProductPickerBlock({
               productId={(field as any).productId}
               getValues={getValues}
               onRemove={() => remove(idx)}
+              session={session}
+              scrapMeta={scrapMeta}
+              setScrapMeta={setScrapMeta}
             />
           ))}
-          <ItemSubtotalLine getValues={getValues} />
+          <ItemSubtotalLine getValues={getValues} setValue={setValue} />
         </div>
       )}
     </div>
@@ -271,18 +405,31 @@ function computeSubtotal(items: any[] | undefined | null): number {
 
 function ItemSubtotalLine({
   getValues,
+  setValue,
 }: {
   getValues: () => FinanceEntryFormData;
+  setValue: (name: any, value: any, options?: any) => void;
 }) {
   // Recalcula a cada render do bloco — ok pois é tela pequena. Para evitar
   // staleness em digitação, lemos via getValues no momento do render.
   const subtotal = computeSubtotal(getValues().items as any[]);
   return (
-    <div className="flex justify-end px-1 pt-1 text-xs text-muted-foreground">
-      Subtotal dos itens:
-      <span className="ml-2 font-medium text-foreground">
+    <div className="flex items-center justify-end gap-2 px-1 pt-1 text-xs text-muted-foreground">
+      <span>Subtotal dos itens:</span>
+      <span className="font-medium text-foreground">
         R$ {formatToBRL(subtotal)}
       </span>
+      {/* Sincroniza o Valor total (editável) com o subtotal — útil em vendas
+          com itens manuais, cujo preço o usuário digita após adicionar. */}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-6 px-2 text-[11px]"
+        onClick={() => setValue("totalAmount", subtotal, { shouldDirty: true })}
+      >
+        Usar no total
+      </Button>
     </div>
   );
 }
@@ -291,9 +438,14 @@ interface ItemRowProps {
   index: number;
   control: Control<FinanceEntryFormData>;
   meta: ProductMeta | undefined;
-  productId: string;
+  productId?: string | null;
   getValues: () => FinanceEntryFormData;
   onRemove: () => void;
+  session: ReturnType<typeof useSession>["data"];
+  scrapMeta: Record<string, string>;
+  setScrapMeta: (
+    updater: (m: Record<string, string>) => Record<string, string>,
+  ) => void;
 }
 
 function ItemRow({
@@ -303,23 +455,46 @@ function ItemRow({
   productId,
   getValues,
   onRemove,
+  session,
+  scrapMeta,
+  setScrapMeta,
 }: ItemRowProps) {
+  // Item manual (sem produto cadastrado): productId nulo/ausente. Renderiza
+  // um input de descrição livre em vez do card de produto.
+  const isManual = !productId;
   return (
-    <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-12">
+    <div className="space-y-1.5 rounded-md border border-transparent">
+      <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-12">
       <div className="col-span-2 sm:col-span-7">
-        {/* Card produto: altura adaptável; nome pode quebrar em até 2 linhas
-            (line-clamp-2). SKU em fonte menor abaixo. Reservado para nomes
-            longos comuns em autopeças. */}
-        <div className="flex min-h-9 w-full items-start rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-sm">
-          <span className="flex min-w-0 flex-col leading-tight">
-            <span className="font-medium line-clamp-2 break-words">
-              {meta?.name ?? "Produto"}
+        {isManual ? (
+          <Controller
+            control={control}
+            name={`items.${index}.description` as const}
+            render={({ field }) => (
+              <Input
+                value={(field.value as string) ?? ""}
+                onChange={field.onChange}
+                placeholder="Descrição do item (texto livre)"
+                aria-label="Descrição do item manual"
+                className="h-9"
+              />
+            )}
+          />
+        ) : (
+          /* Card produto: altura adaptável; nome pode quebrar em até 2 linhas
+             (line-clamp-2). SKU em fonte menor abaixo. Reservado para nomes
+             longos comuns em autopeças. */
+          <div className="flex min-h-9 w-full items-start rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-sm">
+            <span className="flex min-w-0 flex-col leading-tight">
+              <span className="font-medium line-clamp-2 break-words">
+                {meta?.name ?? "Produto"}
+              </span>
+              <span className="truncate text-[10px] text-muted-foreground">
+                SKU: {meta?.sku ?? productId}
+              </span>
             </span>
-            <span className="truncate text-[10px] text-muted-foreground">
-              SKU: {meta?.sku ?? productId}
-            </span>
-          </span>
-        </div>
+          </div>
+        )}
       </div>
       <div className="col-span-1 sm:col-span-2">
         <Controller
@@ -358,7 +533,178 @@ function ItemRow({
           <Trash2 className="size-4 text-destructive" />
         </Button>
       </div>
+      </div>
+
+      {/* Vínculo de sucata por item (cadastrado ou manual). Pré-preenchido por
+          Product.scrapId no item cadastrado; editável/removível. */}
+      <div className="flex items-center gap-2 pl-1">
+        <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+          Sucata
+        </span>
+        <Controller
+          control={control}
+          name={`items.${index}.scrapId` as const}
+          render={({ field }) => (
+            <ScrapCombobox
+              session={session}
+              valueLabel={
+                field.value
+                  ? (scrapMeta[field.value as string] ?? "Sucata vinculada")
+                  : null
+              }
+              onSelect={(id, label) => {
+                field.onChange(id);
+                setScrapMeta((m) => ({ ...m, [id]: label }));
+              }}
+              onClear={() => field.onChange(null)}
+              placeholder="Vincular sucata (opcional)"
+              compact
+            />
+          )}
+        />
+      </div>
     </div>
+  );
+}
+
+// Combobox de SUCATA (reusa GET /scraps?search=). Usado no cabeçalho (default
+// da venda) e por item. Debounce 250ms + abort, mesmo padrão da busca de produto.
+function ScrapCombobox({
+  session,
+  valueLabel,
+  onSelect,
+  onClear,
+  placeholder = "Vincular sucata",
+  compact,
+}: {
+  session: ReturnType<typeof useSession>["data"];
+  valueLabel: string | null;
+  onSelect: (id: string, label: string) => void;
+  onClear: () => void;
+  placeholder?: string;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [options, setOptions] = useState<ScrapSearchResult[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const search = useCallback(async () => {
+    const email = session?.user?.email;
+    if (!email) return;
+    if (debounced.length < 2) {
+      setOptions([]);
+      return;
+    }
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setLoading(true);
+    try {
+      const url = `${getApiBaseUrl()}/scraps?search=${encodeURIComponent(
+        debounced,
+      )}&limit=10`;
+      const res = await fetch(url, { headers: { email }, signal: ctrl.signal });
+      if (!res.ok) throw new Error("scrap search failed");
+      const data = await res.json();
+      setOptions(Array.isArray(data?.scraps) ? data.scraps : []);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") setOptions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [session?.user?.email, debounced]);
+
+  useEffect(() => {
+    if (open) search();
+  }, [open, search]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className={cn(
+            "h-7 max-w-full justify-start gap-1.5 text-xs font-normal",
+            compact && "min-w-0",
+          )}
+        >
+          {valueLabel ? (
+            <Car className="size-3.5 shrink-0 text-primary" />
+          ) : (
+            <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className={cn("truncate", !valueLabel && "text-muted-foreground")}>
+            {valueLabel ?? placeholder}
+          </span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-0">
+        <div className="relative border-b border-border/60 p-2">
+          <Search className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar sucata (marca, modelo, placa)..."
+            className="h-9 pl-8"
+          />
+          {loading && (
+            <Loader2 className="absolute right-4 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+          )}
+        </div>
+        <div className="max-h-64 overflow-y-auto py-1">
+          {options.length === 0 && !loading && (
+            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+              {debounced.length < 2
+                ? "Digite ao menos 2 caracteres..."
+                : "Nenhuma sucata encontrada."}
+            </p>
+          )}
+          {options.map((o) => {
+            const label = scrapLabelFrom(o);
+            return (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => {
+                  onSelect(o.id, label);
+                  setOpen(false);
+                  setQuery("");
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+              >
+                <Car className="size-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {valueLabel && (
+          <button
+            type="button"
+            onClick={() => {
+              onClear();
+              setOpen(false);
+              setQuery("");
+            }}
+            className="flex w-full items-center gap-2 border-t border-border/60 px-3 py-2 text-left text-sm text-destructive hover:bg-muted"
+          >
+            <X className="size-4 shrink-0" />
+            Remover vínculo
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 

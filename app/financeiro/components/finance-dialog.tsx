@@ -40,7 +40,7 @@ import { TitleStep } from "./steps/title-step";
 import { FeesStep } from "./steps/fees-step";
 import { InstallmentsStep } from "./steps/installments-step";
 import type { CustomerOption } from "./shared/customer-combobox";
-import type { ProductMeta } from "./shared/product-picker-block";
+import { scrapLabelFrom, type ProductMeta } from "./shared/product-picker-block";
 
 export type FinanceKind = "receivable" | "payable";
 
@@ -158,6 +158,11 @@ export function FinanceDialog({
     Record<string, ProductMeta>
   >({});
 
+  // ScrapMeta (rótulo legível por scrapId) — mesmo motivo do productMeta:
+  // sobrevive à navegação entre steps. Seedado de initialData.items[].scrap e
+  // atualizado ao selecionar uma sucata no ProductPickerBlock.
+  const [scrapMeta, setScrapMeta] = useState<Record<string, string>>({});
+
   // Fase 8: items em tempo real para gatear o botão de cupom fiscal (só faz
   // sentido oferecer quando a conta tem itens vinculados). useWatch garante
   // re-render quando o usuário adiciona/remove no ProductPickerBlock.
@@ -178,6 +183,7 @@ export function FinanceDialog({
       const items = (initialData as any)?.items;
       if (balcaoEnabled && Array.isArray(items) && items.length > 0) {
         const seed: Record<string, ProductMeta> = {};
+        const scrapSeed: Record<string, string> = {};
         for (const it of items) {
           if (it?.product && it.productId) {
             seed[it.productId] = {
@@ -186,10 +192,16 @@ export function FinanceDialog({
               stock: 0,
             };
           }
+          // Rótulo da sucata vinculada (mini-snapshot do backend) p/ exibição.
+          if (it?.scrap && it.scrapId) {
+            scrapSeed[it.scrapId] = scrapLabelFrom(it.scrap);
+          }
         }
         setProductMeta(seed);
+        setScrapMeta(scrapSeed);
       } else {
         setProductMeta({});
+        setScrapMeta({});
       }
     }
   }, [open, initialData, reset, balcaoEnabled]);
@@ -400,6 +412,8 @@ export function FinanceDialog({
                 setProductMeta={
                   balcaoEnabled ? setProductMeta : undefined
                 }
+                scrapMeta={balcaoEnabled ? scrapMeta : undefined}
+                setScrapMeta={balcaoEnabled ? setScrapMeta : undefined}
               />
             )}
             {currentStep === 3 && (

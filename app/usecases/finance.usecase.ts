@@ -17,6 +17,7 @@ import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
+import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
 
 // Mapeamento código Dexo (paymentMethod) → MeioPagamento (domínio fiscal SEFAZ).
 // 1:1 e sem ambiguidade (decisão da Fase 1). Código nulo/desconhecido → null;
@@ -105,8 +106,17 @@ export class FinanceUseCase {
       if (!it || typeof it !== "object") {
         throw new Error(`Item ${idx + 1} inválido`);
       }
-      if (!it.productId || typeof it.productId !== "string") {
-        throw new Error(`Item ${idx + 1}: produto é obrigatório`);
+      // Item CADASTRADO (productId) OU MANUAL (description). Pelo menos um é
+      // obrigatório — espelha o superRefine do zod do cliente. Mensagem com
+      // "obrigatório" mapeia para 400 no buildCreateHandler.
+      const hasProduct =
+        typeof it.productId === "string" && it.productId.length > 0;
+      const hasDescription =
+        typeof it.description === "string" && it.description.trim().length > 0;
+      if (!hasProduct && !hasDescription) {
+        throw new Error(
+          `Item ${idx + 1}: produto cadastrado ou descrição é obrigatório`,
+        );
       }
       if (
         !Number.isInteger(it.quantity) ||
@@ -271,10 +281,16 @@ export class FinanceUseCase {
         );
         // Baixa de estoque dentro da MESMA tx.
         const result = await StockDeductionService.deductWithinTx(tx, {
-          items: items.map((it) => ({
-            productId: it.productId,
-            quantity: it.quantity,
-          })),
+          // Apenas itens CADASTRADOS baixam estoque. Itens manuais
+          // (productId null) não têm produto no catálogo — não geram
+          // StockLog/baixa. Filtrar honra o tipo StockDeductionItem.productId
+          // (string) e evita SELECT/StockLog com id nulo.
+          items: items
+            .filter((it) => it.productId != null)
+            .map((it) => ({
+              productId: it.productId as string,
+              quantity: it.quantity,
+            })),
           reason: `Venda balcão — Conta a Receber ${id}`,
           // StockSyncJob.orderId é String? livre — anotação para auditoria.
           orderId: `receivable:${id}`,
@@ -300,6 +316,15 @@ export class FinanceUseCase {
       deductions,
       logPrefix: "[FinanceUseCase]",
       pauseOnZero: { userId },
+    });
+
+    // Reflexo no fluxo da sucata (best-effort, pós-commit, idempotente):
+    // AVAILABLE→IN_USE→DEPLETED conforme a venda atribuída ao lote. Irmão do
+    // firePostEffects — NUNCA trava nem reverte o pagamento (já commitado).
+    ScrapStatusReconcileService.reconcileForReceivable({
+      receivableId: id,
+      userId,
+      logPrefix: "[FinanceUseCase]",
     });
 
     return updated!;
@@ -414,10 +439,13 @@ export class FinanceUseCase {
         );
         // 2. Contra-lançamento de estoque (+quantity por item).
         const result = await StockDeductionService.restoreWithinTx(tx, {
-          items: items.map((it) => ({
-            productId: it.productId,
-            quantity: it.quantity,
-          })),
+          // Espelha o markPaid: só itens cadastrados devolvem estoque.
+          items: items
+            .filter((it) => it.productId != null)
+            .map((it) => ({
+              productId: it.productId as string,
+              quantity: it.quantity,
+            })),
           reason: `Estorno venda balcão — Conta a Receber ${id}`,
           orderId: `receivable:${id}`,
           logPrefix: "[FinanceUseCase]",
@@ -433,6 +461,15 @@ export class FinanceUseCase {
       deductions: restorations,
       logPrefix: "[FinanceUseCase]",
       reopenOnRefill: { userId },
+    });
+
+    // Estorno simétrico: reavalia o status da sucata (DEPLETED→IN_USE→AVAILABLE
+    // conforme estoque restaurado e vendas PAGA remanescentes nos dois canais).
+    // Best-effort, pós-commit, idempotente — espelha o caminho do pagamento.
+    ScrapStatusReconcileService.reconcileForReceivable({
+      receivableId: id,
+      userId,
+      logPrefix: "[FinanceUseCase]",
     });
 
     return updated!;
@@ -521,9 +558,11 @@ export class FinanceUseCase {
     // Itens — defaults seguros conforme decisão da Fase 1.
     const itens = entry.items.map((it, idx) => ({
       numero: idx + 1,
-      productId: it.productId,
-      codigo: it.product?.sku ?? it.productId,
-      descricao: it.product?.name ?? "",
+      productId: it.productId ?? null,
+      // Item cadastrado: SKU/nome do Product. Item manual: descrição livre.
+      // Opção A — entra no rascunho com defaults editáveis (NCM em branco).
+      codigo: it.product?.sku ?? it.productId ?? "",
+      descricao: it.product?.name ?? it.description ?? "",
       ncm: "", // usuário completa no editor fiscal antes de emitir
       cfop: "5102", // venda dentro-do-estado
       cest: null,

@@ -72,13 +72,24 @@ function toEntry(raw: any): FinanceEntry {
     items: Array.isArray(raw.items)
       ? raw.items.map((i: any) => ({
           id: i.id,
-          productId: i.productId,
+          productId: i.productId ?? null,
+          description: i.description ?? null,
+          scrapId: i.scrapId ?? null,
           listingId: i.listingId ?? null,
           quantity: i.quantity,
           unitPrice: Number(i.unitPrice),
           createdAt: i.createdAt,
           product: i.product
             ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
+            : null,
+          scrap: i.scrap
+            ? {
+                id: i.scrap.id,
+                brand: i.scrap.brand,
+                model: i.scrap.model,
+                year: i.scrap.year ?? null,
+                plate: i.scrap.plate ?? null,
+              }
             : null,
         }))
       : undefined,
@@ -88,7 +99,14 @@ function toEntry(raw: any): FinanceEntry {
 // Include de itens (somente receivable). Não-receivable ignora.
 const itemsInclude = {
   orderBy: { createdAt: "asc" as const },
-  include: { product: { select: { id: true, sku: true, name: true } } },
+  include: {
+    product: { select: { id: true, sku: true, name: true } },
+    // Mini-snapshot da sucata vinculada (rótulo na edição). Join pequeno em
+    // leitura de UM receivable (detalhe/pagamento) — egress desprezível.
+    scrap: {
+      select: { id: true, brand: true, model: true, year: true, plate: true },
+    },
+  },
 };
 
 function buildInclude(kind: FinanceKind, withItems: boolean): any {
@@ -204,7 +222,9 @@ export class FinanceRepository {
     await (tx as any).receivableItem.createMany({
       data: data.items!.map((it) => ({
         receivableId: created.id,
-        productId: it.productId,
+        productId: it.productId ?? null,
+        description: it.description ?? null,
+        scrapId: it.scrapId ?? null,
         listingId: it.listingId ?? null,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -308,7 +328,9 @@ export class FinanceRepository {
       await (tx as any).receivableItem.createMany({
         data: items.map((it) => ({
           receivableId: id,
-          productId: it.productId,
+          productId: it.productId ?? null,
+          description: it.description ?? null,
+          scrapId: it.scrapId ?? null,
           listingId: it.listingId ?? null,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -347,17 +369,39 @@ export class FinanceRepository {
     const rows = await prisma.receivableItem.findMany({
       where: { receivableId, receivable: { userId } },
       orderBy: { createdAt: "asc" },
-      include: { product: { select: { id: true, sku: true, name: true } } },
+      include: {
+        product: { select: { id: true, sku: true, name: true } },
+        scrap: {
+          select: {
+            id: true,
+            brand: true,
+            model: true,
+            year: true,
+            plate: true,
+          },
+        },
+      },
     });
     return rows.map((i: any) => ({
       id: i.id,
-      productId: i.productId,
+      productId: i.productId ?? null,
+      description: i.description ?? null,
+      scrapId: i.scrapId ?? null,
       listingId: i.listingId ?? null,
       quantity: i.quantity,
       unitPrice: Number(i.unitPrice),
       createdAt: i.createdAt,
       product: i.product
         ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
+        : null,
+      scrap: i.scrap
+        ? {
+            id: i.scrap.id,
+            brand: i.scrap.brand,
+            model: i.scrap.model,
+            year: i.scrap.year ?? null,
+            plate: i.scrap.plate ?? null,
+          }
         : null,
     }));
   }

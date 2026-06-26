@@ -46,14 +46,41 @@ export const financeEntrySchema = z
     // sem itens. Persistido em ReceivableItem (receivable-only) na rota
     // (Fase 4). Quando presente, totalAmount continua editável pelo usuário;
     // a UI (Fase 5) é que pré-preenche.
+    //
+    // Cada item é CADASTRADO (productId, sem description) OU MANUAL
+    // (description em texto livre, sem productId). O superRefine garante que
+    // pelo menos um identificador esteja presente. scrapId é opcional em ambos
+    // (vínculo de sucata por item).
     items: z
       .array(
-        z.object({
-          productId: z.string().min(1, "Produto inválido"),
-          listingId: z.string().optional().nullable(),
-          quantity: z.number().int().positive("Quantidade deve ser positiva"),
-          unitPrice: z.number().nonnegative("Preço unitário deve ser ≥ 0"),
-        }),
+        z
+          .object({
+            productId: z.string().min(1).optional().nullable(),
+            description: z
+              .string()
+              .trim()
+              .min(1, "Descrição obrigatória")
+              .max(200, "Descrição muito longa (máx. 200)")
+              .optional()
+              .nullable(),
+            scrapId: z.string().optional().nullable(),
+            listingId: z.string().optional().nullable(),
+            quantity: z.number().int().positive("Quantidade deve ser positiva"),
+            unitPrice: z.number().nonnegative("Preço unitário deve ser ≥ 0"),
+          })
+          .superRefine((it, ctx) => {
+            const hasProduct = !!it.productId && it.productId.length > 0;
+            const hasDescription =
+              !!it.description && it.description.trim().length > 0;
+            if (!hasProduct && !hasDescription) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["description"],
+                message:
+                  "Informe um produto cadastrado ou a descrição do item manual",
+              });
+            }
+          }),
       )
       .optional(),
   })

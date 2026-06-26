@@ -36,6 +36,7 @@ export class ReceiptPdfService {
     const logo = await tryEmbedLogo(doc);
 
     const ctx: RenderCtx = {
+      doc,
       page,
       font,
       fontBold,
@@ -52,17 +53,21 @@ export class ReceiptPdfService {
     // ── Cards Empresa | Cliente lado a lado ──
     const afterCardsY = drawParties(ctx, afterTitleY - 24, entry, company);
 
-    // ── Itens da venda (tabela) ──
+    // ── Itens da venda (tabela, paginada) ── pode adicionar páginas e
+    // reatribuir ctx.page para a última página em uso.
     const afterItemsY = drawItems(ctx, afterCardsY - 24, entry);
 
-    // ── Totais (direita) ──
+    // ── Totais (direita) ── quebra de página se faltar espaço.
     const afterTotalsY = drawTotals(ctx, afterItemsY - 12, entry);
 
     // ── Pagamento ──
     drawPayment(ctx, afterTotalsY - 20, entry);
 
-    // ── Footer ──
+    // ── Footer (na última página) ──
     drawFooter(ctx, entry);
+
+    // ── Numeração "Página X de Y" em TODAS as páginas (após paginar) ──
+    stampPageNumbers(ctx);
 
     return doc.save();
   }
@@ -90,8 +95,15 @@ const MARGIN = 40;
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
 const CONTENT_W = PAGE_W - MARGIN * 2;
+// Espaço reservado na base p/ rodapé legal + numeração de página. Itens e o
+// bloco de totais nunca descem abaixo disso (MARGIN + FOOTER_RESERVE).
+const FOOTER_RESERVE = 72;
+const ROW_H = 22;
 
 type RenderCtx = {
+  // doc é necessário para adicionar páginas durante a paginação dos itens.
+  doc: PDFDocument;
+  // page é MUTÁVEL: aponta sempre para a página em uso (a última, após quebras).
   page: PDFPage;
   font: PDFFont;
   fontBold: PDFFont;
@@ -417,134 +429,170 @@ function drawKV(
 // Itens
 // ═════════════════════════════════════════════════════════════════
 
-function drawItems(
-  ctx: RenderCtx,
-  y: number,
-  entry: FinanceEntry,
-): number {
-  const { page, font, fontBold, palette } = ctx;
+// Offsets (a partir da borda DIREITA da tabela) das colunas numéricas.
+// Ordem visual: # | Descrição | Qtd | Preço un. | Subtotal.
+const COL_QTY_R = 200;
+const COL_PRICE_R = 105;
+const COL_SUBTOTAL_R = 12;
+// Descrição vai de tableX+36 até antes da coluna Qtd.
+const COL_DESC_MAX = CONTENT_W - 286;
 
-  drawEyebrow(ctx, MARGIN, y, "ITENS DA VENDA");
-  y -= 14;
-
+// Desenha o cabeçalho da tabela de itens em `y` e retorna o novo `y` (abaixo
+// da linha de cabeçalho). Reutilizado em cada página da paginação.
+function drawItemsTableHeader(ctx: RenderCtx, y: number): number {
+  const { page, fontBold, palette } = ctx;
   const tableX = MARGIN;
   const tableW = CONTENT_W;
-  const rowH = 22;
 
-  // Header da tabela
   page.drawRectangle({
     x: tableX,
-    y: y - rowH + 6,
+    y: y - ROW_H + 6,
     width: tableW,
-    height: rowH,
+    height: ROW_H,
     color: palette.softBg,
     borderColor: palette.border,
     borderWidth: 0.5,
   });
-  const headerY = y - 10;
-  page.drawText("#", {
-    x: tableX + 12,
-    y: headerY,
-    size: 8.5,
-    font: fontBold,
-    color: palette.muted,
+  const hy = y - 10;
+  page.drawText("#", { x: tableX + 12, y: hy, size: 8.5, font: fontBold, color: palette.muted });
+  page.drawText("Descricao", { x: tableX + 36, y: hy, size: 8.5, font: fontBold, color: palette.muted });
+  drawTextRight(page, fontBold, "Qtd", tableX + tableW - COL_QTY_R, hy, 8.5, palette.muted);
+  drawTextRight(page, fontBold, "Preco un.", tableX + tableW - COL_PRICE_R, hy, 8.5, palette.muted);
+  drawTextRight(page, fontBold, "Subtotal", tableX + tableW - COL_SUBTOTAL_R, hy, 8.5, palette.muted);
+  return y - ROW_H;
+}
+
+// Adiciona uma página de CONTINUAÇÃO (cabeçalho leve: marca + cupom# + divisória),
+// reatribui ctx.page para ela e retorna o `y` útil logo abaixo da divisória.
+function startContinuationPage(ctx: RenderCtx, entry: FinanceEntry): number {
+  const page = ctx.doc.addPage([PAGE_W, PAGE_H]);
+  ctx.page = page;
+  const top = PAGE_H - MARGIN;
+  page.drawText("Dexo", {
+    x: MARGIN,
+    y: top - 12,
+    size: 12,
+    font: ctx.fontBold,
+    color: ctx.palette.ink,
   });
-  page.drawText("Descricao", {
-    x: tableX + 36,
-    y: headerY,
-    size: 8.5,
-    font: fontBold,
-    color: palette.muted,
-  });
+  const shortId = (entry.id || "").slice(0, 8).toUpperCase();
   drawTextRight(
     page,
-    fontBold,
-    "Valor total",
-    tableX + tableW - 12,
-    headerY,
-    8.5,
-    palette.muted,
+    ctx.font,
+    `Cupom #${shortId} (continuacao)`,
+    PAGE_W - MARGIN,
+    top - 12,
+    9,
+    ctx.palette.muted,
   );
+  const divY = top - 22;
+  page.drawLine({
+    start: { x: MARGIN, y: divY },
+    end: { x: PAGE_W - MARGIN, y: divY },
+    thickness: 0.5,
+    color: ctx.palette.border,
+  });
+  return divY - 16;
+}
 
-  y -= rowH;
+type ItemRowData = {
+  description: string;
+  quantity: number | null;
+  unitPrice: number | null;
+  amount: number | null;
+};
 
-  // Linhas — preferimos os itens estruturados da conta (Fase 4+: venda
-  // balcão persiste ReceivableItem com snapshot de unitPrice/quantity).
-  // Se ausentes, caímos no parser legado de debtDetails (regex), que pode
-  // confundir números no fim do texto com preço (ex.: "Fluence 2011 A 2017"
-  // → 2017 como preço). O caminho estruturado elimina essa ambiguidade.
-  const rows: ParsedItem[] =
-    Array.isArray(entry.items) && entry.items.length > 0
-      ? entry.items.map((it: any) => ({
-          description: buildItemDescription(it),
-          amount: Number(
-            (Number(it.quantity ?? 0) * Number(it.unitPrice ?? 0)).toFixed(2),
-          ),
-        }))
-      : parseItemLines(entry).map((line, _, arr) =>
-          parseItemLine(line, entry, arr.length),
-        );
+// Monta as linhas a partir dos itens estruturados (Fase 4+: ReceivableItem com
+// snapshot de unitPrice/quantity, cadastrado OU manual) ou, na ausência, do
+// parser legado de debtDetails (apenas descrição + valor).
+function buildItemRows(entry: FinanceEntry): ItemRowData[] {
+  if (Array.isArray(entry.items) && entry.items.length > 0) {
+    return entry.items.map((it: any) => {
+      const qty = Number(it.quantity ?? 0);
+      const unit = it.unitPrice != null ? Number(it.unitPrice) : null;
+      return {
+        description: buildItemDescription(it),
+        quantity: Number.isFinite(qty) && qty > 0 ? qty : null,
+        unitPrice: unit != null && Number.isFinite(unit) ? unit : null,
+        amount: Number((qty * Number(it.unitPrice ?? 0)).toFixed(2)),
+      };
+    });
+  }
+  // Legado: linhas de texto (debtDetails) — sem qtd/preço unitário estruturado.
+  return parseItemLines(entry).map((line, _, arr) => {
+    const p = parseItemLine(line, entry, arr.length);
+    return { description: p.description, quantity: null, unitPrice: null, amount: p.amount };
+  });
+}
 
-  const maxRows = Math.min(rows.length, 14);
-  for (let i = 0; i < maxRows; i++) {
+function drawItems(ctx: RenderCtx, y: number, entry: FinanceEntry): number {
+  const { palette } = ctx;
+  const tableX = MARGIN;
+  const tableW = CONTENT_W;
+
+  drawEyebrow(ctx, MARGIN, y, "ITENS DA VENDA");
+  y -= 14;
+
+  const rows = buildItemRows(entry);
+  y = drawItemsTableHeader(ctx, y);
+
+  for (let i = 0; i < rows.length; i++) {
+    // Quebra de página: se a próxima linha invadiria a área reservada ao
+    // rodapé, fecha a tabela aqui, abre página de continuação e redesenha o
+    // cabeçalho da tabela. Sem corte — TODOS os itens saem no cupom.
+    if (y - ROW_H < MARGIN + FOOTER_RESERVE) {
+      ctx.page.drawLine({
+        start: { x: tableX, y: y + 6 },
+        end: { x: tableX + tableW, y: y + 6 },
+        thickness: 0.5,
+        color: palette.border,
+      });
+      y = startContinuationPage(ctx, entry);
+      drawEyebrow(ctx, MARGIN, y, "ITENS DA VENDA (continuacao)");
+      y -= 14;
+      y = drawItemsTableHeader(ctx, y);
+    }
+
+    const r = rows[i];
     const zebra = i % 2 === 1;
     if (zebra) {
-      page.drawRectangle({
+      ctx.page.drawRectangle({
         x: tableX,
-        y: y - rowH + 6,
+        y: y - ROW_H + 6,
         width: tableW,
-        height: rowH,
+        height: ROW_H,
         color: palette.softBg,
       });
     }
-    const parsed = rows[i];
     const textY = y - 10;
-    // # index
-    page.drawText(String(i + 1), {
+    ctx.page.drawText(String(i + 1), {
       x: tableX + 12,
       y: textY,
       size: 9,
-      font,
+      font: ctx.font,
       color: palette.subtle,
     });
-    // descricao (com truncamento)
-    const descMax = tableW - 120;
-    const desc = fitText(font, sanitize(parsed.description), 9.5, descMax);
-    page.drawText(desc, {
+    ctx.page.drawText(fitText(ctx.font, sanitize(r.description), 9.5, COL_DESC_MAX), {
       x: tableX + 36,
       y: textY,
       size: 9.5,
-      font,
+      font: ctx.font,
       color: palette.ink,
     });
-    // valor (se parseado da linha, usa; caso contrário, deixa em branco
-    // para não confundir com o total da conta)
-    if (parsed.amount !== null) {
-      drawTextRight(
-        page,
-        font,
-        maskMoneyBRL(parsed.amount),
-        tableX + tableW - 12,
-        textY,
-        9.5,
-        palette.ink,
-      );
+    if (r.quantity != null) {
+      drawTextRight(ctx.page, ctx.font, String(r.quantity), tableX + tableW - COL_QTY_R, textY, 9.5, palette.ink);
     }
-    y -= rowH;
-  }
-  if (rows.length > maxRows) {
-    page.drawText(`+ ${rows.length - maxRows} item(ns) nao exibidos`, {
-      x: tableX + 36,
-      y: y - 6,
-      size: 8,
-      font,
-      color: palette.alert,
-    });
-    y -= 14;
+    if (r.unitPrice != null) {
+      drawTextRight(ctx.page, ctx.font, maskMoneyBRL(r.unitPrice), tableX + tableW - COL_PRICE_R, textY, 9.5, palette.ink);
+    }
+    if (r.amount != null) {
+      drawTextRight(ctx.page, ctx.font, maskMoneyBRL(r.amount), tableX + tableW - COL_SUBTOTAL_R, textY, 9.5, palette.ink);
+    }
+    y -= ROW_H;
   }
 
   // Borda inferior da tabela
-  page.drawLine({
+  ctx.page.drawLine({
     start: { x: tableX, y: y + 6 },
     end: { x: tableX + tableW, y: y + 6 },
     thickness: 0.5,
@@ -563,6 +611,11 @@ function drawTotals(
   y: number,
   entry: FinanceEntry,
 ): number {
+  // Mantém o bloco de totais + pagamento inteiro acima do rodapé. Se não
+  // couber na página atual (itens longos terminaram baixo), abre continuação.
+  if (y - 190 < MARGIN + FOOTER_RESERVE) {
+    y = startContinuationPage(ctx, entry);
+  }
   const { page, font, fontBold, palette } = ctx;
 
   const rightEdge = PAGE_W - MARGIN;
@@ -652,6 +705,12 @@ function drawTotals(
 // ═════════════════════════════════════════════════════════════════
 
 function drawPayment(ctx: RenderCtx, y: number, entry: FinanceEntry) {
+  // Backstop: se os totais consumiram quase toda a página, joga o bloco de
+  // pagamento para uma continuação (geralmente desnecessário — o guard de
+  // drawTotals já reserva espaço para totais + pagamento).
+  if (y - 80 < MARGIN + FOOTER_RESERVE) {
+    y = startContinuationPage(ctx, entry);
+  }
   const { page, font, fontBold, palette } = ctx;
 
   drawEyebrow(ctx, MARGIN, y, "PAGAMENTO");
@@ -754,16 +813,27 @@ function drawFooter(ctx: RenderCtx, entry: FinanceEntry) {
       color: palette.alert,
     },
   );
+  // A numeração "Pagina X de Y" é estampada em TODAS as páginas por
+  // stampPageNumbers (após a paginação concluir), não aqui.
+}
 
-  const pageLabel = "Pagina 1 de 1";
-  const pageLabelW = font.widthOfTextAtSize(pageLabel, 8);
-  page.drawText(pageLabel, {
-    x: PAGE_W - MARGIN - pageLabelW,
-    y: footerY + 6,
-    size: 8,
-    font,
-    color: palette.subtle,
-  });
+// Estampa "Pagina X de Y" no canto inferior direito de cada página. Chamado
+// por último, quando o total de páginas já é conhecido.
+function stampPageNumbers(ctx: RenderCtx) {
+  const pages = ctx.doc.getPages();
+  const total = pages.length;
+  for (let i = 0; i < total; i++) {
+    const p = pages[i];
+    const label = `Pagina ${i + 1} de ${total}`;
+    const w = ctx.font.widthOfTextAtSize(label, 8);
+    p.drawText(label, {
+      x: PAGE_W - MARGIN - w,
+      y: MARGIN + 6,
+      size: 8,
+      font: ctx.font,
+      color: ctx.palette.subtle,
+    });
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -911,10 +981,10 @@ type ParsedItem = { description: string; amount: number | null };
 // "<qty>×" quando qty > 1. Mantemos curto para caber na coluna de descrição.
 function buildItemDescription(it: any): string {
   const sku = it?.product?.sku ? `${it.product.sku} ` : "";
-  const name = it?.product?.name ?? "Produto";
-  const qty = Number(it?.quantity ?? 0);
-  const qtyPrefix = qty > 1 ? `${qty}× ` : "";
-  return `${qtyPrefix}${sku}${name}`.trim();
+  // Item cadastrado: nome do Product. Item manual (sem product): description
+  // de texto livre. Sem qtd no prefixo — a quantidade tem coluna própria.
+  const name = it?.product?.name ?? it?.description ?? "Item";
+  return `${sku}${name}`.trim();
 }
 
 function parseItemLines(entry: FinanceEntry): string[] {
