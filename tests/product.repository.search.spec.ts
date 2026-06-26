@@ -758,4 +758,53 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     expect(result.total).toBe(1);
     expect(result.products[0]).toMatchObject({ id: "prod-208" });
   });
+
+  it("código alfanumérico com match exato de SKU retorna só ele (sem fuzzy)", async () => {
+    const repo = new ProductRepositoryPrisma();
+    mockQueryRaw.mockResolvedValue([]); // não deve ser chamado
+    mockFindMany.mockResolvedValue([
+      {
+        ...baseProduct,
+        id: "prod-abc",
+        sku: "ABC-1",
+        name: "Farol dianteiro",
+        price: money(50),
+        stock: 3,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockCount.mockResolvedValue(1);
+
+    const result = await repo.findAll(
+      { search: "ABC-1", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    // Match exato (skuNormalized/sku) curto-circuita: nenhum SQL raw (Tier 1/fuzzy).
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+    expect(result.total).toBe(1);
+    expect(result.products[0].sku).toBe("ABC-1");
+  });
+
+  it("SKU/código numérico INEXISTENTE retorna vazio sem cair no fuzzy", async () => {
+    const repo = new ProductRepositoryPrisma();
+    // Tier 0 (exato): sem match.
+    mockFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue(0);
+    // Tier 1 (1 grupo "99999"): ranked vazio + total 0.
+    mockQueryRaw
+      .mockResolvedValueOnce([]) // Tier 1 ranked ids
+      .mockResolvedValueOnce([{ count: BigInt(0) }]); // Tier 1 total
+
+    const result = await repo.findAll(
+      { search: "99999", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    // Só o Tier 1 rodou (2 queries). A guarda code-like cortou o fuzzy — se
+    // ele tivesse rodado seriam 4 chamadas, trazendo SKUs aleatórios.
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ products: [], total: 0 });
+  });
 });
