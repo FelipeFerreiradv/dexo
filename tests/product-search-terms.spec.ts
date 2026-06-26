@@ -4,6 +4,7 @@ import {
   tokenizeSearch,
   reduceVariants,
   MAX_TOKEN_GROUPS,
+  isCodeLikeQuery,
 } from "../app/repositories/product-search-terms";
 
 describe("normalizeTerm", () => {
@@ -77,6 +78,29 @@ describe("tokenizeSearch", () => {
     expect(tokenizeSearch("molla")).toHaveLength(1); // fuzzy preservado
     expect(tokenizeSearch("amortecedor")).toHaveLength(1); // fuzzy preservado
     expect(tokenizeSearch("208")).toHaveLength(1); // numérico: 1 grupo
+  });
+});
+
+describe("isCodeLikeQuery", () => {
+  it("classifica códigos (SKU / nº de peça) como code-like", () => {
+    expect(isCodeLikeQuery("208")).toBe(true); // numérico (modelo/SKU)
+    expect(isCodeLikeQuery("043")).toBe(true); // SKU auto zero-padded
+    expect(isCodeLikeQuery("32763")).toBe(true);
+    expect(isCodeLikeQuery("ABC-1")).toBe(true); // alfanumérico c/ separador
+    expect(isCodeLikeQuery("PROD-001")).toBe(true);
+    expect(isCodeLikeQuery("7891234567890")).toBe(true); // código de barras
+    expect(isCodeLikeQuery("ab_12")).toBe(true);
+  });
+
+  it("NÃO classifica buscas descritivas como code-like (mantém o fuzzy)", () => {
+    expect(isCodeLikeQuery("mola")).toBe(false);
+    expect(isCodeLikeQuery("molla")).toBe(false); // typo → fuzzy preservado
+    expect(isCodeLikeQuery("fiat")).toBe(false);
+    expect(isCodeLikeQuery("ABC")).toBe(false); // alfabético puro
+    expect(isCodeLikeQuery("mola dianteira")).toBe(false); // frase (espaço)
+    expect(isCodeLikeQuery("208 gol")).toBe(false); // frase
+    expect(isCodeLikeQuery("")).toBe(false);
+    expect(isCodeLikeQuery("   ")).toBe(false);
   });
 });
 

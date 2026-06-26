@@ -10,6 +10,12 @@ import { FinanceList } from "./finance-list";
 import { UnidadeFilter } from "./shared/unidade-select";
 import { UnidadesDialog } from "./unidades-dialog";
 import { FinanceReportButton } from "./finance-report-button";
+import { BudgetList } from "./budget-list";
+
+// Flag do módulo de Orçamento. Ausente/false => o Financeiro renderiza
+// EXATAMENTE como antes (apenas as duas abas). Referência literal a
+// process.env.NEXT_PUBLIC_* para o Next.js inlinar no bundle do client.
+const BUDGET_ENABLED = process.env.NEXT_PUBLIC_BUDGET_ENABLED === "true";
 
 interface Toast {
   id: string;
@@ -90,6 +96,9 @@ export function FinanceView() {
         <TabsList>
           <TabsTrigger value="receivables">Contas a Receber</TabsTrigger>
           <TabsTrigger value="payables">Contas a Pagar</TabsTrigger>
+          {BUDGET_ENABLED && (
+            <TabsTrigger value="budgets">Orçamentos</TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="receivables">
           <FinanceList
@@ -107,6 +116,15 @@ export function FinanceView() {
             unidadeId={unidadeFilter}
           />
         </TabsContent>
+        {BUDGET_ENABLED && (
+          <TabsContent value="budgets">
+            <BudgetList
+              onToast={showToast}
+              onChanged={bumpRefresh}
+              unidadeId={unidadeFilter}
+            />
+          </TabsContent>
+        )}
       </Tabs>
 
       <UnidadesDialog

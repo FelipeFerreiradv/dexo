@@ -1,4 +1,6 @@
 import prisma from "../lib/prisma";
+import { normalizeSku } from "../lib/sku";
+import { isCodeLikeQuery } from "./product-search-terms";
 import { lookupCStat } from "../fiscal/sefaz/cstat-mapper";
 import { isNfeReemissaoRejeitadaEnabled } from "../fiscal/domain/nfe-number-reuse";
 import type {
@@ -309,15 +311,34 @@ export class NfeRepository {
     userId: string,
     query: string,
   ): Promise<ProductLookup[]> {
+    const trimmed = (query ?? "").trim();
+    // Precisão de SKU/código (alinhado ao BLOCO 2): quando a query "parece um
+    // código" (numérica "043" ou alfanumérica "ABC-1"), casamos por IGUALDADE
+    // (skuNormalized / sku / partNumber) — não por `contains`, que trazia
+    // produtos não-relacionados ("208" casando "1208"/"2089"). Buscas
+    // descritivas ("mola", "filtro de óleo") seguem com `contains` em
+    // name/sku/partNumber, preservando o recall do picker do balcão/orçamento.
+    const norm = normalizeSku(trimmed);
+    const where = isCodeLikeQuery(trimmed)
+      ? {
+          userId,
+          OR: [
+            ...(norm ? [{ skuNormalized: norm }] : []),
+            { sku: { equals: trimmed, mode: "insensitive" } },
+            { partNumber: { equals: trimmed, mode: "insensitive" } },
+          ],
+        }
+      : {
+          userId,
+          OR: [
+            { name: { contains: trimmed, mode: "insensitive" } },
+            { sku: { contains: trimmed, mode: "insensitive" } },
+            { partNumber: { contains: trimmed, mode: "insensitive" } },
+          ],
+        };
+
     const rows = await (prisma as any).product.findMany({
-      where: {
-        userId,
-        OR: [
-          { name: { contains: query, mode: "insensitive" } },
-          { sku: { contains: query, mode: "insensitive" } },
-          { partNumber: { contains: query, mode: "insensitive" } },
-        ],
-      },
+      where,
       take: 20,
       orderBy: { name: "asc" },
       select: {

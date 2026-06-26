@@ -18,6 +18,7 @@ import {
   RunningHeader,
   SectionHeader,
   StackedBar,
+  fmtBRL,
   fmtInt,
   pctLabel,
   s,
@@ -47,6 +48,19 @@ export interface TeamProductivityReportData {
     ml: number;
     shopee: number;
   }>;
+  // Orçamentos por vendedor (BLOCO 1) — emitidos + convertidos (count+valor).
+  budgetsByVendedor: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    isOwner: boolean;
+    orcamentos: { count: number; valor: number };
+    convertidos: { count: number; valor: number };
+  }>;
+  budgetTotals: {
+    orcamentos: { count: number; valor: number };
+    convertidos: { count: number; valor: number };
+  };
 }
 
 const CONTENT_W = 595.28 - 44 * 2;
@@ -397,6 +411,106 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
           </View>
         </View>
 
+        {/* ORÇAMENTOS POR VENDEDOR (BLOCO 1) — base p/ comissão */}
+        {data.budgetsByVendedor.length > 0 && (
+          <View style={{ marginTop: 20 }} wrap={false}>
+            <SectionHeader>Orçamentos por vendedor</SectionHeader>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: DEXO.bege,
+                borderRadius: 6,
+                backgroundColor: DEXO.branco,
+                padding: 10,
+              }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  borderBottomWidth: 1,
+                  borderBottomColor: DEXO.aco,
+                  paddingBottom: 4,
+                }}
+              >
+                <Text style={[th, bcol.name]}>VENDEDOR</Text>
+                <Text style={[th, bcol.num]}>ORÇ.</Text>
+                <Text style={[th, bcol.money]}>VALOR</Text>
+                <Text style={[th, bcol.num]}>CONV.</Text>
+                <Text style={[th, bcol.money]}>VALOR CONV.</Text>
+              </View>
+              {data.budgetsByVendedor.map((v) => (
+                <View
+                  key={v.id}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingVertical: 3,
+                    borderBottomWidth: 0.5,
+                    borderBottomColor: DEXO.bege,
+                  }}
+                >
+                  <Text
+                    style={[
+                      bcol.name,
+                      {
+                        fontFamily: FONT.sans,
+                        fontSize: 8.5,
+                        color: DEXO.petroleoProfundo,
+                      },
+                    ]}
+                  >
+                    {v.name || v.email}
+                    {v.isOwner ? " (você)" : ""}
+                  </Text>
+                  <Text style={[td, bcol.num]}>{fmtInt(v.orcamentos.count)}</Text>
+                  <Text style={[td, bcol.money]}>
+                    {fmtBRL(v.orcamentos.valor)}
+                  </Text>
+                  <Text style={[td, bcol.num]}>
+                    {fmtInt(v.convertidos.count)}
+                  </Text>
+                  <Text style={[td, bcol.money]}>
+                    {fmtBRL(v.convertidos.valor)}
+                  </Text>
+                </View>
+              ))}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingTop: 5,
+                }}
+              >
+                <Text style={[th, bcol.name]}>TOTAL DA EQUIPE</Text>
+                <Text style={[td, bcol.num]}>
+                  {fmtInt(data.budgetTotals.orcamentos.count)}
+                </Text>
+                <Text style={[td, bcol.money]}>
+                  {fmtBRL(data.budgetTotals.orcamentos.valor)}
+                </Text>
+                <Text style={[td, bcol.num]}>
+                  {fmtInt(data.budgetTotals.convertidos.count)}
+                </Text>
+                <Text style={[td, bcol.money]}>
+                  {fmtBRL(data.budgetTotals.convertidos.valor)}
+                </Text>
+              </View>
+            </View>
+            <Text
+              style={{
+                fontFamily: FONT.sans,
+                fontSize: 7,
+                color: DEXO.aco,
+                marginTop: 5,
+              }}
+            >
+              Orçamentos criados no período, atribuídos a cada vendedor.
+              &quot;Convertidos&quot; = viraram venda (Conta a Receber) — base
+              usual para comissão.
+            </Text>
+          </View>
+        )}
+
         <Footer periodLabel={range.label} />
       </Page>
     </Document>
@@ -447,13 +561,22 @@ const col = {
   share: { width: 34, textAlign: "right" as const },
 };
 
+// Colunas da tabela de orçamentos por vendedor (BLOCO 1).
+const bcol = {
+  name: { flex: 1, minWidth: 120 },
+  num: { width: 44, textAlign: "right" as const },
+  money: { width: 82, textAlign: "right" as const },
+};
+
 /** Gera o PDF do relatório de produtividade da equipe. */
 export async function renderTeamProductivityReport(
   data: TeamProductivityReportData,
 ): Promise<Buffer> {
   registerReportFonts();
   const hasActivity =
-    data.totals.produtos > 0 || data.totals.anuncios.total > 0;
+    data.totals.produtos > 0 ||
+    data.totals.anuncios.total > 0 ||
+    data.budgetTotals.orcamentos.count > 0;
   const doc = hasActivity ? <FullDoc data={data} /> : <EmptyDoc data={data} />;
   return renderToBuffer(doc);
 }

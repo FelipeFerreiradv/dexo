@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  aggregateBudgetsByVendedor,
   aggregateTeamProductivity,
   resolveProductivityRange,
+  type BudgetVendedorRow,
   type ProductivityGroupRow,
 } from "./team-productivity";
 
@@ -159,5 +161,53 @@ describe("resolveProductivityRange", () => {
   it("entrada inválida cai no default sem lançar", () => {
     const r = resolveProductivityRange("nonsense", undefined, now);
     expect(r.label).toBe("Últimos 30 dias");
+  });
+});
+
+describe("aggregateBudgetsByVendedor", () => {
+  const vendedores = [
+    { id: "admin", name: "Dono", email: "dono@x.com", isOwner: true },
+    { id: "u1", name: "Ana", email: "ana@x.com", isOwner: false },
+    { id: "u2", name: "Bruno", email: "bruno@x.com", isOwner: false },
+  ];
+
+  it("soma emitidos e convertidos por vendedor + totais", () => {
+    const rows: BudgetVendedorRow[] = [
+      { vendedorId: "u1", count: 3, totalValue: 300, convertedCount: 1, convertedValue: 100 },
+      { vendedorId: "u2", count: 2, totalValue: 250, convertedCount: 0, convertedValue: 0 },
+      { vendedorId: "admin", count: 1, totalValue: 90, convertedCount: 1, convertedValue: 90 },
+    ];
+    const { totals, byVendedor } = aggregateBudgetsByVendedor(rows, vendedores);
+
+    expect(totals.orcamentos).toEqual({ count: 6, valor: 640 });
+    expect(totals.convertidos).toEqual({ count: 2, valor: 190 });
+
+    const ana = byVendedor.find((v) => v.id === "u1")!;
+    expect(ana.orcamentos).toEqual({ count: 3, valor: 300 });
+    expect(ana.convertidos).toEqual({ count: 1, valor: 100 });
+
+    // o admin entra como vendedor (isOwner) quando tem orçamento próprio.
+    const dono = byVendedor.find((v) => v.id === "admin")!;
+    expect(dono.isOwner).toBe(true);
+    expect(dono.orcamentos.valor).toBe(90);
+  });
+
+  it("ordena por valor de orçamentos desc e inclui vendedores zerados", () => {
+    const rows: BudgetVendedorRow[] = [
+      { vendedorId: "u2", count: 1, totalValue: 500, convertedCount: 0, convertedValue: 0 },
+    ];
+    const { byVendedor } = aggregateBudgetsByVendedor(rows, vendedores);
+    expect(byVendedor).toHaveLength(3); // todos listados, mesmo zerados
+    expect(byVendedor[0].id).toBe("u2"); // maior valor primeiro
+  });
+
+  it("ignora vendedorId nulo ou fora do time (defensivo)", () => {
+    const rows: BudgetVendedorRow[] = [
+      { vendedorId: null, count: 9, totalValue: 999, convertedCount: 9, convertedValue: 999 },
+      { vendedorId: "estranho", count: 5, totalValue: 555, convertedCount: 5, convertedValue: 555 },
+      { vendedorId: "u1", count: 1, totalValue: 10, convertedCount: 0, convertedValue: 0 },
+    ];
+    const { totals } = aggregateBudgetsByVendedor(rows, vendedores);
+    expect(totals.orcamentos).toEqual({ count: 1, valor: 10 }); // só u1 conta
   });
 });

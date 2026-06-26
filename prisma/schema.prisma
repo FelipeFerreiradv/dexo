@@ -62,6 +62,8 @@ model User {
   customers           Customer[]
   payables            Payable[]
   receivables         Receivable[]
+  budgets             Budget[]            @relation("BudgetOwner")
+  budgetsAsVendedor   Budget[]            @relation("BudgetVendedor")
   companyFiscalConfig CompanyFiscalConfig?
   nfesEmitidas        NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
@@ -123,6 +125,7 @@ model Product {
   stockLogs              StockLog[]
   nfeItens               NfeItem[]
   receivableItems        ReceivableItem[]
+  budgetItems            BudgetItem[]
 
   @@unique([userId, sku])
   @@index([userId, skuNormalized])
@@ -320,6 +323,7 @@ model ProductListing {
   product            Product               @relation(fields: [productId], references: [id])
   questions          MarketplaceQuestion[]
   receivableItems    ReceivableItem[]
+  budgetItems        BudgetItem[]
 
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
@@ -593,6 +597,16 @@ enum FinanceStatus {
   CANCELADA
 }
 
+// Estado do orçamento (proposta ao cliente). Aditivo e isolado do FinanceStatus.
+// EXPIRADO é DERIVADO de validUntil em read-time (não persistido), igual ao
+// VENCIDA do Receivable. CONVERTIDO/CANCELADO são transições explícitas.
+enum BudgetStatus {
+  ABERTO
+  CONVERTIDO
+  EXPIRADO
+  CANCELADO
+}
+
 model Customer {
   id     String @id @default(cuid())
   userId String
@@ -653,6 +667,7 @@ model Customer {
   user         User         @relation(fields: [userId], references: [id])
   payables     Payable[]
   receivables  Receivable[]
+  budgets      Budget[]
   nfesEmitidas NfeEmitida[]
 
   @@unique([userId, cpf])
@@ -689,6 +704,12 @@ model Receivable {
   // método é válida (zero regressão). String? em vez de enum p/ flexibilidade.
   paymentMethod String?
 
+  // Conta originada da conversão de um Orçamento (aditivo, default NULL).
+  // @unique => 1:1 (um orçamento converte em no máximo uma conta). onDelete
+  // SetNull no lado do orçamento: apagar o orçamento NÃO apaga a venda já
+  // convertida. Setado SOMENTE pela conversão (não exposto no DTO de finance).
+  budgetId String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -696,6 +717,7 @@ model Receivable {
   customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
   unidade  Unidade?         @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
   items    ReceivableItem[]
+  budget   Budget?          @relation(fields: [budgetId], references: [id], onDelete: SetNull)
 
   @@index([userId, dueDate])
   @@index([userId, status])
@@ -778,6 +800,74 @@ model ReceivableItem {
   @@index([listingId])
 }
 
+// Orçamento (proposta de venda ao cliente). Espelha Receivable/ReceivableItem
+// para reaproveitar 1:1 o picker de itens e alimentar o fluxo de venda balcão
+// na conversão. ADITIVO e ISOLADO: não toca nenhuma query de Receivable/Payable.
+// Escopo por userId (= dataOwnerId), igual a Customer/Receivable. EXPIRADO é
+// derivado de validUntil em read-time (não persistido).
+model Budget {
+  id         String  @id @default(cuid())
+  userId     String
+  customerId String
+  unidadeId  String?
+  // Vendedor atribuído (colaborador OU o próprio admin) — aditivo, nullable.
+  // Alimenta a estatística de orçamentos por vendedor (comissão).
+  vendedorId String?
+
+  // Cabeçalho (espelha os campos human-facing de Receivable que um orçamento usa).
+  document    String?
+  reason      String?
+  notes       String? // observações / condições (texto livre)
+  totalAmount Decimal @db.Decimal(12, 2)
+
+  status     BudgetStatus @default(ABERTO)
+  validUntil DateTime? // validade do orçamento; alimenta EXPIRADO (read-time)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User         @relation("BudgetOwner", fields: [userId], references: [id])
+  customer   Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  unidade    Unidade?     @relation(fields: [unidadeId], references: [id], onDelete: SetNull)
+  // Vendedor: colaborador (children) OU o próprio admin. onDelete SetNull —
+  // remover o usuário não apaga o orçamento (preserva histórico/estatística).
+  vendedor   User?        @relation("BudgetVendedor", fields: [vendedorId], references: [id], onDelete: SetNull)
+  items      BudgetItem[]
+  // Back-relation 1:1 do Receivable.budgetId (preenchida na conversão).
+  receivable Receivable?
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([customerId])
+  @@index([userId, unidadeId])
+  @@index([userId, vendedorId])
+}
+
+// Item do orçamento. Mesma forma do ReceivableItem (productId? | description? +
+// scrapId?/listingId? + quantity + unitPrice snapshot) para a conversão copiar
+// 1:1. Cascade do Budget; Restrict no Product (integridade histórica).
+model BudgetItem {
+  id          String   @id @default(cuid())
+  budgetId    String
+  productId   String? // NULL = item manual (texto livre)
+  description String? // descrição do item manual; NULL p/ item cadastrado
+  scrapId     String? // sucata de origem (override explícito)
+  listingId   String?
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  createdAt   DateTime @default(now())
+
+  budget  Budget          @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  product Product?        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  scrap   Scrap?          @relation(fields: [scrapId], references: [id], onDelete: SetNull)
+  listing ProductListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  @@index([budgetId])
+  @@index([productId])
+  @@index([scrapId])
+  @@index([listingId])
+}
+
 // Unidade (filial / loja física) — escopo por userId (= dataOwnerId), igual a
 // Customer/Location. Soft-delete via `active` porque Receivable/Payable têm FK
 // para cá; inativar preserva histórico e a semântica de "Sem unidade".
@@ -794,6 +884,7 @@ model Unidade {
   user        User         @relation(fields: [userId], references: [id])
   receivables Receivable[]
   payables    Payable[]
+  budgets     Budget[]
 
   @@unique([userId, code])
   @@index([userId, name])
@@ -860,6 +951,8 @@ model Scrap {
   // Vendas balcão (Conta a Receber) vinculadas diretamente a esta sucata —
   // inclui itens manuais (sem Product). onDelete SetNull no lado do item.
   receivableItems ReceivableItem[]
+  // Itens de orçamento vinculados a esta sucata (mesma semântica do balcão).
+  budgetItems     BudgetItem[]
 
   @@index([userId, createdAt])
   @@index([userId, status])
