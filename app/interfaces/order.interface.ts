@@ -25,6 +25,7 @@ export interface OrderItem {
     name: string;
     sku: string;
     stock: number;
+    imageUrl?: string | null;
     location?: string | null;
     productLocation?: {
       id: string;
@@ -57,6 +58,16 @@ export interface Order {
     platform: string;
     accountName: string;
   };
+  // Resumo leve do 1º item para a vitrine de Pedidos (egress enxuto): a lista
+  // NÃO traz `items`; só esta miniatura + a contagem. Preenchido por
+  // `findAllForList`; ausente nas demais leituras (continua `undefined`).
+  thumbnail?: {
+    imageUrl: string | null;
+    name: string;
+    sku: string;
+    location: string | null;
+  };
+  itemCount?: number;
 }
 
 // Interface para criar pedido
@@ -96,6 +107,9 @@ export interface OrderFindOptions {
   limit?: number;
   dateFrom?: Date;
   dateTo?: Date;
+  // Faixa de valor sobre Order.totalAmount (usada só pela listagem da vitrine).
+  amountMin?: number;
+  amountMax?: number;
   includeItems?: boolean;
 }
 
@@ -121,6 +135,11 @@ export interface OrderRepository {
 
   // Listar pedidos com filtros
   findAll(options?: OrderFindOptions): Promise<OrderFindResult>;
+
+  // Listar pedidos para a vitrine: miniatura leve do 1º item (sem trafegar o
+  // grafo completo de itens) + contagem. Mesmos filtros do findAll + faixa de
+  // valor.
+  findAllForList(options?: OrderFindOptions): Promise<OrderFindResult>;
 
   // Listar pedidos de uma conta de marketplace
   findByMarketplaceAccount(marketplaceAccountId: string): Promise<Order[]>;

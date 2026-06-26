@@ -28,6 +28,7 @@ type PrismaOrderWithRelations = PrismaOrder & {
       name: string;
       sku: string;
       stock: number;
+      imageUrl?: string | null;
       location?: string | null;
       productLocation?: {
         id: string;
@@ -56,6 +57,7 @@ function mapPrismaToOrderItem(
       name: string;
       sku: string;
       stock: number;
+      imageUrl?: string | null;
       location?: string | null;
       productLocation?: {
         id: string;
@@ -83,6 +85,7 @@ function mapPrismaToOrderItem(
           name: item.product.name,
           sku: item.product.sku,
           stock: item.product.stock,
+          imageUrl: item.product.imageUrl ?? null,
           location: item.product.location ?? null,
           productLocation: item.product.productLocation
             ? {
@@ -158,6 +161,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -240,6 +244,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -294,6 +299,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -407,6 +413,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                         name: true,
                         sku: true,
                         stock: true,
+                        imageUrl: true,
                         location: true,
                         productLocation: {
                           select: {
@@ -454,6 +461,158 @@ class OrderRepositoryPrisma implements OrderRepository {
   }
 
   /**
+   * Listar pedidos para a VITRINE (lista). Espelha os filtros do `findAll`
+   * (escopo do tenant, plataforma, status, período e busca) e adiciona faixa de
+   * valor (`totalAmount`). Em vez de trafegar o grafo completo de itens, traz só
+   * uma miniatura leve do 1º item (`thumbnail`) + a contagem (`itemCount`).
+   * `findAll`/`mapPrismaToOrder` ficam intocados — zero regressão nas demais
+   * leituras, que continuam sem `thumbnail`/`itemCount`.
+   */
+  async findAllForList(options?: OrderFindOptions): Promise<OrderFindResult> {
+    const page = options?.page ?? 1;
+    const limit = options?.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: {
+      marketplaceAccountId?: string;
+      marketplaceAccount?: { userId?: string; platform?: any };
+      status?: PrismaOrderStatus;
+      createdAt?: {
+        gte?: Date;
+        lte?: Date;
+      };
+      totalAmount?: {
+        gte?: number;
+        lte?: number;
+      };
+      OR?: Array<{
+        customerName?: { contains: string; mode: "insensitive" };
+        externalOrderId?: { contains: string; mode: "insensitive" };
+      }>;
+    } = {};
+
+    if (options?.marketplaceAccountId) {
+      where.marketplaceAccountId = options.marketplaceAccountId;
+    } else if (options?.userId) {
+      where.marketplaceAccount = { userId: options.userId };
+    }
+
+    if (options?.platform) {
+      where.marketplaceAccount = {
+        ...where.marketplaceAccount,
+        platform: options.platform,
+      };
+    }
+
+    if (options?.status) {
+      where.status = options.status as PrismaOrderStatus;
+    }
+
+    if (options?.dateFrom || options?.dateTo) {
+      where.createdAt = {};
+      if (options.dateFrom) {
+        where.createdAt.gte = options.dateFrom;
+      }
+      if (options.dateTo) {
+        where.createdAt.lte = options.dateTo;
+      }
+    }
+
+    // Faixa de valor: só aplica quando vier número finito (ignora NaN/undefined),
+    // garantindo no-op idêntico ao de hoje quando o filtro está vazio.
+    const hasMin =
+      typeof options?.amountMin === "number" &&
+      Number.isFinite(options.amountMin);
+    const hasMax =
+      typeof options?.amountMax === "number" &&
+      Number.isFinite(options.amountMax);
+    if (hasMin || hasMax) {
+      where.totalAmount = {};
+      if (hasMin) where.totalAmount.gte = options!.amountMin;
+      if (hasMax) where.totalAmount.lte = options!.amountMax;
+    }
+
+    if (options?.search) {
+      where.OR = [
+        { customerName: { contains: options.search, mode: "insensitive" } },
+        { externalOrderId: { contains: options.search, mode: "insensitive" } },
+      ];
+    }
+
+    try {
+      const [orders, total] = await Promise.all([
+        prisma.order.findMany({
+          where,
+          skip,
+          take: limit,
+          orderBy: { createdAt: "desc" },
+          include: {
+            // Miniatura do 1º item para o card — NUNCA o grafo inteiro de itens.
+            // `OrderItem` não tem createdAt; `id` (cuid ≈ ordem de inserção) é o
+            // orderBy determinístico para "primeiro item".
+            items: {
+              take: 1,
+              orderBy: { id: "asc" },
+              select: {
+                product: {
+                  select: {
+                    imageUrl: true,
+                    name: true,
+                    sku: true,
+                    location: true,
+                    productLocation: { select: { code: true } },
+                  },
+                },
+              },
+            },
+            _count: { select: { items: true } },
+            marketplaceAccount: {
+              select: {
+                id: true,
+                platform: true,
+                accountName: true,
+              },
+            },
+          },
+        }),
+        prisma.order.count({ where }),
+      ]);
+
+      return {
+        orders: orders.map((o) => {
+          // Remove `items`/`_count` antes do mapper compartilhado: sem `items`,
+          // `mapPrismaToOrder` deixa `order.items` undefined (egress enxuto; o
+          // sheet segue recarregando o pedido completo via GET /orders/:id).
+          const { items, _count, ...rest } = o;
+          const base = mapPrismaToOrder(rest as PrismaOrderWithRelations);
+          const first = items?.[0]?.product;
+          return {
+            ...base,
+            thumbnail: first
+              ? {
+                  imageUrl: first.imageUrl ?? null,
+                  name: first.name,
+                  sku: first.sku,
+                  location:
+                    first.productLocation?.code ?? first.location ?? null,
+                }
+              : undefined,
+            itemCount: _count?.items ?? 0,
+          };
+        }),
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
+    } catch (error) {
+      throw new Error(
+        error instanceof Error ? error.message : "Erro ao listar pedidos",
+      );
+    }
+  }
+
+  /**
    * Listar pedidos de uma conta de marketplace específica
    */
   async findByMarketplaceAccount(
@@ -472,6 +631,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -540,6 +700,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {

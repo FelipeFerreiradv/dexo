@@ -192,6 +192,10 @@ export async function orderRoutes(app: FastifyInstance) {
       limit?: string;
       search?: string;
       platform?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      amountMin?: string;
+      amountMax?: string;
     };
   }>(
     "/",
@@ -205,6 +209,27 @@ export async function orderRoutes(app: FastifyInstance) {
           limit?: string;
           search?: string;
           platform?: string;
+          dateFrom?: string;
+          dateTo?: string;
+          amountMin?: string;
+          amountMax?: string;
+        };
+
+        // Datas (YYYY-MM-DD) → início/fim do dia, inclusivo. Inválidas ⇒ ignoradas
+        // (no-op). Parâmetro ausente mantém o comportamento de hoje.
+        const parseDay = (value: string | undefined, endOfDay: boolean) => {
+          if (!value) return undefined;
+          const iso = /^\d{4}-\d{2}-\d{2}$/.test(value)
+            ? `${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`
+            : value;
+          const d = new Date(iso);
+          return Number.isNaN(d.getTime()) ? undefined : d;
+        };
+        // Valores monetários (string) → number; NaN/vazio ⇒ ignorado (no-op).
+        const parseAmount = (value: string | undefined) => {
+          if (value === undefined || value === "") return undefined;
+          const n = Number(value);
+          return Number.isFinite(n) ? n : undefined;
         };
 
         const result = await OrderUseCase.getOrders(userId, {
@@ -213,6 +238,10 @@ export async function orderRoutes(app: FastifyInstance) {
           search: query.search,
           page: query.page ? parseInt(query.page, 10) : 1,
           limit: query.limit ? parseInt(query.limit, 10) : 10,
+          dateFrom: parseDay(query.dateFrom, false),
+          dateTo: parseDay(query.dateTo, true),
+          amountMin: parseAmount(query.amountMin),
+          amountMax: parseAmount(query.amountMax),
         });
 
         return reply.status(200).send({
