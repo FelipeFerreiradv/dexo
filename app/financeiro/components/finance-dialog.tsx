@@ -40,7 +40,7 @@ import { TitleStep } from "./steps/title-step";
 import { FeesStep } from "./steps/fees-step";
 import { InstallmentsStep } from "./steps/installments-step";
 import type { CustomerOption } from "./shared/customer-combobox";
-import { scrapLabelFrom, type ProductMeta } from "./shared/product-picker-block";
+import type { ProductMeta } from "./shared/product-picker-block";
 
 export type FinanceKind = "receivable" | "payable";
 
@@ -183,7 +183,6 @@ export function FinanceDialog({
       const items = (initialData as any)?.items;
       if (balcaoEnabled && Array.isArray(items) && items.length > 0) {
         const seed: Record<string, ProductMeta> = {};
-        const scrapSeed: Record<string, string> = {};
         for (const it of items) {
           if (it?.product && it.productId) {
             seed[it.productId] = {
@@ -192,17 +191,14 @@ export function FinanceDialog({
               stock: 0,
             };
           }
-          // Rótulo da sucata vinculada (mini-snapshot do backend) p/ exibição.
-          if (it?.scrap && it.scrapId) {
-            scrapSeed[it.scrapId] = scrapLabelFrom(it.scrap);
-          }
         }
         setProductMeta(seed);
-        setScrapMeta(scrapSeed);
       } else {
         setProductMeta({});
-        setScrapMeta({});
       }
+      // scrapMeta (rótulos de sucata) é populado em tempo real pelo
+      // ProductPickerBlock durante a criação; reseta ao (re)abrir.
+      setScrapMeta({});
     }
   }, [open, initialData, reset, balcaoEnabled]);
 

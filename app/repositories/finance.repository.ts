@@ -82,30 +82,20 @@ function toEntry(raw: any): FinanceEntry {
           product: i.product
             ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
             : null,
-          scrap: i.scrap
-            ? {
-                id: i.scrap.id,
-                brand: i.scrap.brand,
-                model: i.scrap.model,
-                year: i.scrap.year ?? null,
-                plate: i.scrap.plate ?? null,
-              }
-            : null,
         }))
       : undefined,
   };
 }
 
 // Include de itens (somente receivable). Não-receivable ignora.
+// NB: o `scrapId` (escalar) já vem na linha do ReceivableItem e é o que a
+// agregação/reconcile usam; NÃO fazemos JOIN com Scrap aqui — nenhum consumidor
+// de findById/findItems exibe o rótulo da sucata (edição não recarrega itens;
+// cupom/fiscal usam só product). Evita egress desnecessário.
 const itemsInclude = {
   orderBy: { createdAt: "asc" as const },
   include: {
     product: { select: { id: true, sku: true, name: true } },
-    // Mini-snapshot da sucata vinculada (rótulo na edição). Join pequeno em
-    // leitura de UM receivable (detalhe/pagamento) — egress desprezível.
-    scrap: {
-      select: { id: true, brand: true, model: true, year: true, plate: true },
-    },
   },
 };
 
@@ -371,15 +361,6 @@ export class FinanceRepository {
       orderBy: { createdAt: "asc" },
       include: {
         product: { select: { id: true, sku: true, name: true } },
-        scrap: {
-          select: {
-            id: true,
-            brand: true,
-            model: true,
-            year: true,
-            plate: true,
-          },
-        },
       },
     });
     return rows.map((i: any) => ({
@@ -393,15 +374,6 @@ export class FinanceRepository {
       createdAt: i.createdAt,
       product: i.product
         ? { id: i.product.id, sku: i.product.sku, name: i.product.name }
-        : null,
-      scrap: i.scrap
-        ? {
-            id: i.scrap.id,
-            brand: i.scrap.brand,
-            model: i.scrap.model,
-            year: i.scrap.year ?? null,
-            plate: i.scrap.plate ?? null,
-          }
         : null,
     }));
   }

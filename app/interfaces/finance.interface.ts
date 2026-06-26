@@ -70,15 +70,6 @@ export interface ReceivableItemInput {
 export interface ReceivableItemSnapshot extends ReceivableItemInput {
   id: string;
   product?: { id: string; sku: string; name: string } | null;
-  // Mini-snapshot da sucata vinculada (para exibir o rótulo na edição). Vem do
-  // include de itens; null quando o item não tem sucata.
-  scrap?: {
-    id: string;
-    brand: string;
-    model: string;
-    year?: string | null;
-    plate?: string | null;
-  } | null;
   createdAt?: Date;
 }
 
