@@ -84,6 +84,13 @@ interface Props {
 
 const LIMIT = 20;
 
+// Flag de venda balcão (mesma do FinanceDialog). Só quando ON a edição carrega
+// os itens sob demanda; com OFF o fluxo é byte-idêntico ao anterior (sem o GET
+// extra) — e mesmo com itens no banco eles são preservados, pois o picker fica
+// oculto e o submit não envia `items` (o backend faz updateSingle).
+const BALCAO_SALE_ENABLED =
+  process.env.NEXT_PUBLIC_BALCAO_SALE_ENABLED === "true";
+
 // Sentinela do filtro de forma de pagamento (Radix Select não aceita value="").
 // "todas" = não envia o parâmetro => resultado idêntico ao atual.
 const METHOD_ALL = "__all__";
@@ -118,6 +125,9 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       | undefined
     >(undefined);
   const [deleteTarget, setDeleteTarget] = useState<FinanceRow | null>(null);
+  // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
+  // egress). Guarda o id em carregamento p/ feedback no botão de editar.
+  const [editLoadingId, setEditLoadingId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const basePath =
@@ -185,8 +195,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     setDialogOpen(true);
   };
 
-  const handleEdit = (r: FinanceRow) => {
-    setEditing({
+  const handleEdit = async (r: FinanceRow) => {
+    const base: Partial<FinanceEntryFormData> & {
+      id?: string;
+      customer?: FinanceRow["customer"];
+      items?: unknown[];
+    } = {
       id: r.id,
       customerId: r.customer?.id || "",
       customer: r.customer,
@@ -197,7 +211,54 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       totalAmount: r.totalAmount,
       installments: r.installments,
       dueDate: r.dueDate?.slice(0, 10),
-    });
+    };
+
+    // Receivables podem ter itens (venda balcão). A lista NÃO os traz (egress),
+    // então carregamos sob demanda ao editar. Sem os itens no form, adicionar
+    // um novo faria o backend dar "replace" e apagar os pré-existentes (perda
+    // de dados + total recalculado errado). Em falha, NÃO abrimos o dialog —
+    // fecha a janela de perda. Payable não tem itens: abre direto (inalterado).
+    const email = session?.user?.email;
+    if (kind === "receivable" && BALCAO_SALE_ENABLED && email) {
+      setEditLoadingId(r.id);
+      try {
+        const res = await fetch(`${getApiBaseUrl()}${basePath}/${r.id}`, {
+          headers: { email },
+        });
+        if (!res.ok) throw new Error("Falha ao carregar itens da conta");
+        const data = await res.json();
+        const items = data?.entry?.items;
+        // Contrato: findById de receivable SEMPRE inclui items (array, mesmo
+        // vazio). Se vier algo diferente (contrato quebrado), não arriscamos
+        // abrir item-less — o usuário poderia adicionar 1 item e o replace
+        // apagaria os ocultos. Trata como falha (toast + não abre).
+        if (Array.isArray(items)) {
+          base.items = items.map((it: any) => ({
+            productId: it.productId ?? null,
+            description: it.description ?? null,
+            scrapId: it.scrapId ?? null,
+            listingId: it.listingId ?? null,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+            // `product` (id/sku/nome) alimenta o seed do productMeta no dialog;
+            // o zod descarta a chave extra no submit (object não-strict).
+            product: it.product ?? null,
+          }));
+        } else {
+          throw new Error("Resposta sem itens");
+        }
+      } catch {
+        onToast(
+          "Não foi possível carregar os itens desta conta. Tente novamente.",
+          "error",
+        );
+        setEditLoadingId(null);
+        return;
+      }
+      setEditLoadingId(null);
+    }
+
+    setEditing(base);
     setDialogOpen(true);
   };
 
@@ -390,9 +451,18 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                         <Button
                           size="icon"
                           variant="ghost"
+                          title="Editar"
+                          // Desabilita TODOS os botões de editar enquanto uma
+                          // edição carrega — impede 2 fetches concorrentes (a
+                          // resposta mais lenta abriria o dialog da linha errada).
+                          disabled={editLoadingId !== null}
                           onClick={() => handleEdit(r)}
                         >
-                          <Pencil className="h-4 w-4" />
+                          {editLoadingId === r.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Pencil className="h-4 w-4" />
+                          )}
                         </Button>
                         <Button
                           size="icon"
