@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Control, Controller, useFieldArray } from "react-hook-form";
+import { Control, Controller, useFieldArray, useWatch } from "react-hook-form";
 import {
   AlertTriangle,
   Car,
@@ -211,12 +211,8 @@ export function ProductPickerBlock({
     const newSubtotal = prevSubtotal + (Number(p.price) || 0);
     setValue("totalAmount", newSubtotal, { shouldDirty: true });
 
-    // Pré-preenche reason apenas se ainda estiver vazio (não sobrescreve).
-    const current = getValues();
-    if (!current.reason || !current.reason.trim()) {
-      const label = `Venda balcão — ${p.sku} ${p.name}`.trim();
-      setValue("reason", label, { shouldDirty: true });
-    }
+    // O "título" (reason) é gerenciado reativamente pelo efeito abaixo
+    // (reflete o 1º item + "e mais N"), não mais aqui.
 
     setOpen(false);
     setQuery("");
@@ -236,7 +232,47 @@ export function ProductPickerBlock({
       quantity: 1,
       unitPrice: 0,
     } as any);
+    // O "título" (reason) é gerenciado reativamente pelo efeito abaixo.
   };
+
+  // ── Título (reason) reativo ──
+  // Enquanto o usuário NÃO editar o Motivo manualmente, o título acompanha os
+  // itens: "Venda balcão — <1º item>" + "e mais N" quando há mais de um. Assim
+  // a listagem (Documento = document || reason) nunca fica vazia, inclusive em
+  // vendas só com itens manuais. Para o produto, usa o nome (productMeta); para
+  // o manual, a descrição digitada (atualiza conforme o usuário digita).
+  const watchedItems = useWatch({ control, name: "items" });
+  const autoReasonRef = useRef<string | null>(null);
+  useEffect(() => {
+    const items = (watchedItems as any[]) ?? [];
+    const current = (getValues().reason ?? "").trim();
+    // Só gerencia se o Motivo está vazio OU é exatamente o último auto-gerado
+    // (ou seja, o usuário não digitou um Motivo próprio).
+    const owns = current === "" || current === (autoReasonRef.current ?? "");
+    if (!owns) return;
+
+    if (items.length === 0) {
+      if (autoReasonRef.current && current === autoReasonRef.current) {
+        setValue("reason", "", { shouldDirty: true });
+        autoReasonRef.current = "";
+      }
+      return;
+    }
+
+    const first = items[0];
+    const firstLabel = first?.productId
+      ? (productMeta[first.productId as string]?.name ?? "Produto")
+      : ((first?.description ?? "").trim() || "Item avulso");
+    const extra = items.length - 1;
+    const suffix =
+      extra > 0 ? ` e mais ${extra} ${extra === 1 ? "item" : "itens"}` : "";
+    const title = `Venda balcão — ${firstLabel}${suffix}`;
+
+    if (title !== current) {
+      setValue("reason", title, { shouldDirty: true });
+      autoReasonRef.current = title;
+    }
+  }, [watchedItems, productMeta, getValues, setValue]);
 
   return (
     <div className="space-y-3 rounded-xl border border-border/60 bg-muted/20 p-4 md:col-span-2">
