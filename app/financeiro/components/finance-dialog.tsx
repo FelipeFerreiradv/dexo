@@ -255,13 +255,23 @@ export function FinanceDialog({
       // payable), garantimos que nenhum `items` vaze pro backend. O backend
       // já é tolerante (validateItems é no-op se ausente), mas o payload
       // fica idêntico ao da Fase 1.
+      // A conta foi aberta JÁ com itens? (edição de venda balcão). Distingue
+      // "nunca teve itens" de "usuário removeu todos": no 2º caso precisamos
+      // ENVIAR items:[] para o backend apagar os existentes (replace/deleteMany),
+      // senão a remoção seria silenciosamente ignorada (updateSingle preserva).
+      const hadItems =
+        Array.isArray((initialData as any)?.items) &&
+        (initialData as any).items.length > 0;
       if (!balcaoEnabled) {
         delete payload.items;
       } else if (
         Array.isArray((payload as any).items) &&
-        (payload as any).items.length === 0
+        (payload as any).items.length === 0 &&
+        !(isEdit && hadItems)
       ) {
-        // items: [] equivale a "sem items" — não enviar reduz ruído.
+        // items: [] sem itens prévios = "sem items" — não enviar reduz ruído.
+        // (Se a conta TINHA itens e o usuário removeu todos, mantemos o [] no
+        // payload para o backend limpar os itens.)
         delete payload.items;
       }
       const basePath =

@@ -123,6 +123,26 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       }
     };
 
+  // GET /:id — entry único COM itens (receivable). Usado pela edição para
+  // carregar os itens já cadastrados (a lista NÃO os traz, por egress). Sem
+  // isso, ao adicionar um item na edição o update faria "replace" e apagaria
+  // os itens pré-existentes (perda de dados + total recalculado errado).
+  const buildGetHandler =
+    (kind: FinanceKind) =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const entry = await useCase.findById(kind, id, userId);
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao buscar registro";
+        const status = message.includes("não encontrado") ? 404 : 500;
+        return reply.status(status).send({ error: message });
+      }
+    };
+
   const buildCreateHandler =
     (kind: FinanceKind) =>
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -213,6 +233,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/receivables",
     { preHandler: [authMiddleware] },
     buildCreateHandler("receivable"),
+  );
+  fastify.get(
+    "/receivables/:id",
+    { preHandler: [authMiddleware] },
+    buildGetHandler("receivable"),
   );
   fastify.put(
     "/receivables/:id",
@@ -346,6 +371,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/payables",
     { preHandler: [authMiddleware] },
     buildCreateHandler("payable"),
+  );
+  fastify.get(
+    "/payables/:id",
+    { preHandler: [authMiddleware] },
+    buildGetHandler("payable"),
   );
   fastify.put(
     "/payables/:id",
