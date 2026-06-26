@@ -246,6 +246,54 @@ describe("Fase 8 — POST /finance/receivables/:id/fiscal-draft", () => {
     });
   });
 
+  it("item MANUAL (sem produto): codigo vazio + descricao vinda de description (Opção A)", async () => {
+    (prisma as any).receivable.findFirst.mockResolvedValue(
+      makeReceivableRaw({
+        totalAmount: "30.00",
+        items: [
+          {
+            id: "ri-m1",
+            productId: null,
+            description: "Peça avulsa sem cadastro",
+            scrapId: null,
+            listingId: null,
+            quantity: 1,
+            unitPrice: "30.00",
+            createdAt: new Date(),
+            product: null,
+          },
+        ],
+      }),
+    );
+    (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/fiscal-draft",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const [, calledInput] = createPopulatedMock.mock.calls[0];
+    expect(calledInput.itens).toHaveLength(1);
+    // Opção A: item manual entra com defaults editáveis (NCM em branco, CFOP
+    // 5102, origem 0). codigo vazio (sem SKU); descricao vem da description.
+    expect(calledInput.itens[0]).toMatchObject({
+      numero: 1,
+      productId: null,
+      codigo: "",
+      descricao: "Peça avulsa sem cadastro",
+      ncm: "",
+      cfop: "5102",
+      origem: 0,
+      unidade: "UN",
+      quantidade: 1,
+      valorUnitario: 30,
+      valorTotal: 30,
+    });
+  });
+
   it("PJ: deliveryCnpj presente vira destinatário tipo PJ", async () => {
     (prisma as any).receivable.findFirst.mockResolvedValue(
       makeReceivableRaw({

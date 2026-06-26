@@ -163,6 +163,10 @@ describe("Fase 4 — POST /finance/receivables com items", () => {
         {
           receivableId: "r-1",
           productId: "p-1",
+          // Campos aditivos (item manual + vínculo de sucata): NULL p/ item
+          // cadastrado. Persistidos sempre, sem efeito quando ausentes.
+          description: null,
+          scrapId: null,
           listingId: null,
           quantity: 2,
           unitPrice: 50,
@@ -285,6 +289,131 @@ describe("Fase 4 — POST /finance/receivables com items", () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.payload).error).toMatch(/produto/i);
   });
+
+  // ── Fase B — itens MANUAIS (texto livre, sem produto cadastrado) ──
+  it("cria conta com item MANUAL (productId null + description)", async () => {
+    (prisma as any).customer.findFirst.mockResolvedValue({ id: "c-1" });
+    (prisma as any).receivable.create.mockResolvedValue({ id: "r-1" });
+    (prisma as any).receivable.findUnique.mockResolvedValue({
+      ...baseReceivableRow,
+      items: [
+        {
+          id: "ri-m1",
+          productId: null,
+          description: "Parafuso avulso",
+          scrapId: null,
+          listingId: null,
+          quantity: 3,
+          unitPrice: "10.00",
+          createdAt: new Date(),
+          product: null,
+        },
+      ],
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: {
+        customerId: "c-1",
+        totalAmount: 30,
+        dueDate: "2026-06-01",
+        installments: 1,
+        items: [{ description: "Parafuso avulso", quantity: 3, unitPrice: 10 }],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect((prisma as any).receivableItem.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          receivableId: "r-1",
+          productId: null,
+          description: "Parafuso avulso",
+          scrapId: null,
+          listingId: null,
+          quantity: 3,
+          unitPrice: 10,
+        },
+      ],
+    });
+    const body = JSON.parse(res.payload);
+    expect(body.entry.items[0]).toMatchObject({
+      productId: null,
+      description: "Parafuso avulso",
+      product: null,
+    });
+  });
+
+  it("aceita venda MISTA (item cadastrado + item manual)", async () => {
+    (prisma as any).customer.findFirst.mockResolvedValue({ id: "c-1" });
+    (prisma as any).receivable.create.mockResolvedValue({ id: "r-1" });
+    (prisma as any).receivable.findUnique.mockResolvedValue({
+      ...baseReceivableRow,
+      items: [],
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: {
+        customerId: "c-1",
+        totalAmount: 130,
+        dueDate: "2026-06-01",
+        installments: 1,
+        items: [
+          { productId: "p-1", quantity: 2, unitPrice: 50 },
+          { description: "Mao de obra", quantity: 1, unitPrice: 30 },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect((prisma as any).receivableItem.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          receivableId: "r-1",
+          productId: "p-1",
+          description: null,
+          scrapId: null,
+          listingId: null,
+          quantity: 2,
+          unitPrice: 50,
+        },
+        {
+          receivableId: "r-1",
+          productId: null,
+          description: "Mao de obra",
+          scrapId: null,
+          listingId: null,
+          quantity: 1,
+          unitPrice: 30,
+        },
+      ],
+    });
+  });
+
+  it("rejeita item sem productId E sem description (400)", async () => {
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: {
+        customerId: "c-1",
+        totalAmount: 100,
+        dueDate: "2026-06-01",
+        installments: 1,
+        items: [{ quantity: 1, unitPrice: 50 }],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.payload).error).toMatch(/obrigat/i);
+  });
 });
 
 describe("Fase 4 — PUT /finance/receivables/:id com items", () => {
@@ -332,6 +461,8 @@ describe("Fase 4 — PUT /finance/receivables/:id com items", () => {
         {
           receivableId: "r-1",
           productId: "p-2",
+          description: null,
+          scrapId: null,
           listingId: null,
           quantity: 3,
           unitPrice: 30,
@@ -457,6 +588,49 @@ describe("Fase 4 — GET /finance/products/lookup", () => {
         take: 20,
       }),
     );
+  });
+
+  it("inclui scrapId + scrapLabel quando o produto tem sucata (pré-preenche vínculo)", async () => {
+    (prisma as any).product.findMany.mockResolvedValue([
+      {
+        id: "p-1",
+        sku: "SKU-1",
+        name: "Pastilha",
+        price: "10.00",
+        stock: 2,
+        scrapId: "s-1",
+        scrap: { brand: "VW", model: "Gol", year: "2006", plate: "ABC1D23" },
+      },
+      {
+        id: "p-2",
+        sku: "SKU-2",
+        name: "Sem sucata",
+        price: "5.00",
+        stock: 1,
+        scrapId: null,
+        scrap: null,
+      },
+    ]);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/finance/products/lookup?q=peca",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.results[0]).toMatchObject({
+      id: "p-1",
+      scrapId: "s-1",
+      scrapLabel: "VW Gol · 2006 · ABC1D23",
+    });
+    expect(body.results[1]).toMatchObject({
+      id: "p-2",
+      scrapId: null,
+      scrapLabel: null,
+    });
   });
 
   it("query curta (< 2 chars): retorna [] sem hit no banco", async () => {

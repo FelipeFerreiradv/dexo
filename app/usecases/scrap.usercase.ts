@@ -63,7 +63,12 @@ export class ScrapUseCase {
   async getScrapDetail(
     id: string,
     userId: string,
-    include?: { financials?: boolean; products?: boolean; history?: boolean },
+    include?: {
+      financials?: boolean;
+      products?: boolean;
+      history?: boolean;
+      manualSales?: boolean;
+    },
   ): Promise<ScrapDetail | null> {
     const scrap = await this.scrapRepository.findById(id, userId);
     if (!scrap) return null;
@@ -93,6 +98,13 @@ export class ScrapUseCase {
 
     if (include?.history) {
       detail.history = await this.scrapRepository.getStatusEvents(id, userId);
+    }
+
+    if (include?.manualSales) {
+      detail.manualSales = await this.scrapRepository.getScrapManualSales(
+        id,
+        userId,
+      );
     }
 
     return detail;

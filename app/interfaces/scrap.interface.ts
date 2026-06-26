@@ -197,10 +197,21 @@ export interface ScrapStatusEventDTO {
   createdAt: Date;
 }
 
+// Venda avulsa (item MANUAL, sem produto cadastrado) atribuída diretamente a
+// esta sucata via ReceivableItem.scrapId. Display-only: a receita já entra em
+// realizedRevenue.counter (getScrapMoney), aqui é só o detalhamento.
+export interface ScrapManualSale {
+  description: string | null;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
 export interface ScrapDetail extends Scrap {
   financials?: ScrapFinancials;
   products?: ScrapPart[];
   history?: ScrapStatusEventDTO[];
+  manualSales?: ScrapManualSale[];
 }
 
 // Visão de Balcão: busca peça-cêntrica que devolve a peça + o lote de origem
@@ -237,6 +248,10 @@ export interface ScrapRepository {
     userId: string,
   ): Promise<{ marketplace: number; counter: number; potential: number }>;
   getScrapParts(scrapId: string, userId: string): Promise<ScrapPart[]>;
+  getScrapManualSales(
+    scrapId: string,
+    userId: string,
+  ): Promise<ScrapManualSale[]>;
   findStagesByIds(
     ids: string[],
     userId: string,

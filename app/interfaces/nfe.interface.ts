@@ -187,6 +187,12 @@ export interface ProductLookup {
   name: string;
   price: number;
   stock: number;
+  // Sucata de origem do produto (aditivo). Usado pelo financeiro (venda
+  // balcão) para pré-preencher o vínculo de sucata do item. O módulo fiscal
+  // ignora estes campos.
+  scrapId?: string | null;
+  // Rótulo legível da sucata (ex.: "VW Gol · 2006 · ABC1D23") para exibição.
+  scrapLabel?: string | null;
 }
 
 // ── Listagem de notas emitidas (F6) ──

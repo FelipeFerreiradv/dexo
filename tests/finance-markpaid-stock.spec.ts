@@ -28,6 +28,15 @@ vi.mock("@/app/marketplaces/services/stock-deduction.service", () => ({
   },
 }));
 
+// Mock ScrapStatusReconcileService — isola o reflexo de status da sucata
+// (best-effort, cobertura própria em scrap-status-reconcile.spec).
+vi.mock("../app/marketplaces/services/scrap-status-reconcile.service", () => ({
+  ScrapStatusReconcileService: { reconcileForReceivable: vi.fn() },
+}));
+vi.mock("@/app/marketplaces/services/scrap-status-reconcile.service", () => ({
+  ScrapStatusReconcileService: { reconcileForReceivable: vi.fn() },
+}));
+
 // Mock prisma — o mesmo padrao das outras specs de finance.
 vi.mock("../app/lib/prisma", () => {
   const fmodel = () => ({
@@ -93,6 +102,7 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
 import prisma from "../app/lib/prisma";
 import { financeRoutes } from "../app/routes/finance.routes";
 import { StockDeductionService } from "../app/marketplaces/services/stock-deduction.service";
+import { ScrapStatusReconcileService } from "../app/marketplaces/services/scrap-status-reconcile.service";
 
 const OWNER = "owner@test.com";
 
@@ -241,6 +251,70 @@ describe("Fase 6 — markPaid: receivable COM itens (venda balcao)", () => {
     expect(postArg.logPrefix).toBe("[FinanceUseCase]");
     expect(postArg.pauseOnZero).toEqual({ userId: "user-owner" });
     expect(postArg.deductions).toHaveLength(2);
+    // Reflexo na sucata disparado pós-commit (best-effort, irmão do firePostEffects).
+    expect(
+      ScrapStatusReconcileService.reconcileForReceivable,
+    ).toHaveBeenCalledWith({
+      receivableId: "r-1",
+      userId: "user-owner",
+      logPrefix: "[FinanceUseCase]",
+    });
+  });
+
+  it("itens MANUAIS nao baixam estoque (deductWithinTx so recebe itens com productId)", async () => {
+    // Conta MISTA: 1 item cadastrado (p-1) + 1 item manual (productId null).
+    (prisma as any).receivable.findFirst.mockResolvedValue(
+      makeReceivableRaw({
+        items: [
+          {
+            id: "ri-1",
+            productId: "p-1",
+            description: null,
+            scrapId: null,
+            listingId: null,
+            quantity: 2,
+            unitPrice: "50.00",
+            createdAt: new Date(),
+            product: { id: "p-1", sku: "SKU-1", name: "Produto" },
+          },
+          {
+            id: "ri-m1",
+            productId: null,
+            description: "Mao de obra",
+            scrapId: null,
+            listingId: null,
+            quantity: 1,
+            unitPrice: "30.00",
+            createdAt: new Date(),
+            product: null,
+          },
+        ],
+      }),
+    );
+    (prisma as any).receivable.updateMany.mockResolvedValue({ count: 1 });
+    (prisma as any).receivable.findUnique.mockResolvedValue(
+      makeReceivableRaw({ status: "PAGA", paidAt: new Date() }),
+    );
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/pay",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Tem itens (manual + cadastrado) => abre $transaction.
+    expect((prisma as any).$transaction).toHaveBeenCalledTimes(1);
+    // Mas a baixa SO recebe o item cadastrado — o manual (productId null) e
+    // filtrado e nao gera baixa de catalogo (nem StockLog).
+    expect(StockDeductionService.deductWithinTx).toHaveBeenCalledTimes(1);
+    expect(StockDeductionService.deductWithinTx).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        items: [{ productId: "p-1", quantity: 2 }],
+      }),
+    );
   });
 
   it("se a tx falhar, status NAO muda e nada e enfileirado (rollback total)", async () => {
@@ -310,6 +384,10 @@ describe("Fase 6 — markPaid: idempotencia", () => {
     expect((prisma as any).receivable.updateMany).not.toHaveBeenCalled();
     expect(StockDeductionService.deductWithinTx).not.toHaveBeenCalled();
     expect(StockDeductionService.firePostEffects).not.toHaveBeenCalled();
+    // Idempotência também no reflexo da sucata: não reconcilia de novo.
+    expect(
+      ScrapStatusReconcileService.reconcileForReceivable,
+    ).not.toHaveBeenCalled();
     // Response contem a entry no estado atual (PAGA).
     const body = JSON.parse(res.payload);
     expect(body.entry.status).toBe("PAGA");

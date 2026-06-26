@@ -845,6 +845,24 @@ class ProductRepositoryPrisma implements ProductRepository {
             }))
         : [];
 
+      // Tenant guard: se um scrapId for informado, a sucata DEVE pertencer ao
+      // mesmo userId do produto. Product.scrapId é FK p/ Scrap sem garantir
+      // Product.userId == Scrap.userId — sem esta checagem, um payload forjado
+      // poderia vincular o produto à sucata de OUTRO tenant (poluindo as
+      // agregações daquela sucata: getScrapParts/getScrapMoney/reconcile). No-op
+      // para produtos legítimos (mesmo dono). "inválido" → 400 no route handler.
+      if (data.scrapId && data.userId) {
+        const ownsScrap = await prisma.scrap.findFirst({
+          where: { id: data.scrapId, userId: data.userId },
+          select: { id: true },
+        });
+        if (!ownsScrap) {
+          throw new Error(
+            "Vínculo de sucata inválido: sucata não encontrada para este usuário",
+          );
+        }
+      }
+
       const result = await prisma.product.create({
         data: {
           userId: data.userId ?? null,

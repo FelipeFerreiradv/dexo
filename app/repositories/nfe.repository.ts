@@ -326,11 +326,29 @@ export class NfeRepository {
         name: true,
         price: true,
         stock: true,
+        // Aditivo: sucata de origem (id p/ vínculo + rótulo p/ exibição no balcão).
+        scrapId: true,
+        scrap: {
+          select: { brand: true, model: true, year: true, plate: true },
+        },
       },
     });
     return rows.map((r: any) => ({
-      ...r,
+      id: r.id,
+      sku: r.sku,
+      name: r.name,
       price: Number(r.price),
+      stock: r.stock,
+      scrapId: r.scrapId ?? null,
+      scrapLabel: r.scrap
+        ? [
+            `${r.scrap.brand} ${r.scrap.model}`.trim(),
+            r.scrap.year || null,
+            r.scrap.plate || null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : null,
     }));
   }
 

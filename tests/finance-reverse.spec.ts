@@ -33,6 +33,13 @@ vi.mock("@/app/marketplaces/services/stock-deduction.service", () => ({
   },
 }));
 
+vi.mock("../app/marketplaces/services/scrap-status-reconcile.service", () => ({
+  ScrapStatusReconcileService: { reconcileForReceivable: vi.fn() },
+}));
+vi.mock("@/app/marketplaces/services/scrap-status-reconcile.service", () => ({
+  ScrapStatusReconcileService: { reconcileForReceivable: vi.fn() },
+}));
+
 vi.mock("../app/lib/prisma", () => {
   const fmodel = () => ({
     findMany: vi.fn().mockResolvedValue([]),
@@ -97,6 +104,7 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
 import prisma from "../app/lib/prisma";
 import { financeRoutes } from "../app/routes/finance.routes";
 import { StockDeductionService } from "../app/marketplaces/services/stock-deduction.service";
+import { ScrapStatusReconcileService } from "../app/marketplaces/services/scrap-status-reconcile.service";
 
 const OWNER = "owner@test.com";
 
@@ -211,6 +219,14 @@ describe("Fase 9 — POST /finance/receivables/:id/reverse", () => {
     expect(postArg.logPrefix).toBe("[FinanceUseCase]");
     expect(postArg.reopenOnRefill).toEqual({ userId: "user-owner" });
     expect(postArg.pauseOnZero).toBeUndefined();
+    // Reflexo na sucata reavaliado pós-commit (simetria com o pagamento).
+    expect(
+      ScrapStatusReconcileService.reconcileForReceivable,
+    ).toHaveBeenCalledWith({
+      receivableId: "r-1",
+      userId: "user-owner",
+      logPrefix: "[FinanceUseCase]",
+    });
   });
 
   it("idempotência: já CANCELADA → no-op (sem tx, sem restoreWithinTx)", async () => {
@@ -229,6 +245,9 @@ describe("Fase 9 — POST /finance/receivables/:id/reverse", () => {
     expect((prisma as any).$transaction).not.toHaveBeenCalled();
     expect(StockDeductionService.restoreWithinTx).not.toHaveBeenCalled();
     expect(StockDeductionService.firePostEffects).not.toHaveBeenCalled();
+    expect(
+      ScrapStatusReconcileService.reconcileForReceivable,
+    ).not.toHaveBeenCalled();
     expect(JSON.parse(res.payload).entry.status).toBe("CANCELADA");
   });
 

@@ -753,18 +753,28 @@ model Payable {
 model ReceivableItem {
   id           String   @id @default(cuid())
   receivableId String
-  productId    String
+  // productId nulável (aditivo): item MANUAL (texto livre) não tem produto
+  // cadastrado. Itens existentes mantêm productId setado — zero regressão.
+  productId    String?
+  // Descrição do item manual (texto livre). NULL p/ item cadastrado (a
+  // descrição vem do Product). Preenchida só quando productId é NULL.
+  description  String?
+  // Sucata de origem da venda (override explícito; precede Product.scrapId na
+  // agregação). NULL = sucata efetiva derivada do Product, se houver.
+  scrapId      String?
   listingId    String?
   quantity     Int
   unitPrice    Decimal  @db.Decimal(10, 2)
   createdAt    DateTime @default(now())
 
   receivable Receivable      @relation(fields: [receivableId], references: [id], onDelete: Cascade)
-  product    Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product    Product?        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  scrap      Scrap?          @relation(fields: [scrapId], references: [id], onDelete: SetNull)
   listing    ProductListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
 
   @@index([receivableId])
   @@index([productId])
+  @@index([scrapId])
   @@index([listingId])
 }
 
@@ -844,9 +854,12 @@ model Scrap {
   updatedAt DateTime @updatedAt
 
   // Relacionamentos
-  user         User               @relation(fields: [userId], references: [id])
-  products     Product[]
-  statusEvents ScrapStatusEvent[]
+  user            User               @relation(fields: [userId], references: [id])
+  products        Product[]
+  statusEvents    ScrapStatusEvent[]
+  // Vendas balcão (Conta a Receber) vinculadas diretamente a esta sucata —
+  // inclui itens manuais (sem Product). onDelete SetNull no lado do item.
+  receivableItems ReceivableItem[]
 
   @@index([userId, createdAt])
   @@index([userId, status])
