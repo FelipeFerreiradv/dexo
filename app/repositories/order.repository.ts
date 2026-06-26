@@ -161,7 +161,6 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
-                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -244,6 +243,8 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
+                  // imageUrl só aqui (detalhe) e no findAllForList (vitrine) —
+                  // os demais selects não exibem imagem (egress enxuto).
                   imageUrl: true,
                   location: true,
                   productLocation: {
@@ -299,7 +300,6 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
-                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -413,7 +413,6 @@ class OrderRepositoryPrisma implements OrderRepository {
                         name: true,
                         sku: true,
                         stock: true,
-                        imageUrl: true,
                         location: true,
                         productLocation: {
                           select: {
@@ -631,7 +630,6 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
-                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
@@ -700,7 +698,6 @@ class OrderRepositoryPrisma implements OrderRepository {
                   name: true,
                   sku: true,
                   stock: true,
-                  imageUrl: true,
                   location: true,
                   productLocation: {
                     select: {
