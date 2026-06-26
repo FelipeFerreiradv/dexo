@@ -103,6 +103,11 @@ interface Props {
   setScrapMeta: (
     updater: (m: Record<string, string>) => Record<string, string>,
   ) => void;
+  // Rótulos parametrizáveis para reuso fora da venda balcão (ex.: Orçamento).
+  // Os DEFAULTS preservam 100% o comportamento/texto da venda balcão.
+  reasonPrefix?: string;
+  headerTitle?: string;
+  headerHint?: string;
 }
 
 export function ProductPickerBlock({
@@ -113,6 +118,9 @@ export function ProductPickerBlock({
   setProductMeta,
   scrapMeta,
   setScrapMeta,
+  reasonPrefix = "Venda balcão — ",
+  headerTitle = "Produtos (venda balcão)",
+  headerHint = "Itens deste título. O estoque será baixado na finalização (pagamento).",
 }: Props) {
   const { data: session } = useSession();
   // Sucata "da venda" (default no cabeçalho): só pré-preenche NOVAS linhas
@@ -266,23 +274,20 @@ export function ProductPickerBlock({
     const extra = items.length - 1;
     const suffix =
       extra > 0 ? ` e mais ${extra} ${extra === 1 ? "item" : "itens"}` : "";
-    const title = `Venda balcão — ${firstLabel}${suffix}`;
+    const title = `${reasonPrefix}${firstLabel}${suffix}`;
 
     if (title !== current) {
       setValue("reason", title, { shouldDirty: true });
       autoReasonRef.current = title;
     }
-  }, [watchedItems, productMeta, getValues, setValue]);
+  }, [watchedItems, productMeta, getValues, setValue, reasonPrefix]);
 
   return (
     <div className="space-y-3 rounded-xl border border-border/60 bg-muted/20 p-4 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium">Produtos (venda balcão)</p>
-          <p className="text-xs text-muted-foreground">
-            Itens deste título. O estoque será baixado na finalização
-            (pagamento).
-          </p>
+          <p className="text-sm font-medium">{headerTitle}</p>
+          <p className="text-xs text-muted-foreground">{headerHint}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <Button

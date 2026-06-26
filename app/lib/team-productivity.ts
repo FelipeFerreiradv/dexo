@@ -55,6 +55,42 @@ export interface ProductivityResult {
   totals: { produtos: number; anuncios: AnunciosBreakdown };
   byCollaborator: CollaboratorProductivity[];
   timeseries: ProductivityTimeseriesPoint[];
+  // Aditivo (BLOCO 1 — orçamentos por vendedor). Opcional p/ não quebrar o
+  // retorno de aggregateTeamProductivity (que cuida só de produtividade).
+  budgetsByVendedor?: VendedorBudgetStats[];
+  budgetTotals?: BudgetVendedorTotals;
+}
+
+// ── Orçamentos por vendedor (BLOCO 1) ──
+// Linha agregada NO BANCO por vendedorId: emitidos + convertidos (count+valor).
+export interface BudgetVendedorRow {
+  vendedorId: string | null;
+  count: number;
+  totalValue: number;
+  convertedCount: number;
+  convertedValue: number;
+}
+
+// Vendedor selecionável = colaborador OU o próprio admin (isOwner=true).
+export interface BudgetVendedorInput {
+  id: string;
+  name?: string | null;
+  email: string;
+  isOwner: boolean;
+}
+
+export interface VendedorBudgetStats {
+  id: string;
+  name: string | null;
+  email: string;
+  isOwner: boolean;
+  orcamentos: { count: number; valor: number };
+  convertidos: { count: number; valor: number };
+}
+
+export interface BudgetVendedorTotals {
+  orcamentos: { count: number; valor: number };
+  convertidos: { count: number; valor: number };
 }
 
 export interface ProductivityRange {
@@ -241,4 +277,66 @@ export function aggregateTeamProductivity(
     byCollaborator,
     timeseries: buildTimeseries(range.startDate, range.endDate, dayMap),
   };
+}
+
+/**
+ * Agregação PURA dos orçamentos por vendedor (count + valor, emitidos e
+ * convertidos). `rows` já vêm contados do banco (GROUP BY vendedorId).
+ * `vendedores` = admin + colaboradores (cada um vira uma linha, mesmo com zero,
+ * p/ o relatório listar todos). Ordena por valor de orçamentos desc.
+ */
+export function aggregateBudgetsByVendedor(
+  rows: BudgetVendedorRow[],
+  vendedores: BudgetVendedorInput[],
+): { totals: BudgetVendedorTotals; byVendedor: VendedorBudgetStats[] } {
+  const per = new Map<
+    string,
+    { count: number; valor: number; convCount: number; convValor: number }
+  >();
+  for (const v of vendedores) {
+    per.set(v.id, { count: 0, valor: 0, convCount: 0, convValor: 0 });
+  }
+  const totals: BudgetVendedorTotals = {
+    orcamentos: { count: 0, valor: 0 },
+    convertidos: { count: 0, valor: 0 },
+  };
+
+  for (const r of rows) {
+    if (!r.vendedorId) continue;
+    const p = per.get(r.vendedorId);
+    if (!p) continue; // vendedor fora do time conhecido (defensivo)
+    const count = r.count || 0;
+    const valor = r.totalValue || 0;
+    const convCount = r.convertedCount || 0;
+    const convValor = r.convertedValue || 0;
+    p.count += count;
+    p.valor += valor;
+    p.convCount += convCount;
+    p.convValor += convValor;
+    totals.orcamentos.count += count;
+    totals.orcamentos.valor += valor;
+    totals.convertidos.count += convCount;
+    totals.convertidos.valor += convValor;
+  }
+
+  const byVendedor: VendedorBudgetStats[] = vendedores
+    .map((v) => {
+      const p = per.get(v.id)!;
+      return {
+        id: v.id,
+        name: v.name ?? null,
+        email: v.email,
+        isOwner: v.isOwner,
+        orcamentos: { count: p.count, valor: p.valor },
+        convertidos: { count: p.convCount, valor: p.convValor },
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.orcamentos.valor - a.orcamentos.valor ||
+        b.orcamentos.count - a.orcamentos.count ||
+        (a.name ?? a.email).localeCompare(b.name ?? b.email),
+    );
+
+  return { totals, byVendedor };
 }

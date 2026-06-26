@@ -5,10 +5,14 @@ import { UserRepositoryPrisma } from "../repositories/user.repository";
 import { SystemLogService } from "../services/system-log.service";
 import type { LogAction } from "../interfaces/system-log.interface";
 import {
+  aggregateBudgetsByVendedor,
   aggregateTeamProductivity,
   resolveProductivityRange,
 } from "../lib/team-productivity";
-import { fetchProductivityGroups } from "../lib/team-productivity.query";
+import {
+  fetchBudgetStatsByVendedor,
+  fetchProductivityGroups,
+} from "../lib/team-productivity.query";
 import { renderTeamProductivityReport } from "../reports/team-productivity-report";
 
 const userRepository = new UserRepositoryPrisma();
@@ -36,40 +40,71 @@ async function loadTeamProductivity(
     label: range.label,
   };
 
-  const children = await userRepository.findChildren(adminId);
-  if (children.length === 0) {
-    return {
-      rangeOut,
-      result: {
-        totals: {
-          produtos: 0,
-          anuncios: { total: 0, ml: 0, shopee: 0, outro: 0 },
-        },
-        byCollaborator: [],
-        timeseries: [],
-      },
-    };
-  }
+  const [admin, children] = await Promise.all([
+    userRepository.findById(adminId),
+    userRepository.findChildren(adminId),
+  ]);
 
-  const childIds = children.map((c) => c.id);
-  // EGRESS: contagem agregada no banco (não puxa as linhas do período).
-  const groups = await fetchProductivityGroups(
-    childIds,
-    range.startDate,
-    range.endDate,
-  );
-
-  const result = aggregateTeamProductivity(
-    groups,
-    children.map((c) => ({
+  // Vendedores selecionáveis = admin + colaboradores (mesma lista do dropdown
+  // de orçamento). O admin também pode ser o vendedor de uma venda própria.
+  const vendedores = [
+    ...(admin
+      ? [{ id: admin.id, name: admin.name, email: admin.email, isOwner: true }]
+      : []),
+    ...children.map((c) => ({
       id: c.id,
       name: c.name,
       email: c.email,
-      avatarUrl: c.avatarUrl,
+      isOwner: false,
     })),
-    range,
-  );
-  return { rangeOut, result };
+  ];
+
+  const childIds = children.map((c) => c.id);
+
+  // EGRESS + velocidade: as 2 queries pesadas e INDEPENDENTES (orçamentos por
+  // vendedor + grupos de produtividade do SystemLog) rodam em PARALELO — uma
+  // única ida ao banco em vez de duas sequenciais. Ambas agregam no banco.
+  const [budgetRows, groups] = await Promise.all([
+    fetchBudgetStatsByVendedor(adminId, range.startDate, range.endDate),
+    childIds.length > 0
+      ? fetchProductivityGroups(childIds, range.startDate, range.endDate)
+      : Promise.resolve([]),
+  ]);
+
+  const budgets = aggregateBudgetsByVendedor(budgetRows, vendedores);
+
+  // Produtividade (colaboradores via SystemLog). Fail-closed sem colaboradores
+  // — mas o bloco de orçamentos por vendedor (acima) continua valendo.
+  const result =
+    childIds.length > 0
+      ? aggregateTeamProductivity(
+          groups,
+          children.map((c) => ({
+            id: c.id,
+            name: c.name,
+            email: c.email,
+            avatarUrl: c.avatarUrl,
+          })),
+          range,
+        )
+      : {
+          totals: {
+            produtos: 0,
+            anuncios: { total: 0, ml: 0, shopee: 0, outro: 0 },
+          },
+          byCollaborator: [],
+          timeseries: [],
+        };
+
+  return {
+    rangeOut,
+    admin,
+    result: {
+      ...result,
+      budgetsByVendedor: budgets.byVendedor,
+      budgetTotals: budgets.totals,
+    },
+  };
 }
 
 // Cache curto de presença pra evitar pressão na tabela SystemLog.
@@ -366,11 +401,12 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
         }
 
         const q = request.query as Record<string, string | undefined>;
-        // Independentes ⇒ em paralelo (a empresa não depende da produtividade).
-        const [{ rangeOut, result }, admin] = await Promise.all([
-          loadTeamProductivity(me.id, q),
-          userRepository.findById(me.id),
-        ]);
+        // loadTeamProductivity já busca o admin (p/ a lista de vendedores) —
+        // reusamos p/ o nome da empresa, sem refazer a mesma query (egress).
+        const { rangeOut, result, admin } = await loadTeamProductivity(
+          me.id,
+          q,
+        );
         const company = admin?.name || admin?.email || "Sua empresa";
 
         const pdf = await renderTeamProductivityReport({
@@ -380,6 +416,11 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
           totals: result.totals,
           byCollaborator: result.byCollaborator,
           timeseries: result.timeseries,
+          budgetsByVendedor: result.budgetsByVendedor ?? [],
+          budgetTotals: result.budgetTotals ?? {
+            orcamentos: { count: 0, valor: 0 },
+            convertidos: { count: 0, valor: 0 },
+          },
         });
 
         return reply

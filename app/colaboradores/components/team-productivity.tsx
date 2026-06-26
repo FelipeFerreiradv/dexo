@@ -40,6 +40,13 @@ const SHOPEE_COLOR = "var(--color-accent)";
 const PRODUTO_COLOR = "var(--color-muted-foreground)";
 
 const nf = new Intl.NumberFormat("pt-BR");
+const brlFmt = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+function brl(n: number): string {
+  return brlFmt.format(n || 0);
+}
 
 type Anuncios = { total: number; ml: number; shopee: number; outro: number };
 
@@ -61,6 +68,19 @@ type ProductivityResponse = {
     ml: number;
     shopee: number;
   }>;
+  // Orçamentos por vendedor (BLOCO 1). Opcional (compat com respostas antigas).
+  budgetsByVendedor?: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    isOwner: boolean;
+    orcamentos: { count: number; valor: number };
+    convertidos: { count: number; valor: number };
+  }>;
+  budgetTotals?: {
+    orcamentos: { count: number; valor: number };
+    convertidos: { count: number; valor: number };
+  };
 };
 
 type PresetId = "today" | "7d" | "30d" | "month" | "custom";
@@ -555,6 +575,78 @@ export function TeamProductivity({
             )}
           </>
         )}
+
+        {/* Orçamentos por vendedor (BLOCO 1) — base p/ comissão. Aparece quando
+            há orçamentos atribuídos no período (independe de produtividade). */}
+        {!loading &&
+          data?.budgetsByVendedor &&
+          data.budgetsByVendedor.length > 0 && (
+            <div className="mt-6 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold">
+                  Orçamentos por vendedor
+                </h4>
+                {data.budgetTotals && (
+                  <span className="text-xs text-muted-foreground">
+                    {nf.format(data.budgetTotals.orcamentos.count)} orçamento(s)
+                    · {nf.format(data.budgetTotals.convertidos.count)}{" "}
+                    convertido(s)
+                  </span>
+                )}
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-border/70">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">
+                        Vendedor
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Orçamentos
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">Valor</th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Convertidos
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Valor convertido
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.budgetsByVendedor.map((v) => (
+                      <tr key={v.id} className="border-t border-border/60">
+                        <td className="px-3 py-2">
+                          {v.name || v.email}
+                          {v.isOwner ? (
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              (admin)
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {nf.format(v.orcamentos.count)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {brl(v.orcamentos.valor)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {nf.format(v.convertidos.count)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {brl(v.convertidos.valor)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Orçamentos criados no período por vendedor. &quot;Convertidos&quot;
+                = viraram venda (Conta a Receber) — base usual para comissão.
+              </p>
+            </div>
+          )}
       </CardContent>
     </Card>
   );
