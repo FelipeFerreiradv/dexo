@@ -1266,19 +1266,27 @@ export class OrderUseCase {
       search?: string;
       page?: number;
       limit?: number;
+      dateFrom?: Date;
+      dateTo?: Date;
+      amountMin?: number;
+      amountMax?: number;
     },
   ) {
-    return orderRepository.findAll({
+    // EGRESS: a lista de pedidos NÃO traz o grafo de itens — só uma miniatura
+    // leve do 1º item (`thumbnail`) + a contagem (`itemCount`). O sheet recarrega
+    // o pedido completo via GET /orders/:id ao abrir. `findAllForList` também
+    // aplica os filtros de período (data) e faixa de valor (preço).
+    return orderRepository.findAllForList({
       userId,
       status: options?.status as any,
       platform: options?.platform,
       search: options?.search,
       page: options?.page,
       limit: options?.limit,
-      // EGRESS: a TABELA de pedidos não exibe itens — só o detalhe usa. O sheet
-      // recarrega o pedido completo via GET /orders/:id ao abrir, então a lista
-      // não precisa trafegar o grafo items->product->listing de cada pedido.
-      includeItems: false,
+      dateFrom: options?.dateFrom,
+      dateTo: options?.dateTo,
+      amountMin: options?.amountMin,
+      amountMax: options?.amountMax,
     });
   }
 

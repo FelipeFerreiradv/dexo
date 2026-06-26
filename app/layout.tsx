@@ -6,7 +6,12 @@ import "./globals.css";
 import { Providers } from "./providers";
 import { MainLayoutWrapper } from "@/components/main-layout-wrapper";
 
-import { Inter, JetBrains_Mono, Bricolage_Grotesque } from "next/font/google";
+import {
+  Inter,
+  JetBrains_Mono,
+  Bricolage_Grotesque,
+  Outfit,
+} from "next/font/google";
 
 // Fontes da identidade visual Dexo (Manual de Marca):
 // Inter = corpo/UI · JetBrains Mono = SKU/códigos/valores · Bricolage = títulos.
@@ -26,6 +31,14 @@ const jetbrainsMono = JetBrains_Mono({
 const bricolage = Bricolage_Grotesque({
   subsets: ["latin"],
   variable: "--font-bricolage",
+  display: "swap",
+});
+// Outfit (geométrica) — fonte do título "wordmark" (`nome.`) dos cabeçalhos de
+// página. Exposta como CSS var p/ ser usada por componentes server E client
+// (o PageHeader é importado por páginas dos dois tipos).
+const outfit = Outfit({
+  subsets: ["latin"],
+  variable: "--font-outfit",
   display: "swap",
 });
 
@@ -138,7 +151,7 @@ export default function RootLayout({
   return (
     <html
       lang="pt-BR"
-      className={`${inter.variable} ${jetbrainsMono.variable} ${bricolage.variable}`}
+      className={`${inter.variable} ${jetbrainsMono.variable} ${bricolage.variable} ${outfit.variable}`}
       suppressHydrationWarning
     >
       <body className={`font-sans antialiased`}>

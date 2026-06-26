@@ -3,39 +3,41 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import { Search, Download, ChevronLeft, ChevronRight, Eye } from "lucide-react";
+import {
+  Search,
+  Download,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  LayoutGrid,
+  List,
+  Package,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import type { Order, OrderFindResult } from "@/app/interfaces/order.interface";
+import type { Order } from "@/app/interfaces/order.interface";
 import { OrderSkeleton } from "./order-skeleton";
 import { OrderDetailSheet } from "./order-detail-sheet";
+import { OrdersFilters } from "./orders-filters";
+import { OrdersTableView } from "./orders-table-view";
+import { OrdersGalleryView } from "./orders-gallery-view";
+import {
+  OrdersGallerySkeleton,
+  OrdersTableSkeleton,
+} from "./orders-gallery-skeleton";
+import { useOrdersView, type OrdersView } from "../hooks/use-orders-view";
+import {
+  DEFAULT_ORDER_FILTERS,
+  countActiveOrderFilters,
+  hasActiveOrderFilters,
+  serializeOrderFilters,
+  type OrderFiltersState,
+} from "../lib/order-filters";
 
 interface Pagination {
   page: number;
@@ -74,28 +76,38 @@ export function OrdersList() {
     totalRevenue: 0,
   });
   const [searchInput, setSearchInput] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [filters, setFilters] = useState<OrderFiltersState>(
+    DEFAULT_ORDER_FILTERS,
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
-  const [platformFilter, setPlatformFilter] = useState<string>("ALL");
+  const [view, setView] = useOrdersView("gallery");
 
+  // Debounce da busca → filtros (mesma cadência de hoje, 250ms).
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
+    const timer = setTimeout(() => {
+      const next = searchInput.trim();
+      setFilters((prev) =>
+        prev.search === next ? prev : { ...prev, search: next },
+      );
+    }, 250);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
+  // Qualquer mudança de filtro volta para a página 1 (estende o que a lista já
+  // fazia para busca/plataforma).
   useEffect(() => {
     setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
-  }, [debouncedSearch, platformFilter]);
+  }, [filters]);
 
+  // Busca vinda da URL (?search=) preenche o campo (preservado do original).
   useEffect(() => {
     const param = searchParams?.get("search") ?? "";
     if (param && param !== searchInput) {
       setSearchInput(param);
-      setDebouncedSearch(param.trim());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
@@ -111,6 +123,19 @@ export function OrdersList() {
     [],
   );
 
+  const updateFilter = useCallback(function updateFilterValue<
+    K extends keyof OrderFiltersState,
+  >(key: K, value: OrderFiltersState[K]) {
+    setFilters((prev) =>
+      prev[key] === value ? prev : { ...prev, [key]: value },
+    );
+  }, []);
+
+  const clearFilters = useCallback(() => {
+    setSearchInput("");
+    setFilters(DEFAULT_ORDER_FILTERS);
+  }, []);
+
   const fetchOrders = useCallback(async () => {
     if (!session?.user?.email) {
       console.log("Session not ready for orders");
@@ -118,17 +143,10 @@ export function OrdersList() {
     }
     try {
       setIsLoading(true);
-      const params = new URLSearchParams({
-        page: pagination.page.toString(),
-        limit: pagination.limit.toString(),
+      const params = serializeOrderFilters(filters, {
+        page: pagination.page,
+        limit: pagination.limit,
       });
-      const term = debouncedSearch.trim();
-      if (term.length >= 2) {
-        params.set("search", term);
-      }
-      if (platformFilter && platformFilter !== "ALL") {
-        params.set("platform", platformFilter);
-      }
 
       const apiBase = getApiBaseUrl();
       const response = await fetch(`${apiBase}/orders?${params}`, {
@@ -153,16 +171,24 @@ export function OrdersList() {
     } finally {
       setIsLoading(false);
     }
-  }, [debouncedSearch, pagination.limit, pagination.page, platformFilter, session?.user?.email, showToast]);
+  }, [
+    filters,
+    pagination.limit,
+    pagination.page,
+    session?.user?.email,
+    showToast,
+  ]);
 
   const fetchStats = useCallback(async () => {
     if (!session?.user?.email) {
       return;
     }
     try {
+      // Stats permanecem um retrato global, respeitando só o marketplace (como
+      // hoje). Os demais filtros (data/preço/status/busca) afetam só a lista.
       const statsParams = new URLSearchParams();
-      if (platformFilter && platformFilter !== "ALL") {
-        statsParams.set("platform", platformFilter);
+      if (filters.marketplace) {
+        statsParams.set("platform", filters.marketplace);
       }
       const qs = statsParams.toString();
       const response = await fetch(
@@ -196,7 +222,7 @@ export function OrdersList() {
     } catch (error) {
       console.error("Erro ao buscar estatísticas:", error);
     }
-  }, [session?.user?.email, platformFilter]);
+  }, [session?.user?.email, filters.marketplace]);
 
   const handleImportOrders = async () => {
     if (!session?.user?.email) {
@@ -232,8 +258,8 @@ export function OrdersList() {
   };
 
   const handleViewOrder = async (order: Order) => {
-    // Abre o sheet imediatamente (o cabeçalho já vem na lista). A lista agora
-    // NÃO traz os itens (egress enxuto), então recarrega o pedido COMPLETO via
+    // Abre o sheet imediatamente (o cabeçalho já vem na lista). A lista NÃO traz
+    // os itens (egress enxuto), então recarrega o pedido COMPLETO via
     // GET /orders/:id e preenche os itens quando chegam. O sheet trata
     // order.items ausente (mostra "0 itens" por instantes). Sem perda de dados.
     setSelectedOrder(order);
@@ -249,31 +275,6 @@ export function OrdersList() {
       if (data?.order) setSelectedOrder(data.order);
     } catch {
       /* mantém o pedido da lista (sem itens) se o refetch falhar */
-    }
-  };
-
-  const getStatusBadge = (status: string) => {
-    const variants: Record<
-      string,
-      "default" | "secondary" | "destructive" | "outline"
-    > = {
-      PENDING: "secondary",
-      PAID: "default",
-      SHIPPED: "outline",
-      DELIVERED: "default",
-      CANCELLED: "destructive",
-    };
-    return <Badge variant={variants[status] || "default"}>{status}</Badge>;
-  };
-
-  const getPlatformLabel = (platform: string) => {
-    switch (platform) {
-      case "MERCADO_LIVRE":
-        return "Mercado Livre";
-      case "SHOPEE":
-        return "Shopee";
-      default:
-        return platform;
     }
   };
 
@@ -304,6 +305,9 @@ export function OrdersList() {
       </div>
     );
   }
+
+  const filtersActive =
+    hasActiveOrderFilters(filters) || searchInput.trim().length > 0;
 
   return (
     <div className="space-y-6">
@@ -371,151 +375,125 @@ export function OrdersList() {
         </Card>
       </div>
 
-      {/* Controls */}
+      {/* Filtros */}
+      <OrdersFilters
+        filters={filters}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        onUpdateFilter={updateFilter}
+        onClear={clearFilters}
+        isFetching={isLoading}
+        activeCount={countActiveOrderFilters(filters)}
+      />
+
+      {/* Toolbar: contagem + importar + alternância de visão */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
-          <div className="relative w-full sm:w-auto">
-            <Search className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
-            <Input
-              placeholder="Buscar pedidos..."
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              className="h-10 w-full sm:w-[300px] rounded-full border border-border/70 bg-muted/20 pl-8"
-            />
-          </div>
-          <Select value={platformFilter} onValueChange={setPlatformFilter}>
-            <SelectTrigger className="h-10 w-full sm:w-[180px]">
-              <SelectValue placeholder="Plataforma" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">Todos</SelectItem>
-              <SelectItem value="MERCADO_LIVRE">Mercado Livre</SelectItem>
-              <SelectItem value="SHOPEE">Shopee</SelectItem>
-            </SelectContent>
-          </Select>
+        <p className="text-sm text-muted-foreground">
+          {pagination.total} {pagination.total === 1 ? "pedido" : "pedidos"}
+          {filtersActive ? " · filtros ativos" : ""}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleImportOrders}
+            disabled={isImporting}
+            variant="outline"
+          >
+            {isImporting ? "Importando..." : "Importar Pedidos"}
+          </Button>
+          <Tabs
+            value={view}
+            onValueChange={(value) => setView(value as OrdersView)}
+          >
+            <TabsList>
+              <TabsTrigger value="gallery" aria-label="Visão em vitrine">
+                <LayoutGrid className="size-4" />
+              </TabsTrigger>
+              <TabsTrigger value="table" aria-label="Visão em tabela">
+                <List className="size-4" />
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
-        <Button onClick={handleImportOrders} disabled={isImporting} className="w-full sm:w-auto">
-          {isImporting ? "Importando..." : "Importar Pedidos"}
-        </Button>
       </div>
 
-      {/* Orders Table */}
-      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
-        <CardHeader>
-          <CardTitle>Pedidos</CardTitle>
-          <CardDescription>
-            Lista de todos os pedidos importados dos marketplaces
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <OrderSkeleton />
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>ID Externo</TableHead>
-                    <TableHead>Plataforma</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Total</TableHead>
-                    <TableHead>Data</TableHead>
-                    <TableHead className="w-[100px]">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {orders.map((order) => (
-                    <TableRow key={order.id}>
-                      <TableCell className="font-mono text-sm">
-                        {order.externalOrderId}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={
-                            order.marketplaceAccount?.platform === "MERCADO_LIVRE"
-                              ? "border-yellow-500/50 bg-yellow-500/10 text-yellow-700 dark:text-yellow-400"
-                              : order.marketplaceAccount?.platform === "SHOPEE"
-                                ? "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-400"
-                                : ""
-                          }
-                        >
-                          {getPlatformLabel(
-                            order.marketplaceAccount?.platform || "—",
-                          )}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{order.customerName || "N/A"}</TableCell>
-                      <TableCell>{getStatusBadge(order.status)}</TableCell>
-                      <TableCell>
-                        R${" "}
-                        {order.totalAmount.toLocaleString("pt-BR", {
-                          minimumFractionDigits: 2,
-                        })}
-                      </TableCell>
-                      <TableCell>
-                        {new Date(order.createdAt).toLocaleDateString("pt-BR")}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleViewOrder(order)}
-                        >
-                          <Eye className="size-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+      {/* Miolo: vitrine ou tabela */}
+      {isLoading ? (
+        view === "gallery" ? (
+          <OrdersGallerySkeleton />
+        ) : (
+          <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+            <CardContent className="pt-6">
+              <OrdersTableSkeleton />
+            </CardContent>
+          </Card>
+        )
+      ) : orders.length === 0 ? (
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+          <CardContent className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+            <Package className="size-8 text-muted-foreground" />
+            <p className="text-sm font-medium text-foreground">
+              {filtersActive
+                ? "Nenhum pedido encontrado para os filtros aplicados."
+                : "Nenhum pedido importado ainda."}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {filtersActive
+                ? "Ajuste ou limpe os filtros para ver mais resultados."
+                : "Use “Importar Pedidos” para trazer pedidos dos marketplaces."}
+            </p>
+          </CardContent>
+        </Card>
+      ) : view === "gallery" ? (
+        <OrdersGalleryView orders={orders} onView={handleViewOrder} />
+      ) : (
+        <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+          <CardContent className="pt-6">
+            <OrdersTableView orders={orders} onView={handleViewOrder} />
+          </CardContent>
+        </Card>
+      )}
 
-              {/* Pagination */}
-              {pagination.totalPages > 1 && (
-                <div className="flex items-center justify-between px-2 py-4">
-                  <div className="flex-1 text-sm text-muted-foreground">
-                    Mostrando {orders.length} de {pagination.total} pedidos
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setPagination((prev) => ({
-                          ...prev,
-                          page: prev.page - 1,
-                        }))
-                      }
-                      disabled={pagination.page === 1}
-                    >
-                      <ChevronLeft className="size-4" />
-                      Anterior
-                    </Button>
-                    <span className="text-sm">
-                      Página {pagination.page} de {pagination.totalPages}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setPagination((prev) => ({
-                          ...prev,
-                          page: prev.page + 1,
-                        }))
-                      }
-                      disabled={pagination.page === pagination.totalPages}
-                    >
-                      Próximo
-                      <ChevronRight className="size-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+      {/* Pagination */}
+      {!isLoading && orders.length > 0 && pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between px-2 py-2">
+          <div className="flex-1 text-sm text-muted-foreground">
+            Mostrando {orders.length} de {pagination.total} pedidos
+          </div>
+          <div className="flex items-center space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setPagination((prev) => ({
+                  ...prev,
+                  page: prev.page - 1,
+                }))
+              }
+              disabled={pagination.page === 1}
+            >
+              <ChevronLeft className="size-4" />
+              Anterior
+            </Button>
+            <span className="text-sm">
+              Página {pagination.page} de {pagination.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setPagination((prev) => ({
+                  ...prev,
+                  page: prev.page + 1,
+                }))
+              }
+              disabled={pagination.page === pagination.totalPages}
+            >
+              Próximo
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Order Detail Sheet */}
       <OrderDetailSheet

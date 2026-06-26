@@ -24,7 +24,7 @@ describe("OrderUseCase.getOrders", () => {
     vi.restoreAllMocks();
   });
 
-  it("does NOT request items (includeItems=false) when listing — detalhe recarrega via GET /orders/:id", async () => {
+  it("delega para findAllForList (egress enxuto: lista sem itens; detalhe recarrega via GET /orders/:id)", async () => {
     const mockResult = {
       orders: [],
       total: 0,
@@ -34,7 +34,7 @@ describe("OrderUseCase.getOrders", () => {
     };
 
     const spy = vi
-      .spyOn(orderRepository, "findAll")
+      .spyOn(orderRepository, "findAllForList")
       .mockResolvedValue(mockResult as any);
 
     const result = await OrderUseCase.getOrders("user-123", {
@@ -55,7 +55,6 @@ describe("OrderUseCase.getOrders", () => {
         search: "cubo",
         page: 2,
         limit: 5,
-        includeItems: false,
       }),
     );
   });

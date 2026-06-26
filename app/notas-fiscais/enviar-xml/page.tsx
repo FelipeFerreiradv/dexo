@@ -7,6 +7,7 @@ import { Send, Download, FileText, Mail, CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
+import { PageHeader } from "@/components/page-header";
 import { Input } from "@/components/ui/input";
 import {
   Card,
@@ -148,16 +149,11 @@ export default function EnviarXmlPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <p className="text-xs uppercase tracking-wider text-muted-foreground">
-          Notas Fiscais
-        </p>
-        <h1 className="text-2xl font-bold tracking-tight">Enviar XML</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Baixe ou envie por e-mail o XML e DANFE das notas autorizadas
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Notas Fiscais"
+        title="Enviar XML"
+        subtitle="Baixe ou envie por e-mail o XML e DANFE das notas autorizadas"
+      />
 
       {/* List */}
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">

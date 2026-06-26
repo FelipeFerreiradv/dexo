@@ -3,16 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import {
-  Ban,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  AlertTriangle,
-} from "lucide-react";
+import { Ban, CheckCircle2, XCircle, Clock, AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
+import { PageHeader } from "@/components/page-header";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -208,18 +203,11 @@ export default function InutilizarNumeroPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <p className="text-xs uppercase tracking-wider text-muted-foreground">
-          Notas Fiscais
-        </p>
-        <h1 className="text-2xl font-bold tracking-tight">
-          Inutilizar Numeracao
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Inutilize faixas de numeracao de NF-e que nao serao utilizadas
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Notas Fiscais"
+        title="Inutilizar Numeração"
+        subtitle="Inutilize faixas de numeração de NF-e que não serão utilizadas"
+      />
 
       {/* Form */}
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
