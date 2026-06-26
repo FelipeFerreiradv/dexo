@@ -25,11 +25,6 @@ export default async function OrdersPage() {
         eyebrow="Operações"
         title="Pedidos"
         subtitle="Acompanhe pedidos importados de todos os marketplaces e mantenha o status sempre atualizado."
-        pills={
-          <span className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-xs font-medium text-muted-foreground">
-            Cobertura multicanal
-          </span>
-        }
       />
 
       <OrdersList />
