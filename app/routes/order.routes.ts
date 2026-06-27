@@ -582,4 +582,59 @@ export async function orderRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  /**
+   * POST /orders/shipping-labels/batch
+   * Gera as etiquetas de vários pedidos e devolve UM PDF combinado (base64).
+   * Pedidos com erro voltam em `failures[]` sem derrubar o lote.
+   * Body: { orderIds: string[], size?: "A4" | "THERMAL" }.
+   */
+  app.post<{
+    Body: { orderIds?: string[]; size?: string };
+  }>(
+    "/shipping-labels/batch",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const body = request.body as { orderIds?: string[]; size?: string };
+        const orderIds = Array.isArray(body?.orderIds)
+          ? body.orderIds.filter((id) => typeof id === "string")
+          : [];
+        if (orderIds.length === 0) {
+          return reply
+            .status(400)
+            .send({ error: "Nenhum pedido selecionado" });
+        }
+        const size: LabelSize = body?.size === "THERMAL" ? "THERMAL" : "A4";
+
+        const result = await ShippingLabelUseCase.generateLabelsBatch(
+          userId,
+          orderIds,
+          size,
+        );
+
+        if (!result.pdf || result.count === 0) {
+          return reply.status(409).send({
+            error: "Nenhuma etiqueta foi gerada",
+            count: 0,
+            failures: result.failures,
+          });
+        }
+
+        return reply.status(200).send({
+          success: true,
+          count: result.count,
+          failures: result.failures,
+          pdfBase64: result.pdf.toString("base64"),
+        });
+      } catch (error) {
+        console.error("[Orders] Shipping labels batch error:", error);
+        return reply.status(500).send({
+          error: "Erro ao gerar etiquetas em lote",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
 }

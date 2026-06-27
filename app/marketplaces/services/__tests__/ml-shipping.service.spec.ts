@@ -149,7 +149,10 @@ describe("MlShippingLabelProvider", () => {
       status: "ready_to_ship",
       substatus: "invoice_pending",
     });
-    const r = await new MlShippingLabelProvider().ensureReadyToShip(ctx);
+    const r = await new MlShippingLabelProvider({
+      pollMaxAttempts: 2,
+      pollDelayMs: 0,
+    }).ensureReadyToShip(ctx);
     expect(r.ready).toBe(false);
     expect(r.reason).toBe("invoice_pending");
   });

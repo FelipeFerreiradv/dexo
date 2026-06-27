@@ -29,9 +29,13 @@ import { cfopTipoFromOperacao } from "@/app/fiscal/domain/cfop-catalog";
 import { ValorInput } from "../valor-input";
 import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
-// Combobox de CFOP atrás de flag — desligar volta ao input de texto livre atual.
+// Combobox de CFOP (lista buscável do catálogo) é o PADRÃO. Escape hatch: defina
+// NEXT_PUBLIC_NFE_CFOP_COMBOBOX_ENABLED="false" para voltar ao input de texto
+// livre. Era opt-in ("true"), mas como NEXT_PUBLIC é inlined no build, a flag
+// ausente derrubava o combobox silenciosamente — agora ele é o comportamento
+// padrão e só some quando explicitamente desligado.
 const CFOP_COMBOBOX_ENABLED =
-  process.env.NEXT_PUBLIC_NFE_CFOP_COMBOBOX_ENABLED === "true";
+  process.env.NEXT_PUBLIC_NFE_CFOP_COMBOBOX_ENABLED !== "false";
 
 interface Props {
   control: Control<NfeDraftFormData>;
