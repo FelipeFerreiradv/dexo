@@ -148,6 +148,20 @@ export class MlShippingService {
 export class MlShippingLabelProvider implements ShippingLabelProvider {
   readonly platform: ShippingPlatform = "MERCADO_LIVRE";
 
+  constructor(
+    private opts: { pollMaxAttempts?: number; pollDelayMs?: number } = {},
+  ) {}
+
+  private get pollMaxAttempts(): number {
+    return this.opts.pollMaxAttempts ?? 5;
+  }
+  private get pollDelayMs(): number {
+    return this.opts.pollDelayMs ?? 3000;
+  }
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   /** Cache do shipment_id por pedido (evita reconsultar GET /orders no fluxo). */
   private shipmentIdCache = new Map<string, string>();
 
@@ -204,19 +218,31 @@ export class MlShippingLabelProvider implements ShippingLabelProvider {
 
   async ensureReadyToShip(ctx: ShippingOrderContext): Promise<ShipReadiness> {
     const shipmentId = await this.resolveShipmentId(ctx);
-    const shipment = await ShippingAuthRetry.ml(ctx.account, (token) =>
-      MlShippingService.getShipment(token, shipmentId),
-    );
-    const status = shipment.status ?? null;
-    const substatus = shipment.substatus ?? null;
-    const ready = this.isReadyToPrint(status, substatus);
+    let status: string | null = null;
+    let substatus: string | null = null;
+    let trackingNumber: string | null = null;
+    // Poll curto: o ML leva alguns segundos para processar a NF-e enviada
+    // (substatus invoice_pending → ready_to_print). Tenta algumas vezes antes de
+    // devolver "não pronto" — assim o usuário não precisa re-clicar.
+    for (let attempt = 0; attempt < this.pollMaxAttempts; attempt++) {
+      const shipment = await ShippingAuthRetry.ml(ctx.account, (token) =>
+        MlShippingService.getShipment(token, shipmentId),
+      );
+      status = shipment.status ?? null;
+      substatus = shipment.substatus ?? null;
+      trackingNumber = shipment.tracking_number ?? null;
+      if (this.isReadyToPrint(status, substatus)) {
+        return { ready: true, status, substatus, shipmentId, trackingNumber };
+      }
+      if (attempt < this.pollMaxAttempts - 1) await this.sleep(this.pollDelayMs);
+    }
     return {
-      ready,
-      reason: ready ? undefined : (substatus ?? status ?? "aguardando liberação"),
+      ready: false,
+      reason: substatus ?? status ?? "aguardando liberação",
       status,
       substatus,
       shipmentId,
-      trackingNumber: shipment.tracking_number ?? null,
+      trackingNumber,
     };
   }
 

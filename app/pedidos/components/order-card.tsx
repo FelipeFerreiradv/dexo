@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Package, MapPin, Store } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { Order } from "@/app/interfaces/order.interface";
 import {
   getPlatformLabel,
@@ -18,6 +19,9 @@ const formatCurrency = (value: number) =>
 interface OrderCardProps {
   order: Order;
   onView: (order: Order) => void;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
 /**
@@ -26,7 +30,13 @@ interface OrderCardProps {
  * `next/image` (otimizador global desligado) com fallback neutro (`Package`)
  * quando não há imagem ou ela falha. Card inteiro clicável e acessível.
  */
-export function OrderCard({ order, onView }: OrderCardProps) {
+export function OrderCard({
+  order,
+  onView,
+  selectable,
+  selected,
+  onToggleSelect,
+}: OrderCardProps) {
   const [imgError, setImgError] = useState(false);
   const thumb = order.thumbnail;
   const itemCount = order.itemCount ?? 0;
@@ -51,6 +61,21 @@ export function OrderCard({ order, onView }: OrderCardProps) {
       className="group flex cursor-pointer flex-col rounded-2xl border border-border/60 bg-card/80 p-3 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur transition hover:-translate-y-0.5 hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
     >
       <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-muted">
+        {selectable ? (
+          <div
+            role="presentation"
+            className="absolute left-2 top-2 z-10"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <Checkbox
+              checked={!!selected}
+              onCheckedChange={() => onToggleSelect?.(order.id)}
+              aria-label={`Selecionar pedido ${order.externalOrderId}`}
+              className="border-border/70 bg-card/90 shadow"
+            />
+          </div>
+        ) : null}
         {showImage ? (
           <Image
             src={thumb!.imageUrl as string}

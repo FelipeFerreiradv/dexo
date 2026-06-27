@@ -12,6 +12,8 @@ import {
   LayoutGrid,
   List,
   Package,
+  Printer,
+  Loader2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +21,16 @@ import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+const isEtiquetasEnabled =
+  process.env.NEXT_PUBLIC_ETIQUETAS_MODULE_ENABLED === "true";
 
 import type { Order } from "@/app/interfaces/order.interface";
 import { OrderSkeleton } from "./order-skeleton";
@@ -85,6 +97,9 @@ export function OrdersList() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
   const [view, setView] = useOrdersView("gallery");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkSize, setBulkSize] = useState<"A4" | "THERMAL">("A4");
 
   // Debounce da busca → filtros (mesma cadência de hoje, 250ms).
   useEffect(() => {
@@ -102,6 +117,11 @@ export function OrdersList() {
   useEffect(() => {
     setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   }, [filters]);
+
+  // Limpa a seleção ao mudar filtros/página (ids podem sair da lista).
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [filters, pagination.page]);
 
   // Busca vinda da URL (?search=) preenche o campo (preservado do original).
   useEffect(() => {
@@ -135,6 +155,81 @@ export function OrdersList() {
     setSearchInput("");
     setFilters(DEFAULT_ORDER_FILTERS);
   }, []);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllOnPage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const all = orders.length > 0 && orders.every((o) => next.has(o.id));
+      if (all) orders.forEach((o) => next.delete(o.id));
+      else orders.forEach((o) => next.add(o.id));
+      return next;
+    });
+  };
+
+  // Lote: gera as etiquetas dos selecionados → recebe 1 PDF combinado (base64)
+  // + falhas parciais; abre o PDF para impressão. Gated pela flag.
+  const handleBulkLabels = async () => {
+    if (!session?.user?.email || bulkLoading) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/orders/shipping-labels/batch`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
+          body: JSON.stringify({ orderIds: ids, size: bulkSize }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const fails = Array.isArray(data?.failures)
+          ? data.failures.length
+          : ids.length;
+        showToast(
+          `${data?.error ?? "Não foi possível gerar as etiquetas"} (${fails} falha(s)).`,
+          "error",
+        );
+        return;
+      }
+      if (data?.pdfBase64) {
+        const bytes = Uint8Array.from(atob(data.pdfBase64), (c) =>
+          c.charCodeAt(0),
+        );
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank", "noopener,noreferrer");
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+      const failCount = Array.isArray(data?.failures)
+        ? data.failures.length
+        : 0;
+      showToast(
+        `${data?.count ?? 0} etiqueta(s) gerada(s)${
+          failCount ? `, ${failCount} falhou(aram)` : ""
+        }.`,
+        failCount ? "error" : "success",
+      );
+      setSelectedIds(new Set());
+    } catch {
+      showToast("Erro de conexão ao gerar etiquetas em lote.", "error");
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   const fetchOrders = useCallback(async () => {
     if (!session?.user?.email) {
@@ -416,6 +511,49 @@ export function OrdersList() {
         </div>
       </div>
 
+      {/* Barra de ações em massa: etiquetas em lote */}
+      {isEtiquetasEnabled && selectedIds.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+          <span className="text-sm text-muted-foreground">
+            {selectedIds.size} selecionado(s)
+          </span>
+          <Select
+            value={bulkSize}
+            onValueChange={(value) => setBulkSize(value as "A4" | "THERMAL")}
+            disabled={bulkLoading}
+          >
+            <SelectTrigger className="h-9 w-[160px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="A4">Etiqueta A4</SelectItem>
+              <SelectItem value="THERMAL">Térmica 10×15</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            onClick={handleBulkLabels}
+            disabled={bulkLoading}
+            className="gap-1.5"
+          >
+            {bulkLoading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Printer className="size-4" />
+            )}
+            {bulkLoading ? "Gerando..." : "Emitir etiquetas (lote)"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSelectedIds(new Set())}
+            disabled={bulkLoading}
+          >
+            Limpar
+          </Button>
+        </div>
+      ) : null}
+
       {/* Miolo: vitrine ou tabela */}
       {isLoading ? (
         view === "gallery" ? (
@@ -444,11 +582,28 @@ export function OrdersList() {
           </CardContent>
         </Card>
       ) : view === "gallery" ? (
-        <OrdersGalleryView orders={orders} onView={handleViewOrder} />
+        <OrdersGalleryView
+          orders={orders}
+          onView={handleViewOrder}
+          selectable={isEtiquetasEnabled}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+        />
       ) : (
         <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
           <CardContent className="pt-6">
-            <OrdersTableView orders={orders} onView={handleViewOrder} />
+            <OrdersTableView
+              orders={orders}
+              onView={handleViewOrder}
+              selectable={isEtiquetasEnabled}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onToggleAll={toggleSelectAllOnPage}
+              allSelected={
+                orders.length > 0 &&
+                orders.every((o) => selectedIds.has(o.id))
+              }
+            />
           </CardContent>
         </Card>
       )}
