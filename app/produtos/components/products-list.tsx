@@ -11,14 +11,13 @@ import {
 import {
   ChevronLeft,
   ChevronRight,
-  Eye,
   Filter,
+  LayoutGrid,
+  List,
   Loader2,
   Megaphone,
   Package,
   Pause,
-  PauseCircle,
-  Pencil,
   Play,
   QrCode,
   Search,
@@ -48,12 +47,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import {
@@ -71,12 +65,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  MARKETPLACE_LISTING_PLATFORMS,
-  resolveMarketplaceListingLinkState,
-  type MarketplaceListingLinkInput,
-  type MarketplaceListingPlatform,
-} from "@/app/lib/marketplace-listing-links";
+import { type MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-links";
 import { getApiBaseUrl } from "@/lib/api";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
 import {
@@ -111,57 +100,20 @@ import {
   BulkDeleteResultModal,
   type BulkDeleteProductResultView,
 } from "./bulk-delete-result-modal";
+import { ProductsGalleryView } from "./products-gallery-view";
+import { ProductsGallerySkeleton } from "./products-gallery-skeleton";
+import { ProductsListView } from "./products-list-view";
+import {
+  useProductsView,
+  type ProductsView,
+} from "@/app/produtos/hooks/use-products-view";
+import type { Product } from "@/app/produtos/lib/product-view-types";
 
 const BULK_DELETE_CHUNK_SIZE = 50;
 
 interface BulkDeleteResponseBody {
   results: BulkDeleteProductResultView[];
   summary: { total: number; deleted: number; failed: number };
-}
-
-type MarketplacePlatform = MarketplaceListingPlatform;
-type ProductListing = MarketplaceListingLinkInput & {
-  accountIds: string[];
-  categoryId?: string;
-};
-type Quality = "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO";
-
-interface Product {
-  id: string;
-  sku: string;
-  name: string;
-  description?: string | null;
-  price: number;
-  stock: number;
-  createdAt: string;
-  updatedAt: string;
-  costPrice?: number | null;
-  markup?: number | null;
-  brand?: string | null;
-  model?: string | null;
-  year?: string | null;
-  version?: string | null;
-  category?: string | null;
-  location?: string | null;
-  locationId?: string | null;
-  locationPath?: string | null; // caminho completo (read-only, vem enriquecido do backend)
-  partNumber?: string | null;
-  quality?: Quality | null;
-  isSecurityItem?: boolean;
-  isTraceable?: boolean;
-  sourceVehicle?: string | null;
-  imageUrl?: string | null;
-  imageUrls?: string[] | null;
-  mlCategoryId?: string | null;
-  shopeeCategoryId?: string | null;
-  createdFromMarketplace?: boolean;
-  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | null;
-  productLocation?: {
-    id: string;
-    code: string;
-    description?: string | null;
-  } | null;
-  listings?: ProductListing[];
 }
 
 interface Pagination {
@@ -198,20 +150,6 @@ const STATIC_FILTER_CACHE_TTL_MS = 15_000;
 type TimedCacheEntry<T> = {
   data: T;
   expiresAt: number;
-};
-
-const MARKETPLACE_ICONS: Record<
-  MarketplacePlatform,
-  { label: string; src: string }
-> = {
-  MERCADO_LIVRE: {
-    label: "Mercado Livre",
-    src: "/marketplaces/mercado-livre.svg",
-  },
-  SHOPEE: {
-    label: "Shopee",
-    src: "/marketplaces/shopee.svg",
-  },
 };
 
 const PUBLICATION_STATUS_OPTIONS: Array<{
@@ -394,218 +332,9 @@ async function loadProductFilterOptions(email: string, force = false) {
   return request;
 }
 
-type ProductPauseState =
-  | "all-active"
-  | "all-paused"
-  | "mixed"
-  | "no-actionable";
-
-// Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
-// app/lib/marketplace-listing-links.ts ("active" e "normal"). "paused"/"unlist"
-// contam como pausado. Outros (closed, under_review, error) caem em no-actionable.
-function computeProductPauseState(
-  listings: Product["listings"],
-): ProductPauseState {
-  if (!listings || listings.length === 0) return "no-actionable";
-
-  const publishable = listings.filter(
-    (l) =>
-      l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
-  );
-
-  if (publishable.length === 0) return "no-actionable";
-
-  let active = 0;
-  let paused = 0;
-  for (const l of publishable) {
-    const s = l.status?.toLowerCase();
-    if (s === "active" || s === "normal") active++;
-    else if (s === "paused" || s === "unlist") paused++;
-  }
-
-  if (active === publishable.length) return "all-active";
-  if (paused === publishable.length) return "all-paused";
-  if (active > 0 && paused > 0) return "mixed";
-
-  return "no-actionable";
-}
-
-function PauseListingsButton({
-  product,
-  state,
-  isPausing,
-  onTogglePause,
-}: {
-  product: Product;
-  state: ProductPauseState;
-  isPausing: boolean;
-  onTogglePause: (product: Product, status: "active" | "paused") => void;
-}) {
-  if (state === "no-actionable") return null;
-
-  if (state === "mixed") {
-    return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            title="Pausar/Despausar anúncios"
-            disabled={isPausing}
-          >
-            {isPausing ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <PauseCircle className="size-4" />
-            )}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => onTogglePause(product, "paused")}>
-            <Pause className="mr-2 size-4" />
-            Pausar todos
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onTogglePause(product, "active")}>
-            <Play className="mr-2 size-4" />
-            Despausar todos
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    );
-  }
-
-  const targetStatus: "active" | "paused" =
-    state === "all-active" ? "paused" : "active";
-  const Icon = state === "all-active" ? Pause : Play;
-  const title = state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
-  const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
-  const description =
-    state === "all-active"
-      ? `Pausar todos os anúncios publicados de "${product.name}"? Eles ficarão invisíveis nos marketplaces até serem despausados.`
-      : `Reativar todos os anúncios publicados de "${product.name}"? Eles voltarão a aparecer nos marketplaces.`;
-
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          title={title}
-          disabled={isPausing}
-        >
-          {isPausing ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Icon className="size-4" />
-          )}
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{`${confirmLabel} anúncios?`}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancelar</AlertDialogCancel>
-          <AlertDialogAction onClick={() => onTogglePause(product, targetStatus)}>
-            {confirmLabel}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-function MarketplaceBadges({
-  listings,
-  size = "md",
-  onOpenListings,
-}: {
-  listings?: Product["listings"];
-  size?: "sm" | "md";
-  onOpenListings?: (platform: MarketplacePlatform) => void;
-}) {
-  const groupedByPlatform = useMemo(() => {
-    const map = new Map<
-      MarketplacePlatform,
-      { count: number; anyOpenable: boolean }
-    >();
-
-    for (const listing of listings ?? []) {
-      if (!listing) continue;
-      const platform = listing.platform as MarketplacePlatform | undefined;
-      if (!platform || !MARKETPLACE_LISTING_PLATFORMS.includes(platform)) {
-        continue;
-      }
-      const current = map.get(platform) ?? { count: 0, anyOpenable: false };
-      current.count += 1;
-      if (
-        !current.anyOpenable &&
-        resolveMarketplaceListingLinkState(listing).isOpenable
-      ) {
-        current.anyOpenable = true;
-      }
-      map.set(platform, current);
-    }
-
-    return MARKETPLACE_LISTING_PLATFORMS.flatMap((platform) => {
-      const entry = map.get(platform);
-      return entry ? [{ platform, ...entry }] : [];
-    });
-  }, [listings]);
-
-  if (groupedByPlatform.length === 0) return null;
-
-  const imgClass = size === "sm" ? "h-4 w-auto" : "h-5 w-auto";
-  const chipClass =
-    size === "sm"
-      ? "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-[2px]"
-      : "inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1";
-  const interactiveClass =
-    "transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
-  const dimmedClass = "opacity-60";
-
-  return (
-    <div className="flex items-center gap-2">
-      {groupedByPlatform.map(({ platform, count, anyOpenable }) => {
-        const icon = MARKETPLACE_ICONS[platform];
-        const title =
-          count > 1
-            ? `${count} anúncios publicados no ${icon.label}`
-            : `Anúncio publicado no ${icon.label}`;
-
-        return (
-          <button
-            key={platform}
-            type="button"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onOpenListings?.(platform);
-            }}
-            className={`${chipClass} ${interactiveClass} ${
-              anyOpenable ? "" : dimmedClass
-            }`}
-            title={title}
-            aria-label={title}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={icon.src} alt={icon.label} className={imgClass} />
-            {count > 1 && (
-              <span className="text-xs font-medium leading-none text-muted-foreground">
-                {count}
-              </span>
-            )}
-            <span className="sr-only">{icon.label}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function ProductsList() {
   const { data: session, status } = useSession();
+  const [view, setView] = useProductsView("catalog");
   const [products, setProducts] = useState<Product[]>([]);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
@@ -1383,25 +1112,6 @@ export function ProductsList() {
     setIsEditDialogOpen(true);
   };
 
-  const formatPrice = (price: number) =>
-    new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    }).format(price);
-
-  const formatDate = (dateString: string) =>
-    new Intl.DateTimeFormat("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    }).format(new Date(dateString));
-
-  const getStockBadgeVariant = (stock: number) => {
-    if (stock === 0) return "destructive";
-    if (stock <= 10) return "warning";
-    return "success";
-  };
-
   const selectionCount = selectedIds.length;
   const allSelected = products.length > 0 && selectionCount === products.length;
   const isIndeterminate =
@@ -1897,7 +1607,11 @@ export function ProductsList() {
         </CardHeader>
         <CardContent>
           {isBootstrapping ? (
-            <ProductSkeleton />
+            view === "catalog" ? (
+              <ProductsGallerySkeleton />
+            ) : (
+              <ProductSkeleton />
+            )
           ) : (
             <div className="space-y-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -2083,6 +1797,21 @@ export function ProductsList() {
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
+
+                  <Tabs
+                    value={view}
+                    onValueChange={(value) => setView(value as ProductsView)}
+                    className="ml-auto"
+                  >
+                    <TabsList>
+                      <TabsTrigger value="catalog" aria-label="Catálogo">
+                        <LayoutGrid className="size-4" />
+                      </TabsTrigger>
+                      <TabsTrigger value="list" aria-label="Lista">
+                        <List className="size-4" />
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
                 </div>
               </div>
 
@@ -2093,377 +1822,44 @@ export function ProductsList() {
               >
                 {products.length > 0 ? (
                   <>
-                    <div className="hidden rounded-md border sm:block">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-12">
-                              <Checkbox
-                                aria-label="Selecionar todos os produtos desta página"
-                                checked={
-                                  allSelected
-                                    ? true
-                                    : isIndeterminate
-                                      ? "indeterminate"
-                                      : false
-                                }
-                                onCheckedChange={toggleSelectAll}
-                                disabled={isBulkDeleting || isBulkPausing}
-                              />
-                            </TableHead>
-                            <TableHead>Imagem</TableHead>
-                            <TableHead>SKU</TableHead>
-                            <TableHead>Nome</TableHead>
-                            <TableHead className="hidden md:table-cell">
-                              Marketplaces
-                            </TableHead>
-                            <TableHead className="hidden md:table-cell">
-                              Preço
-                            </TableHead>
-                            <TableHead>Estoque</TableHead>
-                            <TableHead className="hidden lg:table-cell">
-                              Localização
-                            </TableHead>
-                            <TableHead className="hidden lg:table-cell">
-                              Criado em
-                            </TableHead>
-                            <TableHead className="text-right">Ações</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {products.map((product) => (
-                            <TableRow
-                              key={product.id}
-                              data-state={
-                                selectedIds.includes(product.id)
-                                  ? "selected"
-                                  : undefined
-                              }
-                              className="cursor-pointer"
-                            >
-                              <TableCell>
-                                <Checkbox
-                                  aria-label={`Selecionar ${product.name}`}
-                                  checked={selectedIds.includes(product.id)}
-                                  onCheckedChange={(checked) =>
-                                    toggleSelectOne(product.id, checked)
-                                  }
-                                  disabled={isBulkDeleting || isBulkPausing}
-                                />
-                              </TableCell>
-                              <TableCell>
-                                {product.imageUrl ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => openProductLightbox(product)}
-                                    title="Ampliar imagem"
-                                    className="group relative h-24 w-24 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
-                                  >
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img
-                                      src={product.imageUrl}
-                                      alt={product.name}
-                                      loading="lazy"
-                                      decoding="async"
-                                      className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
-                                      onError={(event) => {
-                                        event.currentTarget.style.display =
-                                          "none";
-                                      }}
-                                    />
-                                  </button>
-                                ) : (
-                                  <div className="flex h-24 w-24 items-center justify-center rounded border bg-muted">
-                                    <Package className="h-12 w-12 text-muted-foreground" />
-                                  </div>
-                                )}
-                              </TableCell>
-                              <TableCell className="font-mono text-sm">
-                                {product.sku}
-                              </TableCell>
-                              <TableCell className="font-medium">
-                                <div>
-                                  <p>{product.name}</p>
-                                  {product.createdFromMarketplace &&
-                                    product.originPlatform && (
-                                      <Badge
-                                        variant="secondary"
-                                        className="mt-0.5 font-normal"
-                                      >
-                                        Origem: Anúncio{" "}
-                                        {product.originPlatform === "SHOPEE"
-                                          ? "Shopee"
-                                          : "Mercado Livre"}
-                                      </Badge>
-                                    )}
-                                  {product.description && (
-                                    <p
-                                      className="text-xs text-muted-foreground"
-                                      title={product.description}
-                                    >
-                                      {product.description.length > 80
-                                        ? `${product.description.slice(0, 80)}...`
-                                        : product.description}
-                                    </p>
-                                  )}
-                                </div>
-                              </TableCell>
-                              <TableCell className="hidden md:table-cell">
-                                <MarketplaceBadges
-                                  listings={product.listings}
-                                  onOpenListings={(platform) =>
-                                    setListingsDialog({ product, platform })
-                                  }
-                                />
-                              </TableCell>
-                              <TableCell className="hidden md:table-cell">
-                                {formatPrice(product.price)}
-                              </TableCell>
-                              <TableCell>
-                                <Badge
-                                  variant={getStockBadgeVariant(product.stock)}
-                                >
-                                  {product.stock} un.
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {product.locationPath ??
-                                  product.productLocation?.code ??
-                                  product.location ??
-                                  "—"}
-                              </TableCell>
-                              <TableCell className="hidden text-muted-foreground lg:table-cell">
-                                {formatDate(product.createdAt)}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex justify-end gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    title="Ver detalhes"
-                                    onClick={() => setViewProduct(product)}
-                                  >
-                                    <Eye className="size-4" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    title="Editar"
-                                    onClick={() => handleEditClick(product)}
-                                  >
-                                    <Pencil className="size-4" />
-                                  </Button>
-
-                                  <PauseListingsButton
-                                    product={product}
-                                    state={computeProductPauseState(
-                                      product.listings,
-                                    )}
-                                    isPausing={pausingIds.has(product.id)}
-                                    onTogglePause={handleTogglePause}
-                                  />
-
-                                  <AlertDialog>
-                                    <AlertDialogTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        title="Excluir"
-                                      >
-                                        <Trash2 className="size-4 text-destructive" />
-                                      </Button>
-                                    </AlertDialogTrigger>
-                                    <AlertDialogContent>
-                                      <AlertDialogHeader>
-                                        <AlertDialogTitle>
-                                          Excluir produto?
-                                        </AlertDialogTitle>
-                                        <AlertDialogDescription>
-                                          {`Tem certeza que deseja excluir o produto "${product.name}"? Esta ação é irreversível.`}
-                                        </AlertDialogDescription>
-                                      </AlertDialogHeader>
-                                      <AlertDialogFooter>
-                                        <AlertDialogCancel>
-                                          Cancelar
-                                        </AlertDialogCancel>
-                                        <AlertDialogAction
-                                          onClick={() =>
-                                            handleDelete(product.id)
-                                          }
-                                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                        >
-                                          Excluir
-                                        </AlertDialogAction>
-                                      </AlertDialogFooter>
-                                    </AlertDialogContent>
-                                  </AlertDialog>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-
-                    <div className="space-y-3 sm:hidden">
-                      {products.map((product) => (
-                        <div
-                          key={product.id}
-                          className="space-y-3 rounded-lg border bg-card p-4"
-                        >
-                          <div className="flex items-start gap-3">
-                            <Checkbox
-                              aria-label={`Selecionar ${product.name}`}
-                              className="mt-1"
-                              checked={selectedIds.includes(product.id)}
-                              onCheckedChange={(checked) =>
-                                toggleSelectOne(product.id, checked)
-                              }
-                              disabled={isBulkDeleting || isBulkPausing}
-                            />
-                            {product.imageUrl ? (
-                              <button
-                                type="button"
-                                onClick={() => openProductLightbox(product)}
-                                title="Ampliar imagem"
-                                className="group relative h-32 w-32 flex-shrink-0 overflow-hidden rounded border bg-transparent transition-shadow hover:shadow-md"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={product.imageUrl}
-                                  alt={product.name}
-                                  loading="lazy"
-                                  decoding="async"
-                                  className="absolute inset-0 h-full w-full object-cover transition-transform group-hover:scale-105"
-                                  onError={(event) => {
-                                    event.currentTarget.style.display = "none";
-                                  }}
-                                />
-                              </button>
-                            ) : (
-                              <div className="flex h-32 w-32 flex-shrink-0 items-center justify-center rounded border bg-muted">
-                                <Package className="h-16 w-16 text-muted-foreground" />
-                              </div>
-                            )}
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0 flex-1 space-y-1">
-                                  <p className="truncate font-medium">
-                                    {product.name}
-                                  </p>
-                                  <p className="font-mono text-xs text-muted-foreground">
-                                    {product.sku}
-                                  </p>
-                                  {product.createdFromMarketplace &&
-                                    product.originPlatform && (
-                                      <Badge
-                                        variant="secondary"
-                                        className="font-normal"
-                                      >
-                                        Origem: Anúncio{" "}
-                                        {product.originPlatform === "SHOPEE"
-                                          ? "Shopee"
-                                          : "Mercado Livre"}
-                                      </Badge>
-                                    )}
-                                  <MarketplaceBadges
-                                    listings={product.listings}
-                                    size="sm"
-                                    onOpenListings={(platform) =>
-                                      setListingsDialog({ product, platform })
-                                    }
-                                  />
-                                  {(product.locationPath ||
-                                    product.location ||
-                                    product.productLocation?.code) && (
-                                    <p className="text-xs text-muted-foreground">
-                                      {product.locationPath ??
-                                        product.productLocation?.code ??
-                                        product.location}
-                                    </p>
-                                  )}
-                                </div>
-                                <Badge
-                                  variant={getStockBadgeVariant(product.stock)}
-                                >
-                                  {product.stock} un.
-                                </Badge>
-                              </div>
-                              {product.description && (
-                                <p
-                                  className="mt-2 text-sm text-muted-foreground"
-                                  title={product.description}
-                                >
-                                  {product.description.length > 120
-                                    ? `${product.description.slice(0, 120)}...`
-                                    : product.description}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between border-t pt-2">
-                            <span className="text-lg font-semibold">
-                              {formatPrice(product.price)}
-                            </span>
-                            <div className="flex gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                title="Ver detalhes"
-                                onClick={() => setViewProduct(product)}
-                              >
-                                <Eye className="size-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                onClick={() => handleEditClick(product)}
-                              >
-                                <Pencil className="size-4" />
-                              </Button>
-
-                              <PauseListingsButton
-                                product={product}
-                                state={computeProductPauseState(
-                                  product.listings,
-                                )}
-                                isPausing={pausingIds.has(product.id)}
-                                onTogglePause={handleTogglePause}
-                              />
-
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="ghost" size="icon-sm">
-                                    <Trash2 className="size-4 text-destructive" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>
-                                      Excluir produto?
-                                    </AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      {`Tem certeza que deseja excluir o produto "${product.name}"? Esta ação é irreversível.`}
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>
-                                      Cancelar
-                                    </AlertDialogCancel>
-                                    <AlertDialogAction
-                                      onClick={() => handleDelete(product.id)}
-                                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                    >
-                                      Excluir
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                    {view === "catalog" ? (
+                      <ProductsGalleryView
+                        products={products}
+                        selectedIds={selectedIds}
+                        pausingIds={pausingIds}
+                        isBulkDeleting={isBulkDeleting}
+                        isBulkPausing={isBulkPausing}
+                        onToggleSelectOne={toggleSelectOne}
+                        onView={(product) => setViewProduct(product)}
+                        onEdit={handleEditClick}
+                        onDelete={handleDelete}
+                        onTogglePause={handleTogglePause}
+                        onOpenLightbox={openProductLightbox}
+                        onOpenListings={(product, platform) =>
+                          setListingsDialog({ product, platform })
+                        }
+                      />
+                    ) : (
+                      <ProductsListView
+                        products={products}
+                        selectedIds={selectedIds}
+                        pausingIds={pausingIds}
+                        allSelected={allSelected}
+                        isIndeterminate={isIndeterminate}
+                        isBulkDeleting={isBulkDeleting}
+                        isBulkPausing={isBulkPausing}
+                        onToggleSelectAll={toggleSelectAll}
+                        onToggleSelectOne={toggleSelectOne}
+                        onView={(product) => setViewProduct(product)}
+                        onEdit={handleEditClick}
+                        onDelete={handleDelete}
+                        onTogglePause={handleTogglePause}
+                        onOpenLightbox={openProductLightbox}
+                        onOpenListings={(product, platform) =>
+                          setListingsDialog({ product, platform })
+                        }
+                      />
+                    )}
 
                     {pagination.total > 0 && (
                       <div className="flex flex-wrap items-center justify-between gap-3 pt-4">
