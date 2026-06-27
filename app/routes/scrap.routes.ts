@@ -242,6 +242,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           financials: wants.includes("financials"),
           products: wants.includes("products"),
           history: wants.includes("history"),
+          manualSales: wants.includes("manualSales"),
         });
         if (!scrap) {
           return reply.status(404).send({ error: "Sucata não encontrada" });

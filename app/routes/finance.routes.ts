@@ -5,6 +5,29 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { FinanceRepository } from "../repositories/finance.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { ReceiptPdfService } from "../financeiro/generators/receipt-pdf.service";
+import prisma from "../lib/prisma";
+import { resolveProductivityRange } from "../lib/team-productivity";
+import {
+  aggregateFinanceReport,
+  type FinanceEntryInput,
+  type FinanceStatusRaw,
+} from "../lib/finance-report";
+import { renderFinanceReport } from "../reports/finance-report";
+import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
+
+function fmtDateTimeBR(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(
+    d.getHours(),
+  )}:${p(d.getMinutes())}`;
+}
+
+function toNum(x: unknown): number {
+  if (x == null) return 0;
+  if (typeof x === "number") return x;
+  const anyx = x as { toNumber?: () => number };
+  return typeof anyx.toNumber === "function" ? anyx.toNumber() : Number(x);
+}
 
 export const financeRoutes = async (fastify: FastifyInstance) => {
   const useCase = new FinanceUseCase();
@@ -46,9 +69,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         return reply.status(500).send({
           error:
-            error instanceof Error
-              ? error.message
-              : "Erro ao buscar produtos",
+            error instanceof Error ? error.message : "Erro ao buscar produtos",
         });
       }
     },
@@ -99,6 +120,26 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           error:
             error instanceof Error ? error.message : "Erro ao listar registros",
         });
+      }
+    };
+
+  // GET /:id — entry único COM itens (receivable). Usado pela edição para
+  // carregar os itens já cadastrados (a lista NÃO os traz, por egress). Sem
+  // isso, ao adicionar um item na edição o update faria "replace" e apagaria
+  // os itens pré-existentes (perda de dados + total recalculado errado).
+  const buildGetHandler =
+    (kind: FinanceKind) =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const entry = await useCase.findById(kind, id, userId);
+        return reply.status(200).send({ entry });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao buscar registro";
+        const status = message.includes("não encontrado") ? 404 : 500;
+        return reply.status(status).send({ error: message });
       }
     };
 
@@ -193,6 +234,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     buildCreateHandler("receivable"),
   );
+  fastify.get(
+    "/receivables/:id",
+    { preHandler: [authMiddleware] },
+    buildGetHandler("receivable"),
+  );
   fastify.put(
     "/receivables/:id",
     { preHandler: [authMiddleware] },
@@ -250,10 +296,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const draft = await useCase.createFiscalDraftFromReceivable(
-          id,
-          userId,
-        );
+        const draft = await useCase.createFiscalDraftFromReceivable(id, userId);
         return reply.status(201).send({ draft });
       } catch (error) {
         const message =
@@ -329,6 +372,11 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     buildCreateHandler("payable"),
   );
+  fastify.get(
+    "/payables/:id",
+    { preHandler: [authMiddleware] },
+    buildGetHandler("payable"),
+  );
   fastify.put(
     "/payables/:id",
     { preHandler: [authMiddleware] },
@@ -343,5 +391,112 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     "/payables/:id",
     { preHandler: [authMiddleware] },
     buildDeleteHandler("payable"),
+  );
+
+  /**
+   * GET /finance/report.pdf
+   * Relatório PDF (A4) do período: contas a pagar, a receber e VENDA BALCÃO
+   * (conta a receber COM itens). Escopo = dono (dataOwnerId), respeita o filtro
+   * de unidade. Período por `createdAt` (lançamentos do período); a situação
+   * (recebido/pendente/vencido) é recalculada no momento, igual ao FinanceUseCase.
+   * Querystring: startDate, endDate ("YYYY-MM-DD"/ISO; default 30 dias), unidadeId.
+   * Leitura PURA + render @react-pdf; streama como download.
+   */
+  fastify.get(
+    "/report.pdf",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string | undefined;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveProductivityRange(q.startDate, q.endDate);
+        const unidadeId = q.unidadeId || undefined;
+
+        const whereBase = {
+          userId,
+          status: { not: PrismaFinanceStatus.CANCELADA },
+          createdAt: { gte: range.startDate, lte: range.endDate },
+          ...(unidadeId ? { unidadeId } : {}),
+        };
+
+        const [receivables, payables, owner] = await Promise.all([
+          prisma.receivable.findMany({
+            where: whereBase,
+            select: {
+              totalAmount: true,
+              status: true,
+              dueDate: true,
+              paymentMethod: true,
+              createdAt: true,
+              _count: { select: { items: true } },
+            },
+          }),
+          prisma.payable.findMany({
+            where: whereBase,
+            select: {
+              totalAmount: true,
+              status: true,
+              dueDate: true,
+              paymentMethod: true,
+              createdAt: true,
+            },
+          }),
+          prisma.user.findUnique({
+            where: { id: userId },
+            select: { name: true, email: true },
+          }),
+        ]);
+
+        const mapEntry = (
+          e: {
+            totalAmount: unknown;
+            status: string;
+            dueDate: Date;
+            paymentMethod: string | null;
+            createdAt: Date;
+          },
+          hasItems?: boolean,
+        ): FinanceEntryInput => ({
+          totalAmount: toNum(e.totalAmount),
+          status: e.status as FinanceStatusRaw,
+          dueDate: e.dueDate,
+          paymentMethod: e.paymentMethod,
+          createdAt: e.createdAt,
+          hasItems,
+        });
+
+        const result = aggregateFinanceReport(
+          receivables.map((r) => mapEntry(r, (r._count?.items ?? 0) > 0)),
+          payables.map((p) => mapEntry(p)),
+          range,
+          new Date(),
+        );
+
+        const pdf = await renderFinanceReport({
+          company: owner?.name || owner?.email || "Sua empresa",
+          generatedAtLabel: fmtDateTimeBR(new Date()),
+          range: {
+            startDate: range.startDate.toISOString(),
+            endDate: range.endDate.toISOString(),
+            label: range.label,
+          },
+          result,
+        });
+
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header(
+            "Content-Disposition",
+            'attachment; filename="relatorio-financeiro-dexo.pdf"',
+          )
+          .send(pdf);
+      } catch (error) {
+        console.error("Erro finance report:", error);
+        return reply.status(500).send({ error: "Erro ao gerar o relatório" });
+      }
+    },
   );
 };

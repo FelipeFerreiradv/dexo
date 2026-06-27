@@ -72,7 +72,9 @@ function toEntry(raw: any): FinanceEntry {
     items: Array.isArray(raw.items)
       ? raw.items.map((i: any) => ({
           id: i.id,
-          productId: i.productId,
+          productId: i.productId ?? null,
+          description: i.description ?? null,
+          scrapId: i.scrapId ?? null,
           listingId: i.listingId ?? null,
           quantity: i.quantity,
           unitPrice: Number(i.unitPrice),
@@ -86,9 +88,15 @@ function toEntry(raw: any): FinanceEntry {
 }
 
 // Include de itens (somente receivable). Não-receivable ignora.
+// NB: o `scrapId` (escalar) já vem na linha do ReceivableItem e é o que a
+// agregação/reconcile usam; NÃO fazemos JOIN com Scrap aqui — nenhum consumidor
+// de findById/findItems exibe o rótulo da sucata (edição não recarrega itens;
+// cupom/fiscal usam só product). Evita egress desnecessário.
 const itemsInclude = {
   orderBy: { createdAt: "asc" as const },
-  include: { product: { select: { id: true, sku: true, name: true } } },
+  include: {
+    product: { select: { id: true, sku: true, name: true } },
+  },
 };
 
 function buildInclude(kind: FinanceKind, withItems: boolean): any {
@@ -204,7 +212,9 @@ export class FinanceRepository {
     await (tx as any).receivableItem.createMany({
       data: data.items!.map((it) => ({
         receivableId: created.id,
-        productId: it.productId,
+        productId: it.productId ?? null,
+        description: it.description ?? null,
+        scrapId: it.scrapId ?? null,
         listingId: it.listingId ?? null,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -308,7 +318,9 @@ export class FinanceRepository {
       await (tx as any).receivableItem.createMany({
         data: items.map((it) => ({
           receivableId: id,
-          productId: it.productId,
+          productId: it.productId ?? null,
+          description: it.description ?? null,
+          scrapId: it.scrapId ?? null,
           listingId: it.listingId ?? null,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -347,11 +359,15 @@ export class FinanceRepository {
     const rows = await prisma.receivableItem.findMany({
       where: { receivableId, receivable: { userId } },
       orderBy: { createdAt: "asc" },
-      include: { product: { select: { id: true, sku: true, name: true } } },
+      include: {
+        product: { select: { id: true, sku: true, name: true } },
+      },
     });
     return rows.map((i: any) => ({
       id: i.id,
-      productId: i.productId,
+      productId: i.productId ?? null,
+      description: i.description ?? null,
+      scrapId: i.scrapId ?? null,
       listingId: i.listingId ?? null,
       quantity: i.quantity,
       unitPrice: Number(i.unitPrice),

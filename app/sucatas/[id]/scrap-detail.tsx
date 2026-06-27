@@ -72,6 +72,13 @@ interface ScrapHistoryEvent {
   createdAt: string;
 }
 
+interface ScrapManualSale {
+  description: string | null;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+}
+
 interface ScrapDetailData {
   id: string;
   brand: string;
@@ -97,6 +104,7 @@ interface ScrapDetailData {
   financials?: ScrapFinancials;
   products?: ScrapPart[];
   history?: ScrapHistoryEvent[];
+  manualSales?: ScrapManualSale[];
 }
 
 const moneyFmt = new Intl.NumberFormat("pt-BR", {
@@ -217,7 +225,7 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
     if (!email) return;
     try {
       const res = await fetch(
-        `${getApiBaseUrl()}/scraps/${encodeURIComponent(scrapId)}?include=financials,products,history`,
+        `${getApiBaseUrl()}/scraps/${encodeURIComponent(scrapId)}?include=financials,products,history,manualSales`,
         { headers: { email } },
       );
       if (res.status === 404) {
@@ -631,6 +639,50 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Vendas avulsas — itens MANUAIS (sem produto) vinculados a este lote.
+          Tabela própria, separada de "Peças do lote": não afeta a contagem de
+          peças. Só aparece quando há vendas avulsas. */}
+      {data.manualSales && data.manualSales.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wallet className="size-4" />
+              Vendas avulsas deste lote ({data.manualSales.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Itens vendidos no balcão sem produto cadastrado, atribuídos a este
+              lote. A receita já está somada na Receita Realizada (Balcão).
+            </p>
+            <div className="min-w-0 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">Descrição</th>
+                    <th className="pb-2 pr-4 font-medium">Qtd</th>
+                    <th className="pb-2 pr-4 font-medium">Preço un.</th>
+                    <th className="pb-2 font-medium">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {data.manualSales.map((s, i) => (
+                    <tr key={i}>
+                      <td className="py-2 pr-4 font-medium">
+                        {s.description || "Item avulso"}
+                      </td>
+                      <td className="py-2 pr-4">{s.quantity}</td>
+                      <td className="py-2 pr-4">{price(s.unitPrice)}</td>
+                      <td className="py-2">{price(s.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Histórico de movimentação (diferencial F) */}
       <Card>

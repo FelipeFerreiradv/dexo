@@ -6,6 +6,7 @@ import {
   ScrapListOptions,
   ScrapPipeline,
   ScrapPart,
+  ScrapManualSale,
   ScrapStatusEventDTO,
 } from "../interfaces/scrap.interface";
 import prisma from "../lib/prisma";
@@ -324,9 +325,9 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         ) AS marketplace,
         (SELECT COALESCE(SUM(ri."unitPrice" * ri."quantity"), 0)::float8
            FROM "ReceivableItem" ri
-           JOIN "Product" p ON p."id" = ri."productId"
+           LEFT JOIN "Product" p ON p."id" = ri."productId"
            JOIN "Receivable" r ON r."id" = ri."receivableId"
-           WHERE p."scrapId" = ${scrapId}
+           WHERE COALESCE(ri."scrapId", p."scrapId") = ${scrapId}
              AND r."status"::text = 'PAGA'
              AND r."userId" = ${userId}
         ) AS counter,
@@ -335,6 +336,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
            JOIN "Scrap" s ON s."id" = p."scrapId"
            WHERE p."scrapId" = ${scrapId}
              AND s."userId" = ${userId}
+             AND p."userId" = ${userId}
              AND p."stock" > 0
         ) AS potential
     `);
@@ -353,7 +355,10 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
   // Sem N+1: 1 findMany + 2 groupBy agregados.
   async getScrapParts(scrapId: string, userId: string): Promise<ScrapPart[]> {
     const products = await prisma.product.findMany({
-      where: { scrapId },
+      // userId além de scrapId: defense-in-depth contra produto de outro tenant
+      // apontando para esta sucata (Product.scrapId não garante Product.userId
+      // == Scrap.userId). Para dados legítimos é no-op (mesmo dono).
+      where: { scrapId, userId },
       select: {
         id: true,
         name: true,
@@ -398,6 +403,10 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
       soldBy.set(r.productId, r._sum.quantity ?? 0);
     }
     for (const r of counterSold) {
+      // productId virou nulável no schema (itens manuais). O groupBy já filtra
+      // productId IN ids (subconjunto não-nulo), mas o tipo agora é
+      // string | null — narrow defensivo para satisfazer o Map<string, number>.
+      if (r.productId == null) continue;
       soldBy.set(
         r.productId,
         (soldBy.get(r.productId) ?? 0) + (r._sum.quantity ?? 0),
@@ -416,6 +425,44 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
       isSecurityItem: p.isSecurityItem ?? false,
       isTraceable: p.isTraceable ?? false,
       soldQuantity: soldBy.get(p.id) ?? 0,
+    }));
+  }
+
+  // Vendas avulsas (itens MANUAIS, sem produto cadastrado) atribuídas
+  // diretamente a esta sucata via ReceivableItem.scrapId, em contas PAGA.
+  // Restringir a `productId IS NULL` mantém este conjunto DISJUNTO das peças
+  // cadastradas (getScrapParts) — um item manual nunca aparece na tabela de
+  // peças e vice-versa. Display-only: a receita já está somada no `counter`
+  // de getScrapMoney (não há dupla contagem). Para productId NULL,
+  // COALESCE(ri.scrapId, p.scrapId) colapsa em ri.scrapId — o predicado é
+  // escrito direto, sem JOIN com Product. scrapId já restringe ao tenant; o
+  // filtro r.userId reforça o escopo.
+  async getScrapManualSales(
+    scrapId: string,
+    userId: string,
+  ): Promise<ScrapManualSale[]> {
+    const rows = await prisma.$queryRaw<
+      { description: string | null; quantity: number; unitPrice: number; total: number }[]
+    >(Prisma.sql`
+      SELECT
+        ri."description"                          AS description,
+        ri."quantity"                             AS quantity,
+        ri."unitPrice"::float8                    AS "unitPrice",
+        (ri."unitPrice" * ri."quantity")::float8  AS total
+      FROM "ReceivableItem" ri
+      JOIN "Receivable" r ON r."id" = ri."receivableId"
+      WHERE ri."productId" IS NULL
+        AND ri."scrapId" = ${scrapId}
+        AND r."status"::text = 'PAGA'
+        AND r."userId" = ${userId}
+      ORDER BY ri."createdAt" DESC
+    `);
+
+    return rows.map((r) => ({
+      description: r.description ?? null,
+      quantity: Number(r.quantity) || 0,
+      unitPrice: Number(r.unitPrice) || 0,
+      total: Number(r.total) || 0,
     }));
   }
 

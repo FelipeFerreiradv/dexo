@@ -4,9 +4,11 @@ import type { Metadata } from "next";
 
 import { authOptions } from "./lib/auth";
 import { getApiBaseUrl, authHeaders } from "@/lib/api";
+import { PageHeader } from "@/components/page-header";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
 import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
+import { DashboardReportButton } from "@/components/dashboard/dashboard-report-button";
 import {
   CountryGrid,
   type AccountStat,
@@ -250,24 +252,21 @@ export default async function Home() {
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6 pb-10">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-1">
-          <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-            Painel executivo
-          </p>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            Visão de desempenho
-          </h1>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="rounded-full border border-border/60 bg-muted/30 px-3 py-1 font-medium text-foreground">
-            Dados em tempo real
-          </span>
-          <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 sm:inline">
-            {activeIntegrations.length} integrações
-          </span>
-        </div>
-      </header>
+      <PageHeader
+        eyebrow="Painel executivo"
+        title="Visão de desempenho"
+        pills={
+          <>
+            <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 text-xs font-medium text-foreground sm:inline">
+              Dados em tempo real
+            </span>
+            <span className="hidden rounded-full border border-border/60 bg-muted/30 px-3 py-1 text-xs text-muted-foreground lg:inline">
+              {activeIntegrations.length} integrações
+            </span>
+          </>
+        }
+        actions={<DashboardReportButton />}
+      />
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {metricCards.map((metric) => (

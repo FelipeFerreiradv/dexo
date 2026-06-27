@@ -158,6 +158,11 @@ export function FinanceDialog({
     Record<string, ProductMeta>
   >({});
 
+  // ScrapMeta (rótulo legível por scrapId) — mesmo motivo do productMeta:
+  // sobrevive à navegação entre steps. Seedado de initialData.items[].scrap e
+  // atualizado ao selecionar uma sucata no ProductPickerBlock.
+  const [scrapMeta, setScrapMeta] = useState<Record<string, string>>({});
+
   // Fase 8: items em tempo real para gatear o botão de cupom fiscal (só faz
   // sentido oferecer quando a conta tem itens vinculados). useWatch garante
   // re-render quando o usuário adiciona/remove no ProductPickerBlock.
@@ -191,6 +196,9 @@ export function FinanceDialog({
       } else {
         setProductMeta({});
       }
+      // scrapMeta (rótulos de sucata) é populado em tempo real pelo
+      // ProductPickerBlock durante a criação; reseta ao (re)abrir.
+      setScrapMeta({});
     }
   }, [open, initialData, reset, balcaoEnabled]);
 
@@ -247,13 +255,23 @@ export function FinanceDialog({
       // payable), garantimos que nenhum `items` vaze pro backend. O backend
       // já é tolerante (validateItems é no-op se ausente), mas o payload
       // fica idêntico ao da Fase 1.
+      // A conta foi aberta JÁ com itens? (edição de venda balcão). Distingue
+      // "nunca teve itens" de "usuário removeu todos": no 2º caso precisamos
+      // ENVIAR items:[] para o backend apagar os existentes (replace/deleteMany),
+      // senão a remoção seria silenciosamente ignorada (updateSingle preserva).
+      const hadItems =
+        Array.isArray((initialData as any)?.items) &&
+        (initialData as any).items.length > 0;
       if (!balcaoEnabled) {
         delete payload.items;
       } else if (
         Array.isArray((payload as any).items) &&
-        (payload as any).items.length === 0
+        (payload as any).items.length === 0 &&
+        !(isEdit && hadItems)
       ) {
-        // items: [] equivale a "sem items" — não enviar reduz ruído.
+        // items: [] sem itens prévios = "sem items" — não enviar reduz ruído.
+        // (Se a conta TINHA itens e o usuário removeu todos, mantemos o [] no
+        // payload para o backend limpar os itens.)
         delete payload.items;
       }
       const basePath =
@@ -400,6 +418,8 @@ export function FinanceDialog({
                 setProductMeta={
                   balcaoEnabled ? setProductMeta : undefined
                 }
+                scrapMeta={balcaoEnabled ? scrapMeta : undefined}
+                setScrapMeta={balcaoEnabled ? setScrapMeta : undefined}
               />
             )}
             {currentStep === 3 && (

@@ -1481,7 +1481,7 @@ export function ProductsList() {
     ? "Nenhum produto encontrado"
     : "Nenhum produto cadastrado";
   const emptyStateMessage = hasActiveSearch
-    ? "Nenhum produto corresponde à sua pesquisa. Tente outras palavras."
+    ? `Nenhum produto encontrado para "${filters.search.trim()}". Tente outras palavras.`
     : activeFilters
       ? "Nenhum produto corresponde aos filtros aplicados. Ajuste os critérios ou limpe os filtros para ampliar o catálogo."
       : "Comece adicionando seu primeiro produto ao catálogo.";

@@ -17,7 +17,11 @@ import {
   parseProductListingCategoryValue,
 } from "../lib/product-listing-category";
 import { normalizeSku } from "../lib/sku";
-import { tokenizeSearch, reduceVariants } from "./product-search-terms";
+import {
+  tokenizeSearch,
+  reduceVariants,
+  isCodeLikeQuery,
+} from "./product-search-terms";
 
 const LOW_STOCK_THRESHOLD = 10;
 const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
@@ -845,6 +849,24 @@ class ProductRepositoryPrisma implements ProductRepository {
             }))
         : [];
 
+      // Tenant guard: se um scrapId for informado, a sucata DEVE pertencer ao
+      // mesmo userId do produto. Product.scrapId é FK p/ Scrap sem garantir
+      // Product.userId == Scrap.userId — sem esta checagem, um payload forjado
+      // poderia vincular o produto à sucata de OUTRO tenant (poluindo as
+      // agregações daquela sucata: getScrapParts/getScrapMoney/reconcile). No-op
+      // para produtos legítimos (mesmo dono). "inválido" → 400 no route handler.
+      if (data.scrapId && data.userId) {
+        const ownsScrap = await prisma.scrap.findFirst({
+          where: { id: data.scrapId, userId: data.userId },
+          select: { id: true },
+        });
+        if (!ownsScrap) {
+          throw new Error(
+            "Vínculo de sucata inválido: sucata não encontrada para este usuário",
+          );
+        }
+      }
+
       const result = await prisma.product.create({
         data: {
           userId: data.userId ?? null,
@@ -1062,8 +1084,16 @@ class ProductRepositoryPrisma implements ProductRepository {
     const search = (filters?.search ?? "").trim();
     const baseWhere = this.buildBaseWhere(filters, userId);
 
-    if (search && /^[0-9]+$/.test(search)) {
-      const whereExact = combineWhereClauses(baseWhere, { sku: search });
+    // Match exato de SKU para buscas que "parecem um código" (numéricas como
+    // "043" ou alfanuméricas como "ABC-1"). Casamos por skuNormalized
+    // (= trim().toLowerCase(), case-insensitive) E pelo sku cru (cobre linhas
+    // antigas/importadas sem skuNormalized) — superset do antigo `{ sku }`,
+    // então é zero-regressão para o caso numérico.
+    if (search && isCodeLikeQuery(search)) {
+      const normalized = normalizeSku(search);
+      const whereExact = combineWhereClauses(baseWhere, {
+        OR: normalized ? [{ sku: search }, { skuNormalized: normalized }] : [{ sku: search }],
+      });
       const [items, total] = await Promise.all([
         prisma.product.findMany({
           where: whereExact,
@@ -1076,8 +1106,10 @@ class ProductRepositoryPrisma implements ProductRepository {
       ]);
 
       // Match exato de SKU tem prioridade. Mas se NÃO houver SKU exato, não
-      // retorna vazio: cai para a busca fuzzy abaixo (partNumber/modelo/nome) —
+      // retorna vazio: cai para o Tier 1 abaixo (partNumber/modelo/nome) —
       // essencial para buscas numéricas de número de peça / modelo (ex.: "208").
+      // O que MUDA vs. antes: um código sem match de Tier 1 NÃO cai mais no
+      // fuzzy (ver guard code-like antes do Tier 2) — vira "não encontrado".
       if (total > 0) {
         return {
           products: items.map((it) =>
@@ -1120,8 +1152,19 @@ class ProductRepositoryPrisma implements ProductRepository {
           // dicionário: cai para o fuzzy (recall) abaixo, tolerando "molla"→"mola".
         }
 
+        // Buscas code-like (SKU / código) NUNCA entram no fuzzy trigram: se
+        // chegaram aqui é porque não houve match exato (acima) nem no Tier 1 →
+        // é um código inexistente → vazio ("produto não encontrado"), em vez
+        // dos SKUs aleatórios que o similarity() de threshold frouxo trazia.
+        // "208" não é afetado (casa no Tier 1 via partNumber/model); "molla"
+        // não é code-like (alfabético puro) → segue para o fuzzy abaixo.
+        if (isCodeLikeQuery(search)) {
+          return { products: [], total: 0 };
+        }
+
         // Tier 2 — recall: fuzzy legado (frase inteira + similarity trigram).
-        // Alcançado só com 1 grupo de token (ou 0 grupos: ex.: só stopword).
+        // Alcançado só com 1 grupo de token alfabético (ou 0 grupos: ex.: só
+        // stopword) — tolerância a digitação ("molla"→"mola").
         return await this.runLegacyFuzzySearch({
           search,
           baseSqlWhere,

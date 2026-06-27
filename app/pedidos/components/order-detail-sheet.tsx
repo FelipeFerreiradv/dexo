@@ -14,7 +14,9 @@ import {
   Loader2,
   MapPin,
   Printer,
+  ExternalLink,
 } from "lucide-react";
+import Image from "next/image";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
@@ -26,15 +28,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-
 import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
 import { getApiBaseUrl } from "@/lib/api";
 
@@ -72,6 +65,33 @@ const formatDateTime = (value: Date | string) =>
     dateStyle: "short",
     timeStyle: "short",
   });
+
+/**
+ * Miniatura do item no detalhe: foto via next/image (otimizador global
+ * desligado) com fallback neutro (`Package`) quando não há imagem ou ela falha.
+ */
+function ItemThumb({ src, alt }: { src: string | null; alt: string }) {
+  const [error, setError] = useState(false);
+  const showImage = Boolean(src) && !error;
+  return (
+    <div className="relative size-20 shrink-0 overflow-hidden rounded-xl bg-muted sm:size-24">
+      {showImage ? (
+        <Image
+          src={src as string}
+          alt={alt}
+          fill
+          sizes="96px"
+          className="object-cover"
+          onError={() => setError(true)}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center">
+          <Package className="size-6 text-muted-foreground" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function OrderDetailSheet({
   order,
@@ -522,36 +542,36 @@ export function OrderDetailSheet({
                 </Badge>
               </div>
 
-              <div className="p-4">
+              <div className="space-y-3 p-4">
                 {order.items?.length ? (
-                  <Table className="[&_th]:text-xs">
-                    <TableHeader className="bg-muted/40">
-                      <TableRow>
-                        <TableHead>Produto</TableHead>
-                        <TableHead>SKU</TableHead>
-                        <TableHead>Localização</TableHead>
-                        <TableHead>Quantidade</TableHead>
-                        <TableHead>Preço Unitário</TableHead>
-                        <TableHead>Total</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {order.items.map((item) => {
-                        const locationLabel =
-                          item.product?.productLocation?.code ??
-                          item.product?.location ??
-                          null;
-                        const locationDescription =
-                          item.product?.productLocation?.description ?? null;
-                        return (
-                          <TableRow key={item.id} className="hover:bg-muted/40">
-                            <TableCell className="font-medium text-foreground">
-                              {item.product?.name || "Produto não encontrado"}
-                            </TableCell>
-                            <TableCell className="font-mono text-xs text-muted-foreground">
-                              {item.product?.sku || "N/A"}
-                            </TableCell>
-                            <TableCell className="text-xs">
+                  order.items.map((item) => {
+                    const locationLabel =
+                      item.product?.productLocation?.code ??
+                      item.product?.location ??
+                      null;
+                    const locationDescription =
+                      item.product?.productLocation?.description ?? null;
+                    const productName =
+                      item.product?.name || "Produto não encontrado";
+                    const permalink = item.listing?.permalink ?? null;
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex flex-col gap-4 rounded-xl border border-border/60 bg-card p-3 transition hover:border-primary/40 sm:flex-row sm:items-center"
+                      >
+                        <div className="flex items-start gap-3 sm:flex-1">
+                          <ItemThumb
+                            src={item.product?.imageUrl ?? null}
+                            alt={productName}
+                          />
+                          <div className="min-w-0 space-y-1.5">
+                            <p className="font-semibold leading-snug text-foreground">
+                              {productName}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-mono text-muted-foreground">
+                                {item.product?.sku || "N/A"}
+                              </span>
                               {locationLabel ? (
                                 <span
                                   className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 font-medium text-foreground"
@@ -560,22 +580,50 @@ export function OrderDetailSheet({
                                   <MapPin className="size-3 text-muted-foreground" />
                                   {locationLabel}
                                 </span>
-                              ) : (
-                                <span className="text-muted-foreground">—</span>
-                              )}
-                            </TableCell>
-                            <TableCell>{item.quantity}</TableCell>
-                            <TableCell>
+                              ) : null}
+                            </div>
+                            {permalink ? (
+                              <a
+                                href={permalink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                              >
+                                <ExternalLink className="size-3" />
+                                Ver anúncio
+                              </a>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center justify-between gap-5 border-t border-border/60 pt-3 sm:justify-end sm:border-t-0 sm:pt-0">
+                          <div className="text-center">
+                            <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                              Qtd
+                            </p>
+                            <p className="text-sm font-medium text-foreground">
+                              {item.quantity}
+                            </p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                              Preço Unit.
+                            </p>
+                            <p className="text-sm font-medium text-foreground">
                               {formatCurrency(item.unitPrice)}
-                            </TableCell>
-                            <TableCell>
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                              Total
+                            </p>
+                            <p className="text-sm font-semibold text-foreground">
                               {formatCurrency(item.quantity * item.unitPrice)}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
                 ) : (
                   <div className="flex items-center gap-2 rounded-xl border border-dashed border-border/70 bg-muted/40 p-4 text-sm text-muted-foreground">
                     <Package className="size-4" />

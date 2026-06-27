@@ -15,8 +15,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -55,81 +55,89 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
+/*
+ * Identidade visual Dexo — Manual de Marca (Ed. 01 · 2026).
+ * Base quente Pergaminho/Creme · Petróleo Profundo no lugar do preto puro ·
+ * Amarelo Sinalização como assinatura/CTA · Verde Operação para sucesso ·
+ * paleta da marca nos gráficos (no lugar do azul padrão). Apenas tokens —
+ * nenhuma mudança de lógica/fluxo nos componentes (todos consomem estas vars).
+ */
 :root {
-  --background: oklch(0.96059 0.00265 106.45);
-  --foreground: oklch(0.15907 0 89.88);
-  --card: oklch(0.96059 0.00265 106.45);
-  --card-foreground: oklch(0.15907 0 89.88);
-  --popover: oklch(0.96059 0.00265 106.45);
-  --popover-foreground: oklch(0.15907 0 89.88);
-  --primary: oklch(0.85052 0.17398 94.84);
-  --primary-foreground: oklch(0.15907 0 89.88);
-  --secondary: oklch(0.89719 0.18922 104.36);
-  --secondary-foreground: oklch(0.15907 0 89.88);
-  --muted: oklch(0.89606 0.12582 98.56);
-  --muted-foreground: oklch(0.15907 0 89.88);
-  --accent: oklch(0.89719 0.18922 104.36);
-  --accent-foreground: oklch(0.15907 0 89.88);
+  --background: #f2ede2; /* Pergaminho Técnico — fundo base */
+  --foreground: #0e1f2a; /* Petróleo Profundo — substitui o preto puro */
+  --card: #fbf7ee; /* Creme Catálogo — cartões "levantam" do fundo */
+  --card-foreground: #0e1f2a;
+  --popover: #fbf7ee;
+  --popover-foreground: #0e1f2a;
+  --primary: #f2c419; /* Amarelo Sinalização — assinatura / CTA */
+  --primary-foreground: #0e1f2a;
+  --secondary: #e8dfca; /* Bege Manual — chip/superfície sutil (não mais amarelo) */
+  --secondary-foreground: #0e1f2a;
+  --muted: #e8dfca; /* Bege Manual */
+  --muted-foreground: #3f4a52; /* Aço — texto secundário quente e legível */
+  --accent: #e8ddc4; /* Bege levemente mais profundo — superfície de hover */
+  --accent-foreground: #0e1f2a;
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(1 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.81 0.1 252);
-  --chart-2: oklch(0.62 0.19 260);
-  --chart-3: oklch(0.55 0.22 263);
-  --chart-4: oklch(0.49 0.22 264);
-  --chart-5: oklch(0.42 0.18 266);
+  --destructive-foreground: #ffffff;
+  --border: #ddd3bd; /* borda quente (areia) */
+  --input: #d6ccb4;
+  --ring: #1b3a4d; /* foco Petróleo Médio */
+  --chart-1: #f2c419; /* Amarelo Sinalização */
+  --chart-2: #2c5f4f; /* Verde Operação */
+  --chart-3: #1b3a4d; /* Petróleo Médio */
+  --chart-4: #7b8590; /* Aço Claro */
+  --chart-5: #7fa395; /* Verde Claro */
   --radius: 0.5rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* Sidebar Imersiva — Petróleo Profundo com texto creme e ativo amarelo */
+  --sidebar: #0e1f2a;
+  --sidebar-foreground: #f2ede2;
+  --sidebar-primary: #f2c419;
+  --sidebar-primary-foreground: #0e1f2a;
+  --sidebar-accent: #f2c419;
+  --sidebar-accent-foreground: #0e1f2a;
+  --sidebar-border: #27414f;
+  --sidebar-ring: #f2c419;
   --shadow-x: 0px;
   --shadow-y: 1px;
   --shadow-blur: 2px;
   --shadow-spread: 0px;
   --shadow-opacity: 0.05;
-  --shadow-color: #000000;
+  --shadow-color: #0e1f2a; /* sombra quente (petróleo, baixa opacidade) */
 }
 
 .dark {
-  --background: oklch(0.06 0.01 260);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.06 0.01 260);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.06 0.01 260);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.85052 0.17398 94.84);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.89719 0.18922 104.36);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.89606 0.12582 98.56);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.89719 0.18922 104.36);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: #070d12; /* Carbono */
+  --foreground: #f2ede2; /* Pergaminho */
+  --card: #0e1f2a; /* Petróleo Profundo */
+  --card-foreground: #f2ede2;
+  --popover: #0e1f2a;
+  --popover-foreground: #f2ede2;
+  --primary: #f2c419; /* Amarelo Sinalização */
+  --primary-foreground: #0e1f2a;
+  --secondary: #1b3a4d; /* Petróleo Médio */
+  --secondary-foreground: #f2ede2;
+  --muted: #1b3a4d;
+  --muted-foreground: #9ca39c; /* Concreto */
+  --accent: #1b3a4d;
+  --accent-foreground: #f2ede2;
   --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.275 0 0);
-  --input: oklch(0.325 0 0);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.81 0.1 252);
-  --chart-2: oklch(0.62 0.19 260);
-  --chart-3: oklch(0.55 0.22 263);
-  --chart-4: oklch(0.49 0.22 264);
-  --chart-5: oklch(0.42 0.18 266);
-  --sidebar: oklch(20.463% 0.00002 271.152 / 0.185);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.275 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --destructive-foreground: #f2ede2;
+  --border: #1b3a4d;
+  --input: #284251;
+  --ring: #f2c419;
+  --chart-1: #f2c419; /* Amarelo */
+  --chart-2: #7fa395; /* Verde Claro (visível no escuro) */
+  --chart-3: #7b8590; /* Aço Claro */
+  --chart-4: #f0e58d; /* Amarelo Claro */
+  --chart-5: #9ca39c; /* Concreto */
+  --sidebar: #0a1620; /* entre Carbono e Petróleo */
+  --sidebar-foreground: #f2ede2;
+  --sidebar-primary: #f2c419;
+  --sidebar-primary-foreground: #0e1f2a;
+  --sidebar-accent: #f2c419;
+  --sidebar-accent-foreground: #0e1f2a;
+  --sidebar-border: #27414f;
+  --sidebar-ring: #f2c419;
   --shadow-x: 0px;
   --shadow-y: 1px;
   --shadow-blur: 2px;
@@ -138,9 +146,40 @@
   --shadow-color: #000000;
 }
 
+/*
+ * A sidebar é escura (Petróleo) nos dois temas. Alguns elementos dentro dela
+ * usam classes hardcoded com tokens GLOBAIS (text-foreground, text-muted-
+ * foreground, border-border) — que no claro são escuros. Reescopamos esses
+ * tokens DENTRO da sidebar para os equivalentes claros, sem tocar em componente.
+ * data-slot="sidebar" cobre desktop e o drawer mobile (Sheet em portal).
+ */
+[data-slot="sidebar"] {
+  --background: var(--sidebar);
+  --foreground: var(--sidebar-foreground);
+  --muted-foreground: color-mix(
+    in oklab,
+    var(--sidebar-foreground) 58%,
+    transparent
+  );
+  --border: var(--sidebar-border);
+  --input: var(--sidebar-border);
+  --ring: var(--sidebar-ring);
+  --accent: var(--sidebar-accent);
+  --accent-foreground: var(--sidebar-accent-foreground);
+  --card: var(--sidebar);
+  --card-foreground: var(--sidebar-foreground);
+}
+
 @theme inline {
-  --font-sans: "Geist", "Geist Fallback";
-  --font-mono: "Geist Mono", "Geist Mono Fallback";
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Arial, sans-serif;
+  --font-mono:
+    var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  --font-display:
+    var(--font-bricolage), var(--font-inter), ui-sans-serif, system-ui,
+    sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -243,6 +282,18 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* Títulos na fonte-âncora da marca (Bricolage Grotesque). Cobre headings e
+     os slots de título do shadcn (card/dialog/sheet) — só tipografia, sem
+     tocar nos componentes. */
+  h1,
+  h2,
+  h3,
+  [data-slot="card-title"],
+  [data-slot="dialog-title"],
+  [data-slot="sheet-title"] {
+    font-family: var(--font-display);
+    letter-spacing: -0.011em;
   }
 }
 

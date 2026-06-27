@@ -56,7 +56,12 @@ export interface NewCustomerInput {
 // receivable-only: payables nunca recebem items (validado no usecase). Tudo
 // opcional na criação para preservar 100% o fluxo atual sem itens.
 export interface ReceivableItemInput {
-  productId: string;
+  // Item CADASTRADO: productId setado, description null.
+  // Item MANUAL: productId null, description setada (texto livre).
+  productId?: string | null;
+  description?: string | null;
+  // Sucata de origem (override explícito; precede Product.scrapId).
+  scrapId?: string | null;
   listingId?: string | null;
   quantity: number;
   unitPrice: number; // snapshot — não acompanha mudanças em Product.price

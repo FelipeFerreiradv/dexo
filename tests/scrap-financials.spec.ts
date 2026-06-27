@@ -233,7 +233,7 @@ describe("Fase 4 — GET /scraps/:id?include=products", () => {
       status: "SOLD",
     });
     expect((prisma as any).product.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { scrapId: "s-1" } }),
+      expect.objectContaining({ where: { scrapId: "s-1", userId: "user-owner" } }),
     );
     // financials não foi pedido → não agrega.
     expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
@@ -348,5 +348,78 @@ describe("Fase 4 — multi-tenant", () => {
     expect(res.statusCode).toBe(404);
     expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
     expect((prisma as any).product.findMany).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Fase E — vínculo de sucata: counter estendido (COALESCE anti-duplicidade) +
+// "Vendas avulsas" (itens manuais sem produto vinculados via ReceivableItem.scrapId).
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("Fase E — getScrapMoney counter estendido", () => {
+  it("usa COALESCE(ri.scrapId, p.scrapId) + LEFT JOIN Product no counter", async () => {
+    (prisma as any).scrap.findFirst.mockResolvedValue({ ...baseScrapRow });
+    (prisma as any).$queryRaw.mockResolvedValue([
+      { marketplace: 0, counter: 0, potential: 0 },
+    ]);
+
+    const app = buildApp();
+    await app.inject({
+      method: "GET",
+      url: "/scraps/s-1?include=financials",
+      headers: { email: OWNER },
+    });
+
+    const sqlArg: any = (prisma as any).$queryRaw.mock.calls[0][0];
+    // Prisma.sql expõe as partes do template em `.strings`; serializamos para
+    // verificar que a regra anti-duplicidade está no SQL executado.
+    const sqlText = JSON.stringify(sqlArg);
+    expect(sqlText).toContain("COALESCE");
+    expect(sqlText).toContain("scrapId");
+    expect(sqlText).toContain("LEFT JOIN");
+  });
+});
+
+describe("Fase E — GET /scraps/:id?include=manualSales", () => {
+  it("lista vendas avulsas (itens manuais vinculados à sucata)", async () => {
+    (prisma as any).scrap.findFirst.mockResolvedValue({ ...baseScrapRow });
+    (prisma as any).$queryRaw.mockResolvedValue([
+      { description: "Mão de obra", quantity: 1, unitPrice: 80, total: 80 },
+      { description: "Taxa de descarte", quantity: 2, unitPrice: 10, total: 20 },
+    ]);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/scraps/s-1?include=manualSales",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.manualSales).toHaveLength(2);
+    expect(body.manualSales[0]).toEqual({
+      description: "Mão de obra",
+      quantity: 1,
+      unitPrice: 80,
+      total: 80,
+    });
+    // Uma única query (a de vendas avulsas) — financials não foi pedido.
+    expect((prisma as any).$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("sem include=manualSales: não consulta nem retorna manualSales", async () => {
+    (prisma as any).scrap.findFirst.mockResolvedValue({ ...baseScrapRow });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/scraps/s-1?include=products",
+      headers: { email: OWNER },
+    });
+
+    const body = JSON.parse(res.payload);
+    expect(body.manualSales).toBeUndefined();
+    expect((prisma as any).$queryRaw).not.toHaveBeenCalled();
   });
 });

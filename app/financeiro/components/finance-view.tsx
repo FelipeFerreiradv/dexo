@@ -2,18 +2,20 @@
 
 import { useCallback, useState } from "react";
 import { Building2 } from "lucide-react";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { FinanceOverview } from "./finance-overview";
 import { FinanceList } from "./finance-list";
 import { UnidadeFilter } from "./shared/unidade-select";
 import { UnidadesDialog } from "./unidades-dialog";
+import { FinanceReportButton } from "./finance-report-button";
+import { BudgetList } from "./budget-list";
+
+// Flag do módulo de Orçamento. Ausente/false => o Financeiro renderiza
+// EXATAMENTE como antes (apenas as duas abas). Referência literal a
+// process.env.NEXT_PUBLIC_* para o Next.js inlinar no bundle do client.
+const BUDGET_ENABLED = process.env.NEXT_PUBLIC_BUDGET_ENABLED === "true";
 
 interface Toast {
   id: string;
@@ -79,10 +81,13 @@ export function FinanceView() {
             refreshKey={unidadeRefreshKey}
           />
         </div>
-        <Button variant="outline" onClick={() => setUnidadesOpen(true)}>
-          <Building2 className="h-4 w-4" />
-          Gerenciar unidades
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <FinanceReportButton unidadeId={unidadeFilter} />
+          <Button variant="outline" onClick={() => setUnidadesOpen(true)}>
+            <Building2 className="h-4 w-4" />
+            Gerenciar unidades
+          </Button>
+        </div>
       </div>
 
       <FinanceOverview refreshKey={refreshKey} unidadeId={unidadeFilter} />
@@ -91,6 +96,9 @@ export function FinanceView() {
         <TabsList>
           <TabsTrigger value="receivables">Contas a Receber</TabsTrigger>
           <TabsTrigger value="payables">Contas a Pagar</TabsTrigger>
+          {BUDGET_ENABLED && (
+            <TabsTrigger value="budgets">Orçamentos</TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="receivables">
           <FinanceList
@@ -108,6 +116,15 @@ export function FinanceView() {
             unidadeId={unidadeFilter}
           />
         </TabsContent>
+        {BUDGET_ENABLED && (
+          <TabsContent value="budgets">
+            <BudgetList
+              onToast={showToast}
+              onChanged={bumpRefresh}
+              unidadeId={unidadeFilter}
+            />
+          </TabsContent>
+        )}
       </Tabs>
 
       <UnidadesDialog

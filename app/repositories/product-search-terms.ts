@@ -164,3 +164,32 @@ export function tokenizeSearch(search: string): string[][] {
   }
   return groups;
 }
+
+/**
+ * Heurística "isto é um CÓDIGO (SKU / número de peça) e não uma busca
+ * descritiva". Decide se a busca deve ser tratada como lookup exato de SKU.
+ *
+ * Por que existe: a busca por um SKU INEXISTENTE caía no fuzzy trigram (Tier 2,
+ * threshold frouxo 0.22/0.3) e "alucinava" SKUs aleatórios. Mas não dá para
+ * simplesmente desligar o fuzzy: ele é o que tolera digitação ("molla"→"mola").
+ * A distinção certa é "código vs. descritivo":
+ *  - Um SKU pode ser numérico zero-padded ("043"), alfanumérico ("ABC-1"),
+ *    com prefixo/separador ("PROD-001") ou um código de barras. Sinal comum:
+ *    é UM token, sem espaço, e contém um DÍGITO ou um separador "-"/"_".
+ *  - Uma busca descritiva é uma frase (tem espaço) ou uma palavra puramente
+ *    alfabética ("mola", "molla", "fiat", "gol") — essas mantêm o fuzzy.
+ *
+ * Casos-chave (intencionais):
+ *  - "208"  → code-like. NÃO vira ruído: já casa no Tier 1 via partNumber/model
+ *             (recall do modelo preservado SEM precisar do fuzzy). Se nada casar,
+ *             vira "não encontrado" — que é o correto.
+ *  - "molla"→ NÃO é code-like (alfabético puro) → fuzzy preservado.
+ *  - "ABC-1"/SKU inexistente → code-like → exato/Tier1 e, se vazio, vazio
+ *             (sem fuzzy), em vez de SKUs aleatórios.
+ */
+export function isCodeLikeQuery(search: string): boolean {
+  const trimmed = (search ?? "").trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return false;
+  return /[0-9]/.test(trimmed) || /[-_]/.test(trimmed);
+}

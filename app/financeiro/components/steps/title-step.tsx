@@ -36,6 +36,10 @@ interface Props {
   setProductMeta?: (
     updater: (m: Record<string, ProductMeta>) => Record<string, ProductMeta>,
   ) => void;
+  scrapMeta?: Record<string, string>;
+  setScrapMeta?: (
+    updater: (m: Record<string, string>) => Record<string, string>,
+  ) => void;
 }
 
 export function TitleStep({
@@ -46,13 +50,17 @@ export function TitleStep({
   getValues,
   productMeta,
   setProductMeta,
+  scrapMeta,
+  setScrapMeta,
 }: Props) {
   const showPicker =
     !!balcaoEnabled &&
     !!setValue &&
     !!getValues &&
     !!productMeta &&
-    !!setProductMeta;
+    !!setProductMeta &&
+    !!scrapMeta &&
+    !!setScrapMeta;
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {showPicker && (
@@ -62,6 +70,8 @@ export function TitleStep({
           getValues={getValues!}
           productMeta={productMeta!}
           setProductMeta={setProductMeta!}
+          scrapMeta={scrapMeta!}
+          setScrapMeta={setScrapMeta!}
         />
       )}
       <div className="space-y-1">

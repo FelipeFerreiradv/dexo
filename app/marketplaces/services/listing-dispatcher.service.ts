@@ -16,6 +16,7 @@ import type {
   BulkListingItemResult,
   BulkListingPlatform,
 } from "../repositories/bulk-listing-job.repository";
+import { SystemLogService } from "../../services/system-log.service";
 
 export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE";
 
@@ -44,6 +45,10 @@ export interface ListingDispatchInput {
   // percentual escalonado entre contas ML). Quando ausente, o fluxo é idêntico
   // ao de hoje (nenhum override, nenhuma busca extra de produto).
   overrideTemplate?: BulkOverrideTemplate | null;
+  // Id do ATOR (colaborador) que disparou a criação, p/ atribuir o log
+  // `CREATE_LISTING` de produtividade. Ausente em fluxos de sistema/sem ator —
+  // nesse caso nenhum log de produtividade é gravado (não fabricamos ator).
+  actorId?: string;
 }
 
 export interface BulkRunRequest {
@@ -74,7 +79,7 @@ export interface ListingDispatchSnapshot {
  */
 export class ListingDispatcher {
   static dispatch(input: ListingDispatchInput): ListingDispatchSnapshot {
-    const { userId, productId, requests, overrideTemplate } = input;
+    const { userId, productId, requests, overrideTemplate, actorId } = input;
     const queued: ListingDispatchSnapshot["queued"] = requests.map((req) => ({
       platform: req.platform,
       accountId: req.accountId,
@@ -123,13 +128,14 @@ export class ListingDispatcher {
             req,
             overrideTemplate,
             productRules,
+            actorId,
           );
         }
       })();
     } else {
       // Caminho atual (sem overrides): dispara síncrono, comportamento idêntico.
       for (const req of requests) {
-        void this.runOne(userId, productId, req);
+        void this.runOne(userId, productId, req, undefined, undefined, actorId);
       }
     }
 
@@ -142,6 +148,7 @@ export class ListingDispatcher {
     req: ListingDispatchRequest,
     overrideTemplate?: BulkOverrideTemplate | null,
     productRules?: BulkRulesProductInput,
+    actorId?: string,
   ): Promise<void> {
     // Observabilidade simétrica ML↔Shopee. createMLListing e createShopeeListing
     // ambos retornam CreateListingResult com `success: boolean`. Antes desta
@@ -174,6 +181,13 @@ export class ListingDispatcher {
           );
           return;
         }
+        // Produtividade: 1 CREATE_LISTING por anúncio criado, atribuído ao ator.
+        this.logCreatedListing(
+          actorId,
+          (result as any).listingId,
+          productId,
+          "MERCADO_LIVRE",
+        );
         // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
         // contas ML) se houver template. Sem template, nada muda (fluxo atual).
         if (overrideTemplate && (result as any).listingId) {
@@ -207,6 +221,14 @@ export class ListingDispatcher {
         if (!result.success) {
           console.error(
             `[ListingDispatcher] Shopee listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          // Produtividade: 1 CREATE_LISTING por anúncio criado, atribuído ao ator.
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "SHOPEE",
           );
         }
         return;
@@ -277,6 +299,29 @@ export class ListingDispatcher {
   }
 
   /**
+   * Grava UM log estruturado `CREATE_LISTING` por anúncio criado com sucesso,
+   * atribuído ao ATOR (colaborador que disparou), para alimentar os relatórios
+   * de produtividade. Só grava quando há um ator humano (`actorId`): fluxos de
+   * sistema/sem ator não fabricam atribuição. Fire-and-forget e tolerante a
+   * falha (`SystemLogService.log` já engole erros). NÃO altera criação/sync.
+   */
+  private static logCreatedListing(
+    actorId: string | undefined,
+    listingId: string | undefined,
+    productId: string,
+    platform: "MERCADO_LIVRE" | "SHOPEE",
+  ): void {
+    if (!actorId || !listingId) return;
+    const marketplace = platform === "SHOPEE" ? "Shopee" : "MercadoLivre";
+    void SystemLogService.logListingCreate(
+      actorId,
+      listingId,
+      productId,
+      marketplace,
+    );
+  }
+
+  /**
    * Variante batch: cria N produtos × M requests (platform × account) com
    * concorrência fixa (mesmo padrão do bulk-delete na UI). Espera cada
    * createMLListing/createShopeeListing finalizar e, em caso de sucesso,
@@ -299,6 +344,9 @@ export class ListingDispatcher {
     }>;
     overrideTemplate?: BulkOverrideTemplate | null;
     onItemDone: (item: BulkListingItemResult) => void | Promise<void>;
+    // Ator (colaborador) que disparou o lote, p/ atribuir os logs de
+    // produtividade. Ver ListingDispatchInput.actorId.
+    actorId?: string;
   }): Promise<{ success: number; failed: number; lastError?: string | null }> {
     type Pair = { productId: string; req: BulkRunRequest };
     const pairs: Pair[] = [];
@@ -358,6 +406,7 @@ export class ListingDispatcher {
           req,
           input.overrideTemplate ?? null,
           productRulesCache,
+          input.actorId,
         );
         if (result.success) success++;
         else {
@@ -387,6 +436,7 @@ export class ListingDispatcher {
     req: BulkRunRequest,
     overrideTemplate: BulkOverrideTemplate | null,
     productRulesCache?: Map<string, BulkRulesProductInput> | null,
+    actorId?: string,
   ): Promise<BulkListingItemResult> {
     const finishedAt = () => new Date().toISOString();
 
@@ -442,6 +492,14 @@ export class ListingDispatcher {
           productRulesCache,
         });
       }
+
+      // Produtividade: 1 CREATE_LISTING por anúncio criado, atribuído ao ator.
+      this.logCreatedListing(
+        actorId,
+        createResult.listingId,
+        productId,
+        req.platform,
+      );
 
       return {
         productId,

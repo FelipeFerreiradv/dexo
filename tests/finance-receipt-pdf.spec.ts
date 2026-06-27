@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { PDFDocument } from "pdf-lib";
 import { ReceiptPdfService } from "../app/financeiro/generators/receipt-pdf.service";
 import type { FinanceEntry } from "../app/interfaces/finance.interface";
 
@@ -79,5 +80,88 @@ describe("ReceiptPdfService — forma de pagamento no cupom", () => {
       null,
     );
     expect(isPdf(bytes)).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────────────────
+// Fase C — paginação: o cupom traz TODOS os itens (sem o corte de 14 linhas),
+// quebrando em múltiplas páginas A4 quando necessário. Itens manuais (sem
+// product) renderizam pela description.
+// ──────────────────────────────────────────────────────────
+
+function makeItems(n: number): FinanceEntry["items"] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `i${i}`,
+    productId: `p${i}`,
+    listingId: null,
+    quantity: (i % 3) + 1,
+    unitPrice: 10 + i,
+    product: {
+      id: `p${i}`,
+      sku: `SKU${i}`,
+      name: `Peça número ${i} com nome longo típico de autopeça`,
+    },
+  }));
+}
+
+async function pageCount(bytes: Uint8Array): Promise<number> {
+  const doc = await PDFDocument.load(bytes);
+  return doc.getPageCount();
+}
+
+describe("ReceiptPdfService — paginação (todos os itens)", () => {
+  it("1 item: 1 página", async () => {
+    const bytes = await new ReceiptPdfService().generate(
+      makeEntry({ items: makeItems(1) }),
+      null,
+    );
+    expect(isPdf(bytes)).toBe(true);
+    expect(await pageCount(bytes)).toBe(1);
+  });
+
+  it("5 itens: ainda 1 página", async () => {
+    const bytes = await new ReceiptPdfService().generate(
+      makeEntry({ items: makeItems(5) }),
+      null,
+    );
+    expect(await pageCount(bytes)).toBe(1);
+  });
+
+  it("20 itens: pagina em múltiplas páginas (nenhum item escondido)", async () => {
+    const bytes = await new ReceiptPdfService().generate(
+      makeEntry({ items: makeItems(20) }),
+      null,
+    );
+    expect(isPdf(bytes)).toBe(true);
+    expect(await pageCount(bytes)).toBeGreaterThan(1);
+  });
+
+  it("itens MANUAIS (sem product) renderizam pela description, misturados com cadastrados", async () => {
+    const bytes = await new ReceiptPdfService().generate(
+      makeEntry({
+        items: [
+          {
+            id: "m1",
+            productId: null,
+            description: "Mão de obra avulsa",
+            listingId: null,
+            quantity: 1,
+            unitPrice: 80,
+            product: null,
+          },
+          {
+            id: "p1",
+            productId: "p1",
+            listingId: null,
+            quantity: 2,
+            unitPrice: 35,
+            product: { id: "p1", sku: "SKU1", name: "Filtro de óleo" },
+          },
+        ],
+      }),
+      null,
+    );
+    expect(isPdf(bytes)).toBe(true);
+    expect(await pageCount(bytes)).toBe(1);
   });
 });
