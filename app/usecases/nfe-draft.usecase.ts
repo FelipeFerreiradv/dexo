@@ -1,5 +1,6 @@
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { orderRepository } from "../repositories/order.repository";
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -44,25 +45,127 @@ export class NfeDraftUseCase {
       );
     }
 
-    // If no orderId specified, reuse the most recent existing draft
-    if (!input.orderId) {
-      const existing = await this.nfeRepo.findExistingDraft(userId);
-      if (existing) return existing;
+    const ambiente =
+      (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO";
+    // Série padrão fixada na configuração fiscal (o usuário pode trocar no
+    // wizard). Default 1 quando a config ainda não tem série definida.
+    const serie = input.serie ?? config.serieNfe ?? 1;
+
+    // Com orderId: rascunho FRESCO já populado com os itens (produto +
+    // quantidade + valor) e os dados do cliente do pedido — autopreenchimento
+    // rico. NÃO toca o wizard/emissão: só enriquece os valores iniciais.
+    if (input.orderId) {
+      return this.createPopulatedFromOrder(
+        userId,
+        input.orderId,
+        ambiente,
+        serie,
+      );
     }
+
+    // Sem orderId: reusa o rascunho mais recente (comportamento atual).
+    const existing = await this.nfeRepo.findExistingDraft(userId);
+    if (existing) return existing;
 
     const draft = await this.nfeRepo.createDraft(userId, {
       ...input,
-      ambiente: (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO",
-      // Série padrão fixada na configuração fiscal (o usuário pode trocar no
-      // wizard). Default 1 quando a config ainda não tem série definida.
-      serie: input.serie ?? config.serieNfe ?? 1,
+      ambiente,
+      serie,
     });
 
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", {
-      orderId: input.orderId ?? null,
+      orderId: null,
     });
 
     return draft;
+  }
+
+  // Pré-popula um rascunho a partir de um pedido de marketplace. Mesmo padrão
+  // de `createPopulatedFromReceivable` (venda balcão): cria draft fresco +
+  // updateDraft. Preenche SÓ o que o pedido conhece de fato:
+  //  - destinatário: nome/email (Order não guarda CPF/CNPJ nem endereço →
+  //    ficam em branco para o usuário completar via lookup no wizard);
+  //  - itens: código (SKU), descrição (nome), quantidade, valor unit./total;
+  //  - pagamento: valor = soma dos itens, meio "OUTROS" (pedido de marketplace
+  //    não traz forma de pagamento fiscal) — o usuário ajusta.
+  // NCM e CFOP entram VAZIOS de propósito: Product não tem NCM, e o CFOP
+  // depende da UF do destinatário (desconhecida aqui — Order não tem endereço);
+  // hardcodar daria nota errada. São obrigatórios na emissão, então o usuário
+  // completa no editor — o wizard e a emissão seguem 100% intactos.
+  private async createPopulatedFromOrder(
+    userId: string,
+    orderId: string,
+    ambiente: "HOMOLOGACAO" | "PRODUCAO",
+    serie: number,
+  ): Promise<NfeDraftResponse> {
+    const order = await orderRepository.findForFiscalDraft(orderId, userId);
+    if (!order) {
+      throw new Error("Pedido não encontrado");
+    }
+
+    const destinatario: NfeDestinatario = {
+      tipoPessoa: "PF",
+      cpfCnpj: "",
+      nome: order.customerName ?? "",
+      inscricaoEstadual: null,
+      email: order.customerEmail ?? null,
+      telefone: null,
+      cep: null,
+      logradouro: null,
+      numero: null,
+      complemento: null,
+      bairro: null,
+      municipio: null,
+      codMunicipio: null,
+      uf: null,
+      codPais: "1058",
+      pais: "BRASIL",
+    };
+
+    const itens: NfeDraftItem[] = order.items.map((it, idx) => {
+      const valorUnitario = it.unitPrice;
+      return {
+        numero: idx + 1,
+        productId: it.productId ?? null,
+        codigo: it.product?.sku ?? it.productId ?? "",
+        descricao: it.product?.name ?? "",
+        ncm: "",
+        cfop: "",
+        cest: null,
+        origem: 0 as const,
+        unidade: "UN",
+        quantidade: it.quantity,
+        valorUnitario,
+        valorTotal: Number((it.quantity * valorUnitario).toFixed(2)),
+        desconto: null,
+        observacoes: null,
+      };
+    });
+
+    // Pagamento = total dos itens (= total da nota, sem frete). Só entra quando
+    // há itens; meio "OUTROS" (99) é o neutro p/ marketplace.
+    const somaItens = Number(
+      itens.reduce((acc, it) => acc + it.valorTotal, 0).toFixed(2),
+    );
+    const pagamentos =
+      somaItens > 0 ? [{ meio: "OUTROS", valor: somaItens }] : [];
+
+    const draft = await this.nfeRepo.createDraft(userId, {
+      orderId,
+      ambiente,
+      serie,
+    });
+
+    const filled = await this.nfeRepo.updateDraft(userId, draft.id, {
+      destinatarioJson: destinatario,
+      itens,
+      ...(pagamentos.length > 0 ? { pagamentosJson: pagamentos } : {}),
+      numeroPedido: order.externalOrderId,
+    });
+
+    await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", { orderId });
+
+    return filled;
   }
 
   async getById(

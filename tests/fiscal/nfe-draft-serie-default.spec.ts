@@ -8,12 +8,27 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // Aqui mockamos os repositórios (a usecase os instancia via `new`) para provar
 // essa resolução sem tocar no banco — e garantir que a série explícita do input
 // nunca é sobrescrita pela config e que o fallback seguro é 1.
+//
+// NOTA: com orderId, `create` roteia por `createPopulatedFromOrder` (autopreen-
+// chimento a partir do pedido) — por isso mockamos também o order.repository e
+// o updateDraft. A série continua sendo resolvida e passada ao createDraft.
 // ──────────────────────────────────────────────────────────────────────────
 
-const findByUserIdMock = vi.fn();
-const findExistingDraftMock = vi.fn();
-const createDraftMock = vi.fn();
-const addAuditLogMock = vi.fn();
+const {
+  findByUserIdMock,
+  findExistingDraftMock,
+  createDraftMock,
+  updateDraftMock,
+  addAuditLogMock,
+  findForFiscalDraftMock,
+} = vi.hoisted(() => ({
+  findByUserIdMock: vi.fn(),
+  findExistingDraftMock: vi.fn(),
+  createDraftMock: vi.fn(),
+  updateDraftMock: vi.fn(),
+  addAuditLogMock: vi.fn(),
+  findForFiscalDraftMock: vi.fn(),
+}));
 
 vi.mock("../../app/repositories/company-fiscal.repository", () => ({
   CompanyFiscalRepository: class {
@@ -29,6 +44,7 @@ vi.mock("../../app/repositories/nfe.repository", () => ({
   NfeRepository: class {
     findExistingDraft = findExistingDraftMock;
     createDraft = createDraftMock;
+    updateDraft = updateDraftMock;
     addAuditLog = addAuditLogMock;
   },
 }));
@@ -36,23 +52,51 @@ vi.mock("@/app/repositories/nfe.repository", () => ({
   NfeRepository: class {
     findExistingDraft = findExistingDraftMock;
     createDraft = createDraftMock;
+    updateDraft = updateDraftMock;
     addAuditLog = addAuditLogMock;
   },
+}));
+vi.mock("../../app/repositories/order.repository", () => ({
+  orderRepository: { findForFiscalDraft: findForFiscalDraftMock },
+}));
+vi.mock("@/app/repositories/order.repository", () => ({
+  orderRepository: { findForFiscalDraft: findForFiscalDraftMock },
 }));
 
 import { NfeDraftUseCase } from "../../app/usecases/nfe-draft.usecase";
 
+let lastCreated: any;
+
 beforeEach(() => {
   vi.clearAllMocks();
   // O repo devolve o draft "como criado" — a série é eco do que recebeu.
-  createDraftMock.mockImplementation(async (_userId: string, input: any) => ({
-    id: "draft-1",
-    serie: input.serie,
-    status: "DRAFT",
-    itens: [],
-  }));
+  createDraftMock.mockImplementation(async (_userId: string, input: any) => {
+    lastCreated = {
+      id: "draft-1",
+      serie: input.serie,
+      status: "DRAFT",
+      itens: [],
+    };
+    return lastCreated;
+  });
+  // `create` com orderId retorna o resultado do updateDraft (draft populado).
+  updateDraftMock.mockImplementation(async () => lastCreated);
   addAuditLogMock.mockResolvedValue(undefined);
   findExistingDraftMock.mockResolvedValue(null);
+  findForFiscalDraftMock.mockResolvedValue({
+    id: "o-1",
+    externalOrderId: "EXT-1",
+    customerName: "Cliente Teste",
+    customerEmail: null,
+    items: [
+      {
+        productId: "p1",
+        quantity: 1,
+        unitPrice: 10,
+        product: { sku: "SKU1", name: "Peça" },
+      },
+    ],
+  });
 });
 
 describe("NfeDraftUseCase.create — série padrão da config fiscal", () => {

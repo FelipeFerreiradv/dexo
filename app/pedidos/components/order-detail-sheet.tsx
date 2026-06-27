@@ -157,26 +157,9 @@ export function OrderDetailSheet({
         return;
       }
 
-      const prefill: Record<string, unknown> = {
-        numeroPedido: order.externalOrderId,
-        destinatarioJson: {
-          tipoPessoa: "PF",
-          cpfCnpj: "",
-          nome: order.customerName ?? "",
-          email: order.customerEmail ?? null,
-          codPais: "1058",
-          pais: "BRASIL",
-        },
-      };
-
-      await fetch(`${apiBase}/fiscal/nfe/draft/${draftId}`, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify(prefill),
-      }).catch(() => {
-        // best-effort prefill — wizard ainda abre com o rascunho em branco
-      });
-
+      // O servidor já devolve o rascunho POPULADO (destinatário + itens +
+      // valores do pedido) no POST acima — não há PUT de prefill aqui: evita um
+      // round-trip extra e não sobrescreve os dados ricos vindos do servidor.
       router.push(`/notas-fiscais/nfe?draft=${draftId}`);
     } catch {
       setNfeError("Erro de conexão ao iniciar emissão de NF-e.");

@@ -285,6 +285,61 @@ class OrderRepositoryPrisma implements OrderRepository {
   }
 
   /**
+   * Leitura ENXUTA p/ pré-popular o rascunho de NF-e a partir do pedido.
+   * Seleciona SÓ o que o autopreenchimento usa (cliente + itens com produto)
+   * — não puxa imageUrl/localização/listing/conta do `findById` (egress).
+   * Escopada por `userId` (multi-tenant). `unitPrice` Decimal → number.
+   */
+  async findForFiscalDraft(
+    id: string,
+    userId: string,
+  ): Promise<{
+    id: string;
+    externalOrderId: string;
+    customerName: string | null;
+    customerEmail: string | null;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      unitPrice: number;
+      product: { sku: string; name: string } | null;
+    }>;
+  } | null> {
+    const result = await prisma.order.findFirst({
+      where: { id, marketplaceAccount: { userId } },
+      select: {
+        id: true,
+        externalOrderId: true,
+        customerName: true,
+        customerEmail: true,
+        items: {
+          select: {
+            productId: true,
+            quantity: true,
+            unitPrice: true,
+            product: { select: { sku: true, name: true } },
+          },
+        },
+      },
+    });
+    if (!result) return null;
+    return {
+      id: result.id,
+      externalOrderId: result.externalOrderId,
+      customerName: result.customerName,
+      customerEmail: result.customerEmail,
+      items: result.items.map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        unitPrice: Number(it.unitPrice),
+        product: it.product
+          ? { sku: it.product.sku, name: it.product.name }
+          : null,
+      })),
+    };
+  }
+
+  /**
    * Buscar pedido por ID externo (ex: ID do ML)
    */
   async findByExternalOrderId(externalOrderId: string): Promise<Order | null> {
