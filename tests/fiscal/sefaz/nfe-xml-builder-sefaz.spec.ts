@@ -555,3 +555,85 @@ describe("NfeXmlBuilderSefazService — <infAdic>/<infCpl> (observacoes)", () =>
     expect(posInfAdic).toBeGreaterThan(posPag);
   });
 });
+
+describe("NfeXmlBuilderSefazService — saneamento de espaços (XSD TString)", () => {
+  const builder = new NfeXmlBuilderSefazService();
+  const FIXED_DH = new Date("2026-05-14T15:00:00-03:00");
+
+  it("remove espaço no início/fim dos campos texto (corrige 'Falha no Schema XML')", () => {
+    const draft = makeDraft({
+      ambiente: "PRODUCAO", // produção usa o nome real (homologação força literal)
+      destinoOperacao: "INTERESTADUAL",
+      destinatarioJson: {
+        tipoPessoa: "PF",
+        cpfCnpj: "34053537851",
+        nome: "  Talita Aparecida Neves  ",
+        inscricaoEstadual: "ISENTO",
+        email: null,
+        telefone: null,
+        cep: "13472290",
+        logradouro: "Rua São Gonçalo ",
+        numero: "40 ",
+        complemento: "   ", // só espaços → deve ser OMITIDO (não vira tag vazia)
+        bairro: " Jardim Nossa Senhora do Carmo",
+        municipio: "Americana",
+        codMunicipio: " 3501608 ",
+        uf: " SP ",
+        codPais: "1058",
+        pais: "BRASIL",
+      },
+      itens: [
+        makeItem({
+          codigo: " 6 ",
+          descricao: "Tampa Combustível Citroen C3 2011 Preto 2011 ",
+          unidade: "UN ",
+          cfop: "6102",
+        }),
+      ],
+    });
+
+    const { xml } = builder.build({
+      draft,
+      config: makeConfig({ regimeTributario: "SIMPLES" }),
+      numero: 52,
+      dhEmi: FIXED_DH,
+      cNF: "10000001",
+    });
+
+    // Nenhum valor de texto pode ter espaço colado nas tags.
+    expect(xml).toContain(
+      "<xProd>Tampa Combustível Citroen C3 2011 Preto 2011</xProd>",
+    );
+    expect(xml).toContain("<xNome>Talita Aparecida Neves</xNome>");
+    expect(xml).toContain("<xLgr>Rua São Gonçalo</xLgr>");
+    expect(xml).toContain("<nro>40</nro>");
+    expect(xml).toContain("<xBairro>Jardim Nossa Senhora do Carmo</xBairro>");
+    expect(xml).toContain("<cMun>3501608</cMun>");
+    expect(xml).toContain("<UF>SP</UF>");
+    expect(xml).toContain("<cProd>6</cProd>");
+    expect(xml).toContain("<uCom>UN</uCom>");
+    expect(xml).toContain("<uTrib>UN</uTrib>");
+
+    // complemento só-espaços é omitido (não gera <xCpl></xCpl>).
+    expect(xml).not.toContain("<xCpl>");
+
+    // Garantia genérica: nenhum campo texto termina com espaço antes do fecho.
+    expect(xml).not.toMatch(/<xProd>[^<]* <\/xProd>/);
+    expect(xml).not.toMatch(/<xNome>[^<]* <\/xNome>/);
+    expect(xml).not.toMatch(/<xLgr>[^<]* <\/xLgr>/);
+  });
+
+  it("não altera valores já limpos (zero regressão)", () => {
+    const { xml } = builder.build({
+      draft: makeDraft({
+        itens: [makeItem({ descricao: "PRODUTO LIMPO", unidade: "UN" })],
+      }),
+      config: makeConfig(),
+      numero: 1,
+      dhEmi: FIXED_DH,
+      cNF: "87654321",
+    });
+    expect(xml).toContain("<xProd>PRODUTO LIMPO</xProd>");
+    expect(xml).toContain("<uCom>UN</uCom>");
+  });
+});
