@@ -263,4 +263,44 @@ describe("ShippingLabelUseCase", () => {
       code: "ORDER_NOT_FOUND",
     });
   });
+
+  it("lote paralelo: worker pool drena a fila e preserva count/failures (6 pedidos > concorrência)", async () => {
+    vi.spyOn(NfeRepository.prototype, "findAuthorizedByOrderId").mockResolvedValue(
+      PROD_NFE as never,
+    );
+    // ids começando com "bad" não são do usuário → falham em resolveContext.
+    vi.spyOn(prisma.order, "findFirst").mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((args: any) =>
+        Promise.resolve(
+          String(args?.where?.id ?? "").startsWith("bad") ? null : ORDER_ROW,
+        )) as never,
+    );
+    vi.spyOn(
+      MlShippingLabelProvider.prototype,
+      "ensureInvoiceSent",
+    ).mockResolvedValue(undefined);
+    vi.spyOn(
+      MlShippingLabelProvider.prototype,
+      "ensureReadyToShip",
+    ).mockResolvedValue({ ready: true });
+    vi.spyOn(MlShippingLabelProvider.prototype, "getLabelPdf").mockResolvedValue(
+      await makeRealPdf(),
+    );
+
+    const res = await ShippingLabelUseCase.generateLabelsBatch(
+      "u1",
+      ["g1", "bad1", "g2", "bad2", "g3", "bad3"],
+      "THERMAL",
+    );
+    expect(res.count).toBe(3);
+    expect(Buffer.isBuffer(res.pdf)).toBe(true);
+    expect(res.failures).toHaveLength(3);
+    expect(res.failures.map((f) => f.orderId).sort()).toEqual([
+      "bad1",
+      "bad2",
+      "bad3",
+    ]);
+    expect(res.failures.every((f) => f.code === "ORDER_NOT_FOUND")).toBe(true);
+  });
 });

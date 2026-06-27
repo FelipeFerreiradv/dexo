@@ -276,23 +276,46 @@ export class ShippingLabelUseCase {
     orderIds: string[],
     size: LabelSize,
   ): Promise<BatchLabelResult> {
-    const raws: Buffer[] = [];
+    // Worker pool com concorrência limitada (mesmo padrão de
+    // MLApiService.getItemsDetails). Preserva a ORDEM no PDF combinado
+    // (results[i]) e as falhas parciais — saída idêntica ao sequencial, só mais
+    // rápido. Seguro p/ ML (refresh com mutex in-flight por conta) e a
+    // concorrência baixa evita rate limit. NOTA: para lote 100% Shopee de uma
+    // mesma conta, o refresh da Shopee ainda não tem mutex — como Shopee não
+    // está em produção, fica para hardening quando for validada.
+    const BATCH_CONCURRENCY = 5;
+    const results: (Buffer | null)[] = new Array(orderIds.length).fill(null);
     const failures: BatchLabelFailure[] = [];
-    for (const orderId of orderIds) {
-      try {
-        const ctx = await this.resolveContext(userId, orderId);
-        const raw = await this.produceRawLabel(ctx, size);
-        await this.finalizeLabel(userId, ctx, raw, size);
-        raws.push(raw);
-      } catch (error) {
-        failures.push({
-          orderId,
-          code: error instanceof ShippingLabelError ? error.code : undefined,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    let nextIndex = 0;
 
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= orderIds.length) break;
+        const orderId = orderIds[i];
+        try {
+          const ctx = await this.resolveContext(userId, orderId);
+          const raw = await this.produceRawLabel(ctx, size);
+          await this.finalizeLabel(userId, ctx, raw, size);
+          results[i] = raw;
+        } catch (error) {
+          failures.push({
+            orderId,
+            code:
+              error instanceof ShippingLabelError ? error.code : undefined,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(BATCH_CONCURRENCY, orderIds.length) }, () =>
+        worker(),
+      ),
+    );
+
+    const raws = results.filter((r): r is Buffer => r !== null);
     let pdf: Buffer | null = null;
     if (raws.length > 0) {
       const merged = await mergePdfs(raws);
