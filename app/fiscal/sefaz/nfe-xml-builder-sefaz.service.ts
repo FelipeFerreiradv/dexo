@@ -246,17 +246,17 @@ export class NfeXmlBuilderSefazService {
     if (dest.tipoPessoa !== "EXTERIOR") {
       const ender = destEl.ele("enderDest");
       ender.ele("xLgr").txt(truncate(dest.logradouro ?? "SEM ENDERECO", 60)).up();
-      ender.ele("nro").txt(dest.numero ?? "S/N").up();
-      if (dest.complemento) {
+      ender.ele("nro").txt(truncate(dest.numero ?? "S/N", 60)).up();
+      if (dest.complemento?.trim()) {
         ender.ele("xCpl").txt(truncate(dest.complemento, 60)).up();
       }
       ender.ele("xBairro").txt(truncate(dest.bairro ?? "CENTRO", 60)).up();
-      ender.ele("cMun").txt(dest.codMunicipio ?? "").up();
+      ender.ele("cMun").txt((dest.codMunicipio ?? "").trim()).up();
       ender.ele("xMun").txt(truncate(dest.municipio ?? "", 60)).up();
-      ender.ele("UF").txt(dest.uf ?? "").up();
+      ender.ele("UF").txt((dest.uf ?? "").trim()).up();
       ender.ele("CEP").txt(onlyDigits(dest.cep ?? "")).up();
       ender.ele("cPais").txt(dest.codPais ?? "1058").up();
-      ender.ele("xPais").txt(dest.pais ?? "BRASIL").up();
+      ender.ele("xPais").txt(truncate(dest.pais ?? "BRASIL", 60)).up();
       if (dest.telefone) {
         ender.ele("fone").txt(onlyDigits(dest.telefone)).up();
       }
@@ -277,7 +277,7 @@ export class NfeXmlBuilderSefazService {
       destEl.ele("IE").txt(onlyDigits(dest.inscricaoEstadual)).up();
     }
 
-    if (dest.email) {
+    if (dest.email?.trim()) {
       destEl.ele("email").txt(truncate(dest.email, 60)).up();
     }
   }
@@ -294,7 +294,7 @@ export class NfeXmlBuilderSefazService {
 
     // <prod>
     const prod = det.ele("prod");
-    prod.ele("cProd").txt(item.codigo).up();
+    prod.ele("cProd").txt(truncate(item.codigo, 60)).up();
     prod.ele("cEAN").txt("SEM GTIN").up();
     prod.ele("xProd").txt(truncate(item.descricao, 120)).up();
     prod.ele("NCM").txt(onlyDigits(item.ncm)).up();
@@ -302,12 +302,12 @@ export class NfeXmlBuilderSefazService {
       prod.ele("CEST").txt(onlyDigits(item.cest)).up();
     }
     prod.ele("CFOP").txt(onlyDigits(item.cfop)).up();
-    prod.ele("uCom").txt(item.unidade).up();
+    prod.ele("uCom").txt(truncate(item.unidade, 6)).up();
     prod.ele("qCom").txt(fmt4(item.quantidade)).up();
     prod.ele("vUnCom").txt(fmt4(item.valorUnitario)).up();
     prod.ele("vProd").txt(fmt2(item.valorTotal)).up();
     prod.ele("cEANTrib").txt("SEM GTIN").up();
-    prod.ele("uTrib").txt(item.unidade).up();
+    prod.ele("uTrib").txt(truncate(item.unidade, 6)).up();
     prod.ele("qTrib").txt(fmt4(item.quantidade)).up();
     prod.ele("vUnTrib").txt(fmt4(item.valorUnitario)).up();
 
@@ -603,7 +603,13 @@ function onlyDigits(s: string | null | undefined): string {
 
 function truncate(s: string, max: number): string {
   if (!s) return "";
-  return s.length > max ? s.slice(0, max) : s;
+  // Campos texto da NF-e (TString) NÃO podem ter espaço no início/fim — o XSD
+  // rejeita com "Falha no Schema XML do lote". Damos trim ANTES de truncar.
+  // Para valores já limpos, s.trim() === s → comportamento idêntico (sem
+  // regressão); só remove espaços sobrando (ex.: nome de produto importado do
+  // marketplace terminando em " ").
+  const trimmed = s.trim();
+  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
 }
 
 function fmt2(n: number | null | undefined): string {
