@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import type { MarketplacePlatform, Product } from "../lib/product-view-types";
 import { ProductCard } from "./product-card";
 
@@ -33,7 +35,7 @@ export function ProductsGalleryView({
   onOpenLightbox,
   onOpenListings,
 }: ProductsGalleryViewProps) {
-  const selectedSet = new Set(selectedIds);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4">
