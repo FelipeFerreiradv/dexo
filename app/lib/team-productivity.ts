@@ -148,12 +148,22 @@ export function resolveProductivityRange(
   const usedDefault = !start && !end;
 
   if (!end) end = now;
+  // Rótulo reflete a data ESCOLHIDA pelo usuário (antes do clamp de fuso abaixo).
+  const labelEnd = end;
+  // Borda de fuso: o "fim do dia" é interpretado em UTC. À noite no Brasil
+  // (BRT = UTC-3) o "hoje" do usuário já virou o próximo dia em UTC, então o
+  // fim "hoje 23:59:59Z" cai ATRÁS do agora real e o filtro `createdAt <= end`
+  // EXCLUI registros recém-criados (orçamento/venda/produto criados à noite
+  // somem das stats até o dia virar). Quando o fim é "hoje" (ficou no passado
+  // a < 24h do agora), estende até o agora. Intervalos genuinamente passados
+  // (fim a > 24h atrás) não são tocados — a borda de dia histórica é inócua.
+  if (end < now && now.getTime() - end.getTime() < MS_PER_DAY) end = now;
   if (!start) start = new Date(end.getTime() - 30 * MS_PER_DAY);
   if (start > end) start = new Date(end.getTime() - 30 * MS_PER_DAY);
 
   const label = usedDefault
     ? "Últimos 30 dias"
-    : `${fmtBR(start)} a ${fmtBR(end)}`;
+    : `${fmtBR(start)} a ${fmtBR(labelEnd)}`;
   return { startDate: start, endDate: end, label };
 }
 

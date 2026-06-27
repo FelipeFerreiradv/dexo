@@ -162,6 +162,24 @@ describe("resolveProductivityRange", () => {
     const r = resolveProductivityRange("nonsense", undefined, now);
     expect(r.label).toBe("Últimos 30 dias");
   });
+
+  it("borda de fuso: fim 'hoje' que ficou no passado (UTC) estende até agora", () => {
+    // BRT 21:30 de 26/06 = 27/06 00:30Z. O usuário manda endDate=2026-06-26
+    // (o "hoje" dele), que vira 2026-06-26T23:59:59.999Z — ATRÁS do agora real.
+    const nowNight = new Date("2026-06-27T00:30:00.000Z");
+    const r = resolveProductivityRange("2026-06-26", "2026-06-26", nowNight);
+    // Fim estendido até o agora p/ não excluir o que acabou de ser criado.
+    expect(r.endDate.getTime()).toBe(nowNight.getTime());
+    // Rótulo continua mostrando a data escolhida (não "vaza" o clamp).
+    expect(r.label).toBe("26/06/2026 a 26/06/2026");
+  });
+
+  it("borda de fuso: intervalo passado NÃO é estendido até agora", () => {
+    const nowLater = new Date("2026-06-27T00:30:00.000Z");
+    const r = resolveProductivityRange("2026-06-01", "2026-06-15", nowLater);
+    // Fim a > 24h do agora: permanece o fim do dia escolhido.
+    expect(r.endDate.toISOString()).toBe("2026-06-15T23:59:59.999Z");
+  });
 });
 
 describe("aggregateBudgetsByVendedor", () => {
