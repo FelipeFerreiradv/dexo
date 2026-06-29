@@ -5,6 +5,10 @@ import type {
   MagaluSkuListParams,
   MagaluSkuListResponse,
 } from "../types/magalu-api.types";
+import type {
+  MagaluOrder,
+  MagaluOrderListResponse,
+} from "../types/magalu-order.types";
 
 /**
  * Cliente HTTP autenticado da API de Marketplace da Magalu.
@@ -141,6 +145,66 @@ export class MagaluApiService {
       );
     } catch (error) {
       throw this.formatError("Erro ao atualizar preço na Magalu", error);
+    }
+  }
+
+  /**
+   * Lista pedidos recentes (últimos `days` dias).
+   * TODO(validar): nome do filtro de data (updated_at__ge?) e paginação real.
+   */
+  static async getRecentOrders(
+    accessToken: string,
+    days = 7,
+    maxOrders = 500,
+  ): Promise<MagaluOrder[]> {
+    try {
+      const since = new Date(
+        Date.now() - days * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const url = new URL(
+        MAGALU_CONSTANTS.ORDERS_ENDPOINT,
+        MAGALU_CONSTANTS.API_URL,
+      );
+      url.searchParams.set(
+        "limit",
+        String(Math.min(maxOrders, MAGALU_CONSTANTS.DEFAULT_PAGE_SIZE)),
+      );
+      url.searchParams.set("updated_at__ge", since);
+
+      const response = await axios.get<MagaluOrderListResponse>(
+        url.toString(),
+        {
+          headers: this.authHeaders(accessToken),
+          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+
+      const body = response.data;
+      const list = body.results ?? body.data ?? [];
+      return list.slice(0, maxOrders);
+    } catch (error) {
+      throw this.formatError("Erro ao listar pedidos da Magalu", error);
+    }
+  }
+
+  /**
+   * Busca um pedido específico (usado pelo webhook, via data.params.id).
+   */
+  static async getOrder(
+    accessToken: string,
+    orderId: string,
+  ): Promise<MagaluOrder> {
+    try {
+      const response = await axios.get<MagaluOrder>(
+        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`,
+        {
+          headers: this.authHeaders(accessToken),
+          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+      return response.data;
+    } catch (error) {
+      throw this.formatError("Erro ao buscar pedido da Magalu", error);
     }
   }
 }

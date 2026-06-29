@@ -73,6 +73,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
         const importML = platform === "ALL" || platform === "MERCADO_LIVRE";
         const importShopee = platform === "ALL" || platform === "SHOPEE";
+        const importMagalu = platform === "ALL" || platform === "MAGALU";
 
         const results: Array<{
           platform: string;
@@ -152,6 +153,42 @@ export async function orderRoutes(app: FastifyInstance) {
                     shopeeError instanceof Error
                       ? shopeeError.message
                       : "Erro ao importar do Shopee",
+                });
+              }),
+          );
+        }
+
+        if (importMagalu) {
+          importTasks.push(
+            OrderUseCase.importRecentMagaluOrders(userId, days, deductStock)
+              .then((magaluResult) => {
+                results.push({ platform: "MAGALU", result: magaluResult });
+                void SystemLogService.logSyncComplete(
+                  userId,
+                  "ORDER_IMPORT",
+                  "Magalu",
+                  {
+                    imported: magaluResult.imported,
+                    alreadyExists: magaluResult.alreadyExists,
+                    errors: magaluResult.errors,
+                    days,
+                    deductStock,
+                  },
+                );
+              })
+              .catch((magaluError) => {
+                console.warn(
+                  "[Orders] Magalu import error (non-blocking):",
+                  magaluError instanceof Error
+                    ? magaluError.message
+                    : magaluError,
+                );
+                results.push({
+                  platform: "MAGALU",
+                  error:
+                    magaluError instanceof Error
+                      ? magaluError.message
+                      : "Erro ao importar da Magalu",
                 });
               }),
           );

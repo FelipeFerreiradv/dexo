@@ -763,6 +763,35 @@ export class MarketplaceUseCase {
         }
 
         MagaluOAuthService.clearAccountCircuitBreaker(existingAccount.id);
+
+        // Backfill de pedidos perdidos durante o período de inatividade.
+        if (wasInactive) {
+          const backfillDays = parseInt(
+            process.env.RECONNECT_BACKFILL_DAYS ?? "14",
+            10,
+          );
+          // Captura o id num const ANTES do closure (evita o implicit-any que
+          // o padrão `let account` + setImmediate gera em ML/Shopee).
+          const backfillAccountId = account.id;
+          setImmediate(() => {
+            void OrderUseCase.importRecentMagaluOrdersForAccount(
+              backfillAccountId,
+              backfillDays,
+              true,
+            )
+              .then((r) =>
+                console.log(
+                  `[handleMagaluOAuthCallback] Backfill Magalu account=${backfillAccountId}: imported=${r.imported}, stockDeductions=${r.stockDeductions}`,
+                ),
+              )
+              .catch((e) =>
+                console.error(
+                  `[handleMagaluOAuthCallback] Backfill Magalu failed for account=${backfillAccountId}:`,
+                  e,
+                ),
+              );
+          });
+        }
       } else {
         account = await MarketplaceRepository.createAccount({
           userId,

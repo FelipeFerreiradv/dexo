@@ -19,6 +19,9 @@ import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.servic
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-webhook-signature.service";
+import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
+import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
 import { AccountStatus } from "@prisma/client";
 
 /**
@@ -2124,6 +2127,62 @@ small{color:#666}</style></head><body>
       });
     }
   });
+
+  /**
+   * POST /marketplace/magalu/webhook — recebe eventos nativos v1 da Magalu
+   * (orders_order / orders_delivery). Valida HMAC (best-effort, ver TODO),
+   * responde 200 rápido e processa em background.
+   */
+  app.post(
+    "/magalu/webhook",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body || {}) as MagaluOrderWebhookPayload;
+
+      // Validação de assinatura HMAC-SHA256 (X-Signature-256 sobre
+      // "{X-Timestamp}.{corpo}"). LIMITAÇÃO: o Fastify já parseou o JSON e o
+      // projeto não captura raw body; validamos sobre o JSON re-serializado e
+      // NÃO bloqueamos em mismatch (para não perder pedidos reais) — apenas
+      // logamos. TODO: capturar raw body p/ enforcement estrito.
+      const secret = MAGALU_CONSTANTS.WEBHOOK_SECRET;
+      if (secret) {
+        const sigHeader = request.headers["x-signature-256"] as
+          | string
+          | undefined;
+        const ts = request.headers["x-timestamp"] as string | undefined;
+        const rawApprox = JSON.stringify(body ?? {});
+        const ok = MagaluWebhookSignatureService.verify(
+          rawApprox,
+          ts,
+          sigHeader,
+          secret,
+        );
+        if (!ok) {
+          console.warn(
+            "[magalu/webhook] assinatura HMAC não confere (validação best-effort sobre JSON re-serializado).",
+          );
+        }
+      }
+
+      // Magalu espera resposta rápida — responder 200 e processar depois.
+      reply.status(200).send({ received: true });
+
+      setImmediate(async () => {
+        try {
+          const r = await WebhookUseCase.processMagaluOrderWebhook(body);
+          if (!r.success) {
+            console.warn(`[magalu/webhook] ${r.error}`);
+          } else {
+            console.log(`[magalu/webhook] ${r.action ?? "ok"}`);
+          }
+        } catch (e) {
+          console.error(
+            "[magalu/webhook] erro:",
+            e instanceof Error ? e.message : e,
+          );
+        }
+      });
+    },
+  );
 
   /**
    * GET /marketplace/magalu/status
