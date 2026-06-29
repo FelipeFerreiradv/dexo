@@ -15,6 +15,7 @@ import type {
   BulkOverrideTemplate,
   BulkListingItemResult,
   BulkListingPlatform,
+  PerProductMlOverride,
 } from "../repositories/bulk-listing-job.repository";
 import { SystemLogService } from "../../services/system-log.service";
 
@@ -56,6 +57,37 @@ export interface BulkRunRequest {
   accountId: string;
   categoryId?: string;
   mlSettings?: ListingDispatchRequest["mlSettings"];
+}
+
+/**
+ * Mescla os mlSettings do request global com o override por produto (modo
+ * Revisão individual). O override por produto vence; campos ausentes caem no
+ * request global. Não inclui categoria (resolvida à parte) nem attributes/preço
+ * (aplicados pós-create). Retorna `undefined` se nada restar.
+ */
+function mergePerProductMlSettings(
+  base: ListingDispatchRequest["mlSettings"],
+  ov: PerProductMlOverride,
+): ListingDispatchRequest["mlSettings"] {
+  const merged: NonNullable<ListingDispatchRequest["mlSettings"]> = {
+    ...(base ?? {}),
+  };
+  const pick = <K extends keyof NonNullable<ListingDispatchRequest["mlSettings"]>>(
+    key: K,
+    value: NonNullable<ListingDispatchRequest["mlSettings"]>[K] | undefined,
+  ) => {
+    if (value !== undefined) merged[key] = value;
+  };
+  pick("listingType", ov.listingType);
+  pick("itemCondition", ov.itemCondition);
+  pick("hasWarranty", ov.hasWarranty);
+  pick("warrantyUnit", ov.warrantyUnit);
+  pick("warrantyDuration", ov.warrantyDuration);
+  pick("shippingMode", ov.shippingMode);
+  pick("freeShipping", ov.freeShipping);
+  pick("localPickup", ov.localPickup);
+  pick("manufacturingTime", ov.manufacturingTime);
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 export interface ListingDispatchSnapshot {
@@ -350,8 +382,17 @@ export class ListingDispatcher {
   }): Promise<{ success: number; failed: number; lastError?: string | null }> {
     type Pair = { productId: string; req: BulkRunRequest };
     const pairs: Pair[] = [];
+    const perProduct = input.overrideTemplate?.perProductOverrides;
     for (const pid of input.productIds) {
+      const ov = perProduct?.[pid];
       for (const r of input.requests) {
+        // Skip por conta (modo Revisão individual). Ausente ⇒ inclui tudo, igual
+        // ao de hoje. Poda espelhada por countEffectiveItems no front/rota.
+        const skipped =
+          r.platform === "MERCADO_LIVRE"
+            ? ov?.disabledMlAccountIds?.includes(r.accountId)
+            : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+        if (skipped) continue;
         pairs.push({
           productId: pid,
           req: {
@@ -440,21 +481,30 @@ export class ListingDispatcher {
   ): Promise<BulkListingItemResult> {
     const finishedAt = () => new Date().toISOString();
 
+    // Override por produto (modo Revisão individual). Ausente ⇒ usa o request
+    // global, idêntico ao de hoje. Categoria e mlSettings entram NO create.
+    const ov = overrideTemplate?.perProductOverrides?.[productId];
+
     try {
       let createResult;
       if (req.platform === "MERCADO_LIVRE") {
+        const categoryId = ov?.ml?.categoryId ?? req.categoryId;
+        const mlSettings = ov?.ml
+          ? mergePerProductMlSettings(req.mlSettings, ov.ml)
+          : req.mlSettings;
         createResult = await ListingUseCase.createMLListing(
           userId,
           productId,
-          req.categoryId,
+          categoryId,
           req.accountId,
-          req.mlSettings,
+          mlSettings,
         );
       } else if (req.platform === "SHOPEE") {
+        const categoryId = ov?.shopee?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createShopeeListing(
           userId,
           productId,
-          req.categoryId,
+          categoryId,
           req.accountId,
         );
       } else {
@@ -582,6 +632,20 @@ export class ListingDispatcher {
           if (price > 0) {
             fields = { ...(fields ?? {}), priceOverride: price };
           }
+        }
+      }
+
+      // Override por produto (modo Revisão individual): ficha técnica e preço do
+      // anúncio entram pelo caminho pós-create existente (updateListingFields já
+      // aceita attributesOverride/priceOverride). Só ML; preço explícito do
+      // produto vence a regra global/escalonada para ESTE produto.
+      const ppm = overrideTemplate.perProductOverrides?.[productId]?.ml;
+      if (ppm && req.platform === "MERCADO_LIVRE") {
+        if (ppm.attributes && Object.keys(ppm.attributes).length > 0) {
+          fields = { ...(fields ?? {}), attributesOverride: ppm.attributes };
+        }
+        if (typeof ppm.listingPrice === "number" && ppm.listingPrice > 0) {
+          fields = { ...(fields ?? {}), priceOverride: ppm.listingPrice };
         }
       }
 
