@@ -3,6 +3,9 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluApiService } from "../services/magalu-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import { MagaluPayloadBuilderService } from "../services/magalu-payload-builder.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -379,6 +382,13 @@ export class ListingUseCase {
         );
       case Platform.SHOPEE:
         return this.createShopeeListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+        );
+      case Platform.MAGALU:
+        return this.createMagaluListing(
           userId,
           productId,
           categoryId,
@@ -3110,6 +3120,144 @@ export class ListingUseCase {
    * @param productId ID do produto
    * @param categoryId ID da categoria do Shopee (opcional, serÃ¡ inferida se nÃ£o fornecida)
    */
+  /**
+   * Cria um anúncio (SKU no portfólio) na Magalu a partir de um Product.
+   * Espelha a estrutura do createShopeeListing (resolução de conta + refresh +
+   * validações), mas com o fluxo simples da Magalu: monta payload e POSTa o SKU.
+   * SEM exigir EAN (peças de desmonte/sucata frequentemente não têm).
+   */
+  static async createMagaluListing(
+    userId: string,
+    productId: string,
+    categoryId?: string,
+    accountId?: string,
+  ): Promise<CreateListingResult> {
+    let account: any = null;
+    try {
+      account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.MAGALU,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta Magalu para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
+
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          error: "Conta da Magalu não conectada ou sem credenciais válidas",
+        };
+      }
+
+      // Token refresh automático (mesmo padrão de ML/Shopee).
+      if (account.expiresAt < new Date()) {
+        try {
+          const refreshed =
+            await MagaluOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
+          const updated = await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+          });
+          if (updated) account = updated as any;
+        } catch (refreshErr) {
+          await MarketplaceRepository.updateStatus(
+            account.id,
+            AccountStatus.ERROR,
+          );
+          console.warn(
+            `[ListingUseCase] Failed to refresh Magalu token for account ${account.id}:`,
+            (refreshErr as any)?.message || refreshErr,
+          );
+          return {
+            success: false,
+            error:
+              "Conta da Magalu expirou ou token inválido — reconecte a conta",
+          };
+        }
+      }
+
+      const product =
+        await ListingUseCase.productRepository.findById(productId);
+      if (!product) {
+        return { success: false, error: "Produto não encontrado" };
+      }
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio na Magalu",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio na Magalu",
+        };
+      }
+
+      const payload = MagaluPayloadBuilderService.build(product, categoryId);
+      const created = await MagaluApiService.createSku(
+        account.accessToken,
+        payload,
+      );
+
+      // POST /portfolios/skus responde 202 (assíncrono): o id pode não vir já.
+      // Se não vier, grava um placeholder PENDING_ que o import reconcilia depois
+      // (mesma ideia dos placeholders do ML).
+      const externalListingId = String(
+        created?.id ?? created?.sku ?? `PENDING_${product.sku}`,
+      );
+      const permalink =
+        (created?.permalink as string) || (created?.url as string) || null;
+
+      const listing = await ListingRepository.createListing({
+        productId: product.id,
+        marketplaceAccountId: account.id,
+        externalListingId,
+        externalSku: product.sku ?? undefined,
+        permalink,
+        status: "active",
+      });
+
+      return {
+        success: true,
+        listingId: listing.id,
+        externalListingId,
+        permalink: permalink ?? undefined,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro ao criar anúncio na Magalu",
+      };
+    }
+  }
+
   static async createShopeeListing(
     userId: string,
     productId: string,

@@ -149,6 +149,30 @@ export class MagaluApiService {
   }
 
   /**
+   * Cria um SKU no portfólio do seller (POST /seller/v1/portfolios/skus).
+   * A API responde 202 (assíncrono) — a resposta pode não conter o id final.
+   * TODO(validar): contrato exato do corpo e da resposta.
+   */
+  static async createSku(
+    accessToken: string,
+    payload: unknown,
+  ): Promise<MagaluSku> {
+    try {
+      const response = await axios.post<MagaluSku>(
+        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.PORTFOLIO_SKUS_ENDPOINT}`,
+        payload,
+        {
+          headers: this.authHeaders(accessToken),
+          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+      return response.data ?? ({} as MagaluSku);
+    } catch (error) {
+      throw this.formatError("Erro ao criar SKU na Magalu", error);
+    }
+  }
+
+  /**
    * Lista pedidos recentes (últimos `days` dias).
    * TODO(validar): nome do filtro de data (updated_at__ge?) e paginação real.
    */
