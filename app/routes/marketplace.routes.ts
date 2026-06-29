@@ -2028,4 +2028,184 @@ small{color:#666}</style></head><body>
       }
     },
   );
+
+  // ====================================================================
+  // ROTAS MAGALU (espelham o padrão /ml/*). Toda a integração é aditiva e
+  // só é exercitada quando a flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED
+  // está ligada no front. Webhook + import/sync entram nas Entregas C/D.
+  // ====================================================================
+
+  /**
+   * POST /marketplace/magalu/auth
+   * Inicia o fluxo OAuth (ID Magalu). userId vem da sessão.
+   */
+  app.post<{ Reply: { authUrl: string; state: string } }>(
+    "/magalu/auth",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { authUrl, state } =
+          MarketplaceUseCase.initiateMagaluOAuth(userId);
+        return reply.send({ authUrl, state });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar autenticação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/magalu/callback?code=...&state=...
+   * Callback OAuth da Magalu. Não requer auth prévia — userId vem do state.
+   */
+  app.get<{
+    Querystring: { code?: string; state?: string };
+  }>("/magalu/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    const acceptHeader = ((request.headers.accept as string) || "").toString();
+    const isBrowserRedirect = acceptHeader.includes("text/html");
+    const frontendUrl =
+      process.env.NEXTAUTH_URL ||
+      process.env.CORS_ORIGIN ||
+      "http://localhost:3000";
+
+    try {
+      const code = (request.query as any).code as string | undefined;
+      const state = (request.query as any).state as string | undefined;
+
+      if (!code || !state) {
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+          );
+        }
+        return reply.status(400).send({
+          error: "Parâmetros inválidos",
+          message: "code e state são obrigatórios",
+        });
+      }
+
+      const userId = request.user?.dataOwnerId;
+      const account = await MarketplaceUseCase.handleMagaluOAuthCallback({
+        code,
+        state,
+        userId,
+      });
+
+      if (isBrowserRedirect) {
+        return reply.redirect(
+          `${frontendUrl}/integracoes/magalu/callback?result=success`,
+        );
+      }
+
+      return reply.send({
+        success: true,
+        message: "Conta conectada com sucesso",
+        account: {
+          id: account.id,
+          platform: account.platform,
+          status: account.status,
+          createdAt: account.createdAt,
+        },
+      });
+    } catch (error) {
+      if (isBrowserRedirect) {
+        const errorMsg =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        return reply.redirect(
+          `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+        );
+      }
+      return reply.status(500).send({
+        error: "Erro ao processar callback",
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
+  /**
+   * GET /marketplace/magalu/status
+   */
+  app.get(
+    "/magalu/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const statusData = await MarketplaceUseCase.getMagaluAccountStatus(userId);
+        return reply.send({
+          connected: statusData.connected,
+          platform: Platform.MAGALU,
+          status: statusData.account?.status,
+          message: statusData.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/magalu/accounts — lista contas Magalu do usuário.
+   */
+  app.get(
+    "/magalu/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+        return reply.send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * DELETE /marketplace/magalu — desconecta conta (aceita accountId).
+   */
+  app.delete<{ Reply: { success: boolean; message: string } }>(
+    "/magalu",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        await MarketplaceUseCase.disconnectAccount(
+          userId,
+          Platform.MAGALU,
+          accountId,
+        );
+
+        return reply.send({
+          success: true,
+          message: "Conta Magalu desconectada com sucesso",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao desconectar conta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
 }
