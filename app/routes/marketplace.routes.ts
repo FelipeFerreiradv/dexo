@@ -2208,4 +2208,226 @@ small{color:#666}</style></head><body>
       }
     },
   );
+
+  /**
+   * GET /marketplace/magalu/listings — vínculos produto↔anúncio da Magalu.
+   */
+  app.get(
+    "/magalu/listings",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.MAGALU,
+                },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.MAGALU,
+              );
+
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta não encontrada",
+            message: "Conecte sua conta da Magalu primeiro",
+          });
+        }
+
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                permalink: true,
+                status: true,
+                lastError: true,
+                createdAt: true,
+                product: { select: { name: true, sku: true, stock: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+        return reply.send({ success: true, count: listings.length, listings });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/magalu/import — importa anúncios da Magalu e vincula por SKU.
+   * Responde 202 e processa em background (espelha /ml/import).
+   */
+  app.post(
+    "/magalu/import",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        reply.status(202).send({
+          success: true,
+          message: "Importação iniciada em segundo plano",
+          totalItems: 0,
+          linkedItems: 0,
+          unlinkedItems: 0,
+          items: [],
+          errors: [],
+        });
+
+        setImmediate(async () => {
+          try {
+            const result = await SyncUseCase.importMagaluItems(
+              userId,
+              accountId,
+            );
+            await SystemLogService.logSyncComplete(userId, "IMPORT", "Magalu", {
+              totalItems: result.totalItems,
+              linkedItems: result.linkedItems,
+              unlinkedItems: result.unlinkedItems,
+              errors: result.errors.length,
+            });
+            console.log(
+              `[magalu/import] Background import complete: ${result.linkedItems}/${result.totalItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
+            );
+          } catch (bgErr) {
+            console.error(
+              `[magalu/import] Background import error:`,
+              bgErr instanceof Error ? bgErr.message : bgErr,
+            );
+          }
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar importação da Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/magalu/sync — sincroniza estoque de todos os anúncios
+   * Magalu (multi-contas). Responde 202 e processa em background.
+   */
+  app.post(
+    "/magalu/sync",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        reply.status(202).send({
+          success: true,
+          message: "Sincronização iniciada em segundo plano",
+          total: 0,
+          successful: 0,
+          failed: 0,
+          results: [],
+        });
+
+        setImmediate(async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.MAGALU,
+              accountIds,
+            );
+            await SystemLogService.logSyncComplete(
+              userId,
+              "FULL_SYNC",
+              "Magalu",
+              {
+                total: result.total,
+                successful: result.successful,
+                failed: result.failed,
+              },
+            );
+            console.log(
+              `[magalu/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (bgErr) {
+            console.error(
+              `[magalu/sync] Background sync error:`,
+              bgErr instanceof Error ? bgErr.message : bgErr,
+            );
+          }
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar sincronização da Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /marketplace/magalu/sync/:productId — sincroniza um produto específico.
+   */
+  app.post<{ Params: { productId: string } }>(
+    "/magalu/sync/:productId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { productId } = request.params as { productId: string };
+
+        const result = await SyncUseCase.syncProductStock(productId);
+        const failed = result.filter((r) => !r.success);
+
+        await SystemLogService.logSyncComplete(
+          userId,
+          "PRODUCT_SYNC",
+          "Magalu",
+          {
+            productId,
+            successful: result.length - failed.length,
+            failed: failed.length,
+          },
+        );
+
+        return reply.send({ success: failed.length === 0, results: result });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque do produto na Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
 }
