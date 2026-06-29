@@ -63,6 +63,11 @@ type NavSection = {
   items: NavItem[];
 };
 
+// Integração Magalu 100% aditiva atrás da flag. Desligada ⇒ item escondido no
+// menu (e a página dá notFound), mantendo o app idêntico ao de hoje.
+const MAGALU_INTEGRATION_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
 const NAV_SECTIONS: NavSection[] = [
   {
     id: "primary",
@@ -130,6 +135,16 @@ const NAV_SECTIONS: NavSection[] = [
         href: "/integracoes/shopee",
         icon: Link2,
       },
+      ...(MAGALU_INTEGRATION_ENABLED
+        ? [
+            {
+              id: "magalu",
+              label: "Magazine Luiza",
+              href: "/integracoes/magalu",
+              icon: ShoppingBag,
+            },
+          ]
+        : []),
     ],
   },
   {
