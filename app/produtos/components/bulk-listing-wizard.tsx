@@ -57,8 +57,17 @@ import {
 } from "@/app/marketplaces/services/bulk-listing-rules.service";
 import { computeStaggeredPrices } from "@/app/marketplaces/services/cross-account-price.service";
 import { useBulkListingJob } from "../hooks/use-bulk-listing-job";
+import { usePerProductListing } from "./bulk-review/use-per-product-listing";
+import { PerProductReviewStep } from "./bulk-review/per-product-review-step";
+import {
+  buildPerProductOverrides,
+  type GlobalListingDefaults,
+  type ReviewCategoryOption,
+} from "./bulk-review/per-product-types";
 
 type Platform = "MERCADO_LIVRE" | "SHOPEE";
+
+type WizardMode = "quick" | "review";
 
 interface MarketplaceAccountLite {
   id: string;
@@ -143,6 +152,26 @@ const STEPS: StepperStep[] = [
   },
 ];
 
+// Mesmos ids/posições do fluxo rápido; só os rótulos das etapas 2 e 3 mudam para
+// refletir o modo Revisão individual. Reaproveita StepAccounts/StepRules/
+// StepProgress; só a etapa 3 troca de conteúdo.
+const REVIEW_STEPS: StepperStep[] = [
+  STEPS[0],
+  {
+    id: 2,
+    title: "Defaults globais",
+    description: "Pré-preenche cada produto",
+    icon: Settings2,
+  },
+  {
+    id: 3,
+    title: "Revisão individual",
+    description: "Produto a produto",
+    icon: ListChecks,
+  },
+  STEPS[3],
+];
+
 export function BulkListingWizard({
   open,
   onOpenChange,
@@ -181,10 +210,70 @@ export function BulkListingWizard({
     }>
   >([]);
 
+  // Modo do fluxo: "quick" (atual, default) ou "review" (Revisão individual).
+  const [mode, setMode] = useState<WizardMode>("quick");
+  // Opções de categoria (ML/Shopee), carregadas sob demanda no modo Revisão.
+  const [mlOptions, setMlOptions] = useState<ReviewCategoryOption[]>([]);
+  const [shopeeOptions, setShopeeOptions] = useState<ReviewCategoryOption[]>([]);
+
+  // --- Estado do modo Revisão individual (camada de anúncio por produto) ---
+  const globalMlIdsArr = useMemo(
+    () => Array.from(selectedMlIds),
+    [selectedMlIds],
+  );
+  const globalShopeeIdsArr = useMemo(
+    () => Array.from(selectedShopeeIds),
+    [selectedShopeeIds],
+  );
+  const reviewProducts = useMemo(
+    () =>
+      selectedProducts.map((p) => ({
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        price: p.price,
+        imageUrl: p.imageUrl,
+        imageUrls: p.imageUrls,
+        mlCategoryId: p.mlCategoryId,
+        shopeeCategoryId: p.shopeeCategoryId,
+      })),
+    [selectedProducts],
+  );
+  const reviewDefaults: GlobalListingDefaults = useMemo(
+    () => ({
+      autoCategory: rules.mlCategoryStrategy === "auto",
+      mlListingType: rules.mlListingType,
+      mlItemCondition: rules.mlItemCondition,
+      mlFreeShipping: rules.mlFreeShipping,
+    }),
+    [
+      rules.mlCategoryStrategy,
+      rules.mlListingType,
+      rules.mlItemCondition,
+      rules.mlFreeShipping,
+    ],
+  );
+  const pp = usePerProductListing({
+    products: reviewProducts,
+    defaults: reviewDefaults,
+    globalMlIds: globalMlIdsArr,
+    globalShopeeIds: globalShopeeIdsArr,
+    mlOptions,
+    email,
+  });
+  const {
+    enterStep: ppEnterStep,
+    goNext: ppGoNext,
+    goBack: ppGoBack,
+    finalizeFlush: ppFinalizeFlush,
+    resetAll: ppResetAll,
+  } = pp;
+
   // Reset wizard state when reopened
   useEffect(() => {
     if (open) {
       setStep(1);
+      setMode("quick");
       setRules(DEFAULT_RULES);
       setSelectedMlIds(new Set());
       setSelectedShopeeIds(new Set());
@@ -193,8 +282,77 @@ export function BulkListingWizard({
       setParentJobIdForRetry(null);
       setFinishedNotified(false);
       setPreflightIssues([]);
+      setMlOptions([]);
+      setShopeeOptions([]);
+      ppResetAll();
     }
-  }, [open]);
+  }, [open, ppResetAll]);
+
+  // Carrega categorias ML/Shopee sob demanda só ao CHEGAR na etapa de Revisão
+  // individual (etapa 3) — espelha o lazy-load por etapa do modal e evita o
+  // fetch de ~12k itens à toa no rápido E quando o usuário escolhe Revisão mas
+  // abandona antes da etapa 3. A sugestão automática (enterStep) não depende
+  // dessa lista; ela só é necessária p/ a busca manual do combobox.
+  useEffect(() => {
+    if (!open || mode !== "review" || step !== 3 || !email) return;
+    let cancelled = false;
+    (async () => {
+      const base = getApiBaseUrl();
+      try {
+        if (selectedMlIds.size > 0 && mlOptions.length === 0) {
+          const r = await fetch(`${base}/marketplace/ml/categories`, {
+            headers: { email },
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (!cancelled && Array.isArray(d?.categories))
+              setMlOptions(d.categories);
+          }
+        }
+        if (selectedShopeeIds.size > 0 && shopeeOptions.length === 0) {
+          const r = await fetch(`${base}/marketplace/shopee/categories`, {
+            headers: { email },
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (!cancelled && Array.isArray(d?.categories))
+              setShopeeOptions(d.categories);
+          }
+        }
+      } catch {
+        // fail-open: comboboxes caem no fallback estático / aviso de sync
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    mode,
+    step,
+    email,
+    selectedMlIds,
+    selectedShopeeIds,
+    mlOptions.length,
+    shopeeOptions.length,
+  ]);
+
+  // Se a seleção GLOBAL de contas mudar, zera as configs por produto para
+  // re-semear com as contas atuais. Sem isso, o snapshot de contas congelado na
+  // 1ª visita ficaria stale: adicionar uma conta nova depois de revisar produtos
+  // faria o produto NÃO publicar nessa conta (over-poda silenciosa). As contas
+  // só mudam na etapa 1 (StepAccounts), então o reset nunca ocorre com um painel
+  // de produto visível.
+  const reviewAccountsKey = useMemo(
+    () =>
+      [...globalMlIdsArr].sort().join(",") +
+      "|" +
+      [...globalShopeeIdsArr].sort().join(","),
+    [globalMlIdsArr, globalShopeeIdsArr],
+  );
+  useEffect(() => {
+    ppResetAll();
+  }, [reviewAccountsKey, ppResetAll]);
 
   // Fetch marketplace accounts on mount of step 1
   useEffect(() => {
@@ -393,10 +551,86 @@ export function BulkListingWizard({
     setStep(step - 1);
   };
 
+  // --- Navegação do modo Revisão individual (caminho paralelo ao rápido) ---
+  const handleReviewNext = async () => {
+    if (step === 1) {
+      if (totalAccountsSelected === 0) {
+        setSubmitError("Selecione ao menos uma conta de marketplace.");
+        return;
+      }
+      setSubmitError(null);
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      if (
+        rules.priceRuleType === "fixed" &&
+        (!rules.priceRuleValue || rules.priceRuleValue <= 0)
+      ) {
+        setSubmitError("Preço fixo deve ser maior que zero.");
+        return;
+      }
+      setSubmitError(null);
+      setStep(3);
+      ppEnterStep();
+      // Mesmo preflight de categoria Shopee do fluxo rápido.
+      void runPreflight();
+      return;
+    }
+    if (step === 3) {
+      // Avança produto a produto; só confirma no último.
+      const advanced = ppGoNext();
+      if (advanced) return;
+      const allShopeeBlocked =
+        selectedShopeeIds.size > 0 &&
+        preflightIssues.length > 0 &&
+        preflightIssues.length === selectedProducts.length &&
+        selectedMlIds.size === 0;
+      if (allShopeeBlocked) {
+        setSubmitError(
+          "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
+        );
+        return;
+      }
+      setConfirmOpen(true);
+    }
+  };
+
+  const handleReviewBack = () => {
+    if (step === 1) return;
+    if (step === 2) {
+      setStep(1);
+      return;
+    }
+    if (step === 3) {
+      // Volta produto a produto; do primeiro produto, retorna à etapa Defaults.
+      const wentBack = ppGoBack();
+      if (!wentBack) setStep(2);
+    }
+  };
+
   const handleSubmit = async () => {
     setSubmitting(true);
     setSubmitError(null);
     try {
+      // Template global (idêntico ao rápido). No modo Revisão, anexa os overrides
+      // por produto DENTRO do template (campo aditivo; backend ignora se ausente).
+      let overrideTemplate: Record<string, unknown> | null =
+        buildOverrideTemplate();
+      if (mode === "review") {
+        const map = ppFinalizeFlush();
+        const ppo = buildPerProductOverrides(
+          map,
+          globalMlIdsArr,
+          globalShopeeIdsArr,
+        );
+        if (Object.keys(ppo).length > 0) {
+          overrideTemplate = {
+            ...(overrideTemplate ?? {}),
+            perProductOverrides: ppo,
+          };
+        }
+      }
       const res = await fetch(`${getApiBaseUrl()}/listings/bulk`, {
         method: "POST",
         headers: {
@@ -406,7 +640,7 @@ export function BulkListingWizard({
         body: JSON.stringify({
           productIds: selectedProducts.map((p) => p.id),
           requests: buildRequests(),
-          overrideTemplate: buildOverrideTemplate(),
+          overrideTemplate,
         }),
       });
       const data = await res.json();
@@ -520,6 +754,25 @@ export function BulkListingWizard({
     [selectedMlIds, mlAccounts],
   );
 
+  // Contas Shopee selecionadas (para o modo Revisão individual).
+  const selectedShopeeAccountsSel = useMemo(
+    () =>
+      Array.from(selectedShopeeIds)
+        .map((id) => shopeeAccounts.find((a) => a.id === id))
+        .filter((a): a is MarketplaceAccountLite => !!a),
+    [selectedShopeeIds, shopeeAccounts],
+  );
+
+  // Pendência de preflight do produto atualmente em revisão (badge no painel).
+  const currentReviewProductId = pp.current?.id;
+  const preflightIssueForCurrent = useMemo(() => {
+    if (!currentReviewProductId) return undefined;
+    const found = preflightIssues.find(
+      (i) => i.productId === currentReviewProductId,
+    );
+    return found ? { code: found.code, message: found.message } : undefined;
+  }, [currentReviewProductId, preflightIssues]);
+
   return (
     <>
       <Dialog
@@ -529,7 +782,7 @@ export function BulkListingWizard({
           else onOpenChange(true);
         }}
       >
-        <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[98vw] max-w-[1600px] max-h-[96vh] overflow-y-auto sm:max-w-[98vw]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Megaphone className="size-5" />
@@ -541,7 +794,7 @@ export function BulkListingWizard({
           </DialogHeader>
 
           <StepperHeader
-            steps={STEPS}
+            steps={mode === "review" ? REVIEW_STEPS : STEPS}
             currentStep={step}
             onGoToStep={(s) => {
               if (jobId) return; // não permite voltar depois de disparar
@@ -557,6 +810,17 @@ export function BulkListingWizard({
           )}
 
           <div className="min-h-[280px]">
+            {step === 1 && (
+              <ModeSelector
+                mode={mode}
+                onChange={(m) => {
+                  setMode(m);
+                  setSubmitError(null);
+                }}
+                disabled={!!jobId}
+              />
+            )}
+
             {step === 1 && (
               <StepAccounts
                 loading={accountsLoading}
@@ -591,7 +855,7 @@ export function BulkListingWizard({
               />
             )}
 
-            {step === 3 && (
+            {step === 3 && mode === "quick" && (
               <StepReview
                 products={selectedProducts}
                 rules={rules}
@@ -602,6 +866,18 @@ export function BulkListingWizard({
                 preflightLoading={preflightLoading}
                 preflightIssues={preflightIssues}
                 crossAccountAccounts={selectedMlAccountsOrdered}
+              />
+            )}
+
+            {step === 3 && mode === "review" && (
+              <PerProductReviewStep
+                pp={pp}
+                globalMlAccounts={selectedMlAccountsOrdered}
+                globalShopeeAccounts={selectedShopeeAccountsSel}
+                mlOptions={mlOptions}
+                shopeeOptions={shopeeOptions}
+                preflightIssue={preflightIssueForCurrent}
+                email={email}
               />
             )}
 
@@ -618,7 +894,7 @@ export function BulkListingWizard({
             )}
           </div>
 
-          {step < 4 && (
+          {step < 4 && mode === "quick" && (
             <StepperFooter
               currentStep={step}
               totalSteps={3}
@@ -627,6 +903,20 @@ export function BulkListingWizard({
               onNext={handleNext}
               onSubmit={handleNext}
               submitLabel="Confirmar e criar"
+            />
+          )}
+
+          {step < 4 && mode === "review" && (
+            <StepperFooter
+              currentStep={step}
+              totalSteps={3}
+              isSubmitting={submitting}
+              onBack={handleReviewBack}
+              onNext={handleReviewNext}
+              onSubmit={handleReviewNext}
+              submitLabel={
+                step === 3 && pp.index < pp.total - 1 ? "Próximo" : "Finalizar"
+              }
             />
           )}
 
@@ -682,6 +972,50 @@ export function BulkListingWizard({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/* --------------------------- Seletor de modo --------------------------- */
+function ModeSelector({
+  mode,
+  onChange,
+  disabled,
+}: {
+  mode: WizardMode;
+  onChange: (m: WizardMode) => void;
+  disabled?: boolean;
+}) {
+  const options: Array<{ id: WizardMode; title: string; desc: string }> = [
+    {
+      id: "quick",
+      title: "Rápido / em massa",
+      desc: "Aplica as mesmas regras a todos os produtos de uma vez.",
+    },
+    {
+      id: "review",
+      title: "Revisão individual",
+      desc: "Confira e ajuste cada anúncio, um por um, antes de publicar.",
+    },
+  ];
+  return (
+    <div className="mb-4 grid gap-2 sm:grid-cols-2">
+      {options.map((opt) => (
+        <button
+          key={opt.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(opt.id)}
+          className={`rounded-lg border p-3 text-left transition ${
+            mode === opt.id
+              ? "border-primary bg-primary/5 ring-1 ring-primary"
+              : "hover:bg-muted/50"
+          } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+        >
+          <p className="text-sm font-medium">{opt.title}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{opt.desc}</p>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -874,7 +1208,9 @@ function StepRules({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">Resolver automaticamente</SelectItem>
+            <SelectItem value="auto">
+              Categoria automática (sugerir por produto)
+            </SelectItem>
             <SelectItem value="from_product">
               Usar mlCategoryId do produto
             </SelectItem>

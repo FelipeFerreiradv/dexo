@@ -1053,11 +1053,31 @@ export async function listingRoutes(app: FastifyInstance) {
           body.overrideTemplate ?? null,
         );
 
+        // Total efetivo: desconta os skips de conta por produto (modo Revisão
+        // individual, em overrideTemplate.perProductOverrides). Sem overrides ⇒
+        // produtos×requests, idêntico ao de hoje. Espelha a poda do dispatcher.
+        const ppo = overrideTemplate?.perProductOverrides;
+        let effectiveTotal = body.productIds.length * body.requests.length;
+        if (ppo) {
+          effectiveTotal = 0;
+          for (const pid of body.productIds) {
+            const ov = ppo[pid];
+            for (const r of body.requests) {
+              const skipped =
+                r.platform === "MERCADO_LIVRE"
+                  ? ov?.disabledMlAccountIds?.includes(r.accountId)
+                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+              if (!skipped) effectiveTotal++;
+            }
+          }
+        }
+
         const job = await BulkListingJobRepository.create({
           userId,
           productIds: body.productIds,
           requests: body.requests as BulkListingRequestSpec[],
           overrideTemplate,
+          totalItems: effectiveTotal,
         });
 
         // Disparo fire-and-forget. O cliente faz polling pelo jobId.
@@ -1239,13 +1259,37 @@ export async function listingRoutes(app: FastifyInstance) {
           }
         }
 
+        const retryProductIds = Array.from(productIdsSet);
+        const retryRequests = Array.from(requestsKey.values());
+        const retryTemplate =
+          (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
+          null;
+
+        // Total efetivo do retry: desconta skips por produto (caso o job de
+        // origem seja do modo Revisão individual). Sem overrides ⇒ idêntico ao
+        // de hoje.
+        const retryPpo = retryTemplate?.perProductOverrides;
+        let retryTotal = retryProductIds.length * retryRequests.length;
+        if (retryPpo) {
+          retryTotal = 0;
+          for (const pid of retryProductIds) {
+            const ov = retryPpo[pid];
+            for (const r of retryRequests) {
+              const skipped =
+                r.platform === "MERCADO_LIVRE"
+                  ? ov?.disabledMlAccountIds?.includes(r.accountId)
+                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+              if (!skipped) retryTotal++;
+            }
+          }
+        }
+
         const newJob = await BulkListingJobRepository.create({
           userId,
-          productIds: Array.from(productIdsSet),
-          requests: Array.from(requestsKey.values()),
-          overrideTemplate:
-            (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
-            null,
+          productIds: retryProductIds,
+          requests: retryRequests,
+          overrideTemplate: retryTemplate,
+          totalItems: retryTotal,
         });
 
         void (async () => {
@@ -1254,11 +1298,9 @@ export async function listingRoutes(app: FastifyInstance) {
             const summary = await ListingDispatcher.dispatchBatch({
               userId,
               actorId: request.user!.id,
-              productIds: Array.from(productIdsSet),
-              requests: Array.from(requestsKey.values()),
-              overrideTemplate:
-                (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
-                null,
+              productIds: retryProductIds,
+              requests: retryRequests,
+              overrideTemplate: retryTemplate,
               onItemDone: async (item) => {
                 try {
                   await BulkListingJobRepository.appendResult(newJob.id, item);

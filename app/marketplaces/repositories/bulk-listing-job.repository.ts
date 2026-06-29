@@ -20,6 +20,40 @@ export interface BulkListingRequestSpec {
   };
 }
 
+/**
+ * Override por produto (modo "Revisão individual" do bulk). ADITIVO: viaja
+ * DENTRO de `overrideTemplate.perProductOverrides`. Quando ausente, o dispatcher
+ * se comporta byte-idêntico ao fluxo de regra global. Categoria/mlSettings são
+ * aplicados no CREATE; attributes/listingPrice no override pós-create; o skip de
+ * contas (`disabled*AccountIds`) poda os pares produto×conta.
+ */
+export interface PerProductMlOverride {
+  categoryId?: string;
+  listingType?: string;
+  itemCondition?: string;
+  hasWarranty?: boolean;
+  warrantyUnit?: string;
+  warrantyDuration?: number;
+  shippingMode?: string;
+  freeShipping?: boolean;
+  localPickup?: boolean;
+  manufacturingTime?: number;
+  listingPrice?: number;
+  catalogProductId?: string;
+  attributes?: Record<string, { value_id?: string; value_name?: string }>;
+}
+
+export interface PerProductShopeeOverride {
+  categoryId?: string;
+}
+
+export interface PerProductOverrideEntry {
+  ml?: PerProductMlOverride;
+  shopee?: PerProductShopeeOverride;
+  disabledMlAccountIds?: string[];
+  disabledShopeeAccountIds?: string[];
+}
+
 export interface BulkOverrideTemplate {
   priceRule?:
     | { type: "keep" }
@@ -39,6 +73,11 @@ export interface BulkOverrideTemplate {
     percent: number;
     indexByAccountId?: Record<string, number>;
   };
+
+  // Config por produto (modo Revisão individual). Opcional/aditivo: ausente ⇒
+  // comportamento atual. Persistido junto ao job (coluna `overrideTemplate`
+  // JSON, sem migration) ⇒ o retry-failed relê e reproduz fielmente.
+  perProductOverrides?: Record<string, PerProductOverrideEntry>;
 }
 
 export interface BulkListingItemResult {
@@ -69,8 +108,13 @@ export class BulkListingJobRepository {
     productIds: string[];
     requests: BulkListingRequestSpec[];
     overrideTemplate?: BulkOverrideTemplate | null;
+    // Total efetivo de anúncios. Quando ausente, usa produtos×requests (igual ao
+    // de hoje). O modo Revisão individual passa o total já descontando os skips
+    // de conta por produto, para o progresso bater com o real.
+    totalItems?: number;
   }) {
-    const totalItems = data.productIds.length * data.requests.length;
+    const totalItems =
+      data.totalItems ?? data.productIds.length * data.requests.length;
     return prisma.bulkListingJob.create({
       data: {
         userId: data.userId,
