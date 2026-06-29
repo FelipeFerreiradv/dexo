@@ -24,13 +24,18 @@ import {
 } from "./product-search-terms";
 
 const LOW_STOCK_THRESHOLD = 10;
-const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
+const PUBLISHED_MARKETPLACE_PLATFORMS = [
+  "MERCADO_LIVRE",
+  "SHOPEE",
+  "MAGALU",
+] as const;
 type PublishedMarketplacePlatform =
   (typeof PUBLISHED_MARKETPLACE_PLATFORMS)[number];
 
 const MARKETPLACE_LABELS: Record<PublishedMarketplacePlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
+  MAGALU: "Magalu",
 };
 const PUBLICATION_STATUS_VALUES: Record<
   Exclude<ProductPublicationStatus, "NO_LISTING">,
@@ -46,7 +51,11 @@ const PUBLICATION_STATUS_VALUES: Record<
 function isPublishedMarketplacePlatform(
   platform: Platform | null | undefined,
 ): platform is PublishedMarketplacePlatform {
-  return platform === "MERCADO_LIVRE" || platform === "SHOPEE";
+  return (
+    platform === "MERCADO_LIVRE" ||
+    platform === "SHOPEE" ||
+    platform === "MAGALU"
+  );
 }
 
 function combineWhereClauses(

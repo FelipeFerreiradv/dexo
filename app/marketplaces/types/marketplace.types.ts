@@ -2,6 +2,7 @@
 export enum MarketplacePlatform {
   MERCADO_LIVRE = "MERCADO_LIVRE",
   SHOPEE = "SHOPEE",
+  MAGALU = "MAGALU",
 }
 
 export enum MarketplaceAccountStatus {

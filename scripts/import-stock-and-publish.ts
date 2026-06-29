@@ -299,7 +299,18 @@ async function loadAccounts(
     select: { id: true, platform: true, accountName: true, expiresAt: true },
   });
   const cutoff = new Date(Date.now() + minMinutesValid * 60 * 1000);
-  const filtered = accounts.filter((a) => {
+  const filtered = accounts.filter(
+    (
+      a,
+    ): a is {
+      id: string;
+      platform: "MERCADO_LIVRE" | "SHOPEE";
+      accountName: string;
+      expiresAt: Date;
+    } => {
+    // Este bulk-import só publica em ML/Shopee; Magalu (publicação) é tratada
+    // pelo fluxo da aplicação, não por este script. Exclui MAGALU aqui.
+    if (a.platform !== "MERCADO_LIVRE" && a.platform !== "SHOPEE") return false;
     if (platformFlag === "ml" && a.platform !== "MERCADO_LIVRE") return false;
     if (platformFlag === "shopee" && a.platform !== "SHOPEE") return false;
     if (a.expiresAt < cutoff) {

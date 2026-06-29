@@ -27,6 +27,7 @@ export const LISTING_STATUS_LABELS: Record<
 export const LISTING_PLATFORM_LABELS: Record<MarketplaceListingPlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
+  MAGALU: "Magalu",
 };
 
 export function getListingStatusBadge(status?: string | null) {

@@ -555,6 +555,7 @@ enum Quality {
 enum Platform {
   MERCADO_LIVRE
   SHOPEE
+  MAGALU
 }
 
 enum AccountStatus {

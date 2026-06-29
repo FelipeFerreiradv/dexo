@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900" role="img" aria-label="Magalu">
+  <rect width="900" height="900" rx="200" fill="#0086FF"/>
+  <path d="M210 650 V300 a40 40 0 0 1 70 -27 L450 470 L620 273 a40 40 0 0 1 70 27 V650 a45 45 0 0 1 -90 0 V430 L484 565 a45 45 0 0 1 -68 0 L300 430 V650 a45 45 0 0 1 -90 0 Z" fill="#FFFFFF"/>
+</svg>
