@@ -320,7 +320,8 @@ export class MagaluOAuthService {
     try {
       const payloadSegment = accessToken.split(".")[1];
       if (!payloadSegment) return "";
-      const json = Buffer.from(payloadSegment, "base64").toString("utf-8");
+      // JWT usa base64url (- e _ em vez de + e /).
+      const json = Buffer.from(payloadSegment, "base64url").toString("utf-8");
       const payload = JSON.parse(json) as Record<string, any>;
 
       const candidate =
