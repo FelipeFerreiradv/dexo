@@ -1003,6 +1003,21 @@ export class OrderUseCase {
           continue;
         }
 
+        // Só importa/deduz pedidos em VENDA CONFIRMADA (PAID/SHIPPED/DELIVERED).
+        // Espelha ML (getRecentOrders status="paid") e Shopee (API já devolve só
+        // pós-venda); como o getRecentOrders da Magalu NÃO filtra por status,
+        // pulamos PENDING/CANCELLED aqui — quando virarem pagos, o próximo ciclo
+        // (poll/webhook) reimporta e desconta uma única vez. Evita baixar estoque
+        // de pedido ainda não pago / depois cancelado.
+        const mappedStatus = this.mapMagaluStatus(magaluOrder.status);
+        if (
+          mappedStatus !== "PAID" &&
+          mappedStatus !== "SHIPPED" &&
+          mappedStatus !== "DELIVERED"
+        ) {
+          continue;
+        }
+
         const { items, linkedCount } = await this.mapMagaluOrderItems(
           itemList,
           account.userId,
@@ -1035,7 +1050,7 @@ export class OrderUseCase {
         const orderData: OrderCreate = {
           marketplaceAccountId,
           externalOrderId,
-          status: this.mapMagaluStatus(magaluOrder.status),
+          status: mappedStatus,
           totalAmount,
           customerName:
             magaluOrder.customer_name ??

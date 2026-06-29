@@ -834,7 +834,11 @@ export async function listingRoutes(app: FastifyInstance) {
         }
 
         for (const req of body.requests) {
-          if (req.platform !== "MERCADO_LIVRE" && req.platform !== "SHOPEE") {
+          if (
+            req.platform !== "MERCADO_LIVRE" &&
+            req.platform !== "SHOPEE" &&
+            req.platform !== "MAGALU"
+          ) {
             return reply.status(400).send({
               error: "Dados inválidos",
               message: `platform desconhecido: ${req.platform}`,
@@ -1024,7 +1028,9 @@ export async function listingRoutes(app: FastifyInstance) {
           body.requests.some(
             (r) =>
               !r ||
-              (r.platform !== "MERCADO_LIVRE" && r.platform !== "SHOPEE") ||
+              (r.platform !== "MERCADO_LIVRE" &&
+                r.platform !== "SHOPEE" &&
+                r.platform !== "MAGALU") ||
               typeof r.accountId !== "string" ||
               !r.accountId,
           )
