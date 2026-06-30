@@ -173,6 +173,11 @@ const STOCK_STATUS_OPTIONS: Array<{
   { value: "LOW_STOCK", label: "Estoque baixo" },
 ];
 
+// Magalu (3º marketplace) atrás da flag — quando off, o filtro fica idêntico
+// ao de hoje (só ML/Shopee/Todos os canais).
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
 const MARKETPLACE_OPTIONS: Array<{
   value: ProductFilterMarketplace;
   label: string;
@@ -180,6 +185,12 @@ const MARKETPLACE_OPTIONS: Array<{
   { value: "BOTH", label: "Todos os canais" },
   { value: "MERCADO_LIVRE", label: "Mercado Livre" },
   { value: "SHOPEE", label: "Shopee" },
+  ...(MAGALU_ENABLED
+    ? ([{ value: "MAGALU", label: "Magalu" }] as Array<{
+        value: ProductFilterMarketplace;
+        label: string;
+      }>)
+    : []),
 ];
 
 const QUALITY_OPTIONS: Array<{

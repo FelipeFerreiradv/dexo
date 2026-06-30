@@ -334,14 +334,16 @@ export function StackedBar({
   ml,
   shopee,
   outro,
+  magalu = 0,
   widthPct,
 }: {
   ml: number;
   shopee: number;
   outro: number;
+  magalu?: number;
   widthPct: number;
 }) {
-  const total = ml + shopee + outro;
+  const total = ml + shopee + outro + magalu;
   const seg = (v: number, color: string) =>
     total > 0 && v > 0 ? (
       <View
@@ -366,6 +368,7 @@ export function StackedBar({
       >
         {seg(ml, PLATFORM_COLOR.ML)}
         {seg(shopee, PLATFORM_COLOR.SHOPEE)}
+        {seg(magalu, PLATFORM_COLOR.MAGALU)}
         {seg(outro, PLATFORM_COLOR.OUTRO)}
       </View>
     </View>

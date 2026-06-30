@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 export interface BulkDeleteListingResultView {
   listingId: string;
   externalListingId: string;
-  platform: "MERCADO_LIVRE" | "SHOPEE" | null;
+  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | null;
   closed: boolean;
   error?: string;
   retryable?: boolean;
@@ -42,6 +42,7 @@ interface BulkDeleteResultModalProps {
 const platformLabel = (p: BulkDeleteListingResultView["platform"]): string => {
   if (p === "MERCADO_LIVRE") return "Mercado Livre";
   if (p === "SHOPEE") return "Shopee";
+  if (p === "MAGALU") return "Magalu";
   return "Marketplace";
 };
 

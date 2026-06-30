@@ -107,7 +107,7 @@ interface ProductData {
   imageUrls?: string[];
   scrapId?: string;
   createdFromMarketplace?: boolean;
-  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | null;
+  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | null;
   compatibilities?: Compatibility[];
 }
 
@@ -306,7 +306,9 @@ export function ProductDetail({ productId }: { productId: string }) {
                   Origem: Anúncio{" "}
                   {product.originPlatform === "SHOPEE"
                     ? "Shopee"
-                    : "Mercado Livre"}
+                    : product.originPlatform === "MAGALU"
+                      ? "Magalu"
+                      : "Mercado Livre"}
                 </Badge>
               )}
               {product.quality && (

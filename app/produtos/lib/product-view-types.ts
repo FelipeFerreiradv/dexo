@@ -49,7 +49,7 @@ export interface Product {
   mlCategoryId?: string | null;
   shopeeCategoryId?: string | null;
   createdFromMarketplace?: boolean;
-  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | null;
+  originPlatform?: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | null;
   productLocation?: {
     id: string;
     code: string;
