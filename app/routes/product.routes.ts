@@ -820,6 +820,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                   categoryId: lst.categoryId,
                 });
               }
+            } else if (lst.platform === "MAGALU") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "MAGALU",
+                  accountId: accId,
+                  // categoria opcional — createMagaluListing resolve (de-para/busca)
+                  categoryId: lst.categoryId,
+                });
+              }
             }
           }
 

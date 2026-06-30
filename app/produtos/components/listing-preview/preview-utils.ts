@@ -38,6 +38,7 @@ export interface PreviewFormValues {
   attributes?: Record<string, { value_id?: string; value_name?: string }>;
   createMLListing?: boolean;
   createShopeeListing?: boolean;
+  createMagaluListing?: boolean;
 }
 
 export interface PreviewAccount {
@@ -69,6 +70,9 @@ export interface BuildPreviewArgs {
   mlOptions: CategoryOption[];
   shopeeOptions: CategoryOption[];
   formatCurrency: (value: number | null | undefined) => string;
+  // Magalu (opcionais p/ retrocompatibilidade dos chamadores/testes).
+  magaluAccounts?: PreviewAccount[];
+  selectedMagaluAccountIds?: string[];
 }
 
 // ---- Output ---------------------------------------------------------------
@@ -77,6 +81,7 @@ export interface ListingPreviewViewModel {
   /** Whether each marketplace preview should be shown (user opted to create). */
   showML: boolean;
   showShopee: boolean;
+  showMagalu: boolean;
 
   title: string;
   description: string;
@@ -88,6 +93,7 @@ export interface ListingPreviewViewModel {
   /** Pre-formatted via the dialog's own formatCurrency (parity with Revisão). */
   mlPriceFormatted: string;
   shopeePriceFormatted: string;
+  magaluPriceFormatted: string;
 
   /** ML free shipping (from mlFreeShipping). Shopee shipping is static/illustrative. */
   freeShipping: boolean;
@@ -98,6 +104,8 @@ export interface ListingPreviewViewModel {
   /** Breadcrumbs already include a generic autopeças prefix + the chosen leaf. */
   mlBreadcrumb: string[];
   shopeeBreadcrumb: string[];
+  /** Magalu: categoria é auto-resolvida no backend → breadcrumb genérico. */
+  magaluBreadcrumb: string[];
 
   /** "O que você precisa saber" bullet rows (brand/model/year/version + attributes). */
   specs: Array<{ label: string; value: string }>;
@@ -105,9 +113,10 @@ export interface ListingPreviewViewModel {
   compatibilitySummary: string | null;
   compatibilities: PreviewCompatibility[];
 
-  /** "Vendido por …" (ML) / store name (Shopee). */
+  /** "Vendido por …" (ML) / store name (Shopee/Magalu). */
   mlAccountLabel: string;
   shopeeAccountLabel: string;
+  magaluAccountLabel: string;
 }
 
 // Generic breadcrumbs used when no category is chosen (graceful degradation).
@@ -121,6 +130,9 @@ const SHOPEE_GENERIC_BREADCRUMB = [
   "Acessórios para Veículos",
   "Peças de Reposição para Automóveis",
 ];
+// Magalu resolve a categoria no backend (de-para/busca) — o modal não escolhe,
+// então a prévia mostra o caminho de domínio genérico.
+const MAGALU_GENERIC_BREADCRUMB = ["Veículos e Peças", "Autopeças"];
 
 function resolveMlCategoryLeaf(
   values: PreviewFormValues,
@@ -236,6 +248,8 @@ export function buildPreviewViewModel(
     mlOptions,
     shopeeOptions,
     formatCurrency,
+    magaluAccounts,
+    selectedMagaluAccountIds,
   } = args;
 
   const images =
@@ -251,6 +265,7 @@ export function buildPreviewViewModel(
   return {
     showML: !!values.createMLListing,
     showShopee: !!values.createShopeeListing,
+    showMagalu: !!values.createMagaluListing,
 
     title: values.name?.trim() || "—",
     description: values.description?.trim() || "",
@@ -260,6 +275,7 @@ export function buildPreviewViewModel(
 
     mlPriceFormatted: formatCurrency(values.mlListingPrice ?? values.price),
     shopeePriceFormatted: formatCurrency(values.price),
+    magaluPriceFormatted: formatCurrency(values.price),
 
     freeShipping: !!values.mlFreeShipping,
     warranty: buildWarranty(values),
@@ -271,6 +287,7 @@ export function buildPreviewViewModel(
     shopeeBreadcrumb: shopeeLeaf
       ? [...SHOPEE_GENERIC_BREADCRUMB, shopeeLeaf]
       : [...SHOPEE_GENERIC_BREADCRUMB],
+    magaluBreadcrumb: [...MAGALU_GENERIC_BREADCRUMB],
 
     specs: buildSpecs(values),
     compatibilitySummary: buildCompatibilitySummary(compatibilities),
@@ -283,6 +300,13 @@ export function buildPreviewViewModel(
     shopeeAccountLabel: joinAccountNames(
       selectedAccountNames(shopeeAccounts, selectedShopeeAccountIds),
       "Sua loja Shopee",
+    ),
+    magaluAccountLabel: joinAccountNames(
+      selectedAccountNames(
+        magaluAccounts ?? [],
+        selectedMagaluAccountIds ?? [],
+      ),
+      "Sua loja Magalu",
     ),
   };
 }
