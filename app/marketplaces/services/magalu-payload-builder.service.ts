@@ -16,6 +16,7 @@ export interface MagaluSkuPayload {
   title: string;
   description?: string;
   sku: string;
+  brand: string; // obrigatório pela API (422 "brand: Field required" sem ele)
   ean?: string;
   price: number;
   quantity: number;
@@ -47,6 +48,12 @@ export class MagaluPayloadBuilderService {
         MAGALU_CONSTANTS.DESCRIPTION_MAX_LENGTH,
       ),
       sku: String(product?.sku ?? ""),
+      // Marca: obrigatória pela Magalu. Tenta brand do produto; fallback para a
+      // marca do veículo de origem, senão "Genérico" (peça de desmonte sem marca).
+      brand:
+        String(
+          product?.brand ?? product?.mlBrand ?? product?.vehicleBrand ?? "",
+        ).trim() || "Genérico",
       // SEM EAN passa (opcional). Só inclui quando existe.
       ...(ean ? { ean } : {}),
       price: Number(product?.price ?? 0),

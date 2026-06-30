@@ -43,6 +43,16 @@ describe("MagaluPayloadBuilderService.build", () => {
     expect(p.ean).toBe("7891234567890");
   });
 
+  it("brand: usa o do produto; fallback 'Genérico' quando ausente (obrigatório p/ Magalu)", () => {
+    expect(
+      MagaluPayloadBuilderService.build({ ...baseProduct, brand: "Renault" })
+        .brand,
+    ).toBe("Renault");
+    expect(MagaluPayloadBuilderService.build(baseProduct).brand).toBe(
+      "Genérico",
+    );
+  });
+
   it("deduplica imagens preservando a ordem", () => {
     const p = MagaluPayloadBuilderService.build(baseProduct);
     expect(p.images).toEqual(["https://img/1.jpg", "https://img/2.jpg"]);

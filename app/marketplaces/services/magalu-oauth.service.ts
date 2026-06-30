@@ -251,7 +251,12 @@ export class MagaluOAuthService {
     overrideClientId?: string,
     overrideClientSecret?: string,
   ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
-    validateMagaluConfig();
+    // Contas conectadas via CLI guardam credenciais por-conta (appClientId/
+    // appClientSecret) — nesse caso NÃO exigimos as MAGALU_* do env. Só validamos
+    // o env quando o refresh vai cair nas credenciais do ambiente.
+    if (!overrideClientId || !overrideClientSecret) {
+      validateMagaluConfig();
+    }
     try {
       const tokenUrl = new URL(
         MAGALU_CONSTANTS.OAUTH_TOKEN_ENDPOINT,

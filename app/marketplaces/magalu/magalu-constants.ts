@@ -38,8 +38,12 @@ export const MAGALU_CONSTANTS = {
     process.env.MAGALU_REDIRECT_URI ||
     `${process.env.APP_BACKEND_URL || "http://localhost:3333"}/marketplace/magalu/callback`,
 
-  // Escopos OAuth (separados por espaço). Confirmar a lista exata no portal.
-  // Cobrem: portfolio (sku/preço/estoque/veículos) leitura+escrita e pedidos leitura.
+  // Escopos OAuth (separados por espaço) das APIs de MARKETPLACE do seller.
+  // VALIDADO contra a API real: `apiin:all` é escopo do Magalu CLOUD (object
+  // storage/VM/etc., criado pela CLI `idm`) e NÃO dá acesso ao seller das APIs
+  // de marketplace — `/seller/v1/portfolios/*` exige estes `open:*-seller`.
+  // O client precisa ser criado COM estes escopos (portal developers.magalu.com)
+  // e autorizado com o tenant da LOJA (PJ), não um tenant "person".
   SCOPES:
     process.env.MAGALU_SCOPES ||
     [
@@ -49,8 +53,6 @@ export const MAGALU_CONSTANTS = {
       "open:portfolio-prices-seller:write",
       "open:portfolio-stocks-seller:read",
       "open:portfolio-stocks-seller:write",
-      "open:portfolio-vehicles-seller:read",
-      "open:portfolio-vehicles-seller:write",
       "open:order-order-seller:read",
       "open:order-delivery-seller:read",
     ].join(" "),
