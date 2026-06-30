@@ -93,6 +93,32 @@ async function main() {
     );
   }
   if (!channelId) throw new Error("Sem channel id (passe --channel-id)");
+
+  // Modo: só setar estoque + preço de um SKU já existente (PATCH/atualizar).
+  if (hasFlag("set-stock-price")) {
+    console.log(`\n[setStock] sku=${product.sku} qty=${product.stock} ...`);
+    try {
+      await MagaluApiService.setStock(token, product.sku, product.stock, channelId, {
+        create: true,
+      });
+      console.log("[stock OK]");
+    } catch (e: any) {
+      console.log("[stock ERRO]", e?.status, JSON.stringify(e?.responseData));
+    }
+    const priceReais = Number(product.price);
+    console.log(`\n[setPrice] sku=${product.sku} price=R$${priceReais} ...`);
+    try {
+      await MagaluApiService.setPrice(token, product.sku, priceReais, channelId, {
+        create: true,
+      });
+      console.log("[price OK]");
+    } catch (e: any) {
+      console.log("[price ERRO]", e?.status, JSON.stringify(e?.responseData));
+    }
+    await prisma.$disconnect();
+    return;
+  }
+
   const payload = MagaluPayloadBuilderService.build(product, {
     groupId,
     channelId,

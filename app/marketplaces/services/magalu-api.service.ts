@@ -102,50 +102,93 @@ export class MagaluApiService {
   }
 
   /**
-   * Atualiza o estoque de um SKU.
-   * TODO(validar): a Magalu usa um serviço de estoque separado; confirmar
-   * método (PUT/PATCH), caminho e nome do campo de quantidade.
+   * Estoque do SKU (VALIDADO na doc): POST cria, PATCH atualiza, em
+   * /seller/v1/portfolios/stocks/{sku}. Body: { channel:{id}, quantity,
+   * type:"AVAILABLE", branch?:{id} }. SKU vai na URL.
    */
-  static async updateStock(
+  static async setStock(
     accessToken: string,
     sku: string,
     quantity: number,
+    channelId: string,
+    opts?: { branchId?: string; create?: boolean },
   ): Promise<void> {
+    await this.upsert(
+      accessToken,
+      `${MAGALU_CONSTANTS.API_URL}/seller/v1/portfolios/stocks/${encodeURIComponent(sku)}`,
+      {
+        channel: { id: channelId },
+        ...(opts?.branchId ? { branch: { id: opts.branchId } } : {}),
+        quantity,
+        type: "AVAILABLE",
+      },
+      Boolean(opts?.create),
+      "Erro ao atualizar estoque na Magalu",
+    );
+  }
+
+  /**
+   * Faz POST (criar) ou PATCH (atualizar) e, em 404/409, tenta o outro método —
+   * torna estoque/preço idempotentes independente de a entrada já existir.
+   */
+  private static async upsert(
+    accessToken: string,
+    url: string,
+    data: unknown,
+    create: boolean,
+    errLabel: string,
+  ): Promise<void> {
+    const primary = create ? "post" : "patch";
+    const fallback = create ? "patch" : "post";
+    const headers = this.authHeaders(accessToken);
+    const timeout = MAGALU_CONSTANTS.REQUEST_TIMEOUT;
     try {
-      await axios.put(
-        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.PORTFOLIO_STOCKS_ENDPOINT}`,
-        { sku, quantity },
-        {
-          headers: this.authHeaders(accessToken),
-          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
-        },
-      );
+      await axios.request({ method: primary, url, data, headers, timeout });
     } catch (error) {
-      throw this.formatError("Erro ao atualizar estoque na Magalu", error);
+      const status = axios.isAxiosError(error)
+        ? error.response?.status
+        : undefined;
+      if (status === 404 || status === 409) {
+        try {
+          await axios.request({ method: fallback, url, data, headers, timeout });
+          return;
+        } catch (err2) {
+          throw this.formatError(errLabel, err2);
+        }
+      }
+      throw this.formatError(errLabel, error);
     }
   }
 
   /**
-   * Atualiza o preço de um SKU.
-   * TODO(validar): serviço de preço separado; confirmar método/caminho/campo.
+   * Preço do SKU (VALIDADO na doc): POST cria, PATCH atualiza, em
+   * /seller/v1/portfolios/prices/{sku}. Body: { channel:{id}, currency:"BRL",
+   * list_price, price, normalizer:100 }. price/list_price são INTEIROS em
+   * CENTAVOS (normalizer 100). Recebe reais e converte.
    */
-  static async updatePrice(
+  static async setPrice(
     accessToken: string,
     sku: string,
-    price: number,
+    priceReais: number,
+    channelId: string,
+    opts?: { listPriceReais?: number; create?: boolean },
   ): Promise<void> {
-    try {
-      await axios.put(
-        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.PORTFOLIO_PRICES_ENDPOINT}`,
-        { sku, price },
-        {
-          headers: this.authHeaders(accessToken),
-          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
-        },
-      );
-    } catch (error) {
-      throw this.formatError("Erro ao atualizar preço na Magalu", error);
-    }
+    const cents = (v: number) => Math.round(v * 100);
+    const price = cents(priceReais);
+    const listPrice = cents(opts?.listPriceReais ?? priceReais);
+    await this.upsert(
+      accessToken,
+      `${MAGALU_CONSTANTS.API_URL}/seller/v1/portfolios/prices/${encodeURIComponent(sku)}`,
+      {
+        channel: { id: channelId },
+        currency: "BRL",
+        list_price: listPrice,
+        price,
+        normalizer: 100,
+      },
+      Boolean(opts?.create),
+      "Erro ao atualizar preço na Magalu",
+    );
   }
 
   /**

@@ -3253,6 +3253,36 @@ export class ListingUseCase {
         payload,
       );
 
+      // Após criar o SKU, define estoque e preço iniciais (serviços separados:
+      // /portfolios/stocks e /portfolios/prices). Não falha a criação do anúncio
+      // se isso der erro — o sync recorrente reaplica depois.
+      try {
+        await MagaluApiService.setStock(
+          account.accessToken,
+          product.sku,
+          product.stock,
+          channelId,
+          { create: true },
+        );
+        const price = Number(product.price);
+        if (Number.isFinite(price) && price > 0) {
+          await MagaluApiService.setPrice(
+            account.accessToken,
+            product.sku,
+            price,
+            channelId,
+            { create: true },
+          );
+        }
+      } catch (stockPriceErr) {
+        console.warn(
+          `[ListingUseCase] Magalu SKU criado, mas falhou estoque/preço inicial (sku=${product.sku}):`,
+          stockPriceErr instanceof Error
+            ? stockPriceErr.message
+            : stockPriceErr,
+        );
+      }
+
       // POST /portfolios/skus responde 202 (assíncrono): o id pode não vir já.
       // Se não vier, grava um placeholder PENDING_ que o import reconcilia depois
       // (mesma ideia dos placeholders do ML).

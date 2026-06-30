@@ -2242,6 +2242,23 @@ export class SyncUseCase {
   }
 
   /**
+   * Resolve o channel.id do seller Magalu (obrigatório em estoque/preço),
+   * via GET /seller/v1/portfolios/me. O seller tem 1 canal.
+   */
+  private static async resolveMagaluChannelId(
+    accessToken: string,
+  ): Promise<string> {
+    const channels = await MagaluApiService.getChannels(accessToken);
+    const id = channels[0]?.id;
+    if (!id) {
+      throw new Error(
+        "Seller Magalu sem canal de venda (channel) — não é possível sincronizar.",
+      );
+    }
+    return id;
+  }
+
+  /**
    * Sincroniza estoque de um produto para a Magalu.
    * Atualiza a quantidade do SKU no portfólio (serviço de estoque da Magalu).
    */
@@ -2299,10 +2316,12 @@ export class SyncUseCase {
     }
 
     try {
-      await MagaluApiService.updateStock(
+      const channelId = await this.resolveMagaluChannelId(account.accessToken);
+      await MagaluApiService.setStock(
         account.accessToken,
         sku,
         product.stock,
+        channelId,
       );
 
       await this.logSync(
@@ -2382,15 +2401,22 @@ export class SyncUseCase {
     }
 
     try {
-      await MagaluApiService.updateStock(
+      const channelId = await this.resolveMagaluChannelId(account.accessToken);
+      await MagaluApiService.setStock(
         account.accessToken,
         sku,
         product.stock,
+        channelId,
       );
 
       const price = product.price != null ? Number(product.price) : null;
       if (price != null && Number.isFinite(price)) {
-        await MagaluApiService.updatePrice(account.accessToken, sku, price);
+        await MagaluApiService.setPrice(
+          account.accessToken,
+          sku,
+          price,
+          channelId,
+        );
       }
 
       await this.logSync(
