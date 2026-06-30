@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MagaluApiService } from "../magalu-api.service";
 import { MagaluCategoryResolutionService } from "../magalu-category-resolution.service";
+import { MAGALU_CATEGORY_MAP } from "../../magalu/magalu-category-map";
 
 vi.mock("../magalu-api.service");
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  for (const k of Object.keys(MAGALU_CATEGORY_MAP)) delete MAGALU_CATEGORY_MAP[k];
 });
 
 describe("MagaluCategoryResolutionService.resolveCategoryId", () => {
@@ -15,6 +17,26 @@ describe("MagaluCategoryResolutionService.resolveCategoryId", () => {
       name: "Foo",
     });
     expect(id).toBe("cat-x");
+  });
+
+  it("de-para: casa o tipo da peça antes de buscar (prefixo mais longo)", async () => {
+    MAGALU_CATEGORY_MAP["tampa"] = "cat-tampa";
+    MAGALU_CATEGORY_MAP["tampa reservatorio"] = "cat-reservatorio";
+    (MagaluApiService as any).searchCategories = vi.fn();
+    const id = await MagaluCategoryResolutionService.resolveCategoryId("tok", {
+      name: "Tampa Reservatório Renault Sandero 2009",
+    });
+    expect(id).toBe("cat-reservatorio"); // prefixo mais longo vence
+    expect(MagaluApiService.searchCategories).not.toHaveBeenCalled(); // não busca
+  });
+
+  it("de-para: ignora chave que não é prefixo do nome", async () => {
+    MAGALU_CATEGORY_MAP["farol"] = "cat-farol";
+    (MagaluApiService as any).searchCategories = vi.fn().mockResolvedValue([]);
+    const id = await MagaluCategoryResolutionService.resolveCategoryId("tok", {
+      name: "Tampa Reservatorio",
+    });
+    expect(id).toBeNull(); // "farol" não casa → cai na busca (vazia) → null
   });
 
   it("viés de domínio: prefere o resultado no path do hint (Veículos e Peças)", async () => {

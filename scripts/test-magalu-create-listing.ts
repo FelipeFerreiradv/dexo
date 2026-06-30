@@ -71,6 +71,27 @@ async function main() {
     return;
   }
 
+  // Descoberta de categoria: lista candidatos (★ = no domínio Veículos e Peças)
+  // para popular o de-para magalu-category-map.ts. Ex.: --find-category="tampa reservatorio"
+  const findCat = arg("find-category");
+  if (findCat) {
+    const cats = await MagaluApiService.searchCategories(token, {
+      name: findCat,
+    });
+    const hint = MAGALU_CONSTANTS.CATEGORY_ROOT_HINT.toLowerCase();
+    console.log(`[find-category] "${findCat}" — ${cats.length} resultado(s):`);
+    for (const c of cats) {
+      const inDomain = String((c as any).path ?? "")
+        .toLowerCase()
+        .startsWith(hint);
+      console.log(
+        `  ${inDomain ? "★" : " "} ${c.id}  ${(c as any).path ?? (c as any).name ?? ""}`,
+      );
+    }
+    await prisma.$disconnect();
+    return;
+  }
+
   const product = productId
     ? await prisma.product.findFirst({ where: { id: productId, userId } })
     : await prisma.product.findFirst({

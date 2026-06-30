@@ -1,5 +1,6 @@
 import { MagaluApiService } from "./magalu-api.service";
 import { MAGALU_CONSTANTS } from "../magalu/magalu-constants";
+import { MAGALU_CATEGORY_MAP } from "../magalu/magalu-category-map";
 import type { MagaluAttribute } from "../types/magalu-category.types";
 
 /**
@@ -21,11 +22,12 @@ export interface MagaluCategoryFields {
 
 export class MagaluCategoryResolutionService {
   /**
-   * Resolve o id da categoria:
-   *  1. product.magaluCategoryId explícito (mapa do lojista) — vence sempre.
-   *  2. busca por nome com TERMO PROGRESSIVO (nome cru → 3 → 2 → 1ª palavra),
+   * Resolve o id da categoria, em ordem de confiança:
+   *  1. product.magaluCategoryId explícito — vence sempre.
+   *  2. DE-PARA curado por tipo de peça (prefixo mais longo do nome) — preciso.
+   *  3. busca por nome com TERMO PROGRESSIVO (nome cru → 3 → 2 → 1ª palavra),
    *     porque a busca por similaridade falha com nome específico demais.
-   *  3. VIÉS DE DOMÍNIO: entre os resultados, prefere os cujo `path` começa por
+   *  4. VIÉS DE DOMÍNIO: entre os resultados, prefere os cujo `path` começa por
    *     CATEGORY_ROOT_HINT (ex.: "Veículos e Peças"). Sem match no domínio →
    *     retorna null (SKU fica em DRAFT; não categoriza errado).
    * Com o hint vazio ("") cai no comportamento simples (1º resultado).
@@ -36,6 +38,9 @@ export class MagaluCategoryResolutionService {
   ): Promise<string | null> {
     const explicit = product?.magaluCategoryId;
     if (explicit) return String(explicit);
+
+    const mapped = this.lookupCategoryMap(product);
+    if (mapped) return mapped;
 
     const hint = String(
       product?.magaluCategoryRootHint ?? MAGALU_CONSTANTS.CATEGORY_ROOT_HINT,
@@ -72,6 +77,34 @@ export class MagaluCategoryResolutionService {
       words[0],
     ].filter((t): t is string => Boolean(t));
     return Array.from(new Set(candidates));
+  }
+
+  /**
+   * De-para curado: casa o tipo da peça pelo PREFIXO mais longo do nome do
+   * produto (normalizado). Ex.: nome "tampa reservatorio renault sandero 2009"
+   * casa a chave "tampa reservatorio" (e não a mais curta "tampa").
+   */
+  private static lookupCategoryMap(product: any): string | null {
+    const name = this.normalize(product?.name);
+    if (!name) return null;
+    let best: { len: number; id: string } | null = null;
+    for (const [rawKey, id] of Object.entries(MAGALU_CATEGORY_MAP)) {
+      const key = this.normalize(rawKey);
+      if (!key || !id) continue;
+      if (name === key || name.startsWith(`${key} `)) {
+        if (!best || key.length > best.len) best = { len: key.length, id };
+      }
+    }
+    return best?.id ?? null;
+  }
+
+  /** minúsculas, sem acento, trim — para casamento de termos. */
+  private static normalize(s: unknown): string {
+    return String(s ?? "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim();
   }
 
   /**
@@ -112,13 +145,7 @@ export class MagaluCategoryResolutionService {
     attr: MagaluAttribute,
     product: any,
   ): { value: string | null; fallback: boolean } {
-    const norm = (s: unknown) =>
-      String(s ?? "")
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
-        .trim();
-    const key = `${norm(attr.name)} ${norm(attr.display_name)}`;
+    const key = `${this.normalize(attr.name)} ${this.normalize(attr.display_name)}`;
     const has = (...terms: string[]) => terms.some((t) => key.includes(t));
     const s = (v: unknown): string | null => {
       const x = String(v ?? "").trim();
