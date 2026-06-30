@@ -92,10 +92,18 @@ async function main() {
     return;
   }
 
+  const nameLike = arg("name-like");
   const product = productId
     ? await prisma.product.findFirst({ where: { id: productId, userId } })
     : await prisma.product.findFirst({
-        where: { userId, stock: { gt: 0 }, price: { gt: 0 } },
+        where: {
+          userId,
+          stock: { gt: 0 },
+          price: { gt: 0 },
+          ...(nameLike
+            ? { name: { contains: nameLike, mode: "insensitive" } }
+            : {}),
+        },
         orderBy: { updatedAt: "desc" },
       });
   if (!product) throw new Error("Produto não encontrado (precisa stock>0 e price>0)");
