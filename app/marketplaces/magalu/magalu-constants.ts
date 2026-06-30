@@ -27,6 +27,9 @@ export const MAGALU_CONSTANTS = {
   PORTFOLIO_PRICES_ENDPOINT: "/seller/v1/portfolios/prices",
   PORTFOLIO_STOCKS_ENDPOINT: "/seller/v1/portfolios/stocks",
   ORDERS_ENDPOINT: "/seller/v1/orders",
+  // Logística — geração de etiqueta de envio (keyed por delivery.id + channel.id).
+  // POST → { label:{ signed_url } } p/ baixar o PDF/ZPL. Doc validada 2026-06-30.
+  LOGISTICS_SHIPPING_LABELS_ENDPOINT: "/seller/v1/logistics/shipping-labels",
   WEBHOOK_SIGNUP_ENDPOINT: "/v1/onboarding/signup", // PUT → devolve segredo whsec_*
 
   // Credenciais (do app criado no ID Magalu)

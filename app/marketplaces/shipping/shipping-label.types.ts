@@ -8,7 +8,7 @@
 
 export type LabelSize = "A4" | "THERMAL";
 
-export type ShippingPlatform = "MERCADO_LIVRE" | "SHOPEE";
+export type ShippingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 /**
  * Estados persistidos em `ShipmentLabel.labelStatus`.

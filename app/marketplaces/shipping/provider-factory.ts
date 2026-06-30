@@ -9,6 +9,7 @@ import {
 } from "./shipping-label.types";
 import { MlShippingLabelProvider } from "../services/ml-shipping.service";
 import { ShopeeShippingLabelProvider } from "../services/shopee-shipping.service";
+import { MagaluShippingLabelProvider } from "../services/magalu-shipping.service";
 
 export function getShippingProvider(
   platform: ShippingPlatform | string,
@@ -18,6 +19,8 @@ export function getShippingProvider(
       return new MlShippingLabelProvider();
     case "SHOPEE":
       return new ShopeeShippingLabelProvider();
+    case "MAGALU":
+      return new MagaluShippingLabelProvider();
     default:
       throw new ShippingLabelError(
         "UNSUPPORTED_PLATFORM",

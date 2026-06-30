@@ -4,10 +4,11 @@
  * (order.usercase.ts): tenta a chamada com o token atual; em erro de auth
  * (401/403), refresca, persiste no banco e retenta UMA vez.
  *
- * Reutilizado pelos dois adapters. Não altera os clients existentes.
+ * Reutilizado pelos adapters (ML/Shopee/Magalu). Não altera os clients existentes.
  */
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import type { ShippingAccount } from "./shipping-label.types";
 
@@ -90,6 +91,37 @@ export class ShippingAuthRetry {
       account.accessToken = refreshed.access_token;
       account.refreshToken = refreshed.refresh_token;
       return await fn(refreshed.access_token, shopId);
+    }
+  }
+
+  /**
+   * Executa `fn` com um access token válido da Magalu. Em erro de auth, refresca
+   * via MagaluOAuthService.refreshAccessTokenForAccount, persiste e retenta.
+   * Mesma forma do `.ml` (o refresh devolve { accessToken, refreshToken,
+   * expiresIn }).
+   */
+  static async magalu<T>(
+    account: ShippingAccount,
+    fn: (accessToken: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn(account.accessToken);
+    } catch (error) {
+      if (!isMarketplaceAuthError(error) || !account.refreshToken) {
+        throw error;
+      }
+      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+        account.id,
+        account.refreshToken,
+      );
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+      account.accessToken = refreshed.accessToken;
+      account.refreshToken = refreshed.refreshToken;
+      return await fn(refreshed.accessToken);
     }
   }
 }
