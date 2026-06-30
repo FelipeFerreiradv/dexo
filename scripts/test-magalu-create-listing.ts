@@ -82,12 +82,23 @@ async function main() {
     const cats = await MagaluApiService.searchCategories(token, {
       name: findCat,
     });
-    const hint = MAGALU_CONSTANTS.CATEGORY_ROOT_HINT.toLowerCase();
-    console.log(`[find-category] "${findCat}" — ${cats.length} resultado(s):`);
-    for (const c of cats) {
-      const inDomain = String((c as any).path ?? "")
+    const norm = (s: unknown) =>
+      String(s ?? "")
         .toLowerCase()
-        .startsWith(hint);
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+    const h = norm(MAGALU_CONSTANTS.CATEGORY_ROOT_HINT);
+    const domain = cats.filter((c) => norm((c as any).path).startsWith(h));
+    // Mostra só o domínio (Veículos e Peças); se nada casar, mostra todos.
+    const shown = domain.length ? domain : cats;
+    console.log(
+      `[find-category] "${findCat}" — ${cats.length} resultado(s)` +
+        (domain.length
+          ? `, ${domain.length} em Veículos e Peças:`
+          : " (nenhum no domínio — mostrando todos):"),
+    );
+    for (const c of shown) {
+      const inDomain = norm((c as any).path).startsWith(h);
       console.log(
         `  ${inDomain ? "★" : " "} ${c.id}  ${(c as any).path ?? (c as any).name ?? ""}`,
       );
