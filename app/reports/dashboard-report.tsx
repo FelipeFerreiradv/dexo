@@ -23,7 +23,7 @@ import {
 } from "./primitives";
 import { AreaTimeline } from "./charts";
 
-type CanonPlat = "ML" | "SHOPEE" | "OUTRO";
+type CanonPlat = "ML" | "SHOPEE" | "MAGALU" | "OUTRO";
 
 export interface DashboardReportData {
   company: string;
@@ -49,7 +49,13 @@ export interface DashboardReportData {
   };
   equipe: {
     produtos: number;
-    anuncios: { total: number; ml: number; shopee: number; outro: number };
+    anuncios: {
+      total: number;
+      ml: number;
+      shopee: number;
+      magalu: number;
+      outro: number;
+    };
     top: Array<{ nome: string; produtos: number; anuncios: number }>;
   };
 }
@@ -62,7 +68,10 @@ function shortDate(iso: string): string {
 }
 
 function platLabel(p: CanonPlat): string {
-  return p === "ML" ? "Mercado Livre" : p === "SHOPEE" ? "Shopee" : "Outro";
+  if (p === "ML") return "Mercado Livre";
+  if (p === "SHOPEE") return "Shopee";
+  if (p === "MAGALU") return "Magalu";
+  return "Outro";
 }
 
 function Bar({ widthPct, color }: { widthPct: number; color: string }) {
@@ -292,6 +301,11 @@ function Doc({ data }: { data: DashboardReportData }) {
               label="Anúncios Shopee"
               value={fmtInt(equipe.anuncios.shopee)}
               dot={PLATFORM_COLOR.SHOPEE}
+            />
+            <Kpi
+              label="Anúncios Magalu"
+              value={fmtInt(equipe.anuncios.magalu)}
+              dot={PLATFORM_COLOR.MAGALU}
             />
           </KpiRow>
           <View style={{ flexDirection: "row", marginBottom: 6 }}>
