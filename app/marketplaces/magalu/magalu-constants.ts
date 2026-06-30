@@ -67,6 +67,14 @@ export const MAGALU_CONSTANTS = {
   // Estado (state) para CSRF
   STATE_LENGTH: 32,
 
+  // Resolução de categoria: viés de domínio. A busca por nome (similaridade)
+  // mistura domínios (ex.: "Tampa" devolve itens de cozinha/piscina); como o
+  // perfil do Dexo é desmonte/autopeças, filtramos os resultados cujo `path`
+  // começa por este hint. Sem match confiável no domínio → SKU fica em DRAFT
+  // (melhor que categorizar errado). Vazio/"" desliga o viés (pega o 1º match).
+  CATEGORY_ROOT_HINT:
+    process.env.MAGALU_CATEGORY_ROOT_HINT ?? "Veículos e Peças",
+
   // Limites de anúncio — PROVISÓRIOS até confirmar na doc/conta real.
   TITLE_MAX_LENGTH: 150,
   DESCRIPTION_MAX_LENGTH: 8000,

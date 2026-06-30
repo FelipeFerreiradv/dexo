@@ -17,17 +17,45 @@ describe("MagaluCategoryResolutionService.resolveCategoryId", () => {
     expect(id).toBe("cat-x");
   });
 
-  it("busca por nome e pega o 1º (mais relevante)", async () => {
+  it("viés de domínio: prefere o resultado no path do hint (Veículos e Peças)", async () => {
+    // Nome cru não acha; só a 1ª palavra ("Tampa") acha, e entre os resultados
+    // pega o que está em "Veículos e Peças" (não o de cozinha).
     (MagaluApiService as any).searchCategories = vi
       .fn()
-      .mockResolvedValue([{ id: "c1" }, { id: "c2" }]);
+      .mockResolvedValueOnce([]) // "Tampa Reservatorio Renault Sandero 2009"
+      .mockResolvedValueOnce([]) // "Tampa Reservatorio Renault"
+      .mockResolvedValueOnce([]) // "Tampa Reservatorio"
+      .mockResolvedValueOnce([
+        { id: "cozinha", path: "Casa e Jardim/Utensílios/Tampa Champagne" },
+        { id: "auto", path: "Veículos e Peças/Peças de Motor/Junta da Tampa" },
+      ]); // "Tampa"
     const id = await MagaluCategoryResolutionService.resolveCategoryId("tok", {
-      name: "Tampa Reservatorio",
+      name: "Tampa Reservatorio Renault Sandero 2009",
+    });
+    expect(id).toBe("auto");
+  });
+
+  it("retorna null quando há resultados mas nenhum no domínio", async () => {
+    (MagaluApiService as any).searchCategories = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "x", path: "Casa e Jardim/Utensílios/Tampa Champagne" },
+      ]);
+    const id = await MagaluCategoryResolutionService.resolveCategoryId("tok", {
+      name: "Tampa",
+    });
+    expect(id).toBeNull();
+  });
+
+  it("hint vazio: cai no 1º resultado", async () => {
+    (MagaluApiService as any).searchCategories = vi
+      .fn()
+      .mockResolvedValue([{ id: "c1", path: "Qualquer" }]);
+    const id = await MagaluCategoryResolutionService.resolveCategoryId("tok", {
+      name: "Tampa",
+      magaluCategoryRootHint: "",
     });
     expect(id).toBe("c1");
-    expect(MagaluApiService.searchCategories).toHaveBeenCalledWith("tok", {
-      name: "Tampa Reservatorio",
-    });
   });
 
   it("retorna null quando não há nome nem id", async () => {

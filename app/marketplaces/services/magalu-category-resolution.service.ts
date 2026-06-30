@@ -1,4 +1,5 @@
 import { MagaluApiService } from "./magalu-api.service";
+import { MAGALU_CONSTANTS } from "../magalu/magalu-constants";
 import type { MagaluAttribute } from "../types/magalu-category.types";
 
 /**
@@ -20,8 +21,14 @@ export interface MagaluCategoryFields {
 
 export class MagaluCategoryResolutionService {
   /**
-   * Resolve o id da categoria: usa product.magaluCategoryId se houver; senão
-   * busca por nome (similaridade) e pega o melhor resultado (1º).
+   * Resolve o id da categoria:
+   *  1. product.magaluCategoryId explícito (mapa do lojista) — vence sempre.
+   *  2. busca por nome com TERMO PROGRESSIVO (nome cru → 3 → 2 → 1ª palavra),
+   *     porque a busca por similaridade falha com nome específico demais.
+   *  3. VIÉS DE DOMÍNIO: entre os resultados, prefere os cujo `path` começa por
+   *     CATEGORY_ROOT_HINT (ex.: "Veículos e Peças"). Sem match no domínio →
+   *     retorna null (SKU fica em DRAFT; não categoriza errado).
+   * Com o hint vazio ("") cai no comportamento simples (1º resultado).
    */
   static async resolveCategoryId(
     accessToken: string,
@@ -29,12 +36,42 @@ export class MagaluCategoryResolutionService {
   ): Promise<string | null> {
     const explicit = product?.magaluCategoryId;
     if (explicit) return String(explicit);
-    const term = String(product?.name ?? "").trim();
-    if (!term) return null;
-    const cats = await MagaluApiService.searchCategories(accessToken, {
-      name: term,
-    });
-    return cats[0]?.id ?? null;
+
+    const hint = String(
+      product?.magaluCategoryRootHint ?? MAGALU_CONSTANTS.CATEGORY_ROOT_HINT,
+    )
+      .trim()
+      .toLowerCase();
+
+    for (const term of this.searchTerms(product)) {
+      const cats = await MagaluApiService.searchCategories(accessToken, {
+        name: term,
+      });
+      if (!cats.length) continue;
+      if (!hint) return cats[0].id;
+      const inDomain = cats.find((c) =>
+        String(c.path ?? "")
+          .toLowerCase()
+          .startsWith(hint),
+      );
+      if (inDomain) return inDomain.id;
+      // termo achou resultados mas nenhum no domínio → tenta termo mais curto.
+    }
+    return null;
+  }
+
+  /** Termos de busca, do mais específico ao mais genérico (dedup). */
+  private static searchTerms(product: any): string[] {
+    const name = String(product?.name ?? "").trim();
+    if (!name) return [];
+    const words = name.split(/\s+/).filter(Boolean);
+    const candidates = [
+      name,
+      words.slice(0, 3).join(" "),
+      words.slice(0, 2).join(" "),
+      words[0],
+    ].filter((t): t is string => Boolean(t));
+    return Array.from(new Set(candidates));
   }
 
   /**
