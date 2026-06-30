@@ -449,6 +449,16 @@ export class SyncUseCase {
     const externalItemIds = skus
       .map((s) => extractExternalId(s))
       .filter(Boolean);
+    // SKUs crus (= product.sku, gravado em externalSku) p/ casar o placeholder
+    // PENDING_<sku> que o create da Magalu deixa (POST 202 sem id real). Sem
+    // isto, o import não acharia o vínculo por externalListingId e DUPLICARIA.
+    const rawSkus = Array.from(
+      new Set(
+        skus
+          .map((s) => extractSku(s))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
     const normalizedSkus = Array.from(
       new Set(
         skus
@@ -460,11 +470,24 @@ export class SyncUseCase {
     const existingListings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
-        externalListingId: { in: externalItemIds },
+        OR: [
+          { externalListingId: { in: externalItemIds } },
+          ...(rawSkus.length > 0
+            ? [{ externalSku: { in: rawSkus } }]
+            : []),
+        ],
       },
     });
     const existingListingsMap = new Map(
       existingListings.map((l) => [l.externalListingId, l]),
+    );
+    // Índice por SKU p/ reusar o vínculo placeholder (PENDING_<sku>) em vez de
+    // criar duplicata quando a Magalu devolve o id real (≈ o próprio SKU). Só é
+    // consultado no fallback abaixo — quando NÃO houve match por id externo.
+    const existingBySku = new Map(
+      existingListings
+        .filter((l) => l.externalSku)
+        .map((l) => [l.externalSku as string, l] as const),
     );
 
     const products =
@@ -491,7 +514,13 @@ export class SyncUseCase {
       try {
         const sku = extractSku(s);
         const normalizedSku = normalizeSku(sku);
-        const existingListing = existingListingsMap.get(externalListingId);
+        // Casa primeiro pelo id externo; se não houver, tenta pelo SKU (caso do
+        // placeholder PENDING_<sku> do create) p/ NÃO duplicar o vínculo. O
+        // fallback por SKU só dispara quando não houve match por id — então se
+        // já existir uma linha com o id real, é ela que casa (sem conflito).
+        const existingListing =
+          existingListingsMap.get(externalListingId) ||
+          (sku ? existingBySku.get(sku) : undefined);
         const product = normalizedSku ? productsMap.get(normalizedSku) : null;
         const status = (s.status as string) || "active";
         const permalink = (s.permalink as string) || (s.url as string) || null;
@@ -500,11 +529,16 @@ export class SyncUseCase {
 
         if (existingListing) {
           linkedProductId = existingListing.productId;
+          // Upgrade do placeholder: PENDING_<sku> → id externo real da Magalu.
+          const needsIdUpgrade =
+            !!externalListingId &&
+            existingListing.externalListingId !== externalListingId;
           const needsStatusUpdate = existingListing.status !== status;
           const needsPermalinkUpdate =
             !existingListing.permalink && !!permalink;
-          if (needsStatusUpdate || needsPermalinkUpdate) {
+          if (needsIdUpgrade || needsStatusUpdate || needsPermalinkUpdate) {
             await ListingRepository.updateListing(existingListing.id, {
+              externalListingId: needsIdUpgrade ? externalListingId : undefined,
               status: needsStatusUpdate ? status : undefined,
               permalink: needsPermalinkUpdate ? permalink : undefined,
             });
