@@ -82,7 +82,22 @@ async function main() {
     `[produto] ${product.id} | "${product.name}" | sku=${product.sku} | stock=${product.stock} | price=${product.price}`,
   );
 
-  const payload = MagaluPayloadBuilderService.build(product, categoryId);
+  // group.id é definido pelo seller (agrupa variações) — usamos o SKU por padrão.
+  const groupId = arg("group-id") ?? product.sku;
+  let channelId = arg("channel-id");
+  if (!channelId) {
+    const chans = await MagaluApiService.getChannels(token);
+    channelId = chans[0]?.id;
+    console.log(
+      `[channel auto] ${channelId ?? "(nenhum)"} (${chans[0]?.name ?? ""})`,
+    );
+  }
+  if (!channelId) throw new Error("Sem channel id (passe --channel-id)");
+  const payload = MagaluPayloadBuilderService.build(product, {
+    groupId,
+    channelId,
+    categoryId,
+  });
   console.log("\n[payload enviado]:\n" + JSON.stringify(payload, null, 2));
 
   if (hasFlag("dry")) {

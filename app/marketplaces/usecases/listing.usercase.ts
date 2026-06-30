@@ -3217,7 +3217,37 @@ export class ListingUseCase {
         };
       }
 
-      const payload = MagaluPayloadBuilderService.build(product, categoryId);
+      // group.id é definido pelo SELLER (agrupa variações) — não é taxonomia.
+      // Produto sem variação = seu próprio SKU como group (main_variation:true).
+      // channels[].id é o canal de venda do seller (obrigatório, exatamente 1):
+      // resolvido do produto, do env, senão do 1º canal do seller (/channels).
+      const groupId = (product as any).magaluGroupId || product.sku;
+      let channelId =
+        (product as any).magaluChannelId ||
+        process.env.MAGALU_DEFAULT_CHANNEL_ID;
+      if (!channelId) {
+        try {
+          const channels = await MagaluApiService.getChannels(
+            account.accessToken,
+          );
+          channelId = channels[0]?.id;
+        } catch {
+          /* deixa o preflight abaixo tratar */
+        }
+      }
+      if (!groupId || !channelId) {
+        return {
+          success: false,
+          error:
+            "Criação na Magalu requer SKU (group) e um canal de venda. Configure MAGALU_DEFAULT_CHANNEL_ID ou habilite um canal no seller.",
+        };
+      }
+
+      const payload = MagaluPayloadBuilderService.build(product, {
+        groupId,
+        channelId,
+        categoryId,
+      });
       const created = await MagaluApiService.createSku(
         account.accessToken,
         payload,

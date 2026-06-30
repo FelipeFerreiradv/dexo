@@ -212,6 +212,41 @@ export class MagaluApiService {
   }
 
   /**
+   * Informações do seller logado: GET /seller/v1/portfolios/me
+   * → { tenant:{id}, channel:{id,name}, seller:{id,name} } (VALIDADO na doc).
+   */
+  static async getMe(accessToken: string): Promise<{
+    tenant?: { id?: string };
+    channel?: { id?: string; name?: string };
+    seller?: { id?: string; name?: string };
+    [key: string]: unknown;
+  }> {
+    try {
+      const response = await axios.get<any>(
+        `${MAGALU_CONSTANTS.API_URL}/seller/v1/portfolios/me`,
+        {
+          headers: this.authHeaders(accessToken),
+          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+      return response.data ?? {};
+    } catch (error) {
+      throw this.formatError("Erro ao consultar seller (me) na Magalu", error);
+    }
+  }
+
+  /**
+   * Canal de venda do seller (channels[].id é obrigatório no create de SKU).
+   * O seller tem UM canal, retornado em /portfolios/me.channel.
+   */
+  static async getChannels(
+    accessToken: string,
+  ): Promise<Array<{ id: string; name?: string }>> {
+    const me = await this.getMe(accessToken);
+    return me.channel?.id ? [{ id: me.channel.id, name: me.channel.name }] : [];
+  }
+
+  /**
    * Busca um pedido específico (usado pelo webhook, via data.params.id).
    */
   static async getOrder(
