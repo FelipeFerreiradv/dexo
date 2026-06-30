@@ -1,5 +1,5 @@
 import prisma from "@/app/lib/prisma";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, Platform } from "@prisma/client";
 import { MLQuestion } from "../types/ml-questions.types";
 
 export interface ConversationSummary {
@@ -31,6 +31,9 @@ export interface ConversationListParams {
   // Ausente/undefined = todas as contas do userId. Presente = conta
   // específica (comportamento idêntico ao legado).
   marketplaceAccountId?: string;
+  // Filtro por plataforma (MERCADO_LIVRE | SHOPEE | MAGALU). Ausente = todas.
+  // Combina (AND) com o escopo de conta/usuário.
+  platform?: Platform;
   search?: string;
   status?: "all" | "unanswered" | "answered" | "unread";
   limit?: number;
@@ -411,10 +414,19 @@ export class QuestionRepository {
     // Quando marketplaceAccountId é ausente, filtra pela relação
     // marketplaceAccount.userId — isolamento multi-tenant garantido no banco
     // (mesmo padrão de countUnreadForUser). Reusado em ambas as fases da query.
-    const accountScope: Prisma.MarketplaceQuestionWhereInput =
-      params.marketplaceAccountId
+    // O filtro de plataforma (opcional) entra na relação e combina (AND) com
+    // o escopo — em "todas as contas" mantém o isolamento por userId.
+    const accountRelation: Prisma.MarketplaceAccountWhereInput = {};
+    if (!params.marketplaceAccountId) accountRelation.userId = params.userId;
+    if (params.platform) accountRelation.platform = params.platform;
+    const accountScope: Prisma.MarketplaceQuestionWhereInput = {
+      ...(params.marketplaceAccountId
         ? { marketplaceAccountId: params.marketplaceAccountId }
-        : { marketplaceAccount: { userId: params.userId } };
+        : {}),
+      ...(Object.keys(accountRelation).length > 0
+        ? { marketplaceAccount: accountRelation }
+        : {}),
+    };
 
     const where: Prisma.MarketplaceQuestionWhereInput = { ...accountScope };
 

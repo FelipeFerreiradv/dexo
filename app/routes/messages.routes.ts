@@ -6,6 +6,13 @@ import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.
 import { QuestionRepository } from "../marketplaces/repositories/question.repository";
 import { MessagesUseCase } from "../marketplaces/usecases/messages.usecase";
 
+// Plataformas válidas para o filtro de conversas (string da query → enum).
+const PLATFORM_BY_KEY: Record<string, Platform> = {
+  MERCADO_LIVRE: Platform.MERCADO_LIVRE,
+  SHOPEE: Platform.SHOPEE,
+  MAGALU: Platform.MAGALU,
+};
+
 /**
  * Rotas de Mensagens (perguntas pré-venda do Mercado Livre).
  * Todas autenticadas via header `email` (padrão atual do projeto).
@@ -92,12 +99,27 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: "status inválido" });
       }
 
+      // Filtro de plataforma (opcional). "all"/ausente = todas. Inválido = 400.
+      const platformParam = q.platform;
+      if (
+        platformParam &&
+        platformParam !== "all" &&
+        !PLATFORM_BY_KEY[platformParam]
+      ) {
+        return reply.status(400).send({ error: "platform inválido" });
+      }
+      const platform =
+        platformParam && platformParam !== "all"
+          ? PLATFORM_BY_KEY[platformParam]
+          : undefined;
+
       const limit = Number(q.limit) || 30;
       const offset = Number(q.offset) || 0;
 
       const result = await QuestionRepository.listConversations({
         userId,
         marketplaceAccountId: isAllAccounts ? undefined : accountId,
+        platform,
         status,
         search: q.search ?? "",
         limit,

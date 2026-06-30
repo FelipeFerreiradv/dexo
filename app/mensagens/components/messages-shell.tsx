@@ -57,6 +57,18 @@ interface MessagesShellProps {
 
 const POLL_MS = 30_000;
 
+// Magalu (3º marketplace) só entra no filtro com a flag ligada — off ⇒ o
+// seletor fica idêntico (só Mercado Livre/Shopee).
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
+const PLATFORM_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "Todas as plataformas" },
+  { value: "MERCADO_LIVRE", label: "Mercado Livre" },
+  { value: "SHOPEE", label: "Shopee" },
+  ...(MAGALU_ENABLED ? [{ value: "MAGALU", label: "Magalu" }] : []),
+];
+
 export function MessagesShell({ userEmail }: MessagesShellProps) {
   const apiBase = getApiBaseUrl();
   // Sessão do CLIENTE: a ponte (api-auth-bridge) só popula o Bearer depois que
@@ -79,6 +91,8 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   // Default "Todas as contas". Como não há persistência (URL/localStorage),
   // não há seleção salva pra conflitar — abre sempre agregando todas.
   const [accountId, setAccountId] = React.useState<string>("all");
+  // Filtro de plataforma (all | MERCADO_LIVRE | SHOPEE | MAGALU).
+  const [platform, setPlatform] = React.useState<string>("all");
   const [filter, setFilter] = React.useState<ConversationFilter>("all");
   const [search, setSearch] = React.useState("");
   // debouncedSearch isola digitação: só dispara fetch 250ms após parar de digitar.
@@ -126,6 +140,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
         const params = new URLSearchParams({
           accountId,
           status: filter,
+          ...(platform !== "all" ? { platform } : {}),
           ...(debouncedSearch ? { search: debouncedSearch } : {}),
           limit: "50",
         });
@@ -147,13 +162,13 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
         setConversations([]);
       }
     },
-    [accountId, apiBase, filter, headers, debouncedSearch, isAuthenticated],
+    [accountId, platform, apiBase, filter, headers, debouncedSearch, isAuthenticated],
   );
 
   // Skeleton (null) só em mudança "dura" — evita flicker em re-fetch por busca/poll.
   React.useEffect(() => {
     setConversations(null);
-  }, [accountId, filter]);
+  }, [accountId, platform, filter]);
 
   // Carrega conversas + cancela request anterior se inputs mudarem em sequência rápida.
   React.useEffect(() => {
@@ -185,6 +200,18 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
       conversations?.find((c) => c.externalItemId === selectedItemId) ?? null,
     [conversations, selectedItemId],
   );
+
+  // Conta e plataforma combinam (AND); para nunca cair em lista vazia por
+  // conflito, escolher um zera o outro (conta específica ⇒ plataforma "todas",
+  // e vice-versa).
+  const handleSelectAccount = React.useCallback((id: string) => {
+    setAccountId(id);
+    if (id !== "all") setPlatform("all");
+  }, []);
+  const handleSelectPlatform = React.useCallback((p: string) => {
+    setPlatform(p);
+    if (p !== "all") setAccountId("all");
+  }, []);
 
   const onConversationRead = React.useCallback(
     (itemId: string) => {
@@ -231,8 +258,20 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
+        <Select value={platform} onValueChange={handleSelectPlatform}>
+          <SelectTrigger className="h-9 w-48">
+            <SelectValue placeholder="Plataforma" />
+          </SelectTrigger>
+          <SelectContent>
+            {PLATFORM_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {accounts.length >= 1 && (
-          <Select value={accountId} onValueChange={setAccountId}>
+          <Select value={accountId} onValueChange={handleSelectAccount}>
             <SelectTrigger className="h-9 w-55">
               <SelectValue placeholder="Conta" />
             </SelectTrigger>
