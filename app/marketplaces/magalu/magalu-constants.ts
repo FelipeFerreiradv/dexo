@@ -53,6 +53,7 @@ export const MAGALU_CONSTANTS = {
       "open:portfolio-prices-seller:write",
       "open:portfolio-stocks-seller:read",
       "open:portfolio-stocks-seller:write",
+      "open:portfolio-categories-seller:read",
       "open:order-order-seller:read",
       "open:order-delivery-seller:read",
     ].join(" "),
