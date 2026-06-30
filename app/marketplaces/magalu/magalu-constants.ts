@@ -16,6 +16,12 @@ export const MAGALU_CONSTANTS = {
     process.env.MAGALU_API_URL ||
     (SANDBOX ? "https://api-sandbox.magalu.com" : "https://api.magalu.com"),
 
+  // Chat com Cliente vive em OUTRO host: services.magalu.com (não api.magalu.com).
+  // Endpoints /v0/conversations[/:id/messages|/read_by]. Doc validada 2026-06-30.
+  SERVICES_URL:
+    process.env.MAGALU_SERVICES_URL || "https://services.magalu.com",
+  CONVERSATIONS_ENDPOINT: "/v0/conversations",
+
   SANDBOX,
 
   // OAuth endpoints (relativos a AUTH_URL)
@@ -59,6 +65,10 @@ export const MAGALU_CONSTANTS = {
       "open:portfolio-categories-seller:read",
       "open:order-order-seller:read",
       "open:order-delivery-seller:read",
+      // Chat com Cliente (services.magalu.com). O client precisa TER estes
+      // escopos E o authorize precisa PEDIR → reautorizar a conta após adicionar.
+      "services:conversations-seller:read",
+      "services:conversations-seller:write",
     ].join(" "),
 
   // Segredo de assinatura do webhook (whsec_*). Usado para validar X-Signature-256.
