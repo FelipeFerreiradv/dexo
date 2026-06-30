@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { getShippingProvider } from "../provider-factory";
 import { MlShippingLabelProvider } from "../../services/ml-shipping.service";
 import { ShopeeShippingLabelProvider } from "../../services/shopee-shipping.service";
+import { MagaluShippingLabelProvider } from "../../services/magalu-shipping.service";
 import { ShippingLabelError } from "../shipping-label.types";
 
 describe("getShippingProvider", () => {
@@ -15,6 +16,12 @@ describe("getShippingProvider", () => {
     const p = getShippingProvider("SHOPEE");
     expect(p).toBeInstanceOf(ShopeeShippingLabelProvider);
     expect(p.platform).toBe("SHOPEE");
+  });
+
+  it("retorna o adapter da Magalu", () => {
+    const p = getShippingProvider("MAGALU");
+    expect(p).toBeInstanceOf(MagaluShippingLabelProvider);
+    expect(p.platform).toBe("MAGALU");
   });
 
   it("lança UNSUPPORTED_PLATFORM para plataforma desconhecida", () => {

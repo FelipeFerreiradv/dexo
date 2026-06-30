@@ -132,6 +132,7 @@ export function EditListingDialog({
 
   const isML = listing?.account.platform === "MERCADO_LIVRE";
   const isShopee = listing?.account.platform === "SHOPEE";
+  const isMagalu = listing?.account.platform === "MAGALU";
 
   const isPaused = useMemo(() => {
     const s = (listing?.status ?? "").toLowerCase();
@@ -315,7 +316,7 @@ export function EditListingDialog({
                 )}
               </div>
 
-              {isML && (
+              {(isML || isMagalu) && (
                 <Button
                   type="button"
                   variant="outline"
@@ -349,6 +350,16 @@ export function EditListingDialog({
                 dimensões ou estoque deste anúncio, use{" "}
                 <strong>Editar produto</strong> — as mudanças serão
                 propagadas para o anúncio pelo fluxo de sincronização.
+              </div>
+            )}
+
+            {isMagalu && (
+              <div className="rounded-lg border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
+                Aqui você pode <strong>pausar</strong> ou{" "}
+                <strong>reativar</strong> o anúncio da Magalu. Para alterar
+                nome, descrição, preço ou estoque, use{" "}
+                <strong>Editar produto</strong> — as mudanças são propagadas
+                para a Magalu pelo fluxo de sincronização.
               </div>
             )}
 

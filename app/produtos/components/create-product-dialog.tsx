@@ -159,6 +159,12 @@ const productSchema = z.object({
   shopeeAccountIds: z.array(z.string()).optional(),
   shopeeCategory: z.string().optional(),
 
+  // Step Magalu (opcional). A categoria é sugerida automaticamente (mesma
+  // resolução do backend) e o usuário pode buscar/trocar — paridade ML/Shopee.
+  createMagaluListing: z.boolean().optional(),
+  magaluAccountIds: z.array(z.string()).optional(),
+  magaluCategory: z.string().optional(),
+
   // Step 2: Preços e Estoque
   price: z
     .number({ invalid_type_error: "Preço deve ser um número" })
@@ -272,7 +278,13 @@ const qualityOptions = [
   { value: "RECONDICIONADO", label: "Recondicionado" },
 ];
 
-// Configuração dos steps
+// Integração Magalu (3º marketplace) atrás da flag — quando off, o modal fica
+// idêntico ao de hoje (passo Magalu ausente, ids inalterados).
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
+// Configuração dos steps. Os `id` abaixo são reatribuídos sequencialmente no
+// final (.map) — assim o passo Magalu condicional não desalinha Prévia/Revisão.
 const STEPS = [
   {
     id: 1,
@@ -333,6 +345,19 @@ const STEPS = [
     icon: ShoppingCart,
     fields: ["createShopeeListing", "shopeeAccountIds", "shopeeCategory"],
   },
+  // Passo Magalu (só com a flag ligada). Categoria é auto-resolvida no backend,
+  // então o passo só precisa do toggle + seleção de contas.
+  ...(MAGALU_ENABLED
+    ? [
+        {
+          id: 8,
+          title: "Magalu",
+          description: "Criar anúncio (opcional)",
+          icon: ShoppingCart,
+          fields: ["createMagaluListing", "magaluAccountIds", "magaluCategory"],
+        },
+      ]
+    : []),
   {
     id: 8,
     title: "Prévia",
@@ -347,7 +372,7 @@ const STEPS = [
     icon: ClipboardCheck,
     fields: [],
   },
-];
+].map((step, index) => ({ ...step, id: index + 1 }));
 
 const TOTAL_STEPS = STEPS.length;
 
@@ -355,8 +380,10 @@ const TOTAL_STEPS = STEPS.length;
 // etapa: o botão "Criar Produto" só renderiza em currentStep === TOTAL_STEPS e o
 // onSubmit aborta fora dela — logo a Prévia, inserida imediatamente ANTES da
 // Revisão, jamais dispara a criação.
-const PREVIEW_STEP = TOTAL_STEPS - 1; // 8
-const REVIEW_STEP = TOTAL_STEPS; // 9
+const PREVIEW_STEP = TOTAL_STEPS - 1; // 8 (9 com Magalu)
+const REVIEW_STEP = TOTAL_STEPS; // 9 (10 com Magalu)
+// Passo Magalu (logo antes da Prévia) quando a flag está ligada; -1 quando off.
+const MAGALU_STEP = MAGALU_ENABLED ? PREVIEW_STEP - 1 : -1; // 8 quando on
 
 // Mapa campo do formulário → etapa que o contém. Usado pelo scroll-to-erro no
 // submit; inclui chaves aninhadas/derivadas que não aparecem em STEPS[].fields.
@@ -462,6 +489,18 @@ export function CreateProductDialog({
   const [shopeeAccounts, setShopeeAccounts] = useState<
     Array<{ id: string; accountName: string; status?: string; shopId?: number }>
   >([]);
+  const [magaluAccounts, setMagaluAccounts] = useState<
+    Array<{ id: string; accountName: string; status?: string }>
+  >([]);
+  const [magaluOptions, setMagaluOptions] = useState<
+    { id: string; value: string }[]
+  >([]);
+  const [magaluCategorySearch, setMagaluCategorySearch] = useState("");
+  const [magaluCategoryDropdownOpen, setMagaluCategoryDropdownOpen] =
+    useState(false);
+  const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
+  const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
+  const magaluSuggestedRef = useRef(false);
   const [locationOptions, setLocationOptions] = useState<
     Array<{
       id: string;
@@ -549,6 +588,9 @@ export function CreateProductDialog({
       createShopeeListing: false,
       shopeeAccountIds: [],
       shopeeCategory: "",
+      createMagaluListing: false,
+      magaluAccountIds: [],
+      magaluCategory: "",
       price: 0,
       stock: 0,
       costPrice: null,
@@ -585,11 +627,14 @@ export function CreateProductDialog({
   const watchWeight = watch("weightKg");
   const watchMlAccountIds = watch("mlAccountIds") || [];
   const watchShopeeAccountIds = watch("shopeeAccountIds") || [];
+  const watchMagaluAccountIds = watch("magaluAccountIds") || [];
   const watchCreateMLListing = watch("createMLListing");
   const watchCreateShopeeListing = watch("createShopeeListing");
+  const watchCreateMagaluListing = watch("createMagaluListing");
   const watchDescription = watch("description") || "";
   const mlAutofilledRef = useRef(false);
   const shopeeAutofilledRef = useRef(false);
+  const magaluAutofilledRef = useRef(false);
 
   // Quando o usuário opta por criar anúncio, pré-selecionar todas as contas disponíveis
   useEffect(() => {
@@ -625,11 +670,27 @@ export function CreateProductDialog({
   }, [shopeeAccounts, setValue, watchCreateShopeeListing]);
 
   useEffect(() => {
+    if (!watchCreateMagaluListing) {
+      magaluAutofilledRef.current = false;
+      return;
+    }
+    if (magaluAccounts.length === 0) return;
+    if (magaluAutofilledRef.current) return;
+    const allIds = magaluAccounts.map((acc) => acc.id);
+    setValue("magaluAccountIds", allIds, {
+      shouldDirty: true,
+      shouldValidate: true,
+      shouldTouch: true,
+    });
+    magaluAutofilledRef.current = true;
+  }, [magaluAccounts, setValue, watchCreateMagaluListing]);
+
+  useEffect(() => {
     if (!open) setTitleSuggestion("");
   }, [open]);
 
   const toggleAccountSelection = (
-    field: "mlAccountIds" | "shopeeAccountIds",
+    field: "mlAccountIds" | "shopeeAccountIds" | "magaluAccountIds",
     accountId: string,
     checked: boolean,
   ) => {
@@ -647,13 +708,18 @@ export function CreateProductDialog({
   const fetchAccounts = useCallback(async () => {
     if (!session?.user?.email) return;
     try {
-      const [mlRes, shopeeRes] = await Promise.all([
+      const [mlRes, shopeeRes, magaluRes] = await Promise.all([
         fetch(`${getApiBaseUrl()}/marketplace/ml/accounts`, {
           headers: { email: session.user.email },
         }),
         fetch(`${getApiBaseUrl()}/marketplace/shopee/accounts`, {
           headers: { email: session.user.email },
         }),
+        MAGALU_ENABLED
+          ? fetch(`${getApiBaseUrl()}/marketplace/magalu/accounts`, {
+              headers: { email: session.user.email },
+            })
+          : Promise.resolve(null),
       ]);
 
       if (mlRes.ok) {
@@ -664,6 +730,11 @@ export function CreateProductDialog({
       if (shopeeRes.ok) {
         const data = await shopeeRes.json();
         setShopeeAccounts(Array.isArray(data?.accounts) ? data.accounts : []);
+      }
+
+      if (magaluRes && magaluRes.ok) {
+        const data = await magaluRes.json();
+        setMagaluAccounts(Array.isArray(data?.accounts) ? data.accounts : []);
       }
     } catch (err) {
       console.error("Erro ao carregar contas de marketplace:", err);
@@ -963,6 +1034,11 @@ export function CreateProductDialog({
     if (!open) {
       mlCategoriesLoadedRef.current = false;
       shopeeCategoriesLoadedRef.current = false;
+      magaluSuggestedRef.current = false;
+      setMagaluOptions([]);
+      setMagaluCategorySearch("");
+      setMagaluCategoryDropdownOpen(false);
+      setMagaluSelectedLabel("");
     }
   }, [open]);
 
@@ -1001,6 +1077,69 @@ export function CreateProductDialog({
     shopeeOptions.length,
     session?.user?.email,
   ]);
+
+  // Sugestão automática da categoria Magalu (mesma resolução do backend) quando
+  // o toggle liga e há nome de produto. Pré-preenche o campo (paridade ML/Shopee).
+  useEffect(() => {
+    if (!MAGALU_ENABLED || !watchCreateMagaluListing) {
+      magaluSuggestedRef.current = false;
+      return;
+    }
+    if (magaluSuggestedRef.current) return;
+    const name = (watchName || "").trim();
+    if (!name) return;
+    magaluSuggestedRef.current = true;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/magalu/category-suggest?name=${encodeURIComponent(name)}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data?.categoryId) {
+          const label = data.path || data.categoryId;
+          setValue("magaluCategory", data.categoryId, { shouldDirty: true });
+          setMagaluSelectedLabel(label);
+          setMagaluOptions([{ id: data.categoryId, value: label }]);
+        }
+      } catch (err) {
+        console.error("Erro ao sugerir categoria Magalu:", err);
+      }
+    })();
+  }, [
+    watchCreateMagaluListing,
+    watchName,
+    setValue,
+    session?.user?.email,
+  ]);
+
+  // Busca server-side de categorias Magalu (debounced) ao digitar no combobox.
+  useEffect(() => {
+    if (!MAGALU_ENABLED || !watchCreateMagaluListing) return;
+    const term = magaluCategorySearch.trim();
+    if (term.length < 2) return;
+    const handle = setTimeout(async () => {
+      setMagaluCategoryLoading(true);
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/magalu/categories?search=${encodeURIComponent(term)}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setMagaluOptions(
+            Array.isArray(data?.categories) ? data.categories : [],
+          );
+        }
+      } catch (err) {
+        console.error("Erro ao buscar categorias Magalu:", err);
+      } finally {
+        setMagaluCategoryLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [magaluCategorySearch, watchCreateMagaluListing, session?.user?.email]);
 
   // AUTO-FILL A PARTIR DAS COMPATIBILIDADES (fonte primária)
   // Quando o usuário adiciona/altera compatibilidades, preenche marca/modelo/ano/versão
@@ -2292,6 +2431,8 @@ export function CreateProductDialog({
         (data.mlAccountIds?.filter(Boolean) as string[]) ?? [];
       const selectedShopeeAccounts =
         (data.shopeeAccountIds?.filter(Boolean) as string[]) ?? [];
+      const selectedMagaluAccounts =
+        (data.magaluAccountIds?.filter(Boolean) as string[]) ?? [];
 
       if (data.createMLListing && selectedMlAccounts.length === 0) {
         onToast(
@@ -2332,8 +2473,18 @@ export function CreateProductDialog({
         return;
       }
 
+      // Magalu: categoria é auto-resolvida no backend → só exige conta.
+      if (data.createMagaluListing && selectedMagaluAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta da Magalu para criar o anúncio.",
+          "warning",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       const listingsPayload: Array<{
-        platform: "MERCADO_LIVRE" | "SHOPEE";
+        platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
         accountIds: string[];
         categoryId?: string;
         listingType?: string;
@@ -2380,6 +2531,15 @@ export function CreateProductDialog({
           platform: "SHOPEE",
           accountIds: selectedShopeeAccounts,
           categoryId: data.shopeeCategory || undefined,
+        });
+      }
+
+      if (data.createMagaluListing && selectedMagaluAccounts.length > 0) {
+        listingsPayload.push({
+          platform: "MAGALU",
+          accountIds: selectedMagaluAccounts,
+          // categoria escolhida no modal; se vazia, o backend resolve no envio.
+          categoryId: data.magaluCategory || undefined,
         });
       }
 
@@ -4123,6 +4283,197 @@ export function CreateProductDialog({
             </div>
           </section>
 
+          {/* Passo Magalu (só com a flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED).
+              Categoria é auto-resolvida no backend → só toggle + seleção de contas. */}
+          {MAGALU_ENABLED && (
+            <section
+              data-step={MAGALU_STEP}
+              ref={(el) => {
+                sectionRefs.current[MAGALU_STEP] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[MAGALU_STEP - 1]} />
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Controller
+                    name="createMagaluListing"
+                    control={control}
+                    render={({ field }) => (
+                      <Switch
+                        id="createMagaluListing"
+                        checked={field.value || false}
+                        onCheckedChange={field.onChange}
+                        disabled={magaluAccounts.length === 0}
+                      />
+                    )}
+                  />
+                  <Label
+                    htmlFor="createMagaluListing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio no Magalu
+                  </Label>
+                </div>
+
+                <p className="text-sm text-muted-foreground">
+                  Selecione esta opção para publicar o produto nas contas
+                  conectadas do Magalu. A categoria é resolvida automaticamente.
+                </p>
+
+                {watchCreateMagaluListing && (
+                  <div className="space-y-2">
+                    <Label>Contas do Magalu</Label>
+                    {magaluAccounts.length > 0 ? (
+                      <div className="space-y-2 rounded-md border p-3">
+                        {magaluAccounts.map((acc) => {
+                          const checked = watchMagaluAccountIds.includes(acc.id);
+                          return (
+                            <label
+                              key={acc.id}
+                              className="flex items-center gap-2 text-sm"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  toggleAccountSelection(
+                                    "magaluAccountIds",
+                                    acc.id,
+                                    e.target.checked,
+                                  )
+                                }
+                              />
+                              <span className="font-medium">
+                                {acc.accountName || "Conta Magalu"}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Nenhuma conta Magalu conectada. Conecte em Integrações.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {watchCreateMagaluListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="magaluCategory">Categoria no Magalu</Label>
+                    <Controller
+                      name="magaluCategory"
+                      control={control}
+                      render={({ field }) => {
+                        // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
+                        const fmt = (v: string) =>
+                          v
+                            .split("/")
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .join(" > ");
+                        const rawLabel =
+                          magaluSelectedLabel ||
+                          magaluOptions.find((o) => o.id === field.value)
+                            ?.value ||
+                          "";
+                        const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                        const term = magaluCategorySearch.trim();
+                        return (
+                          <div className="relative">
+                            {selectedLabel && !magaluCategoryDropdownOpen && (
+                              <div
+                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                onClick={() => {
+                                  setMagaluCategoryDropdownOpen(true);
+                                  setMagaluCategorySearch("");
+                                }}
+                              >
+                                <span className="truncate">
+                                  {selectedLabel}
+                                </span>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  Alterar
+                                </span>
+                              </div>
+                            )}
+
+                            {(magaluCategoryDropdownOpen || !selectedLabel) && (
+                              <>
+                                <Input
+                                  placeholder="Buscar categoria do Magalu..."
+                                  value={magaluCategorySearch}
+                                  onChange={(e) =>
+                                    setMagaluCategorySearch(e.target.value)
+                                  }
+                                  onBlur={() => {
+                                    setTimeout(
+                                      () =>
+                                        setMagaluCategoryDropdownOpen(false),
+                                      200,
+                                    );
+                                  }}
+                                  autoFocus={magaluCategoryDropdownOpen}
+                                />
+                                {term && magaluOptions.length > 0 && (
+                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                    {magaluOptions.map((o) => (
+                                      <button
+                                        type="button"
+                                        key={o.id}
+                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                          o.id === field.value
+                                            ? "bg-accent font-medium"
+                                            : ""
+                                        }`}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          field.onChange(o.id);
+                                          setMagaluSelectedLabel(o.value);
+                                          setMagaluCategorySearch("");
+                                          setMagaluCategoryDropdownOpen(false);
+                                        }}
+                                      >
+                                        {fmt(o.value)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {term &&
+                                  !magaluCategoryLoading &&
+                                  magaluOptions.length === 0 && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                      Nenhuma categoria encontrada
+                                    </div>
+                                  )}
+                                {magaluCategoryLoading && (
+                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                    Buscando…
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Categoria sugerida:{" "}
+                      {magaluSelectedLabel
+                        ? magaluSelectedLabel
+                            .split("/")
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .join(" > ")
+                        : "Nenhuma"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
           {/* Prévia + Revisão: sempre montadas; assinam o formulário via
               useWatch, isolando o re-render do StepPreview (pesado) e da Revisão
               das demais seções (digitar nos outros campos não re-renderiza tudo). */}
@@ -4152,6 +4503,11 @@ export function CreateProductDialog({
                     mlOptions={mlOptions}
                     shopeeOptions={shopeeOptions}
                     formatCurrency={formatCurrency}
+                    magaluAccounts={magaluAccounts}
+                    selectedMagaluAccountIds={
+                      (formValues.magaluAccountIds ?? []) as string[]
+                    }
+                    magaluOptions={magaluOptions}
                   />
                 </section>
 

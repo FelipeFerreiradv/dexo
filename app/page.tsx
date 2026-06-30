@@ -332,6 +332,8 @@ function getPlatformDisplay(platform: string): {
       return { name: "Mercado Livre", abbrev: "ML" };
     case "SHOPEE":
       return { name: "Shopee", abbrev: "SP" };
+    case "MAGALU":
+      return { name: "Magalu", abbrev: "MG" };
     default:
       return { name: platform, abbrev: platform.slice(0, 2).toUpperCase() };
   }

@@ -16,9 +16,10 @@ function fmtDateTimeBR(d: Date): string {
   )}:${p(d.getMinutes())}`;
 }
 
-function canonFromPlatform(p: Platform): "ML" | "SHOPEE" | "OUTRO" {
+function canonFromPlatform(p: Platform): "ML" | "SHOPEE" | "MAGALU" | "OUTRO" {
   if (p === "MERCADO_LIVRE") return "ML";
   if (p === "SHOPEE") return "SHOPEE";
+  if (p === "MAGALU") return "MAGALU";
   return "OUTRO";
 }
 

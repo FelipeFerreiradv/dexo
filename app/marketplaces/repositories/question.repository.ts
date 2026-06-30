@@ -1,5 +1,5 @@
 import prisma from "@/app/lib/prisma";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, Platform } from "@prisma/client";
 import { MLQuestion } from "../types/ml-questions.types";
 
 export interface ConversationSummary {
@@ -31,6 +31,9 @@ export interface ConversationListParams {
   // Ausente/undefined = todas as contas do userId. Presente = conta
   // específica (comportamento idêntico ao legado).
   marketplaceAccountId?: string;
+  // Filtro por plataforma (MERCADO_LIVRE | SHOPEE | MAGALU). Ausente = todas.
+  // Combina (AND) com o escopo de conta/usuário.
+  platform?: Platform;
   search?: string;
   status?: "all" | "unanswered" | "answered" | "unread";
   limit?: number;
@@ -157,6 +160,251 @@ export class QuestionRepository {
   }
 
   /**
+   * Upsert idempotente de um comentário/pergunta da Shopee (modelo Q&A 1:1,
+   * igual ao ML — authorType fica NULL). Anexa a resposta quando há CommentReply.
+   */
+  static async upsertFromShopeeComment(
+    marketplaceAccountId: string,
+    comment: {
+      comment_id: number | string;
+      comment: string;
+      buyer_username?: string;
+      item_id: number | string;
+      create_time: number;
+      // Resposta do seller (snake_case da Shopee, normalizado em getComments).
+      comment_reply?: { reply?: string; create_time?: number } | null;
+    },
+    options: { productListingId?: string | null } = {},
+  ): Promise<{ id: string; isNew: boolean }> {
+    const externalQuestionId = String(comment.comment_id);
+    const externalItemId = String(comment.item_id);
+    const needsListingLookup = options.productListingId === undefined;
+
+    const [existing, resolvedListingId] = await Promise.all([
+      prisma.marketplaceQuestion.findUnique({
+        where: {
+          marketplaceAccountId_externalQuestionId: {
+            marketplaceAccountId,
+            externalQuestionId,
+          },
+        },
+        select: { id: true },
+      }),
+      needsListingLookup
+        ? this.resolveListingId(marketplaceAccountId, externalItemId)
+        : Promise.resolve(options.productListingId ?? null),
+    ]);
+
+    const hasReply = !!(comment.comment_reply && comment.comment_reply.reply);
+    const baseData = {
+      marketplaceAccountId,
+      externalQuestionId,
+      externalItemId,
+      externalBuyerId: comment.buyer_username ?? "0",
+      buyerNickname: comment.buyer_username ?? null,
+      text: comment.comment,
+      status: hasReply ? "ANSWERED" : "UNANSWERED",
+      dateCreated: new Date(comment.create_time * 1000),
+      productListingId: resolvedListingId,
+    };
+
+    const upserted = await prisma.marketplaceQuestion.upsert({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      create: { ...baseData, lastSyncedAt: new Date() },
+      update: {
+        status: baseData.status,
+        text: baseData.text,
+        productListingId: baseData.productListingId,
+        buyerNickname: baseData.buyerNickname,
+        lastSyncedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    if (hasReply) {
+      const replyAt = comment.comment_reply!.create_time ?? comment.create_time;
+      await this.attachAnswer(upserted.id, {
+        text: comment.comment_reply!.reply!,
+        status: "ACTIVE",
+        date_created: new Date(replyAt * 1000).toISOString(),
+      });
+    }
+
+    return { id: upserted.id, isNew: !existing };
+  }
+
+  // ===========================================================================
+  // Magalu — Chat com Cliente (conversas com N mensagens).
+  //
+  // Modelo de dados: cada MENSAGEM do chat vira UMA linha de MarketplaceQuestion
+  // (sem MarketplaceAnswer), com `authorType` (CUSTOMER | SELLER). O agrupamento
+  // por conversa usa `externalItemId = conversation.id` (a mesma chave do Q&A do
+  // ML/Shopee), então listConversations/listMessages funcionam SEM alteração.
+  //
+  // Estado "precisa de resposta" é por CONVERSA (não por mensagem): vale quando a
+  // última mensagem foi do CUSTOMER. Para que os filtros (Sem resposta/Respondidas)
+  // e o badge "Pendente" — todos baseados em `status` — continuem valendo sem
+  // tratar Magalu como caso especial na leitura, mantemos um INVARIANTE: após
+  // sincronizar uma conversa, TODAS as suas linhas recebem o mesmo `status`
+  // (UNANSWERED quando pendente, ANSWERED quando respondida). Assim o status é
+  // "nível-conversa" para o chat, enquanto continua "nível-pergunta" no Q&A.
+  // ===========================================================================
+
+  /**
+   * Upsert idempotente de UMA mensagem de chat Magalu (sem answer). O `status`
+   * inicial deriva do autor (CUSTOMER→UNANSWERED, SELLER→ANSWERED) e é depois
+   * normalizado ao nível-conversa por `syncMagaluConversation`. Mensagens do
+   * SELLER nascem já LIDAS (readAt) — não devem inflar o contador de não-lidas.
+   */
+  static async upsertMagaluMessage(
+    marketplaceAccountId: string,
+    msg: {
+      conversationId: string;
+      messageId: string;
+      text: string;
+      authorType: "CUSTOMER" | "SELLER";
+      dateCreated: Date;
+      customerExternalId: string | null;
+      customerName: string | null;
+    },
+  ): Promise<{ id: string; isNew: boolean }> {
+    const externalQuestionId = String(msg.messageId);
+    const isSeller = msg.authorType === "SELLER";
+
+    const existing = await prisma.marketplaceQuestion.findUnique({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      select: { id: true },
+    });
+
+    const baseData = {
+      marketplaceAccountId,
+      externalQuestionId,
+      externalItemId: msg.conversationId,
+      externalBuyerId: msg.customerExternalId ?? "0",
+      buyerNickname: msg.customerName,
+      text: msg.text,
+      status: isSeller ? "ANSWERED" : "UNANSWERED",
+      authorType: msg.authorType,
+      dateCreated: msg.dateCreated,
+      // Chat não tem listing local (externalItemId é o id da conversa, não MLB).
+      productListingId: null,
+    };
+
+    const upserted = await prisma.marketplaceQuestion.upsert({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      create: {
+        ...baseData,
+        lastSyncedAt: new Date(),
+        // SELLER já lido; CUSTOMER fica não-lido até o seller abrir a conversa.
+        readAt: isSeller ? msg.dateCreated : null,
+      },
+      // re-sync NÃO mexe em readAt (preserva o que o usuário já leu) nem no
+      // status individual (o status final é definido pelo rewrite da conversa).
+      update: {
+        text: baseData.text,
+        buyerNickname: baseData.buyerNickname,
+        authorType: baseData.authorType,
+        lastSyncedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    return { id: upserted.id, isNew: !existing };
+  }
+
+  /**
+   * Sincroniza uma conversa Magalu inteira: upsert de cada mensagem + reescrita
+   * do `status` de TODAS as linhas da conversa para o estado nível-conversa
+   * (`pending` ⇒ UNANSWERED, senão ANSWERED). Mantém o invariante descrito acima.
+   *
+   * `pending` é decidido pelo caller (última mensagem = CUSTOMER). `messages`
+   * pode ser a conversa inteira (pull on-demand) ou só a última (polling do cron).
+   */
+  static async syncMagaluConversation(
+    marketplaceAccountId: string,
+    conversation: {
+      conversationId: string;
+      customerExternalId: string | null;
+      customerName: string | null;
+      pending: boolean;
+      messages: {
+        messageId: string;
+        text: string;
+        authorType: "CUSTOMER" | "SELLER";
+        dateCreated: Date;
+      }[];
+    },
+  ): Promise<{ synced: number; created: number }> {
+    // Upserts em paralelo por chunk (cada mensagem é uma linha independente,
+    // sem lookup compartilhado) — acelera a hidratação do histórico sem saturar
+    // o pool. Espelha a concorrência do pull do ML.
+    const UPSERT_CONCURRENCY = 8;
+    let created = 0;
+    for (let i = 0; i < conversation.messages.length; i += UPSERT_CONCURRENCY) {
+      const chunk = conversation.messages.slice(i, i + UPSERT_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((m) =>
+          this.upsertMagaluMessage(marketplaceAccountId, {
+            conversationId: conversation.conversationId,
+            messageId: m.messageId,
+            text: m.text,
+            authorType: m.authorType,
+            dateCreated: m.dateCreated,
+            customerExternalId: conversation.customerExternalId,
+            customerName: conversation.customerName,
+          }),
+        ),
+      );
+      created += results.filter((r) => r.isNew).length;
+    }
+
+    // Invariante nível-conversa: alinha o status de todas as linhas ao estado
+    // atual (uma query), DEPOIS de todos os upserts. Não toca readAt nem authorType.
+    await prisma.marketplaceQuestion.updateMany({
+      where: {
+        marketplaceAccountId,
+        externalItemId: conversation.conversationId,
+      },
+      data: { status: conversation.pending ? "UNANSWERED" : "ANSWERED" },
+    });
+
+    return { synced: conversation.messages.length, created };
+  }
+
+  /**
+   * Cliente (destinatário) de uma conversa de chat — usado para montar o `owner`
+   * ao responder na Magalu. Lê da linha mais recente já sincronizada.
+   */
+  static async getConversationCustomer(
+    marketplaceAccountId: string,
+    externalItemId: string,
+  ): Promise<{ externalBuyerId: string; buyerNickname: string | null } | null> {
+    const row = await prisma.marketplaceQuestion.findFirst({
+      where: { marketplaceAccountId, externalItemId },
+      orderBy: { dateCreated: "desc" },
+      select: { externalBuyerId: true, buyerNickname: true },
+    });
+    return row
+      ? { externalBuyerId: row.externalBuyerId, buyerNickname: row.buyerNickname }
+      : null;
+  }
+
+  /**
    * Lista conversas (uma por anúncio). Implementação: pega a pergunta mais
    * recente por externalItemId via DISTINCT ON (PostgreSQL), depois faz join
    * para enriquecer com dados do anúncio/produto.
@@ -175,10 +423,19 @@ export class QuestionRepository {
     // Quando marketplaceAccountId é ausente, filtra pela relação
     // marketplaceAccount.userId — isolamento multi-tenant garantido no banco
     // (mesmo padrão de countUnreadForUser). Reusado em ambas as fases da query.
-    const accountScope: Prisma.MarketplaceQuestionWhereInput =
-      params.marketplaceAccountId
+    // O filtro de plataforma (opcional) entra na relação e combina (AND) com
+    // o escopo — em "todas as contas" mantém o isolamento por userId.
+    const accountRelation: Prisma.MarketplaceAccountWhereInput = {};
+    if (!params.marketplaceAccountId) accountRelation.userId = params.userId;
+    if (params.platform) accountRelation.platform = params.platform;
+    const accountScope: Prisma.MarketplaceQuestionWhereInput = {
+      ...(params.marketplaceAccountId
         ? { marketplaceAccountId: params.marketplaceAccountId }
-        : { marketplaceAccount: { userId: params.userId } };
+        : {}),
+      ...(Object.keys(accountRelation).length > 0
+        ? { marketplaceAccount: accountRelation }
+        : {}),
+    };
 
     const where: Prisma.MarketplaceQuestionWhereInput = { ...accountScope };
 

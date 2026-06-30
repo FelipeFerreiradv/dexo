@@ -13,6 +13,8 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluApiService } from "../services/magalu-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -22,6 +24,7 @@ import { SystemLogService } from "@/app/services/system-log.service";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
+import type { MagaluSku } from "../types/magalu-api.types";
 import { normalizeSku } from "@/app/lib/sku";
 import fs from "node:fs";
 import path from "node:path";
@@ -392,6 +395,193 @@ export class SyncUseCase {
       SyncType.PRODUCT_SYNC,
       result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
       `Importados ${result.totalItems} itens, ${result.linkedItems} vinculados`,
+      { totalItems: result.totalItems, linkedItems: result.linkedItems },
+    );
+
+    return result;
+  }
+
+  /**
+   * Importa anúncios (SKUs) do portfólio da Magalu e tenta vincular por SKU.
+   * Espelha importMLItems (busca em lote de listings/produtos + auto-vínculo).
+   */
+  static async importMagaluItems(
+    userId: string,
+    accountId?: string,
+  ): Promise<ImportResult> {
+    const result: ImportResult = {
+      totalItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      errors: [],
+      items: [],
+    };
+
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+
+    if (!account || !account.accessToken) {
+      throw new Error("Conta da Magalu não conectada ou sem credenciais");
+    }
+
+    // TODO(paginação): listSkus retorna a primeira página; quando a paginação
+    // real da Magalu for confirmada, iterar até esgotar o portfólio.
+    const skus = await MagaluApiService.listSkus(account.accessToken, {
+      limit: 100,
+    });
+    if (skus.length === 0) {
+      return result;
+    }
+
+    result.totalItems = skus.length;
+
+    const extractSku = (s: MagaluSku): string | null =>
+      (s.seller_sku as string) ||
+      (s.sku as string) ||
+      (s.code as string) ||
+      null;
+    // A identidade da Magalu é o SKU do seller (= chave de /skus/{sku} e do
+    // create). Por isso o SKU vem ANTES do `id` interno — create/import/auto-
+    // detecção gravam todos a MESMA chave (sem divergir → sem duplicar).
+    const extractExternalId = (s: MagaluSku): string =>
+      String(extractSku(s) ?? s.id ?? "");
+
+    const externalItemIds = skus
+      .map((s) => extractExternalId(s))
+      .filter(Boolean);
+    // SKUs crus (= product.sku, gravado em externalSku) p/ casar o placeholder
+    // PENDING_<sku> que o create da Magalu deixa (POST 202 sem id real). Sem
+    // isto, o import não acharia o vínculo por externalListingId e DUPLICARIA.
+    const rawSkus = Array.from(
+      new Set(
+        skus
+          .map((s) => extractSku(s))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+    const normalizedSkus = Array.from(
+      new Set(
+        skus
+          .map((s) => normalizeSku(extractSku(s)))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+
+    const existingListings = await prisma.productListing.findMany({
+      where: {
+        marketplaceAccountId: account.id,
+        OR: [
+          { externalListingId: { in: externalItemIds } },
+          ...(rawSkus.length > 0
+            ? [{ externalSku: { in: rawSkus } }]
+            : []),
+        ],
+      },
+    });
+    const existingListingsMap = new Map(
+      existingListings.map((l) => [l.externalListingId, l]),
+    );
+    // Índice por SKU p/ reusar o vínculo placeholder (PENDING_<sku>) em vez de
+    // criar duplicata quando a Magalu devolve o id real (≈ o próprio SKU). Só é
+    // consultado no fallback abaixo — quando NÃO houve match por id externo.
+    const existingBySku = new Map(
+      existingListings
+        .filter((l) => l.externalSku)
+        .map((l) => [l.externalSku as string, l] as const),
+    );
+
+    const products =
+      normalizedSkus.length > 0
+        ? await prisma.product.findMany({
+            where: {
+              skuNormalized: { in: normalizedSkus },
+              userId: account.userId,
+            },
+          })
+        : [];
+    const productsMap = new Map(
+      products
+        .map((p) => [p.skuNormalized, p] as const)
+        .filter(
+          (e): e is readonly [string, (typeof products)[number]] =>
+            Boolean(e[0]),
+        ),
+    );
+
+    const PREVIEW_CAP = 50;
+    for (const s of skus) {
+      const externalListingId = extractExternalId(s);
+      try {
+        const sku = extractSku(s);
+        const normalizedSku = normalizeSku(sku);
+        // Casa primeiro pelo id externo; se não houver, tenta pelo SKU (caso do
+        // placeholder PENDING_<sku> do create) p/ NÃO duplicar o vínculo. O
+        // fallback por SKU só dispara quando não houve match por id — então se
+        // já existir uma linha com o id real, é ela que casa (sem conflito).
+        const existingListing =
+          existingListingsMap.get(externalListingId) ||
+          (sku ? existingBySku.get(sku) : undefined);
+        const product = normalizedSku ? productsMap.get(normalizedSku) : null;
+        const status = (s.status as string) || "active";
+        const permalink = (s.permalink as string) || (s.url as string) || null;
+
+        let linkedProductId: string | null = null;
+
+        if (existingListing) {
+          linkedProductId = existingListing.productId;
+          // Upgrade do placeholder: PENDING_<sku> → id externo real da Magalu.
+          const needsIdUpgrade =
+            !!externalListingId &&
+            existingListing.externalListingId !== externalListingId;
+          const needsStatusUpdate = existingListing.status !== status;
+          const needsPermalinkUpdate =
+            !existingListing.permalink && !!permalink;
+          if (needsIdUpgrade || needsStatusUpdate || needsPermalinkUpdate) {
+            await ListingRepository.updateListing(existingListing.id, {
+              externalListingId: needsIdUpgrade ? externalListingId : undefined,
+              status: needsStatusUpdate ? status : undefined,
+              permalink: needsPermalinkUpdate ? permalink : undefined,
+            });
+          }
+        } else if (product) {
+          linkedProductId = product.id;
+          await ListingRepository.createListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId,
+            externalSku: sku || undefined,
+            permalink,
+            status,
+          });
+        }
+
+        if (result.items.length < PREVIEW_CAP) {
+          result.items.push({
+            externalListingId,
+            title: (s.title as string) || externalListingId,
+            sku,
+            linkedProductId,
+            status: linkedProductId ? "linked" : "unlinked",
+          });
+        }
+        if (linkedProductId) result.linkedItems++;
+        else result.unlinkedItems++;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        result.errors.push(`Item ${externalListingId}: ${errorMessage}`);
+      }
+    }
+
+    await this.logSync(
+      account.id,
+      SyncType.PRODUCT_SYNC,
+      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.totalItems} itens da Magalu, ${result.linkedItems} vinculados`,
       { totalItems: result.totalItems, linkedItems: result.linkedItems },
     );
 
@@ -1786,6 +1976,164 @@ export class SyncUseCase {
   }
 
   /**
+   * Polling incremental de anúncios NOVOS da Magalu (auto-detecção).
+   *
+   * Varre o portfólio (listSkus) e, para cada SKU com `created_at >=
+   * autoImportListingsSince`, cria na Dexo o Product vinculado via núcleo
+   * idempotente. SKUs antigos (created_at < baseline) são ignorados — sem
+   * backfill. Reexecução não duplica: anúncios criados pelo Dexo já têm o SKU
+   * como externalListingId (listing_exists no núcleo) e o upsert é à prova de
+   * corrida. Sem baseline ⇒ não importa nada. Erros por item nunca abortam o
+   * lote. NOTA: listSkus traz só a 1ª página por enquanto (TODO paginação),
+   * mesma limitação do importMagaluItems.
+   */
+  static async importNewMagaluItemsForAccount(account: {
+    id: string;
+    userId: string;
+    accessToken: string;
+    refreshToken: string | null;
+    expiresAt: Date | null;
+    autoImportListingsSince: Date | null;
+  }): Promise<{
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const summary = { created: 0, linked: 0, skipped: 0, errors: 0 };
+
+    // Fail-safe: nunca importa sem baseline.
+    if (!account.autoImportListingsSince) return summary;
+    const baselineMs = account.autoImportListingsSince.getTime();
+
+    // Token fresco (refresh + persist se expirado). Falha de refresh ⇒ aborta.
+    let accessToken = account.accessToken;
+    if (
+      account.expiresAt &&
+      new Date(account.expiresAt) <= new Date() &&
+      account.refreshToken
+    ) {
+      try {
+        const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+        });
+        accessToken = refreshed.accessToken;
+      } catch (err) {
+        console.error(
+          `[autodetect][magalu] refresh de token falhou (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+        return summary;
+      }
+    }
+
+    let skus: MagaluSku[];
+    try {
+      skus = await MagaluApiService.listSkus(accessToken, { limit: 100 });
+    } catch (err) {
+      console.error(
+        `[autodetect][magalu] listSkus falhou (conta ${account.id}):`,
+        err instanceof Error ? err.message : err,
+      );
+      return summary;
+    }
+    if (skus.length === 0) return summary;
+
+    // Idempotência robusta POR SKU: a identidade da Magalu É o SKU. Pré-carrega
+    // os externalSku que já têm vínculo nesta conta para NUNCA duplicar um
+    // anúncio que o Dexo criou (externalListingId=sku) nem um placeholder legado
+    // (PENDING_<sku>), independentemente de a Magalu devolver um id interno
+    // diferente do SKU. O núcleo já é idempotente por externalListingId; este
+    // filtro cobre o caso em que a chave gravada difere do SKU (legado/divergência).
+    const rawSkusForCheck = skus
+      .map(
+        (s) =>
+          (s.seller_sku as string) ||
+          (s.sku as string) ||
+          (s.code as string) ||
+          null,
+      )
+      .filter((x): x is string => Boolean(x));
+    const linkedSkus = new Set<string>(
+      rawSkusForCheck.length > 0
+        ? (
+            await prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalSku: { in: rawSkusForCheck },
+              },
+              select: { externalSku: true },
+            })
+          )
+            .map((l) => l.externalSku)
+            .filter((x): x is string => Boolean(x))
+        : [],
+    );
+
+    let skipSamplesLogged = 0;
+    for (const sku of skus) {
+      try {
+        const normalized = ListingAutodetectUseCase.normalizeMagaluItem(
+          { id: account.id, userId: account.userId },
+          sku,
+        );
+
+        // Já vinculado (Dexo, detecção anterior ou placeholder legado) → no-op
+        // idempotente, sem chamar o núcleo (evita duplicar por chave divergente).
+        if (normalized.rawSku && linkedSkus.has(normalized.rawSku)) {
+          continue;
+        }
+
+        // Gate "só novos": created_at < baseline = SKU antigo (só editado) →
+        // ignora, sem backfill. SKU sem id externo também é pulado.
+        const createdMs = normalized.createdAt.getTime();
+        if (
+          !normalized.externalListingId ||
+          !Number.isFinite(createdMs) ||
+          createdMs < baselineMs
+        ) {
+          if (skipSamplesLogged < 3) {
+            console.log(
+              `[autodetect][magalu] conta ${account.id}: sku ${normalized.externalListingId || "(sem id)"} ignorado (created_at=${normalized.createdAt.toISOString()}, baseline=${account.autoImportListingsSince.toISOString()})`,
+            );
+            skipSamplesLogged++;
+          }
+          summary.skipped++;
+          continue;
+        }
+
+        const res =
+          await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+            normalized,
+          );
+        if (res.action === "created_product") {
+          summary.created++;
+        } else if (
+          res.action === "linked_existing_product" ||
+          res.action === "raced"
+        ) {
+          summary.linked++;
+        }
+        // res.action === "listing_exists" → no-op idempotente.
+      } catch (err) {
+        summary.errors++;
+        console.error(
+          `[AUTODETECT][Magalu] Falha no sku ${sku.sku ?? sku.id} (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  /**
    * Sincroniza o estoque de um produto especÃ­fico para todos os marketplaces conectados
    */
   static async syncProductStock(productId: string): Promise<SyncResult[]> {
@@ -1838,6 +2186,9 @@ export class SyncUseCase {
             break;
           case Platform.SHOPEE:
             result = await this.syncShopeeProductStock(listing, product);
+            break;
+          case Platform.MAGALU:
+            result = await this.syncMagaluProductStock(listing, product);
             break;
           default:
             result = {
@@ -2087,6 +2438,214 @@ export class SyncUseCase {
   }
 
   /**
+   * Resolve o channel.id do seller Magalu (obrigatório em estoque/preço),
+   * via GET /seller/v1/portfolios/me. O seller tem 1 canal.
+   */
+  private static async resolveMagaluChannelId(
+    accessToken: string,
+  ): Promise<string> {
+    const channels = await MagaluApiService.getChannels(accessToken);
+    const id = channels[0]?.id;
+    if (!id) {
+      throw new Error(
+        "Seller Magalu sem canal de venda (channel) — não é possível sincronizar.",
+      );
+    }
+    return id;
+  }
+
+  /**
+   * Sincroniza estoque de um produto para a Magalu.
+   * Atualiza a quantidade do SKU no portfólio (serviço de estoque da Magalu).
+   */
+  private static async syncMagaluProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta sem token de acesso",
+      };
+    }
+
+    if (
+      listing.externalListingId &&
+      String(listing.externalListingId).startsWith("PENDING_")
+    ) {
+      try {
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.WARNING,
+          `Anúncio local (placeholder) — não existe na Magalu: ${listing.externalListingId}`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+          },
+        );
+      } catch {
+        /* ignore logging failures */
+      }
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Anúncio local (placeholder) — não existe na Magalu. Sincronização ignorada.",
+      };
+    }
+
+    // A Magalu identifica o item de estoque pelo SKU do seller.
+    const sku = listing.externalSku || product.sku;
+    if (!sku) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Listing sem SKU para sincronizar estoque na Magalu",
+      };
+    }
+
+    try {
+      const channelId = await this.resolveMagaluChannelId(account.accessToken);
+      await MagaluApiService.setStock(
+        account.accessToken,
+        sku,
+        product.stock,
+        channelId,
+      );
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} atualizado na Magalu para ${product.stock}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: product.stock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        newStock: product.stock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao atualizar estoque na Magalu: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Sincroniza dados completos (estoque + preço) para a Magalu.
+   */
+  private static async syncMagaluProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    // A Magalu é keyed por SKU (não pelo externalListingId): a publicação é um
+    // POST 202 assíncrono e o vínculo local fica PENDING_<sku>. Por isso NÃO há
+    // guarda de PENDING aqui — o SKU do produto já é a chave real de
+    // patchSku/setStock/setPrice. Sem SKU não há o que sincronizar.
+    const sku = product.sku;
+    if (!sku) {
+      result.error = "Produto sem SKU para sincronizar na Magalu";
+      return result;
+    }
+
+    try {
+      const channelId = await this.resolveMagaluChannelId(account.accessToken);
+
+      // Título/descrição (PATCH parcial no SKU) — paridade com ML/Shopee, que
+      // propagam nome/descrição na edição do produto. Só envia o que existe.
+      const patch: Record<string, unknown> = {};
+      if (typeof product.name === "string" && product.name.trim()) {
+        patch.title = product.name.trim().slice(0, 150);
+      }
+      if (
+        typeof product.description === "string" &&
+        product.description.trim()
+      ) {
+        patch.description = product.description.trim();
+      }
+      if (Object.keys(patch).length > 0) {
+        await MagaluApiService.patchSku(account.accessToken, sku, patch);
+      }
+
+      await MagaluApiService.setStock(
+        account.accessToken,
+        sku,
+        product.stock,
+        channelId,
+      );
+
+      const price = product.price != null ? Number(product.price) : null;
+      if (price != null && Number.isFinite(price)) {
+        await MagaluApiService.setPrice(
+          account.accessToken,
+          sku,
+          price,
+          channelId,
+        );
+      }
+
+      await this.logSync(
+        account.id,
+        SyncType.PRODUCT_SYNC,
+        SyncStatus.SUCCESS,
+        `Dados do produto ${product.name} sincronizados na Magalu (título/descrição/estoque/preço)`,
+        { productId: product.id, externalListingId, newStock: product.stock },
+      );
+
+      result.success = true;
+      result.newStock = product.stock;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      await this.logSync(
+        account.id,
+        SyncType.PRODUCT_SYNC,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar dados na Magalu: ${result.error}`,
+        { productId: product.id, externalListingId, error: result.error },
+      );
+    }
+
+    return result;
+  }
+
+  /**
    * Sincroniza estoque de um produto para Shopee
    */
   private static async syncShopeeProductStock(
@@ -2288,6 +2847,8 @@ export class SyncUseCase {
                   return this.syncMLProductStock(listing, listing.product);
                 case Platform.SHOPEE:
                   return this.syncShopeeProductStock(listing, listing.product);
+                case Platform.MAGALU:
+                  return this.syncMagaluProductStock(listing, listing.product);
                 default:
                   return {
                     success: false,
@@ -2446,6 +3007,12 @@ export class SyncUseCase {
           );
         case Platform.SHOPEE:
           return await this.syncShopeeProductData(
+            effectiveProduct,
+            externalListingId,
+            account,
+          );
+        case Platform.MAGALU:
+          return await this.syncMagaluProductData(
             effectiveProduct,
             externalListingId,
             account,

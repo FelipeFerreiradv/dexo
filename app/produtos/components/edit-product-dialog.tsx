@@ -220,7 +220,7 @@ interface Product {
 export interface EditProductDialogListingContext {
   listingId: string;
   accountName: string;
-  platform: "MERCADO_LIVRE" | "SHOPEE";
+  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
   externalListingId: string | null;
   status: string;
 }

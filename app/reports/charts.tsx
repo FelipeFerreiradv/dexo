@@ -42,14 +42,16 @@ export function DonutSplit({
   ml,
   shopee,
   outro,
+  magalu = 0,
   size = 132,
 }: {
   ml: number;
   shopee: number;
   outro: number;
+  magalu?: number;
   size?: number;
 }) {
-  const total = ml + shopee + outro;
+  const total = ml + shopee + outro + magalu;
   const cx = size / 2;
   const cy = size / 2;
   const rOuter = size / 2 - 4;
@@ -57,6 +59,7 @@ export function DonutSplit({
   const segs: { value: number; color: string }[] = [
     { value: ml, color: PLATFORM_COLOR.ML },
     { value: shopee, color: PLATFORM_COLOR.SHOPEE },
+    { value: magalu, color: PLATFORM_COLOR.MAGALU },
     { value: outro, color: PLATFORM_COLOR.OUTRO },
   ];
   let angle = 0;

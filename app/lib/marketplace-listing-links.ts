@@ -1,4 +1,4 @@
-export type MarketplaceListingPlatform = "MERCADO_LIVRE" | "SHOPEE";
+export type MarketplaceListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 export interface MarketplaceListingLinkInput {
   platform: MarketplaceListingPlatform;
@@ -20,11 +20,13 @@ const ACTIVE_LISTING_STATUSES = new Set(["active", "normal"]);
 export const MARKETPLACE_LISTING_PLATFORMS = [
   "MERCADO_LIVRE",
   "SHOPEE",
+  "MAGALU",
 ] as const;
 
 const PLATFORM_LABELS: Record<MarketplaceListingPlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
+  MAGALU: "Magalu",
 };
 
 function normalizeText(value?: string | null) {
@@ -107,6 +109,17 @@ export function resolveMarketplaceListingLinkState(
       href: `https://produto.mercadolivre.com.br/${externalListingId}`,
       isOpenable: true,
       disabledReason: null,
+    };
+  }
+
+  // Magalu: a URL pública usa slug do produto, que não é derivável só do
+  // externalListingId. Quando há link, ele vem em `permalink` (tratado acima).
+  // Sem permalink, degrada graciosamente — nunca cai na lógica da Shopee.
+  if (listing.platform === "MAGALU") {
+    return {
+      href: null,
+      isOpenable: false,
+      disabledReason: `Anuncio do ${label} ainda nao tem link disponivel.`,
     };
   }
 

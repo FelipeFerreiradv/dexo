@@ -51,6 +51,7 @@ const QUALITY_VALUES = new Set<Quality>([
 const MARKETPLACE_VALUES = new Set<ProductMarketplaceFilter>([
   "MERCADO_LIVRE",
   "SHOPEE",
+  "MAGALU",
   "BOTH",
 ]);
 
@@ -817,6 +818,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 dispatchRequests.push({
                   platform: "SHOPEE",
                   accountId: accId,
+                  categoryId: lst.categoryId,
+                });
+              }
+            } else if (lst.platform === "MAGALU") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "MAGALU",
+                  accountId: accId,
+                  // categoria opcional — createMagaluListing resolve (de-para/busca)
                   categoryId: lst.categoryId,
                 });
               }

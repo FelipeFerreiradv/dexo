@@ -1,6 +1,10 @@
 import { Platform } from "@prisma/client";
 
-const FILTER_PLATFORMS = new Set<Platform>(["MERCADO_LIVRE", "SHOPEE"]);
+const FILTER_PLATFORMS = new Set<Platform>([
+  "MERCADO_LIVRE",
+  "SHOPEE",
+  "MAGALU",
+]);
 
 export interface ParsedProductListingCategoryValue {
   value: string;

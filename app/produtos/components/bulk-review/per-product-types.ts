@@ -21,6 +21,8 @@ export const perProductListingSchema = z.object({
   includeMl: z.boolean(),
   /** Inclui este produto na Shopee (default: true quando há conta Shopee). */
   includeShopee: z.boolean(),
+  /** Inclui este produto no Magalu (default: true quando há conta Magalu). */
+  includeMagalu: z.boolean(),
   /** Categoria automática ligada — pré-preenche categoria sugerida (override ok). */
   autoCategory: z.boolean(),
 
@@ -32,11 +34,17 @@ export const perProductListingSchema = z.object({
   shopeeCategory: z.string().optional(),
   /** Rótulo da categoria Shopee — só exibição. */
   shopeeCategoryLabel: z.string().optional(),
+  /** Categoria Magalu (id da categoria; vazio ⇒ backend resolve no envio). */
+  magaluCategory: z.string().optional(),
+  /** Rótulo (caminho "A/B/C") da categoria Magalu — só exibição. */
+  magaluCategoryLabel: z.string().optional(),
 
   /** Subconjunto das contas ML selecionadas globalmente (default: todas). */
   mlAccountIds: z.array(z.string()),
   /** Subconjunto das contas Shopee selecionadas globalmente (default: todas). */
   shopeeAccountIds: z.array(z.string()),
+  /** Subconjunto das contas Magalu selecionadas globalmente (default: todas). */
+  magaluAccountIds: z.array(z.string()),
 
   mlCatalogProductId: z.string().nullable().optional(),
   attributes: z.record(
@@ -116,13 +124,20 @@ export interface PerProductShopeeOverride {
   categoryId?: string;
 }
 
+export interface PerProductMagaluOverride {
+  categoryId?: string;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
+  magalu?: PerProductMagaluOverride;
   /** Contas ML globais que ESTE produto NÃO publica (skip por conta). */
   disabledMlAccountIds?: string[];
   /** Contas Shopee globais que ESTE produto NÃO publica. */
   disabledShopeeAccountIds?: string[];
+  /** Contas Magalu globais que ESTE produto NÃO publica. */
+  disabledMagaluAccountIds?: string[];
 }
 
 export type PerProductOverrides = Record<string, PerProductOverrideEntry>;
@@ -134,15 +149,19 @@ export function configFromDefaults(
   defaults: GlobalListingDefaults,
   globalMlIds: string[],
   globalShopeeIds: string[],
+  globalMagaluIds: string[] = [],
 ): PerProductListingConfig {
   return {
     includeMl: globalMlIds.length > 0,
     includeShopee: globalShopeeIds.length > 0,
+    includeMagalu: globalMagaluIds.length > 0,
     autoCategory: defaults.autoCategory,
     mlCategory: undefined,
     shopeeCategory: undefined,
+    magaluCategory: undefined,
     mlAccountIds: [...globalMlIds],
     shopeeAccountIds: [...globalShopeeIds],
+    magaluAccountIds: [...globalMagaluIds],
     mlCatalogProductId: null,
     attributes: {},
     mlListingType: defaults.mlListingType,
@@ -176,6 +195,7 @@ export function buildPerProductOverrides(
   map: Record<string, PerProductListingConfig>,
   globalMlIds: string[],
   globalShopeeIds: string[],
+  globalMagaluIds: string[] = [],
 ): PerProductOverrides {
   const out: PerProductOverrides = {};
 
@@ -231,12 +251,30 @@ export function buildPerProductOverrides(
       }
     }
 
+    if (globalMagaluIds.length > 0) {
+      if (cfg.includeMagalu) {
+        const magalu = pruneUndefined({
+          categoryId: cfg.magaluCategory || undefined,
+        }) as PerProductMagaluOverride;
+        if (Object.keys(magalu).length > 0) entry.magalu = magalu;
+        const disabled = globalMagaluIds.filter(
+          (id) => !cfg.magaluAccountIds.includes(id),
+        );
+        if (disabled.length > 0) entry.disabledMagaluAccountIds = disabled;
+      } else {
+        entry.disabledMagaluAccountIds = [...globalMagaluIds];
+      }
+    }
+
     if (
       entry.ml ||
       entry.shopee ||
+      entry.magalu ||
       (entry.disabledMlAccountIds && entry.disabledMlAccountIds.length > 0) ||
       (entry.disabledShopeeAccountIds &&
-        entry.disabledShopeeAccountIds.length > 0)
+        entry.disabledShopeeAccountIds.length > 0) ||
+      (entry.disabledMagaluAccountIds &&
+        entry.disabledMagaluAccountIds.length > 0)
     ) {
       out[productId] = entry;
     }
@@ -253,7 +291,10 @@ export function buildPerProductOverrides(
 export function countEffectiveItems(
   overrides: PerProductOverrides,
   productIds: string[],
-  requests: Array<{ platform: "MERCADO_LIVRE" | "SHOPEE"; accountId: string }>,
+  requests: Array<{
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+    accountId: string;
+  }>,
 ): number {
   let total = 0;
   for (const pid of productIds) {
@@ -262,7 +303,9 @@ export function countEffectiveItems(
       const disabled =
         r.platform === "MERCADO_LIVRE"
           ? ov?.disabledMlAccountIds?.includes(r.accountId)
-          : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+          : r.platform === "SHOPEE"
+            ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+            : ov?.disabledMagaluAccountIds?.includes(r.accountId);
       if (!disabled) total++;
     }
   }

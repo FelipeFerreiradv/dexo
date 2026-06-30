@@ -90,7 +90,7 @@ async function loadTeamProductivity(
       : {
           totals: {
             produtos: 0,
-            anuncios: { total: 0, ml: 0, shopee: 0, outro: 0 },
+            anuncios: { total: 0, ml: 0, shopee: 0, magalu: 0, outro: 0 },
           },
           byCollaborator: [],
           timeseries: [],

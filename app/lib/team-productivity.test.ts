@@ -31,6 +31,7 @@ describe("aggregateTeamProductivity (grupos agregados no banco)", () => {
       grp("u1", "CREATE_LISTING", "2026-06-10", "SHOPEE"),
       grp("u2", "CREATE_LISTING", "2026-06-11", "Shopee"),
       grp("u2", "CREATE_LISTING", "2026-06-11", "MERCADO_LIVRE"),
+      grp("u2", "CREATE_LISTING", "2026-06-11", "Magalu"), // → magalu
       grp("u2", "CREATE_LISTING", "2026-06-11", "Amazon"), // → outro
     ];
     const res = aggregateTeamProductivity(groups, collaborators, {
@@ -40,13 +41,14 @@ describe("aggregateTeamProductivity (grupos agregados no banco)", () => {
 
     expect(res.totals.produtos).toBe(1);
     expect(res.totals.anuncios).toEqual({
-      total: 5,
+      total: 6,
       ml: 2,
       shopee: 2,
+      magalu: 1,
       outro: 1,
     });
-    const { ml, shopee, outro, total } = res.totals.anuncios;
-    expect(ml + shopee + outro).toBe(total);
+    const { ml, shopee, magalu, outro, total } = res.totals.anuncios;
+    expect(ml + shopee + magalu + outro).toBe(total);
   });
 
   it("soma o count de cada grupo (não conta 1 por linha)", () => {

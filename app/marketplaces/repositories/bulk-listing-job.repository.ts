@@ -1,7 +1,7 @@
 import { BulkJobStatus, Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
 
-export type BulkListingPlatform = "MERCADO_LIVRE" | "SHOPEE";
+export type BulkListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 export interface BulkListingRequestSpec {
   platform: BulkListingPlatform;
@@ -47,11 +47,17 @@ export interface PerProductShopeeOverride {
   categoryId?: string;
 }
 
+export interface PerProductMagaluOverride {
+  categoryId?: string;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
+  magalu?: PerProductMagaluOverride;
   disabledMlAccountIds?: string[];
   disabledShopeeAccountIds?: string[];
+  disabledMagaluAccountIds?: string[];
 }
 
 export interface BulkOverrideTemplate {

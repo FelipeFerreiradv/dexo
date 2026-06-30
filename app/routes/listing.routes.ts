@@ -834,7 +834,11 @@ export async function listingRoutes(app: FastifyInstance) {
         }
 
         for (const req of body.requests) {
-          if (req.platform !== "MERCADO_LIVRE" && req.platform !== "SHOPEE") {
+          if (
+            req.platform !== "MERCADO_LIVRE" &&
+            req.platform !== "SHOPEE" &&
+            req.platform !== "MAGALU"
+          ) {
             return reply.status(400).send({
               error: "Dados inválidos",
               message: `platform desconhecido: ${req.platform}`,
@@ -1024,7 +1028,9 @@ export async function listingRoutes(app: FastifyInstance) {
           body.requests.some(
             (r) =>
               !r ||
-              (r.platform !== "MERCADO_LIVRE" && r.platform !== "SHOPEE") ||
+              (r.platform !== "MERCADO_LIVRE" &&
+                r.platform !== "SHOPEE" &&
+                r.platform !== "MAGALU") ||
               typeof r.accountId !== "string" ||
               !r.accountId,
           )
@@ -1066,7 +1072,9 @@ export async function listingRoutes(app: FastifyInstance) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
-                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+                  : r.platform === "SHOPEE"
+                    ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
               if (!skipped) effectiveTotal++;
             }
           }
@@ -1278,7 +1286,9 @@ export async function listingRoutes(app: FastifyInstance) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
-                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+                  : r.platform === "SHOPEE"
+                    ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
               if (!skipped) retryTotal++;
             }
           }

@@ -65,9 +65,15 @@ import {
   type ReviewCategoryOption,
 } from "./bulk-review/per-product-types";
 
-type Platform = "MERCADO_LIVRE" | "SHOPEE";
+type Platform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 type WizardMode = "quick" | "review";
+
+// Integração Magalu (3º marketplace) atrás da flag — quando off, o wizard fica
+// idêntico ao de hoje (seção/contas Magalu ausentes; nenhum request MAGALU é
+// emitido). Espelha o gate do modal create-product-dialog.tsx.
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
 
 interface MarketplaceAccountLite {
   id: string;
@@ -186,9 +192,15 @@ export function BulkListingWizard({
   const [shopeeAccounts, setShopeeAccounts] = useState<
     MarketplaceAccountLite[]
   >([]);
+  const [magaluAccounts, setMagaluAccounts] = useState<
+    MarketplaceAccountLite[]
+  >([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedMlIds, setSelectedMlIds] = useState<Set<string>>(new Set());
   const [selectedShopeeIds, setSelectedShopeeIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [selectedMagaluIds, setSelectedMagaluIds] = useState<Set<string>>(
     new Set(),
   );
   const [rules, setRules] = useState<RulesForm>(DEFAULT_RULES);
@@ -225,6 +237,10 @@ export function BulkListingWizard({
     () => Array.from(selectedShopeeIds),
     [selectedShopeeIds],
   );
+  const globalMagaluIdsArr = useMemo(
+    () => Array.from(selectedMagaluIds),
+    [selectedMagaluIds],
+  );
   const reviewProducts = useMemo(
     () =>
       selectedProducts.map((p) => ({
@@ -258,6 +274,7 @@ export function BulkListingWizard({
     defaults: reviewDefaults,
     globalMlIds: globalMlIdsArr,
     globalShopeeIds: globalShopeeIdsArr,
+    globalMagaluIds: globalMagaluIdsArr,
     mlOptions,
     email,
   });
@@ -277,6 +294,7 @@ export function BulkListingWizard({
       setRules(DEFAULT_RULES);
       setSelectedMlIds(new Set());
       setSelectedShopeeIds(new Set());
+      setSelectedMagaluIds(new Set());
       setSubmitError(null);
       setJobId(null);
       setParentJobIdForRetry(null);
@@ -347,8 +365,10 @@ export function BulkListingWizard({
     () =>
       [...globalMlIdsArr].sort().join(",") +
       "|" +
-      [...globalShopeeIdsArr].sort().join(","),
-    [globalMlIdsArr, globalShopeeIdsArr],
+      [...globalShopeeIdsArr].sort().join(",") +
+      "|" +
+      [...globalMagaluIdsArr].sort().join(","),
+    [globalMlIdsArr, globalShopeeIdsArr, globalMagaluIdsArr],
   );
   useEffect(() => {
     ppResetAll();
@@ -370,8 +390,16 @@ export function BulkListingWizard({
       })
         .then((r) => r.json())
         .catch(() => ({ accounts: [] })),
+      // Magalu só é buscado com a flag ligada; senão resolve vazio (sem request).
+      MAGALU_ENABLED
+        ? fetch(`${getApiBaseUrl()}/marketplace/magalu/accounts`, {
+            headers: { email },
+          })
+            .then((r) => r.json())
+            .catch(() => ({ accounts: [] }))
+        : Promise.resolve({ accounts: [] }),
     ])
-      .then(([ml, sh]) => {
+      .then(([ml, sh, mg]) => {
         if (cancelled) return;
         const mlAccs = Array.isArray(ml?.accounts)
           ? (ml.accounts as MarketplaceAccountLite[])
@@ -379,8 +407,12 @@ export function BulkListingWizard({
         const shAccs = Array.isArray(sh?.accounts)
           ? (sh.accounts as MarketplaceAccountLite[])
           : [];
+        const mgAccs = Array.isArray(mg?.accounts)
+          ? (mg.accounts as MarketplaceAccountLite[])
+          : [];
         setMlAccounts(mlAccs.filter((a) => a.status !== "INACTIVE"));
         setShopeeAccounts(shAccs.filter((a) => a.status !== "INACTIVE"));
+        setMagaluAccounts(mgAccs.filter((a) => a.status !== "INACTIVE"));
       })
       .finally(() => {
         if (!cancelled) setAccountsLoading(false);
@@ -411,7 +443,8 @@ export function BulkListingWizard({
     };
   }, [open, email]);
 
-  const totalAccountsSelected = selectedMlIds.size + selectedShopeeIds.size;
+  const totalAccountsSelected =
+    selectedMlIds.size + selectedShopeeIds.size + selectedMagaluIds.size;
   const totalListings =
     selectedProducts.length * Math.max(1, totalAccountsSelected);
 
@@ -438,6 +471,11 @@ export function BulkListingWizard({
     }
     for (const id of selectedShopeeIds) {
       out.push({ platform: "SHOPEE", accountId: id });
+    }
+    // Magalu: categoria resolvida no backend → request sem categoryId (espelha
+    // Shopee). No modo Revisão, a categoria por produto vai em perProductOverrides.
+    for (const id of selectedMagaluIds) {
+      out.push({ platform: "MAGALU", accountId: id });
     }
     return out;
   };
@@ -531,14 +569,21 @@ export function BulkListingWizard({
       return;
     }
     if (step === 3) {
+      // Só bloqueia quando NÃO há nenhum alvo válido de fallback: preflight é
+      // exclusivo da Shopee; ML e Magalu publicam independentemente (Magalu
+      // resolve a categoria no backend). Com a flag off, selectedMagaluIds está
+      // sempre vazio ⇒ condição idêntica à de antes.
       const allShopeeBlocked =
         selectedShopeeIds.size > 0 &&
         preflightIssues.length > 0 &&
         preflightIssues.length === selectedProducts.length &&
-        selectedMlIds.size === 0;
+        selectedMlIds.size === 0 &&
+        selectedMagaluIds.size === 0;
       if (allShopeeBlocked) {
         setSubmitError(
-          "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
+          MAGALU_ENABLED
+            ? "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML ou Magalu está selecionada. Corrija antes de prosseguir."
+            : "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
         );
         return;
       }
@@ -581,14 +626,21 @@ export function BulkListingWizard({
       // Avança produto a produto; só confirma no último.
       const advanced = ppGoNext();
       if (advanced) return;
+      // Só bloqueia quando NÃO há nenhum alvo válido de fallback: preflight é
+      // exclusivo da Shopee; ML e Magalu publicam independentemente (Magalu
+      // resolve a categoria no backend). Com a flag off, selectedMagaluIds está
+      // sempre vazio ⇒ condição idêntica à de antes.
       const allShopeeBlocked =
         selectedShopeeIds.size > 0 &&
         preflightIssues.length > 0 &&
         preflightIssues.length === selectedProducts.length &&
-        selectedMlIds.size === 0;
+        selectedMlIds.size === 0 &&
+        selectedMagaluIds.size === 0;
       if (allShopeeBlocked) {
         setSubmitError(
-          "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
+          MAGALU_ENABLED
+            ? "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML ou Magalu está selecionada. Corrija antes de prosseguir."
+            : "Todos os produtos têm categoria Shopee inválida e nenhuma conta ML está selecionada. Corrija antes de prosseguir.",
         );
         return;
       }
@@ -623,6 +675,7 @@ export function BulkListingWizard({
           map,
           globalMlIdsArr,
           globalShopeeIdsArr,
+          globalMagaluIdsArr,
         );
         if (Object.keys(ppo).length > 0) {
           overrideTemplate = {
@@ -763,6 +816,15 @@ export function BulkListingWizard({
     [selectedShopeeIds, shopeeAccounts],
   );
 
+  // Contas Magalu selecionadas (para o modo Revisão individual).
+  const selectedMagaluAccountsSel = useMemo(
+    () =>
+      Array.from(selectedMagaluIds)
+        .map((id) => magaluAccounts.find((a) => a.id === id))
+        .filter((a): a is MarketplaceAccountLite => !!a),
+    [selectedMagaluIds, magaluAccounts],
+  );
+
   // Pendência de preflight do produto atualmente em revisão (badge no painel).
   const currentReviewProductId = pp.current?.id;
   const preflightIssueForCurrent = useMemo(() => {
@@ -826,8 +888,10 @@ export function BulkListingWizard({
                 loading={accountsLoading}
                 mlAccounts={mlAccounts}
                 shopeeAccounts={shopeeAccounts}
+                magaluAccounts={magaluAccounts}
                 selectedMlIds={selectedMlIds}
                 selectedShopeeIds={selectedShopeeIds}
+                selectedMagaluIds={selectedMagaluIds}
                 onToggleMl={(id, checked) => {
                   setSelectedMlIds((prev) => {
                     const next = new Set(prev);
@@ -838,6 +902,14 @@ export function BulkListingWizard({
                 }}
                 onToggleShopee={(id, checked) => {
                   setSelectedShopeeIds((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
+                onToggleMagalu={(id, checked) => {
+                  setSelectedMagaluIds((prev) => {
                     const next = new Set(prev);
                     if (checked) next.add(id);
                     else next.delete(id);
@@ -874,8 +946,10 @@ export function BulkListingWizard({
                 pp={pp}
                 globalMlAccounts={selectedMlAccountsOrdered}
                 globalShopeeAccounts={selectedShopeeAccountsSel}
+                globalMagaluAccounts={selectedMagaluAccountsSel}
                 mlOptions={mlOptions}
                 shopeeOptions={shopeeOptions}
+                magaluOptions={[]}
                 preflightIssue={preflightIssueForCurrent}
                 email={email}
               />
@@ -1024,18 +1098,24 @@ function StepAccounts({
   loading,
   mlAccounts,
   shopeeAccounts,
+  magaluAccounts,
   selectedMlIds,
   selectedShopeeIds,
+  selectedMagaluIds,
   onToggleMl,
   onToggleShopee,
+  onToggleMagalu,
 }: {
   loading: boolean;
   mlAccounts: MarketplaceAccountLite[];
   shopeeAccounts: MarketplaceAccountLite[];
+  magaluAccounts: MarketplaceAccountLite[];
   selectedMlIds: Set<string>;
   selectedShopeeIds: Set<string>;
+  selectedMagaluIds: Set<string>;
   onToggleMl: (id: string, checked: boolean) => void;
   onToggleShopee: (id: string, checked: boolean) => void;
+  onToggleMagalu: (id: string, checked: boolean) => void;
 }) {
   if (loading) {
     return (
@@ -1063,6 +1143,19 @@ function StepAccounts({
         onToggle={onToggleShopee}
         emptyHint="Nenhuma conta Shopee conectada. Conecte em Integrações."
       />
+      {/* Magalu (3º marketplace) só aparece com a flag ligada. */}
+      {MAGALU_ENABLED && (
+        <>
+          <Separator />
+          <AccountSection
+            title="Magalu"
+            accounts={magaluAccounts}
+            selected={selectedMagaluIds}
+            onToggle={onToggleMagalu}
+            emptyHint="Nenhuma conta Magalu conectada. Conecte em Integrações."
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -1650,7 +1743,11 @@ function StepProgress({
                   </td>
                   <td className="px-3 py-2 text-xs">
                     <Badge variant="outline" className="font-normal">
-                      {r.platform === "MERCADO_LIVRE" ? "ML" : "Shopee"}
+                      {r.platform === "MERCADO_LIVRE"
+                        ? "ML"
+                        : r.platform === "SHOPEE"
+                          ? "Shopee"
+                          : "Magalu"}
                     </Badge>
                   </td>
                   <td className="px-3 py-2">

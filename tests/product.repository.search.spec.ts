@@ -607,7 +607,7 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
         marketplaceAccount: {
           is: {
             platform: {
-              in: ["MERCADO_LIVRE", "SHOPEE"],
+              in: ["MERCADO_LIVRE", "SHOPEE", "MAGALU"],
             },
           },
         },

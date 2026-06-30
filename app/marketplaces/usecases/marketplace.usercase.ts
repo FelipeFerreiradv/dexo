@@ -1,6 +1,7 @@
 ﻿import { MLOAuthService } from "../services/ml-oauth.service";
 import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
@@ -673,6 +674,209 @@ export class MarketplaceUseCase {
       throw new Error(
         `Erro ao desconectar conta Shopee: ${error instanceof Error ? error.message : error}`,
       );
+    }
+  }
+
+  // ====================================================================
+  // MÉTODOS PARA MAGALU
+  // ====================================================================
+
+  /**
+   * Inicia fluxo OAuth para a Magalu (ID Magalu, Authorization Code, sem PKCE).
+   */
+  static initiateMagaluOAuth(userId?: string): {
+    authUrl: string;
+    state: string;
+  } {
+    const oauthData = MagaluOAuthService.generateAuthUrl(userId);
+    return { authUrl: oauthData.authUrl, state: oauthData.state };
+  }
+
+  /**
+   * Processa o callback OAuth da Magalu. Espelha handleOAuthCallback (ML):
+   * valida state, troca code por tokens, persiste a conta usando o tenant_id
+   * como externalUserId. (Backfill de pedidos na reativação é adicionado na
+   * Entrega D, quando OrderUseCase.importRecentMagaluOrdersForAccount existir.)
+   */
+  static async handleMagaluOAuthCallback(data: {
+    code: string;
+    state: string;
+    userId?: string;
+  }) {
+    try {
+      const stateValidation = MagaluOAuthService.validateState(data.state);
+      if (!stateValidation.valid) {
+        throw new Error("State inválido ou expirado. Reinicie a autenticação.");
+      }
+
+      const userId = data.userId || stateValidation.userId;
+      if (!userId) {
+        throw new Error("userId não encontrado. Faça login e tente novamente.");
+      }
+
+      const tokenData = await MagaluOAuthService.exchangeCodeForTokens(data.code);
+
+      if (!tokenData.externalUserId) {
+        throw new Error(
+          "Não foi possível identificar o tenant (loja) da Magalu no token.",
+        );
+      }
+
+      // Bloquear vinculação cross-tenant do mesmo tenant Magalu
+      const conflictingAccounts =
+        await MarketplaceRepository.findAllByExternalUserId(
+          tokenData.externalUserId,
+          Platform.MAGALU,
+        );
+      const conflictingAccount = conflictingAccounts.find(
+        (account) => account.userId !== userId,
+      );
+      if (conflictingAccount) {
+        throw new Error(
+          "Esta conta da Magalu já está vinculada a outro usuário. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      const existingAccount =
+        await MarketplaceRepository.findByUserAndExternalUserId(
+          userId,
+          tokenData.externalUserId,
+          Platform.MAGALU,
+        );
+
+      let account;
+      const expiresAt = new Date(Date.now() + tokenData.expiresIn * 1000);
+
+      if (existingAccount) {
+        account = await MarketplaceRepository.updateTokens(existingAccount.id, {
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          expiresAt,
+        });
+
+        const wasInactive = account.status !== AccountStatus.ACTIVE;
+        if (wasInactive) {
+          account = await MarketplaceRepository.updateStatus(
+            existingAccount.id,
+            AccountStatus.ACTIVE,
+          );
+        }
+
+        MagaluOAuthService.clearAccountCircuitBreaker(existingAccount.id);
+
+        // Backfill de pedidos perdidos durante o período de inatividade.
+        if (wasInactive) {
+          const backfillDays = parseInt(
+            process.env.RECONNECT_BACKFILL_DAYS ?? "14",
+            10,
+          );
+          // Captura o id num const ANTES do closure (evita o implicit-any que
+          // o padrão `let account` + setImmediate gera em ML/Shopee).
+          const backfillAccountId = account.id;
+          setImmediate(() => {
+            void OrderUseCase.importRecentMagaluOrdersForAccount(
+              backfillAccountId,
+              backfillDays,
+              true,
+            )
+              .then((r) =>
+                console.log(
+                  `[handleMagaluOAuthCallback] Backfill Magalu account=${backfillAccountId}: imported=${r.imported}, stockDeductions=${r.stockDeductions}`,
+                ),
+              )
+              .catch((e) =>
+                console.error(
+                  `[handleMagaluOAuthCallback] Backfill Magalu failed for account=${backfillAccountId}:`,
+                  e,
+                ),
+              );
+          });
+        }
+      } else {
+        account = await MarketplaceRepository.createAccount({
+          userId,
+          platform: Platform.MAGALU,
+          accountName: `Magalu ${tokenData.externalUserId}`,
+          externalUserId: tokenData.externalUserId,
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          expiresAt,
+          // Baseline "só novos": só anúncios criados a partir de agora viram
+          // produto na Dexo. Não importa o portfólio já existente.
+          autoImportListingsSince: new Date(),
+        });
+      }
+
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao processar callback OAuth Magalu: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  /**
+   * Status da conta Magalu (espelha getShopeeAccountStatus): renova o token
+   * proativamente quando expirado; marca ERROR se o refresh falhar.
+   */
+  static async getMagaluAccountStatus(
+    userId: string,
+    accountId?: string,
+  ): Promise<{ connected: boolean; account?: any; message: string }> {
+    try {
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.MAGALU,
+          );
+
+      if (!account) {
+        return { connected: false, message: "Conta Magalu não conectada" };
+      }
+
+      const isExpired = account.expiresAt < new Date();
+      if (isExpired) {
+        try {
+          const refreshed =
+            await MagaluOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
+          await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+          });
+          return {
+            connected: true,
+            account,
+            message: "Conta conectada e token renovado",
+          };
+        } catch (refreshError) {
+          await MarketplaceAccountService.handleAuthFailure(
+            account.id,
+            refreshError,
+            { userId, context: "AUTH_REFRESH" },
+          );
+          return {
+            connected: false,
+            account,
+            message: "Token expirado. Reconecte sua conta.",
+          };
+        }
+      }
+
+      return {
+        connected: account.status === AccountStatus.ACTIVE,
+        account,
+        message: "Conta conectada",
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        message: `Erro ao verificar status: ${error instanceof Error ? error.message : error}`,
+      };
     }
   }
 }

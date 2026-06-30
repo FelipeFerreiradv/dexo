@@ -26,6 +26,7 @@ interface UsePerProductListingArgs {
   defaults: GlobalListingDefaults;
   globalMlIds: string[];
   globalShopeeIds: string[];
+  globalMagaluIds: string[];
   mlOptions: ReviewCategoryOption[];
   email: string;
 }
@@ -33,9 +34,11 @@ interface UsePerProductListingArgs {
 const EMPTY_CONFIG: PerProductListingConfig = {
   includeMl: false,
   includeShopee: false,
+  includeMagalu: false,
   autoCategory: true,
   mlAccountIds: [],
   shopeeAccountIds: [],
+  magaluAccountIds: [],
   attributes: {},
   mlCatalogProductId: null,
   mlListingType: "gold_special",
@@ -55,6 +58,7 @@ export function usePerProductListing({
   defaults,
   globalMlIds,
   globalShopeeIds,
+  globalMagaluIds,
   mlOptions,
   email,
 }: UsePerProductListingArgs) {
@@ -89,6 +93,8 @@ export function usePerProductListing({
         mlCategoryLabel?: string;
         shopeeCategory?: string;
         shopeeCategoryLabel?: string;
+        magaluCategory?: string;
+        magaluCategoryLabel?: string;
       } = {};
       const base = getApiBaseUrl();
       const headers = { email } as Record<string, string>;
@@ -128,9 +134,28 @@ export function usePerProductListing({
           // fail-open: categoria Shopee inválida/ausente cai no preflight
         }
       }
+      if (globalMagaluIds.length > 0) {
+        try {
+          // Magalu usa a MESMA resolução do create (de-para/busca); o endpoint
+          // recebe `name=` (não `title=`) e devolve { categoryId, path }.
+          const r = await fetch(
+            `${base}/marketplace/magalu/category-suggest?name=${encodeURIComponent(p.name)}`,
+            { headers },
+          );
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.categoryId) {
+              out.magaluCategory = d.categoryId as string;
+              out.magaluCategoryLabel = (d.path || d.categoryId) as string;
+            }
+          }
+        } catch {
+          // fail-open: sem sugestão ⇒ backend resolve no envio (DRAFT)
+        }
+      }
       return out;
     },
-    [email, globalMlIds.length, globalShopeeIds.length],
+    [email, globalMlIds.length, globalShopeeIds.length, globalMagaluIds.length],
   );
 
   // Preenche categorias sugeridas no form atual. onlyEmpty=true respeita o que
@@ -159,6 +184,15 @@ export function usePerProductListing({
           });
           changed = true;
         }
+        if (sug.magaluCategory && (!onlyEmpty || !cur.magaluCategory)) {
+          form.setValue("magaluCategory", sug.magaluCategory, {
+            shouldDirty: false,
+          });
+          form.setValue("magaluCategoryLabel", sug.magaluCategoryLabel ?? "", {
+            shouldDirty: false,
+          });
+          changed = true;
+        }
         if (changed) writeConfig(p.id, form.getValues());
       } finally {
         if (currentIdRef.current === p.id) setInitializing(false);
@@ -182,7 +216,12 @@ export function usePerProductListing({
       let cfg = mapRef.current[p.id];
       const isNew = !cfg;
       if (!cfg) {
-        cfg = configFromDefaults(defaults, globalMlIds, globalShopeeIds);
+        cfg = configFromDefaults(
+          defaults,
+          globalMlIds,
+          globalShopeeIds,
+          globalMagaluIds,
+        );
         // NÃO semear mlCategory do produto: product.mlCategoryId é um id INTERNO
         // (cuid, FK p/ MarketplaceCategory) — incompatível com o combobox/sugestão
         // (que usam id EXTERNO MLB...). Vazio ⇒ a sugestão automática preenche um id
@@ -209,6 +248,7 @@ export function usePerProductListing({
       defaults,
       globalMlIds,
       globalShopeeIds,
+      globalMagaluIds,
       writeConfig,
       form,
       runAutoSuggest,

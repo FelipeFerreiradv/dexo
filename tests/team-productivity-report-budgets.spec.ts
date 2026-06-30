@@ -17,7 +17,10 @@ const baseData = {
     endDate: "2026-06-26T23:59:59.999Z",
     label: "Junho/2026",
   },
-  totals: { produtos: 0, anuncios: { total: 0, ml: 0, shopee: 0, outro: 0 } },
+  totals: {
+    produtos: 0,
+    anuncios: { total: 0, ml: 0, shopee: 0, magalu: 0, outro: 0 },
+  },
   byCollaborator: [] as any[],
   timeseries: [] as any[],
   budgetsByVendedor: [] as any[],
@@ -67,18 +70,23 @@ describe("renderTeamProductivityReport — orçamentos por vendedor", () => {
   it("produtividade + orçamentos juntos rendeiriza sem erro", async () => {
     const pdf = await renderTeamProductivityReport({
       ...baseData,
-      totals: { produtos: 10, anuncios: { total: 6, ml: 4, shopee: 2, outro: 0 } },
+      totals: {
+        produtos: 10,
+        anuncios: { total: 6, ml: 4, shopee: 2, magalu: 0, outro: 0 },
+      },
       byCollaborator: [
         {
           id: "u1",
           name: "Ana",
           email: "a@x.com",
           produtos: 10,
-          anuncios: { total: 6, ml: 4, shopee: 2, outro: 0 },
+          anuncios: { total: 6, ml: 4, shopee: 2, magalu: 0, outro: 0 },
           lastActivityAt: "2026-06-10T00:00:00.000Z",
         },
       ],
-      timeseries: [{ date: "2026-06-10", produtos: 10, ml: 4, shopee: 2 }],
+      timeseries: [
+        { date: "2026-06-10", produtos: 10, ml: 4, shopee: 2, magalu: 0 },
+      ],
       budgetsByVendedor: [
         {
           id: "u1",

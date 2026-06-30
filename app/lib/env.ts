@@ -54,6 +54,22 @@ const envSchema = z.object({
   SHOPEE_PARTNER_KEY: z.string().min(1, "SHOPEE_PARTNER_KEY é obrigatória"),
   SHOPEE_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
 
+  // Magalu (ID Magalu / Grupo Magalu). TODAS opcionais de propósito: a
+  // integração fica atrás da flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED e
+  // env.ts é exit-on-error — vars obrigatórias ausentes derrubariam o boot
+  // (mesmo padrão de REMBG_*/MARKETPLACE_TOKEN_ENC_KEY). Os serviços magalu-*
+  // validam a presença em runtime (validateMagaluConfig).
+  MAGALU_CLIENT_ID: z.string().optional(),
+  MAGALU_CLIENT_SECRET: z.string().optional(),
+  MAGALU_AUTH_URL: optionalUrlIsh,
+  MAGALU_API_URL: optionalUrlIsh,
+  MAGALU_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por espaço. Sem valor → usa o default das constantes.
+  MAGALU_SCOPES: z.string().optional(),
+  // Segredo whsec_* devolvido por PUT /v1/onboarding/signup (assinatura do webhook).
+  MAGALU_WEBHOOK_SECRET: z.string().optional(),
+  MAGALU_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
+
   // URLs
   APP_BACKEND_URL: urlIsh,
   NEXT_PUBLIC_API_URL: urlIsh,

@@ -555,6 +555,7 @@ enum Quality {
 enum Platform {
   MERCADO_LIVRE
   SHOPEE
+  MAGALU
 }
 
 enum AccountStatus {
@@ -1213,6 +1214,11 @@ model MarketplaceQuestion {
   buyerNickname        String?
   text                 String    @db.Text
   status               String // UNANSWERED | ANSWERED | CLOSED_UNANSWERED | UNDER_REVIEW | BANNED | DELETED
+  // Autor da mensagem em conversas de CHAT (Magalu): CUSTOMER | SELLER. Aditivo
+  // e nullable: ML/Shopee (Q&A 1:1) deixam NULL e seguem usando `answer`. Quando
+  // preenchido, a linha é UMA mensagem do chat (sem MarketplaceAnswer) e a UI
+  // renderiza por authorType (SELLER à direita / CUSTOMER à esquerda).
+  authorType           String?
   dateCreated          DateTime
   lastSyncedAt         DateTime  @default(now())
   readAt               DateTime?

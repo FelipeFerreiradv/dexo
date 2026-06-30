@@ -6,6 +6,7 @@ import {
   MLItemWebhookPayload,
 } from "../types/ml-order.types";
 import { MLQuestionWebhookPayload } from "../types/ml-questions.types";
+import { MagaluOrderWebhookPayload } from "../types/magalu-order.types";
 import { OrderUseCase } from "./order.usercase";
 import { MessagesUseCase } from "./messages.usecase";
 import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
@@ -284,6 +285,109 @@ export class WebhookUseCase {
           error instanceof Error
             ? error.message
             : "Erro desconhecido no processamento do webhook Shopee",
+      };
+    }
+  }
+
+  /**
+   * Processa webhook nativo de pedido da Magalu (tópicos orders_order /
+   * orders_delivery). Resolve a conta por tenant_id e dispara a importação
+   * recente da conta (que faz a baixa de estoque), espelhando ML/Shopee.
+   *
+   * A validação de assinatura HMAC acontece na rota (precisa dos headers e do
+   * corpo) — aqui assumimos um payload já autenticado.
+   */
+  static async processMagaluOrderWebhook(
+    payload: MagaluOrderWebhookPayload,
+  ): Promise<{
+    success: boolean;
+    accountId?: string;
+    action?: string;
+    error?: string;
+  }> {
+    try {
+      const tenantId = payload.tenant_id;
+      const topic = payload.topic ?? "";
+      const resourceId = payload.data?.params?.id ?? "";
+      const status = payload.data?.status ?? "";
+
+      if (!tenantId) {
+        return { success: false, error: "Webhook Magalu sem tenant_id" };
+      }
+
+      const dedupKey = `${tenantId}:${topic}:${resourceId}:${status}`;
+      const isNew = await claimWebhookEvent("MAGALU", dedupKey, payload);
+      if (!isNew) {
+        return { success: true, action: "duplicate_ignored" };
+      }
+
+      const accounts = await MarketplaceRepository.findAllByExternalUserId(
+        tenantId,
+        Platform.MAGALU,
+        true,
+      );
+
+      if (accounts.length === 0) {
+        void SystemLogService.logWarning(
+          "WEBHOOK_ACCOUNT_NOT_FOUND",
+          `Webhook Magalu ignorado: conta não encontrada para tenant_id=${tenantId}. Pedidos podem estar sendo perdidos.`,
+          {
+            resource: "MarketplaceAccount",
+            details: { tenantId, platform: "MAGALU", topic, resourceId },
+          },
+        ).catch(() => {});
+        return {
+          success: false,
+          error: `Conta Magalu não encontrada para tenant_id: ${tenantId}`,
+        };
+      }
+
+      if (accounts.length > 1) {
+        return {
+          success: false,
+          error: `Múltiplas contas Magalu ativas encontradas para tenant_id: ${tenantId}. Resolva a duplicidade antes de processar webhooks.`,
+        };
+      }
+
+      const [account] = accounts;
+      if (account.status !== "ACTIVE") {
+        return {
+          success: false,
+          error: `Conta Magalu não está ativa (status: ${account.status})`,
+        };
+      }
+
+      // Janela curta (2 dias) — cobre o pedido recém-atualizado + borda de fuso.
+      const importResult =
+        await OrderUseCase.importRecentMagaluOrdersForAccount(
+          account.id,
+          2,
+          true,
+        );
+
+      if (importResult.errors > 0) {
+        return {
+          success: false,
+          accountId: account.id,
+          error: `Erro ao importar pedidos Magalu: ${importResult.errors} erros`,
+        };
+      }
+
+      return {
+        success: true,
+        accountId: account.id,
+        action:
+          importResult.imported > 0
+            ? `imported_${importResult.imported}_orders`
+            : "no_new_orders",
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido no processamento do webhook Magalu",
       };
     }
   }

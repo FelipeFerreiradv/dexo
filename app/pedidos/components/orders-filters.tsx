@@ -27,6 +27,12 @@ import type { OrderFiltersState } from "../lib/order-filters";
 // Radix Select não aceita value "" — usamos um sentinel para "Todos".
 const SELECT_ALL = "ALL";
 
+// Magalu (3º marketplace) só aparece no filtro com a flag ligada — quando off, o
+// seletor fica idêntico ao de hoje (só ML/Shopee). Pedido Magalu só existe com a
+// integração ativa, então o badge (order-badges) não precisa de gate.
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
 interface OrdersFiltersProps {
   filters: OrderFiltersState;
   searchInput: string;
@@ -148,6 +154,9 @@ export function OrdersFilters({
                 <SelectItem value={SELECT_ALL}>Todos</SelectItem>
                 <SelectItem value="MERCADO_LIVRE">Mercado Livre</SelectItem>
                 <SelectItem value="SHOPEE">Shopee</SelectItem>
+                {MAGALU_ENABLED && (
+                  <SelectItem value="MAGALU">Magalu</SelectItem>
+                )}
               </SelectContent>
             </Select>
           </div>

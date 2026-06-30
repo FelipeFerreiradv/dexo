@@ -32,14 +32,26 @@ export interface TeamProductivityReportData {
   range: { startDate: string; endDate: string; label: string };
   totals: {
     produtos: number;
-    anuncios: { total: number; ml: number; shopee: number; outro: number };
+    anuncios: {
+      total: number;
+      ml: number;
+      shopee: number;
+      magalu: number;
+      outro: number;
+    };
   };
   byCollaborator: Array<{
     id: string;
     name: string | null;
     email: string;
     produtos: number;
-    anuncios: { total: number; ml: number; shopee: number; outro: number };
+    anuncios: {
+      total: number;
+      ml: number;
+      shopee: number;
+      magalu: number;
+      outro: number;
+    };
     lastActivityAt: string | null;
   }>;
   timeseries: Array<{
@@ -47,6 +59,7 @@ export interface TeamProductivityReportData {
     produtos: number;
     ml: number;
     shopee: number;
+    magalu: number;
   }>;
   // Orçamentos por vendedor (BLOCO 1) — emitidos + convertidos (count+valor).
   budgetsByVendedor: Array<{
@@ -158,7 +171,7 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
     (c) => c.produtos > 0 || c.anuncios.total > 0,
   ).length;
   const perDot = Math.max(1, Math.ceil(totals.anuncios.total / 130));
-  const areaSeries = data.timeseries.map((t) => t.ml + t.shopee);
+  const areaSeries = data.timeseries.map((t) => t.ml + t.shopee + t.magalu);
   const areaSecondary = data.timeseries.map((t) => t.produtos);
   const firstDate = data.timeseries[0]?.date;
   const lastDate = data.timeseries[data.timeseries.length - 1]?.date;
@@ -199,6 +212,11 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
             value={fmtInt(totals.anuncios.shopee)}
             dot={PLATFORM_COLOR.SHOPEE}
           />
+          <Kpi
+            label="Anúncios Magalu"
+            value={fmtInt(totals.anuncios.magalu)}
+            dot={PLATFORM_COLOR.MAGALU}
+          />
         </KpiRow>
 
         <View style={{ flexDirection: "row", gap: 14, marginBottom: 18 }}>
@@ -224,14 +242,17 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
                 marginBottom: 6,
               }}
             >
-              DISTRIBUIÇÃO ML × SHOPEE
+              DISTRIBUIÇÃO POR CANAL
             </Text>
             <DonutSplit
               ml={totals.anuncios.ml}
               shopee={totals.anuncios.shopee}
+              magalu={totals.anuncios.magalu}
               outro={totals.anuncios.outro}
             />
-            <View style={{ flexDirection: "row", marginTop: 8 }}>
+            <View
+              style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 8 }}
+            >
               <LegendDot
                 color={PLATFORM_COLOR.ML}
                 label={`ML ${pctLabel(totals.anuncios.ml, totals.anuncios.total)}`}
@@ -239,6 +260,10 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
               <LegendDot
                 color={PLATFORM_COLOR.SHOPEE}
                 label={`Shopee ${pctLabel(totals.anuncios.shopee, totals.anuncios.total)}`}
+              />
+              <LegendDot
+                color={PLATFORM_COLOR.MAGALU}
+                label={`Magalu ${pctLabel(totals.anuncios.magalu, totals.anuncios.total)}`}
               />
             </View>
           </View>
@@ -291,6 +316,7 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
           <View style={{ flexDirection: "row", marginBottom: 10 }}>
             <LegendDot color={PLATFORM_COLOR.ML} label="ML" />
             <LegendDot color={PLATFORM_COLOR.SHOPEE} label="Shopee" />
+            <LegendDot color={PLATFORM_COLOR.MAGALU} label="Magalu" />
           </View>
         </View>
 
@@ -310,6 +336,7 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
           <Text style={[col.num, th]}>PROD.</Text>
           <Text style={[col.num, th]}>ML</Text>
           <Text style={[col.num, th]}>SHOPEE</Text>
+          <Text style={[col.num, th]}>MAGALU</Text>
           <Text style={[col.num, th]}>ANÚNC.</Text>
           <Text style={[col.share, th]}>PART.</Text>
         </View>
@@ -356,6 +383,7 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
                 <StackedBar
                   ml={c.anuncios.ml}
                   shopee={c.anuncios.shopee}
+                  magalu={c.anuncios.magalu}
                   outro={c.anuncios.outro}
                   widthPct={maxTotal ? (c.anuncios.total / maxTotal) * 100 : 0}
                 />
@@ -363,6 +391,7 @@ function FullDoc({ data }: { data: TeamProductivityReportData }) {
               <Text style={[col.num, td]}>{fmtInt(c.produtos)}</Text>
               <Text style={[col.num, td]}>{fmtInt(c.anuncios.ml)}</Text>
               <Text style={[col.num, td]}>{fmtInt(c.anuncios.shopee)}</Text>
+              <Text style={[col.num, td]}>{fmtInt(c.anuncios.magalu)}</Text>
               <Text style={[col.num, td, { fontWeight: 700 }]}>
                 {fmtInt(c.anuncios.total)}
               </Text>

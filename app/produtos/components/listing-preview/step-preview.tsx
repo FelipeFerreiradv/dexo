@@ -4,9 +4,9 @@
 //
 // Builds a normalized view-model from the form values and renders a faithful,
 // read-only preview of the marketplace listing(s) the user opted to create:
-//   - neither marketplace marked  → friendly empty state
-//   - exactly one marked          → that mock directly (no tabs)
-//   - both marked                 → ML/Shopee tabs (default ML)
+//   - nenhum marcado   → estado vazio amigável
+//   - exatamente um     → aquele mock direto (sem abas)
+//   - mais de um        → abas por marketplace (1º como default)
 //
 // This step is PURELY VISUAL: it never creates/edits/publishes anything and
 // never mutates form/business state.
@@ -16,6 +16,7 @@ import { Eye } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MlListingPreview } from "./ml-listing-preview";
 import { ShopeeListingPreview } from "./shopee-listing-preview";
+import { MagaluListingPreview } from "./magalu-listing-preview";
 import {
   buildPreviewViewModel,
   type PreviewFormValues,
@@ -34,6 +35,10 @@ export interface StepPreviewProps {
   mlOptions: CategoryOption[];
   shopeeOptions: CategoryOption[];
   formatCurrency: (value: number | null | undefined) => string;
+  // Magalu (opcionais — só usados com a flag ligada).
+  magaluAccounts?: PreviewAccount[];
+  selectedMagaluAccountIds?: string[];
+  magaluOptions?: CategoryOption[];
 }
 
 export function StepPreview({
@@ -46,6 +51,9 @@ export function StepPreview({
   mlOptions,
   shopeeOptions,
   formatCurrency,
+  magaluAccounts = [],
+  selectedMagaluAccountIds = [],
+  magaluOptions = [],
 }: StepPreviewProps) {
   const vm = buildPreviewViewModel({
     values,
@@ -57,10 +65,41 @@ export function StepPreview({
     mlOptions,
     shopeeOptions,
     formatCurrency,
+    magaluAccounts,
+    selectedMagaluAccountIds,
+    magaluOptions,
   });
 
+  // Marketplaces ativos (na ordem de exibição). Cada um vira aba/preview.
+  const previews: Array<{
+    value: string;
+    label: string;
+    iconSrc?: string;
+    node: React.ReactNode;
+  }> = [];
+  if (vm.showML)
+    previews.push({
+      value: "ml",
+      label: "Mercado Livre",
+      iconSrc: "/marketplaces/mercado-livre.svg",
+      node: <MlListingPreview vm={vm} />,
+    });
+  if (vm.showShopee)
+    previews.push({
+      value: "shopee",
+      label: "Shopee",
+      iconSrc: "/marketplaces/shopee.svg",
+      node: <ShopeeListingPreview vm={vm} />,
+    });
+  if (vm.showMagalu)
+    previews.push({
+      value: "magalu",
+      label: "Magalu",
+      node: <MagaluListingPreview vm={vm} />,
+    });
+
   // Nenhum marketplace marcado → estado vazio amigável.
-  if (!vm.showML && !vm.showShopee) {
+  if (previews.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-muted/30 p-10 text-center">
         <Eye className="h-10 w-10 text-muted-foreground" />
@@ -83,50 +122,36 @@ export function StepPreview({
   );
 
   // Apenas um marketplace marcado → mostra direto, sem abas.
-  if (vm.showML && !vm.showShopee) {
+  if (previews.length === 1) {
     return (
       <div className="space-y-3">
         {intro}
-        <MlListingPreview vm={vm} />
-      </div>
-    );
-  }
-  if (vm.showShopee && !vm.showML) {
-    return (
-      <div className="space-y-3">
-        {intro}
-        <ShopeeListingPreview vm={vm} />
+        {previews[0].node}
       </div>
     );
   }
 
-  // Ambos marcados → abas, ML por padrão.
+  // Mais de um → abas (o 1º ativo como default).
   return (
     <div className="space-y-3">
       {intro}
-      <Tabs defaultValue="ml" className="w-full">
+      <Tabs defaultValue={previews[0].value} className="w-full">
         <TabsList>
-          <TabsTrigger value="ml" className="gap-2">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/marketplaces/mercado-livre.svg"
-              alt=""
-              className="h-4 w-4"
-            />
-            Mercado Livre
-          </TabsTrigger>
-          <TabsTrigger value="shopee" className="gap-2">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/marketplaces/shopee.svg" alt="" className="h-4 w-4" />
-            Shopee
-          </TabsTrigger>
+          {previews.map((p) => (
+            <TabsTrigger key={p.value} value={p.value} className="gap-2">
+              {p.iconSrc && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={p.iconSrc} alt="" className="h-4 w-4" />
+              )}
+              {p.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
-        <TabsContent value="ml">
-          <MlListingPreview vm={vm} />
-        </TabsContent>
-        <TabsContent value="shopee">
-          <ShopeeListingPreview vm={vm} />
-        </TabsContent>
+        {previews.map((p) => (
+          <TabsContent key={p.value} value={p.value}>
+            {p.node}
+          </TabsContent>
+        ))}
       </Tabs>
     </div>
   );

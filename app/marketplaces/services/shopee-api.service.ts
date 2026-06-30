@@ -22,6 +22,29 @@ import {
 } from "../types/shopee-api.types";
 
 /**
+ * Comentário/pergunta de um anúncio Shopee (product/get_comment). Modelo Q&A
+ * 1:1 (comentário + opcional CommentReply) — encaixa direto no MarketplaceQuestion
+ * sem authorType (igual ML). Tipos defensivos.
+ */
+export interface ShopeeComment {
+  comment_id: number;
+  comment: string;
+  buyer_username?: string;
+  item_id: number;
+  create_time: number; // epoch em SEGUNDOS
+  hidden?: boolean;
+  // Resposta do seller. A Shopee usa snake_case `comment_reply`; samples antigos
+  // ainda emitem `cmt_reply`. getComments normaliza ambos para comment_reply.
+  comment_reply?: {
+    reply?: string;
+    hidden?: boolean;
+    create_time?: number;
+  } | null;
+  cmt_reply?: { reply?: string; create_time?: number } | null;
+  [key: string]: unknown;
+}
+
+/**
  * Cliente para API do Shopee
  * Responsável por:
  * 1. Gerenciar itens/produtos
@@ -806,6 +829,84 @@ export class ShopeeApiService {
     }
 
     return response.response?.order_list ?? [];
+  }
+
+  /**
+   * Lista comentários/perguntas (product/get_comment). Sem item_id ⇒ shop-wide
+   * (usado pelo polling); com item_id ⇒ só daquele anúncio (pull on-demand).
+   * Paginação por cursor (more + next_cursor), igual ao get_order_list.
+   */
+  static async getComments(
+    accessToken: string,
+    shopId: number,
+    params: { itemId?: number; cursor?: string; pageSize?: number } = {},
+  ): Promise<{ comments: ShopeeComment[]; more: boolean; nextCursor: string }> {
+    const apiPath = "/api/v2/product/get_comment";
+    const query = new URLSearchParams({
+      page_size: String(Math.min(params.pageSize ?? 50, 100)),
+    });
+    if (params.itemId) query.set("item_id", String(params.itemId));
+    if (params.cursor) query.set("cursor", params.cursor);
+
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        item_comment_list?: ShopeeComment[];
+        more?: boolean;
+        next_cursor?: string;
+      }>
+    >("GET", `${apiPath}?${query.toString()}`, accessToken, shopId);
+
+    if (response.error) {
+      throw new Error(`Erro ao listar comentários Shopee: ${response.message}`);
+    }
+    const r = response.response;
+    // Normaliza o campo de resposta: a Shopee usa `comment_reply` (e o legado
+    // `cmt_reply` em samples antigos). O resto do código lê só comment_reply.
+    const comments = (r?.item_comment_list ?? []).map((c) => ({
+      ...c,
+      comment_reply: c.comment_reply ?? c.cmt_reply ?? null,
+    }));
+    return {
+      comments,
+      more: r?.more ?? false,
+      nextCursor: r?.next_cursor ?? "",
+    };
+  }
+
+  /**
+   * Responde um comentário (product/reply_comment). reply_comment aceita lote;
+   * usamos 1 por vez. Falha por-item vem em result_list[].fail_error.
+   */
+  static async replyComment(
+    accessToken: string,
+    shopId: number,
+    commentId: number,
+    comment: string,
+  ): Promise<void> {
+    const apiPath = "/api/v2/product/reply_comment";
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        result_list?: {
+          comment_id: number;
+          fail_error?: string | null;
+          fail_message?: string | null;
+        }[];
+      }>
+    >("POST", apiPath, accessToken, shopId, {
+      comment_list: [{ comment_id: commentId, comment }],
+    });
+
+    if (response.error) {
+      throw new Error(
+        `Erro ao responder comentário Shopee: ${response.message}`,
+      );
+    }
+    const failed = response.response?.result_list?.find((r) => r.fail_error);
+    if (failed) {
+      throw new Error(
+        `Erro ao responder comentário ${commentId}: ${failed.fail_message ?? failed.fail_error}`,
+      );
+    }
   }
 
   /**

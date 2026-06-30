@@ -37,7 +37,14 @@ import { getApiBaseUrl } from "@/lib/api";
 // visual editorial pesado é só do PDF). ML × Shopee são tokens distintos.
 const ML_COLOR = "var(--color-primary)";
 const SHOPEE_COLOR = "var(--color-accent)";
+const MAGALU_COLOR = "#2563eb"; // azul da marca Magalu (série de gráfico)
 const PRODUTO_COLOR = "var(--color-muted-foreground)";
+
+// Magalu (3º marketplace) atrás da flag — KPI/legenda só aparecem com a flag
+// ligada (off = tela idêntica). A barra/série sempre renderizam (0 = invisível),
+// para nunca esconder contagem de Magalu já existente.
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
 
 const nf = new Intl.NumberFormat("pt-BR");
 const brlFmt = new Intl.NumberFormat("pt-BR", {
@@ -48,7 +55,13 @@ function brl(n: number): string {
   return brlFmt.format(n || 0);
 }
 
-type Anuncios = { total: number; ml: number; shopee: number; outro: number };
+type Anuncios = {
+  total: number;
+  ml: number;
+  shopee: number;
+  magalu: number;
+  outro: number;
+};
 
 type ProductivityResponse = {
   range: { startDate: string; endDate: string; label: string };
@@ -67,6 +80,7 @@ type ProductivityResponse = {
     produtos: number;
     ml: number;
     shopee: number;
+    magalu: number;
   }>;
   // Orçamentos por vendedor (BLOCO 1). Opcional (compat com respostas antigas).
   budgetsByVendedor?: Array<{
@@ -348,6 +362,14 @@ export function TeamProductivity({
                 icon={ShoppingBagIcon}
                 dotColor={SHOPEE_COLOR}
               />
+              {MAGALU_ENABLED && (
+                <KpiCard
+                  title="Anúncios Magalu"
+                  value={totals!.anuncios.magalu}
+                  icon={StoreIcon}
+                  dotColor={MAGALU_COLOR}
+                />
+              )}
             </div>
 
             {!hasActivity ? (
@@ -382,7 +404,14 @@ export function TeamProductivity({
                         c.anuncios.total > 0
                           ? (c.anuncios.shopee / c.anuncios.total) * 100
                           : 0;
-                      const outroW = Math.max(0, 100 - mlW - shopeeW);
+                      const magaluW =
+                        c.anuncios.total > 0
+                          ? (c.anuncios.magalu / c.anuncios.total) * 100
+                          : 0;
+                      const outroW = Math.max(
+                        0,
+                        100 - mlW - shopeeW - magaluW,
+                      );
                       return (
                         <div
                           key={c.id}
@@ -412,6 +441,9 @@ export function TeamProductivity({
                                 <div className="text-[11px] tabular-nums text-muted-foreground">
                                   ML {nf.format(c.anuncios.ml)} · SH{" "}
                                   {nf.format(c.anuncios.shopee)}
+                                  {MAGALU_ENABLED && (
+                                    <> · MG {nf.format(c.anuncios.magalu)}</>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -433,6 +465,13 @@ export function TeamProductivity({
                                   style={{
                                     width: `${shopeeW}%`,
                                     backgroundColor: SHOPEE_COLOR,
+                                  }}
+                                />
+                                <span
+                                  className="h-full"
+                                  style={{
+                                    width: `${magaluW}%`,
+                                    backgroundColor: MAGALU_COLOR,
                                   }}
                                 />
                                 <span
@@ -499,6 +538,24 @@ export function TeamProductivity({
                               stopOpacity={0.03}
                             />
                           </linearGradient>
+                          <linearGradient
+                            id="tp-magalu"
+                            x1="0"
+                            x2="0"
+                            y1="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor={MAGALU_COLOR}
+                              stopOpacity={0.45}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={MAGALU_COLOR}
+                              stopOpacity={0.03}
+                            />
+                          </linearGradient>
                         </defs>
                         <CartesianGrid
                           stroke="color-mix(in srgb, var(--color-border) 68%, transparent)"
@@ -557,6 +614,19 @@ export function TeamProductivity({
                           stroke={SHOPEE_COLOR}
                           strokeWidth={2}
                           fill="url(#tp-shopee)"
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="magalu"
+                          name="Magalu"
+                          stackId="anuncios"
+                          stroke={MAGALU_COLOR}
+                          strokeWidth={2}
+                          fill="url(#tp-magalu)"
+                          // Com a flag off a série continua desenhando (nunca
+                          // esconde contagem real), mas some da legenda → tela
+                          // idêntica quando não há Magalu.
+                          legendType={MAGALU_ENABLED ? "line" : "none"}
                         />
                         <Line
                           type="monotone"
@@ -730,6 +800,15 @@ function Legendinha() {
         />
         Shopee
       </span>
+      {MAGALU_ENABLED && (
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-block size-2 rounded-full"
+            style={{ backgroundColor: MAGALU_COLOR }}
+          />
+          Magalu
+        </span>
+      )}
     </div>
   );
 }

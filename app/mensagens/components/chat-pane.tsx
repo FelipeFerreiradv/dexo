@@ -36,6 +36,8 @@ interface QuestionDto {
   dateCreated: string;
   buyerNickname: string | null;
   readAt: string | null;
+  // Chat Magalu: CUSTOMER | SELLER. Nulo em Q&A (ML/Shopee), que usa `answer`.
+  authorType: string | null;
   answer: {
     text: string;
     dateCreated: string;
@@ -70,6 +72,9 @@ export function ChatPane({
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   const itemId = conversation?.externalItemId ?? null;
+  // Magalu é um CHAT (N mensagens), não Q&A: render por authorType + envio de
+  // mensagem na conversa (em vez de resposta a uma pergunta específica).
+  const isMagalu = conversation?.accountPlatform === "MAGALU";
 
   // Em modo "Todas as contas" o accountId global é "all" — read/sync/answer
   // precisam da conta REAL da conversa (vem no DTO). Quando o filtro é uma
@@ -150,21 +155,26 @@ export function ChatPane({
       await loadConversation();
     } catch (err) {
       console.error("chat: sync failed", err);
-      setError("Falha ao sincronizar com o Mercado Livre.");
+      setError("Falha ao sincronizar a conversa.");
     } finally {
       setSyncing(false);
     }
   };
 
-  const handleAnswer = async (questionId: string, text: string) => {
+  // Envia resposta/mensagem. Magalu manda `itemId` (mensagem na conversa); ML
+  // manda `questionId` (resposta à pergunta). A rota despacha por plataforma.
+  const submitReply = async (text: string, questionId?: string) => {
+    const payload = isMagalu
+      ? { accountId: effectiveAccountId, itemId, text }
+      : { accountId: effectiveAccountId, questionId, text };
     const res = await fetch(`${apiBase}/messages/answers`, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: effectiveAccountId, questionId, text }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err?.error ?? "Erro ao enviar resposta");
+      throw new Error(err?.error ?? "Erro ao enviar mensagem");
     }
     // Dispara o refresh da lista em paralelo com o reload do chat — não há
     // dependência entre eles, esperar sequencialmente é desperdício.
@@ -195,6 +205,7 @@ export function ChatPane({
     data?.listing?.titleOverride ??
     data?.listing?.product?.name ??
     conversation.listingTitle ??
+    (isMagalu ? conversation.buyerNickname : null) ??
     itemId;
   const sku = data?.listing?.product?.sku ?? conversation.productSku ?? null;
   const permalink = data?.listing?.permalink ?? conversation.listingPermalink ?? null;
@@ -233,10 +244,13 @@ export function ChatPane({
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
             {conversation.buyerNickname && (
-              <span>Comprador: {conversation.buyerNickname}</span>
+              <span>
+                {isMagalu ? "Cliente" : "Comprador"}:{" "}
+                {conversation.buyerNickname}
+              </span>
             )}
             {sku && <span>· SKU {sku}</span>}
-            <span>· {itemId}</span>
+            {!isMagalu && <span>· {itemId}</span>}
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -280,24 +294,40 @@ export function ChatPane({
             {error}
           </div>
         ) : data && data.questions.length > 0 ? (
-          data.questions.map((q) => (
-            <React.Fragment key={q.id}>
+          data.questions.map((q) =>
+            q.authorType ? (
+              // Magalu (chat): uma mensagem por linha; lado conforme o autor.
               <MessageBubble
-                side="incoming"
-                authorLabel={q.buyerNickname ?? "Comprador"}
+                key={q.id}
+                side={q.authorType === "SELLER" ? "outgoing" : "incoming"}
+                authorLabel={
+                  q.authorType === "SELLER"
+                    ? "Você"
+                    : (q.buyerNickname ?? "Cliente")
+                }
                 text={q.text}
                 date={q.dateCreated}
               />
-              {q.answer && (
+            ) : (
+              // ML/Shopee (Q&A): pergunta do comprador + resposta do vendedor.
+              <React.Fragment key={q.id}>
                 <MessageBubble
-                  side="outgoing"
-                  authorLabel="Você"
-                  text={q.answer.text}
-                  date={q.answer.dateCreated}
+                  side="incoming"
+                  authorLabel={q.buyerNickname ?? "Comprador"}
+                  text={q.text}
+                  date={q.dateCreated}
                 />
-              )}
-            </React.Fragment>
-          ))
+                {q.answer && (
+                  <MessageBubble
+                    side="outgoing"
+                    authorLabel="Você"
+                    text={q.answer.text}
+                    date={q.answer.dateCreated}
+                  />
+                )}
+              </React.Fragment>
+            ),
+          )
         ) : (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <MessageCircle className="h-10 w-10 text-muted-foreground/30" />
@@ -309,10 +339,16 @@ export function ChatPane({
       </div>
 
       <div className="border-t border-border/70 p-3">
-        {oldestUnanswered ? (
+        {isMagalu ? (
+          // Chat: o vendedor pode mandar mensagem a qualquer momento.
+          <ReplyComposer
+            placeholder="Escreva uma mensagem..."
+            onSubmit={(text) => submitReply(text)}
+          />
+        ) : oldestUnanswered ? (
           <ReplyComposer
             placeholder="Escreva uma resposta..."
-            onSubmit={(text) => handleAnswer(oldestUnanswered.id, text)}
+            onSubmit={(text) => submitReply(text, oldestUnanswered.id)}
           />
         ) : (
           <div className="rounded-lg bg-muted/40 px-3 py-2 text-center text-xs text-muted-foreground">

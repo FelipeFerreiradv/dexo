@@ -3,6 +3,10 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluApiService } from "../services/magalu-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import { MagaluPayloadBuilderService } from "../services/magalu-payload-builder.service";
+import { MagaluCategoryResolutionService } from "../services/magalu-category-resolution.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -379,6 +383,13 @@ export class ListingUseCase {
         );
       case Platform.SHOPEE:
         return this.createShopeeListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+        );
+      case Platform.MAGALU:
+        return this.createMagaluListing(
           userId,
           productId,
           categoryId,
@@ -3110,6 +3121,350 @@ export class ListingUseCase {
    * @param productId ID do produto
    * @param categoryId ID da categoria do Shopee (opcional, serÃ¡ inferida se nÃ£o fornecida)
    */
+  /**
+   * Cria um anúncio (SKU no portfólio) na Magalu a partir de um Product.
+   * Espelha a estrutura do createShopeeListing (resolução de conta + refresh +
+   * validações), mas com o fluxo simples da Magalu: monta payload e POSTa o SKU.
+   * SEM exigir EAN (peças de desmonte/sucata frequentemente não têm).
+   */
+  static async createMagaluListing(
+    userId: string,
+    productId: string,
+    categoryId?: string,
+    accountId?: string,
+  ): Promise<CreateListingResult> {
+    let account: any = null;
+    try {
+      account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.MAGALU,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta Magalu para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
+
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          error: "Conta da Magalu não conectada ou sem credenciais válidas",
+        };
+      }
+
+      // Token refresh automático (mesmo padrão de ML/Shopee).
+      if (account.expiresAt < new Date()) {
+        try {
+          const refreshed =
+            await MagaluOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
+          const updated = await MarketplaceRepository.updateTokens(account.id, {
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken,
+            expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+          });
+          if (updated) account = updated as any;
+        } catch (refreshErr) {
+          await MarketplaceRepository.updateStatus(
+            account.id,
+            AccountStatus.ERROR,
+          );
+          console.warn(
+            `[ListingUseCase] Failed to refresh Magalu token for account ${account.id}:`,
+            (refreshErr as any)?.message || refreshErr,
+          );
+          return {
+            success: false,
+            error:
+              "Conta da Magalu expirou ou token inválido — reconecte a conta",
+          };
+        }
+      }
+
+      const product =
+        await ListingUseCase.productRepository.findById(productId);
+      if (!product) {
+        return { success: false, error: "Produto não encontrado" };
+      }
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio na Magalu",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio na Magalu",
+        };
+      }
+
+      // group.id é definido pelo SELLER (agrupa variações) — não é taxonomia.
+      // Produto sem variação = seu próprio SKU como group (main_variation:true).
+      // channels[].id é o canal de venda do seller (obrigatório, exatamente 1):
+      // resolvido do produto, do env, senão do 1º canal do seller (/channels).
+      const groupId = (product as any).magaluGroupId || product.sku;
+      let channelId =
+        (product as any).magaluChannelId ||
+        process.env.MAGALU_DEFAULT_CHANNEL_ID;
+      if (!channelId) {
+        try {
+          const channels = await MagaluApiService.getChannels(
+            account.accessToken,
+          );
+          channelId = channels[0]?.id;
+        } catch {
+          /* deixa o preflight abaixo tratar */
+        }
+      }
+      if (!groupId || !channelId) {
+        return {
+          success: false,
+          error:
+            "Criação na Magalu requer SKU (group) e um canal de venda. Configure MAGALU_DEFAULT_CHANNEL_ID ou habilite um canal no seller.",
+        };
+      }
+
+      // Resolução de categoria (best-effort): com o escopo
+      // open:portfolio-categories-seller:read e um match, inclui category +
+      // atributos obrigatórios (tira o SKU de DRAFT). Sem escopo/sem match,
+      // cria sem categoria (DRAFT) — NÃO falha o anúncio.
+      let categoryFields: {
+        categoryId?: string;
+        attributes?: Array<{ name: string; value: string }>;
+        datasheet?: Array<{ name: string; value: string }>;
+      } = { categoryId };
+      try {
+        const resolvedCategoryId =
+          categoryId ??
+          (await MagaluCategoryResolutionService.resolveCategoryId(
+            account.accessToken,
+            product,
+          ));
+        if (resolvedCategoryId) {
+          const fields =
+            await MagaluCategoryResolutionService.buildCategoryFields(
+              account.accessToken,
+              resolvedCategoryId,
+              product,
+            );
+          categoryFields = {
+            categoryId: resolvedCategoryId,
+            attributes: fields.attributes,
+            datasheet: fields.datasheet,
+          };
+          if (fields.missing.length) {
+            console.warn(
+              `[ListingUseCase] Magalu categoria ${resolvedCategoryId}: atributos obrigatórios sem valor (lojista completa no painel): ${fields.missing.join(", ")}`,
+            );
+          }
+        }
+      } catch (catErr) {
+        console.warn(
+          `[ListingUseCase] Resolução de categoria Magalu falhou (cria sem categoria/DRAFT): ${catErr instanceof Error ? catErr.message : catErr}`,
+        );
+      }
+
+      const payload = MagaluPayloadBuilderService.build(product, {
+        groupId,
+        channelId,
+        ...categoryFields,
+      });
+      // Rede de segurança: se o create COM categoria for rejeitado por VALIDAÇÃO
+      // de payload (400/422 — ex.: atributo obrigatório faltando), recria SEM
+      // categoria (DRAFT). SÓ nesses status: 401/403/409/5xx/timeout propagam —
+      // retry não ajuda e poderia DUPLICAR o SKU se o 1º POST já tiver sido
+      // aceito (createSku é assíncrono/202 e o sku/group.id são fixos).
+      let created: Awaited<ReturnType<typeof MagaluApiService.createSku>>;
+      try {
+        created = await MagaluApiService.createSku(account.accessToken, payload);
+      } catch (createErr) {
+        const status = (createErr as { status?: number })?.status;
+        const isPayloadValidation = status === 400 || status === 422;
+        if (!categoryFields.categoryId || !isPayloadValidation) throw createErr;
+        console.warn(
+          `[ListingUseCase] create Magalu com categoria ${categoryFields.categoryId} rejeitado (${status}: ${createErr instanceof Error ? createErr.message : createErr}); retry SEM categoria (DRAFT).`,
+        );
+        created = await MagaluApiService.createSku(
+          account.accessToken,
+          MagaluPayloadBuilderService.build(product, { groupId, channelId }),
+        );
+      }
+
+      // Após criar o SKU, define estoque e preço iniciais (serviços separados:
+      // /portfolios/stocks e /portfolios/prices). Não falha a criação do anúncio
+      // se isso der erro — o sync recorrente reaplica depois.
+      try {
+        await MagaluApiService.setStock(
+          account.accessToken,
+          product.sku,
+          product.stock,
+          channelId,
+          { create: true },
+        );
+        const price = Number(product.price);
+        if (Number.isFinite(price) && price > 0) {
+          await MagaluApiService.setPrice(
+            account.accessToken,
+            product.sku,
+            price,
+            channelId,
+            { create: true },
+          );
+        }
+      } catch (stockPriceErr) {
+        console.warn(
+          `[ListingUseCase] Magalu SKU criado, mas falhou estoque/preço inicial (sku=${product.sku}):`,
+          stockPriceErr instanceof Error
+            ? stockPriceErr.message
+            : stockPriceErr,
+        );
+      }
+
+      // A IDENTIDADE de um SKU na Magalu é o PRÓPRIO SKU: o POST responde 202 sem
+      // id, e listSkus/getSku/stock/price/patch usam o sku como chave. Por isso
+      // gravamos o SKU como `externalListingId` — não um placeholder PENDING_ (que
+      // era o padrão do ML, onde o id real só chega depois). Assim edição/pausa/
+      // remoção, import e auto-detecção casam todos pela MESMA chave (sem duplicar
+      // o vínculo). Só cai no placeholder se, por algum motivo, não houver SKU.
+      const externalListingId = String(
+        created?.id ?? created?.sku ?? product.sku ?? `PENDING_${Date.now()}`,
+      );
+      const permalink =
+        (created?.permalink as string) || (created?.url as string) || null;
+
+      const listing = await ListingRepository.createListing({
+        productId: product.id,
+        marketplaceAccountId: account.id,
+        externalListingId,
+        externalSku: product.sku ?? undefined,
+        permalink,
+        status: "active",
+      });
+
+      return {
+        success: true,
+        listingId: listing.id,
+        externalListingId,
+        permalink: permalink ?? undefined,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro ao criar anúncio na Magalu",
+      };
+    }
+  }
+
+  /** Resolve uma conta Magalu ativa + token fresco (p/ endpoints de categoria). */
+  private static async resolveMagaluToken(
+    userId: string,
+    accountId?: string,
+  ): Promise<string | null> {
+    let account: any = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+    if (!account) {
+      const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+        userId,
+        Platform.MAGALU,
+      );
+      account =
+        (all || []).find((acc) => acc.status === AccountStatus.ACTIVE) ?? null;
+    }
+    if (!account?.accessToken || !account?.refreshToken) return null;
+    if (account.expiresAt && new Date(account.expiresAt) <= new Date()) {
+      try {
+        const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken,
+        );
+        const updated = await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+        });
+        account = updated ?? { ...account, accessToken: refreshed.accessToken };
+      } catch {
+        return null;
+      }
+    }
+    return account.accessToken ?? null;
+  }
+
+  /** Busca categorias Magalu por nome (combobox de categoria do modal). */
+  static async searchMagaluCategories(
+    userId: string,
+    search: string,
+  ): Promise<Array<{ id: string; value: string }>> {
+    const term = String(search ?? "").trim();
+    if (!term) return [];
+    const token = await this.resolveMagaluToken(userId);
+    if (!token) return [];
+    const cats = await MagaluApiService.searchCategories(token, { name: term });
+    return cats
+      .filter((c) => c.id)
+      .map((c) => ({
+        id: String(c.id),
+        value: c.path || c.name || String(c.id),
+      }));
+  }
+
+  /**
+   * Sugere a categoria Magalu de um produto pelo nome — usa a MESMA resolução do
+   * create (de-para → busca + viés de domínio), então a categoria mostrada no
+   * modal é a que o anúncio será publicado.
+   */
+  static async suggestMagaluCategory(
+    userId: string,
+    name: string,
+  ): Promise<{ categoryId: string; path: string | null } | null> {
+    const term = String(name ?? "").trim();
+    if (!term) return null;
+    const token = await this.resolveMagaluToken(userId);
+    if (!token) return null;
+    const categoryId = await MagaluCategoryResolutionService.resolveCategoryId(
+      token,
+      { name: term },
+    );
+    if (!categoryId) return null;
+    let path: string | null = null;
+    try {
+      const found = await MagaluApiService.searchCategories(token, {
+        id: categoryId,
+      });
+      path = found[0]?.path || found[0]?.name || null;
+    } catch {
+      /* path é opcional — segue só com o id */
+    }
+    return { categoryId, path };
+  }
+
   static async createShopeeListing(
     userId: string,
     productId: string,
@@ -4406,6 +4761,9 @@ export class ListingUseCase {
     if (platform === Platform.SHOPEE) {
       return ListingUseCase.removeShopeeListing(listingId);
     }
+    if (platform === Platform.MAGALU) {
+      return ListingUseCase.removeMagaluListing(listingId);
+    }
 
     console.warn(
       `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
@@ -4449,6 +4807,10 @@ export class ListingUseCase {
 
       if (platform === Platform.SHOPEE) {
         return await ListingUseCase.updateShopeeListingFields(listing, fields);
+      }
+
+      if (platform === Platform.MAGALU) {
+        return await ListingUseCase.updateMagaluListingFields(listing, fields);
       }
 
       return {
@@ -4496,17 +4858,22 @@ export class ListingUseCase {
       }
 
       // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
+      const platform = listing.marketplaceAccount?.platform;
+
+      // Magalu: a publicação é assíncrona (POST 202) e o `externalListingId` fica
+      // PENDING_<sku>; a chave de API é o SKU (externalSku). Considera-se
+      // "publicado" quando há SKU — por isso a guarda de PENDING não se aplica.
+      const isMagalu = platform === Platform.MAGALU;
       if (
-        !listing.externalListingId ||
-        listing.externalListingId.startsWith("PENDING_")
+        !isMagalu &&
+        (!listing.externalListingId ||
+          listing.externalListingId.startsWith("PENDING_"))
       ) {
         return {
           success: false,
           error: "Anúncio ainda não foi publicado no marketplace",
         };
       }
-
-      const platform = listing.marketplaceAccount?.platform;
 
       if (platform === Platform.MERCADO_LIVRE) {
         // Reusa account incluído no findById (sem 2ª query ao banco).
@@ -4558,6 +4925,33 @@ export class ListingUseCase {
         return { success: true };
       }
 
+      if (platform === Platform.MAGALU) {
+        const account = listing.marketplaceAccount;
+        const sku = listing.externalSku || listing.product?.sku;
+        if (!account) {
+          return { success: false, error: "Conta sem credenciais válidas" };
+        }
+        if (!sku) {
+          return {
+            success: false,
+            error: "Anúncio Magalu sem SKU para atualizar",
+          };
+        }
+        const token = await ListingUseCase.ensureFreshMagaluToken(account);
+        if (!token) {
+          return {
+            success: false,
+            error: "Conta Magalu sem token válido — reconecte a conta",
+          };
+        }
+        // Pausar = active:false; reativar = active:true (PATCH parcial no SKU).
+        await MagaluApiService.patchSku(token, sku, {
+          active: status === "active",
+        });
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
+      }
+
       return {
         success: false,
         error: `Plataforma ${platform} não suportada`,
@@ -4570,6 +4964,155 @@ export class ListingUseCase {
           error instanceof Error ? error.message : "Erro ao alterar status",
       };
     }
+  }
+
+  /**
+   * Garante um access token Magalu válido a partir de uma conta já carregada
+   * (mesmo refresh+persist de createMagaluListing). Retorna null se a conta não
+   * tem token ou o refresh falha. Não lança — o chamador trata o null.
+   */
+  private static async ensureFreshMagaluToken(account: {
+    id: string;
+    accessToken: string | null;
+    refreshToken: string | null;
+    expiresAt: Date | null;
+  }): Promise<string | null> {
+    if (!account?.accessToken) return null;
+    const expired = account.expiresAt
+      ? new Date(account.expiresAt) <= new Date()
+      : false;
+    if (!expired) return account.accessToken;
+    if (!account.refreshToken) return null;
+    try {
+      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+        account.id,
+        account.refreshToken,
+      );
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+      return refreshed.accessToken;
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] Falha ao refrescar token Magalu da conta ${account.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Remove (encerra) um anúncio Magalu. A doc não expõe DELETE de SKU; o
+   * equivalente a "parar de vender" é PATCH `active:false` (UNPUBLISHED). Depois
+   * apaga o vínculo local. 404 (SKU já inexistente) é idempotente → sucesso.
+   * Sem SKU ⇒ só apaga o vínculo local (nada a fazer no marketplace).
+   */
+  static async removeMagaluListing(listingId: string): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
+    const listing = await ListingRepository.findById(listingId);
+    if (!listing) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error: "Vínculo não encontrado",
+      };
+    }
+    const sku = listing.externalSku || listing.product?.sku;
+    if (!sku) {
+      await ListingRepository.deleteListing(listingId);
+      return { success: true, closedOnMarketplace: false };
+    }
+    const account = await MarketplaceRepository.findById(
+      listing.marketplaceAccountId,
+    );
+    if (!account || !account.accessToken) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        retryable: true,
+        error:
+          "Conta da Magalu sem token de acesso. Reconecte a conta e tente novamente.",
+      };
+    }
+    const token = await ListingUseCase.ensureFreshMagaluToken(account);
+    if (!token) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        retryable: true,
+        error: "Conta Magalu sem token válido — reconecte a conta",
+      };
+    }
+    try {
+      await MagaluApiService.patchSku(token, sku, { active: false });
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      // 404 = SKU não existe mais na Magalu → tratar como já encerrado.
+      if (status !== 404) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: status === undefined || status >= 500,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Erro ao remover anúncio na Magalu",
+        };
+      }
+    }
+    await ListingRepository.deleteListing(listingId);
+    return { success: true, closedOnMarketplace: true };
+  }
+
+  /**
+   * Edição de campos de um anúncio Magalu (PATCH parcial no SKU). Escopo mínimo:
+   * title/description (os únicos campos de texto editáveis aqui). Preço/estoque
+   * têm endpoints dedicados (setPrice/setStock) e fluem pelo "Editar produto".
+   * Sem campos mapeáveis ⇒ no-op com sucesso (mesmo contrato do ML/Shopee).
+   */
+  private static async updateMagaluListingFields(
+    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    const account = listing.marketplaceAccount;
+    const sku = listing.externalSku || listing.product?.sku;
+    if (!account || !account.accessToken) {
+      return { success: false, error: "Conta sem credenciais válidas" };
+    }
+    if (!sku) {
+      return { success: false, error: "Anúncio Magalu sem SKU para editar" };
+    }
+    const token = await ListingUseCase.ensureFreshMagaluToken(account);
+    if (!token) {
+      return {
+        success: false,
+        error: "Conta Magalu sem token válido — reconecte a conta",
+      };
+    }
+    const patch: Record<string, unknown> = {};
+    if (
+      typeof fields.titleOverride === "string" &&
+      fields.titleOverride.trim()
+    ) {
+      // Limite de título da Magalu: 150 chars.
+      patch.title = fields.titleOverride.trim().slice(0, 150);
+    }
+    if (
+      typeof fields.descriptionOverride === "string" &&
+      fields.descriptionOverride.trim()
+    ) {
+      patch.description = fields.descriptionOverride.trim();
+    }
+    if (Object.keys(patch).length > 0) {
+      await MagaluApiService.patchSku(token, sku, patch);
+    }
+    return { success: true };
   }
 
   /**

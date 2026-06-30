@@ -23,6 +23,12 @@ describe("canonPlatform (normalização de plataforma p/ leitura de logs)", () =
     }
   });
 
+  it("reconhece os formatos de Magalu como MAGALU", () => {
+    for (const raw of ["Magalu", "MAGALU", "magalu", "Magazine Luiza"]) {
+      expect(canonPlatform(raw)).toBe("MAGALU");
+    }
+  });
+
   it("entradas vazias/nulas/desconhecidas caem em OUTRO (sem lançar)", () => {
     expect(canonPlatform(undefined)).toBe("OUTRO");
     expect(canonPlatform(null)).toBe("OUTRO");

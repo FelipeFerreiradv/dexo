@@ -24,13 +24,18 @@ import {
 } from "./product-search-terms";
 
 const LOW_STOCK_THRESHOLD = 10;
-const PUBLISHED_MARKETPLACE_PLATFORMS = ["MERCADO_LIVRE", "SHOPEE"] as const;
+const PUBLISHED_MARKETPLACE_PLATFORMS = [
+  "MERCADO_LIVRE",
+  "SHOPEE",
+  "MAGALU",
+] as const;
 type PublishedMarketplacePlatform =
   (typeof PUBLISHED_MARKETPLACE_PLATFORMS)[number];
 
 const MARKETPLACE_LABELS: Record<PublishedMarketplacePlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
+  MAGALU: "Magalu",
 };
 const PUBLICATION_STATUS_VALUES: Record<
   Exclude<ProductPublicationStatus, "NO_LISTING">,
@@ -46,7 +51,11 @@ const PUBLICATION_STATUS_VALUES: Record<
 function isPublishedMarketplacePlatform(
   platform: Platform | null | undefined,
 ): platform is PublishedMarketplacePlatform {
-  return platform === "MERCADO_LIVRE" || platform === "SHOPEE";
+  return (
+    platform === "MERCADO_LIVRE" ||
+    platform === "SHOPEE" ||
+    platform === "MAGALU"
+  );
 }
 
 function combineWhereClauses(
@@ -423,9 +432,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       parseProductListingCategoryValue(listingCategory);
     const effectiveMarketplace =
       parsedListingCategory?.platform ??
-      (marketplace === "MERCADO_LIVRE" || marketplace === "SHOPEE"
-        ? marketplace
-        : undefined);
+      (marketplace && marketplace !== "BOTH" ? marketplace : undefined);
 
     if (effectiveMarketplace) {
       clauses.push({
@@ -518,6 +525,21 @@ class ProductRepositoryPrisma implements ProductRepository {
             },
           },
         );
+      case "MAGALU":
+        // Canal único (igual a ML/SHOPEE): produtos com ao menos 1 anúncio
+        // Magalu. Sem exclusão dos outros canais (evita mexer na semântica
+        // histórica de ML/Shopee).
+        return {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "MAGALU",
+                },
+              },
+            },
+          },
+        };
       case "BOTH":
         return combineWhereClauses(
           {
@@ -582,6 +604,9 @@ class ProductRepositoryPrisma implements ProductRepository {
           existsInPlatform("SHOPEE"),
           doesNotExistInPlatform("MERCADO_LIVRE"),
         ];
+      case "MAGALU":
+        // Canal único: ao menos 1 anúncio Magalu (sem excluir ML/Shopee).
+        return [existsInPlatform("MAGALU")];
       case "BOTH":
         return [existsInPlatform("MERCADO_LIVRE"), existsInPlatform("SHOPEE")];
       default:

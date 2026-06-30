@@ -14,6 +14,8 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { MagaluApiService } from "../services/magalu-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import {
   StockDeductionService,
   type StockOversellAlert,
@@ -28,6 +30,10 @@ import type {
   ShopeeOrderDetail,
   ShopeeOrderItem,
 } from "../types/shopee-api.types";
+import type {
+  MagaluOrder,
+  MagaluOrderItem,
+} from "../types/magalu-order.types";
 import type {
   OrderCreate,
   OrderItemCreate,
@@ -834,6 +840,430 @@ export class OrderUseCase {
   /**
    * Mapeia itens do pedido Shopee priorizando o anúncio vinculado e faz fallback por SKU.
    */
+  // ====================================================================
+  // MAGALU — importação de pedidos + baixa automática (espelha Shopee)
+  // ====================================================================
+
+  /**
+   * Importa pedidos recentes da Magalu de todas as contas ativas do usuário.
+   */
+  static async importRecentMagaluOrders(
+    userId: string,
+    days: number = 7,
+    deductStock: boolean = true,
+  ): Promise<ImportOrdersResult> {
+    const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+      userId,
+      Platform.MAGALU,
+    );
+
+    const validAccounts =
+      accounts?.filter((acc) => acc.accessToken && acc.externalUserId) ?? [];
+
+    if (validAccounts.length === 0) {
+      throw new Error("Conta da Magalu não conectada ou sem credenciais");
+    }
+
+    const aggregated: ImportOrdersResult = {
+      totalOrders: 0,
+      imported: 0,
+      alreadyExists: 0,
+      noProducts: 0,
+      errors: 0,
+      stockDeductions: 0,
+      results: [],
+    };
+
+    for (const account of validAccounts) {
+      try {
+        const result = await this.importRecentMagaluOrdersForAccount(
+          account.id,
+          days,
+          deductStock,
+        );
+        aggregated.totalOrders += result.totalOrders;
+        aggregated.imported += result.imported;
+        aggregated.alreadyExists += result.alreadyExists;
+        aggregated.noProducts += result.noProducts;
+        aggregated.errors += result.errors;
+        aggregated.stockDeductions += result.stockDeductions;
+        aggregated.results.push(...result.results);
+      } catch (error) {
+        aggregated.errors += 1;
+        aggregated.results.push({
+          success: false,
+          orderId: null,
+          externalOrderId: `ACCOUNT_${account.id}`,
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao importar conta Magalu",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: 0,
+        });
+      }
+    }
+
+    return aggregated;
+  }
+
+  /**
+   * Importa pedidos recentes da Magalu para uma conta específica.
+   */
+  static async importRecentMagaluOrdersForAccount(
+    marketplaceAccountId: string,
+    days: number = 7,
+    deductStock: boolean = true,
+  ): Promise<ImportOrdersResult> {
+    const account = await MarketplaceRepository.findById(marketplaceAccountId);
+    if (!account || !account.accessToken || !account.externalUserId) {
+      throw new Error("Conta Magalu não encontrada ou sem credenciais");
+    }
+
+    const result: ImportOrdersResult = {
+      totalOrders: 0,
+      imported: 0,
+      alreadyExists: 0,
+      noProducts: 0,
+      errors: 0,
+      stockDeductions: 0,
+      results: [],
+    };
+
+    const magaluOrders = await this.getRecentMagaluOrdersWithRefresh(
+      {
+        id: account.id,
+        accessToken: account.accessToken,
+        refreshToken: account.refreshToken,
+      },
+      days,
+    );
+
+    result.totalOrders = magaluOrders.length;
+
+    const extractExternalOrderId = (o: MagaluOrder): string =>
+      String(o.id ?? o.code ?? o.order_id ?? "");
+
+    const externalIds = magaluOrders
+      .map((o) => extractExternalOrderId(o))
+      .filter(Boolean);
+    const existingOrders = await prisma.order.findMany({
+      where: {
+        marketplaceAccountId: account.id,
+        externalOrderId: { in: externalIds },
+      },
+      select: { externalOrderId: true },
+    });
+    const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
+
+    // EGRESS: idem ML/Shopee — só relê os anúncios da conta se houver pedido novo.
+    const hasNewOrders = magaluOrders.some(
+      (o) => !existingSet.has(extractExternalOrderId(o)),
+    );
+    const listingMap = new Map<string, any>();
+    if (hasNewOrders) {
+      const accountListings = await prisma.productListing.findMany({
+        where: { marketplaceAccountId: account.id },
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          externalListingId: true,
+          product: { select: { id: true } },
+        },
+      });
+      for (const l of accountListings) {
+        listingMap.set(`${l.marketplaceAccountId}_${l.externalListingId}`, l);
+      }
+    }
+
+    for (const magaluOrder of magaluOrders) {
+      const externalOrderId = extractExternalOrderId(magaluOrder);
+      const itemList = magaluOrder.items ?? [];
+      try {
+        if (!externalOrderId) {
+          result.errors++;
+          continue;
+        }
+
+        if (existingSet.has(externalOrderId)) {
+          result.results.push({
+            success: true,
+            orderId: null,
+            externalOrderId,
+            status: "already_exists",
+            message: "Pedido já importado anteriormente",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: itemList.length,
+          });
+          result.alreadyExists++;
+          continue;
+        }
+
+        // Só importa/deduz pedidos em VENDA CONFIRMADA (PAID/SHIPPED/DELIVERED).
+        // Espelha ML (getRecentOrders status="paid") e Shopee (API já devolve só
+        // pós-venda); como o getRecentOrders da Magalu NÃO filtra por status,
+        // pulamos PENDING/CANCELLED aqui — quando virarem pagos, o próximo ciclo
+        // (poll/webhook) reimporta e desconta uma única vez. Evita baixar estoque
+        // de pedido ainda não pago / depois cancelado.
+        const mappedStatus = this.mapMagaluStatus(magaluOrder.status);
+        if (
+          mappedStatus !== "PAID" &&
+          mappedStatus !== "SHIPPED" &&
+          mappedStatus !== "DELIVERED"
+        ) {
+          continue;
+        }
+
+        const { items, linkedCount } = await this.mapMagaluOrderItems(
+          itemList,
+          account.userId,
+          marketplaceAccountId,
+          listingMap,
+        );
+
+        if (items.length === 0) {
+          result.results.push({
+            success: false,
+            orderId: null,
+            externalOrderId,
+            status: "no_products",
+            message: "Nenhum item do pedido Magalu pôde ser vinculado",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: itemList.length,
+          });
+          result.noProducts++;
+          continue;
+        }
+
+        const rawTotal =
+          magaluOrder.total ?? magaluOrder.total_amount ?? magaluOrder.amount;
+        const totalAmount =
+          typeof rawTotal === "number" && Number.isFinite(rawTotal)
+            ? Number(rawTotal)
+            : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+
+        const orderData: OrderCreate = {
+          marketplaceAccountId,
+          externalOrderId,
+          status: mappedStatus,
+          totalAmount,
+          customerName:
+            magaluOrder.customer_name ??
+            magaluOrder.buyer?.name ??
+            undefined,
+          items,
+        };
+
+        const created = await orderRepository.create(orderData);
+
+        let stockDeducted = false;
+        if (deductStock) {
+          try {
+            await this.deductStockForOrder(
+              created,
+              `Venda Magalu #${externalOrderId}`,
+            );
+            stockDeducted = true;
+          } catch (err) {
+            console.error(
+              `[OrderUseCase] Falha ao descontar estoque para pedido Magalu #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
+              err,
+            );
+          }
+        }
+
+        result.imported++;
+        result.stockDeductions += stockDeducted ? 1 : 0;
+        result.results.push({
+          success: true,
+          orderId: created.id,
+          externalOrderId,
+          status: "imported",
+          message: "Pedido Magalu importado com sucesso",
+          stockDeducted,
+          itemsLinked: linkedCount,
+          itemsTotal: itemList.length,
+        });
+      } catch (error) {
+        const isPrismaUniqueError =
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as any).code === "P2002";
+        if (isPrismaUniqueError) {
+          result.results.push({
+            success: true,
+            orderId: null,
+            externalOrderId,
+            status: "already_exists",
+            message: "Pedido já importado (corrida concorrente)",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: itemList.length,
+          });
+          result.alreadyExists++;
+          continue;
+        }
+        result.errors++;
+        result.results.push({
+          success: false,
+          orderId: null,
+          externalOrderId,
+          status: "error",
+          message:
+            error instanceof Error ? error.message : "Erro ao importar pedido",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal: itemList.length,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private static async mapMagaluOrderItems(
+    items: MagaluOrderItem[],
+    userId: string | undefined,
+    marketplaceAccountId: string,
+    listingMap?: Map<string, any>,
+  ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
+    const result: OrderItemCreate[] = [];
+    let linkedCount = 0;
+
+    for (const item of items) {
+      const externalListingId = String(
+        item.product_id ?? item.sku ?? item.seller_sku ?? "",
+      );
+      const quantity = Number(item.quantity ?? item.qty ?? 0) || 0;
+      const unitPrice = Number(item.unit_price ?? item.price ?? 0) || 0;
+
+      const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
+      const listing =
+        externalListingId && listingMap
+          ? listingMap.get(cacheKey)
+          : externalListingId
+            ? await prisma.productListing.findUnique({
+                where: {
+                  marketplaceAccountId_externalListingId: {
+                    marketplaceAccountId,
+                    externalListingId,
+                  },
+                },
+                include: { product: true },
+              })
+            : null;
+
+      if (listing && listing.product) {
+        result.push({
+          productId: listing.productId,
+          listingId: listing.id,
+          quantity,
+          unitPrice,
+        });
+        linkedCount++;
+        continue;
+      }
+
+      const sku = this.extractSkuFromMagalu(item);
+      if (!sku) {
+        console.log(
+          `[OrderUseCase] Item Magalu ${externalListingId || "(sem id)"} sem SKU e sem listing vinculado, pulando`,
+        );
+        continue;
+      }
+
+      const product = await this.findProductByFallbackSku(sku, userId);
+      if (!product) {
+        console.log(
+          `[OrderUseCase] Produto com SKU "${sku}" (Magalu) não encontrado`,
+        );
+        continue;
+      }
+
+      const fallbackListing = await this.upsertFallbackListing({
+        productId: product.id,
+        marketplaceAccountId,
+        externalListingId: externalListingId || sku,
+        externalSku: sku,
+      });
+
+      result.push({
+        productId: product.id,
+        listingId: fallbackListing?.id ?? null,
+        quantity,
+        unitPrice,
+      });
+      linkedCount++;
+    }
+
+    return { items: result, linkedCount };
+  }
+
+  private static extractSkuFromMagalu(item: MagaluOrderItem): string | null {
+    return (
+      (item.seller_sku as string) ||
+      (item.sku as string) ||
+      (item.product_sku as string) ||
+      null
+    );
+  }
+
+  private static mapMagaluStatus(status?: string): OrderStatus {
+    switch ((status ?? "").toLowerCase()) {
+      case "delivered":
+        return "DELIVERED";
+      case "shipped":
+        return "SHIPPED";
+      case "approved":
+      case "processing":
+      case "invoiced":
+        return "PAID";
+      case "cancelled":
+      case "canceled":
+      case "unavailable":
+        return "CANCELLED";
+      case "new":
+      default:
+        return "PENDING";
+    }
+  }
+
+  private static async getRecentMagaluOrdersWithRefresh(
+    account: {
+      id: string;
+      accessToken: string;
+      refreshToken: string | null;
+    },
+    days: number,
+  ): Promise<MagaluOrder[]> {
+    try {
+      return await MagaluApiService.getRecentOrders(account.accessToken, days);
+    } catch (error) {
+      if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
+        throw error;
+      }
+
+      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+        account.id,
+        account.refreshToken,
+      );
+
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+
+      return MagaluApiService.getRecentOrders(refreshed.accessToken, days);
+    }
+  }
+
   private static async mapShopeeOrderItems(
     items: ShopeeOrderItem[],
     userId: string | undefined,

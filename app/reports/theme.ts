@@ -19,6 +19,7 @@ export const DEXO = {
   verdeClaro: "#7FA395",
   amarelo: "#F2C419",
   amareloClaro: "#F0E58D",
+  azulMagalu: "#2563EB",
   bege: "#E8DFCA",
   pergaminho: "#F2EDE2",
   creme: "#FBF7EE",
@@ -44,6 +45,7 @@ export const FONT = {
 export const PLATFORM_COLOR = {
   ML: DEXO.amarelo,
   SHOPEE: DEXO.verdeOperacao,
+  MAGALU: DEXO.azulMagalu,
   OUTRO: DEXO.acoClaro,
 } as const;
 

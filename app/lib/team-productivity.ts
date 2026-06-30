@@ -31,6 +31,7 @@ export interface AnunciosBreakdown {
   total: number;
   ml: number;
   shopee: number;
+  magalu: number;
   outro: number;
 }
 
@@ -49,6 +50,7 @@ export interface ProductivityTimeseriesPoint {
   produtos: number;
   ml: number;
   shopee: number;
+  magalu: number;
 }
 
 export interface ProductivityResult {
@@ -103,7 +105,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 function newAnuncios(): AnunciosBreakdown {
-  return { total: 0, ml: 0, shopee: 0, outro: 0 };
+  return { total: 0, ml: 0, shopee: 0, magalu: 0, outro: 0 };
 }
 
 function toISODate(d: Date): string {
@@ -189,6 +191,7 @@ function buildTimeseries(
       produtos: b?.produtos ?? 0,
       ml: b?.ml ?? 0,
       shopee: b?.shopee ?? 0,
+      magalu: b?.magalu ?? 0,
     });
     cur.setUTCDate(cur.getUTCDate() + 1);
     guard++;
@@ -231,7 +234,7 @@ export function aggregateTeamProductivity(
 
     let bucket = dayMap.get(g.day);
     if (!bucket) {
-      bucket = { date: g.day, produtos: 0, ml: 0, shopee: 0 };
+      bucket = { date: g.day, produtos: 0, ml: 0, shopee: 0, magalu: 0 };
       dayMap.set(g.day, bucket);
     }
 
@@ -254,6 +257,10 @@ export function aggregateTeamProductivity(
       totals.anuncios.shopee += cnt;
       c.anuncios.shopee += cnt;
       bucket.shopee += cnt;
+    } else if (platform === "MAGALU") {
+      totals.anuncios.magalu += cnt;
+      c.anuncios.magalu += cnt;
+      bucket.magalu += cnt;
     } else {
       totals.anuncios.outro += cnt;
       c.anuncios.outro += cnt;

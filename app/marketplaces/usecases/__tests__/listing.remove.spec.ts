@@ -6,9 +6,11 @@ import { ListingRepository } from "../../repositories/listing.repository";
 import { MarketplaceRepository } from "../../repositories/marketplace.repository";
 import { ShopeeApiService } from "../../services/shopee-api.service";
 import { MLApiService } from "../../services/ml-api.service";
+import { MagaluApiService } from "../../services/magalu-api.service";
 
 const SHOPEE_LISTING_ID = "listing-shopee-1";
 const ML_LISTING_ID = "listing-ml-1";
+const MAGALU_LISTING_ID = "listing-magalu-1";
 
 const shopeeListing = {
   id: SHOPEE_LISTING_ID,
@@ -33,6 +35,24 @@ const shopeeAccount = {
 const mlAccount = {
   id: "acc-ml",
   accessToken: "ml-tok",
+} as any;
+
+// Magalu: externalListingId fica PENDING_<sku> (202 async); a chave de API é o
+// SKU (externalSku). expiresAt no futuro ⇒ ensureFreshMagaluToken não refresca.
+const magaluListing = {
+  id: MAGALU_LISTING_ID,
+  externalListingId: "PENDING_SKU-MG",
+  externalSku: "SKU-MG",
+  marketplaceAccountId: "acc-magalu",
+  marketplaceAccount: { platform: Platform.MAGALU },
+  product: { sku: "SKU-MG", userId: "u1" },
+} as any;
+
+const magaluAccount = {
+  id: "acc-magalu",
+  accessToken: "mg-tok",
+  refreshToken: "mg-ref",
+  expiresAt: new Date(Date.now() + 3_600_000),
 } as any;
 
 afterEach(() => {
@@ -360,6 +380,100 @@ describe("ListingUseCase.removeMLListing", () => {
   });
 });
 
+describe("ListingUseCase.removeMagaluListing", () => {
+  it("local-only cleanup quando não há SKU (sem chamada externa)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue({
+      ...magaluListing,
+      externalSku: null,
+      product: { sku: null, userId: "u1" },
+    });
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const api = vi.spyOn(MagaluApiService, "patchSku");
+
+    const result = await ListingUseCase.removeMagaluListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(false);
+    expect(api).not.toHaveBeenCalled();
+    expect(del).toHaveBeenCalledWith(MAGALU_LISTING_ID);
+  });
+
+  it("NÃO deleta local quando a conta não tem token (retryable)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(magaluListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-magalu",
+      accessToken: null,
+    } as any);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const api = vi.spyOn(MagaluApiService, "patchSku");
+
+    const result = await ListingUseCase.removeMagaluListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(true);
+    expect(api).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("PATCH active:false (pelo SKU) e deleta local no happy path", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(magaluListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(magaluAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const api = vi
+      .spyOn(MagaluApiService, "patchSku")
+      .mockResolvedValue({ trace_id: "t-1" });
+
+    const result = await ListingUseCase.removeMagaluListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
+    expect(api).toHaveBeenCalledWith("mg-tok", "SKU-MG", { active: false });
+    expect(del).toHaveBeenCalledWith(MAGALU_LISTING_ID);
+  });
+
+  it("trata 404 (SKU já inexistente) como sucesso idempotente", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(magaluListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(magaluAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Erro ao atualizar SKU: not found"), {
+      status: 404,
+    });
+    vi.spyOn(MagaluApiService, "patchSku").mockRejectedValue(err);
+
+    const result = await ListingUseCase.removeMagaluListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(result.closedOnMarketplace).toBe(true);
+    expect(del).toHaveBeenCalledWith(MAGALU_LISTING_ID);
+  });
+
+  it("NÃO deleta local em erro permanente (ex.: 403)", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(magaluListing);
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(magaluAccount);
+    const del = vi
+      .spyOn(ListingRepository, "deleteListing")
+      .mockResolvedValue(undefined as any);
+    const err = Object.assign(new Error("Erro ao atualizar SKU: forbidden"), {
+      status: 403,
+    });
+    vi.spyOn(MagaluApiService, "patchSku").mockRejectedValue(err);
+
+    const result = await ListingUseCase.removeMagaluListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(del).not.toHaveBeenCalled();
+  });
+});
+
 describe("ListingUseCase.removeListing (dispatcher)", () => {
   it("delegates to removeMLListing for MERCADO_LIVRE platform", async () => {
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(mlListing);
@@ -392,6 +506,18 @@ describe("ListingUseCase.removeListing (dispatcher)", () => {
     expect(result.success).toBe(true);
     expect(shopee).toHaveBeenCalledWith(SHOPEE_LISTING_ID);
     expect(ml).not.toHaveBeenCalled();
+  });
+
+  it("delegates to removeMagaluListing for MAGALU platform", async () => {
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(magaluListing);
+    const magalu = vi
+      .spyOn(ListingUseCase, "removeMagaluListing")
+      .mockResolvedValue({ success: true, closedOnMarketplace: true });
+
+    const result = await ListingUseCase.removeListing(MAGALU_LISTING_ID);
+
+    expect(result.success).toBe(true);
+    expect(magalu).toHaveBeenCalledWith(MAGALU_LISTING_ID);
   });
 
   it("returns error when listing not found", async () => {

@@ -48,6 +48,10 @@ const MARKETPLACE_ICONS: Record<
     label: "Shopee",
     src: "/marketplaces/shopee.svg",
   },
+  MAGALU: {
+    label: "Magalu",
+    src: "/marketplaces/magalu.svg",
+  },
 };
 
 // Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de

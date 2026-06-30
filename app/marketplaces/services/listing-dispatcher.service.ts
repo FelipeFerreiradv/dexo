@@ -19,7 +19,7 @@ import type {
 } from "../repositories/bulk-listing-job.repository";
 import { SystemLogService } from "../../services/system-log.service";
 
-export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE";
+export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 export interface ListingDispatchRequest {
   platform: ListingPlatform;
@@ -265,6 +265,36 @@ export class ListingDispatcher {
         }
         return;
       }
+      if (req.platform === "MAGALU") {
+        const result = await ListingUseCase.createMagaluListing(
+          userId,
+          productId,
+          req.categoryId,
+          req.accountId,
+        );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] Magalu listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "MAGALU",
+          );
+        }
+        return;
+      }
     } catch (err) {
       console.error(
         `[ListingDispatcher] ${req.platform} error (product=${productId}, account=${req.accountId}):`,
@@ -341,10 +371,15 @@ export class ListingDispatcher {
     actorId: string | undefined,
     listingId: string | undefined,
     productId: string,
-    platform: "MERCADO_LIVRE" | "SHOPEE",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
   ): void {
     if (!actorId || !listingId) return;
-    const marketplace = platform === "SHOPEE" ? "Shopee" : "MercadoLivre";
+    const marketplace =
+      platform === "SHOPEE"
+        ? "Shopee"
+        : platform === "MAGALU"
+          ? "Magalu"
+          : "MercadoLivre";
     void SystemLogService.logListingCreate(
       actorId,
       listingId,
@@ -391,7 +426,9 @@ export class ListingDispatcher {
         const skipped =
           r.platform === "MERCADO_LIVRE"
             ? ov?.disabledMlAccountIds?.includes(r.accountId)
-            : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+            : r.platform === "SHOPEE"
+              ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+              : ov?.disabledMagaluAccountIds?.includes(r.accountId);
         if (skipped) continue;
         pairs.push({
           productId: pid,
@@ -502,6 +539,16 @@ export class ListingDispatcher {
       } else if (req.platform === "SHOPEE") {
         const categoryId = ov?.shopee?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createShopeeListing(
+          userId,
+          productId,
+          categoryId,
+          req.accountId,
+        );
+      } else if (req.platform === "MAGALU") {
+        // Override por-produto de Magalu (modo Revisão individual): categoria
+        // escolhida vence o request global; ausente ⇒ backend resolve no envio.
+        const categoryId = ov?.magalu?.categoryId ?? req.categoryId;
+        createResult = await ListingUseCase.createMagaluListing(
           userId,
           productId,
           categoryId,
