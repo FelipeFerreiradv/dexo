@@ -3289,16 +3289,20 @@ export class ListingUseCase {
         channelId,
         ...categoryFields,
       });
-      // Rede de segurança: se o create COM categoria for rejeitado (ex.: 422 por
-      // atributo obrigatório faltando), recria SEM categoria (DRAFT) — garante o
-      // anúncio (comportamento pré-categoria) em vez de não criar nada.
+      // Rede de segurança: se o create COM categoria for rejeitado por VALIDAÇÃO
+      // de payload (400/422 — ex.: atributo obrigatório faltando), recria SEM
+      // categoria (DRAFT). SÓ nesses status: 401/403/409/5xx/timeout propagam —
+      // retry não ajuda e poderia DUPLICAR o SKU se o 1º POST já tiver sido
+      // aceito (createSku é assíncrono/202 e o sku/group.id são fixos).
       let created: Awaited<ReturnType<typeof MagaluApiService.createSku>>;
       try {
         created = await MagaluApiService.createSku(account.accessToken, payload);
       } catch (createErr) {
-        if (!categoryFields.categoryId) throw createErr;
+        const status = (createErr as { status?: number })?.status;
+        const isPayloadValidation = status === 400 || status === 422;
+        if (!categoryFields.categoryId || !isPayloadValidation) throw createErr;
         console.warn(
-          `[ListingUseCase] create Magalu com categoria ${categoryFields.categoryId} falhou (${createErr instanceof Error ? createErr.message : createErr}); retry SEM categoria (DRAFT).`,
+          `[ListingUseCase] create Magalu com categoria ${categoryFields.categoryId} rejeitado (${status}: ${createErr instanceof Error ? createErr.message : createErr}); retry SEM categoria (DRAFT).`,
         );
         created = await MagaluApiService.createSku(
           account.accessToken,

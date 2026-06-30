@@ -125,7 +125,7 @@ describe("MagaluCategoryResolutionService.buildCategoryFields", () => {
     expect(f.missing).not.toContain("Marca");
   });
 
-  it("extrai Lado e Posição do nome do produto (não chuta)", async () => {
+  it("extrai Lado e Posição do nome do produto (por extenso, não chuta)", async () => {
     (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([]);
     (MagaluApiService as any).getCategoryDatasheet = vi.fn().mockResolvedValue([
       { id: "d1", name: "Lado", required: "required", choices: ["Direito", "Esquerdo"] },
@@ -141,6 +141,67 @@ describe("MagaluCategoryResolutionService.buildCategoryFields", () => {
       { name: "Posição", value: "Traseiro" },
     ]);
     expect(f.missing).toEqual([]);
+  });
+
+  it("Lado: abreviação ambígua ('Le Mans') NÃO infere lado → missing", async () => {
+    (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([]);
+    (MagaluApiService as any).getCategoryDatasheet = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "d1", name: "Lado", required: "required", choices: ["Direito"] },
+      ]);
+    const f = await MagaluCategoryResolutionService.buildCategoryFields(
+      "tok",
+      "cat-1",
+      { name: "Porta Le Mans Peugeot" },
+    );
+    expect(f.datasheet).toEqual([]); // não chutou "Esquerdo"
+    expect(f.missing).toEqual(["Lado"]);
+  });
+
+  it("Lado: nome com ambos os lados (par 'Esquerda Direita') → ambíguo → missing", async () => {
+    (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([]);
+    (MagaluApiService as any).getCategoryDatasheet = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "d1", name: "Lado", required: "required", choices: ["Direito"] },
+      ]);
+    const f = await MagaluCategoryResolutionService.buildCategoryFields(
+      "tok",
+      "cat-1",
+      { name: "Par Lanternas Esquerda Direita Gol" },
+    );
+    expect(f.missing).toEqual(["Lado"]);
+  });
+
+  it("campo combinado 'Ano/Modelo' recebe o ANO (ano antes de modelo)", async () => {
+    (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([]);
+    (MagaluApiService as any).getCategoryDatasheet = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "d1", name: "Ano/Modelo", required: "required" },
+      ]);
+    const f = await MagaluCategoryResolutionService.buildCategoryFields(
+      "tok",
+      "cat-1",
+      { year: "2016", model: "Fusion" },
+    );
+    expect(f.datasheet).toEqual([{ name: "Ano/Modelo", value: "2016" }]);
+  });
+
+  it("overflow: required preenchível além do limite entra em `missing`", async () => {
+    const mk = (n: number) => ({ id: `${n}`, name: "Marca", required: "required" });
+    (MagaluApiService as any).getCategoryAttributes = vi
+      .fn()
+      .mockResolvedValue([mk(1), mk(2), mk(3), mk(4)]);
+    (MagaluApiService as any).getCategoryDatasheet = vi.fn().mockResolvedValue([]);
+    const f = await MagaluCategoryResolutionService.buildCategoryFields(
+      "tok",
+      "cat-1",
+      { brand: "Ford" },
+    );
+    expect(f.attributes).toHaveLength(3); // cap da API
+    expect(f.missing).toContain("Marca"); // o 4º preenchível ficou de fora → visível
   });
 
   it("limita attributes a 3 e ignora não-obrigatórios", async () => {

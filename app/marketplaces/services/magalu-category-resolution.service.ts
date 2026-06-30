@@ -46,11 +46,12 @@ export class MagaluCategoryResolutionService {
     const mapped = this.lookupCategoryMap(product);
     if (mapped) return mapped;
 
-    const hint = String(
+    // normalize() (sem acento) nos DOIS lados — a árvore real pode vir com
+    // acentuação/casing divergente; comparar acento-insensível evita perder o
+    // domínio e deixar tudo em DRAFT.
+    const hint = this.normalize(
       product?.magaluCategoryRootHint ?? MAGALU_CONSTANTS.CATEGORY_ROOT_HINT,
-    )
-      .trim()
-      .toLowerCase();
+    );
 
     for (const term of this.searchTerms(product)) {
       const cats = await MagaluApiService.searchCategories(accessToken, {
@@ -59,9 +60,7 @@ export class MagaluCategoryResolutionService {
       if (!cats.length) continue;
       if (!hint) return cats[0].id;
       const inDomain = cats.find((c) =>
-        String(c.path ?? "")
-          .toLowerCase()
-          .startsWith(hint),
+        this.normalize(c.path).startsWith(hint),
       );
       if (inDomain) return inDomain.id;
       // termo achou resultados mas nenhum no domínio → tenta termo mais curto.
@@ -126,19 +125,22 @@ export class MagaluCategoryResolutionService {
     ]);
 
     const missing: string[] = [];
-    const fill = (attrs: MagaluAttribute[], max: number) =>
-      attrs
-        .filter((a) => a.required === "required")
-        .slice(0, max)
-        .map((a) => {
-          const value = this.valueFor(a, product);
-          if (!value) {
-            missing.push(a.name);
-            return null;
-          }
-          return { name: a.name, value };
-        })
-        .filter((x): x is { name: string; value: string } => x !== null);
+    // Mapeia TODOS os required PRIMEIRO (registrando os sem valor em `missing`),
+    // e só então aplica o limite da API — assim um required preenchível além do
+    // índice `max` não é descartado antes de ser tentado. O que tiver valor mas
+    // estourar o limite também entra em `missing` (visibilidade pro lojista).
+    const fill = (attrs: MagaluAttribute[], max: number) => {
+      const filled: Array<{ name: string; value: string }> = [];
+      for (const a of attrs.filter((x) => x.required === "required")) {
+        const value = this.valueFor(a, product);
+        if (value) filled.push({ name: a.name, value });
+        else missing.push(a.name);
+      }
+      if (filled.length > max) {
+        for (const f of filled.slice(max)) missing.push(f.name);
+      }
+      return filled.slice(0, max);
+    };
 
     return {
       category: { id: categoryId },
@@ -168,31 +170,39 @@ export class MagaluCategoryResolutionService {
     // montadora/fabricante = marca do veículo.
     if (has("marca", "fabricante", "montadora"))
       return s(product?.brand ?? product?.mlBrand);
-    if (has("modelo")) return s(product?.model ?? product?.partNumber);
+    // "ano" ANTES de "modelo": um campo combinado "Ano/Modelo" deve virar ano,
+    // não o modelo (has() é substring, "ano/modelo" contém "modelo").
     if (has("ano")) return s(product?.year);
+    if (has("modelo")) return s(product?.model ?? product?.partNumber);
     if (has("lado")) return this.extractSide(product);
     if (has("posic")) return this.extractPosition(product);
     if (has("cor")) return s(product?.color);
     if (has("material")) return s(product?.material);
     if (has("garantia")) return s(product?.warranty) ?? "3 meses";
     if (has("tamanho")) return s(product?.size);
-    if (has("genero", "sexo")) return "Unissex";
     return null; // sem chute: required não-mapeado fica em `missing`.
   }
 
-  /** Lado (esquerdo/direito) extraído do nome do produto. */
+  /**
+   * Lado extraído do nome — SÓ por extenso (esquerdo/direito). Abreviações
+   * "le"/"ld" são ambíguas demais p/ um campo crítico (Lado errado = devolução;
+   * ex.: "Le Mans" → falso "Esquerdo"); sem extenso → null → `missing` (lojista
+   * confirma). Nome com AMBOS os lados (par) → null (ambíguo).
+   */
   private static extractSide(product: any): string | null {
     const n = this.normalize(product?.name);
-    if (/\b(esquerd[oa]|le)\b/.test(n)) return "Esquerdo";
-    if (/\b(direit[oa]|ld)\b/.test(n)) return "Direito";
-    return null;
+    const left = /\b(esquerd[oa])\b/.test(n);
+    const right = /\b(direit[oa])\b/.test(n);
+    if (left === right) return null; // nenhum ou ambos → indefinido
+    return left ? "Esquerdo" : "Direito";
   }
 
-  /** Posição (dianteiro/traseiro) extraída do nome do produto. */
+  /** Posição (dianteiro/traseiro) do nome; ambos/nenhum → null (ambíguo). */
   private static extractPosition(product: any): string | null {
     const n = this.normalize(product?.name);
-    if (/\b(diant|frontal)/.test(n)) return "Dianteiro";
-    if (/\b(tras)/.test(n)) return "Traseiro";
-    return null;
+    const front = /\b(diant|frontal)/.test(n);
+    const rear = /\btras/.test(n);
+    if (front === rear) return null;
+    return front ? "Dianteiro" : "Traseiro";
   }
 }

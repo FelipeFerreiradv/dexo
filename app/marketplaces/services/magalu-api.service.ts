@@ -339,7 +339,10 @@ export class MagaluApiService {
         headers: this.authHeaders(accessToken),
         timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
       });
-      return resp.data?.results ?? [];
+      // Shape TBD: espelha searchCategories — pode vir array puro ou {results}.
+      const body = resp.data;
+      if (Array.isArray(body)) return body;
+      return body?.results ?? [];
     } catch (error) {
       throw this.formatError(`Erro ao consultar ${kind} da categoria`, error);
     }
