@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { platformBadgeClassName } from "@/app/pedidos/lib/order-badges";
 
 import type { ConversationSummary } from "./messages-shell";
 
@@ -80,7 +81,8 @@ export function ConversationList({
 
 // Cor estável por conta: hash do id → paleta fixa. Determinístico (a mesma
 // conta sempre recebe a mesma cor). Amber omitido de propósito para não
-// colidir visualmente com o badge "Pendente" (que é sempre amber).
+// colidir visualmente com o badge "Pendente" (que é sempre amber). Usado como
+// fallback quando a plataforma é desconhecida (conversas legadas sem platform).
 const ACCOUNT_BADGE_PALETTE = [
   "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
   "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
@@ -99,6 +101,21 @@ function accountBadgeClasses(accountId: string): string {
   ];
 }
 
+/**
+ * Cor do badge da conta = cor da PLATAFORMA (ML amarelo / Shopee laranja /
+ * Magalu azul), reusando a paleta de marca de Pedidos. Fallback: cor por hash
+ * do id (mantém o comportamento legado quando accountPlatform é nulo).
+ */
+function conversationBadgeClasses(
+  accountPlatform: string | null,
+  accountId: string,
+): string {
+  return (
+    platformBadgeClassName(accountPlatform ?? undefined) ||
+    accountBadgeClasses(accountId)
+  );
+}
+
 function ConversationRow({
   conversation,
   active,
@@ -108,7 +125,11 @@ function ConversationRow({
   active: boolean;
   onClick: () => void;
 }) {
-  const title = conversation.listingTitle ?? conversation.externalItemId;
+  // Magalu (chat) não tem listing local → cai no nome do cliente, depois no id.
+  const title =
+    conversation.listingTitle ??
+    conversation.buyerNickname ??
+    conversation.externalItemId;
   const lastText = conversation.lastQuestionText;
   const lastAt = conversation.lastQuestionAt
     ? formatRelative(conversation.lastQuestionAt)
@@ -151,7 +172,10 @@ function ConversationRow({
                 variant="outline"
                 className={cn(
                   "h-4 max-w-full truncate px-1.5 text-[10px] font-medium",
-                  accountBadgeClasses(conversation.marketplaceAccountId),
+                  conversationBadgeClasses(
+                    conversation.accountPlatform,
+                    conversation.marketplaceAccountId,
+                  ),
                 )}
                 title={conversation.accountName}
               >

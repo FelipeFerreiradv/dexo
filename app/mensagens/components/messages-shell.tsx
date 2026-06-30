@@ -23,6 +23,9 @@ export interface AccountSummary {
   id: string;
   accountName: string;
   status: string;
+  // Plataforma da conta (MERCADO_LIVRE | MAGALU | ...). Permite badge e o
+  // ChatPane decidir o modo de envio (resposta de pergunta vs mensagem de chat).
+  platform?: string | null;
 }
 
 export interface ConversationSummary {
@@ -209,14 +212,15 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-border/70 bg-card p-12 text-center">
         <MessageCircle className="h-10 w-10 text-muted-foreground/50" />
-        <div className="text-sm font-medium">Nenhuma conta do Mercado Livre conectada</div>
+        <div className="text-sm font-medium">Nenhuma conta conectada</div>
         <p className="max-w-sm text-sm text-muted-foreground">
-          Para começar a receber e responder perguntas, conecte uma conta em{" "}
+          Para começar a receber e responder perguntas e mensagens, conecte uma
+          conta em{" "}
           <a
             href="/integracoes/mercado-livre"
             className="font-medium text-foreground underline-offset-4 hover:underline"
           >
-            Integrações → Mercado Livre
+            Integrações
           </a>
           .
         </p>
