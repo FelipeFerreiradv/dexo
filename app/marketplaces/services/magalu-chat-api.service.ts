@@ -45,7 +45,16 @@ export interface MagaluConversation {
   to_user?: MagaluChatUser;
   owner?: { external_id?: string; name?: string };
   status?: string; // OPENED | CLOSED
-  last_message?: { content?: string; when_at?: string; [key: string]: unknown };
+  // MinimalMessage: id/from_user/content/when_at. Usado pelo polling p/ gravar a
+  // última mensagem sem um GET por conversa.
+  last_message?: {
+    id?: string;
+    external_id?: string;
+    from_user?: MagaluChatUser;
+    content?: string;
+    when_at?: string;
+    [key: string]: unknown;
+  };
   unread_to_count?: number;
   unread_from_count?: number;
   last_interaction_at?: string;

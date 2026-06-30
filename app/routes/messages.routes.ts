@@ -18,7 +18,9 @@ import { MessagesUseCase } from "../marketplaces/usecases/messages.usecase";
 export const messagesRoutes = async (fastify: FastifyInstance) => {
   /**
    * GET /messages/accounts
-   * Lista contas ML do usuário (para o seletor da UI).
+   * Lista contas do usuário com perguntas/conversas (para o seletor da UI).
+   * Hoje: Mercado Livre (Q&A) + Magalu (chat). `platform` permite à UI badgear
+   * e despachar o envio (resposta de pergunta vs mensagem de conversa).
    */
   fastify.get(
     "/accounts",
@@ -27,15 +29,23 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
-      const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
-        userId,
-        Platform.MERCADO_LIVRE,
-      );
+      const [mlAccounts, magaluAccounts] = await Promise.all([
+        MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MERCADO_LIVRE,
+        ),
+        MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.MAGALU,
+        ),
+      ]);
+
       return reply.send({
-        accounts: accounts.map((a) => ({
+        accounts: [...mlAccounts, ...magaluAccounts].map((a) => ({
           id: a.id,
           accountName: a.accountName,
           status: a.status,
+          platform: a.platform,
         })),
       });
     },
@@ -178,7 +188,11 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
 
   /**
    * POST /messages/answers
-   * body: { accountId, questionId, text }
+   * body: { accountId, text, questionId?, itemId? }
+   *
+   * Despacha por plataforma da conta:
+   *   - Mercado Livre (Q&A): responde a pergunta `questionId`.
+   *   - Magalu (chat): envia uma mensagem na conversa `itemId`.
    */
   fastify.post(
     "/answers",
@@ -190,16 +204,45 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const body = (request.body || {}) as {
         accountId?: string;
         questionId?: string;
+        itemId?: string;
         text?: string;
       };
 
-      if (!body.accountId || !body.questionId || !body.text) {
+      if (!body.accountId || !body.text) {
         return reply
           .status(400)
-          .send({ error: "accountId, questionId e text são obrigatórios" });
+          .send({ error: "accountId e text são obrigatórios" });
+      }
+
+      const account = await MarketplaceRepository.findByIdAndUser(
+        body.accountId,
+        userId,
+      );
+      if (!account) {
+        return reply.status(404).send({ error: "Conta não encontrada" });
       }
 
       try {
+        if (account.platform === Platform.MAGALU) {
+          if (!body.itemId) {
+            return reply
+              .status(400)
+              .send({ error: "itemId é obrigatório para conversas Magalu" });
+          }
+          const result = await MessagesUseCase.sendMagaluMessage(
+            userId,
+            body.accountId,
+            body.itemId,
+            body.text,
+          );
+          return reply.send(result);
+        }
+
+        if (!body.questionId) {
+          return reply
+            .status(400)
+            .send({ error: "questionId é obrigatório" });
+        }
         const updated = await MessagesUseCase.answerQuestion(
           userId,
           body.accountId,

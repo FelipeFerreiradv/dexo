@@ -1,36 +1,81 @@
 import { Platform } from "@prisma/client";
+import type { MarketplaceAccount } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { QuestionRepository } from "../repositories/question.repository";
 import { MlQuestionsApiService } from "../services/ml-questions-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
+import {
+  MagaluChatApiService,
+  MagaluChatMessage,
+  MagaluChatUser,
+  MagaluConversation,
+} from "../services/magalu-chat-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MLQuestionWebhookPayload } from "../types/ml-questions.types";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
 
-interface AccountWithToken {
-  id: string;
-  userId: string;
+interface ResolvedAccount {
+  account: MarketplaceAccount;
   accessToken: string;
 }
 
+/** Subconjunto necessário p/ refresh de token Magalu (aceita conta parcial). */
+interface MagaluTokenAccount {
+  id: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+}
+
+/** Mensagem de chat já normalizada para o formato do repositório. */
+interface NormalizedMagaluMessage {
+  messageId: string;
+  text: string;
+  authorType: "CUSTOMER" | "SELLER";
+  dateCreated: Date;
+}
+
+interface NormalizedMagaluConversation {
+  customerExternalId: string | null;
+  customerName: string | null;
+  pending: boolean;
+  messages: NormalizedMagaluMessage[];
+}
+
 /**
- * Resolve uma conta ML pelo accountId garantindo que pertence ao userId
- * e que o accessToken está válido (refresh automático se expirado).
+ * Resolve uma conta do usuário (qualquer plataforma suportada por Mensagens)
+ * garantindo posse + accessToken válido (refresh por plataforma). Plataforma
+ * ainda não suportada ⇒ null.
  */
 async function resolveAccountForUser(
   userId: string,
   accountId: string,
-): Promise<AccountWithToken | null> {
+): Promise<ResolvedAccount | null> {
   const account = await MarketplaceRepository.findByIdAndUser(accountId, userId);
-  if (!account || account.platform !== Platform.MERCADO_LIVRE) return null;
+  if (!account) return null;
 
-  const accessToken = await ensureFreshToken(account);
-  return { id: account.id, userId: account.userId, accessToken };
+  const accessToken = await ensureFreshTokenForAccount(account);
+  if (!accessToken) return null;
+  return { account, accessToken };
 }
 
-async function ensureFreshToken(account: {
+async function ensureFreshTokenForAccount(
+  account: MarketplaceAccount,
+): Promise<string | null> {
+  if (account.platform === Platform.MERCADO_LIVRE) {
+    return ensureFreshMlToken(account);
+  }
+  if (account.platform === Platform.MAGALU) {
+    return ensureFreshMagaluToken(account);
+  }
+  // Shopee e demais: ainda não suportados em Mensagens.
+  return null;
+}
+
+async function ensureFreshMlToken(account: {
   id: string;
   accessToken: string;
   refreshToken: string;
@@ -50,6 +95,111 @@ async function ensureFreshToken(account: {
     expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
   });
   return refreshed.accessToken;
+}
+
+/**
+ * Token Magalu fresco (espelha listing.usercase.ensureFreshMagaluToken). Não
+ * expirado ⇒ token atual; expirado com refresh ⇒ renova+persiste; falha ⇒ null.
+ */
+async function ensureFreshMagaluToken(
+  account: MagaluTokenAccount,
+): Promise<string | null> {
+  if (!account.accessToken) return null;
+  const expiresMs = account.expiresAt
+    ? new Date(account.expiresAt).getTime()
+    : 0;
+  if (
+    Number.isFinite(expiresMs) &&
+    expiresMs - Date.now() > TOKEN_REFRESH_SAFETY_MS
+  ) {
+    return account.accessToken;
+  }
+  if (!account.refreshToken) return account.accessToken;
+  try {
+    const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+      account.id,
+      account.refreshToken,
+    );
+    await MarketplaceRepository.updateTokens(account.id, {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+    });
+    return refreshed.accessToken;
+  } catch (err) {
+    console.warn(
+      `[Messages] Falha ao refrescar token Magalu da conta ${account.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+/** O cliente da conversa é o usuário com type CUSTOMER (fallback: from_user). */
+function pickMagaluCustomer(
+  fromUser?: MagaluChatUser,
+  toUser?: MagaluChatUser,
+): { externalId: string | null; name: string | null } {
+  const customer =
+    fromUser?.type === "CUSTOMER"
+      ? fromUser
+      : toUser?.type === "CUSTOMER"
+        ? toUser
+        : (fromUser ?? toUser);
+  return {
+    externalId: customer?.external_id ?? customer?.id ?? null,
+    name: customer?.full_name ?? null,
+  };
+}
+
+/** SELLER quando o autor da mensagem é o vendedor; senão CUSTOMER. */
+function magaluAuthorType(user?: MagaluChatUser): "CUSTOMER" | "SELLER" {
+  return user?.type === "SELLER" ? "SELLER" : "CUSTOMER";
+}
+
+/**
+ * Data válida a partir do when_at. when_at ausente/ inválido (string não
+ * parseável) ⇒ agora — evita Invalid Date (NaN no sort + erro de escrita no
+ * Prisma, que exige DateTime válido).
+ */
+function parseMagaluDate(whenAt?: string): Date {
+  if (!whenAt) return new Date();
+  const d = new Date(whenAt);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+/**
+ * Normaliza as mensagens de uma conversa Magalu para o repositório: ordena por
+ * data, deriva o cliente (estável) e o estado `pending` (última msg = CUSTOMER).
+ * Mensagens sem id são descartadas (não há chave de upsert).
+ */
+function normalizeMagaluConversationMessages(
+  rawMessages: MagaluChatMessage[],
+): NormalizedMagaluConversation {
+  const messages: NormalizedMagaluMessage[] = [];
+  let customerExternalId: string | null = null;
+  let customerName: string | null = null;
+
+  for (const m of rawMessages) {
+    if (!m.id) continue;
+    const cust = pickMagaluCustomer(m.from_user, m.to_user);
+    if (!customerExternalId && cust.externalId) {
+      customerExternalId = cust.externalId;
+      customerName = cust.name;
+    }
+    messages.push({
+      messageId: String(m.id),
+      text: m.content ?? "",
+      authorType: magaluAuthorType(m.from_user),
+      dateCreated: parseMagaluDate(m.when_at),
+    });
+  }
+
+  messages.sort((a, b) => a.dateCreated.getTime() - b.dateCreated.getTime());
+  const last = messages[messages.length - 1];
+  const pending = last ? last.authorType === "CUSTOMER" : false;
+
+  return { customerExternalId, customerName, pending, messages };
 }
 
 /**
@@ -132,7 +282,7 @@ export class MessagesUseCase {
       let lastError: string | undefined;
       for (const account of accounts) {
         try {
-          const accessToken = await ensureFreshToken(account);
+          const accessToken = await ensureFreshMlToken(account);
           const mlQuestion = await MlQuestionsApiService.getQuestion(
             accessToken,
             externalQuestionId,
@@ -178,13 +328,19 @@ export class MessagesUseCase {
     accountId: string,
     externalItemId: string,
   ): Promise<{ synced: number; total: number }> {
-    const account = await resolveAccountForUser(userId, accountId);
-    if (!account) {
-      throw Object.assign(new Error("Conta ML não encontrada"), {
+    const resolved = await resolveAccountForUser(userId, accountId);
+    if (!resolved) {
+      throw Object.assign(new Error("Conta não encontrada"), {
         statusCode: 404,
       });
     }
+    const { account, accessToken } = resolved;
 
+    if (account.platform === Platform.MAGALU) {
+      return this.pullMagaluConversation(account, accessToken, externalItemId);
+    }
+
+    // Mercado Livre (Q&A) — comportamento legado inalterado.
     // Resolve a productListingId UMA vez (todas as perguntas referenciam o mesmo
     // item) — evita N lookups idênticos em upsertFromMl.
     const productListingId = await QuestionRepository.resolveListingId(
@@ -202,7 +358,7 @@ export class MessagesUseCase {
 
     while (true) {
       const page = await MlQuestionsApiService.searchQuestionsByItem(
-        account.accessToken,
+        accessToken,
         externalItemId,
         { offset, limit: 50 },
       );
@@ -224,6 +380,47 @@ export class MessagesUseCase {
     }
 
     return { synced, total };
+  }
+
+  /**
+   * Pull on-demand de uma conversa Magalu: busca TODAS as mensagens da conversa
+   * e re-sincroniza localmente (com o invariante de status nível-conversa).
+   */
+  private static async pullMagaluConversation(
+    account: MarketplaceAccount,
+    accessToken: string,
+    conversationId: string,
+  ): Promise<{ synced: number; total: number }> {
+    // Pagina TODAS as mensagens (a API limita a 100/página) — conversas longas
+    // não podem ser truncadas, senão o histórico, o `pending` e o cliente
+    // derivam de um subconjunto. Teto de segurança p/ não rodar sem fim.
+    const PAGE = 100;
+    const MAX_PAGES = 20; // até 2000 mensagens/conversa
+    const all: MagaluChatMessage[] = [];
+    let offset = 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { messages, total } = await MagaluChatApiService.listMessages(
+        accessToken,
+        conversationId,
+        { offset, limit: PAGE },
+      );
+      all.push(...messages);
+      if (messages.length < PAGE) break;
+      offset += PAGE;
+      if (total && offset >= total) break;
+    }
+    const normalized = normalizeMagaluConversationMessages(all);
+    if (normalized.messages.length === 0) {
+      return { synced: 0, total: 0 };
+    }
+    const r = await QuestionRepository.syncMagaluConversation(account.id, {
+      conversationId,
+      customerExternalId: normalized.customerExternalId,
+      customerName: normalized.customerName,
+      pending: normalized.pending,
+      messages: normalized.messages,
+    });
+    return { synced: r.synced, total: r.synced };
   }
 
   /**
@@ -258,6 +455,14 @@ export class MessagesUseCase {
     if (question.marketplaceAccount.userId !== userId) {
       throw Object.assign(new Error("Acesso negado"), { statusCode: 403 });
     }
+    // Conversas de chat (Magalu) não respondem por questionId — usam
+    // sendMagaluMessage. Guarda defensiva: a rota já despacha por plataforma.
+    if (question.marketplaceAccount.platform !== Platform.MERCADO_LIVRE) {
+      throw Object.assign(
+        new Error("Plataforma não suporta resposta por pergunta"),
+        { statusCode: 400 },
+      );
+    }
     if (question.status !== "UNANSWERED") {
       throw Object.assign(
         new Error("Esta pergunta já foi respondida ou não aceita mais respostas"),
@@ -265,15 +470,15 @@ export class MessagesUseCase {
       );
     }
 
-    const account = await resolveAccountForUser(userId, accountId);
-    if (!account) {
-      throw Object.assign(new Error("Conta ML não encontrada"), {
+    const resolved = await resolveAccountForUser(userId, accountId);
+    if (!resolved) {
+      throw Object.assign(new Error("Conta não encontrada"), {
         statusCode: 404,
       });
     }
 
     const updated = await MlQuestionsApiService.postAnswer(
-      account.accessToken,
+      resolved.accessToken,
       question.externalQuestionId,
       trimmed,
     );
@@ -281,5 +486,154 @@ export class MessagesUseCase {
     await QuestionRepository.upsertFromMl(accountId, updated);
     const reloaded = await QuestionRepository.findById(questionId);
     return reloaded;
+  }
+
+  /**
+   * Envia uma mensagem do SELLER numa conversa de chat Magalu. O `owner` do
+   * payload é o DESTINATÁRIO (o cliente), cujos dados vêm das linhas locais já
+   * sincronizadas da conversa. Após enviar, re-sincroniza a conversa para
+   * refletir a nova mensagem (e o flip de pending → respondida).
+   */
+  static async sendMagaluMessage(
+    userId: string,
+    accountId: string,
+    conversationId: string,
+    text: string,
+  ): Promise<{ success: boolean }> {
+    const trimmed = (text ?? "").trim();
+    if (!trimmed) {
+      throw Object.assign(new Error("Texto da mensagem é obrigatório"), {
+        statusCode: 400,
+      });
+    }
+    if (trimmed.length > 2200) {
+      throw Object.assign(
+        new Error("Texto da mensagem excede o limite de 2200 caracteres"),
+        { statusCode: 400 },
+      );
+    }
+
+    const resolved = await resolveAccountForUser(userId, accountId);
+    if (!resolved || resolved.account.platform !== Platform.MAGALU) {
+      throw Object.assign(new Error("Conta Magalu não encontrada"), {
+        statusCode: 404,
+      });
+    }
+    const { account, accessToken } = resolved;
+
+    const customer = await QuestionRepository.getConversationCustomer(
+      account.id,
+      conversationId,
+    );
+    if (!customer || !customer.externalBuyerId || customer.externalBuyerId === "0") {
+      throw Object.assign(
+        new Error(
+          "Não foi possível identificar o cliente da conversa. Sincronize a conversa e tente novamente.",
+        ),
+        { statusCode: 409 },
+      );
+    }
+
+    await MagaluChatApiService.replyMessage(accessToken, conversationId, {
+      content: trimmed,
+      owner: {
+        external_id: customer.externalBuyerId,
+        name: customer.buyerNickname || "Cliente",
+      },
+    });
+
+    // Re-sincroniza p/ trazer a mensagem recém-enviada e atualizar o status.
+    await this.pullMagaluConversation(account, accessToken, conversationId);
+    return { success: true };
+  }
+
+  /**
+   * Polling (cron) das conversas Magalu de uma conta: lista conversas abertas e
+   * grava a ÚLTIMA mensagem de cada uma localmente (o histórico completo é
+   * hidratado on-demand pelo botão atualizar). Mantém a lista + badges frescos
+   * sem N+1 chamadas por conversa. Best-effort: erros por-conversa são isolados.
+   */
+  static async syncMagaluMessagesForAccount(
+    account: MagaluTokenAccount,
+  ): Promise<{
+    conversations: number;
+    errors: number;
+  }> {
+    const accessToken = await ensureFreshMagaluToken(account);
+    if (!accessToken) return { conversations: 0, errors: 1 };
+
+    const PAGE = 50;
+    const MAX_PAGES = 20; // teto de segurança (até 1000 conversas/ciclo)
+    let offset = 0;
+    let processed = 0;
+    let errors = 0;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { conversations, total } =
+        await MagaluChatApiService.listConversations(accessToken, {
+          status: "OPENED",
+          offset,
+          limit: PAGE,
+        });
+
+      for (const conv of conversations) {
+        try {
+          const did = await this.upsertMagaluConversationLastMessage(
+            account.id,
+            conv,
+          );
+          if (did) processed += 1;
+        } catch (err) {
+          errors += 1;
+          console.warn(
+            `[Messages] Falha ao sincronizar conversa Magalu ${conv?.id} (conta ${account.id}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+
+      if (conversations.length < PAGE) break;
+      offset += PAGE;
+      if (total && offset >= total) break;
+    }
+
+    return { conversations: processed, errors };
+  }
+
+  /**
+   * Grava a última mensagem de uma conversa (do payload de listConversations).
+   * Retorna false quando não há mensagem aprovada com id (nada a persistir).
+   */
+  private static async upsertMagaluConversationLastMessage(
+    accountId: string,
+    conv: MagaluConversation,
+  ): Promise<boolean> {
+    const conversationId = conv?.id;
+    const last = conv?.last_message;
+    if (!conversationId || !last?.id) return false;
+
+    // O cliente é resolvido pelos PARTICIPANTES da conversa (from_user/to_user),
+    // não pelo autor da última mensagem: `last_message` (MinimalMessage) não tem
+    // to_user, então usar last.from_user faria o cliente cair no VENDEDOR quando
+    // a última mensagem (ou a conversa) parte do seller. A conversa em si expõe
+    // ambos os lados → pickMagaluCustomer escolhe o que tem type CUSTOMER.
+    const customer = pickMagaluCustomer(conv.from_user, conv.to_user);
+    const authorType = magaluAuthorType(last.from_user);
+
+    await QuestionRepository.syncMagaluConversation(accountId, {
+      conversationId,
+      customerExternalId: customer.externalId,
+      customerName: customer.name,
+      pending: authorType === "CUSTOMER",
+      messages: [
+        {
+          messageId: String(last.id),
+          text: last.content ?? "",
+          authorType,
+          dateCreated: parseMagaluDate(last.when_at),
+        },
+      ],
+    });
+    return true;
   }
 }

@@ -2,6 +2,7 @@ import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
 import { SyncUseCase } from "../app/marketplaces/usecases/sync.usercase";
+import { MessagesUseCase } from "../app/marketplaces/usecases/messages.usecase";
 import { syncAllListingsMetrics } from "./sync-listing-metrics";
 
 const intervalMinutes = parseInt(process.env.SYNC_FULL_INTERVAL_MINUTES ?? "15", 10);
@@ -85,6 +86,32 @@ async function runOnce() {
       } catch (err) {
         console.error(
           `[sync-loop] Falha na auto-detecção de anúncios Magalu (conta ${account.id}):`,
+          err,
+        );
+      }
+
+      // Polling de conversas (Chat com Cliente) da Magalu. Try/catch próprio:
+      // mantém a lista de Mensagens fresca sem nunca abortar pedidos/métricas.
+      try {
+        const full = await prisma.marketplaceAccount.findUnique({
+          where: { id: account.id },
+          // EGRESS: só o que o refresh de token usa.
+          select: {
+            id: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+          },
+        });
+        if (full) {
+          const r = await MessagesUseCase.syncMagaluMessagesForAccount(full);
+          console.log(
+            `[sync-loop] Magalu mensagens conta ${account.id}: conversas=${r.conversations} erros=${r.errors}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[sync-loop] Falha no polling de conversas Magalu (conta ${account.id}):`,
           err,
         );
       }

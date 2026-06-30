@@ -156,6 +156,163 @@ export class QuestionRepository {
     ]);
   }
 
+  // ===========================================================================
+  // Magalu — Chat com Cliente (conversas com N mensagens).
+  //
+  // Modelo de dados: cada MENSAGEM do chat vira UMA linha de MarketplaceQuestion
+  // (sem MarketplaceAnswer), com `authorType` (CUSTOMER | SELLER). O agrupamento
+  // por conversa usa `externalItemId = conversation.id` (a mesma chave do Q&A do
+  // ML/Shopee), então listConversations/listMessages funcionam SEM alteração.
+  //
+  // Estado "precisa de resposta" é por CONVERSA (não por mensagem): vale quando a
+  // última mensagem foi do CUSTOMER. Para que os filtros (Sem resposta/Respondidas)
+  // e o badge "Pendente" — todos baseados em `status` — continuem valendo sem
+  // tratar Magalu como caso especial na leitura, mantemos um INVARIANTE: após
+  // sincronizar uma conversa, TODAS as suas linhas recebem o mesmo `status`
+  // (UNANSWERED quando pendente, ANSWERED quando respondida). Assim o status é
+  // "nível-conversa" para o chat, enquanto continua "nível-pergunta" no Q&A.
+  // ===========================================================================
+
+  /**
+   * Upsert idempotente de UMA mensagem de chat Magalu (sem answer). O `status`
+   * inicial deriva do autor (CUSTOMER→UNANSWERED, SELLER→ANSWERED) e é depois
+   * normalizado ao nível-conversa por `syncMagaluConversation`. Mensagens do
+   * SELLER nascem já LIDAS (readAt) — não devem inflar o contador de não-lidas.
+   */
+  static async upsertMagaluMessage(
+    marketplaceAccountId: string,
+    msg: {
+      conversationId: string;
+      messageId: string;
+      text: string;
+      authorType: "CUSTOMER" | "SELLER";
+      dateCreated: Date;
+      customerExternalId: string | null;
+      customerName: string | null;
+    },
+  ): Promise<{ id: string; isNew: boolean }> {
+    const externalQuestionId = String(msg.messageId);
+    const isSeller = msg.authorType === "SELLER";
+
+    const existing = await prisma.marketplaceQuestion.findUnique({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      select: { id: true },
+    });
+
+    const baseData = {
+      marketplaceAccountId,
+      externalQuestionId,
+      externalItemId: msg.conversationId,
+      externalBuyerId: msg.customerExternalId ?? "0",
+      buyerNickname: msg.customerName,
+      text: msg.text,
+      status: isSeller ? "ANSWERED" : "UNANSWERED",
+      authorType: msg.authorType,
+      dateCreated: msg.dateCreated,
+      // Chat não tem listing local (externalItemId é o id da conversa, não MLB).
+      productListingId: null,
+    };
+
+    const upserted = await prisma.marketplaceQuestion.upsert({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      create: {
+        ...baseData,
+        lastSyncedAt: new Date(),
+        // SELLER já lido; CUSTOMER fica não-lido até o seller abrir a conversa.
+        readAt: isSeller ? msg.dateCreated : null,
+      },
+      // re-sync NÃO mexe em readAt (preserva o que o usuário já leu) nem no
+      // status individual (o status final é definido pelo rewrite da conversa).
+      update: {
+        text: baseData.text,
+        buyerNickname: baseData.buyerNickname,
+        authorType: baseData.authorType,
+        lastSyncedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    return { id: upserted.id, isNew: !existing };
+  }
+
+  /**
+   * Sincroniza uma conversa Magalu inteira: upsert de cada mensagem + reescrita
+   * do `status` de TODAS as linhas da conversa para o estado nível-conversa
+   * (`pending` ⇒ UNANSWERED, senão ANSWERED). Mantém o invariante descrito acima.
+   *
+   * `pending` é decidido pelo caller (última mensagem = CUSTOMER). `messages`
+   * pode ser a conversa inteira (pull on-demand) ou só a última (polling do cron).
+   */
+  static async syncMagaluConversation(
+    marketplaceAccountId: string,
+    conversation: {
+      conversationId: string;
+      customerExternalId: string | null;
+      customerName: string | null;
+      pending: boolean;
+      messages: {
+        messageId: string;
+        text: string;
+        authorType: "CUSTOMER" | "SELLER";
+        dateCreated: Date;
+      }[];
+    },
+  ): Promise<{ synced: number; created: number }> {
+    let created = 0;
+    for (const m of conversation.messages) {
+      const r = await this.upsertMagaluMessage(marketplaceAccountId, {
+        conversationId: conversation.conversationId,
+        messageId: m.messageId,
+        text: m.text,
+        authorType: m.authorType,
+        dateCreated: m.dateCreated,
+        customerExternalId: conversation.customerExternalId,
+        customerName: conversation.customerName,
+      });
+      if (r.isNew) created += 1;
+    }
+
+    // Invariante nível-conversa: alinha o status de todas as linhas ao estado
+    // atual (uma query). Não toca readAt nem authorType.
+    await prisma.marketplaceQuestion.updateMany({
+      where: {
+        marketplaceAccountId,
+        externalItemId: conversation.conversationId,
+      },
+      data: { status: conversation.pending ? "UNANSWERED" : "ANSWERED" },
+    });
+
+    return { synced: conversation.messages.length, created };
+  }
+
+  /**
+   * Cliente (destinatário) de uma conversa de chat — usado para montar o `owner`
+   * ao responder na Magalu. Lê da linha mais recente já sincronizada.
+   */
+  static async getConversationCustomer(
+    marketplaceAccountId: string,
+    externalItemId: string,
+  ): Promise<{ externalBuyerId: string; buyerNickname: string | null } | null> {
+    const row = await prisma.marketplaceQuestion.findFirst({
+      where: { marketplaceAccountId, externalItemId },
+      orderBy: { dateCreated: "desc" },
+      select: { externalBuyerId: true, buyerNickname: true },
+    });
+    return row
+      ? { externalBuyerId: row.externalBuyerId, buyerNickname: row.buyerNickname }
+      : null;
+  }
+
   /**
    * Lista conversas (uma por anúncio). Implementação: pega a pergunta mais
    * recente por externalItemId via DISTINCT ON (PostgreSQL), depois faz join
