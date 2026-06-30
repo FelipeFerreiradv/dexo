@@ -15,7 +15,7 @@ export type OrderFilterStatus =
   | "DELIVERED"
   | "CANCELLED";
 
-export type OrderFilterMarketplace = "MERCADO_LIVRE" | "SHOPEE";
+export type OrderFilterMarketplace = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
 
 export interface OrderFiltersState {
   search: string;

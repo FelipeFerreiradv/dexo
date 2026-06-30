@@ -28,6 +28,8 @@ export function getPlatformLabel(platform: string) {
       return "Mercado Livre";
     case "SHOPEE":
       return "Shopee";
+    case "MAGALU":
+      return "Magalu";
     default:
       return platform;
   }
@@ -44,6 +46,10 @@ export function platformBadgeClassName(platform?: string) {
   }
   if (platform === "SHOPEE") {
     return "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-400";
+  }
+  // Magalu = azul da marca (mesmo do preview do anúncio na Fase 1).
+  if (platform === "MAGALU") {
+    return "border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-400";
   }
   return "";
 }
