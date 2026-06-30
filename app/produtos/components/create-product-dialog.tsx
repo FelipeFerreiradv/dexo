@@ -40,7 +40,6 @@ import {
   ShoppingCart,
   Link2,
   Eye,
-  Search,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -4367,85 +4366,107 @@ export function CreateProductDialog({
                       name="magaluCategory"
                       control={control}
                       render={({ field }) => {
-                        const selectedLabel =
+                        // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
+                        const fmt = (v: string) =>
+                          v
+                            .split("/")
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .join(" > ");
+                        const rawLabel =
                           magaluSelectedLabel ||
                           magaluOptions.find((o) => o.id === field.value)
                             ?.value ||
                           "";
+                        const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                        const term = magaluCategorySearch.trim();
                         return (
                           <div className="relative">
-                            {!magaluCategoryDropdownOpen && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setMagaluCategoryDropdownOpen(true)
-                                }
-                                className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm"
+                            {selectedLabel && !magaluCategoryDropdownOpen && (
+                              <div
+                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                onClick={() => {
+                                  setMagaluCategoryDropdownOpen(true);
+                                  setMagaluCategorySearch("");
+                                }}
                               >
-                                <span
-                                  className={
-                                    selectedLabel
-                                      ? ""
-                                      : "text-muted-foreground"
-                                  }
-                                >
-                                  {selectedLabel || "Selecionar categoria…"}
+                                <span className="truncate">
+                                  {selectedLabel}
                                 </span>
-                                <Search className="h-4 w-4 text-muted-foreground" />
-                              </button>
+                                <span className="ml-2 text-xs text-muted-foreground">
+                                  Alterar
+                                </span>
+                              </div>
                             )}
-                            {magaluCategoryDropdownOpen && (
-                              <div className="rounded-md border">
-                                <input
-                                  autoFocus
+
+                            {(magaluCategoryDropdownOpen || !selectedLabel) && (
+                              <>
+                                <Input
+                                  placeholder="Buscar categoria do Magalu..."
                                   value={magaluCategorySearch}
                                   onChange={(e) =>
                                     setMagaluCategorySearch(e.target.value)
                                   }
-                                  placeholder="Buscar categoria (ex.: farol, amortecedor)…"
-                                  className="w-full rounded-t-md border-b px-3 py-2 text-sm outline-none"
+                                  onBlur={() => {
+                                    setTimeout(
+                                      () =>
+                                        setMagaluCategoryDropdownOpen(false),
+                                      200,
+                                    );
+                                  }}
+                                  autoFocus={magaluCategoryDropdownOpen}
                                 />
-                                <div className="max-h-56 overflow-auto">
-                                  {magaluCategoryLoading && (
-                                    <p className="px-3 py-2 text-xs text-muted-foreground">
-                                      Buscando…
-                                    </p>
+                                {term && magaluOptions.length > 0 && (
+                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                    {magaluOptions.map((o) => (
+                                      <button
+                                        type="button"
+                                        key={o.id}
+                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                          o.id === field.value
+                                            ? "bg-accent font-medium"
+                                            : ""
+                                        }`}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          field.onChange(o.id);
+                                          setMagaluSelectedLabel(o.value);
+                                          setMagaluCategorySearch("");
+                                          setMagaluCategoryDropdownOpen(false);
+                                        }}
+                                      >
+                                        {fmt(o.value)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {term &&
+                                  !magaluCategoryLoading &&
+                                  magaluOptions.length === 0 && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                      Nenhuma categoria encontrada
+                                    </div>
                                   )}
-                                  {!magaluCategoryLoading &&
-                                    magaluOptions.length === 0 && (
-                                      <p className="px-3 py-2 text-xs text-muted-foreground">
-                                        Digite ao menos 2 letras para buscar.
-                                      </p>
-                                    )}
-                                  {magaluOptions.map((o) => (
-                                    <button
-                                      key={o.id}
-                                      type="button"
-                                      onClick={() => {
-                                        field.onChange(o.id);
-                                        setMagaluSelectedLabel(o.value);
-                                        setMagaluCategoryDropdownOpen(false);
-                                        setMagaluCategorySearch("");
-                                      }}
-                                      className={`block w-full px-3 py-2 text-left text-sm hover:bg-muted ${
-                                        o.id === field.value
-                                          ? "bg-muted font-medium"
-                                          : ""
-                                      }`}
-                                    >
-                                      {o.value}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
+                                {magaluCategoryLoading && (
+                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                    Buscando…
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         );
                       }}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Sugerida automaticamente pelo produto — você pode buscar e
-                      trocar. Se ficar vazia, o Magalu resolve no envio.
+                      Categoria sugerida:{" "}
+                      {magaluSelectedLabel
+                        ? magaluSelectedLabel
+                            .split("/")
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .join(" > ")
+                        : "Nenhuma"}
                     </p>
                   </div>
                 )}
