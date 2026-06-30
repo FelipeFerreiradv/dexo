@@ -30,6 +30,7 @@ export interface PreviewFormValues {
   mlWarrantyUnit?: string;
   mlCategory?: string;
   shopeeCategory?: string;
+  magaluCategory?: string;
   category?: string | null;
   brand?: string | null;
   model?: string | null;
@@ -73,6 +74,7 @@ export interface BuildPreviewArgs {
   // Magalu (opcionais p/ retrocompatibilidade dos chamadores/testes).
   magaluAccounts?: PreviewAccount[];
   selectedMagaluAccountIds?: string[];
+  magaluOptions?: CategoryOption[];
 }
 
 // ---- Output ---------------------------------------------------------------
@@ -155,6 +157,17 @@ function resolveShopeeCategoryLeaf(
 ): string {
   if (!values.shopeeCategory) return "";
   return shopeeOptions.find((o) => o.id === values.shopeeCategory)?.value || "";
+}
+
+/** Caminho completo (path) da categoria Magalu escolhida, ou "". */
+function resolveMagaluCategoryPath(
+  values: PreviewFormValues,
+  magaluOptions: CategoryOption[],
+): string {
+  if (!values.magaluCategory) return "";
+  return (
+    magaluOptions.find((o) => o.id === values.magaluCategory)?.value || ""
+  );
 }
 
 /** "Conta A" | "Conta A e mais 2" | fallback when nothing selected. */
@@ -250,6 +263,7 @@ export function buildPreviewViewModel(
     formatCurrency,
     magaluAccounts,
     selectedMagaluAccountIds,
+    magaluOptions,
   } = args;
 
   const images =
@@ -261,6 +275,14 @@ export function buildPreviewViewModel(
 
   const mlLeaf = resolveMlCategoryLeaf(values, mlOptions);
   const shopeeLeaf = resolveShopeeCategoryLeaf(values, shopeeOptions);
+  // Path completo da categoria Magalu (ex.: "Veículos e Peças/.../Farol").
+  const magaluPath = resolveMagaluCategoryPath(values, magaluOptions ?? []);
+  const magaluCrumbs = magaluPath
+    ? magaluPath
+        .split("/")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
 
   return {
     showML: !!values.createMLListing,
@@ -287,7 +309,8 @@ export function buildPreviewViewModel(
     shopeeBreadcrumb: shopeeLeaf
       ? [...SHOPEE_GENERIC_BREADCRUMB, shopeeLeaf]
       : [...SHOPEE_GENERIC_BREADCRUMB],
-    magaluBreadcrumb: [...MAGALU_GENERIC_BREADCRUMB],
+    magaluBreadcrumb:
+      magaluCrumbs.length > 0 ? magaluCrumbs : [...MAGALU_GENERIC_BREADCRUMB],
 
     specs: buildSpecs(values),
     compatibilitySummary: buildCompatibilitySummary(compatibilities),

@@ -22,6 +22,7 @@ import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-webhook-signature.service";
 import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
 import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
+import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import { AccountStatus } from "@prisma/client";
 
 /**
@@ -2329,6 +2330,61 @@ small{color:#666}</style></head><body>
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/magalu/categories?search=<termo>
+   * Busca categorias do Magalu por nome (combobox de categoria do modal).
+   */
+  app.get(
+    "/magalu/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const search = (request.query as any)?.search as string | undefined;
+        const categories = await ListingUseCase.searchMagaluCategories(
+          userId,
+          search ?? "",
+        );
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar categorias Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/magalu/category-suggest?name=<nome do produto>
+   * Sugere a categoria Magalu (mesma resolução do create) — id + caminho.
+   */
+  app.get(
+    "/magalu/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const name = (request.query as any)?.name as string | undefined;
+      if (!name || !name.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'name' é obrigatório" });
+      }
+      try {
+        const userId = request.user!.dataOwnerId;
+        const suggestion = await ListingUseCase.suggestMagaluCategory(
+          userId,
+          name,
+        );
+        return reply.send(suggestion ?? { categoryId: null, path: null });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categoria Magalu",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

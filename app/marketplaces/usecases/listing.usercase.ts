@@ -3375,6 +3375,93 @@ export class ListingUseCase {
     }
   }
 
+  /** Resolve uma conta Magalu ativa + token fresco (p/ endpoints de categoria). */
+  private static async resolveMagaluToken(
+    userId: string,
+    accountId?: string,
+  ): Promise<string | null> {
+    let account: any = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.MAGALU,
+        );
+    if (!account) {
+      const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+        userId,
+        Platform.MAGALU,
+      );
+      account =
+        (all || []).find((acc) => acc.status === AccountStatus.ACTIVE) ?? null;
+    }
+    if (!account?.accessToken || !account?.refreshToken) return null;
+    if (account.expiresAt && new Date(account.expiresAt) <= new Date()) {
+      try {
+        const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken,
+        );
+        const updated = await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+        });
+        account = updated ?? { ...account, accessToken: refreshed.accessToken };
+      } catch {
+        return null;
+      }
+    }
+    return account.accessToken ?? null;
+  }
+
+  /** Busca categorias Magalu por nome (combobox de categoria do modal). */
+  static async searchMagaluCategories(
+    userId: string,
+    search: string,
+  ): Promise<Array<{ id: string; value: string }>> {
+    const term = String(search ?? "").trim();
+    if (!term) return [];
+    const token = await this.resolveMagaluToken(userId);
+    if (!token) return [];
+    const cats = await MagaluApiService.searchCategories(token, { name: term });
+    return cats
+      .filter((c) => c.id)
+      .map((c) => ({
+        id: String(c.id),
+        value: c.path || c.name || String(c.id),
+      }));
+  }
+
+  /**
+   * Sugere a categoria Magalu de um produto pelo nome — usa a MESMA resolução do
+   * create (de-para → busca + viés de domínio), então a categoria mostrada no
+   * modal é a que o anúncio será publicado.
+   */
+  static async suggestMagaluCategory(
+    userId: string,
+    name: string,
+  ): Promise<{ categoryId: string; path: string | null } | null> {
+    const term = String(name ?? "").trim();
+    if (!term) return null;
+    const token = await this.resolveMagaluToken(userId);
+    if (!token) return null;
+    const categoryId = await MagaluCategoryResolutionService.resolveCategoryId(
+      token,
+      { name: term },
+    );
+    if (!categoryId) return null;
+    let path: string | null = null;
+    try {
+      const found = await MagaluApiService.searchCategories(token, {
+        id: categoryId,
+      });
+      path = found[0]?.path || found[0]?.name || null;
+    } catch {
+      /* path é opcional — segue só com o id */
+    }
+    return { categoryId, path };
+  }
+
   static async createShopeeListing(
     userId: string,
     productId: string,

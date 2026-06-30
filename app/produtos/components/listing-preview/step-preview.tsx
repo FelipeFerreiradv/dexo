@@ -38,6 +38,7 @@ export interface StepPreviewProps {
   // Magalu (opcionais — só usados com a flag ligada).
   magaluAccounts?: PreviewAccount[];
   selectedMagaluAccountIds?: string[];
+  magaluOptions?: CategoryOption[];
 }
 
 export function StepPreview({
@@ -52,6 +53,7 @@ export function StepPreview({
   formatCurrency,
   magaluAccounts = [],
   selectedMagaluAccountIds = [],
+  magaluOptions = [],
 }: StepPreviewProps) {
   const vm = buildPreviewViewModel({
     values,
@@ -65,6 +67,7 @@ export function StepPreview({
     formatCurrency,
     magaluAccounts,
     selectedMagaluAccountIds,
+    magaluOptions,
   });
 
   // Marketplaces ativos (na ordem de exibição). Cada um vira aba/preview.
