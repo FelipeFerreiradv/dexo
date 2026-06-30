@@ -350,22 +350,31 @@ export class QuestionRepository {
       }[];
     },
   ): Promise<{ synced: number; created: number }> {
+    // Upserts em paralelo por chunk (cada mensagem é uma linha independente,
+    // sem lookup compartilhado) — acelera a hidratação do histórico sem saturar
+    // o pool. Espelha a concorrência do pull do ML.
+    const UPSERT_CONCURRENCY = 8;
     let created = 0;
-    for (const m of conversation.messages) {
-      const r = await this.upsertMagaluMessage(marketplaceAccountId, {
-        conversationId: conversation.conversationId,
-        messageId: m.messageId,
-        text: m.text,
-        authorType: m.authorType,
-        dateCreated: m.dateCreated,
-        customerExternalId: conversation.customerExternalId,
-        customerName: conversation.customerName,
-      });
-      if (r.isNew) created += 1;
+    for (let i = 0; i < conversation.messages.length; i += UPSERT_CONCURRENCY) {
+      const chunk = conversation.messages.slice(i, i + UPSERT_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((m) =>
+          this.upsertMagaluMessage(marketplaceAccountId, {
+            conversationId: conversation.conversationId,
+            messageId: m.messageId,
+            text: m.text,
+            authorType: m.authorType,
+            dateCreated: m.dateCreated,
+            customerExternalId: conversation.customerExternalId,
+            customerName: conversation.customerName,
+          }),
+        ),
+      );
+      created += results.filter((r) => r.isNew).length;
     }
 
     // Invariante nível-conversa: alinha o status de todas as linhas ao estado
-    // atual (uma query). Não toca readAt nem authorType.
+    // atual (uma query), DEPOIS de todos os upserts. Não toca readAt nem authorType.
     await prisma.marketplaceQuestion.updateMany({
       where: {
         marketplaceAccountId,

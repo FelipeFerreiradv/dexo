@@ -498,6 +498,7 @@ export class MessagesUseCase {
     );
 
     const MAX_PAGES = 20;
+    const UPSERT_CONCURRENCY = 8;
     let cursor: string | undefined;
     let synced = 0;
     for (let page = 0; page < MAX_PAGES; page++) {
@@ -506,11 +507,18 @@ export class MessagesUseCase {
         account.shopId,
         { itemId: Number(externalItemId), cursor, pageSize: 100 },
       );
-      for (const c of comments) {
-        await QuestionRepository.upsertFromShopeeComment(account.id, c, {
-          productListingId,
-        });
-        synced += 1;
+      // Upserts em paralelo por chunk (comentários são linhas independentes;
+      // productListingId já resolvido ⇒ sem lookup compartilhado). Espelha o ML.
+      for (let i = 0; i < comments.length; i += UPSERT_CONCURRENCY) {
+        const chunk = comments.slice(i, i + UPSERT_CONCURRENCY);
+        await Promise.all(
+          chunk.map((c) =>
+            QuestionRepository.upsertFromShopeeComment(account.id, c, {
+              productListingId,
+            }),
+          ),
+        );
+        synced += chunk.length;
       }
       if (!more || !nextCursor) break;
       cursor = nextCursor;
@@ -800,17 +808,25 @@ export class MessagesUseCase {
         break;
       }
 
-      for (const c of comments) {
-        try {
-          await QuestionRepository.upsertFromShopeeComment(account.id, c);
-          processed += 1;
-        } catch (err) {
-          errors += 1;
-          console.warn(
-            `[Messages] Falha ao gravar comentário Shopee ${c?.comment_id} (conta ${account.id}):`,
-            err instanceof Error ? err.message : err,
-          );
-        }
+      // Upserts em paralelo por chunk; cada um isolado em try/catch para
+      // preservar a contagem por-comentário (uma falha não derruba o chunk).
+      const UPSERT_CONCURRENCY = 8;
+      for (let i = 0; i < comments.length; i += UPSERT_CONCURRENCY) {
+        const chunk = comments.slice(i, i + UPSERT_CONCURRENCY);
+        await Promise.all(
+          chunk.map(async (c) => {
+            try {
+              await QuestionRepository.upsertFromShopeeComment(account.id, c);
+              processed += 1;
+            } catch (err) {
+              errors += 1;
+              console.warn(
+                `[Messages] Falha ao gravar comentário Shopee ${c?.comment_id} (conta ${account.id}):`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }),
+        );
       }
 
       if (!more || !nextCursor) break;
