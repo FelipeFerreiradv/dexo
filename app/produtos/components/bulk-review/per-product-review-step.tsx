@@ -20,6 +20,7 @@ import { StepPreview } from "../listing-preview/step-preview";
 import type { PreviewFormValues } from "../listing-preview/preview-utils";
 import { MlListingFields } from "./ml-listing-fields";
 import { ShopeeListingFields } from "./shopee-listing-fields";
+import { MagaluListingFields } from "./magalu-listing-fields";
 import type { UsePerProductListingReturn } from "./use-per-product-listing";
 import type {
   PerProductListingConfig,
@@ -54,8 +55,10 @@ export interface PerProductReviewStepProps {
   pp: UsePerProductListingReturn;
   globalMlAccounts: ReviewAccountLite[];
   globalShopeeAccounts: ReviewAccountLite[];
+  globalMagaluAccounts: ReviewAccountLite[];
   mlOptions: ReviewCategoryOption[];
   shopeeOptions: ReviewCategoryOption[];
+  magaluOptions: ReviewCategoryOption[];
   preflightIssue?: { code: string; message: string };
   email: string;
 }
@@ -64,8 +67,10 @@ export function PerProductReviewStep({
   pp,
   globalMlAccounts,
   globalShopeeAccounts,
+  globalMagaluAccounts,
   mlOptions,
   shopeeOptions,
+  magaluOptions,
   preflightIssue,
   email,
 }: PerProductReviewStepProps) {
@@ -87,6 +92,7 @@ export function PerProductReviewStep({
 
   const showMl = globalMlAccounts.length > 0;
   const showShopee = globalShopeeAccounts.length > 0;
+  const showMagalu = globalMagaluAccounts.length > 0;
 
   return (
     <div className="space-y-4">
@@ -153,14 +159,27 @@ export function PerProductReviewStep({
         />
       )}
 
+      {showMagalu && (
+        <MagaluListingFields
+          key={`magalu-${current.id}`}
+          control={form.control}
+          setValue={form.setValue}
+          watch={form.watch}
+          magaluAccounts={globalMagaluAccounts}
+          email={email}
+        />
+      )}
+
       {/* Prévia isolada: re-renderiza só ela quando um valor observado muda */}
       <LivePreview
         control={form.control}
         product={current}
         globalMlAccounts={globalMlAccounts}
         globalShopeeAccounts={globalShopeeAccounts}
+        globalMagaluAccounts={globalMagaluAccounts}
         mlOptions={mlOptions}
         shopeeOptions={shopeeOptions}
+        magaluOptions={magaluOptions}
       />
     </div>
   );
@@ -215,15 +234,19 @@ function LivePreview({
   product,
   globalMlAccounts,
   globalShopeeAccounts,
+  globalMagaluAccounts,
   mlOptions,
   shopeeOptions,
+  magaluOptions,
 }: {
   control: Control<PerProductListingConfig>;
   product: ReviewProduct;
   globalMlAccounts: ReviewAccountLite[];
   globalShopeeAccounts: ReviewAccountLite[];
+  globalMagaluAccounts: ReviewAccountLite[];
   mlOptions: ReviewCategoryOption[];
   shopeeOptions: ReviewCategoryOption[];
+  magaluOptions: ReviewCategoryOption[];
 }) {
   // Assina TODO o form, mas isolado neste subtree: só a Prévia re-renderiza.
   const values = useWatch({ control }) as PerProductListingConfig;
@@ -241,9 +264,11 @@ function LivePreview({
     mlWarrantyUnit: values.mlWarrantyUnit,
     mlCategory: values.mlCategory,
     shopeeCategory: values.shopeeCategory,
+    magaluCategory: values.magaluCategory,
     attributes: values.attributes,
     createMLListing: values.includeMl,
     createShopeeListing: values.includeShopee,
+    createMagaluListing: values.includeMagalu,
   };
 
   // Resolve o NOME da categoria na Prévia mesmo antes de a lista de 12k carregar.
@@ -261,6 +286,17 @@ function LivePreview({
       ),
     [shopeeOptions, values.shopeeCategory, values.shopeeCategoryLabel],
   );
+  // Magalu busca a categoria server-side (sem lista pré-carregada): a opção
+  // sintética com o rótulo capturado resolve o caminho na Prévia.
+  const magaluOptionsForPreview = useMemo(
+    () =>
+      withSelectedLabel(
+        magaluOptions,
+        values.magaluCategory,
+        values.magaluCategoryLabel,
+      ),
+    [magaluOptions, values.magaluCategory, values.magaluCategoryLabel],
+  );
 
   return (
     <div className="space-y-2 rounded-lg border p-4">
@@ -275,6 +311,9 @@ function LivePreview({
         mlOptions={mlOptionsForPreview}
         shopeeOptions={shopeeOptionsForPreview}
         formatCurrency={formatCurrency}
+        magaluAccounts={globalMagaluAccounts}
+        selectedMagaluAccountIds={values.magaluAccountIds ?? []}
+        magaluOptions={magaluOptionsForPreview}
       />
     </div>
   );

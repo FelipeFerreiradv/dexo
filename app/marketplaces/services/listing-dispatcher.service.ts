@@ -426,7 +426,9 @@ export class ListingDispatcher {
         const skipped =
           r.platform === "MERCADO_LIVRE"
             ? ov?.disabledMlAccountIds?.includes(r.accountId)
-            : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+            : r.platform === "SHOPEE"
+              ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+              : ov?.disabledMagaluAccountIds?.includes(r.accountId);
         if (skipped) continue;
         pairs.push({
           productId: pid,
@@ -543,9 +545,9 @@ export class ListingDispatcher {
           req.accountId,
         );
       } else if (req.platform === "MAGALU") {
-        // Sem override por-produto específico de Magalu (ainda); usa o categoryId
-        // do request. O `(ov as any)` evita acoplar ao tipo de overrides ML/Shopee.
-        const categoryId = (ov as any)?.magalu?.categoryId ?? req.categoryId;
+        // Override por-produto de Magalu (modo Revisão individual): categoria
+        // escolhida vence o request global; ausente ⇒ backend resolve no envio.
+        const categoryId = ov?.magalu?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createMagaluListing(
           userId,
           productId,

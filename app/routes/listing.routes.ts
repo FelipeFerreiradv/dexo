@@ -1072,7 +1072,9 @@ export async function listingRoutes(app: FastifyInstance) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
-                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+                  : r.platform === "SHOPEE"
+                    ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
               if (!skipped) effectiveTotal++;
             }
           }
@@ -1284,7 +1286,9 @@ export async function listingRoutes(app: FastifyInstance) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
-                  : ov?.disabledShopeeAccountIds?.includes(r.accountId);
+                  : r.platform === "SHOPEE"
+                    ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
+                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
               if (!skipped) retryTotal++;
             }
           }
