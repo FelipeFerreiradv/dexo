@@ -158,7 +158,9 @@ export function ProductsListView({
                         Origem: Anúncio{" "}
                         {product.originPlatform === "SHOPEE"
                           ? "Shopee"
-                          : "Mercado Livre"}
+                          : product.originPlatform === "MAGALU"
+                            ? "Magalu"
+                            : "Mercado Livre"}
                       </Badge>
                     )}
                     {product.description && (
@@ -309,7 +311,9 @@ export function ProductsListView({
                           Origem: Anúncio{" "}
                           {product.originPlatform === "SHOPEE"
                             ? "Shopee"
-                            : "Mercado Livre"}
+                            : product.originPlatform === "MAGALU"
+                              ? "Magalu"
+                              : "Mercado Livre"}
                         </Badge>
                       )}
                     <MarketplaceBadges

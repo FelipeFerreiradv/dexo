@@ -623,6 +623,10 @@ export function TeamProductivity({
                           stroke={MAGALU_COLOR}
                           strokeWidth={2}
                           fill="url(#tp-magalu)"
+                          // Com a flag off a série continua desenhando (nunca
+                          // esconde contagem real), mas some da legenda → tela
+                          // idêntica quando não há Magalu.
+                          legendType={MAGALU_ENABLED ? "line" : "none"}
                         />
                         <Line
                           type="monotone"
