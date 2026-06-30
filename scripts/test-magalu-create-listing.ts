@@ -57,7 +57,11 @@ async function main() {
     console.log(`[GET] ${MAGALU_CONSTANTS.API_URL}${getPath}`);
     try {
       const resp = await axios.get(`${MAGALU_CONSTANTS.API_URL}${getPath}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // alguns endpoints (ex.: /skus/:sku/validation-info) exigem o tenant.
+          "X-Tenant-Id": account.externalUserId,
+        },
         timeout: 30000,
       });
       console.log(JSON.stringify(resp.data, null, 2).slice(0, 20000));
