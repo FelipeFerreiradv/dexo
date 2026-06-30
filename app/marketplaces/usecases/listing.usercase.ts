@@ -3272,9 +3272,9 @@ export class ListingUseCase {
             attributes: fields.attributes,
             datasheet: fields.datasheet,
           };
-          if (fields.usedFallback.length) {
+          if (fields.missing.length) {
             console.warn(
-              `[ListingUseCase] Magalu categoria ${resolvedCategoryId}: atributos por fallback (revisar): ${fields.usedFallback.join(", ")}`,
+              `[ListingUseCase] Magalu categoria ${resolvedCategoryId}: atributos obrigatórios sem valor (lojista completa no painel): ${fields.missing.join(", ")}`,
             );
           }
         }
@@ -3289,10 +3289,22 @@ export class ListingUseCase {
         channelId,
         ...categoryFields,
       });
-      const created = await MagaluApiService.createSku(
-        account.accessToken,
-        payload,
-      );
+      // Rede de segurança: se o create COM categoria for rejeitado (ex.: 422 por
+      // atributo obrigatório faltando), recria SEM categoria (DRAFT) — garante o
+      // anúncio (comportamento pré-categoria) em vez de não criar nada.
+      let created: Awaited<ReturnType<typeof MagaluApiService.createSku>>;
+      try {
+        created = await MagaluApiService.createSku(account.accessToken, payload);
+      } catch (createErr) {
+        if (!categoryFields.categoryId) throw createErr;
+        console.warn(
+          `[ListingUseCase] create Magalu com categoria ${categoryFields.categoryId} falhou (${createErr instanceof Error ? createErr.message : createErr}); retry SEM categoria (DRAFT).`,
+        );
+        created = await MagaluApiService.createSku(
+          account.accessToken,
+          MagaluPayloadBuilderService.build(product, { groupId, channelId }),
+        );
+      }
 
       // Após criar o SKU, define estoque e preço iniciais (serviços separados:
       // /portfolios/stocks e /portfolios/prices). Não falha a criação do anúncio

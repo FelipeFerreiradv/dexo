@@ -88,8 +88,9 @@ describe("MagaluCategoryResolutionService.resolveCategoryId", () => {
 });
 
 describe("MagaluCategoryResolutionService.buildCategoryFields", () => {
-  it("preenche required mapeados do produto + fallback p/ não mapeados", async () => {
+  it("preenche required mapeados; NÃO chuta → required sem fonte vira missing", async () => {
     (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([
+      // Cor é obrigatória e o produto não tem color → NÃO chuta choices[0].
       {
         id: "a1",
         name: "Cor",
@@ -101,8 +102,9 @@ describe("MagaluCategoryResolutionService.buildCategoryFields", () => {
     ]);
     (MagaluApiService as any).getCategoryDatasheet = vi.fn().mockResolvedValue([
       { id: "d1", name: "Marca", required: "required", type: "text" },
-      { id: "d2", name: "Garantia", required: "required", type: "text" },
-      { id: "d3", name: "Linha", required: "recommended", type: "text" },
+      { id: "d2", name: "Montadora", required: "required", type: "text" },
+      { id: "d3", name: "Garantia", required: "required", type: "text" },
+      { id: "d4", name: "Linha", required: "recommended", type: "text" },
     ]);
 
     const f = await MagaluCategoryResolutionService.buildCategoryFields(
@@ -112,30 +114,50 @@ describe("MagaluCategoryResolutionService.buildCategoryFields", () => {
     );
 
     expect(f.category).toEqual({ id: "cat-1" });
-    // Cor sem product.color → fallback choices[0]
-    expect(f.attributes).toEqual([{ name: "Cor", value: "Preto" }]);
-    // Marca → product.brand; Garantia → "3 meses" (default); Linha (recommended) ignorada
+    expect(f.attributes).toEqual([]); // Cor sem fonte → não vai
+    // Marca → brand; Montadora → brand; Garantia → "3 meses"; Linha (recommended) ignorada
     expect(f.datasheet).toEqual([
       { name: "Marca", value: "Renault" },
+      { name: "Montadora", value: "Renault" },
       { name: "Garantia", value: "3 meses" },
     ]);
-    expect(f.usedFallback).toContain("Cor");
-    expect(f.usedFallback).not.toContain("Marca");
+    expect(f.missing).toContain("Cor");
+    expect(f.missing).not.toContain("Marca");
+  });
+
+  it("extrai Lado e Posição do nome do produto (não chuta)", async () => {
+    (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([]);
+    (MagaluApiService as any).getCategoryDatasheet = vi.fn().mockResolvedValue([
+      { id: "d1", name: "Lado", required: "required", choices: ["Direito", "Esquerdo"] },
+      { id: "d2", name: "Posição", required: "required", choices: ["Dianteiro", "Traseiro"] },
+    ]);
+    const f = await MagaluCategoryResolutionService.buildCategoryFields(
+      "tok",
+      "cat-1",
+      { name: "Lanterna Traseira Esquerda Ford Fusion 2016" },
+    );
+    expect(f.datasheet).toEqual([
+      { name: "Lado", value: "Esquerdo" },
+      { name: "Posição", value: "Traseiro" },
+    ]);
+    expect(f.missing).toEqual([]);
   });
 
   it("limita attributes a 3 e ignora não-obrigatórios", async () => {
-    (MagaluApiService as any).getCategoryAttributes = vi.fn().mockResolvedValue([
-      { id: "1", name: "A1", required: "required", choices: ["x"] },
-      { id: "2", name: "A2", required: "required", choices: ["x"] },
-      { id: "3", name: "A3", required: "required", choices: ["x"] },
-      { id: "4", name: "A4", required: "required", choices: ["x"] },
-      { id: "5", name: "A5", required: "optional", choices: ["x"] },
-    ]);
+    // Atributos preenchíveis (Marca) p/ não cair em missing; testa o slice(3).
+    const mk = (n: number) => ({
+      id: `${n}`,
+      name: "Marca",
+      required: "required",
+    });
+    (MagaluApiService as any).getCategoryAttributes = vi
+      .fn()
+      .mockResolvedValue([mk(1), mk(2), mk(3), mk(4), { id: "5", name: "Marca", required: "optional" }]);
     (MagaluApiService as any).getCategoryDatasheet = vi.fn().mockResolvedValue([]);
     const f = await MagaluCategoryResolutionService.buildCategoryFields(
       "tok",
       "cat-1",
-      {},
+      { brand: "Ford" },
     );
     expect(f.attributes).toHaveLength(3);
   });

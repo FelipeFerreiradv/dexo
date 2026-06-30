@@ -172,7 +172,7 @@ async function main() {
           datasheet: f.datasheet,
         };
         console.log(
-          `\n[categoria] id=${cid}\n  attributes=${JSON.stringify(f.attributes)}\n  datasheet=${JSON.stringify(f.datasheet)}\n  fallback=[${f.usedFallback.join(", ")}]`,
+          `\n[categoria] id=${cid}\n  attributes=${JSON.stringify(f.attributes)}\n  datasheet=${JSON.stringify(f.datasheet)}\n  missing=[${f.missing.join(", ")}]`,
         );
       } else {
         console.log("\n[categoria] nenhuma encontrada para o nome do produto");

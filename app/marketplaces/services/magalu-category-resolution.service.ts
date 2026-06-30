@@ -17,7 +17,11 @@ export interface MagaluCategoryFields {
   category: { id: string };
   attributes: Array<{ name: string; value: string }>;
   datasheet: Array<{ name: string; value: string }>;
-  usedFallback: string[];
+  /** Atributos OBRIGATÓRIOS que NÃO conseguimos preencher com precisão (não
+   *  chutamos — para autopeça, valor errado de Lado/Posição = devolução). O
+   *  lojista completa no painel; o create faz fallback p/ sem-categoria se a
+   *  Magalu bloquear. */
+  missing: string[];
 }
 
 export class MagaluCategoryResolutionService {
@@ -121,15 +125,18 @@ export class MagaluCategoryResolutionService {
       MagaluApiService.getCategoryDatasheet(accessToken, categoryId, true),
     ]);
 
-    const usedFallback: string[] = [];
+    const missing: string[] = [];
     const fill = (attrs: MagaluAttribute[], max: number) =>
       attrs
         .filter((a) => a.required === "required")
         .slice(0, max)
         .map((a) => {
-          const { value, fallback } = this.valueFor(a, product);
-          if (value && fallback) usedFallback.push(a.name);
-          return value ? { name: a.name, value } : null;
+          const value = this.valueFor(a, product);
+          if (!value) {
+            missing.push(a.name);
+            return null;
+          }
+          return { name: a.name, value };
         })
         .filter((x): x is { name: string; value: string } => x !== null);
 
@@ -137,14 +144,20 @@ export class MagaluCategoryResolutionService {
       category: { id: categoryId },
       attributes: fill(variationAttrs, 3),
       datasheet: fill(datasheetAttrs, 50),
-      usedFallback,
+      missing,
     };
   }
 
+  /**
+   * Valor PRECISO de um atributo a partir do produto. NÃO chuta: required sem
+   * fonte confiável volta null (vira `missing`). Lado/Posição saem do NOME do
+   * produto (autopeça nomeia "Esquerdo"/"Traseira"); valor errado aqui =
+   * cliente recebe peça do lado trocado.
+   */
   private static valueFor(
     attr: MagaluAttribute,
     product: any,
-  ): { value: string | null; fallback: boolean } {
+  ): string | null {
     const key = `${this.normalize(attr.name)} ${this.normalize(attr.display_name)}`;
     const has = (...terms: string[]) => terms.some((t) => key.includes(t));
     const s = (v: unknown): string | null => {
@@ -152,32 +165,34 @@ export class MagaluCategoryResolutionService {
       return x ? x : null;
     };
 
-    // Mapeamentos precisos a partir do produto Dexo.
-    let mapped: string | null = null;
-    if (has("marca", "fabricante"))
-      mapped = s(product?.brand ?? product?.mlBrand);
-    else if (has("modelo"))
-      mapped = s(product?.model ?? product?.partNumber ?? product?.sku);
-    else if (has("cor")) mapped = s(product?.color);
-    else if (has("material")) mapped = s(product?.material);
-    else if (has("garantia")) mapped = s(product?.warranty) ?? "3 meses";
-    else if (has("tamanho")) mapped = s(product?.size);
-    else if (has("ano")) mapped = s(product?.year);
-    else if (has("genero", "sexo")) mapped = "Unissex";
+    // montadora/fabricante = marca do veículo.
+    if (has("marca", "fabricante", "montadora"))
+      return s(product?.brand ?? product?.mlBrand);
+    if (has("modelo")) return s(product?.model ?? product?.partNumber);
+    if (has("ano")) return s(product?.year);
+    if (has("lado")) return this.extractSide(product);
+    if (has("posic")) return this.extractPosition(product);
+    if (has("cor")) return s(product?.color);
+    if (has("material")) return s(product?.material);
+    if (has("garantia")) return s(product?.warranty) ?? "3 meses";
+    if (has("tamanho")) return s(product?.size);
+    if (has("genero", "sexo")) return "Unissex";
+    return null; // sem chute: required não-mapeado fica em `missing`.
+  }
 
-    if (mapped) return { value: mapped, fallback: false };
+  /** Lado (esquerdo/direito) extraído do nome do produto. */
+  private static extractSide(product: any): string | null {
+    const n = this.normalize(product?.name);
+    if (/\b(esquerd[oa]|le)\b/.test(n)) return "Esquerdo";
+    if (/\b(direit[oa]|ld)\b/.test(n)) return "Direito";
+    return null;
+  }
 
-    // Fallback: 1ª choice, ou 1º valor do example quando parece um valor.
-    if (Array.isArray(attr.choices) && attr.choices.length) {
-      return { value: String(attr.choices[0]), fallback: true };
-    }
-    const ex = String(attr.example ?? "").trim();
-    if (ex.includes(",")) {
-      return { value: ex.split(",")[0].trim(), fallback: true };
-    }
-    if (ex && ex.length <= 40) {
-      return { value: ex, fallback: true };
-    }
-    return { value: null, fallback: false };
+  /** Posição (dianteiro/traseiro) extraída do nome do produto. */
+  private static extractPosition(product: any): string | null {
+    const n = this.normalize(product?.name);
+    if (/\b(diant|frontal)/.test(n)) return "Dianteiro";
+    if (/\b(tras)/.test(n)) return "Traseiro";
+    return null;
   }
 }
