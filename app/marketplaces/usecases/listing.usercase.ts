@@ -4758,6 +4758,9 @@ export class ListingUseCase {
     if (platform === Platform.SHOPEE) {
       return ListingUseCase.removeShopeeListing(listingId);
     }
+    if (platform === Platform.MAGALU) {
+      return ListingUseCase.removeMagaluListing(listingId);
+    }
 
     console.warn(
       `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
@@ -4801,6 +4804,10 @@ export class ListingUseCase {
 
       if (platform === Platform.SHOPEE) {
         return await ListingUseCase.updateShopeeListingFields(listing, fields);
+      }
+
+      if (platform === Platform.MAGALU) {
+        return await ListingUseCase.updateMagaluListingFields(listing, fields);
       }
 
       return {
@@ -4848,17 +4855,22 @@ export class ListingUseCase {
       }
 
       // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
+      const platform = listing.marketplaceAccount?.platform;
+
+      // Magalu: a publicação é assíncrona (POST 202) e o `externalListingId` fica
+      // PENDING_<sku>; a chave de API é o SKU (externalSku). Considera-se
+      // "publicado" quando há SKU — por isso a guarda de PENDING não se aplica.
+      const isMagalu = platform === Platform.MAGALU;
       if (
-        !listing.externalListingId ||
-        listing.externalListingId.startsWith("PENDING_")
+        !isMagalu &&
+        (!listing.externalListingId ||
+          listing.externalListingId.startsWith("PENDING_"))
       ) {
         return {
           success: false,
           error: "Anúncio ainda não foi publicado no marketplace",
         };
       }
-
-      const platform = listing.marketplaceAccount?.platform;
 
       if (platform === Platform.MERCADO_LIVRE) {
         // Reusa account incluído no findById (sem 2ª query ao banco).
@@ -4910,6 +4922,33 @@ export class ListingUseCase {
         return { success: true };
       }
 
+      if (platform === Platform.MAGALU) {
+        const account = listing.marketplaceAccount;
+        const sku = listing.externalSku || listing.product?.sku;
+        if (!account) {
+          return { success: false, error: "Conta sem credenciais válidas" };
+        }
+        if (!sku) {
+          return {
+            success: false,
+            error: "Anúncio Magalu sem SKU para atualizar",
+          };
+        }
+        const token = await ListingUseCase.ensureFreshMagaluToken(account);
+        if (!token) {
+          return {
+            success: false,
+            error: "Conta Magalu sem token válido — reconecte a conta",
+          };
+        }
+        // Pausar = active:false; reativar = active:true (PATCH parcial no SKU).
+        await MagaluApiService.patchSku(token, sku, {
+          active: status === "active",
+        });
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
+      }
+
       return {
         success: false,
         error: `Plataforma ${platform} não suportada`,
@@ -4922,6 +4961,155 @@ export class ListingUseCase {
           error instanceof Error ? error.message : "Erro ao alterar status",
       };
     }
+  }
+
+  /**
+   * Garante um access token Magalu válido a partir de uma conta já carregada
+   * (mesmo refresh+persist de createMagaluListing). Retorna null se a conta não
+   * tem token ou o refresh falha. Não lança — o chamador trata o null.
+   */
+  private static async ensureFreshMagaluToken(account: {
+    id: string;
+    accessToken: string | null;
+    refreshToken: string | null;
+    expiresAt: Date | null;
+  }): Promise<string | null> {
+    if (!account?.accessToken) return null;
+    const expired = account.expiresAt
+      ? new Date(account.expiresAt) <= new Date()
+      : false;
+    if (!expired) return account.accessToken;
+    if (!account.refreshToken) return null;
+    try {
+      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+        account.id,
+        account.refreshToken,
+      );
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+      return refreshed.accessToken;
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] Falha ao refrescar token Magalu da conta ${account.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Remove (encerra) um anúncio Magalu. A doc não expõe DELETE de SKU; o
+   * equivalente a "parar de vender" é PATCH `active:false` (UNPUBLISHED). Depois
+   * apaga o vínculo local. 404 (SKU já inexistente) é idempotente → sucesso.
+   * Sem SKU ⇒ só apaga o vínculo local (nada a fazer no marketplace).
+   */
+  static async removeMagaluListing(listingId: string): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
+    const listing = await ListingRepository.findById(listingId);
+    if (!listing) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error: "Vínculo não encontrado",
+      };
+    }
+    const sku = listing.externalSku || listing.product?.sku;
+    if (!sku) {
+      await ListingRepository.deleteListing(listingId);
+      return { success: true, closedOnMarketplace: false };
+    }
+    const account = await MarketplaceRepository.findById(
+      listing.marketplaceAccountId,
+    );
+    if (!account || !account.accessToken) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        retryable: true,
+        error:
+          "Conta da Magalu sem token de acesso. Reconecte a conta e tente novamente.",
+      };
+    }
+    const token = await ListingUseCase.ensureFreshMagaluToken(account);
+    if (!token) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        retryable: true,
+        error: "Conta Magalu sem token válido — reconecte a conta",
+      };
+    }
+    try {
+      await MagaluApiService.patchSku(token, sku, { active: false });
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      // 404 = SKU não existe mais na Magalu → tratar como já encerrado.
+      if (status !== 404) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: status === undefined || status >= 500,
+          error:
+            err instanceof Error
+              ? err.message
+              : "Erro ao remover anúncio na Magalu",
+        };
+      }
+    }
+    await ListingRepository.deleteListing(listingId);
+    return { success: true, closedOnMarketplace: true };
+  }
+
+  /**
+   * Edição de campos de um anúncio Magalu (PATCH parcial no SKU). Escopo mínimo:
+   * title/description (os únicos campos de texto editáveis aqui). Preço/estoque
+   * têm endpoints dedicados (setPrice/setStock) e fluem pelo "Editar produto".
+   * Sem campos mapeáveis ⇒ no-op com sucesso (mesmo contrato do ML/Shopee).
+   */
+  private static async updateMagaluListingFields(
+    listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    const account = listing.marketplaceAccount;
+    const sku = listing.externalSku || listing.product?.sku;
+    if (!account || !account.accessToken) {
+      return { success: false, error: "Conta sem credenciais válidas" };
+    }
+    if (!sku) {
+      return { success: false, error: "Anúncio Magalu sem SKU para editar" };
+    }
+    const token = await ListingUseCase.ensureFreshMagaluToken(account);
+    if (!token) {
+      return {
+        success: false,
+        error: "Conta Magalu sem token válido — reconecte a conta",
+      };
+    }
+    const patch: Record<string, unknown> = {};
+    if (
+      typeof fields.titleOverride === "string" &&
+      fields.titleOverride.trim()
+    ) {
+      // Limite de título da Magalu: 150 chars.
+      patch.title = fields.titleOverride.trim().slice(0, 150);
+    }
+    if (
+      typeof fields.descriptionOverride === "string" &&
+      fields.descriptionOverride.trim()
+    ) {
+      patch.description = fields.descriptionOverride.trim();
+    }
+    if (Object.keys(patch).length > 0) {
+      await MagaluApiService.patchSku(token, sku, patch);
+    }
+    return { success: true };
   }
 
   /**

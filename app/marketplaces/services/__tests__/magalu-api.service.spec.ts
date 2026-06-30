@@ -7,6 +7,7 @@ const mockedAxios = axios as unknown as {
   get: ReturnType<typeof vi.fn>;
   post: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
+  patch: ReturnType<typeof vi.fn>;
   request: ReturnType<typeof vi.fn>;
   isAxiosError: (e: unknown) => boolean;
 };
@@ -15,6 +16,7 @@ beforeEach(() => {
   (mockedAxios as any).get = vi.fn().mockResolvedValue({ data: {} });
   (mockedAxios as any).post = vi.fn().mockResolvedValue({ data: {} });
   (mockedAxios as any).put = vi.fn().mockResolvedValue({ data: {} });
+  (mockedAxios as any).patch = vi.fn().mockResolvedValue({ data: {} });
   (mockedAxios as any).request = vi.fn().mockResolvedValue({ data: {} });
   (mockedAxios as any).isAxiosError = (e: any) => !!e && e.isAxiosError === true;
 });
@@ -78,6 +80,20 @@ describe("MagaluApiService (cliente Bearer)", () => {
     expect(created.id).toBe("new-1");
     const [url, , config] = (mockedAxios as any).post.mock.calls[0];
     expect(url).toContain("/seller/v1/portfolios/skus");
+    expect(config.headers.Authorization).toBe("Bearer tok");
+  });
+
+  it("patchSku → PATCH /portfolios/skus/{sku} com Bearer e corpo parcial", async () => {
+    (mockedAxios as any).patch.mockResolvedValue({
+      data: { trace_id: "t-1" },
+    });
+    const res = await MagaluApiService.patchSku("tok", "SKU-1", {
+      active: false,
+    });
+    expect(res.trace_id).toBe("t-1");
+    const [url, body, config] = (mockedAxios as any).patch.mock.calls[0];
+    expect(url).toContain("/seller/v1/portfolios/skus/SKU-1");
+    expect(body).toEqual({ active: false });
     expect(config.headers.Authorization).toBe("Bearer tok");
   });
 

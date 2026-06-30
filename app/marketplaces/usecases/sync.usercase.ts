@@ -2379,21 +2379,10 @@ export class SyncUseCase {
       externalListingId,
     };
 
-    if (String(externalListingId).startsWith("PENDING_")) {
-      try {
-        await this.logSync(
-          account.id,
-          SyncType.PRODUCT_SYNC,
-          SyncStatus.WARNING,
-          `Sincronização ignorada para placeholder local ${externalListingId}`,
-          { productId: product.id, externalListingId },
-        );
-      } catch {
-        /* ignore */
-      }
-      return result;
-    }
-
+    // A Magalu é keyed por SKU (não pelo externalListingId): a publicação é um
+    // POST 202 assíncrono e o vínculo local fica PENDING_<sku>. Por isso NÃO há
+    // guarda de PENDING aqui — o SKU do produto já é a chave real de
+    // patchSku/setStock/setPrice. Sem SKU não há o que sincronizar.
     const sku = product.sku;
     if (!sku) {
       result.error = "Produto sem SKU para sincronizar na Magalu";
@@ -2402,6 +2391,23 @@ export class SyncUseCase {
 
     try {
       const channelId = await this.resolveMagaluChannelId(account.accessToken);
+
+      // Título/descrição (PATCH parcial no SKU) — paridade com ML/Shopee, que
+      // propagam nome/descrição na edição do produto. Só envia o que existe.
+      const patch: Record<string, unknown> = {};
+      if (typeof product.name === "string" && product.name.trim()) {
+        patch.title = product.name.trim().slice(0, 150);
+      }
+      if (
+        typeof product.description === "string" &&
+        product.description.trim()
+      ) {
+        patch.description = product.description.trim();
+      }
+      if (Object.keys(patch).length > 0) {
+        await MagaluApiService.patchSku(account.accessToken, sku, patch);
+      }
+
       await MagaluApiService.setStock(
         account.accessToken,
         sku,
@@ -2423,7 +2429,7 @@ export class SyncUseCase {
         account.id,
         SyncType.PRODUCT_SYNC,
         SyncStatus.SUCCESS,
-        `Dados do produto ${product.name} sincronizados na Magalu (estoque/preço)`,
+        `Dados do produto ${product.name} sincronizados na Magalu (título/descrição/estoque/preço)`,
         { productId: product.id, externalListingId, newStock: product.stock },
       );
 

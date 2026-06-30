@@ -220,6 +220,32 @@ export class MagaluApiService {
   }
 
   /**
+   * Atualiza PARCIALMENTE um SKU (PATCH /seller/v1/portfolios/skus/{sku}) — só os
+   * campos enviados. Usado para editar (title/description), pausar/reativar
+   * (`active`) e remover (`active:false`). Responde 202 + trace_id (assíncrono).
+   * VALIDADO na doc do cliente (2026-06-30).
+   */
+  static async patchSku(
+    accessToken: string,
+    sku: string,
+    body: Record<string, unknown>,
+  ): Promise<{ trace_id?: string }> {
+    try {
+      const response = await axios.patch<{ trace_id?: string }>(
+        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.PORTFOLIO_SKUS_ENDPOINT}/${encodeURIComponent(sku)}`,
+        body,
+        {
+          headers: this.authHeaders(accessToken),
+          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+        },
+      );
+      return response.data ?? {};
+    } catch (error) {
+      throw this.formatError("Erro ao atualizar SKU na Magalu", error);
+    }
+  }
+
+  /**
    * Lista pedidos recentes (últimos `days` dias).
    * TODO(validar): nome do filtro de data (updated_at__ge?) e paginação real.
    */
