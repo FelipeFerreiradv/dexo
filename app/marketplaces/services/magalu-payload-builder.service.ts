@@ -17,12 +17,16 @@ import { MAGALU_CONSTANTS } from "../magalu/magalu-constants";
  */
 
 export interface MagaluCreateSkuOptions {
-  /** group.id (obrigatório pela API) — taxonomia de produto da Magalu. */
+  /** group.id (obrigatório pela API) — definido pelo seller (agrupa variações). */
   groupId: string;
   /** channels[].id (obrigatório, exatamente 1) — canal de venda do seller. */
   channelId: string;
   /** category.id (opcional). */
   categoryId?: string;
+  /** Atributos de variação preenchidos (resolução de categoria). ≤3. */
+  attributes?: Array<{ name: string; value: string }>;
+  /** Atributos de ficha técnica preenchidos (datasheet). ≤50. */
+  datasheet?: Array<{ name: string; value: string }>;
 }
 
 interface MagaluMeasure {
@@ -75,14 +79,13 @@ export class MagaluPayloadBuilderService {
 
     return {
       active: true,
-      // Atributos por categoria — vazio por ora (TBD: preencher conforme a
-      // categoria/ficha técnica exigir, via API de Categorias e Atributos).
-      attributes: [],
+      // Atributos de variação por categoria (resolução de categoria preenche).
+      attributes: (opts.attributes ?? []).slice(0, 3),
       brand: clamp(brand, 100),
       ...(opts.categoryId ? { category: { id: opts.categoryId } } : {}),
       channels: [{ id: opts.channelId }],
       condition: this.mapCondition(product?.quality),
-      datasheet: [],
+      datasheet: (opts.datasheet ?? []).slice(0, 50),
       description: clamp(
         String(product?.description ?? product?.name ?? ""),
         MAGALU_CONSTANTS.DESCRIPTION_MAX_LENGTH,

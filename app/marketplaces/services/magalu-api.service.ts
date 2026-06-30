@@ -9,6 +9,10 @@ import type {
   MagaluOrder,
   MagaluOrderListResponse,
 } from "../types/magalu-order.types";
+import type {
+  MagaluCategory,
+  MagaluAttribute,
+} from "../types/magalu-category.types";
 
 /**
  * Cliente HTTP autenticado da API de Marketplace da Magalu.
@@ -287,6 +291,86 @@ export class MagaluApiService {
   ): Promise<Array<{ id: string; name?: string }>> {
     const me = await this.getMe(accessToken);
     return me.channel?.id ? [{ id: me.channel.id, name: me.channel.name }] : [];
+  }
+
+  // ── Categorias e Atributos (escopo open:portfolio-categories-seller:read) ──
+
+  /**
+   * Busca categorias por nome (similaridade) ou id. /portfolios/categories.
+   * A busca por nome devolve um array ordenado por relevância.
+   */
+  static async searchCategories(
+    accessToken: string,
+    params: { name?: string; id?: string },
+  ): Promise<MagaluCategory[]> {
+    try {
+      const url = new URL(
+        "/seller/v1/portfolios/categories",
+        MAGALU_CONSTANTS.API_URL,
+      );
+      if (params.name) url.searchParams.set("name", params.name);
+      if (params.id) url.searchParams.set("id", params.id);
+      const resp = await axios.get<any>(url.toString(), {
+        headers: this.authHeaders(accessToken),
+        timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+      });
+      const body = resp.data;
+      if (Array.isArray(body)) return body;
+      return body?.results ?? (body?.id ? [body] : []);
+    } catch (error) {
+      throw this.formatError("Erro ao buscar categoria na Magalu", error);
+    }
+  }
+
+  private static async getCategoryFields(
+    accessToken: string,
+    categoryId: string,
+    kind: "attributes" | "datasheet",
+    requiredOnly: boolean,
+  ): Promise<MagaluAttribute[]> {
+    try {
+      const url = new URL(
+        `/seller/v1/portfolios/categories/${encodeURIComponent(categoryId)}/${kind}`,
+        MAGALU_CONSTANTS.API_URL,
+      );
+      url.searchParams.set("_limit", "100");
+      if (requiredOnly) url.searchParams.set("required", "required");
+      const resp = await axios.get<any>(url.toString(), {
+        headers: this.authHeaders(accessToken),
+        timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+      });
+      return resp.data?.results ?? [];
+    } catch (error) {
+      throw this.formatError(`Erro ao consultar ${kind} da categoria`, error);
+    }
+  }
+
+  /** Atributos de variação de uma categoria. */
+  static async getCategoryAttributes(
+    accessToken: string,
+    categoryId: string,
+    requiredOnly = false,
+  ): Promise<MagaluAttribute[]> {
+    return this.getCategoryFields(
+      accessToken,
+      categoryId,
+      "attributes",
+      requiredOnly,
+    );
+  }
+
+  /** Atributos de ficha técnica (datasheet) de uma categoria. */
+  static async getCategoryDatasheet(
+    accessToken: string,
+    categoryId: string,
+    requiredOnly = false,
+  ): Promise<MagaluAttribute[]> {
+    return this.getCategoryFields(
+      accessToken,
+      categoryId,
+      "datasheet",
+      requiredOnly,
+    );
   }
 
   /**

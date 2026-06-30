@@ -6,6 +6,7 @@ import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MagaluPayloadBuilderService } from "../services/magalu-payload-builder.service";
+import { MagaluCategoryResolutionService } from "../services/magalu-category-resolution.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -3243,10 +3244,50 @@ export class ListingUseCase {
         };
       }
 
+      // Resolução de categoria (best-effort): com o escopo
+      // open:portfolio-categories-seller:read e um match, inclui category +
+      // atributos obrigatórios (tira o SKU de DRAFT). Sem escopo/sem match,
+      // cria sem categoria (DRAFT) — NÃO falha o anúncio.
+      let categoryFields: {
+        categoryId?: string;
+        attributes?: Array<{ name: string; value: string }>;
+        datasheet?: Array<{ name: string; value: string }>;
+      } = { categoryId };
+      try {
+        const resolvedCategoryId =
+          categoryId ??
+          (await MagaluCategoryResolutionService.resolveCategoryId(
+            account.accessToken,
+            product,
+          ));
+        if (resolvedCategoryId) {
+          const fields =
+            await MagaluCategoryResolutionService.buildCategoryFields(
+              account.accessToken,
+              resolvedCategoryId,
+              product,
+            );
+          categoryFields = {
+            categoryId: resolvedCategoryId,
+            attributes: fields.attributes,
+            datasheet: fields.datasheet,
+          };
+          if (fields.usedFallback.length) {
+            console.warn(
+              `[ListingUseCase] Magalu categoria ${resolvedCategoryId}: atributos por fallback (revisar): ${fields.usedFallback.join(", ")}`,
+            );
+          }
+        }
+      } catch (catErr) {
+        console.warn(
+          `[ListingUseCase] Resolução de categoria Magalu falhou (cria sem categoria/DRAFT): ${catErr instanceof Error ? catErr.message : catErr}`,
+        );
+      }
+
       const payload = MagaluPayloadBuilderService.build(product, {
         groupId,
         channelId,
-        categoryId,
+        ...categoryFields,
       });
       const created = await MagaluApiService.createSku(
         account.accessToken,

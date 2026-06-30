@@ -6,6 +6,7 @@ import { MarketplaceRepository } from "../app/marketplaces/repositories/marketpl
 import { MagaluOAuthService } from "../app/marketplaces/services/magalu-oauth.service";
 import { MagaluApiService } from "../app/marketplaces/services/magalu-api.service";
 import { MagaluPayloadBuilderService } from "../app/marketplaces/services/magalu-payload-builder.service";
+import { MagaluCategoryResolutionService } from "../app/marketplaces/services/magalu-category-resolution.service";
 import { MAGALU_CONSTANTS } from "../app/marketplaces/magalu/magalu-constants";
 
 /**
@@ -59,7 +60,7 @@ async function main() {
         headers: { Authorization: `Bearer ${token}` },
         timeout: 30000,
       });
-      console.log(JSON.stringify(resp.data, null, 2).slice(0, 6000));
+      console.log(JSON.stringify(resp.data, null, 2).slice(0, 20000));
     } catch (e: any) {
       console.log("[ERRO] status:", e?.response?.status);
       console.log(
@@ -119,10 +120,46 @@ async function main() {
     return;
   }
 
+  // Resolução de categoria (best-effort) — exercita o módulo. --no-category pula.
+  let catFields: {
+    categoryId?: string;
+    attributes?: Array<{ name: string; value: string }>;
+    datasheet?: Array<{ name: string; value: string }>;
+  } = { categoryId };
+  if (!hasFlag("no-category")) {
+    try {
+      const cid =
+        categoryId ??
+        (await MagaluCategoryResolutionService.resolveCategoryId(token, product));
+      if (cid) {
+        const f = await MagaluCategoryResolutionService.buildCategoryFields(
+          token,
+          cid,
+          product,
+        );
+        catFields = {
+          categoryId: cid,
+          attributes: f.attributes,
+          datasheet: f.datasheet,
+        };
+        console.log(
+          `\n[categoria] id=${cid}\n  attributes=${JSON.stringify(f.attributes)}\n  datasheet=${JSON.stringify(f.datasheet)}\n  fallback=[${f.usedFallback.join(", ")}]`,
+        );
+      } else {
+        console.log("\n[categoria] nenhuma encontrada para o nome do produto");
+      }
+    } catch (e: any) {
+      console.log(
+        "\n[categoria] resolução falhou (precisa do escopo open:portfolio-categories-seller:read?):",
+        e?.status ?? e?.message,
+      );
+    }
+  }
+
   const payload = MagaluPayloadBuilderService.build(product, {
     groupId,
     channelId,
-    categoryId,
+    ...catFields,
   });
   console.log("\n[payload enviado]:\n" + JSON.stringify(payload, null, 2));
 
