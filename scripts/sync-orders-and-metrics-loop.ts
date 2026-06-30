@@ -59,6 +59,36 @@ async function runOnce() {
         );
       }
     }
+
+    // Auto-detecção de anúncios novos da Magalu (polling incremental). Try/catch
+    // próprio: uma falha aqui nunca aborta pedidos nem métricas.
+    if (account.platform === Platform.MAGALU) {
+      try {
+        const full = await prisma.marketplaceAccount.findUnique({
+          where: { id: account.id },
+          // EGRESS: só os campos que o poller usa.
+          select: {
+            id: true,
+            userId: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+            autoImportListingsSince: true,
+          },
+        });
+        if (full) {
+          const r = await SyncUseCase.importNewMagaluItemsForAccount(full);
+          console.log(
+            `[sync-loop] Magalu auto-detect conta ${account.id}: criados=${r.created} vinculados=${r.linked} ignorados=${r.skipped} erros=${r.errors}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[sync-loop] Falha na auto-detecção de anúncios Magalu (conta ${account.id}):`,
+          err,
+        );
+      }
+    }
   }
 
   try {

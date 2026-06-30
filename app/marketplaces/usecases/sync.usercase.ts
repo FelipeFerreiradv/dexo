@@ -14,6 +14,7 @@ import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluApiService } from "../services/magalu-api.service";
+import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -443,8 +444,11 @@ export class SyncUseCase {
       (s.sku as string) ||
       (s.code as string) ||
       null;
+    // A identidade da Magalu é o SKU do seller (= chave de /skus/{sku} e do
+    // create). Por isso o SKU vem ANTES do `id` interno — create/import/auto-
+    // detecção gravam todos a MESMA chave (sem divergir → sem duplicar).
     const extractExternalId = (s: MagaluSku): string =>
-      String(s.id ?? s.sku ?? s.code ?? "");
+      String(extractSku(s) ?? s.id ?? "");
 
     const externalItemIds = skus
       .map((s) => extractExternalId(s))
@@ -1966,6 +1970,164 @@ export class SyncUseCase {
         `[AUTODETECT][Shopee] Falha ao avançar watermark da conta ${account.id}:`,
         err instanceof Error ? err.message : err,
       );
+    }
+
+    return summary;
+  }
+
+  /**
+   * Polling incremental de anúncios NOVOS da Magalu (auto-detecção).
+   *
+   * Varre o portfólio (listSkus) e, para cada SKU com `created_at >=
+   * autoImportListingsSince`, cria na Dexo o Product vinculado via núcleo
+   * idempotente. SKUs antigos (created_at < baseline) são ignorados — sem
+   * backfill. Reexecução não duplica: anúncios criados pelo Dexo já têm o SKU
+   * como externalListingId (listing_exists no núcleo) e o upsert é à prova de
+   * corrida. Sem baseline ⇒ não importa nada. Erros por item nunca abortam o
+   * lote. NOTA: listSkus traz só a 1ª página por enquanto (TODO paginação),
+   * mesma limitação do importMagaluItems.
+   */
+  static async importNewMagaluItemsForAccount(account: {
+    id: string;
+    userId: string;
+    accessToken: string;
+    refreshToken: string | null;
+    expiresAt: Date | null;
+    autoImportListingsSince: Date | null;
+  }): Promise<{
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: number;
+  }> {
+    const summary = { created: 0, linked: 0, skipped: 0, errors: 0 };
+
+    // Fail-safe: nunca importa sem baseline.
+    if (!account.autoImportListingsSince) return summary;
+    const baselineMs = account.autoImportListingsSince.getTime();
+
+    // Token fresco (refresh + persist se expirado). Falha de refresh ⇒ aborta.
+    let accessToken = account.accessToken;
+    if (
+      account.expiresAt &&
+      new Date(account.expiresAt) <= new Date() &&
+      account.refreshToken
+    ) {
+      try {
+        const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken,
+        );
+        await MarketplaceRepository.updateTokens(account.id, {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+        });
+        accessToken = refreshed.accessToken;
+      } catch (err) {
+        console.error(
+          `[autodetect][magalu] refresh de token falhou (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+        return summary;
+      }
+    }
+
+    let skus: MagaluSku[];
+    try {
+      skus = await MagaluApiService.listSkus(accessToken, { limit: 100 });
+    } catch (err) {
+      console.error(
+        `[autodetect][magalu] listSkus falhou (conta ${account.id}):`,
+        err instanceof Error ? err.message : err,
+      );
+      return summary;
+    }
+    if (skus.length === 0) return summary;
+
+    // Idempotência robusta POR SKU: a identidade da Magalu É o SKU. Pré-carrega
+    // os externalSku que já têm vínculo nesta conta para NUNCA duplicar um
+    // anúncio que o Dexo criou (externalListingId=sku) nem um placeholder legado
+    // (PENDING_<sku>), independentemente de a Magalu devolver um id interno
+    // diferente do SKU. O núcleo já é idempotente por externalListingId; este
+    // filtro cobre o caso em que a chave gravada difere do SKU (legado/divergência).
+    const rawSkusForCheck = skus
+      .map(
+        (s) =>
+          (s.seller_sku as string) ||
+          (s.sku as string) ||
+          (s.code as string) ||
+          null,
+      )
+      .filter((x): x is string => Boolean(x));
+    const linkedSkus = new Set<string>(
+      rawSkusForCheck.length > 0
+        ? (
+            await prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalSku: { in: rawSkusForCheck },
+              },
+              select: { externalSku: true },
+            })
+          )
+            .map((l) => l.externalSku)
+            .filter((x): x is string => Boolean(x))
+        : [],
+    );
+
+    let skipSamplesLogged = 0;
+    for (const sku of skus) {
+      try {
+        const normalized = ListingAutodetectUseCase.normalizeMagaluItem(
+          { id: account.id, userId: account.userId },
+          sku,
+        );
+
+        // Já vinculado (Dexo, detecção anterior ou placeholder legado) → no-op
+        // idempotente, sem chamar o núcleo (evita duplicar por chave divergente).
+        if (normalized.rawSku && linkedSkus.has(normalized.rawSku)) {
+          continue;
+        }
+
+        // Gate "só novos": created_at < baseline = SKU antigo (só editado) →
+        // ignora, sem backfill. SKU sem id externo também é pulado.
+        const createdMs = normalized.createdAt.getTime();
+        if (
+          !normalized.externalListingId ||
+          !Number.isFinite(createdMs) ||
+          createdMs < baselineMs
+        ) {
+          if (skipSamplesLogged < 3) {
+            console.log(
+              `[autodetect][magalu] conta ${account.id}: sku ${normalized.externalListingId || "(sem id)"} ignorado (created_at=${normalized.createdAt.toISOString()}, baseline=${account.autoImportListingsSince.toISOString()})`,
+            );
+            skipSamplesLogged++;
+          }
+          summary.skipped++;
+          continue;
+        }
+
+        const res =
+          await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+            normalized,
+          );
+        if (res.action === "created_product") {
+          summary.created++;
+        } else if (
+          res.action === "linked_existing_product" ||
+          res.action === "raced"
+        ) {
+          summary.linked++;
+        }
+        // res.action === "listing_exists" → no-op idempotente.
+      } catch (err) {
+        summary.errors++;
+        console.error(
+          `[AUTODETECT][Magalu] Falha no sku ${sku.sku ?? sku.id} (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
 
     return summary;

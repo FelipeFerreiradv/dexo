@@ -3340,11 +3340,14 @@ export class ListingUseCase {
         );
       }
 
-      // POST /portfolios/skus responde 202 (assíncrono): o id pode não vir já.
-      // Se não vier, grava um placeholder PENDING_ que o import reconcilia depois
-      // (mesma ideia dos placeholders do ML).
+      // A IDENTIDADE de um SKU na Magalu é o PRÓPRIO SKU: o POST responde 202 sem
+      // id, e listSkus/getSku/stock/price/patch usam o sku como chave. Por isso
+      // gravamos o SKU como `externalListingId` — não um placeholder PENDING_ (que
+      // era o padrão do ML, onde o id real só chega depois). Assim edição/pausa/
+      // remoção, import e auto-detecção casam todos pela MESMA chave (sem duplicar
+      // o vínculo). Só cai no placeholder se, por algum motivo, não houver SKU.
       const externalListingId = String(
-        created?.id ?? created?.sku ?? `PENDING_${product.sku}`,
+        created?.id ?? created?.sku ?? product.sku ?? `PENDING_${Date.now()}`,
       );
       const permalink =
         (created?.permalink as string) || (created?.url as string) || null;

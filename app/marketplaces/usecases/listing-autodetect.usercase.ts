@@ -6,6 +6,7 @@ import { ListingRepository } from "../repositories/listing.repository";
 import { SyncUseCase } from "./sync.usercase";
 import { MLItemDetails } from "../types/ml-api.types";
 import { ShopeeItem } from "../types/shopee-api.types";
+import { MagaluSku } from "../types/magalu-api.types";
 
 /**
  * Formato comum para o qual ML e Shopee normalizam um anúncio antes de chamar o
@@ -237,6 +238,64 @@ export class ListingAutodetectUseCase {
       permalink: null,
       imageUrl,
       createdAt: new Date((item.create_time ?? 0) * 1000),
+    };
+  }
+
+  /**
+   * Normaliza um SKU da Magalu (GET /portfolios/skus[/{id}]) para o formato
+   * comum. A Magalu é keyed pelo SKU (= externalListingId). Preço/estoque vêm em
+   * endpoints separados (prices/stocks) e podem NÃO vir no SKU → caem em 0 (o
+   * lojista completa; o sync reconcilia). O gate "só novos" (created_at >=
+   * baseline) é aplicado por quem chama (polling).
+   */
+  static normalizeMagaluItem(
+    account: { id: string; userId: string },
+    sku: MagaluSku,
+  ): NormalizedMarketplaceItem {
+    const rawSku =
+      (sku.seller_sku as string) ||
+      (sku.sku as string) ||
+      (sku.code as string) ||
+      null;
+    // A identidade de um SKU na Magalu é o PRÓPRIO SKU do seller (= externalSku
+    // no create e chave de stock/price/patch). Por isso o SKU vem ANTES do `id`
+    // interno — assim create-time e poll-time gravam a MESMA chave e o núcleo
+    // (idempotente por externalListingId) não duplica o vínculo.
+    const externalListingId = String(rawSku ?? sku.id ?? "");
+    // imagens: [{ reference, type }] (defensivo — shape do type é aberto).
+    const images = (sku as { images?: Array<{ reference?: string }> }).images;
+    const imageUrl =
+      (Array.isArray(images) && images[0]?.reference) || null;
+    // url pública: permalink | url | url_marketplace[0].url.
+    const urlMarketplace = (
+      sku as { url_marketplace?: Array<{ url?: string }> }
+    ).url_marketplace;
+    const permalink =
+      (sku.permalink as string) ||
+      (sku.url as string) ||
+      (Array.isArray(urlMarketplace) && urlMarketplace[0]?.url) ||
+      null;
+    const stock =
+      typeof sku.available_quantity === "number"
+        ? sku.available_quantity
+        : typeof sku.quantity === "number"
+          ? sku.quantity
+          : 0;
+
+    return {
+      platform: Platform.MAGALU,
+      account,
+      externalListingId,
+      rawSku,
+      title: (sku.title as string) || rawSku || externalListingId,
+      price: this.coercePrice(sku.price),
+      stock,
+      status: (sku.status as string) || "active",
+      permalink,
+      imageUrl,
+      createdAt: this.parseDate(
+        (sku as { created_at?: string }).created_at,
+      ),
     };
   }
 
