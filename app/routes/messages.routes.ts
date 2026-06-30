@@ -19,8 +19,8 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
   /**
    * GET /messages/accounts
    * Lista contas do usuário com perguntas/conversas (para o seletor da UI).
-   * Hoje: Mercado Livre (Q&A) + Magalu (chat). `platform` permite à UI badgear
-   * e despachar o envio (resposta de pergunta vs mensagem de conversa).
+   * Mercado Livre + Shopee (Q&A) + Magalu (chat). `platform` permite à UI
+   * badgear e despachar o envio (resposta de pergunta vs mensagem de conversa).
    */
   fastify.get(
     "/accounts",
@@ -29,10 +29,14 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
-      const [mlAccounts, magaluAccounts] = await Promise.all([
+      const [mlAccounts, shopeeAccounts, magaluAccounts] = await Promise.all([
         MarketplaceRepository.findAllByUserIdAndPlatform(
           userId,
           Platform.MERCADO_LIVRE,
+        ),
+        MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.SHOPEE,
         ),
         MarketplaceRepository.findAllByUserIdAndPlatform(
           userId,
@@ -41,12 +45,14 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       ]);
 
       return reply.send({
-        accounts: [...mlAccounts, ...magaluAccounts].map((a) => ({
-          id: a.id,
-          accountName: a.accountName,
-          status: a.status,
-          platform: a.platform,
-        })),
+        accounts: [...mlAccounts, ...shopeeAccounts, ...magaluAccounts].map(
+          (a) => ({
+            id: a.id,
+            accountName: a.accountName,
+            status: a.status,
+            platform: a.platform,
+          }),
+        ),
       });
     },
   );

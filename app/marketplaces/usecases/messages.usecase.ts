@@ -12,6 +12,8 @@ import {
   MagaluConversation,
 } from "../services/magalu-chat-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import { ShopeeApiService } from "../services/shopee-api.service";
+import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MLQuestionWebhookPayload } from "../types/ml-questions.types";
 import { SystemLogService } from "@/app/services/system-log.service";
 
@@ -25,6 +27,15 @@ interface ResolvedAccount {
 /** Subconjunto necessário p/ refresh de token Magalu (aceita conta parcial). */
 interface MagaluTokenAccount {
   id: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+}
+
+/** Idem para Shopee (precisa do shopId p/ assinar e refrescar). */
+interface ShopeeTokenAccount {
+  id: string;
+  shopId: number | null;
   accessToken: string | null;
   refreshToken: string | null;
   expiresAt: Date | null;
@@ -71,8 +82,48 @@ async function ensureFreshTokenForAccount(
   if (account.platform === Platform.MAGALU) {
     return ensureFreshMagaluToken(account);
   }
-  // Shopee e demais: ainda não suportados em Mensagens.
+  if (account.platform === Platform.SHOPEE) {
+    return ensureFreshShopeeToken(account);
+  }
   return null;
+}
+
+/**
+ * Token Shopee fresco. Não expirado ⇒ token atual; expirado com refresh ⇒
+ * renova+persiste (precisa do shopId); falha ⇒ null.
+ */
+async function ensureFreshShopeeToken(
+  account: ShopeeTokenAccount,
+): Promise<string | null> {
+  if (!account.accessToken || !account.shopId) return null;
+  const expiresMs = account.expiresAt
+    ? new Date(account.expiresAt).getTime()
+    : 0;
+  if (
+    Number.isFinite(expiresMs) &&
+    expiresMs - Date.now() > TOKEN_REFRESH_SAFETY_MS
+  ) {
+    return account.accessToken;
+  }
+  if (!account.refreshToken) return account.accessToken;
+  try {
+    const refreshed = await ShopeeOAuthService.refreshAccessToken(
+      account.refreshToken,
+      account.shopId,
+    );
+    await MarketplaceRepository.updateTokens(account.id, {
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token,
+      expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+    });
+    return refreshed.access_token;
+  } catch (err) {
+    console.warn(
+      `[Messages] Falha ao refrescar token Shopee da conta ${account.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 async function ensureFreshMlToken(account: {
@@ -340,6 +391,10 @@ export class MessagesUseCase {
       return this.pullMagaluConversation(account, accessToken, externalItemId);
     }
 
+    if (account.platform === Platform.SHOPEE) {
+      return this.pullShopeeComments(account, accessToken, externalItemId);
+    }
+
     // Mercado Livre (Q&A) — comportamento legado inalterado.
     // Resolve a productListingId UMA vez (todas as perguntas referenciam o mesmo
     // item) — evita N lookups idênticos em upsertFromMl.
@@ -424,6 +479,46 @@ export class MessagesUseCase {
   }
 
   /**
+   * Pull on-demand dos comentários de UM anúncio Shopee (product/get_comment
+   * filtrado por item_id). Q&A: reusa upsertFromShopeeComment. Pagina por cursor.
+   */
+  private static async pullShopeeComments(
+    account: MarketplaceAccount,
+    accessToken: string,
+    externalItemId: string,
+  ): Promise<{ synced: number; total: number }> {
+    if (!account.shopId) {
+      throw Object.assign(new Error("Conta Shopee sem shopId"), {
+        statusCode: 400,
+      });
+    }
+    const productListingId = await QuestionRepository.resolveListingId(
+      account.id,
+      externalItemId,
+    );
+
+    const MAX_PAGES = 20;
+    let cursor: string | undefined;
+    let synced = 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { comments, more, nextCursor } = await ShopeeApiService.getComments(
+        accessToken,
+        account.shopId,
+        { itemId: Number(externalItemId), cursor, pageSize: 100 },
+      );
+      for (const c of comments) {
+        await QuestionRepository.upsertFromShopeeComment(account.id, c, {
+          productListingId,
+        });
+        synced += 1;
+      }
+      if (!more || !nextCursor) break;
+      cursor = nextCursor;
+    }
+    return { synced, total: synced };
+  }
+
+  /**
    * Posta resposta no ML e atualiza estado local.
    * Validações: texto não-vazio, conta do usuário, pergunta UNANSWERED.
    */
@@ -457,7 +552,7 @@ export class MessagesUseCase {
     }
     // Conversas de chat (Magalu) não respondem por questionId — usam
     // sendMagaluMessage. Guarda defensiva: a rota já despacha por plataforma.
-    if (question.marketplaceAccount.platform !== Platform.MERCADO_LIVRE) {
+    if (question.marketplaceAccount.platform === Platform.MAGALU) {
       throw Object.assign(
         new Error("Plataforma não suporta resposta por pergunta"),
         { statusCode: 400 },
@@ -476,9 +571,33 @@ export class MessagesUseCase {
         statusCode: 404,
       });
     }
+    const { account, accessToken } = resolved;
 
+    // Shopee (Q&A): reply_comment + anexa a resposta localmente (a API não
+    // devolve o comentário atualizado). authorType permanece NULL.
+    if (account.platform === Platform.SHOPEE) {
+      if (!account.shopId) {
+        throw Object.assign(new Error("Conta Shopee sem shopId"), {
+          statusCode: 400,
+        });
+      }
+      await ShopeeApiService.replyComment(
+        accessToken,
+        account.shopId,
+        Number(question.externalQuestionId),
+        trimmed,
+      );
+      await QuestionRepository.attachAnswer(questionId, {
+        text: trimmed,
+        status: "ACTIVE",
+        date_created: new Date().toISOString(),
+      });
+      return QuestionRepository.findById(questionId);
+    }
+
+    // Mercado Livre (Q&A) — comportamento legado inalterado.
     const updated = await MlQuestionsApiService.postAnswer(
-      resolved.accessToken,
+      accessToken,
       question.externalQuestionId,
       trimmed,
     );
@@ -567,6 +686,7 @@ export class MessagesUseCase {
     let offset = 0;
     let processed = 0;
     let errors = 0;
+    let truncated = false;
 
     for (let page = 0; page < MAX_PAGES; page++) {
       const { conversations, total } =
@@ -595,6 +715,13 @@ export class MessagesUseCase {
       if (conversations.length < PAGE) break;
       offset += PAGE;
       if (total && offset >= total) break;
+      if (page === MAX_PAGES - 1) truncated = true;
+    }
+
+    if (truncated) {
+      console.warn(
+        `[Messages] Polling de conversas Magalu da conta ${account.id} atingiu o teto de ${MAX_PAGES} páginas (truncado neste ciclo).`,
+      );
     }
 
     return { conversations: processed, errors };
@@ -635,5 +762,71 @@ export class MessagesUseCase {
       ],
     });
     return true;
+  }
+
+  /**
+   * Polling (cron) dos comentários Shopee de uma conta: get_comment shop-wide
+   * (sem item_id) paginado por cursor, upsert de cada comentário. Best-effort:
+   * erros por-comentário isolados; uma falha não aborta o ciclo do loop.
+   */
+  static async syncShopeeCommentsForAccount(
+    account: ShopeeTokenAccount,
+  ): Promise<{ comments: number; errors: number }> {
+    const accessToken = await ensureFreshShopeeToken(account);
+    if (!accessToken || !account.shopId) return { comments: 0, errors: 1 };
+
+    const MAX_PAGES = 20;
+    let cursor: string | undefined;
+    let processed = 0;
+    let errors = 0;
+    let truncated = false;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      let comments;
+      let more = false;
+      let nextCursor = "";
+      try {
+        ({ comments, more, nextCursor } = await ShopeeApiService.getComments(
+          accessToken,
+          account.shopId,
+          { cursor, pageSize: 100 },
+        ));
+      } catch (err) {
+        errors += 1;
+        console.warn(
+          `[Messages] Falha ao listar comentários Shopee (conta ${account.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+        break;
+      }
+
+      for (const c of comments) {
+        try {
+          await QuestionRepository.upsertFromShopeeComment(account.id, c);
+          processed += 1;
+        } catch (err) {
+          errors += 1;
+          console.warn(
+            `[Messages] Falha ao gravar comentário Shopee ${c?.comment_id} (conta ${account.id}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+
+      if (!more || !nextCursor) break;
+      cursor = nextCursor;
+      // Atingiu o teto com mais páginas pendentes: não silenciar (req. de
+      // observabilidade). A Shopee devolve newest-first, então os truncados são
+      // os mais antigos (já sincronizados em ciclos anteriores).
+      if (page === MAX_PAGES - 1) truncated = true;
+    }
+
+    if (truncated) {
+      console.warn(
+        `[Messages] Polling de comentários Shopee da conta ${account.id} atingiu o teto de ${MAX_PAGES} páginas com mais comentários pendentes (truncado neste ciclo).`,
+      );
+    }
+
+    return { comments: processed, errors };
   }
 }

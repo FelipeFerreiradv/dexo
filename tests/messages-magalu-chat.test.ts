@@ -351,15 +351,23 @@ describe("rotas /messages — multi-plataforma", () => {
     vi.restoreAllMocks();
   });
 
-  it("GET /accounts devolve ML + Magalu com platform", async () => {
+  it("GET /accounts devolve ML + Shopee + Magalu com platform (nessa ordem)", async () => {
     vi.spyOn(
       MarketplaceRepository,
       "findAllByUserIdAndPlatform",
     ).mockImplementation(async (_userId: string, platform: any) => {
-      if (platform === "MERCADO_LIVRE") {
-        return [{ id: "ml-1", accountName: "Loja ML", status: "ACTIVE", platform }] as any;
-      }
-      return [{ id: "mg-1", accountName: "Loja Magalu", status: "ACTIVE", platform }] as any;
+      const byPlatform: Record<string, any[]> = {
+        MERCADO_LIVRE: [
+          { id: "ml-1", accountName: "Loja ML", status: "ACTIVE", platform },
+        ],
+        SHOPEE: [
+          { id: "sh-1", accountName: "Loja Shopee", status: "ACTIVE", platform },
+        ],
+        MAGALU: [
+          { id: "mg-1", accountName: "Loja Magalu", status: "ACTIVE", platform },
+        ],
+      };
+      return byPlatform[platform] ?? [];
     });
 
     const app = await buildApp();
@@ -372,6 +380,7 @@ describe("rotas /messages — multi-plataforma", () => {
     const body = res.json();
     expect(body.accounts).toEqual([
       { id: "ml-1", accountName: "Loja ML", status: "ACTIVE", platform: "MERCADO_LIVRE" },
+      { id: "sh-1", accountName: "Loja Shopee", status: "ACTIVE", platform: "SHOPEE" },
       { id: "mg-1", accountName: "Loja Magalu", status: "ACTIVE", platform: "MAGALU" },
     ]);
     await app.close();

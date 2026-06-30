@@ -59,6 +59,31 @@ async function runOnce() {
           err,
         );
       }
+
+      // Polling de comentários/perguntas Shopee (Mensagens). Try/catch próprio.
+      try {
+        const full = await prisma.marketplaceAccount.findUnique({
+          where: { id: account.id },
+          select: {
+            id: true,
+            shopId: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+          },
+        });
+        if (full) {
+          const r = await MessagesUseCase.syncShopeeCommentsForAccount(full);
+          console.log(
+            `[sync-loop] Shopee comentários conta ${account.id}: comentarios=${r.comments} erros=${r.errors}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[sync-loop] Falha no polling de comentários Shopee (conta ${account.id}):`,
+          err,
+        );
+      }
     }
 
     // Auto-detecção de anúncios novos da Magalu (polling incremental). Try/catch

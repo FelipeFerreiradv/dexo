@@ -156,6 +156,85 @@ export class QuestionRepository {
     ]);
   }
 
+  /**
+   * Upsert idempotente de um comentário/pergunta da Shopee (modelo Q&A 1:1,
+   * igual ao ML — authorType fica NULL). Anexa a resposta quando há CommentReply.
+   */
+  static async upsertFromShopeeComment(
+    marketplaceAccountId: string,
+    comment: {
+      comment_id: number | string;
+      comment: string;
+      buyer_username?: string;
+      item_id: number | string;
+      create_time: number;
+      // Resposta do seller (snake_case da Shopee, normalizado em getComments).
+      comment_reply?: { reply?: string; create_time?: number } | null;
+    },
+    options: { productListingId?: string | null } = {},
+  ): Promise<{ id: string; isNew: boolean }> {
+    const externalQuestionId = String(comment.comment_id);
+    const externalItemId = String(comment.item_id);
+    const needsListingLookup = options.productListingId === undefined;
+
+    const [existing, resolvedListingId] = await Promise.all([
+      prisma.marketplaceQuestion.findUnique({
+        where: {
+          marketplaceAccountId_externalQuestionId: {
+            marketplaceAccountId,
+            externalQuestionId,
+          },
+        },
+        select: { id: true },
+      }),
+      needsListingLookup
+        ? this.resolveListingId(marketplaceAccountId, externalItemId)
+        : Promise.resolve(options.productListingId ?? null),
+    ]);
+
+    const hasReply = !!(comment.comment_reply && comment.comment_reply.reply);
+    const baseData = {
+      marketplaceAccountId,
+      externalQuestionId,
+      externalItemId,
+      externalBuyerId: comment.buyer_username ?? "0",
+      buyerNickname: comment.buyer_username ?? null,
+      text: comment.comment,
+      status: hasReply ? "ANSWERED" : "UNANSWERED",
+      dateCreated: new Date(comment.create_time * 1000),
+      productListingId: resolvedListingId,
+    };
+
+    const upserted = await prisma.marketplaceQuestion.upsert({
+      where: {
+        marketplaceAccountId_externalQuestionId: {
+          marketplaceAccountId,
+          externalQuestionId,
+        },
+      },
+      create: { ...baseData, lastSyncedAt: new Date() },
+      update: {
+        status: baseData.status,
+        text: baseData.text,
+        productListingId: baseData.productListingId,
+        buyerNickname: baseData.buyerNickname,
+        lastSyncedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    if (hasReply) {
+      const replyAt = comment.comment_reply!.create_time ?? comment.create_time;
+      await this.attachAnswer(upserted.id, {
+        text: comment.comment_reply!.reply!,
+        status: "ACTIVE",
+        date_created: new Date(replyAt * 1000).toISOString(),
+      });
+    }
+
+    return { id: upserted.id, isNew: !existing };
+  }
+
   // ===========================================================================
   // Magalu — Chat com Cliente (conversas com N mensagens).
   //
