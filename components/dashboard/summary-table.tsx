@@ -77,7 +77,7 @@ export function SummaryTable({ tabs }: { tabs: SummaryTableTab[] }) {
     <div className="rounded-2xl border border-border/70 bg-card/80 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-5">
         <div className="space-y-1">
-          <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
             Operações
           </p>
           <h3 className="text-lg font-semibold tracking-tight text-foreground">

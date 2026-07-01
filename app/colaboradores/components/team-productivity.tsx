@@ -32,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 
 // Cores das séries (tokens do tema — a tela segue a identidade shadcn/Dexo; o
 // visual editorial pesado é só do PDF). ML × Shopee são tokens distintos.
@@ -257,13 +258,14 @@ export function TeamProductivity({
     <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
       <CardHeader className="gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Produtividade da equipe</CardTitle>
-            <CardDescription>
-              Produtos e anúncios criados por colaborador
-              {data?.range?.label ? ` · ${data.range.label}` : ""}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Equipe · Desempenho"
+            title="Produtividade da"
+            accent="equipe"
+            description={`Produtos e anúncios por colaborador${
+              data?.range?.label ? ` · ${data.range.label}` : ""
+            }`}
+          />
           <Button
             variant="outline"
             size="sm"

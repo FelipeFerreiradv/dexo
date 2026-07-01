@@ -38,7 +38,7 @@ export function TopProductsTable({ rows }: TopProductsTableProps) {
     <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
       <CardHeader className="flex flex-row items-center justify-between px-5 pb-3 pt-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
             MovimentaÃ§Ã£o de estoque
           </p>
         </div>
@@ -59,9 +59,15 @@ export function TopProductsTable({ rows }: TopProductsTableProps) {
                 <TableHead className="w-[24%]">Produto</TableHead>
                 <TableHead className="w-[14%] text-right">Estoque</TableHead>
                 <TableHead className="w-[14%] text-right">Vendas</TableHead>
-                <TableHead className="w-[14%] text-right">Crescimento</TableHead>
-                <TableHead className="w-[16%] text-right">AvaliaÃ§Ãµes</TableHead>
-                <TableHead className="w-[16%] text-right">VisualizaÃ§Ãµes</TableHead>
+                <TableHead className="w-[14%] text-right">
+                  Crescimento
+                </TableHead>
+                <TableHead className="w-[16%] text-right">
+                  AvaliaÃ§Ãµes
+                </TableHead>
+                <TableHead className="w-[16%] text-right">
+                  VisualizaÃ§Ãµes
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -134,4 +140,3 @@ function DirectionPill({
     </span>
   );
 }
-
