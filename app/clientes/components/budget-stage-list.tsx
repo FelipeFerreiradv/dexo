@@ -24,11 +24,15 @@ import {
   COLUMN_LABEL,
   COLUMN_ORDER,
   COLUMN_STYLES,
+  FONT_DISPLAY,
   type ColumnKey,
   type CrmBudget,
   deriveColumn,
   isExpired,
 } from "./budget-crm-shared";
+
+const TH =
+  "font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground";
 
 interface Props {
   budgets: CrmBudget[];
@@ -56,13 +60,13 @@ export function BudgetStageList({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Cliente</TableHead>
-            <TableHead>Documento</TableHead>
-            <TableHead>Valor</TableHead>
-            <TableHead>Validade</TableHead>
-            <TableHead>Vendedor</TableHead>
-            <TableHead className="w-[200px]">Estágio</TableHead>
-            <TableHead className="text-right">Ações</TableHead>
+            <TableHead className={TH}>Cliente</TableHead>
+            <TableHead className={TH}>Documento</TableHead>
+            <TableHead className={TH}>Valor</TableHead>
+            <TableHead className={TH}>Validade</TableHead>
+            <TableHead className={TH}>Vendedor</TableHead>
+            <TableHead className={cn(TH, "w-[200px]")}>Estágio</TableHead>
+            <TableHead className={cn(TH, "text-right")}>Ações</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -82,27 +86,31 @@ export function BudgetStageList({
             const expired = isExpired(b);
             return (
               <TableRow key={b.id}>
-                <TableCell className="font-medium">
+                <TableCell className={cn("font-semibold", FONT_DISPLAY)}>
                   {b.customer?.name || "—"}
                 </TableCell>
-                <TableCell>{b.document || b.reason || "—"}</TableCell>
-                <TableCell>R$ {formatToBRL(b.totalAmount)}</TableCell>
-                <TableCell>
+                <TableCell className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+                  {b.document || b.reason || "—"}
+                </TableCell>
+                <TableCell className="font-mono text-sm font-semibold">
+                  {formatToBRL(b.totalAmount)}
+                </TableCell>
+                <TableCell className="font-mono text-xs">
                   {b.validUntil ? (
                     <span
                       className={cn(
                         expired &&
-                          "font-medium text-orange-600 dark:text-orange-400",
+                          "font-semibold text-orange-600 dark:text-orange-400",
                       )}
                     >
                       {new Date(b.validUntil).toLocaleDateString("pt-BR")}
-                      {expired ? " (expirado)" : ""}
+                      {expired ? " · exp." : ""}
                     </span>
                   ) : (
                     "—"
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell className="text-sm text-muted-foreground">
                   {b.vendedor?.name || b.vendedor?.email || "—"}
                 </TableCell>
                 <TableCell>
@@ -129,7 +137,7 @@ export function BudgetStageList({
                   ) : (
                     <span
                       className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
+                        "inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
                         COLUMN_STYLES[col],
                       )}
                     >

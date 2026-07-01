@@ -307,10 +307,10 @@ export function CustomersList({
                             onClick={() => onOpenBudgets?.(c.id, c.name)}
                             title="Ver orçamentos deste cliente"
                             className={cn(
-                              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-80",
+                              "inline-flex min-w-[1.75rem] items-center justify-center rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums transition-opacity hover:opacity-80",
                               c.openBudgetCount > 0
-                                ? "bg-primary/15 text-foreground"
-                                : "bg-muted text-muted-foreground",
+                                ? "border-primary/50 bg-primary/15 text-foreground"
+                                : "border-transparent bg-muted text-muted-foreground",
                             )}
                           >
                             {c.budgetCount}

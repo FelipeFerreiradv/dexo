@@ -49,6 +49,8 @@ import { downloadBudgetPdf } from "@/app/financeiro/lib/download-budget";
 import { BudgetKanban } from "./budget-kanban";
 import { BudgetStageList } from "./budget-stage-list";
 import {
+  FONT_DISPLAY,
+  FONT_SERIF,
   type ColumnKey,
   type CrmBudget,
   type Transition,
@@ -435,45 +437,69 @@ export function BudgetCrm({
         ))}
       </ToastViewport>
 
-      <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+      <Card className="relative overflow-hidden border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
+        {/* fio-guia amarelo sinalização no topo (assinatura da marca) */}
+        <span
+          className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-[#f2c419] via-[#f2c419]/60 to-transparent"
+          aria-hidden
+        />
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Funil de orçamentos</CardTitle>
-            <CardDescription>
-              {total} orçamento{total === 1 ? "" : "s"}
-              {total > LIMIT ? ` — exibindo os ${LIMIT} mais recentes` : ""}.
-              Arraste os cards entre os estágios.
+          <div className="space-y-1.5">
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              Pipeline · CRM de orçamentos
+            </span>
+            <CardTitle
+              className={cn(
+                "text-2xl tracking-tight sm:text-[26px]",
+                FONT_DISPLAY,
+              )}
+            >
+              Funil de{" "}
+              <span
+                className={cn(
+                  "italic text-[#2c5f4f] dark:text-emerald-400",
+                  FONT_SERIF,
+                )}
+              >
+                orçamentos
+              </span>
+            </CardTitle>
+            <CardDescription className="font-mono text-[11px]">
+              <span className="font-semibold text-foreground">{total}</span>{" "}
+              orçamento{total === 1 ? "" : "s"}
+              {total > LIMIT ? ` · exibindo os ${LIMIT} mais recentes` : ""} ·
+              arraste os cards entre os estágios
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            {/* Toggle catálogo ↔ lista */}
+            {/* Toggle catálogo ↔ lista (chip petróleo quando ativo) */}
             <div className="inline-flex rounded-full border border-border/70 bg-muted/20 p-0.5">
               <button
                 type="button"
                 onClick={() => changeView("catalog")}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-[11px] font-medium uppercase tracking-wide transition-colors",
                   view === "catalog"
-                    ? "bg-background shadow-sm"
+                    ? "bg-foreground text-[var(--card)] shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
                 aria-pressed={view === "catalog"}
               >
-                <LayoutGrid className="h-4 w-4" />
+                <LayoutGrid className="h-3.5 w-3.5" />
                 Catálogo
               </button>
               <button
                 type="button"
                 onClick={() => changeView("list")}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-[11px] font-medium uppercase tracking-wide transition-colors",
                   view === "list"
-                    ? "bg-background shadow-sm"
+                    ? "bg-foreground text-[var(--card)] shadow-sm"
                     : "text-muted-foreground hover:text-foreground",
                 )}
                 aria-pressed={view === "list"}
               >
-                <ListIcon className="h-4 w-4" />
+                <ListIcon className="h-3.5 w-3.5" />
                 Lista
               </button>
             </div>
@@ -527,7 +553,7 @@ export function BudgetCrm({
 
           {initialCustomerId && (
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-3 py-1 text-xs font-medium text-foreground">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/15 px-3 py-1 font-mono text-[11px] font-medium uppercase tracking-wide text-foreground">
                 Cliente: {initialCustomerName || "selecionado"}
                 <button
                   type="button"
@@ -541,26 +567,37 @@ export function BudgetCrm({
             </div>
           )}
 
-          {view === "catalog" ? (
-            <BudgetKanban
-              budgets={budgets}
-              busyId={busyId}
-              onMove={onMove}
-              onEdit={handleEdit}
-              onPdf={handlePdf}
-              onConvert={handleConvertClick}
-            />
-          ) : (
-            <BudgetStageList
-              budgets={budgets}
-              loading={loading}
-              busyId={busyId}
-              onMove={onMove}
-              onEdit={handleEdit}
-              onPdf={handlePdf}
-              onConvert={handleConvertClick}
-            />
-          )}
+          {/* Prancheta técnica: grade de manual (pontos) atrás do funil */}
+          <div
+            className="rounded-2xl border border-border/50 p-2 sm:p-3"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle, rgba(127,133,144,0.14) 1px, transparent 1px)",
+              backgroundSize: "20px 20px",
+              backgroundPosition: "-1px -1px",
+            }}
+          >
+            {view === "catalog" ? (
+              <BudgetKanban
+                budgets={budgets}
+                busyId={busyId}
+                onMove={onMove}
+                onEdit={handleEdit}
+                onPdf={handlePdf}
+                onConvert={handleConvertClick}
+              />
+            ) : (
+              <BudgetStageList
+                budgets={budgets}
+                loading={loading}
+                busyId={busyId}
+                onMove={onMove}
+                onEdit={handleEdit}
+                onPdf={handlePdf}
+                onConvert={handleConvertClick}
+              />
+            )}
+          </div>
         </CardContent>
       </Card>
 

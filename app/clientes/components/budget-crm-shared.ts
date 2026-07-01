@@ -46,33 +46,50 @@ export const COLUMN_LABEL: Record<ColumnKey, string> = {
   NOVO: "Novo",
   EM_NEGOCIACAO: "Em negociação",
   PROPOSTA_ENVIADA: "Proposta enviada",
-  GANHO: "Fechado (ganho)",
-  PERDIDO: "Perdido / Desistido",
+  GANHO: "Fechado / ganho",
+  PERDIDO: "Perdido / desistiu",
   CANCELADO: "Cancelado",
 };
 
-// Pílulas de estágio no padrão Dexo (mesma família de classes do
-// STATUS_STYLES de budget-list.tsx). Verde = ganho; muted/rose = cancelado/perdido.
+// Índice de etiqueta industrial (mono) — reforça o "lado sistema" (manual técnico).
+export const COLUMN_INDEX: Record<ColumnKey, string> = {
+  NOVO: "01",
+  EM_NEGOCIACAO: "02",
+  PROPOSTA_ENVIADA: "03",
+  GANHO: "04",
+  PERDIDO: "05",
+  CANCELADO: "06",
+};
+
+// Pílulas de estágio (padrão Dexo). Verde Operação = ganho; petróleo médio =
+// proposta; amarelo sinalização = negociação; concreto/terracota = cancel/perdido.
 export const COLUMN_STYLES: Record<ColumnKey, string> = {
-  NOVO: "bg-muted text-foreground/80 dark:bg-muted/40",
+  NOVO: "bg-muted text-muted-foreground",
   EM_NEGOCIACAO:
-    "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+    "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100",
   PROPOSTA_ENVIADA:
-    "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200",
-  GANHO: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
-  PERDIDO: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
+    "bg-[#1b3a4d]/10 text-[#1b3a4d] dark:bg-[#1b3a4d]/50 dark:text-[#9cc3d6]",
+  GANHO:
+    "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100",
+  PERDIDO: "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100",
   CANCELADO: "bg-muted text-muted-foreground",
 };
 
-// Acento sutil no topo da coluna (barra) — reforça a identidade sem poluir.
+// Barra-acento (spine) da coluna e do card — cores da paleta oficial:
+// Aço · Amarelo Sinalização · Petróleo Médio · Verde Operação · terracota · Concreto.
 export const COLUMN_ACCENT: Record<ColumnKey, string> = {
-  NOVO: "bg-foreground/25",
-  EM_NEGOCIACAO: "bg-amber-400",
-  PROPOSTA_ENVIADA: "bg-[color:var(--primary)]",
-  GANHO: "bg-green-500",
-  PERDIDO: "bg-rose-400",
-  CANCELADO: "bg-muted-foreground/40",
+  NOVO: "bg-[#7b8590]",
+  EM_NEGOCIACAO: "bg-[#f2c419]",
+  PROPOSTA_ENVIADA: "bg-[#1b3a4d]",
+  GANHO: "bg-[#2c5f4f]",
+  PERDIDO: "bg-[#b23a2e]",
+  CANCELADO: "bg-[#9ca39c]",
 };
+
+// Helpers de tipografia da marca (arbitrary font-family → vars do layout.tsx).
+export const FONT_DISPLAY = "[font-family:var(--font-bricolage)]"; // Bricolage
+export const FONT_SERIF = "[font-family:var(--font-fraunces)]"; // Fraunces
+export const FONT_MONO = "font-mono"; // JetBrains Mono (--font-mono)
 
 export interface CrmBudget {
   id: string;
