@@ -67,6 +67,7 @@ import {
 } from "@/components/ui/table";
 import { type MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-links";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
 import {
   DEFAULT_PRODUCT_FILTERS,
@@ -675,8 +676,7 @@ export function ProductsList() {
   };
 
   const handleDelete = async (id: string) => {
-    const productName =
-      products.find((p) => p.id === id)?.name ?? id;
+    const productName = products.find((p) => p.id === id)?.name ?? id;
     const previousProducts = products;
     const previousPagination = pagination;
     // Optimistic remove apenas até confirmar o resultado do servidor.
@@ -842,14 +842,17 @@ export function ProductsList() {
       let totalFailed = 0;
 
       for (const chunk of chunks) {
-        const response = await fetch(`${getApiBaseUrl()}/products/bulk-delete`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            email,
+        const response = await fetch(
+          `${getApiBaseUrl()}/products/bulk-delete`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              email,
+            },
+            body: JSON.stringify({ ids: chunk }),
           },
-          body: JSON.stringify({ ids: chunk }),
-        });
+        );
 
         if (!response.ok) {
           const data = (await response.json().catch(() => ({}))) as {
@@ -972,8 +975,8 @@ export function ProductsList() {
           const retriedIndex = new Map(
             body.results.map((r) => [r.productId, r]),
           );
-          const merged = prev.results.map((r) =>
-            retriedIndex.get(r.productId) ?? r,
+          const merged = prev.results.map(
+            (r) => retriedIndex.get(r.productId) ?? r,
           );
           const deleted = merged.filter((r) => r.deleted).length;
           const failed = merged.filter((r) => !r.deleted).length;
@@ -1005,10 +1008,7 @@ export function ProductsList() {
 
   const handleBulkPauseToggle = async (status: "active" | "paused") => {
     if (selectedIds.length === 0) {
-      showToast(
-        "Selecione pelo menos um produto para alterar.",
-        "warning",
-      );
+      showToast("Selecione pelo menos um produto para alterar.", "warning");
       return;
     }
 
@@ -1047,8 +1047,7 @@ export function ProductsList() {
             failed.push({
               id,
               name: nameById.get(id) ?? id,
-              message:
-                data?.message || data?.error || "Erro ao alterar status",
+              message: data?.message || data?.error || "Erro ao alterar status",
             });
           } else {
             succeeded.push(id);
@@ -1058,9 +1057,7 @@ export function ProductsList() {
             id,
             name: nameById.get(id) ?? id,
             message:
-              error instanceof Error
-                ? error.message
-                : "Erro ao alterar status",
+              error instanceof Error ? error.message : "Erro ao alterar status",
           });
         } finally {
           setBulkPauseProgress((prev) =>
@@ -1070,9 +1067,7 @@ export function ProductsList() {
       }
     };
 
-    await Promise.all(
-      Array.from({ length: concurrency }, () => worker()),
-    );
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
     if (succeeded.length > 0) {
       // Otimista: atualiza listings publicáveis dos produtos afetados.
@@ -1578,12 +1573,12 @@ export function ProductsList() {
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle>Produtos</CardTitle>
-              <CardDescription>
-                Gerencie o catálogo de produtos do seu estoque central
-              </CardDescription>
-            </div>
+            <SectionHeading
+              eyebrow="Catálogo · Estoque"
+              title="Seus"
+              accent="produtos"
+              description="Gerencie o catálogo do seu estoque central"
+            />
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <ImportExportProducts
                 email={session?.user?.email}
@@ -1707,9 +1702,9 @@ export function ProductsList() {
                           {`Pausar anúncios de ${selectionCount} produto(s)?`}
                         </AlertDialogTitle>
                         <AlertDialogDescription>
-                          Os anúncios publicados serão pausados nos
-                          marketplaces e ficarão invisíveis até serem
-                          despausados. Itens já pausados são ignorados.
+                          Os anúncios publicados serão pausados nos marketplaces
+                          e ficarão invisíveis até serem despausados. Itens já
+                          pausados são ignorados.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>

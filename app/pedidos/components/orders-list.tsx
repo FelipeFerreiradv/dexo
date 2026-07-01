@@ -416,8 +416,12 @@ export function OrdersList() {
             <Download className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalOrders}</div>
-            <p className="text-xs text-muted-foreground">Pedidos importados</p>
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.totalOrders}
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Pedidos importados
+            </p>
           </CardContent>
         </Card>
 
@@ -429,8 +433,10 @@ export function OrdersList() {
             <Search className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.pendingOrders}</div>
-            <p className="text-xs text-muted-foreground">
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.pendingOrders}
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
               Aguardando processamento
             </p>
           </CardContent>
@@ -444,8 +450,10 @@ export function OrdersList() {
             <Eye className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.deliveredOrders}</div>
-            <p className="text-xs text-muted-foreground">
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.deliveredOrders}
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">
               Finalizados com sucesso
             </p>
           </CardContent>
@@ -457,13 +465,17 @@ export function OrdersList() {
             <Download className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              R${" "}
-              {stats.totalRevenue.toLocaleString("pt-BR", {
-                minimumFractionDigits: 2,
-              })}
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono text-xs text-muted-foreground">
+                R$
+              </span>
+              <span className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+                {stats.totalRevenue.toLocaleString("pt-BR", {
+                  minimumFractionDigits: 2,
+                })}
+              </span>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               Valor total dos pedidos
             </p>
           </CardContent>
@@ -600,8 +612,7 @@ export function OrdersList() {
               onToggleSelect={toggleSelect}
               onToggleAll={toggleSelectAllOnPage}
               allSelected={
-                orders.length > 0 &&
-                orders.every((o) => selectedIds.has(o.id))
+                orders.length > 0 && orders.every((o) => selectedIds.has(o.id))
               }
             />
           </CardContent>

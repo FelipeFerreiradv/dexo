@@ -27,6 +27,7 @@ import { HighlightText } from "./highlight-text";
 import { useLocationSearch } from "../hooks/use-location-search";
 
 import { Button } from "@/components/ui/button";
+import { SectionHeading } from "@/components/section-heading";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -1105,12 +1106,12 @@ export function LocationsList() {
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle>Localizações</CardTitle>
-              <CardDescription>
-                Organize seus produtos em locais de armazenamento
-              </CardDescription>
-            </div>
+            <SectionHeading
+              eyebrow="Estoque · Endereçamento"
+              title="Suas"
+              accent="localizações"
+              description="Organize seus produtos em locais de armazenamento"
+            />
             <div className="flex flex-wrap items-center gap-2">
               <Button asChild variant="outline">
                 <Link href="/scan">

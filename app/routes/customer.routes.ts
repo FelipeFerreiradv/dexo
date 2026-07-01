@@ -1,9 +1,12 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { CustomerUseCase } from "../usecases/customer.usecase";
+import { BudgetRepository } from "../repositories/budget.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 export const customerRoutes = async (fastify: FastifyInstance) => {
   const useCase = new CustomerUseCase();
+  // Repo leve (só prisma) p/ o indicador de orçamentos por cliente (CRM).
+  const budgetRepo = new BudgetRepository();
 
   fastify.get(
     "/",
@@ -11,10 +14,11 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { search, page, limit } = request.query as {
+        const { search, page, limit, withBudgetCounts } = request.query as {
           search?: string;
           page?: string;
           limit?: string;
+          withBudgetCounts?: string;
         };
         const data = await useCase.list(
           {
@@ -24,8 +28,21 @@ export const customerRoutes = async (fastify: FastifyInstance) => {
           },
           userId,
         );
+        // OPT-IN (CRM): só quando ?withBudgetCounts=true (front atrás da flag).
+        // Mescla budgetCount/openBudgetCount SEM tocar os campos existentes.
+        // Sem o param, a resposta é byte-a-byte idêntica à de hoje.
+        let customers: any[] = data.customers;
+        if (withBudgetCounts === "true") {
+          const ids = customers.map((c: any) => c.id);
+          const counts = await budgetRepo.countByCustomer(userId, ids);
+          customers = customers.map((c: any) => ({
+            ...c,
+            budgetCount: counts[c.id]?.total ?? 0,
+            openBudgetCount: counts[c.id]?.open ?? 0,
+          }));
+        }
         return reply.status(200).send({
-          customers: data.customers,
+          customers,
           pagination: {
             page: page ? parseInt(page) : 1,
             limit: limit ? parseInt(limit) : 20,

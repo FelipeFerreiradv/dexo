@@ -33,13 +33,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getApiBaseUrl } from "@/lib/api";
 import { parseScannedPayload } from "@/app/lib/qr-payloads";
 
-const QrCamera = dynamic(
-  () => import("./qr-camera").then((m) => m.QrCamera),
-  {
-    ssr: false,
-    loading: () => <Skeleton className="aspect-square w-full rounded-lg" />,
-  },
-);
+const QrCamera = dynamic(() => import("./qr-camera").then((m) => m.QrCamera), {
+  ssr: false,
+  loading: () => <Skeleton className="aspect-square w-full rounded-lg" />,
+});
 
 // ───────────────── Types ─────────────────
 
@@ -156,7 +153,10 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
           setPhase("scanning-products");
           showToast(`Localização "${data.location.code}" travada`, "success");
         } else if (data.kind === "product") {
-          showToast("Esse é um QR de produto — escaneie a localização primeiro.", "error");
+          showToast(
+            "Esse é um QR de produto — escaneie a localização primeiro.",
+            "error",
+          );
         } else {
           showToast("QR não reconhecido como localização.", "error");
         }
@@ -392,10 +392,7 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
       );
       showToast(`${last.product.sku} desvinculado`, "info");
     } catch (e) {
-      showToast(
-        e instanceof Error ? e.message : "Erro ao desfazer",
-        "error",
-      );
+      showToast(e instanceof Error ? e.message : "Erro ao desfazer", "error");
     } finally {
       setIsUndoing(false);
     }
@@ -497,7 +494,7 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
                 <div>
                   <CardTitle className="flex items-center gap-2">
                     <MapPin className="size-5 text-primary" />
-                    {targetLocation.code}
+                    <span className="font-mono">{targetLocation.code}</span>
                   </CardTitle>
                   {targetLocation.description && (
                     <CardDescription>
@@ -520,7 +517,7 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
             <CardContent>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-6">
                 <div className="text-sm">
-                  <span className="font-semibold">
+                  <span className="font-mono font-semibold tabular-nums">
                     {targetLocation.productsCount}
                   </span>
                   {targetLocation.maxCapacity > 0 ? (
@@ -636,14 +633,14 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
                         ) : (
                           <CheckCircle2 className="size-4 shrink-0 text-green-700 dark:text-green-300" />
                         )}
-                        <span className="truncate font-medium">
+                        <span className="truncate font-mono font-medium">
                           {entry.product.sku}
                         </span>
                         <span className="truncate text-muted-foreground">
                           — {entry.product.name}
                         </span>
                       </div>
-                      <time className="shrink-0 text-xs text-muted-foreground">
+                      <time className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
                         {new Date(entry.attachedAt).toLocaleTimeString()}
                       </time>
                     </li>
@@ -655,14 +652,14 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
                     >
                       <div className="flex min-w-0 items-center gap-2">
                         <XCircle className="size-4 shrink-0 text-red-700 dark:text-red-300" />
-                        <span className="truncate font-medium">
+                        <span className="truncate font-mono font-medium">
                           {entry.text || "—"}
                         </span>
                         <span className="truncate text-muted-foreground">
                           {entry.reason}
                         </span>
                       </div>
-                      <time className="shrink-0 text-xs text-muted-foreground">
+                      <time className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
                         {new Date(entry.scannedAt).toLocaleTimeString()}
                       </time>
                     </li>

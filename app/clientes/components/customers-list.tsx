@@ -42,7 +42,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { getApiBaseUrl } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { maskCpf, maskCnpj, maskPhone } from "@/app/lib/masks";
+import { SectionHeading } from "@/components/section-heading";
 import { CustomerDialog } from "./customer-dialog";
 import type { CustomerFormData } from "../lib/customer-schema";
 
@@ -67,7 +69,18 @@ interface Toast {
 
 const LIMIT = 20;
 
-export function CustomersList() {
+interface CustomersListProps {
+  // Quando true (dentro das abas de Clientes, ou seja, só com a flag ligada):
+  // busca as contagens de orçamento e exibe a coluna "Orçamentos" com deep-link.
+  // Ausente (uso standalone / flag off) => componente idêntico ao de hoje.
+  showBudgets?: boolean;
+  onOpenBudgets?: (customerId: string, customerName: string) => void;
+}
+
+export function CustomersList({
+  showBudgets = false,
+  onOpenBudgets,
+}: CustomersListProps = {}) {
   const { data: session } = useSession();
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -116,6 +129,9 @@ export function CustomersList() {
         limit: String(LIMIT),
       });
       if (searchTerm) params.set("search", searchTerm);
+      // OPT-IN: só pede as contagens quando a coluna Orçamentos está visível.
+      // Sem esse param, a resposta é idêntica à de hoje (zero regressão).
+      if (showBudgets) params.set("withBudgetCounts", "true");
       const res = await fetch(`${getApiBaseUrl()}/customers?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -131,7 +147,7 @@ export function CustomersList() {
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
     }
-  }, [session?.user?.email, page, searchTerm, showToast]);
+  }, [session?.user?.email, page, searchTerm, showBudgets, showToast]);
 
   useEffect(() => {
     fetchCustomers();
@@ -208,16 +224,14 @@ export function CustomersList() {
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Clientes
-            </CardTitle>
-            <CardDescription>
-              {total} cliente{total === 1 ? "" : "s"} cadastrado
-              {total === 1 ? "" : "s"}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Relacionamento · Base"
+            title="Base de"
+            accent="clientes"
+            description={`${total} cliente${total === 1 ? "" : "s"} cadastrado${
+              total === 1 ? "" : "s"
+            }`}
+          />
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4" />
             Novo cliente
@@ -249,6 +263,7 @@ export function CustomersList() {
                   <TableHead>E-mail</TableHead>
                   <TableHead>Telefone</TableHead>
                   <TableHead>Cidade/UF</TableHead>
+                  {showBudgets && <TableHead>Orçamentos</TableHead>}
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
@@ -256,7 +271,7 @@ export function CustomersList() {
                 {customers.length === 0 && !loading && (
                   <TableRow>
                     <TableCell
-                      colSpan={6}
+                      colSpan={showBudgets ? 7 : 6}
                       className="text-center py-8 text-muted-foreground"
                     >
                       Nenhum cliente encontrado. Crie o primeiro cadastro.
@@ -282,6 +297,28 @@ export function CustomersList() {
                         ? `${c.city}${c.state ? "/" + c.state : ""}`
                         : "—"}
                     </TableCell>
+                    {showBudgets && (
+                      <TableCell>
+                        {typeof c.budgetCount === "number" &&
+                        c.budgetCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenBudgets?.(c.id, c.name)}
+                            title="Ver orçamentos deste cliente"
+                            className={cn(
+                              "inline-flex min-w-[1.75rem] items-center justify-center rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums transition-opacity hover:opacity-80",
+                              c.openBudgetCount > 0
+                                ? "border-primary/50 bg-primary/15 text-foreground"
+                                : "border-transparent bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {c.budgetCount}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
                         <Button

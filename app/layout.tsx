@@ -10,11 +10,13 @@ import {
   Inter,
   JetBrains_Mono,
   Bricolage_Grotesque,
+  Fraunces,
   Outfit,
 } from "next/font/google";
 
 // Fontes da identidade visual Dexo (Manual de Marca):
-// Inter = corpo/UI · JetBrains Mono = SKU/códigos/valores · Bricolage = títulos.
+// Inter = corpo/UI · JetBrains Mono = SKU/códigos/valores · Bricolage = títulos ·
+// Fraunces = serif editorial (números grandes / itálico de acento).
 // Carregadas como CSS variables e expostas ao <html> (cobre portais de
 // dialog/sheet). Os tokens --font-sans/--font-mono/--font-display em globals.css
 // apontam para estas variáveis.
@@ -31,6 +33,14 @@ const jetbrainsMono = JetBrains_Mono({
 const bricolage = Bricolage_Grotesque({
   subsets: ["latin"],
   variable: "--font-bricolage",
+  display: "swap",
+});
+// Fraunces (serif moderna, variável) — números editoriais grandes e itálicos de
+// acento (par "dado & resultado" do manual). Exposta como CSS var; uso seletivo.
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-fraunces",
+  style: ["normal", "italic"],
   display: "swap",
 });
 // Outfit (geométrica) — fonte do título "wordmark" (`nome.`) dos cabeçalhos de
@@ -151,7 +161,7 @@ export default function RootLayout({
   return (
     <html
       lang="pt-BR"
-      className={`${inter.variable} ${jetbrainsMono.variable} ${bricolage.variable} ${outfit.variable}`}
+      className={`${inter.variable} ${jetbrainsMono.variable} ${bricolage.variable} ${fraunces.variable} ${outfit.variable}`}
       suppressHydrationWarning
     >
       <body className={`font-sans antialiased`}>

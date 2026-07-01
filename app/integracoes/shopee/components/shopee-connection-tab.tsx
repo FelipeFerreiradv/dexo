@@ -334,18 +334,20 @@ export function ShopeeConnectionTab() {
                 {accounts.map((acc) => (
                   <div
                     key={acc.id}
-                    className="flex items-center justify-between rounded-lg border p-3"
+                    className="relative flex items-center justify-between gap-3 overflow-hidden rounded-lg border border-border/60 bg-card p-3"
                   >
-                    <div className="space-y-1">
+                    <span
+                      className="absolute inset-y-0 left-0 w-1 bg-emerald-500"
+                      aria-hidden
+                    />
+                    <div className="min-w-0 space-y-1.5 pl-1.5">
                       <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-4 w-4 text-green-600" />
-                        <span className="font-medium">
-                          {acc.shopName ||
-                            acc.accountName ||
-                            "Conta Shopee"}
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span className="truncate font-semibold [font-family:var(--font-bricolage)]">
+                          {acc.shopName || acc.accountName || "Conta Shopee"}
                         </span>
                       </div>
-                      <p className="text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2">
                         {(() => {
                           const username =
                             acc.merchantName ||
@@ -353,18 +355,19 @@ export function ShopeeConnectionTab() {
                             (acc.shopId ? `Shop ${acc.shopId}` : null);
                           const parts: string[] = [];
                           if (username) parts.push(`@${username}`);
-                          if (
-                            acc.shopId &&
-                            username !== `Shop ${acc.shopId}`
-                          ) {
+                          if (acc.shopId && username !== `Shop ${acc.shopId}`) {
                             parts.push(`Shop ${acc.shopId}`);
                           }
-                          parts.push(
-                            `Status: ${acc.status || status.status || "Ativo"}`,
-                          );
-                          return parts.join(" • ");
+                          return parts.length ? (
+                            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+                              {parts.join(" • ")}
+                            </span>
+                          ) : null;
                         })()}
-                      </p>
+                        <span className="inline-flex items-center rounded-full bg-emerald-500/12 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                          {acc.status || status.status || "Ativo"}
+                        </span>
+                      </div>
                     </div>
                     {!isCollaborator && (
                       <Button
@@ -435,16 +438,14 @@ export function ShopeeConnectionTab() {
                       <AlertDialogHeader>
                         <AlertDialogTitle>Desconectar Shopee</AlertDialogTitle>
                         <AlertDialogDescription>
-                          Tem certeza que deseja desconectar todas as contas
-                          do Shopee? Isso removerá as vinculações e você
-                          precisará reconectar para continuar sincronizando.
+                          Tem certeza que deseja desconectar todas as contas do
+                          Shopee? Isso removerá as vinculações e você precisará
+                          reconectar para continuar sincronizando.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction
-                          onClick={() => handleDisconnect()}
-                        >
+                        <AlertDialogAction onClick={() => handleDisconnect()}>
                           Desconectar tudo
                         </AlertDialogAction>
                       </AlertDialogFooter>
@@ -472,8 +473,7 @@ export function ShopeeConnectionTab() {
                     <p className="text-sm text-yellow-600 dark:text-yellow-300">
                       {isCollaborator
                         ? "Solicite ao administrador da conta para conectar uma conta Shopee."
-                        : status?.message ||
-                          "Conecte sua conta para começar."}
+                        : status?.message || "Conecte sua conta para começar."}
                     </p>
                   </div>
                 </div>

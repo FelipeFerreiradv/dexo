@@ -32,7 +32,7 @@ export function CountryGrid({
     <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
       <CardHeader className="flex flex-row items-center justify-between px-5 pb-2 pt-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+          <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
             Vendas por Conta
           </p>
         </div>
@@ -82,7 +82,7 @@ export function CountryGrid({
             </div>
             <div className="flex flex-col items-end gap-1">
               {item.revenue && item.revenue !== "-" ? (
-                <span className="text-sm font-semibold text-foreground">
+                <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
                   {item.revenue}
                 </span>
               ) : null}

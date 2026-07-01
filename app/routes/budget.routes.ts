@@ -1,6 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BudgetUseCase } from "../usecases/budget.usecase";
-import { Budget, BudgetStatus } from "../interfaces/budget.interface";
+import {
+  Budget,
+  BudgetStage,
+  BudgetStatus,
+} from "../interfaces/budget.interface";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
@@ -59,8 +63,7 @@ function buildBudgetReportData(
           addressLine: buildAddressLine(company),
         }
       : null,
-    companyName:
-      company?.nomeFantasia || company?.razaoSocial || "Sua empresa",
+    companyName: company?.nomeFantasia || company?.razaoSocial || "Sua empresa",
     budgetNumber: budget.document || `#${budget.id.slice(-8)}`,
     statusLabel: budget.status,
     client: {
@@ -129,10 +132,7 @@ export const budgetRoutes = async (fastify: FastifyInstance) => {
     }
   };
 
-  const listHandler = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ) => {
+  const listHandler = async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const userId = (request as any).user?.dataOwnerId as string;
       const {
@@ -241,6 +241,9 @@ export const budgetRoutes = async (fastify: FastifyInstance) => {
     }
   };
 
+  // Cancela o orçamento. Body OPCIONAL { pipelineStage?, lostReason? }: SEM body =
+  // exatamente como hoje (default CANCELADO). Do kanban vem { pipelineStage:
+  // "PERDIDO", lostReason? } (Perdido) ou { pipelineStage: "CANCELADO" }.
   const cancelHandler = async (
     request: FastifyRequest,
     reply: FastifyReply,
@@ -248,7 +251,19 @@ export const budgetRoutes = async (fastify: FastifyInstance) => {
     try {
       const userId = (request as any).user?.dataOwnerId as string;
       const { id } = request.params as { id: string };
-      const budget = await useCase.cancel(id, userId);
+      const body = (request.body ?? {}) as {
+        pipelineStage?: BudgetStage;
+        lostReason?: string | null;
+      };
+      const hasOpts =
+        body.pipelineStage !== undefined || body.lostReason !== undefined;
+      const budget = await useCase.cancel(
+        id,
+        userId,
+        hasOpts
+          ? { pipelineStage: body.pipelineStage, lostReason: body.lostReason }
+          : undefined,
+      );
       return reply.status(200).send({ budget });
     } catch (error) {
       const message =
@@ -257,7 +272,37 @@ export const budgetRoutes = async (fastify: FastifyInstance) => {
         ? 404
         : message.includes("convertido")
           ? 409
-          : 500;
+          : message.includes("inválido")
+            ? 400
+            : 500;
+      return reply.status(status).send({ error: message });
+    }
+  };
+
+  // Move o card entre estágios ABERTOS do funil (Novo/Em negociação/Proposta
+  // enviada). Só atualiza pipelineStage; SEM efeito financeiro. Body:
+  // { pipelineStage: BudgetStage }. Mesmo esquema de status por substring.
+  const stageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const userId = (request as any).user?.dataOwnerId as string;
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as { pipelineStage?: BudgetStage };
+      if (!body.pipelineStage) {
+        return reply.status(400).send({ error: "Estágio inválido" });
+      }
+      const budget = await useCase.setStage(id, userId, body.pipelineStage);
+      return reply.status(200).send({ budget });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erro ao mover o orçamento";
+      // "abertos" => não-ABERTO (conflito de estado) → 409.
+      const status = message.includes("não encontrado")
+        ? 404
+        : message.includes("abertos")
+          ? 409
+          : message.includes("inválido")
+            ? 400
+            : 500;
       return reply.status(status).send({ error: message });
     }
   };
@@ -351,6 +396,11 @@ export const budgetRoutes = async (fastify: FastifyInstance) => {
   fastify.put("/:id", { preHandler: [authMiddleware] }, updateHandler);
   fastify.delete("/:id", { preHandler: [authMiddleware] }, deleteHandler);
   fastify.post("/:id/cancel", { preHandler: [authMiddleware] }, cancelHandler);
-  fastify.post("/:id/convert", { preHandler: [authMiddleware] }, convertHandler);
+  fastify.patch("/:id/stage", { preHandler: [authMiddleware] }, stageHandler);
+  fastify.post(
+    "/:id/convert",
+    { preHandler: [authMiddleware] },
+    convertHandler,
+  );
   fastify.get("/:id/pdf", { preHandler: [authMiddleware] }, pdfHandler);
 };

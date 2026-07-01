@@ -293,8 +293,12 @@ export function ScrapsList() {
                               "—"
                             )}
                           </TableCell>
-                          <TableCell>{formatCost(scrap.cost)}</TableCell>
-                          <TableCell>{scrap.locationCode || "—"}</TableCell>
+                          <TableCell className="font-mono font-semibold tabular-nums">
+                            {formatCost(scrap.cost)}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs uppercase tracking-[0.08em] text-muted-foreground">
+                            {scrap.locationCode || "—"}
+                          </TableCell>
                           <TableCell>
                             <Badge variant={statusConf.variant}>
                               {statusConf.label}

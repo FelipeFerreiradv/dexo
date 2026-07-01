@@ -54,7 +54,9 @@ function buildApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  (prisma as any).$transaction.mockImplementation(async (cb: any) => cb(prisma));
+  (prisma as any).$transaction.mockImplementation(async (cb: any) =>
+    cb(prisma),
+  );
 });
 
 const budgetWithItems = {
@@ -137,14 +139,23 @@ describe("POST /budgets/:id/convert", () => {
     // Receivable criado com os itens copiados (markPaid futuro baixa o estoque).
     expect(body.receivable.status).toBe("PENDENTE");
     expect(body.receivable.items).toHaveLength(1);
-    expect(body.receivable.items[0]).toMatchObject({ productId: "p-1", quantity: 2 });
+    expect(body.receivable.items[0]).toMatchObject({
+      productId: "p-1",
+      quantity: 2,
+    });
 
     // Tudo na MESMA transação.
     expect((prisma as any).$transaction).toHaveBeenCalled();
     // Itens copiados via createMany (mesmo caminho do balcão).
     expect((prisma as any).receivableItem.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: [expect.objectContaining({ receivableId: "r-1", productId: "p-1", quantity: 2 })],
+        data: [
+          expect.objectContaining({
+            receivableId: "r-1",
+            productId: "p-1",
+            quantity: 2,
+          }),
+        ],
       }),
     );
     // Vínculo bidirecional.
@@ -154,7 +165,9 @@ describe("POST /budgets/:id/convert", () => {
     });
     expect((prisma as any).budget.update).toHaveBeenCalledWith({
       where: { id: "b-1" },
-      data: { status: "CONVERTIDO" },
+      // pipelineStage=GANHO é aditivo (CRM): a coluna Fechado deriva de
+      // status=CONVERTIDO; o GANHO só torna o dado do funil explícito.
+      data: { status: "CONVERTIDO", pipelineStage: "GANHO" },
     });
   });
 

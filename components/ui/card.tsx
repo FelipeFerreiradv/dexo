@@ -7,7 +7,9 @@ function Card({ className, ...props }: React.ComponentProps<'div'>) {
     <div
       data-slot="card"
       className={cn(
-        'bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm',
+        // Base premium: creme catálogo levantando do pergaminho, borda quente e
+        // sombra em camadas (suave). Overrides via className continuam vencendo.
+        'bg-card text-card-foreground flex flex-col gap-6 rounded-xl border border-border/70 py-6 shadow-[0_1px_2px_-1px_rgba(14,31,42,0.06),0_20px_48px_-34px_rgba(14,31,42,0.42)]',
         className,
       )}
       {...props}

@@ -418,7 +418,9 @@ export class NfeRepository {
         where,
         skip: (query.page - 1) * query.limit,
         take: query.limit,
-        orderBy: { createdAt: "desc" },
+        // Notas emitidas em ordem de numeração decrescente (nº maior primeiro).
+        // Drafts são excluídos no where (status != DRAFT), então todo nº é real.
+        orderBy: { numero: "desc" },
         select: {
           id: true,
           orderId: true,

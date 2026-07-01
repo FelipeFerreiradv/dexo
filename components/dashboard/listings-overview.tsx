@@ -80,7 +80,10 @@ function colorForIndex(idx: number) {
 export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
   const merged = useMemo(
     () =>
-      mergeSeries(stats?.timeline.global ?? [], stats?.timeline.perAccount ?? {}),
+      mergeSeries(
+        stats?.timeline.global ?? [],
+        stats?.timeline.perAccount ?? {},
+      ),
     [stats],
   );
 
@@ -96,7 +99,7 @@ export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
   return (
     <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
       <CardHeader className="pb-3 pt-4 px-5">
-        <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
           Anúncios
         </p>
         <div className="mt-2 flex flex-wrap gap-2 text-xs">

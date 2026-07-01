@@ -295,18 +295,22 @@ export function MagaluConnectionTab() {
               {accounts.map((acc) => (
                 <div
                   key={acc.id}
-                  className="flex items-center justify-between rounded-lg border p-3"
+                  className="relative flex items-center justify-between gap-3 overflow-hidden rounded-lg border border-border/60 bg-card p-3"
                 >
-                  <div className="space-y-1">
+                  <span
+                    className="absolute inset-y-0 left-0 w-1 bg-emerald-500"
+                    aria-hidden
+                  />
+                  <div className="min-w-0 space-y-1.5 pl-1.5">
                     <div className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-green-600" />
-                      <span className="font-medium">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span className="truncate font-semibold [font-family:var(--font-bricolage)]">
                         {acc.accountName || "Conta Magalu"}
                       </span>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Status: {acc.status || status.status || "Ativo"}
-                    </p>
+                    <span className="inline-flex items-center rounded-full bg-emerald-500/12 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                      {acc.status || status.status || "Ativo"}
+                    </span>
                   </div>
                   {!isCollaborator && (
                     <Button
@@ -369,8 +373,8 @@ export function MagaluConnectionTab() {
                         Desconectar todas as contas Magalu?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
-                        Esta ação removerá as conexões das contas da Magalu. Você
-                        não perderá seus anúncios, mas a sincronização será
+                        Esta ação removerá as conexões das contas da Magalu.
+                        Você não perderá seus anúncios, mas a sincronização será
                         interrompida.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
@@ -389,9 +393,9 @@ export function MagaluConnectionTab() {
             )}
             {isCollaborator && (
               <p className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-                A gestão das conexões com marketplaces é feita pelo administrador
-                da conta. Você pode usar as contas conectadas para criar
-                anúncios.
+                A gestão das conexões com marketplaces é feita pelo
+                administrador da conta. Você pode usar as contas conectadas para
+                criar anúncios.
               </p>
             )}
           </div>

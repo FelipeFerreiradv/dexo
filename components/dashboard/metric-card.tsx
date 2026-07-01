@@ -89,7 +89,7 @@ export function MetricCard({
         <div className="flex flex-col items-end gap-1">
           <div
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.06em]",
+              "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-[0.06em] tabular-nums",
               deltaTone,
             )}
           >
@@ -97,7 +97,7 @@ export function MetricCard({
             <span>{formatDelta(delta)}</span>
           </div>
           {deltaLabel ? (
-            <span className="text-[10px] text-muted-foreground">
+            <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-muted-foreground">
               {deltaLabel}
             </span>
           ) : null}
@@ -105,7 +105,7 @@ export function MetricCard({
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5">
         <div className="flex items-center justify-between gap-4">
-          <span className="text-3xl font-semibold leading-none tracking-tight text-foreground">
+          <span className="text-4xl leading-none tabular-nums text-foreground [font-family:var(--font-fraunces)]">
             {value}
           </span>
           {Icon ? (

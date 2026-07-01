@@ -4,6 +4,30 @@
 
 export type BudgetStatus = "ABERTO" | "CONVERTIDO" | "EXPIRADO" | "CANCELADO";
 
+// Estágio do funil de CRM — 2ª dimensão ADITIVA e OPCIONAL (nullable), ortogonal
+// ao BudgetStatus. Não governa editar/converter/cancelar; só posiciona o card no
+// kanban. A coluna exibida é derivada de (status + pipelineStage).
+export type BudgetStage =
+  | "NOVO"
+  | "EM_NEGOCIACAO"
+  | "PROPOSTA_ENVIADA"
+  | "GANHO"
+  | "PERDIDO"
+  | "CANCELADO";
+
+// Estágios "abertos" — os únicos aceitos por setStage (orçamento ABERTO).
+export const OPEN_BUDGET_STAGES: BudgetStage[] = [
+  "NOVO",
+  "EM_NEGOCIACAO",
+  "PROPOSTA_ENVIADA",
+];
+
+// Opções do cancel a partir do kanban (backward-compatible: sem opts = hoje).
+export interface BudgetCancelOptions {
+  pipelineStage?: BudgetStage; // "CANCELADO" (default) ou "PERDIDO"
+  lostReason?: string | null;
+}
+
 // Item do orçamento. Mesma forma do ReceivableItemInput (cadastrado OU manual).
 export interface BudgetItemInput {
   // Item CADASTRADO: productId setado, description null.
@@ -43,6 +67,10 @@ export interface Budget {
 
   status: BudgetStatus;
   validUntil: Date | null;
+
+  // CRM (aditivo). null = orçamento antigo → deriva "Novo" na exibição.
+  pipelineStage?: BudgetStage | null;
+  lostReason?: string | null;
 
   // Conta a receber gerada na conversão (quando CONVERTIDO).
   receivableId: string | null;
@@ -90,6 +118,11 @@ export interface BudgetCreate {
   // Data de validade do orçamento (string ISO/"YYYY-MM-DD" ou Date). Opcional.
   validUntil?: string | Date | null;
 
+  // CRM (aditivo/opcional). O fluxo padrão de criação NÃO envia estágio — o card
+  // deriva "Novo" a partir de null. Transições de funil usam PATCH /stage e cancel.
+  pipelineStage?: BudgetStage | null;
+  lostReason?: string | null;
+
   items?: BudgetItemInput[];
 }
 
@@ -98,6 +131,8 @@ export type BudgetUpdate = Partial<Omit<BudgetCreate, "userId">>;
 export interface BudgetListFilters {
   search?: string;
   status?: BudgetStatus;
+  // Filtro por estágio de funil (CRM). Opcional; ignorado quando ausente.
+  pipelineStage?: BudgetStage;
   customerId?: string;
   // undefined/"" = todas; "sem_unidade" = unidadeId NULL; outro = aquela unidade.
   unidadeId?: string;

@@ -2,9 +2,11 @@ import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
 import {
   Budget,
+  BudgetCancelOptions,
   BudgetCreate,
   BudgetListFilters,
   BudgetListResult,
+  BudgetStage,
   BudgetUpdate,
 } from "../interfaces/budget.interface";
 
@@ -29,6 +31,8 @@ function toEntry(raw: any): Budget {
     totalAmount: Number(raw.totalAmount),
     status: raw.status,
     validUntil: raw.validUntil ?? null,
+    pipelineStage: raw.pipelineStage ?? null,
+    lostReason: raw.lostReason ?? null,
     receivableId: raw.receivable?.id ?? null,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
@@ -193,9 +197,13 @@ export class BudgetRepository {
     delete payload.items;
     delete payload.userId;
     delete payload.newCustomer;
-    if ("validUntil" in payload) payload.validUntil = parseDate(payload.validUntil);
+    if ("validUntil" in payload)
+      payload.validUntil = parseDate(payload.validUntil);
 
-    const res = await db.budget.updateMany({ where: { id, userId }, data: payload });
+    const res = await db.budget.updateMany({
+      where: { id, userId },
+      data: payload,
+    });
     if (res.count === 0) throw new Error("Orçamento não encontrado");
 
     const updated = await db.budget.findUnique({
@@ -282,6 +290,8 @@ export class BudgetRepository {
     } else if (filters.status) {
       where.status = filters.status;
     }
+    // Filtro por estágio de funil (CRM). Aditivo/opcional.
+    if (filters.pipelineStage) where.pipelineStage = filters.pipelineStage;
     if (filters.from || filters.to) {
       where.createdAt = {};
       if (filters.from) where.createdAt.gte = new Date(filters.from);
@@ -315,9 +325,13 @@ export class BudgetRepository {
           totalAmount: true,
           status: true,
           validUntil: true,
+          pipelineStage: true,
+          lostReason: true,
           createdAt: true,
           updatedAt: true,
-          customer: { select: { id: true, name: true, cpf: true, email: true } },
+          customer: {
+            select: { id: true, name: true, cpf: true, email: true },
+          },
           unidade: { select: { id: true, name: true } },
           vendedor: { select: { id: true, name: true, email: true } },
           receivable: { select: { id: true } },
@@ -335,10 +349,23 @@ export class BudgetRepository {
 
   // Cancela (status → CANCELADO). Bloqueado se já CONVERTIDO (preserva o
   // histórico/vínculo). Idempotente para ABERTO/EXPIRADO/CANCELADO.
-  async cancel(id: string, userId: string): Promise<Budget> {
+  //
+  // ADITIVO (CRM): opts?.pipelineStage carimba o sub-estágio do funil
+  // ("CANCELADO" default ou "PERDIDO") + lostReason opcional. Sem opts =
+  // comportamento de hoje + default "CANCELADO" (invisível ao Financeiro, que
+  // não lê pipelineStage; a coluna Cancelado deriva igual).
+  async cancel(
+    id: string,
+    userId: string,
+    opts?: BudgetCancelOptions,
+  ): Promise<Budget> {
+    const stage: BudgetStage = opts?.pipelineStage ?? "CANCELADO";
+    const data: any = { status: "CANCELADO", pipelineStage: stage };
+    if (opts && "lostReason" in opts) data.lostReason = opts.lostReason ?? null;
+
     const res = await prisma.budget.updateMany({
       where: { id, userId, status: { not: "CONVERTIDO" } },
-      data: { status: "CANCELADO" },
+      data,
     });
     if (res.count === 0) {
       const exists = await prisma.budget.findFirst({
@@ -350,6 +377,58 @@ export class BudgetRepository {
     }
     const updated = await this.findById(id, userId);
     return updated!;
+  }
+
+  // Move o orçamento entre estágios ABERTOS do funil (Novo/Em negociação/
+  // Proposta enviada) — só atualiza pipelineStage, SEM efeito financeiro.
+  // Guarda atômica: só ABERTO (persistido) muda de estágio; CONVERTIDO/CANCELADO
+  // → 409. EXPIRADO é ABERTO por baixo, então é aceito. A validação do valor de
+  // `stage` (aberto) fica no usecase.
+  async setStage(
+    id: string,
+    userId: string,
+    stage: BudgetStage,
+  ): Promise<Budget> {
+    const res = await prisma.budget.updateMany({
+      where: { id, userId, status: "ABERTO" },
+      data: { pipelineStage: stage },
+    });
+    if (res.count === 0) {
+      const exists = await prisma.budget.findFirst({
+        where: { id, userId },
+        select: { status: true },
+      });
+      if (!exists) throw new Error("Orçamento não encontrado");
+      throw new Error("Apenas orçamentos abertos podem mudar de estágio");
+    }
+    const updated = await this.findById(id, userId);
+    return updated!;
+  }
+
+  // Contagem de orçamentos por cliente (indicador da tabela de Clientes).
+  // Batelado: uma única groupBy p/ os IDs da página atual, escopado por userId.
+  // `open` = status ABERTO persistido (inclui os que exibirão EXPIRADO).
+  async countByCustomer(
+    userId: string,
+    ids: string[],
+  ): Promise<Record<string, { total: number; open: number }>> {
+    const out: Record<string, { total: number; open: number }> = {};
+    for (const id of ids) out[id] = { total: 0, open: 0 };
+    if (ids.length === 0) return out;
+
+    const rows = await prisma.budget.groupBy({
+      by: ["customerId", "status"],
+      where: { userId, customerId: { in: ids } },
+      _count: { _all: true },
+    });
+    for (const r of rows) {
+      const bucket =
+        out[r.customerId] ?? (out[r.customerId] = { total: 0, open: 0 });
+      const n = r._count._all;
+      bucket.total += n;
+      if (r.status === "ABERTO") bucket.open += n;
+    }
+    return out;
   }
 
   // Hard-delete (cascade dos itens). Bloqueado se CONVERTIDO (mantém o vínculo

@@ -52,6 +52,7 @@ import {
 import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 import { BudgetDialog } from "./budget-dialog";
 import type { BudgetFormData } from "../lib/budget-schema";
 import { downloadBudgetPdf } from "../lib/download-budget";
@@ -123,17 +124,17 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] =
-    useState<
-      | (Partial<BudgetFormData> & {
-          id?: string;
-          customer?: { id: string; name: string; cpf: string | null } | null;
-        })
-      | undefined
-    >(undefined);
-  const [confirm, setConfirm] = useState<
-    { type: "delete" | "convert"; row: BudgetRow } | null
-  >(null);
+  const [editing, setEditing] = useState<
+    | (Partial<BudgetFormData> & {
+        id?: string;
+        customer?: { id: string; name: string; cpf: string | null } | null;
+      })
+    | undefined
+  >(undefined);
+  const [confirm, setConfirm] = useState<{
+    type: "delete" | "convert";
+    row: BudgetRow;
+  } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -341,13 +342,13 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
     <>
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Orçamentos</CardTitle>
-            <CardDescription>
-              {total} orçamento{total === 1 ? "" : "s"} cadastrado
-              {total === 1 ? "" : "s"}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Financeiro · Propostas"
+            title="Orçamentos"
+            description={`${total} orçamento${total === 1 ? "" : "s"} cadastrado${
+              total === 1 ? "" : "s"
+            }`}
+          />
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4" />
             Novo orçamento
@@ -455,7 +456,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                       <TableCell>
                         {r.vendedor?.name || r.vendedor?.email || "—"}
                       </TableCell>
-                      <TableCell>R$ {formatToBRL(r.totalAmount)}</TableCell>
+                      <TableCell className="font-mono font-semibold tabular-nums">
+                        R$ {formatToBRL(r.totalAmount)}
+                      </TableCell>
                       <TableCell>
                         {r.validUntil
                           ? new Date(r.validUntil).toLocaleDateString("pt-BR")
@@ -464,7 +467,7 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                       <TableCell>
                         <span
                           className={cn(
-                            "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
                             STATUS_STYLES[r.status],
                           )}
                         >
@@ -479,7 +482,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                               variant="ghost"
                               title="Converter em venda (Conta a Receber)"
                               disabled={busyId !== null}
-                              onClick={() => setConfirm({ type: "convert", row: r })}
+                              onClick={() =>
+                                setConfirm({ type: "convert", row: r })
+                              }
                             >
                               <ShoppingCart className="h-4 w-4 text-green-600" />
                             </Button>
@@ -523,7 +528,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                               size="icon"
                               variant="ghost"
                               title="Excluir"
-                              onClick={() => setConfirm({ type: "delete", row: r })}
+                              onClick={() =>
+                                setConfirm({ type: "delete", row: r })
+                              }
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>

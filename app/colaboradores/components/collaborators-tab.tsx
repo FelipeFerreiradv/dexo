@@ -13,6 +13,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SectionHeading } from "@/components/section-heading";
 import {
   Card,
   CardContent,
@@ -132,7 +133,8 @@ export function CollaboratorsTab() {
         page: page.toString(),
         limit: "50",
       });
-      if (collaboratorId !== "ALL") params.set("collaboratorId", collaboratorId);
+      if (collaboratorId !== "ALL")
+        params.set("collaboratorId", collaboratorId);
       if (actionFilter !== "ALL") params.set("action", actionFilter);
       if (startDate) params.set("startDate", startDate);
       if (endDate) params.set("endDate", endDate);
@@ -201,12 +203,16 @@ export function CollaboratorsTab() {
     <div className="space-y-6">
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
-          <CardTitle>Equipe</CardTitle>
-          <CardDescription>
-            {collaborators.length === 0
-              ? "Nenhum colaborador vinculado à sua conta. Cadastre-os via SQL (ver README)."
-              : `${collaborators.length} colaborador(es) vinculado(s) à sua conta.`}
-          </CardDescription>
+          <SectionHeading
+            eyebrow="Equipe · Membros"
+            title="Sua"
+            accent="equipe"
+            description={
+              collaborators.length === 0
+                ? "Nenhum colaborador vinculado à sua conta"
+                : `${collaborators.length} colaborador(es) vinculado(s) à sua conta`
+            }
+          />
         </CardHeader>
         {collaborators.length > 0 && (
           <CardContent>

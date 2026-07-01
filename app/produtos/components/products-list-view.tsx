@@ -87,7 +87,11 @@ export function ProductsListView({
                 <Checkbox
                   aria-label="Selecionar todos os produtos desta página"
                   checked={
-                    allSelected ? true : isIndeterminate ? "indeterminate" : false
+                    allSelected
+                      ? true
+                      : isIndeterminate
+                        ? "indeterminate"
+                        : false
                   }
                   onCheckedChange={toggleSelectAll}
                   disabled={isBulkDeleting || isBulkPausing}
@@ -96,10 +100,14 @@ export function ProductsListView({
               <TableHead>Imagem</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead>Nome</TableHead>
-              <TableHead className="hidden md:table-cell">Marketplaces</TableHead>
+              <TableHead className="hidden md:table-cell">
+                Marketplaces
+              </TableHead>
               <TableHead className="hidden md:table-cell">Preço</TableHead>
               <TableHead>Estoque</TableHead>
-              <TableHead className="hidden lg:table-cell">Localização</TableHead>
+              <TableHead className="hidden lg:table-cell">
+                Localização
+              </TableHead>
               <TableHead className="hidden lg:table-cell">Criado em</TableHead>
               <TableHead className="text-right">Ações</TableHead>
             </TableRow>
@@ -149,20 +157,26 @@ export function ProductsListView({
                     </div>
                   )}
                 </TableCell>
-                <TableCell className="font-mono text-sm">{product.sku}</TableCell>
+                <TableCell className="font-mono text-sm">
+                  {product.sku}
+                </TableCell>
                 <TableCell className="font-medium">
                   <div>
                     <p>{product.name}</p>
-                    {product.createdFromMarketplace && product.originPlatform && (
-                      <Badge variant="secondary" className="mt-0.5 font-normal">
-                        Origem: Anúncio{" "}
-                        {product.originPlatform === "SHOPEE"
-                          ? "Shopee"
-                          : product.originPlatform === "MAGALU"
-                            ? "Magalu"
-                            : "Mercado Livre"}
-                      </Badge>
-                    )}
+                    {product.createdFromMarketplace &&
+                      product.originPlatform && (
+                        <Badge
+                          variant="secondary"
+                          className="mt-0.5 font-normal"
+                        >
+                          Origem: Anúncio{" "}
+                          {product.originPlatform === "SHOPEE"
+                            ? "Shopee"
+                            : product.originPlatform === "MAGALU"
+                              ? "Magalu"
+                              : "Mercado Livre"}
+                        </Badge>
+                      )}
                     {product.description && (
                       <p
                         className="text-xs text-muted-foreground"
@@ -350,7 +364,7 @@ export function ProductsListView({
               </div>
             </div>
             <div className="flex items-center justify-between border-t pt-2">
-              <span className="text-lg font-semibold">
+              <span className="font-mono text-lg font-semibold tabular-nums">
                 {formatPrice(product.price)}
               </span>
               <div className="flex gap-1">

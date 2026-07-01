@@ -45,6 +45,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { SectionHeading } from "@/components/section-heading";
 import {
   Tooltip,
   TooltipContent,
@@ -408,7 +409,9 @@ export function NfeList() {
             <FileText className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total}</div>
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.total}
+            </div>
             <p className="text-xs text-muted-foreground">
               Notas emitidas no sistema
             </p>
@@ -421,7 +424,9 @@ export function NfeList() {
             <CheckCircle2 className="size-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.autorizadas}</div>
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.autorizadas}
+            </div>
             <p className="text-xs text-muted-foreground">
               {formatCurrency(stats.valorTotal)}
             </p>
@@ -434,7 +439,9 @@ export function NfeList() {
             <XCircle className="size-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.rejeitadas}</div>
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.rejeitadas}
+            </div>
             <p className="text-xs text-muted-foreground">Precisam de atencao</p>
           </CardContent>
         </Card>
@@ -445,7 +452,9 @@ export function NfeList() {
             <FileSignature className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.canceladas}</div>
+            <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+              {stats.canceladas}
+            </div>
             <p className="text-xs text-muted-foreground">Notas canceladas</p>
           </CardContent>
         </Card>
@@ -529,10 +538,12 @@ export function NfeList() {
       {/* Table */}
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
-          <CardTitle>Notas Fiscais Emitidas</CardTitle>
-          <CardDescription>
-            Lista de todas as notas fiscais emitidas no sistema
-          </CardDescription>
+          <SectionHeading
+            eyebrow="Notas Fiscais · Registro"
+            title="Notas"
+            accent="emitidas"
+            description="Todas as NF-e emitidas no sistema"
+          />
         </CardHeader>
         <CardContent>
           {isLoading ? (

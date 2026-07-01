@@ -32,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 
 // Cores das séries (tokens do tema — a tela segue a identidade shadcn/Dexo; o
 // visual editorial pesado é só do PDF). ML × Shopee são tokens distintos.
@@ -257,13 +258,14 @@ export function TeamProductivity({
     <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
       <CardHeader className="gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Produtividade da equipe</CardTitle>
-            <CardDescription>
-              Produtos e anúncios criados por colaborador
-              {data?.range?.label ? ` · ${data.range.label}` : ""}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Equipe · Desempenho"
+            title="Produtividade da"
+            accent="equipe"
+            description={`Produtos e anúncios por colaborador${
+              data?.range?.label ? ` · ${data.range.label}` : ""
+            }`}
+          />
           <Button
             variant="outline"
             size="sm"
@@ -408,10 +410,7 @@ export function TeamProductivity({
                         c.anuncios.total > 0
                           ? (c.anuncios.magalu / c.anuncios.total) * 100
                           : 0;
-                      const outroW = Math.max(
-                        0,
-                        100 - mlW - shopeeW - magaluW,
-                      );
+                      const outroW = Math.max(0, 100 - mlW - shopeeW - magaluW);
                       return (
                         <div
                           key={c.id}
@@ -674,7 +673,9 @@ export function TeamProductivity({
                       <th className="px-3 py-2 text-right font-medium">
                         Orçamentos
                       </th>
-                      <th className="px-3 py-2 text-right font-medium">Valor</th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Valor
+                      </th>
                       <th className="px-3 py-2 text-right font-medium">
                         Convertidos
                       </th>
@@ -689,21 +690,21 @@ export function TeamProductivity({
                         <td className="px-3 py-2">
                           {v.name || v.email}
                           {v.isOwner ? (
-                            <span className="ml-1 text-xs text-muted-foreground">
-                              (admin)
+                            <span className="ml-1.5 inline-flex items-center rounded-full bg-primary/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wide text-foreground/70">
+                              admin
                             </span>
                           ) : null}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
                           {nf.format(v.orcamentos.count)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
                           {brl(v.orcamentos.valor)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
                           {nf.format(v.convertidos.count)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
                           {brl(v.convertidos.valor)}
                         </td>
                       </tr>
@@ -712,8 +713,9 @@ export function TeamProductivity({
                 </table>
               </div>
               <p className="text-xs text-muted-foreground">
-                Orçamentos criados no período por vendedor. &quot;Convertidos&quot;
-                = viraram venda (Conta a Receber) — base usual para comissão.
+                Orçamentos criados no período por vendedor.
+                &quot;Convertidos&quot; = viraram venda (Conta a Receber) — base
+                usual para comissão.
               </p>
             </div>
           )}
@@ -735,9 +737,16 @@ function KpiCard({
 }) {
   return (
     <div className="relative overflow-hidden rounded-xl border border-border/60 bg-card/90 p-3.5 sm:p-4">
+      {dotColor ? (
+        <span
+          className="absolute inset-y-0 left-0 w-1"
+          style={{ backgroundColor: dotColor }}
+          aria-hidden
+        />
+      ) : null}
       <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="min-w-0 space-y-1 sm:space-y-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-foreground sm:text-sm">
+          <div className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
             {dotColor ? (
               <span
                 className="inline-block size-2 shrink-0 rounded-full"
@@ -747,7 +756,7 @@ function KpiCard({
             ) : null}
             <span className="leading-tight">{title}</span>
           </div>
-          <div className="text-2xl font-semibold leading-none tracking-tight tabular-nums sm:text-3xl">
+          <div className="text-3xl leading-none tabular-nums sm:text-4xl [font-family:var(--font-fraunces)]">
             {nf.format(value)}
           </div>
         </div>

@@ -23,11 +23,13 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
 import { CreateScrapDialog } from "./create-scrap-dialog";
 import {
   LOGISTICS_ORDER,
   LOGISTICS_CONFIG,
+  paintColorHex,
   type LogisticsStatus,
 } from "../lib/logistics";
 
@@ -179,23 +181,24 @@ export function ScrapsPipeline() {
             return (
               <div
                 key={stage}
-                className="flex min-w-[280px] max-w-[340px] flex-1 flex-col rounded-lg border bg-muted/30"
+                className="flex min-w-[280px] max-w-[340px] flex-1 flex-col overflow-hidden rounded-2xl border border-border/60 bg-muted/20"
               >
-                <div className="flex items-center gap-2 border-b px-3 py-2.5">
+                <div className={cn("h-1", conf.spine)} />
+                <div className="flex items-center gap-2.5 border-b border-border/60 px-3 py-2.5">
                   <span
-                    className={`flex h-7 w-7 items-center justify-center rounded-md ${conf.badgeClass}`}
+                    className={`flex h-8 w-8 items-center justify-center rounded-lg ${conf.badgeClass}`}
                   >
                     <StageIcon className="h-4 w-4" />
                   </span>
-                  <div className="flex-1">
-                    <div className="text-sm font-semibold leading-tight">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-[11px] font-semibold uppercase leading-tight tracking-[0.1em] text-foreground/90">
                       {conf.label}
                     </div>
-                    <div className="text-[11px] leading-tight text-muted-foreground">
+                    <div className="truncate text-[11px] leading-tight text-muted-foreground">
                       {conf.description}
                     </div>
                   </div>
-                  <Badge variant="secondary" className="tabular-nums">
+                  <Badge variant="secondary" className="font-mono tabular-nums">
                     {loading ? "…" : (col?.count ?? 0)}
                   </Badge>
                 </div>
@@ -267,75 +270,105 @@ function PipelineCard({
   onEdit: () => void;
   onMove: (id: string, target: LogisticsStatus) => void;
 }) {
-  const subtitle = [scrap.year, scrap.version, scrap.color]
-    .filter(Boolean)
-    .join(" · ");
+  const conf = LOGISTICS_CONFIG[scrap.logisticsStatus];
+  const specs = [scrap.year, scrap.version].filter(Boolean).join(" · ");
+  const paint = paintColorHex(scrap.color);
   const targets = LOGISTICS_ORDER.filter((s) => s !== scrap.logisticsStatus);
+  const count = scrap.productsCount ?? 0;
 
   return (
-    <div className="rounded-md border bg-card p-3 shadow-sm">
-      <Link
-        href={`/sucatas/${scrap.id}`}
-        className="text-sm font-medium leading-tight hover:underline"
-      >
-        {scrap.brand} {scrap.model}
-      </Link>
-      {subtitle && (
-        <div className="mt-0.5 text-xs text-muted-foreground">{subtitle}</div>
+    <div
+      className={cn(
+        "group relative overflow-hidden rounded-xl border border-border/60 shadow-[0_10px_30px_-26px_rgba(14,31,42,0.6)] transition-shadow hover:shadow-[0_16px_42px_-28px_rgba(14,31,42,0.5)]",
+        conf.cardBg,
       )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {scrap.plate && (
-          <Badge variant="outline" className="font-mono text-[11px]">
-            {scrap.plate}
-          </Badge>
-        )}
-        <span className="text-[11px] text-muted-foreground">
-          {scrap.productsCount ?? 0} peça(s)
-        </span>
-      </div>
-      <div className="mt-3 flex items-center justify-between">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={onEdit}
+    >
+      {/* spine de cor do estágio logístico */}
+      <span
+        className={cn("absolute inset-y-0 left-0 w-1", conf.spine)}
+        aria-hidden
+      />
+      <div className="py-3 pl-3.5 pr-3">
+        <Link
+          href={`/sucatas/${scrap.id}`}
+          className="text-[15px] font-bold leading-tight text-foreground hover:underline [font-family:var(--font-bricolage)]"
         >
-          <Pencil className="mr-1 h-3 w-3" />
-          Editar
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              disabled={moving}
-            >
-              {moving ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <ArrowRightLeft className="mr-1 h-3 w-3" />
-              )}
-              Mover
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuLabel>Mover para</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {targets.map((t) => {
-              const TIcon = LOGISTICS_CONFIG[t].icon;
-              return (
-                <DropdownMenuItem
-                  key={t}
-                  onSelect={() => onMove(scrap.id, t)}
-                >
-                  <TIcon className="mr-2 h-4 w-4" />
-                  {LOGISTICS_CONFIG[t].label}
-                </DropdownMenuItem>
-              );
-            })}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          {scrap.brand} {scrap.model}
+        </Link>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] uppercase tracking-[0.08em]">
+          {specs && <span className="text-muted-foreground">{specs}</span>}
+          {scrap.color && (
+            <span className="inline-flex items-center gap-1 font-semibold text-foreground/85">
+              <span
+                className="h-2.5 w-2.5 rounded-full border border-black/15 shadow-sm dark:border-white/25"
+                style={paint ? { backgroundColor: paint } : undefined}
+                aria-hidden
+              />
+              {scrap.color}
+            </span>
+          )}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {scrap.plate && (
+            <span className="inline-flex items-center rounded-md border border-foreground/15 bg-background/60 px-2 py-0.5 font-mono text-[11px] font-semibold tracking-wide text-foreground">
+              {scrap.plate}
+            </span>
+          )}
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
+              count > 0
+                ? "bg-[#2c5f4f]/12 text-[#2c5f4f] dark:bg-emerald-500/15 dark:text-emerald-300"
+                : "text-muted-foreground",
+            )}
+          >
+            {count} peça{count === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={onEdit}
+          >
+            <Pencil className="mr-1 h-3 w-3" />
+            Editar
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={moving}
+              >
+                {moving ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <ArrowRightLeft className="mr-1 h-3 w-3" />
+                )}
+                Mover
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Mover para</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {targets.map((t) => {
+                const TIcon = LOGISTICS_CONFIG[t].icon;
+                return (
+                  <DropdownMenuItem
+                    key={t}
+                    onSelect={() => onMove(scrap.id, t)}
+                  >
+                    <TIcon className="mr-2 h-4 w-4" />
+                    {LOGISTICS_CONFIG[t].label}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </div>
   );

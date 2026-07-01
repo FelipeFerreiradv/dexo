@@ -1,9 +1,12 @@
 import {
   Budget,
+  BudgetCancelOptions,
   BudgetCreate,
   BudgetListFilters,
   BudgetListResult,
+  BudgetStage,
   BudgetUpdate,
+  OPEN_BUDGET_STAGES,
 } from "../interfaces/budget.interface";
 import type { FinanceEntry } from "../interfaces/finance.interface";
 import prisma from "../lib/prisma";
@@ -106,7 +109,8 @@ export class BudgetUseCase {
   async create(data: BudgetCreate): Promise<Budget> {
     if (!data.userId) throw new Error("Usuário não encontrado");
     this.validateItems(data);
-    if (data.vendedorId) await this.assertVendedor(data.vendedorId, data.userId);
+    if (data.vendedorId)
+      await this.assertVendedor(data.vendedorId, data.userId);
 
     // Cadastro rápido: cria cliente + orçamento na MESMA transação (atômico),
     // reusando CustomerUseCase.createWithTx (mesma validação CPF/duplicidade).
@@ -170,8 +174,43 @@ export class BudgetUseCase {
     };
   }
 
-  async cancel(id: string, userId: string): Promise<Budget> {
-    const b = await this.repo.cancel(id, userId);
+  // Cancela. Backward-compatible: sem `opts` = comportamento atual (repo carimba
+  // pipelineStage=CANCELADO por default). Com `opts` (kanban) grava PERDIDO +
+  // lostReason. O guard de CONVERTIDO→409 continua no repo.
+  async cancel(
+    id: string,
+    userId: string,
+    opts?: BudgetCancelOptions,
+  ): Promise<Budget> {
+    if (
+      opts?.pipelineStage &&
+      opts.pipelineStage !== "CANCELADO" &&
+      opts.pipelineStage !== "PERDIDO"
+    ) {
+      throw new Error(
+        "Estágio de cancelamento inválido (use CANCELADO ou PERDIDO)",
+      );
+    }
+    const b = await this.repo.cancel(id, userId, opts);
+    return this.applyExpiredFlag(b);
+  }
+
+  // Move o card entre estágios ABERTOS do funil (só pipelineStage; sem efeito
+  // financeiro). Valida que o alvo é um estágio aberto; o guard de status ABERTO
+  // (e 404/409) é atômico no repo. Mensagem "inválido" → 400 nas rotas.
+  async setStage(
+    id: string,
+    userId: string,
+    stage: BudgetStage,
+  ): Promise<Budget> {
+    if (!OPEN_BUDGET_STAGES.includes(stage)) {
+      // Msg NÃO contém "abertos" de propósito: a rota mapeia "abertos"→409
+      // (conflito de estado) e "inválido"→400. Aqui é 400 (payload inválido).
+      throw new Error(
+        "Estágio inválido: mova apenas entre Novo, Em negociação e Proposta enviada",
+      );
+    }
+    const b = await this.repo.setStage(id, userId, stage);
     return this.applyExpiredFlag(b);
   }
 
@@ -253,7 +292,9 @@ export class BudgetUseCase {
       });
       await (tx as any).budget.update({
         where: { id: budget.id },
-        data: { status: "CONVERTIDO" },
+        // pipelineStage=GANHO é ADITIVO: a coluna Fechado deriva de
+        // status=CONVERTIDO (o GANHO só torna o dado do funil explícito).
+        data: { status: "CONVERTIDO", pipelineStage: "GANHO" },
       });
 
       return receivable;
