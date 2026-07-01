@@ -52,6 +52,7 @@ import {
 import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 import { BudgetDialog } from "./budget-dialog";
 import type { BudgetFormData } from "../lib/budget-schema";
 import { downloadBudgetPdf } from "../lib/download-budget";
@@ -341,13 +342,13 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
     <>
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Orçamentos</CardTitle>
-            <CardDescription>
-              {total} orçamento{total === 1 ? "" : "s"} cadastrado
-              {total === 1 ? "" : "s"}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Financeiro · Propostas"
+            title="Orçamentos"
+            description={`${total} orçamento${total === 1 ? "" : "s"} cadastrado${
+              total === 1 ? "" : "s"
+            }`}
+          />
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4" />
             Novo orçamento

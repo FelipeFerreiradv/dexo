@@ -44,6 +44,7 @@ import {
 import { getApiBaseUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { maskCpf, maskCnpj, maskPhone } from "@/app/lib/masks";
+import { SectionHeading } from "@/components/section-heading";
 import { CustomerDialog } from "./customer-dialog";
 import type { CustomerFormData } from "../lib/customer-schema";
 
@@ -223,16 +224,14 @@ export function CustomersList({
 
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Clientes
-            </CardTitle>
-            <CardDescription>
-              {total} cliente{total === 1 ? "" : "s"} cadastrado
-              {total === 1 ? "" : "s"}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow="Relacionamento · Base"
+            title="Base de"
+            accent="clientes"
+            description={`${total} cliente${total === 1 ? "" : "s"} cadastrado${
+              total === 1 ? "" : "s"
+            }`}
+          />
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4" />
             Novo cliente

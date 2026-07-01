@@ -51,6 +51,7 @@ import {
 import { formatToBRL } from "@/components/ui/currency-input";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
+import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
@@ -311,13 +312,18 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
     <>
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <CardTitle>Contas {label}</CardTitle>
-            <CardDescription>
-              {total} título{total === 1 ? "" : "s"} cadastrado
-              {total === 1 ? "" : "s"}.
-            </CardDescription>
-          </div>
+          <SectionHeading
+            eyebrow={
+              kind === "receivable"
+                ? "Financeiro · Entradas"
+                : "Financeiro · Saídas"
+            }
+            title="Contas"
+            accent={label}
+            description={`${total} título${total === 1 ? "" : "s"} cadastrado${
+              total === 1 ? "" : "s"
+            }`}
+          />
           <Button onClick={handleCreate}>
             <Plus className="h-4 w-4" />
             Nova conta

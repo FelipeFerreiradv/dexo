@@ -30,6 +30,7 @@ import {
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { PageHeader } from "@/components/page-header";
+import { SectionHeading } from "@/components/section-heading";
 
 interface SystemLog {
   id: string;
@@ -96,32 +97,35 @@ export default function LogsPage() {
   });
 
   // Buscar logs
-  const fetchLogs = useCallback(async (page = 1) => {
-    try {
-      setLoading(true);
-      const queryParams = new URLSearchParams({
-        page: page.toString(),
-        limit: "20",
-        ...Object.fromEntries(
-          Object.entries(filters).filter(
-            ([_, value]) => value !== undefined && value !== "",
+  const fetchLogs = useCallback(
+    async (page = 1) => {
+      try {
+        setLoading(true);
+        const queryParams = new URLSearchParams({
+          page: page.toString(),
+          limit: "20",
+          ...Object.fromEntries(
+            Object.entries(filters).filter(
+              ([_, value]) => value !== undefined && value !== "",
+            ),
           ),
-        ),
-      });
+        });
 
-      const response = await fetch(`/api/system-logs?${queryParams}`);
-      if (response.ok) {
-        const data: LogsResponse = await response.json();
-        setLogs(data.logs);
-        setCurrentPage(data.pagination.page);
-        setTotalPages(data.pagination.totalPages);
+        const response = await fetch(`/api/system-logs?${queryParams}`);
+        if (response.ok) {
+          const data: LogsResponse = await response.json();
+          setLogs(data.logs);
+          setCurrentPage(data.pagination.page);
+          setTotalPages(data.pagination.totalPages);
+        }
+      } catch (error) {
+        console.error("Erro ao buscar logs:", error);
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error("Erro ao buscar logs:", error);
-    } finally {
-      setLoading(false);
-    }
-  }, [filters]);
+    },
+    [filters],
+  );
 
   // Buscar estatísticas
   const fetchStats = useCallback(async () => {
@@ -191,8 +195,8 @@ export default function LogsPage() {
 
   // Obter texto amigável para ações
   const getActionLabel = (action: string) => {
-  const actionLabels: Record<string, string> = {
-    LOGIN: "Login",
+    const actionLabels: Record<string, string> = {
+      LOGIN: "Login",
       LOGOUT: "Logout",
       CREATE_PRODUCT: "Criar Produto",
       UPDATE_PRODUCT: "Atualizar Produto",
@@ -232,7 +236,7 @@ export default function LogsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">
+              <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
                 {stats.totalLogs.toLocaleString()}
               </div>
             </CardContent>
@@ -243,7 +247,7 @@ export default function LogsPage() {
               <CardTitle className="text-sm font-medium">Erros</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-destructive">
+              <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)] text-destructive">
                 {stats.logsByLevel.ERROR || 0}
               </div>
             </CardContent>
@@ -254,7 +258,7 @@ export default function LogsPage() {
               <CardTitle className="text-sm font-medium">Avisos</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-yellow-600">
+              <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)] text-yellow-600">
                 {stats.logsByLevel.WARNING || 0}
               </div>
             </CardContent>
@@ -267,7 +271,7 @@ export default function LogsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">
+              <div className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)] text-green-600">
                 {stats.recentActivity.find(
                   (a) => a.date === new Date().toISOString().split("T")[0],
                 )?.count || 0}
@@ -376,10 +380,12 @@ export default function LogsPage() {
       {/* Timeline de Logs */}
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
-          <CardTitle>Logs Recentes</CardTitle>
-          <CardDescription>
-            Últimas atividades registradas no sistema
-          </CardDescription>
+          <SectionHeading
+            eyebrow="Observabilidade · Timeline"
+            title="Logs"
+            accent="recentes"
+            description="Últimas atividades registradas no sistema"
+          />
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -429,7 +435,7 @@ export default function LogsPage() {
                           </span>
                           <Badge
                             variant={getLevelBadgeVariant(log.level)}
-                            className="text-xs"
+                            className="font-mono text-[10px] font-semibold uppercase tracking-wide"
                           >
                             {log.level}
                           </Badge>
