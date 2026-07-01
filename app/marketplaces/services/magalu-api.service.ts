@@ -132,8 +132,16 @@ export class MagaluApiService {
   }
 
   /**
-   * Faz POST (criar) ou PATCH (atualizar) e, em 404/409, tenta o outro método —
-   * torna estoque/preço idempotentes independente de a entrada já existir.
+   * Faz POST (criar) ou PATCH (atualizar) e, quando faz sentido, tenta o outro
+   * método — torna estoque/preço idempotentes independente de a entrada existir.
+   *
+   * O fallback é DIRECIONAL (evita 1 chamada garantidamente-inútil = egress):
+   *   - create=true  (POST primeiro): em 404 OU 409 → tenta PATCH. Um 409 no POST
+   *     significa "já existe" → o correto é atualizar (PATCH).
+   *   - create=false (PATCH primeiro): SÓ em 404 → tenta POST (a entrada não
+   *     existe → criar). NÃO faz fallback em 409: num UPDATE, 409 = "já existe",
+   *     e um POST só re-conflitaria (o SKU em análise recusa alteração até ser
+   *     aprovado). Nesse caso propaga o erro do PATCH direto, sem POST inútil.
    */
   private static async upsert(
     accessToken: string,
@@ -152,7 +160,10 @@ export class MagaluApiService {
       const status = axios.isAxiosError(error)
         ? error.response?.status
         : undefined;
-      if (status === 404 || status === 409) {
+      const shouldFallback = create
+        ? status === 404 || status === 409
+        : status === 404;
+      if (shouldFallback) {
         try {
           await axios.request({ method: fallback, url, data, headers, timeout });
           return;
