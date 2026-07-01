@@ -3134,6 +3134,7 @@ export class ListingUseCase {
     accountId?: string,
   ): Promise<CreateListingResult> {
     let account: any = null;
+    let product: any = null;
     try {
       account = accountId
         ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
@@ -3198,8 +3199,7 @@ export class ListingUseCase {
         }
       }
 
-      const product =
-        await ListingUseCase.productRepository.findById(productId);
+      product = await ListingUseCase.productRepository.findById(productId);
       if (!product) {
         return { success: false, error: "Produto não encontrado" };
       }
@@ -3215,6 +3215,15 @@ export class ListingUseCase {
           success: false,
           error:
             "Produto precisa ter preço maior que zero para criar anúncio na Magalu",
+        };
+      }
+      // Imagem obrigatória (paridade com ML/Shopee): sem imagem a Magalu não
+      // publica — previne um create fadado ao erro/DRAFT.
+      if (ListingUseCase.collectProductImageUrls(product).length === 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter pelo menos uma imagem para criar anúncio na Magalu",
         };
       }
 
@@ -3352,13 +3361,19 @@ export class ListingUseCase {
       const permalink =
         (created?.permalink as string) || (created?.url as string) || null;
 
-      const listing = await ListingRepository.createListing({
+      // upsert (não create): idempotente pela chave (conta, SKU). Se uma tentativa
+      // anterior gravou status "error", este sucesso REAPROVEITA a mesma linha
+      // virando "active" e limpa o lastError — sem P2002 nem linha duplicada.
+      const listing = await ListingRepository.upsertListing({
         productId: product.id,
         marketplaceAccountId: account.id,
         externalListingId,
-        externalSku: product.sku ?? undefined,
+        externalSku: product.sku ?? null,
         permalink,
         status: "active",
+        lastError: null,
+        retryEnabled: false,
+        nextRetryAt: null,
       });
 
       return {
@@ -3368,13 +3383,38 @@ export class ListingUseCase {
         permalink: permalink ?? undefined,
       };
     } catch (error) {
-      return {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Erro ao criar anúncio na Magalu",
-      };
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Erro ao criar anúncio na Magalu";
+      // Espelha ML/Shopee: grava o RESULTADO no listing para o badge aparecer
+      // (com opacidade menor) e o clique mostrar o porquê da falha. NÃO
+      // sobrescreve um anúncio já publicado: 409 "já cadastrado" = duplicado → o
+      // listing existente fica como está (só falhas REAIS viram "error").
+      // Best-effort: se a persistência falhar, ainda devolve o erro ao chamador.
+      const status = (error as { status?: number })?.status;
+      const isDuplicate =
+        status === 409 || /já cadastrado|already exists/i.test(message);
+      if (product?.sku && account?.id && !isDuplicate) {
+        try {
+          await ListingRepository.upsertListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId: String(product.sku),
+            externalSku: product.sku,
+            status: "error",
+            lastError: message.slice(0, 490),
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 5 * 60 * 1000),
+          });
+        } catch (persistErr) {
+          console.warn(
+            `[ListingUseCase] Falha ao gravar o erro do create Magalu (sku=${product.sku}):`,
+            persistErr instanceof Error ? persistErr.message : persistErr,
+          );
+        }
+      }
+      return { success: false, error: message };
     }
   }
 

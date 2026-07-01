@@ -67,6 +67,59 @@ export class ListingRepository {
   }
 
   /**
+   * Cria OU atualiza o listing pela unique key (marketplaceAccountId,
+   * externalListingId) — idempotente. Usado onde o mesmo anúncio pode ser
+   * (re)criado com resultados diferentes (ex.: Magalu, cuja identidade é o SKU:
+   * uma falha grava status "error"+lastError e um retry bem-sucedido reaproveita
+   * a MESMA linha virando "active", sem P2002 nem linha duplicada). Só sobrescreve
+   * os campos informados (preserva overrides do usuário e o resto).
+   */
+  static async upsertListing(data: {
+    productId: string;
+    marketplaceAccountId: string;
+    externalListingId: string;
+    externalSku?: string | null;
+    permalink?: string | null;
+    status: string;
+    lastError?: string | null;
+    retryEnabled?: boolean;
+    nextRetryAt?: Date | null;
+    retryAttempts?: number;
+  }) {
+    return prisma.productListing.upsert({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId: data.marketplaceAccountId,
+          externalListingId: data.externalListingId,
+        },
+      },
+      create: {
+        productId: data.productId,
+        marketplaceAccountId: data.marketplaceAccountId,
+        externalListingId: data.externalListingId,
+        externalSku: data.externalSku ?? null,
+        permalink: data.permalink ?? null,
+        status: data.status,
+        lastError: data.lastError ?? null,
+        retryEnabled: data.retryEnabled ?? false,
+        nextRetryAt: data.nextRetryAt ?? null,
+        retryAttempts: data.retryAttempts ?? 0,
+      },
+      update: {
+        status: data.status,
+        permalink: data.permalink === undefined ? undefined : data.permalink,
+        externalSku:
+          data.externalSku === undefined ? undefined : data.externalSku,
+        lastError: data.lastError === undefined ? undefined : data.lastError,
+        retryEnabled: data.retryEnabled ?? undefined,
+        nextRetryAt:
+          data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
+        retryAttempts: data.retryAttempts ?? undefined,
+      },
+    });
+  }
+
+  /**
    * Cria (ou reaproveita) o listing de um anúncio detectado automaticamente no
    * marketplace. Upsert na unique key (marketplaceAccountId, externalListingId):
    * idempotente e à prova de corrida — uma reentrega/polling repetido cai no
