@@ -59,7 +59,9 @@ export function ConversationList({
             ))}
           </div>
         ) : error ? (
-          <div className="p-8 text-center text-sm text-destructive">{error}</div>
+          <div className="p-8 text-center text-sm text-destructive">
+            {error}
+          </div>
         ) : conversations.length === 0 ? (
           <EmptyConversations />
         ) : (
@@ -96,9 +98,7 @@ function accountBadgeClasses(accountId: string): string {
   for (let i = 0; i < accountId.length; i++) {
     h = (h * 31 + accountId.charCodeAt(i)) | 0;
   }
-  return ACCOUNT_BADGE_PALETTE[
-    Math.abs(h) % ACCOUNT_BADGE_PALETTE.length
-  ];
+  return ACCOUNT_BADGE_PALETTE[Math.abs(h) % ACCOUNT_BADGE_PALETTE.length];
 }
 
 /**
@@ -134,7 +134,8 @@ function ConversationRow({
   const lastAt = conversation.lastQuestionAt
     ? formatRelative(conversation.lastQuestionAt)
     : "";
-  const fallback = conversation.buyerNickname?.slice(0, 2).toUpperCase() ?? "??";
+  const fallback =
+    conversation.buyerNickname?.slice(0, 2).toUpperCase() ?? "??";
 
   return (
     <li>
@@ -144,9 +145,7 @@ function ConversationRow({
         className={cn(
           "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          active
-            ? "bg-accent/50"
-            : "hover:bg-accent/30",
+          active ? "bg-accent/50" : "hover:bg-accent/30",
         )}
       >
         <Avatar className="h-10 w-10 shrink-0">
@@ -162,7 +161,7 @@ function ConversationRow({
             <div className="truncate text-sm font-medium text-foreground">
               {title}
             </div>
-            <div className="shrink-0 text-[11px] text-muted-foreground">
+            <div className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-muted-foreground tabular-nums">
               {lastAt}
             </div>
           </div>
@@ -223,7 +222,9 @@ function EmptyConversations() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
       <MessageCircle className="h-10 w-10 text-muted-foreground/40" />
-      <div className="text-sm font-medium text-foreground">Nenhuma conversa</div>
+      <div className="text-sm font-medium text-foreground">
+        Nenhuma conversa
+      </div>
       <p className="max-w-xs text-xs text-muted-foreground">
         Quando os compradores enviarem perguntas nos seus anúncios, elas vão
         aparecer aqui.

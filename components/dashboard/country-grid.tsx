@@ -82,7 +82,7 @@ export function CountryGrid({
             </div>
             <div className="flex flex-col items-end gap-1">
               {item.revenue && item.revenue !== "-" ? (
-                <span className="text-sm font-semibold text-foreground">
+                <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
                   {item.revenue}
                 </span>
               ) : null}
