@@ -107,6 +107,7 @@ const productEditSchema = z.object({
   category: z.string().max(500).optional().nullable(),
   mlCategory: z.string().optional().nullable(),
   shopeeCategory: z.string().optional().nullable(),
+  magaluCategory: z.string().optional().nullable(),
   location: z.string().max(100).optional().nullable(),
   locationId: z.string().optional().nullable(),
   partNumber: z.string().max(100).optional().nullable(),
@@ -345,6 +346,17 @@ export function EditProductDialog({
     string[]
   >([]);
   const [createMagaluListing, setCreateMagaluListing] = useState(false);
+  // Categoria Magalu (opcional; se vazia o backend resolve). Espelha o modal de
+  // criação — sugestão 1x no toggle + busca server-side debounced.
+  const [magaluOptions, setMagaluOptions] = useState<
+    { id: string; value: string }[]
+  >([]);
+  const [magaluCategorySearch, setMagaluCategorySearch] = useState("");
+  const [magaluCategoryDropdownOpen, setMagaluCategoryDropdownOpen] =
+    useState(false);
+  const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
+  const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
+  const magaluSuggestedRef = useRef(false);
 
   // ML listing settings (loaded from user defaults)
   const [mlListingType, setMlListingType] = useState("bronze");
@@ -452,6 +464,7 @@ export function EditProductDialog({
       category: product.category || "",
       mlCategory: product.mlCategory || "",
       shopeeCategory: product.shopeeCategoryId || "",
+      magaluCategory: "",
       location: product.location || "",
       partNumber: product.partNumber || "",
       quality: product.quality || null,
@@ -776,6 +789,69 @@ export function EditProductDialog({
     });
   }, [createMagaluListing, magaluAccounts]);
 
+  // Sugere a categoria Magalu 1x quando o toggle liga (ref-guard = 1 fetch, não
+  // por tecla). Usa o nome atual do produto. Espelha o modal de criação.
+  useEffect(() => {
+    if (!MAGALU_ENABLED || !createMagaluListing) {
+      magaluSuggestedRef.current = false;
+      return;
+    }
+    if (magaluSuggestedRef.current) return;
+    const name = (watchName || product.name || "").trim();
+    if (!name) return;
+    magaluSuggestedRef.current = true;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/magalu/category-suggest?name=${encodeURIComponent(
+            name,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data?.categoryId) {
+          const label = data.path || data.categoryId;
+          setValue("magaluCategory", data.categoryId, { shouldDirty: true });
+          setMagaluSelectedLabel(label);
+          setMagaluOptions([{ id: data.categoryId, value: label }]);
+        }
+      } catch (err) {
+        console.error("Erro ao sugerir categoria Magalu:", err);
+      }
+    })();
+  }, [createMagaluListing, watchName, setValue, session?.user?.email, product.name]);
+
+  // Busca server-side (debounced 400ms, só com >=2 chars e dropdown aberto) —
+  // não dispara por tecla nem sem intenção. Espelha o modal de criação.
+  useEffect(() => {
+    if (!MAGALU_ENABLED || !createMagaluListing) return;
+    const term = magaluCategorySearch.trim();
+    if (term.length < 2) return;
+    const handle = setTimeout(async () => {
+      setMagaluCategoryLoading(true);
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/magalu/categories?search=${encodeURIComponent(
+            term,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setMagaluOptions(
+            Array.isArray(data?.categories) ? data.categories : [],
+          );
+        }
+      } catch (err) {
+        console.error("Erro ao buscar categorias Magalu:", err);
+      } finally {
+        setMagaluCategoryLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [magaluCategorySearch, createMagaluListing, session?.user?.email]);
+
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   // e padrões de anúncio ML. Em seguida, sobrepõe com settings já persistidos
   // em ProductListing (se houver) — precedência: ProductListing > user.default*.
@@ -983,6 +1059,11 @@ export function EditProductDialog({
       setSelectedMlAccounts([]);
       setSelectedShopeeAccounts([]);
       setSelectedMagaluAccounts([]);
+      magaluSuggestedRef.current = false;
+      setMagaluSelectedLabel("");
+      setMagaluOptions([]);
+      setMagaluCategorySearch("");
+      setMagaluCategoryDropdownOpen(false);
 
       setMlCategoryWarning(null);
 
@@ -2055,11 +2136,16 @@ export function EditProductDialog({
         }
       }
 
-      // Magalu: sem categoryId → o backend resolve a categoria automaticamente
-      // (mesmo comportamento do modal de criação de produto).
+      // Magalu: envia a categoria escolhida (se houver); vazia → o backend
+      // resolve automaticamente (mesmo comportamento do modal de criação).
       if (createMagaluListing && selectedMagaluAccounts.length > 0) {
+        const magaluCategoryId = data.magaluCategory || undefined;
         for (const accountId of selectedMagaluAccounts) {
-          dispatchRequests.push({ platform: "MAGALU", accountId });
+          dispatchRequests.push({
+            platform: "MAGALU",
+            accountId,
+            categoryId: magaluCategoryId,
+          });
         }
       }
 
@@ -3477,35 +3563,136 @@ export function EditProductDialog({
                   </Label>
                 </div>
                 {createMagaluListing && (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {magaluAccounts.length === 0 ? (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {magaluAccounts.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Conecte ao menos uma conta do Magalu.
+                        </p>
+                      ) : (
+                        magaluAccounts.map((acc) => (
+                          <label
+                            key={acc.id}
+                            className="flex items-center justify-between rounded-md border p-2 text-sm"
+                          >
+                            <span>{acc.accountName || acc.id}</span>
+                            <Switch
+                              checked={selectedMagaluAccounts.includes(acc.id)}
+                              onCheckedChange={(checked) =>
+                                setSelectedMagaluAccounts((prev) =>
+                                  checked
+                                    ? [...prev, acc.id]
+                                    : prev.filter((id) => id !== acc.id),
+                                )
+                              }
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <Label htmlFor="magaluCategory">Categoria no Magalu</Label>
+                      <Controller
+                        name="magaluCategory"
+                        control={control}
+                        render={({ field }) => {
+                          // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
+                          const fmt = (v: string) =>
+                            v
+                              .split("/")
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(" > ");
+                          const rawLabel =
+                            magaluSelectedLabel ||
+                            magaluOptions.find((o) => o.id === field.value)
+                              ?.value ||
+                            "";
+                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                          const term = magaluCategorySearch.trim();
+                          return (
+                            <div className="relative">
+                              {selectedLabel && !magaluCategoryDropdownOpen && (
+                                <div
+                                  className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                                  onClick={() => {
+                                    setMagaluCategoryDropdownOpen(true);
+                                    setMagaluCategorySearch("");
+                                  }}
+                                >
+                                  <span className="truncate">
+                                    {selectedLabel}
+                                  </span>
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    Alterar
+                                  </span>
+                                </div>
+                              )}
+                              {(magaluCategoryDropdownOpen || !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria do Magalu..."
+                                    value={magaluCategorySearch}
+                                    onChange={(e) =>
+                                      setMagaluCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      setTimeout(
+                                        () =>
+                                          setMagaluCategoryDropdownOpen(false),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={magaluCategoryDropdownOpen}
+                                  />
+                                  {term && magaluOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
+                                      {magaluOptions.map((o) => (
+                                        <button
+                                          type="button"
+                                          key={o.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            o.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(o.id);
+                                            setMagaluSelectedLabel(o.value);
+                                            setMagaluCategorySearch("");
+                                            setMagaluCategoryDropdownOpen(false);
+                                          }}
+                                        >
+                                          {fmt(o.value)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {term &&
+                                    !magaluCategoryLoading &&
+                                    magaluOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                  {magaluCategoryLoading && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                      Buscando…
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
                       <p className="text-xs text-muted-foreground">
-                        Conecte ao menos uma conta do Magalu.
+                        Opcional — se vazio, a categoria é resolvida
+                        automaticamente no Magalu.
                       </p>
-                    ) : (
-                      magaluAccounts.map((acc) => (
-                        <label
-                          key={acc.id}
-                          className="flex items-center justify-between rounded-md border p-2 text-sm"
-                        >
-                          <span>{acc.accountName || acc.id}</span>
-                          <Switch
-                            checked={selectedMagaluAccounts.includes(acc.id)}
-                            onCheckedChange={(checked) =>
-                              setSelectedMagaluAccounts((prev) =>
-                                checked
-                                  ? [...prev, acc.id]
-                                  : prev.filter((id) => id !== acc.id),
-                              )
-                            }
-                          />
-                        </label>
-                      ))
-                    )}
-                    <p className="text-xs text-muted-foreground sm:col-span-2">
-                      A categoria é resolvida automaticamente no Magalu.
-                    </p>
-                  </div>
+                    </div>
+                  </>
                 )}
               </div>
             )}
