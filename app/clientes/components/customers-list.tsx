@@ -42,6 +42,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { getApiBaseUrl } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { maskCpf, maskCnpj, maskPhone } from "@/app/lib/masks";
 import { CustomerDialog } from "./customer-dialog";
 import type { CustomerFormData } from "../lib/customer-schema";
@@ -67,7 +68,18 @@ interface Toast {
 
 const LIMIT = 20;
 
-export function CustomersList() {
+interface CustomersListProps {
+  // Quando true (dentro das abas de Clientes, ou seja, só com a flag ligada):
+  // busca as contagens de orçamento e exibe a coluna "Orçamentos" com deep-link.
+  // Ausente (uso standalone / flag off) => componente idêntico ao de hoje.
+  showBudgets?: boolean;
+  onOpenBudgets?: (customerId: string, customerName: string) => void;
+}
+
+export function CustomersList({
+  showBudgets = false,
+  onOpenBudgets,
+}: CustomersListProps = {}) {
   const { data: session } = useSession();
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -116,6 +128,9 @@ export function CustomersList() {
         limit: String(LIMIT),
       });
       if (searchTerm) params.set("search", searchTerm);
+      // OPT-IN: só pede as contagens quando a coluna Orçamentos está visível.
+      // Sem esse param, a resposta é idêntica à de hoje (zero regressão).
+      if (showBudgets) params.set("withBudgetCounts", "true");
       const res = await fetch(`${getApiBaseUrl()}/customers?${params}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -131,7 +146,7 @@ export function CustomersList() {
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
     }
-  }, [session?.user?.email, page, searchTerm, showToast]);
+  }, [session?.user?.email, page, searchTerm, showBudgets, showToast]);
 
   useEffect(() => {
     fetchCustomers();
@@ -249,6 +264,7 @@ export function CustomersList() {
                   <TableHead>E-mail</TableHead>
                   <TableHead>Telefone</TableHead>
                   <TableHead>Cidade/UF</TableHead>
+                  {showBudgets && <TableHead>Orçamentos</TableHead>}
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
@@ -256,7 +272,7 @@ export function CustomersList() {
                 {customers.length === 0 && !loading && (
                   <TableRow>
                     <TableCell
-                      colSpan={6}
+                      colSpan={showBudgets ? 7 : 6}
                       className="text-center py-8 text-muted-foreground"
                     >
                       Nenhum cliente encontrado. Crie o primeiro cadastro.
@@ -282,6 +298,28 @@ export function CustomersList() {
                         ? `${c.city}${c.state ? "/" + c.state : ""}`
                         : "—"}
                     </TableCell>
+                    {showBudgets && (
+                      <TableCell>
+                        {typeof c.budgetCount === "number" &&
+                        c.budgetCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenBudgets?.(c.id, c.name)}
+                            title="Ver orçamentos deste cliente"
+                            className={cn(
+                              "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-80",
+                              c.openBudgetCount > 0
+                                ? "bg-primary/15 text-foreground"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {c.budgetCount}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
                         <Button
