@@ -116,4 +116,50 @@ describe("MagaluApiService (cliente Bearer)", () => {
       MagaluApiService.setStock("tok", "SKU-1", 1, "chan-1"),
     ).rejects.toMatchObject({ status: 401 });
   });
+
+  // Fallback DIRECIONAL do upsert (limpeza de egress) —————————————————————————
+  it("UPDATE (create=false) que bate 409 NÃO faz POST de fallback e propaga o erro do PATCH", async () => {
+    (mockedAxios as any).request = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409, data: { message: "already exists" } },
+    });
+    await expect(
+      MagaluApiService.setStock("tok", "SKU-1", 5, "chan-1"),
+    ).rejects.toMatchObject({ status: 409 });
+    // Só a chamada primária (PATCH); sem POST de fallback garantidamente-inútil.
+    expect((mockedAxios as any).request).toHaveBeenCalledTimes(1);
+    expect((mockedAxios as any).request.mock.calls[0][0].method).toBe("patch");
+  });
+
+  it("UPDATE (create=false) que bate 404 FAZ POST de fallback (entrada não existe → cria)", async () => {
+    (mockedAxios as any).request = vi
+      .fn()
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 404, data: {} },
+      })
+      .mockResolvedValueOnce({ data: {} });
+    await expect(
+      MagaluApiService.setPrice("tok", "SKU-1", 15, "chan-1"),
+    ).resolves.toBeUndefined();
+    expect((mockedAxios as any).request).toHaveBeenCalledTimes(2);
+    expect((mockedAxios as any).request.mock.calls[0][0].method).toBe("patch");
+    expect((mockedAxios as any).request.mock.calls[1][0].method).toBe("post");
+  });
+
+  it("CREATE (create=true) que bate 409 (já existe) FAZ PATCH de fallback — inalterado", async () => {
+    (mockedAxios as any).request = vi
+      .fn()
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 409, data: {} },
+      })
+      .mockResolvedValueOnce({ data: {} });
+    await expect(
+      MagaluApiService.setStock("tok", "SKU-1", 5, "chan-1", { create: true }),
+    ).resolves.toBeUndefined();
+    expect((mockedAxios as any).request).toHaveBeenCalledTimes(2);
+    expect((mockedAxios as any).request.mock.calls[0][0].method).toBe("post");
+    expect((mockedAxios as any).request.mock.calls[1][0].method).toBe("patch");
+  });
 });
