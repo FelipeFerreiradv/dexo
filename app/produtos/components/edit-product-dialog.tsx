@@ -279,6 +279,10 @@ const shopeeSuggestCache = new Map<string, CatOption[]>();
 // entre aberturas do modal; chave = title.trim().toLowerCase().
 const mlSuggestCache = new Map<string, CatOption[]>();
 
+// Magalu (3º marketplace) só aparece com a flag. Módulo (não é dep de hook).
+const MAGALU_ENABLED =
+  process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
 export function EditProductDialog({
   product,
   open,
@@ -332,6 +336,15 @@ export function EditProductDialog({
   >([]);
   const [createMlListing, setCreateMlListing] = useState(false);
   const [createShopeeListing, setCreateShopeeListing] = useState(false);
+  // Magalu (3º marketplace, atrás da flag) — espelha ML/Shopee (toggle + contas);
+  // a categoria é resolvida no backend, então não há seletor de categoria aqui.
+  const [magaluAccounts, setMagaluAccounts] = useState<
+    Array<{ id: string; accountName?: string }>
+  >([]);
+  const [selectedMagaluAccounts, setSelectedMagaluAccounts] = useState<
+    string[]
+  >([]);
+  const [createMagaluListing, setCreateMagaluListing] = useState(false);
 
   // ML listing settings (loaded from user defaults)
   const [mlListingType, setMlListingType] = useState("bronze");
@@ -751,6 +764,18 @@ export function EditProductDialog({
     });
   }, [createShopeeListing, shopeeAccounts]);
 
+  useEffect(() => {
+    if (!createMagaluListing) return;
+    if (magaluAccounts.length === 0) return;
+    setSelectedMagaluAccounts((prev) => {
+      const allIds = magaluAccounts.map((acc) => acc.id);
+      const hasAll =
+        prev.length === allIds.length &&
+        allIds.every((id) => prev.includes(id));
+      return hasAll ? prev : allIds;
+    });
+  }, [createMagaluListing, magaluAccounts]);
+
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   // e padrões de anúncio ML. Em seguida, sobrepõe com settings já persistidos
   // em ProductListing (se houver) — precedência: ProductListing > user.default*.
@@ -954,8 +979,10 @@ export function EditProductDialog({
       setShowAutopartsSection(hasAutopartsData);
       setCreateMlListing(false);
       setCreateShopeeListing(false);
+      setCreateMagaluListing(false);
       setSelectedMlAccounts([]);
       setSelectedShopeeAccounts([]);
+      setSelectedMagaluAccounts([]);
 
       setMlCategoryWarning(null);
 
@@ -988,6 +1015,12 @@ export function EditProductDialog({
               (r) => (r.ok ? r.json() : null),
             )
           : null,
+        // 3b. Contas Magalu (atrás da flag)
+        email && MAGALU_ENABLED
+          ? fetch(`${base}/marketplace/magalu/accounts`, { headers }).then(
+              (r) => (r.ok ? r.json() : null),
+            )
+          : null,
         // 4. Compatibilidades
         email && product.id
           ? fetch(`${base}/products/${product.id}/compatibilities`, {
@@ -997,7 +1030,7 @@ export function EditProductDialog({
         // 5. Descrição padrão do usuário
         fetchDefaultDescriptionRef.current(),
       ])
-        .then(([locJson, mlJson, shJson, compatJson]) => {
+        .then(([locJson, mlJson, shJson, magaluJson, compatJson]) => {
           if (locJson)
             setLocationOptions(
               Array.isArray(locJson.locations) ? locJson.locations : [],
@@ -1009,6 +1042,10 @@ export function EditProductDialog({
           if (shJson)
             setShopeeAccounts(
               Array.isArray(shJson.accounts) ? shJson.accounts : [],
+            );
+          if (magaluJson)
+            setMagaluAccounts(
+              Array.isArray(magaluJson.accounts) ? magaluJson.accounts : [],
             );
           if (compatJson) {
             const items: CompatibilityEntry[] = (
@@ -1671,6 +1708,15 @@ export function EditProductDialog({
         return;
       }
 
+      if (createMagaluListing && selectedMagaluAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Magalu para criar o anúncio.",
+          "error",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       const mlCategorySourceToSend = data.mlCategory
         ? autoDetectedRef.current?.mlCategory === data.mlCategory
           ? "auto"
@@ -1966,7 +2012,7 @@ export function EditProductDialog({
       // de 60s por conta. O status final aparece na aba Anúncios conforme os
       // jobs terminam em background.
       const dispatchRequests: Array<{
-        platform: "MERCADO_LIVRE" | "SHOPEE";
+        platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
         accountId?: string;
         categoryId?: string;
         mlSettings?: Record<string, unknown>;
@@ -2006,6 +2052,14 @@ export function EditProductDialog({
             accountId,
             categoryId: shopeeCategoryId,
           });
+        }
+      }
+
+      // Magalu: sem categoryId → o backend resolve a categoria automaticamente
+      // (mesmo comportamento do modal de criação de produto).
+      if (createMagaluListing && selectedMagaluAccounts.length > 0) {
+        for (const accountId of selectedMagaluAccounts) {
+          dispatchRequests.push({ platform: "MAGALU", accountId });
         }
       }
 
@@ -3403,6 +3457,55 @@ export function EditProductDialog({
                       </p>
                     </div>
                   </>
+                )}
+              </div>
+            )}
+
+            {!listingContext && MAGALU_ENABLED && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    id="edit-create-magalu-listing"
+                    checked={createMagaluListing}
+                    onCheckedChange={setCreateMagaluListing}
+                  />
+                  <Label
+                    htmlFor="edit-create-magalu-listing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio no Magalu
+                  </Label>
+                </div>
+                {createMagaluListing && (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {magaluAccounts.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Conecte ao menos uma conta do Magalu.
+                      </p>
+                    ) : (
+                      magaluAccounts.map((acc) => (
+                        <label
+                          key={acc.id}
+                          className="flex items-center justify-between rounded-md border p-2 text-sm"
+                        >
+                          <span>{acc.accountName || acc.id}</span>
+                          <Switch
+                            checked={selectedMagaluAccounts.includes(acc.id)}
+                            onCheckedChange={(checked) =>
+                              setSelectedMagaluAccounts((prev) =>
+                                checked
+                                  ? [...prev, acc.id]
+                                  : prev.filter((id) => id !== acc.id),
+                              )
+                            }
+                          />
+                        </label>
+                      ))
+                    )}
+                    <p className="text-xs text-muted-foreground sm:col-span-2">
+                      A categoria é resolvida automaticamente no Magalu.
+                    </p>
+                  </div>
                 )}
               </div>
             )}
