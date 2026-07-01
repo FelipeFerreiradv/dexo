@@ -33,7 +33,8 @@
     "shopee:debug-attrs": "tsx scripts/debug-shopee-attrs.ts",
     "shopee:recategorize": "tsx scripts/recategorize-shopee-products.ts",
     "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts",
-    "stats:catalog": "tsx scripts/build-catalog-stats.ts"
+    "stats:catalog": "tsx scripts/build-catalog-stats.ts",
+    "migracao:704": "tsx scripts/migracao-704.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
