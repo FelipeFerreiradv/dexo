@@ -632,6 +632,20 @@ enum BudgetStatus {
   CANCELADO
 }
 
+// Estágio do funil de CRM (2ª dimensão ADITIVA e NULLABLE, ortogonal a
+// BudgetStatus). A coluna do kanban é DERIVADA em read-time a partir de
+// (status + pipelineStage) — ver deriveColumn no front. NUNCA governa
+// editar/converter/cancelar (isso continua sendo papel de BudgetStatus).
+// Sem default destrutivo: orçamentos antigos ficam NULL e derivam para "Novo".
+enum BudgetStage {
+  NOVO
+  EM_NEGOCIACAO
+  PROPOSTA_ENVIADA
+  GANHO
+  PERDIDO
+  CANCELADO
+}
+
 model Customer {
   id     String @id @default(cuid())
   userId String
@@ -848,6 +862,12 @@ model Budget {
   status     BudgetStatus @default(ABERTO)
   validUntil DateTime? // validade do orçamento; alimenta EXPIRADO (read-time)
 
+  // CRM (aditivo, nullable). pipelineStage = posição no funil; lostReason =
+  // motivo opcional ao mover p/ Perdido. NULL = orçamento antigo → deriva "Novo".
+  // NÃO altera a semântica de status/convert/cancel/update.
+  pipelineStage BudgetStage?
+  lostReason    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -866,6 +886,7 @@ model Budget {
   @@index([customerId])
   @@index([userId, unidadeId])
   @@index([userId, vendedorId])
+  @@index([userId, pipelineStage])
 }
 
 // Item do orçamento. Mesma forma do ReceivableItem (productId? | description? +
