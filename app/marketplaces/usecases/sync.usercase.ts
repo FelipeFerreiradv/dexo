@@ -2585,42 +2585,85 @@ export class SyncUseCase {
       return result;
     }
 
-    try {
-      const channelId = await this.resolveMagaluChannelId(account.accessToken);
+    // Cada operação (título/descrição, estoque, preço) é ISOLADA: uma falha de
+    // estoque NÃO pode impedir a atualização de preço (e vice-versa) — antes
+    // tudo dividia o mesmo try e um erro de estoque pulava o preço. Os erros são
+    // coletados com o detalhe da API da Magalu (status + corpo) p/ diagnóstico.
+    const errors: string[] = [];
+    const detail = (e: unknown): string => {
+      const err = e as {
+        message?: string;
+        status?: number;
+        responseData?: unknown;
+      };
+      const base = err?.message ?? String(e);
+      const extra = [
+        err?.status != null ? `status=${err.status}` : null,
+        err?.responseData != null
+          ? `resp=${JSON.stringify(err.responseData).slice(0, 300)}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return extra ? `${base} (${extra})` : base;
+    };
 
-      // Título/descrição (PATCH parcial no SKU) — paridade com ML/Shopee, que
-      // propagam nome/descrição na edição do produto. Só envia o que existe.
-      const patch: Record<string, unknown> = {};
-      if (typeof product.name === "string" && product.name.trim()) {
-        patch.title = product.name.trim().slice(0, 150);
-      }
-      if (
-        typeof product.description === "string" &&
-        product.description.trim()
-      ) {
-        patch.description = product.description.trim();
-      }
-      if (Object.keys(patch).length > 0) {
+    // Título/descrição (PATCH parcial no SKU; não depende de canal) — paridade
+    // com ML/Shopee, que propagam nome/descrição na edição. Só envia o que existe.
+    const patch: Record<string, unknown> = {};
+    if (typeof product.name === "string" && product.name.trim()) {
+      patch.title = product.name.trim().slice(0, 150);
+    }
+    if (typeof product.description === "string" && product.description.trim()) {
+      patch.description = product.description.trim();
+    }
+    if (Object.keys(patch).length > 0) {
+      try {
         await MagaluApiService.patchSku(account.accessToken, sku, patch);
+      } catch (e) {
+        errors.push(`título/descrição: ${detail(e)}`);
       }
+    }
 
-      await MagaluApiService.setStock(
-        account.accessToken,
-        sku,
-        product.stock,
-        channelId,
-      );
+    // Estoque e preço dependem do canal — resolve uma vez. Se o canal falhar,
+    // ambos são pulados (nada a fazer sem canal), mas o título/descrição acima
+    // já foi tentado.
+    let channelId: string | null = null;
+    try {
+      channelId = await this.resolveMagaluChannelId(account.accessToken);
+    } catch (e) {
+      errors.push(`canal: ${detail(e)}`);
+    }
+
+    if (channelId) {
+      try {
+        await MagaluApiService.setStock(
+          account.accessToken,
+          sku,
+          product.stock,
+          channelId,
+        );
+        result.newStock = product.stock;
+      } catch (e) {
+        errors.push(`estoque: ${detail(e)}`);
+      }
 
       const price = product.price != null ? Number(product.price) : null;
       if (price != null && Number.isFinite(price)) {
-        await MagaluApiService.setPrice(
-          account.accessToken,
-          sku,
-          price,
-          channelId,
-        );
+        try {
+          await MagaluApiService.setPrice(
+            account.accessToken,
+            sku,
+            price,
+            channelId,
+          );
+        } catch (e) {
+          errors.push(`preço: ${detail(e)}`);
+        }
       }
+    }
 
+    if (errors.length === 0) {
       await this.logSync(
         account.id,
         SyncType.PRODUCT_SYNC,
@@ -2628,17 +2671,18 @@ export class SyncUseCase {
         `Dados do produto ${product.name} sincronizados na Magalu (título/descrição/estoque/preço)`,
         { productId: product.id, externalListingId, newStock: product.stock },
       );
-
       result.success = true;
-      result.newStock = product.stock;
-    } catch (error) {
-      result.error = error instanceof Error ? error.message : String(error);
+    } else {
+      result.error = errors.join(" | ");
+      console.warn(
+        `[SYNC] Magalu sync parcial/falho (sku=${sku}, listing=${externalListingId}): ${result.error}`,
+      );
       await this.logSync(
         account.id,
         SyncType.PRODUCT_SYNC,
         SyncStatus.FAILURE,
         `Erro ao sincronizar dados na Magalu: ${result.error}`,
-        { productId: product.id, externalListingId, error: result.error },
+        { productId: product.id, externalListingId, errors },
       );
     }
 
