@@ -176,7 +176,7 @@ export function MarketplaceBadges({
   const groupedByPlatform = useMemo(() => {
     const map = new Map<
       MarketplacePlatform,
-      { count: number; anyOpenable: boolean }
+      { count: number; anyOpenable: boolean; anyActive: boolean }
     >();
 
     for (const listing of listings ?? []) {
@@ -185,13 +185,25 @@ export function MarketplaceBadges({
       if (!platform || !MARKETPLACE_LISTING_PLATFORMS.includes(platform)) {
         continue;
       }
-      const current = map.get(platform) ?? { count: 0, anyOpenable: false };
+      const current = map.get(platform) ?? {
+        count: 0,
+        anyOpenable: false,
+        anyActive: false,
+      };
       current.count += 1;
       if (
         !current.anyOpenable &&
         resolveMarketplaceListingLinkState(listing).isOpenable
       ) {
         current.anyOpenable = true;
+      }
+      // Status "publicado" (active/normal) — usado só para a OPACIDADE da Magalu,
+      // que não tem link público derivável (publicação assíncrona).
+      const st = (listing as { status?: string | null }).status
+        ?.toString()
+        .toLowerCase();
+      if (!current.anyActive && (st === "active" || st === "normal")) {
+        current.anyActive = true;
       }
       map.set(platform, current);
     }
@@ -215,12 +227,19 @@ export function MarketplaceBadges({
 
   return (
     <div className="flex items-center gap-2">
-      {groupedByPlatform.map(({ platform, count, anyOpenable }) => {
+      {groupedByPlatform.map(({ platform, count, anyOpenable, anyActive }) => {
         const icon = MARKETPLACE_ICONS[platform];
         const title =
           count > 1
             ? `${count} anúncios publicados no ${icon.label}`
             : `Anúncio publicado no ${icon.label}`;
+
+        // Opacidade = "publicado". ML/Shopee: têm link quando publicados
+        // (anyOpenable). Magalu: publicação é assíncrona e a URL pública não é
+        // derivável do SKU, então o sinal é o STATUS active/normal. ML/Shopee
+        // ficam idênticos (não entram no ramo MAGALU).
+        const isPublished =
+          anyOpenable || (platform === "MAGALU" && anyActive);
 
         return (
           <button
@@ -232,7 +251,7 @@ export function MarketplaceBadges({
               onOpenListings?.(platform);
             }}
             className={`${chipClass} ${interactiveClass} ${
-              anyOpenable ? "" : dimmedClass
+              isPublished ? "" : dimmedClass
             }`}
             title={title}
             aria-label={title}
