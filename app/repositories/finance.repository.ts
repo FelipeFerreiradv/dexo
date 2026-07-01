@@ -417,7 +417,10 @@ export class FinanceRepository {
         where,
         skip,
         take: limit,
-        orderBy: { dueDate: "asc" },
+        // Ordem de criação (mais novo primeiro), padrão do sistema. O filtro
+        // por vencimento (from/to) continua no `where.dueDate` — só a exibição
+        // muda. Antes era dueDate asc.
+        orderBy: { createdAt: "desc" },
         select: {
           id: true,
           userId: true,
