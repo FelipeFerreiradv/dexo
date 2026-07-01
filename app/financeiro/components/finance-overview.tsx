@@ -9,13 +9,9 @@ import {
   Wallet,
 } from "lucide-react";
 
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatToBRL } from "@/components/ui/currency-input";
+import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/api";
 
 interface SummaryBucket {
@@ -50,9 +46,7 @@ export function FinanceOverview({ refreshKey, unidadeId }: Props) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const qs = unidadeId
-        ? `?unidadeId=${encodeURIComponent(unidadeId)}`
-        : "";
+      const qs = unidadeId ? `?unidadeId=${encodeURIComponent(unidadeId)}` : "";
       const res = await fetch(`${getApiBaseUrl()}/finance/summary${qs}`, {
         headers: { email },
         signal: ctrl.signal,
@@ -69,30 +63,40 @@ export function FinanceOverview({ refreshKey, unidadeId }: Props) {
     fetchSummary();
   }, [fetchSummary, refreshKey]);
 
+  // Cores da paleta: Verde Operação = dinheiro entrando; vermelho = saindo;
+  // âmbar = vencido/alerta. Spine + chip do ícone reforçam sem poluir.
   const cards = [
     {
       label: "A receber (pendente)",
       value: summary?.receivables.pendingAmount ?? 0,
       icon: ArrowDownCircle,
-      className: "text-green-600",
+      accent: "text-[#2c5f4f] dark:text-emerald-400",
+      chip: "bg-[#2c5f4f]/10",
+      spine: "bg-[#2c5f4f]",
     },
     {
       label: "A receber (vencido)",
       value: summary?.receivables.overdueAmount ?? 0,
       icon: AlertTriangle,
-      className: "text-amber-600",
+      accent: "text-amber-600 dark:text-amber-400",
+      chip: "bg-amber-500/10",
+      spine: "bg-amber-500",
     },
     {
       label: "A pagar (pendente)",
       value: summary?.payables.pendingAmount ?? 0,
       icon: ArrowUpCircle,
-      className: "text-red-600",
+      accent: "text-red-600 dark:text-red-400",
+      chip: "bg-red-500/10",
+      spine: "bg-red-500",
     },
     {
       label: "A pagar (vencido)",
       value: summary?.payables.overdueAmount ?? 0,
       icon: Wallet,
-      className: "text-amber-600",
+      accent: "text-amber-600 dark:text-amber-400",
+      chip: "bg-amber-500/10",
+      spine: "bg-amber-500",
     },
   ];
 
@@ -103,18 +107,34 @@ export function FinanceOverview({ refreshKey, unidadeId }: Props) {
         return (
           <Card
             key={c.label}
-            className="border border-border/60 bg-card/80 backdrop-blur"
+            className="relative overflow-hidden border border-border/60 bg-card/80 backdrop-blur"
           >
+            <span
+              className={cn("absolute inset-y-0 left-0 w-1", c.spine)}
+              aria-hidden
+            />
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">
+              <CardTitle className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 {c.label}
               </CardTitle>
-              <Icon className={`h-4 w-4 ${c.className}`} />
+              <span
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-full",
+                  c.chip,
+                )}
+              >
+                <Icon className={cn("h-4 w-4", c.accent)} />
+              </span>
             </CardHeader>
             <CardContent>
-              <p className="text-2xl font-semibold">
-                R$ {formatToBRL(c.value)}
-              </p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-mono text-xs text-muted-foreground">
+                  R$
+                </span>
+                <span className="text-3xl leading-none tabular-nums [font-family:var(--font-fraunces)]">
+                  {formatToBRL(c.value)}
+                </span>
+              </div>
             </CardContent>
           </Card>
         );

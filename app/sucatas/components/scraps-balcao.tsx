@@ -3,13 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import {
-  Search,
-  Loader2,
-  PackageCheck,
-  Truck,
-  PackageX,
-} from "lucide-react";
+import { Search, Loader2, PackageCheck, Truck, PackageX } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -159,7 +153,7 @@ function BalcaoCard({ part }: { part: BalcaoPart }) {
             {part.partNumber ? (
               <span className="font-mono">PN {part.partNumber}</span>
             ) : null}
-            <span className="font-medium text-foreground">
+            <span className="font-mono font-semibold tabular-nums text-foreground">
               {priceFmt.format(part.price)}
             </span>
             <span>{inStock ? `${part.stock} em estoque` : "sem estoque"}</span>

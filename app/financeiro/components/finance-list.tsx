@@ -54,10 +54,7 @@ import { getApiBaseUrl } from "@/lib/api";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
-import {
-  PAYMENT_METHODS,
-  paymentMethodLabel,
-} from "@/app/lib/payment-methods";
+import { PAYMENT_METHODS, paymentMethodLabel } from "@/app/lib/payment-methods";
 
 interface FinanceRow {
   id: string;
@@ -96,7 +93,8 @@ const BALCAO_SALE_ENABLED =
 const METHOD_ALL = "__all__";
 
 const STATUS_STYLES: Record<FinanceRow["status"], string> = {
-  PENDENTE: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+  PENDENTE:
+    "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
   PAGA: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
   VENCIDA: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
   CANCELADA: "bg-muted text-muted-foreground",
@@ -116,14 +114,13 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
   );
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] =
-    useState<
-      | (Partial<FinanceEntryFormData> & {
-          id?: string;
-          customer?: { id: string; name: string; cpf: string | null } | null;
-        })
-      | undefined
-    >(undefined);
+  const [editing, setEditing] = useState<
+    | (Partial<FinanceEntryFormData> & {
+        id?: string;
+        customer?: { id: string; name: string; cpf: string | null } | null;
+      })
+    | undefined
+  >(undefined);
   const [deleteTarget, setDeleteTarget] = useState<FinanceRow | null>(null);
   // Edição de receivable carrega os itens sob demanda (a lista não os traz, por
   // egress). Guarda o id em carregamento p/ feedback no botão de editar.
@@ -286,10 +283,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
       await downloadReceipt(r.id, email);
       onToast("Cupom sem validade fiscal emitido", "success");
     } catch (e) {
-      onToast(
-        e instanceof Error ? e.message : "Erro ao emitir cupom",
-        "error",
-      );
+      onToast(e instanceof Error ? e.message : "Erro ao emitir cupom", "error");
     }
   };
 
@@ -400,8 +394,12 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                     </TableCell>
                     <TableCell>{r.customer?.name || "—"}</TableCell>
                     <TableCell>{r.unidade?.name || "—"}</TableCell>
-                    <TableCell>R$ {formatToBRL(r.totalAmount)}</TableCell>
-                    <TableCell>{r.installments}x</TableCell>
+                    <TableCell className="font-mono font-semibold tabular-nums">
+                      R$ {formatToBRL(r.totalAmount)}
+                    </TableCell>
+                    <TableCell className="font-mono text-muted-foreground">
+                      {r.installments}x
+                    </TableCell>
                     <TableCell>
                       {r.dueDate
                         ? new Date(r.dueDate).toLocaleDateString("pt-BR")
@@ -419,7 +417,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
                     <TableCell>
                       <span
                         className={cn(
-                          "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
+                          "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
                           STATUS_STYLES[r.status],
                         )}
                       >
@@ -529,8 +527,8 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir título</AlertDialogTitle>
             <AlertDialogDescription>
-              Tem certeza que deseja excluir este título? Essa ação não pode
-              ser desfeita.
+              Tem certeza que deseja excluir este título? Essa ação não pode ser
+              desfeita.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

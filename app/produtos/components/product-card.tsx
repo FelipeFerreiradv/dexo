@@ -157,7 +157,7 @@ export function ProductCard({
         </div>
 
         <div className="mt-auto flex items-center justify-between border-t border-border/60 pt-2">
-          <span className="text-base font-semibold text-foreground">
+          <span className="font-mono text-base font-semibold tabular-nums text-foreground">
             {formatPrice(product.price)}
           </span>
           <div className="flex gap-1">

@@ -123,17 +123,17 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] =
-    useState<
-      | (Partial<BudgetFormData> & {
-          id?: string;
-          customer?: { id: string; name: string; cpf: string | null } | null;
-        })
-      | undefined
-    >(undefined);
-  const [confirm, setConfirm] = useState<
-    { type: "delete" | "convert"; row: BudgetRow } | null
-  >(null);
+  const [editing, setEditing] = useState<
+    | (Partial<BudgetFormData> & {
+        id?: string;
+        customer?: { id: string; name: string; cpf: string | null } | null;
+      })
+    | undefined
+  >(undefined);
+  const [confirm, setConfirm] = useState<{
+    type: "delete" | "convert";
+    row: BudgetRow;
+  } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -455,7 +455,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                       <TableCell>
                         {r.vendedor?.name || r.vendedor?.email || "—"}
                       </TableCell>
-                      <TableCell>R$ {formatToBRL(r.totalAmount)}</TableCell>
+                      <TableCell className="font-mono font-semibold tabular-nums">
+                        R$ {formatToBRL(r.totalAmount)}
+                      </TableCell>
                       <TableCell>
                         {r.validUntil
                           ? new Date(r.validUntil).toLocaleDateString("pt-BR")
@@ -464,7 +466,7 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                       <TableCell>
                         <span
                           className={cn(
-                            "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            "inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide",
                             STATUS_STYLES[r.status],
                           )}
                         >
@@ -479,7 +481,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                               variant="ghost"
                               title="Converter em venda (Conta a Receber)"
                               disabled={busyId !== null}
-                              onClick={() => setConfirm({ type: "convert", row: r })}
+                              onClick={() =>
+                                setConfirm({ type: "convert", row: r })
+                              }
                             >
                               <ShoppingCart className="h-4 w-4 text-green-600" />
                             </Button>
@@ -523,7 +527,9 @@ export function BudgetList({ onToast, onChanged, unidadeId }: Props) {
                               size="icon"
                               variant="ghost"
                               title="Excluir"
-                              onClick={() => setConfirm({ type: "delete", row: r })}
+                              onClick={() =>
+                                setConfirm({ type: "delete", row: r })
+                              }
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>
