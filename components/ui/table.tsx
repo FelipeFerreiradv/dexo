@@ -65,7 +65,9 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "text-muted-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        // Cabeçalho de dados no padrão da marca: mono, caixa-alta, tracking —
+        // "lado sistema / manual técnico". Overrides via className vencem.
+        "text-muted-foreground h-10 px-2 text-left align-middle whitespace-nowrap font-mono text-[11px] font-semibold uppercase tracking-[0.06em] [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

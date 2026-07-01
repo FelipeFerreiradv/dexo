@@ -57,7 +57,7 @@ export function PageHeader({
       >
         <div className="min-w-0 space-y-1">
           {eyebrow && (
-            <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/80">
               {eyebrow}
             </p>
           )}
@@ -80,7 +80,7 @@ export function PageHeader({
   return (
     <header className={cn("space-y-3 py-2 text-center", className)}>
       {eyebrow && (
-        <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">
+        <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-muted-foreground">
           {eyebrow}
         </p>
       )}
