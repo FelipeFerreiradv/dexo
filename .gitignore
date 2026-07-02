@@ -59,6 +59,9 @@ next-env.d.ts
 # fiscal runtime storage (XMLs assinados e DANFE PDFs)
 .fiscal-storage/
 
+# whatsapp runtime storage (mídia recebida — privada, servida por rota autenticada)
+.whatsapp-storage/
+
 # cópias canônicas de planilhas de importação (grandes, reproduzíveis)
 scripts/data/
 

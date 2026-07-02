@@ -2,9 +2,13 @@ import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AccountStatus } from "@prisma/client";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { WhatsAppRepository } from "../marketplaces/repositories/whatsapp.repository";
+import { WhatsAppInboxRepository } from "../marketplaces/repositories/whatsapp-inbox.repository";
 import { WhatsAppApiService } from "../marketplaces/services/whatsapp-api.service";
+import { WhatsAppMediaStorageService } from "../marketplaces/services/whatsapp-media-storage.service";
+import { WhatsAppWebhookUseCase } from "../marketplaces/usecases/whatsapp-webhook.usecase";
 import { isWhatsappEnabledFor } from "../marketplaces/whatsapp/whatsapp-entitlement.service";
 import {
+  WHATSAPP_CONSTANTS,
   isWhatsappModuleEnabled,
   validateWhatsAppConfig,
 } from "../marketplaces/whatsapp/whatsapp-constants";
@@ -232,6 +236,158 @@ export const whatsappRoutes = async (fastify: FastifyInstance) => {
       return reply.send({ success: true });
     },
   );
+
+  /**
+   * GET /whatsapp/media/:messageId — serving AUTENTICADO da mídia recebida.
+   * A mídia mora fora de public/ (privacidade); a posse é validada pela cadeia
+   * mensagem→conversa→conta→userId do tenant.
+   */
+  fastify.get<{ Params: { messageId: string } }>(
+    "/media/:messageId",
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const userId = request.user?.dataOwnerId;
+      if (!userId) return reply.status(401).send({ error: "Não autenticado" });
+      if (await denyIfDisabled(userId, reply)) return;
+
+      const media = await WhatsAppInboxRepository.findMediaMessageForUser(
+        request.params.messageId,
+        userId,
+      );
+      if (!media) {
+        return reply.status(404).send({ error: "Mídia não encontrada" });
+      }
+      const storage = new WhatsAppMediaStorageService();
+      const bytes = await storage.readFile(media.mediaPath);
+      if (!bytes) {
+        return reply.status(404).send({ error: "Arquivo não encontrado" });
+      }
+      reply.header("Cache-Control", "private, max-age=3600");
+      return reply
+        .type(media.mediaMimeType ?? "application/octet-stream")
+        .send(bytes);
+    },
+  );
+
+  /**
+   * Webhook da Cloud API — plugin ENCAPSULADO de propósito: o content-type
+   * parser `parseAs: "buffer"` abaixo vale SÓ para as rotas deste bloco
+   * (Fastify encapsula parsers por contexto), preservando o corpo BRUTO que o
+   * HMAC do X-Hub-Signature-256 exige, sem tocar no parse JSON global da API.
+   */
+  fastify.register(async (webhookScope) => {
+    webhookScope.addContentTypeParser(
+      "application/json",
+      { parseAs: "buffer" },
+      (_req, body, done) => done(null, body),
+    );
+
+    /**
+     * GET /whatsapp/webhook — handshake de verificação da Meta.
+     * Responde o hub.challenge se o hub.verify_token bater com o nosso.
+     * Flag global desligada ⇒ 404 (handshake não completa; módulo inerte).
+     */
+    webhookScope.get("/webhook", async (request, reply) => {
+      if (!isWhatsappModuleEnabled()) {
+        return reply.status(404).send({ error: "Not found" });
+      }
+      const q = (request.query || {}) as Record<string, string | undefined>;
+      const mode = q["hub.mode"];
+      const verifyToken = q["hub.verify_token"];
+      const challenge = q["hub.challenge"];
+      const expected = WHATSAPP_CONSTANTS.WEBHOOK_VERIFY_TOKEN;
+
+      if (
+        mode === "subscribe" &&
+        Boolean(expected) &&
+        verifyToken === expected &&
+        challenge
+      ) {
+        return reply.status(200).type("text/plain").send(challenge);
+      }
+      return reply.status(403).send({ error: "verify token inválido" });
+    });
+
+    /**
+     * POST /whatsapp/webhook — eventos (messages/statuses).
+     * Segurança fail-closed: assinatura HMAC do corpo bruto é OBRIGATÓRIA e
+     * bloqueante (401 em mismatch/sem segredo configurado). Depois de validar,
+     * 200 imediato + processamento em background (padrão dos webhooks do
+     * projeto) — a Meta exige resposta rápida e reenvia em não-200 por 7 dias.
+     */
+    webhookScope.post("/webhook", async (request, reply) => {
+      // Kill-switch global: inerte (200 sem processar — nada de retry storm).
+      if (!isWhatsappModuleEnabled()) {
+        return reply.status(200).send({ received: true });
+      }
+
+      const rawBody = request.body as Buffer;
+      if (!Buffer.isBuffer(rawBody)) {
+        return reply.status(400).send({ error: "corpo inválido" });
+      }
+      let payload: any;
+      try {
+        payload = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        return reply.status(400).send({ error: "JSON inválido" });
+      }
+
+      if (payload?.object !== "whatsapp_business_account") {
+        return reply.status(200).send({ received: true });
+      }
+
+      // Resolve as contas citadas p/ obter os App Secrets (por conta, com
+      // fallback global). Número desconhecido ⇒ descarte silencioso (200).
+      const phoneNumberIds =
+        WhatsAppWebhookUseCase.extractPhoneNumberIds(payload);
+      const accounts = (
+        await Promise.all(
+          phoneNumberIds.map((id) =>
+            WhatsAppRepository.findByPhoneNumberIdWithSecrets(id),
+          ),
+        )
+      ).filter((a): a is NonNullable<typeof a> => Boolean(a));
+      if (accounts.length === 0) {
+        return reply.status(200).send({ received: true });
+      }
+
+      const secrets = [
+        ...new Set(
+          accounts
+            .map((a) => a.appSecret || WHATSAPP_CONSTANTS.APP_SECRET || "")
+            .filter(Boolean),
+        ),
+      ];
+      if (secrets.length === 0) {
+        request.log.warn(
+          "[whatsapp-webhook] Sem App Secret configurado (conta/env) — evento rejeitado",
+        );
+        return reply.status(401).send({ error: "assinatura não verificável" });
+      }
+
+      const signature = request.headers["x-hub-signature-256"] as
+        | string
+        | undefined;
+      if (
+        !WhatsAppWebhookUseCase.verifySignature(rawBody, signature, secrets)
+      ) {
+        request.log.warn(
+          "[whatsapp-webhook] Assinatura X-Hub-Signature-256 inválida — rejeitado",
+        );
+        return reply.status(401).send({ error: "assinatura inválida" });
+      }
+
+      reply.status(200).send({ received: true });
+      setImmediate(() => {
+        WhatsAppWebhookUseCase.processWebhook(payload).catch((err) => {
+          console.error(
+            "[whatsapp-webhook] Erro no processamento em background:",
+            err instanceof Error ? err.message : err,
+          );
+        });
+      });
+    });
+  });
 
   // healthcheck simples (não exige auth) — espelha /messages/_ping. Também
   // reporta se o módulo está ligado globalmente (não vaza nada por usuário).
