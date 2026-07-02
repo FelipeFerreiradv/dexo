@@ -91,9 +91,10 @@ import { useSession } from "next-auth/react";
 // Schema de validação com campos de autopeças
 const productSchema = z.object({
   // Step 1: Identificação
-  // SKU é atribuído pelo servidor ao salvar (autoSku). O campo é apenas uma
-  // prévia: opcional e nunca bloqueia o submit. A regex segue valendo só para
-  // um valor não-vazio (nunca acionada no fluxo automático).
+  // SKU sugerido automaticamente (autoSku) mas editável. O trim de leading/
+  // trailing é feito na camada do register (setValueAs) ANTES da validação, para
+  // que "001 " vire "001" (passa) e "   " vire "" (=> caminho automático). A
+  // regex/tamanho valem só para valor não-vazio; espaço interno segue inválido.
   sku: z
     .string()
     .max(50, "SKU deve ter no máximo 50 caracteres")
@@ -548,6 +549,13 @@ export function CreateProductDialog({
   initialValuesRef.current = initialValues;
   // Garante que o pré-preenchimento da NF-e seja aplicado uma vez por abertura.
   const nfeAppliedRef = useRef(false);
+  // Guarda o SKU sugerido pelo servidor (autoSku) na abertura. No submit,
+  // comparamos o valor atual do campo com este: se o usuário NÃO alterou (ou
+  // apagou), seguimos o caminho automático de hoje (autoSku:true, sku omitido);
+  // se digitou um código diferente, enviamos esse SKU no caminho manual legado
+  // (autoSku:false). Assim a sugestão automática continua idêntica e o manual
+  // fica opcional, sem regressão.
+  const autoSuggestedSkuRef = useRef<string>("");
 
   const {
     register,
@@ -752,6 +760,8 @@ export function CreateProductDialog({
       });
       if (response.ok) {
         const data = await response.json();
+        // Memoriza a sugestão para detectar edição manual no submit.
+        autoSuggestedSkuRef.current = (data.sku ?? "").toString();
         setValue("sku", data.sku);
       }
     } catch (error) {
@@ -2551,13 +2561,21 @@ export function CreateProductDialog({
           ? "auto"
           : undefined;
 
+      // SKU: por padrão o servidor atribui atomicamente (autoSku). Se o usuário
+      // editou o campo para um código diferente do sugerido, respeitamos esse
+      // valor pelo caminho manual legado (autoSku:false + sku explícito). Campo
+      // vazio ou igual à sugestão => caminho automático de hoje, sem mudança.
+      const typedSku = (data.sku || "").trim();
+      const useManualSku =
+        typedSku.length > 0 && typedSku !== autoSuggestedSkuRef.current.trim();
+
       // Limpar campos vazios/nulos antes de enviar
       const cleanData = {
         ...data,
-        // O SKU é atribuído atomicamente pelo servidor. Não enviar o valor de
-        // prévia (sku: undefined é omitido pelo JSON.stringify).
-        autoSku: true,
-        sku: undefined,
+        // Automático: sku omitido (sku: undefined some no JSON.stringify) e o
+        // servidor decide. Manual: envia o SKU digitado e desliga o autoSku.
+        autoSku: !useManualSku,
+        sku: useManualSku ? typedSku : undefined,
         costPrice: data.costPrice || undefined,
         markup: data.markup || undefined,
         brand: data.brand || undefined,
@@ -2685,6 +2703,8 @@ export function CreateProductDialog({
     scrapAutofilledRef.current = {};
     // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
     hasFetchedOnOpenRef.current = false;
+    // Zera a sugestão memorizada — a próxima abertura busca uma nova.
+    autoSuggestedSkuRef.current = "";
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
     // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
@@ -2858,19 +2878,31 @@ export function CreateProductDialog({
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="sku">SKU (automático)</Label>
+                  <Label htmlFor="sku">SKU</Label>
                   <Input
                     id="sku"
                     placeholder={isLoadingSku ? "Carregando..." : "001"}
-                    {...register("sku")}
-                    readOnly
+                    {...register("sku", {
+                      // Trim de leading/trailing antes de validar: mantendo o
+                      // valor sugerido com um espaço acidental, ele ainda cai no
+                      // caminho automático em vez de bloquear o submit.
+                      setValueAs: (v) =>
+                        typeof v === "string" ? v.trim() : v,
+                    })}
                     disabled={isLoadingSku}
-                    className="bg-muted"
+                    aria-invalid={!!errors.sku}
+                    maxLength={50}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Atribuído automaticamente ao salvar — pode variar se outra
-                    pessoa salvar ao mesmo tempo.
-                  </p>
+                  {errors.sku ? (
+                    <p className="text-xs text-destructive">
+                      {errors.sku.message}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Sugerido automaticamente. Edite se quiser um código
+                      específico; mantendo o sugerido, ele é atribuído ao salvar.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
