@@ -15,6 +15,7 @@ import {
   fromPrefixedAccountId,
   toPrefixedAccountId,
 } from "../marketplaces/repositories/whatsapp-inbox.repository";
+import { WhatsAppMessagesUseCase } from "../marketplaces/usecases/whatsapp-messages.usecase";
 import { isWhatsappEnabledFor } from "../marketplaces/whatsapp/whatsapp-entitlement.service";
 import { isWhatsappModuleEnabled } from "../marketplaces/whatsapp/whatsapp-constants";
 
@@ -427,6 +428,35 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         return reply
           .status(400)
           .send({ error: "accountId e text são obrigatórios" });
+      }
+
+      // Canal WhatsApp (aditivo): conta prefixada "wa:" ⇒ texto livre na
+      // conversa, respeitando a janela de 24h (409 fechada). Curto-circuito
+      // ANTES da validação de conta de marketplace (que não conhece "wa:").
+      const waAccountId = fromPrefixedAccountId(body.accountId);
+      if (waAccountId) {
+        if (!(await isWhatsappEnabledFor(userId))) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        if (!body.itemId) {
+          return reply
+            .status(400)
+            .send({ error: "itemId é obrigatório para conversas WhatsApp" });
+        }
+        try {
+          const result = await WhatsAppMessagesUseCase.sendText(
+            userId,
+            waAccountId,
+            body.itemId,
+            body.text,
+          );
+          return reply.send(result);
+        } catch (err: any) {
+          const status = err?.statusCode ?? 500;
+          return reply.status(status).send({
+            error: err?.message ?? "Erro ao enviar mensagem",
+          });
+        }
       }
 
       const account = await MarketplaceRepository.findByIdAndUser(
