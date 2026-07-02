@@ -36,13 +36,20 @@ interface QuestionDto {
   dateCreated: string;
   buyerNickname: string | null;
   readAt: string | null;
-  // Chat Magalu: CUSTOMER | SELLER. Nulo em Q&A (ML/Shopee), que usa `answer`.
+  // Chat Magalu/WhatsApp: CUSTOMER | SELLER. Nulo em Q&A (ML/Shopee), que usa `answer`.
   authorType: string | null;
   answer: {
     text: string;
     dateCreated: string;
     status: string;
   } | null;
+  // Campos ADITIVOS do canal WhatsApp (ausentes/undefined nos demais canais —
+  // Magalu/ML/Shopee seguem renderizando exatamente como antes).
+  deliveryStatus?: string | null; // sent | delivered | read | failed | played
+  errorCode?: string | null;
+  mediaType?: string | null;
+  mediaMimeType?: string | null;
+  mediaUrl?: string | null; // rota autenticada relativa (/whatsapp/media/:id)
 }
 
 interface ListingDto {
@@ -65,6 +72,12 @@ export function ChatPane({
   const [data, setData] = React.useState<{
     questions: QuestionDto[];
     listing: ListingDto | null;
+    // Presente só em conversas WhatsApp: estado da janela de 24h etc.
+    whatsapp?: {
+      contactWaId: string;
+      contactName: string | null;
+      windowExpiresAt: string | null;
+    } | null;
   } | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [syncing, setSyncing] = React.useState(false);
@@ -75,6 +88,10 @@ export function ChatPane({
   // Magalu é um CHAT (N mensagens), não Q&A: render por authorType + envio de
   // mensagem na conversa (em vez de resposta a uma pergunta específica).
   const isMagalu = conversation?.accountPlatform === "MAGALU";
+  // WhatsApp segue o MESMO modo chat do Magalu; `isChat` agrupa os dois nos
+  // pontos que hoje são binários — para Magalu o comportamento é idêntico.
+  const isWhatsApp = conversation?.accountPlatform === "WHATSAPP";
+  const isChat = isMagalu || isWhatsApp;
 
   // Em modo "Todas as contas" o accountId global é "all" — read/sync/answer
   // precisam da conta REAL da conversa (vem no DTO). Quando o filtro é uma
@@ -96,6 +113,11 @@ export function ChatPane({
         const json = (await res.json()) as {
           questions: QuestionDto[];
           listing: ListingDto | null;
+          whatsapp?: {
+            contactWaId: string;
+            contactName: string | null;
+            windowExpiresAt: string | null;
+          } | null;
         };
         setData(json);
         setError(null);
@@ -161,10 +183,10 @@ export function ChatPane({
     }
   };
 
-  // Envia resposta/mensagem. Magalu manda `itemId` (mensagem na conversa); ML
-  // manda `questionId` (resposta à pergunta). A rota despacha por plataforma.
+  // Envia resposta/mensagem. Chat (Magalu/WhatsApp) manda `itemId` (mensagem na
+  // conversa); ML manda `questionId` (resposta à pergunta). A rota despacha.
   const submitReply = async (text: string, questionId?: string) => {
-    const payload = isMagalu
+    const payload = isChat
       ? { accountId: effectiveAccountId, itemId, text }
       : { accountId: effectiveAccountId, questionId, text };
     const res = await fetch(`${apiBase}/messages/answers`, {
@@ -205,7 +227,7 @@ export function ChatPane({
     data?.listing?.titleOverride ??
     data?.listing?.product?.name ??
     conversation.listingTitle ??
-    (isMagalu ? conversation.buyerNickname : null) ??
+    (isChat ? conversation.buyerNickname : null) ??
     itemId;
   const sku = data?.listing?.product?.sku ?? conversation.productSku ?? null;
   const permalink = data?.listing?.permalink ?? conversation.listingPermalink ?? null;
@@ -213,6 +235,16 @@ export function ChatPane({
     data?.listing?.product?.imageUrl ?? conversation.listingThumbnail ?? null;
 
   const oldestUnanswered = data?.questions.find((q) => q.status === "UNANSWERED") ?? null;
+
+  // Janela de 24h do WhatsApp: aberta se a expiração (última msg do cliente
+  // + 24h, calculada no backend) ainda está no futuro.
+  const waWindowExpiresAt = data?.whatsapp?.windowExpiresAt
+    ? new Date(data.whatsapp.windowExpiresAt)
+    : null;
+  const waWindowOpen =
+    Boolean(waWindowExpiresAt) &&
+    !Number.isNaN(waWindowExpiresAt!.getTime()) &&
+    waWindowExpiresAt!.getTime() > Date.now();
 
   return (
     <div
@@ -245,12 +277,12 @@ export function ChatPane({
           <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
             {conversation.buyerNickname && (
               <span>
-                {isMagalu ? "Cliente" : "Comprador"}:{" "}
+                {isChat ? "Cliente" : "Comprador"}:{" "}
                 {conversation.buyerNickname}
               </span>
             )}
             {sku && <span>· SKU {sku}</span>}
-            {!isMagalu && <span>· {itemId}</span>}
+            {!isChat && <span>· {itemId}</span>}
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -268,17 +300,20 @@ export function ChatPane({
               </a>
             </Button>
           )}
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            onClick={handleSync}
-            disabled={syncing}
-            className="h-8 w-8"
-            aria-label="Atualizar"
-          >
-            <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
-          </Button>
+          {/* WhatsApp não tem pull (histórico é 100% webhook) — sem sync. */}
+          {!isWhatsApp && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={handleSync}
+              disabled={syncing}
+              className="h-8 w-8"
+              aria-label="Atualizar"
+            >
+              <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
+            </Button>
+          )}
         </div>
       </div>
 
@@ -296,7 +331,8 @@ export function ChatPane({
         ) : data && data.questions.length > 0 ? (
           data.questions.map((q) =>
             q.authorType ? (
-              // Magalu (chat): uma mensagem por linha; lado conforme o autor.
+              // Chat (Magalu/WhatsApp): uma mensagem por linha; lado por autor.
+              // Os props extras são ADITIVOS: ausentes (Magalu) ⇒ render igual.
               <MessageBubble
                 key={q.id}
                 side={q.authorType === "SELLER" ? "outgoing" : "incoming"}
@@ -307,6 +343,18 @@ export function ChatPane({
                 }
                 text={q.text}
                 date={q.dateCreated}
+                deliveryStatus={q.deliveryStatus}
+                errorCode={q.errorCode}
+                media={
+                  q.mediaUrl
+                    ? {
+                        url: `${apiBase}${q.mediaUrl}`,
+                        type: q.mediaType ?? "document",
+                        mimeType: q.mediaMimeType ?? null,
+                      }
+                    : null
+                }
+                mediaHeaders={headers}
               />
             ) : (
               // ML/Shopee (Q&A): pergunta do comprador + resposta do vendedor.
@@ -339,7 +387,21 @@ export function ChatPane({
       </div>
 
       <div className="border-t border-border/70 p-3">
-        {isMagalu ? (
+        {isWhatsApp ? (
+          // WhatsApp: texto livre só com a janela de 24h ABERTA (Cloud API).
+          // Fechada ⇒ banner + composer bloqueado (o backend também valida).
+          !data ? null : waWindowOpen ? (
+            <ReplyComposer
+              placeholder="Escreva uma mensagem..."
+              onSubmit={(text) => submitReply(text)}
+            />
+          ) : (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-xs text-amber-700 dark:text-amber-400">
+              A janela de atendimento de 24h fechou. Você poderá responder
+              quando o cliente enviar uma nova mensagem.
+            </div>
+          )
+        ) : isMagalu ? (
           // Chat: o vendedor pode mandar mensagem a qualquer momento.
           <ReplyComposer
             placeholder="Escreva uma mensagem..."

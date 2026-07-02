@@ -5,6 +5,18 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { QuestionRepository } from "../marketplaces/repositories/question.repository";
 import { MessagesUseCase } from "../marketplaces/usecases/messages.usecase";
+// Canal WhatsApp (aditivo, atrás de flag global + gate por usuário/plano).
+// Os branches "wa:"/WHATSAPP abaixo curto-circuitam ANTES da lógica de
+// marketplace e NUNCA rodam com o módulo desabilitado (app idêntico ao legado).
+import { WhatsAppRepository } from "../marketplaces/repositories/whatsapp.repository";
+import { WhatsAppApiService } from "../marketplaces/services/whatsapp-api.service";
+import {
+  WhatsAppInboxRepository,
+  fromPrefixedAccountId,
+  toPrefixedAccountId,
+} from "../marketplaces/repositories/whatsapp-inbox.repository";
+import { isWhatsappEnabledFor } from "../marketplaces/whatsapp/whatsapp-entitlement.service";
+import { isWhatsappModuleEnabled } from "../marketplaces/whatsapp/whatsapp-constants";
 
 // Plataformas válidas para o filtro de conversas (string da query → enum).
 const PLATFORM_BY_KEY: Record<string, Platform> = {
@@ -51,16 +63,40 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         ),
       ]);
 
-      return reply.send({
-        accounts: [...mlAccounts, ...shopeeAccounts, ...magaluAccounts].map(
-          (a) => ({
-            id: a.id,
-            accountName: a.accountName,
-            status: a.status,
-            platform: a.platform,
-          }),
-        ),
-      });
+      const accounts: {
+        id: string;
+        accountName: string;
+        status: string;
+        platform: string;
+      }[] = [...mlAccounts, ...shopeeAccounts, ...magaluAccounts].map((a) => ({
+        id: a.id,
+        accountName: a.accountName,
+        status: a.status as string,
+        platform: a.platform as string,
+      }));
+
+      // Canal WhatsApp (aditivo): números conectados entram no MESMO seletor
+      // com id prefixado "wa:" (o prefixo roteia read/answers de volta para os
+      // branches WhatsApp). O campo `whatsappEnabled` (só com a flag global
+      // ligada — resposta byte-idêntica com flag off) informa a UI se o tenant
+      // tem o módulo no plano.
+      if (isWhatsappModuleEnabled()) {
+        const waEnabled = await isWhatsappEnabledFor(userId);
+        if (waEnabled) {
+          const waAccounts = await WhatsAppRepository.findActiveByUserId(userId);
+          accounts.push(
+            ...waAccounts.map((a) => ({
+              id: toPrefixedAccountId(a.id),
+              accountName: a.displayPhoneNumber,
+              status: a.status as string,
+              platform: "WHATSAPP",
+            })),
+          );
+        }
+        return reply.send({ accounts, whatsappEnabled: waEnabled });
+      }
+
+      return reply.send({ accounts });
     },
   );
 
@@ -79,6 +115,42 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       // accountId ausente ou "all" => todas as contas do usuário.
       // Sentinela explícito "all" além de ausência por robustez.
       const isAllAccounts = !accountId || accountId === "all";
+
+      // ---- Canal WhatsApp (aditivo): accountId "wa:*" ou platform=WHATSAPP
+      // roteiam para as tabelas do canal — curto-circuito ANTES de qualquer
+      // lógica de marketplace. Sem flag/plano, os valores não existem e a
+      // resposta é a MESMA que o app legado daria (404 conta / 400 platform).
+      const waAccountId = fromPrefixedAccountId(accountId);
+      if (waAccountId || q.platform === "WHATSAPP") {
+        if (!(await isWhatsappEnabledFor(userId))) {
+          return waAccountId
+            ? reply.status(404).send({ error: "Conta não encontrada" })
+            : reply.status(400).send({ error: "platform inválido" });
+        }
+        const waStatus = (q.status as any) ?? "all";
+        if (!["all", "unanswered", "answered", "unread"].includes(waStatus)) {
+          return reply.status(400).send({ error: "status inválido" });
+        }
+        if (waAccountId) {
+          const account = await WhatsAppRepository.findByIdAndUser(
+            waAccountId,
+            userId,
+          );
+          if (!account) {
+            return reply.status(404).send({ error: "Conta não encontrada" });
+          }
+        }
+        const result = await WhatsAppInboxRepository.listConversations({
+          userId,
+          whatsAppAccountId: waAccountId ?? undefined,
+          status: waStatus,
+          search: q.search ?? "",
+          limit: Number(q.limit) || 30,
+          offset: Number(q.offset) || 0,
+        });
+        return reply.send(result);
+      }
+      // ---- fim do branch WhatsApp; daqui p/ baixo, fluxo legado intocado.
 
       // Conta específica: valida ownership como antes (comportamento legado
       // idêntico). Modo "todas": o isolamento é garantido na query via
@@ -116,6 +188,46 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const limit = Number(q.limit) || 30;
       const offset = Number(q.offset) || 0;
 
+      // ---- Merge aditivo WhatsApp em "Todas as plataformas": com o módulo
+      // habilitado p/ o tenant, a lista unificada intercala marketplace +
+      // WhatsApp por recência. Cada fonte busca o topo (offset 0) e o slice
+      // aplica offset/limit no conjunto ordenado — correto para o uso real da
+      // UI (limit 50, offset 0). Sem flag/plano, este bloco NUNCA roda.
+      if (
+        isAllAccounts &&
+        !platform &&
+        (await isWhatsappEnabledFor(userId))
+      ) {
+        const fetchCount = Math.min(limit + offset, 100);
+        const [mkt, wa] = await Promise.all([
+          QuestionRepository.listConversations({
+            userId,
+            marketplaceAccountId: undefined,
+            platform: undefined,
+            status,
+            search: q.search ?? "",
+            limit: fetchCount,
+            offset: 0,
+          }),
+          WhatsAppInboxRepository.listConversations({
+            userId,
+            status,
+            search: q.search ?? "",
+            limit: fetchCount,
+            offset: 0,
+          }),
+        ]);
+        const items = [...mkt.items, ...wa.items]
+          .sort(
+            (a, b) =>
+              new Date(b.lastQuestionAt).getTime() -
+              new Date(a.lastQuestionAt).getTime(),
+          )
+          .slice(offset, offset + limit);
+        return reply.send({ items, total: mkt.total + wa.total });
+      }
+      // ---- fim do merge; fluxo legado intocado.
+
       const result = await QuestionRepository.listConversations({
         userId,
         marketplaceAccountId: isAllAccounts ? undefined : accountId,
@@ -146,6 +258,38 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: "accountId é obrigatório" });
       }
 
+      // Canal WhatsApp (aditivo): conta prefixada "wa:" ⇒ thread do canal, com
+      // o MESMO shape de resposta (+ campo opcional `whatsapp` com a janela).
+      const waAccountId = fromPrefixedAccountId(accountId);
+      if (waAccountId) {
+        if (!(await isWhatsappEnabledFor(userId))) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        const account = await WhatsAppRepository.findByIdAndUser(
+          waAccountId,
+          userId,
+        );
+        if (!account) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        const data = await WhatsAppInboxRepository.listMessages(
+          waAccountId,
+          itemId,
+        );
+        if (!data.conversation) {
+          return reply.status(404).send({ error: "Conversa não encontrada" });
+        }
+        return reply.send({
+          questions: data.messages,
+          listing: null,
+          whatsapp: {
+            contactWaId: data.conversation.contactWaId,
+            contactName: data.conversation.contactName,
+            windowExpiresAt: data.conversation.serviceWindowExpiresAt,
+          },
+        });
+      }
+
       const account = await MarketplaceRepository.findByIdAndUser(accountId, userId);
       if (!account) {
         return reply.status(404).send({ error: "Conta não encontrada" });
@@ -171,6 +315,43 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       if (!accountId) {
         return reply.status(400).send({ error: "accountId é obrigatório" });
       }
+
+      // Canal WhatsApp (aditivo): zera o contador local e propaga o "lida"
+      // para o WhatsApp do cliente (best-effort — falha remota não afeta a UI).
+      const waAccountId = fromPrefixedAccountId(accountId);
+      if (waAccountId) {
+        if (!(await isWhatsappEnabledFor(userId))) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        const account = await WhatsAppRepository.findWithSecretsByIdAndUser(
+          waAccountId,
+          userId,
+        );
+        if (!account) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        const { updated, lastInboundWaMessageId } =
+          await WhatsAppInboxRepository.markConversationRead(
+            waAccountId,
+            itemId,
+          );
+        if (updated > 0 && lastInboundWaMessageId) {
+          setImmediate(() => {
+            WhatsAppApiService.markRead(
+              account.accessToken,
+              account.phoneNumberId,
+              lastInboundWaMessageId,
+            ).catch((err: unknown) => {
+              console.warn(
+                "[whatsapp] mark-read remoto falhou (ignorado):",
+                err instanceof Error ? err.message : err,
+              );
+            });
+          });
+        }
+        return reply.send({ updated });
+      }
+
       const account = await MarketplaceRepository.findByIdAndUser(accountId, userId);
       if (!account) {
         return reply.status(404).send({ error: "Conta não encontrada" });
@@ -196,6 +377,12 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const accountId = (request.query as any)?.accountId as string | undefined;
       if (!accountId) {
         return reply.status(400).send({ error: "accountId é obrigatório" });
+      }
+
+      // WhatsApp não tem pull (o histórico é 100% webhook): no-op de sucesso.
+      // A UI nem mostra o botão de sync p/ o canal; isto é só robustez.
+      if (fromPrefixedAccountId(accountId)) {
+        return reply.send({ synced: 0, total: 0 });
       }
 
       try {
@@ -298,7 +485,12 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       const userId = request.user?.dataOwnerId;
       if (!userId) return reply.status(401).send({ error: "Não autenticado" });
 
-      const count = await QuestionRepository.countUnreadForUser(userId);
+      let count = await QuestionRepository.countUnreadForUser(userId);
+      // Canal WhatsApp (aditivo): soma as não-lidas do canal no MESMO shape
+      // {count}. Sem flag/plano, o bloco não roda (badge idêntico ao legado).
+      if (await isWhatsappEnabledFor(userId)) {
+        count += await WhatsAppInboxRepository.countUnreadForUser(userId);
+      }
       return reply.send({ count });
     },
   );

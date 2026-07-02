@@ -30,6 +30,8 @@ export function getPlatformLabel(platform: string) {
       return "Shopee";
     case "MAGALU":
       return "Magalu";
+    case "WHATSAPP":
+      return "WhatsApp";
     default:
       return platform;
   }
@@ -50,6 +52,10 @@ export function platformBadgeClassName(platform?: string) {
   // Magalu = azul da marca (mesmo do preview do anúncio na Fase 1).
   if (platform === "MAGALU") {
     return "border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-400";
+  }
+  // WhatsApp = verde da marca (canal de mensagens; usado na aba de Mensagens).
+  if (platform === "WHATSAPP") {
+    return "border-green-500/50 bg-green-500/10 text-green-700 dark:text-green-400";
   }
   return "";
 }

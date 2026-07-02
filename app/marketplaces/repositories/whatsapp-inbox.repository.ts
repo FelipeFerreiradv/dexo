@@ -37,9 +37,12 @@ export function fromPrefixedAccountId(value: string | undefined | null): string 
 /** Linha de mensagem no shape que o ChatPane já renderiza (authorType). */
 export interface WhatsAppMessageDto {
   id: string;
+  externalQuestionId: string; // wamid (compat com o QuestionDto do front)
   text: string;
   status: string; // inerte no modo chat (a UI não usa p/ chat)
   dateCreated: Date;
+  buyerNickname: string | null;
+  readAt: null;
   authorType: "CUSTOMER" | "SELLER";
   answer: null;
   // Campos ADITIVOS do canal WhatsApp (opcionais p/ os outros canais):
@@ -366,11 +369,16 @@ export class WhatsAppInboxRepository {
       orderBy: { timestamp: "asc" },
     });
 
+    const contactLabel =
+      conversation.contactName ?? conversation.contactWaId;
     const messages: WhatsAppMessageDto[] = rows.map((m) => ({
       id: m.id,
+      externalQuestionId: m.waMessageId,
       text: previewFor(m.type, m.text),
       status: "ANSWERED",
       dateCreated: m.timestamp,
+      buyerNickname: contactLabel,
+      readAt: null,
       authorType: m.direction === "OUTBOUND" ? "SELLER" : "CUSTOMER",
       answer: null,
       deliveryStatus: m.status,
