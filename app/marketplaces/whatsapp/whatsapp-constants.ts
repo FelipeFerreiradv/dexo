@@ -52,6 +52,16 @@ export function isWhatsappModuleEnabled(): boolean {
   return process.env.NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED === "true";
 }
 
+/** Verify token do handshake do webhook — leitura por request (testável). */
+export function getWhatsappVerifyToken(): string | undefined {
+  return process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || undefined;
+}
+
+/** App Secret GLOBAL (fallback do appSecret por conta) — leitura por request. */
+export function getWhatsappAppSecret(): string | undefined {
+  return process.env.WHATSAPP_APP_SECRET || undefined;
+}
+
 /**
  * Valida a config do WhatsApp em RUNTIME (não no boot) — mesmo contrato de
  * validateMagaluConfig. Chamar nos serviços whatsapp-* antes de operar.

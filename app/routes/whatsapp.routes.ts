@@ -8,7 +8,8 @@ import { WhatsAppMediaStorageService } from "../marketplaces/services/whatsapp-m
 import { WhatsAppWebhookUseCase } from "../marketplaces/usecases/whatsapp-webhook.usecase";
 import { isWhatsappEnabledFor } from "../marketplaces/whatsapp/whatsapp-entitlement.service";
 import {
-  WHATSAPP_CONSTANTS,
+  getWhatsappAppSecret,
+  getWhatsappVerifyToken,
   isWhatsappModuleEnabled,
   validateWhatsAppConfig,
 } from "../marketplaces/whatsapp/whatsapp-constants";
@@ -295,7 +296,7 @@ export const whatsappRoutes = async (fastify: FastifyInstance) => {
       const mode = q["hub.mode"];
       const verifyToken = q["hub.verify_token"];
       const challenge = q["hub.challenge"];
-      const expected = WHATSAPP_CONSTANTS.WEBHOOK_VERIFY_TOKEN;
+      const expected = getWhatsappVerifyToken();
 
       if (
         mode === "subscribe" &&
@@ -354,7 +355,7 @@ export const whatsappRoutes = async (fastify: FastifyInstance) => {
       const secrets = [
         ...new Set(
           accounts
-            .map((a) => a.appSecret || WHATSAPP_CONSTANTS.APP_SECRET || "")
+            .map((a) => a.appSecret || getWhatsappAppSecret() || "")
             .filter(Boolean),
         ),
       ];
