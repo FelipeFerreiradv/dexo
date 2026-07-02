@@ -157,25 +157,33 @@ export class WhatsAppInboxRepository {
       throw err;
     }
 
-    // Derivados da conversa. lastMessage*/janela só avançam no tempo (retries
-    // fora de ordem não regridem); unreadCount conta TODA inbound nova.
-    const isNewer = params.timestamp >= conversation.lastMessageAt;
+    // Derivados da conversa, em DOIS updates para serem corretos sob webhooks
+    // concorrentes/fora de ordem:
+    //   1. unreadCount++ (sempre; toda inbound nova conta) + contactName. O
+    //      increment é atômico no banco, então concorrência não perde contagem.
+    //   2. lastMessage*/janela via updateMany com guard `lastMessageAt <= ts`
+    //      — a comparação acontece NO BANCO, então um webhook antigo que corra
+    //      em paralelo com um mais novo nunca REGRIDE o preview/janela (o guard
+    //      em JS da versão anterior tinha janela de corrida entre read e write).
     await prisma.whatsAppConversation.update({
       where: { id: conversation.id },
       data: {
         unreadCount: { increment: 1 },
         ...(params.contactName ? { contactName: params.contactName } : {}),
-        ...(isNewer
-          ? {
-              lastMessageAt: params.timestamp,
-              lastMessagePreview: previewFor(params.type, params.text ?? null),
-              lastMessageDirection: "INBOUND",
-              serviceWindowExpiresAt: new Date(
-                params.timestamp.getTime() +
-                  WHATSAPP_CONSTANTS.SERVICE_WINDOW_MS,
-              ),
-            }
-          : {}),
+      },
+    });
+    await prisma.whatsAppConversation.updateMany({
+      where: {
+        id: conversation.id,
+        lastMessageAt: { lte: params.timestamp },
+      },
+      data: {
+        lastMessageAt: params.timestamp,
+        lastMessagePreview: previewFor(params.type, params.text ?? null),
+        lastMessageDirection: "INBOUND",
+        serviceWindowExpiresAt: new Date(
+          params.timestamp.getTime() + WHATSAPP_CONSTANTS.SERVICE_WINDOW_MS,
+        ),
       },
     });
 
@@ -204,8 +212,13 @@ export class WhatsAppInboxRepository {
       },
       select: { id: true },
     });
-    await prisma.whatsAppConversation.update({
-      where: { id: params.conversationId },
+    // Guard no banco (mesmo motivo do inbound): só avança se for mais recente,
+    // para não regredir o preview se uma inbound concorrente chegar antes.
+    await prisma.whatsAppConversation.updateMany({
+      where: {
+        id: params.conversationId,
+        lastMessageAt: { lte: params.timestamp },
+      },
       data: {
         lastMessageAt: params.timestamp,
         lastMessagePreview: params.text,
@@ -374,7 +387,10 @@ export class WhatsAppInboxRepository {
     const messages: WhatsAppMessageDto[] = rows.map((m) => ({
       id: m.id,
       externalQuestionId: m.waMessageId,
-      text: previewFor(m.type, m.text),
+      // Na THREAD, mídia com anexo renderizado usa o texto CRU (legenda real ou
+      // vazio) — sem o fallback "📷 Imagem", que duplicaria sob a própria mídia.
+      // O fallback fica só para linhas sem mídia (ex.: "unsupported").
+      text: m.text ?? (m.mediaId ? "" : previewFor(m.type, null)),
       status: "ANSWERED",
       dateCreated: m.timestamp,
       buyerNickname: contactLabel,
@@ -411,15 +427,20 @@ export class WhatsAppInboxRepository {
       select: { waMessageId: true },
     });
 
-    const updated = conversation.unreadCount;
-    if (updated > 0) {
-      await prisma.whatsAppConversation.update({
-        where: { id: conversation.id },
-        data: { unreadCount: 0 },
+    // Zera de forma ATÔMICA: decrementa exatamente o que estava lá (via
+    // updateMany com guard >=), em vez de `set 0`. Assim, se uma inbound
+    // concorrente incrementar o contador entre a leitura e a escrita, o
+    // increment dela sobrevive (não some do badge) — o set 0 anterior o
+    // apagaria.
+    const seen = conversation.unreadCount;
+    if (seen > 0) {
+      await prisma.whatsAppConversation.updateMany({
+        where: { id: conversation.id, unreadCount: { gte: seen } },
+        data: { unreadCount: { decrement: seen } },
       });
     }
     return {
-      updated,
+      updated: seen,
       lastInboundWaMessageId: lastInbound?.waMessageId ?? null,
     };
   }

@@ -441,7 +441,10 @@ describe("Gates WhatsApp nas rotas /messages/*", () => {
       await app.close();
     });
 
-    it("POST /conversations/:itemId/sync com wa:: no-op de sucesso (sem pull)", async () => {
+    it("POST /conversations/:itemId/sync com wa: (conta do tenant): no-op de sucesso (sem pull)", async () => {
+      vi.spyOn(WhatsAppRepository, "findByIdAndUser").mockResolvedValue(
+        waAccount,
+      );
       const app = await buildApp();
       const res = await app.inject({
         method: "POST",
@@ -451,6 +454,19 @@ describe("Gates WhatsApp nas rotas /messages/*", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ synced: 0, total: 0 });
+      await app.close();
+    });
+
+    it("POST /conversations/:itemId/sync com wa: de OUTRO tenant: 404 (posse)", async () => {
+      vi.spyOn(WhatsAppRepository, "findByIdAndUser").mockResolvedValue(null);
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/messages/conversations/conv-1/sync?accountId=wa%3Aalheia",
+        headers: { email: "u@x.com" },
+      });
+
+      expect(res.statusCode).toBe(404);
       await app.close();
     });
   });

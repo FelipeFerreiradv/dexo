@@ -52,8 +52,6 @@ describe("WhatsAppWebhookUseCase.processWebhook", () => {
       WhatsAppRepository,
       "findByPhoneNumberIdWithSecrets",
     ).mockResolvedValue(account);
-    // Dedup camada 1 (WebhookEventLog): default = evento NOVO.
-    vi.spyOn(prisma.webhookEventLog, "create").mockResolvedValue({} as any);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -97,14 +95,18 @@ describe("WhatsAppWebhookUseCase.processWebhook", () => {
     );
   });
 
-  it("evento repetido (P2002 no WebhookEventLog): NÃO grava de novo (idempotência)", async () => {
-    (prisma.webhookEventLog.create as any).mockRejectedValue({
-      code: "P2002",
-    });
-    const recordSpy = vi.spyOn(
-      WhatsAppInboxRepository,
-      "recordInboundMessage",
-    );
+  it("evento repetido: dedup INTRÍNSECA via waMessageId @unique (recordInboundMessage devolve duplicated)", async () => {
+    // Sem claim-antes: a idempotência é o próprio insert. recordInboundMessage
+    // é chamado, mas devolve {duplicated:true} (P2002 no waMessageId) e não
+    // toca nos derivados nem baixa mídia.
+    const recordSpy = vi
+      .spyOn(WhatsAppInboxRepository, "recordInboundMessage")
+      .mockResolvedValue({
+        conversationId: "conv-1",
+        messageId: null,
+        duplicated: true,
+      });
+    const mediaSpy = vi.spyOn(WhatsAppApiService, "getMediaInfo");
 
     await WhatsAppWebhookUseCase.processWebhook(
       payloadWith({
@@ -113,14 +115,16 @@ describe("WhatsAppWebhookUseCase.processWebhook", () => {
             id: "wamid.1",
             from: "5547988887777",
             timestamp: "1750000000",
-            type: "text",
-            text: { body: "duplicada" },
+            type: "image",
+            image: { id: "media-x", mime_type: "image/jpeg" },
           },
         ],
       }) as any,
     );
 
-    expect(recordSpy).not.toHaveBeenCalled();
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    // duplicated ⇒ não tenta baixar mídia de novo.
+    expect(mediaSpy).not.toHaveBeenCalled();
   });
 
   it("número não conectado: descarta sem gravar", async () => {
@@ -175,11 +179,10 @@ describe("WhatsAppWebhookUseCase.processWebhook", () => {
     expect(recordSpy).not.toHaveBeenCalled();
   });
 
-  it("statuses[]: atualiza o status de entrega (dedup por wamid:status)", async () => {
+  it("statuses[]: atualiza o status de entrega (idempotência via updateMessageStatus, sem claim)", async () => {
     const statusSpy = vi
       .spyOn(WhatsAppInboxRepository, "updateMessageStatus")
       .mockResolvedValue(true);
-    const claimSpy = prisma.webhookEventLog.create as any;
 
     await WhatsAppWebhookUseCase.processWebhook(
       payloadWith({
@@ -195,14 +198,6 @@ describe("WhatsAppWebhookUseCase.processWebhook", () => {
     );
 
     expect(statusSpy).toHaveBeenCalledWith("wamid.out1", "delivered", null);
-    expect(claimSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          source: "WHATSAPP",
-          externalId: "wamid.out1:delivered",
-        }),
-      }),
-    );
   });
 
   it("status failed: carrega o errorCode da Meta", async () => {

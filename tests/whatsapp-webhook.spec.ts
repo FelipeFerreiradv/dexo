@@ -261,7 +261,7 @@ describe("POST /whatsapp/webhook — eventos", () => {
     await app.close();
   });
 
-  it("número não conectado: 200 e descarta sem processar", async () => {
+  it("número não conectado: 401 UNIFICADO (mesma resposta de assinatura inválida — sem oráculo de enumeração)", async () => {
     vi.spyOn(
       WhatsAppRepository,
       "findByPhoneNumberIdWithSecrets",
@@ -282,7 +282,44 @@ describe("POST /whatsapp/webhook — eventos", () => {
       },
     });
 
-    expect(res.statusCode).toBe(200);
+    // 401 idêntico ao de assinatura inválida: um atacante não distingue número
+    // conectado (401 por assinatura) de desconhecido (401 por conta).
+    expect(res.statusCode).toBe(401);
+    await flushBackground();
+    expect(processSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("injeção cross-tenant: número do tenant B assinado com o secret do tenant A é DESCARTADO", async () => {
+    // Payload cita o número do tenant B; atacante assina com o secret de A.
+    // A validação por-conta rejeita B (assinatura não casa com o secret de B).
+    const secretA = "secret-tenant-A";
+    const secretB = "secret-tenant-B";
+    vi.spyOn(
+      WhatsAppRepository,
+      "findByPhoneNumberIdWithSecrets",
+    ).mockResolvedValue({
+      ...accountFixture,
+      userId: "tenant-B",
+      appSecret: secretB,
+    });
+    const processSpy = vi
+      .spyOn(WhatsAppWebhookUseCase, "processWebhook")
+      .mockResolvedValue();
+
+    const body = JSON.stringify(samplePayload());
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/whatsapp/webhook",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": signed(body, secretA), // assinado com A!
+      },
+    });
+
+    expect(res.statusCode).toBe(401);
     await flushBackground();
     expect(processSpy).not.toHaveBeenCalled();
     await app.close();

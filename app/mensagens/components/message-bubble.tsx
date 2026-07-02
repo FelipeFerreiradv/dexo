@@ -62,7 +62,13 @@ export function MessageBubble({
         {media && (
           <AuthenticatedMedia media={media} headers={mediaHeaders} />
         )}
-        <p className="whitespace-pre-wrap break-words leading-relaxed">{text}</p>
+        {/* Sem texto quando é mídia pura sem legenda: evita duplicar um
+            fallback ("📷 Imagem") logo abaixo da própria mídia renderizada. */}
+        {text.trim() && (
+          <p className="whitespace-pre-wrap break-words leading-relaxed">
+            {text}
+          </p>
+        )}
         <div
           className={cn(
             "mt-1 flex items-center justify-end gap-1 text-right text-[10px]",
@@ -81,7 +87,11 @@ export function MessageBubble({
   );
 }
 
-/** Ticks de entrega estilo WhatsApp (só em bolhas OUTGOING do canal). */
+/**
+ * Ticks de entrega estilo WhatsApp (só em bolhas OUTGOING do canal). A bolha
+ * outgoing tem fundo `primary` (amarelo da marca), então usamos tons ESCUROS
+ * para contraste legível — text-red-200/sky-300 (claros) somem no amarelo.
+ */
 function DeliveryTicks({
   status,
   errorCode,
@@ -92,7 +102,7 @@ function DeliveryTicks({
   if (status === "failed") {
     return (
       <span
-        className="inline-flex items-center gap-0.5 text-red-200"
+        className="inline-flex items-center gap-0.5 font-semibold text-red-700"
         title={errorCode ? `Falha no envio (erro ${errorCode})` : "Falha no envio"}
       >
         <AlertTriangle className="h-3 w-3" />
@@ -101,12 +111,24 @@ function DeliveryTicks({
     );
   }
   if (status === "read" || status === "played") {
-    return <CheckCheck className="h-3 w-3 text-sky-300" aria-label="Lida" />;
+    return (
+      <CheckCheck className="h-3 w-3 text-sky-800" aria-label="Lida" />
+    );
   }
   if (status === "delivered") {
-    return <CheckCheck className="h-3 w-3" aria-label="Entregue" />;
+    return (
+      <CheckCheck
+        className="h-3 w-3 text-primary-foreground/80"
+        aria-label="Entregue"
+      />
+    );
   }
-  return <Check className="h-3 w-3" aria-label="Enviada" />;
+  return (
+    <Check
+      className="h-3 w-3 text-primary-foreground/70"
+      aria-label="Enviada"
+    />
+  );
 }
 
 /**

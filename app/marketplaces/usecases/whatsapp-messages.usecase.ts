@@ -102,12 +102,24 @@ export class WhatsAppMessagesUseCase {
       throw httpError(502, "A Meta não devolveu o id da mensagem enviada");
     }
 
-    await WhatsAppInboxRepository.recordOutboundMessage({
-      conversationId: conversation.id,
-      waMessageId: sent.messageId,
-      text,
-      timestamp: new Date(),
-    });
+    // A mensagem JÁ foi entregue à Meta (temos o wamid). Se a gravação local
+    // falhar, NÃO propagamos erro: um 5xx faria o cliente reenviar e o texto
+    // chegaria DUPLICADO ao contato. Preferimos logar e reportar sucesso — a
+    // mensagem enviada é o efeito colateral irreversível que manda. (O eco
+    // local é cosmético; o próximo webhook/refresh reconcilia.)
+    try {
+      await WhatsAppInboxRepository.recordOutboundMessage({
+        conversationId: conversation.id,
+        waMessageId: sent.messageId,
+        text,
+        timestamp: new Date(),
+      });
+    } catch (err) {
+      console.error(
+        `[whatsapp] Mensagem ${sent.messageId} enviada à Meta mas falhou ao gravar localmente (evitando reenvio):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
 
     return { success: true, waMessageId: sent.messageId };
   }

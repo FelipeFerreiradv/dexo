@@ -117,17 +117,19 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
       // Sentinela explícito "all" além de ausência por robustez.
       const isAllAccounts = !accountId || accountId === "all";
 
-      // ---- Canal WhatsApp (aditivo): accountId "wa:*" ou platform=WHATSAPP
-      // roteiam para as tabelas do canal — curto-circuito ANTES de qualquer
-      // lógica de marketplace. Sem flag/plano, os valores não existem e a
-      // resposta é a MESMA que o app legado daria (404 conta / 400 platform).
+      // ---- Canal WhatsApp (aditivo): accountId "wa:*", ou platform=WHATSAPP
+      // com "todas as contas", roteiam para as tabelas do canal. O branch só é
+      // ENTRADO quando o tenant tem o módulo habilitado — caso contrário o
+      // request CAI no fluxo legado abaixo, que por construção produz a resposta
+      // byte-idêntica de sempre ("wa:x" nunca é conta de marketplace ⇒ 404;
+      // platform=WHATSAPP ⇒ 400 "platform inválido" na ordem legada, após
+      // ownership/status). platform=WHATSAPP só entra em modo "todas as contas"
+      // — com uma conta de marketplace selecionada, cai no legado e recebe 400
+      // (em vez de ignorar o filtro de conta silenciosamente).
       const waAccountId = fromPrefixedAccountId(accountId);
-      if (waAccountId || q.platform === "WHATSAPP") {
-        if (!(await isWhatsappEnabledFor(userId))) {
-          return waAccountId
-            ? reply.status(404).send({ error: "Conta não encontrada" })
-            : reply.status(400).send({ error: "platform inválido" });
-        }
+      const wantsWhatsapp =
+        Boolean(waAccountId) || (q.platform === "WHATSAPP" && isAllAccounts);
+      if (wantsWhatsapp && (await isWhatsappEnabledFor(userId))) {
         const waStatus = (q.status as any) ?? "all";
         if (!["all", "unanswered", "answered", "unread"].includes(waStatus)) {
           return reply.status(400).send({ error: "status inválido" });
@@ -380,10 +382,21 @@ export const messagesRoutes = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: "accountId é obrigatório" });
       }
 
-      // WhatsApp não tem pull (o histórico é 100% webhook): no-op de sucesso.
-      // A UI nem mostra o botão de sync p/ o canal; isto é só robustez.
-      if (fromPrefixedAccountId(accountId)) {
-        return reply.send({ synced: 0, total: 0 });
+      // WhatsApp não tem pull (histórico é 100% webhook): no-op de sucesso —
+      // MAS só após validar entitlement E posse da conta, senão o request cai
+      // no fluxo legado abaixo (que dá 404 "Conta não encontrada" para o id
+      // "wa:*", byte-idêntico ao comportamento sem o módulo). A UI nem mostra o
+      // botão de sync para o canal; isto é robustez + preservação de contrato.
+      const waSyncAccountId = fromPrefixedAccountId(accountId);
+      if (waSyncAccountId && (await isWhatsappEnabledFor(userId))) {
+        const account = await WhatsAppRepository.findByIdAndUser(
+          waSyncAccountId,
+          userId,
+        );
+        if (account) {
+          return reply.send({ synced: 0, total: 0 });
+        }
+        return reply.status(404).send({ error: "Conta não encontrada" });
       }
 
       try {

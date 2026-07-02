@@ -337,8 +337,16 @@ export const whatsappRoutes = async (fastify: FastifyInstance) => {
         return reply.status(200).send({ received: true });
       }
 
-      // Resolve as contas citadas p/ obter os App Secrets (por conta, com
-      // fallback global). Número desconhecido ⇒ descarte silencioso (200).
+      // Assinatura validada POR CONTA (não com uma lista agregada de segredos):
+      // cada phone_number_id do payload é autorizado só se a assinatura do corpo
+      // casa com o App Secret DAQUELA conta (fallback env). Isso impede que o
+      // tenant A (que conhece o próprio App Secret) forje um payload contendo o
+      // número do tenant B e o injete — o número de B só passa se assinado com o
+      // segredo de B. `authorized` alimenta o processamento, que ignora changes
+      // de números não-autorizados.
+      const signature = request.headers["x-hub-signature-256"] as
+        | string
+        | undefined;
       const phoneNumberIds =
         WhatsAppWebhookUseCase.extractPhoneNumberIds(payload);
       const accounts = (
@@ -348,44 +356,41 @@ export const whatsappRoutes = async (fastify: FastifyInstance) => {
           ),
         )
       ).filter((a): a is NonNullable<typeof a> => Boolean(a));
-      if (accounts.length === 0) {
-        return reply.status(200).send({ received: true });
+
+      const authorized = new Set<string>();
+      for (const account of accounts) {
+        const secret = account.appSecret || getWhatsappAppSecret();
+        if (!secret) continue;
+        if (
+          WhatsAppWebhookUseCase.verifySignature(rawBody, signature, [secret])
+        ) {
+          authorized.add(account.phoneNumberId);
+        }
       }
 
-      const secrets = [
-        ...new Set(
-          accounts
-            .map((a) => a.appSecret || getWhatsappAppSecret() || "")
-            .filter(Boolean),
-        ),
-      ];
-      if (secrets.length === 0) {
+      // Nenhum número autorizado (desconhecido, sem segredo, ou assinatura
+      // inválida) ⇒ 401 ÚNICO. Resposta uniforme de propósito: não distinguir
+      // "número desconhecido" de "assinatura inválida" evita um oráculo de
+      // enumeração dos números conectados. A Meta reenvia em não-200, o que é
+      // aceitável para o volume de lixo/ataque que cai aqui.
+      if (authorized.size === 0) {
         request.log.warn(
-          "[whatsapp-webhook] Sem App Secret configurado (conta/env) — evento rejeitado",
+          "[whatsapp-webhook] Nenhum número autorizado (assinatura inválida ou número desconhecido) — rejeitado",
         );
-        return reply.status(401).send({ error: "assinatura não verificável" });
-      }
-
-      const signature = request.headers["x-hub-signature-256"] as
-        | string
-        | undefined;
-      if (
-        !WhatsAppWebhookUseCase.verifySignature(rawBody, signature, secrets)
-      ) {
-        request.log.warn(
-          "[whatsapp-webhook] Assinatura X-Hub-Signature-256 inválida — rejeitado",
-        );
-        return reply.status(401).send({ error: "assinatura inválida" });
+        return reply.status(401).send({ error: "não autorizado" });
       }
 
       reply.status(200).send({ received: true });
+      const authorizedIds = [...authorized];
       setImmediate(() => {
-        WhatsAppWebhookUseCase.processWebhook(payload).catch((err) => {
-          console.error(
-            "[whatsapp-webhook] Erro no processamento em background:",
-            err instanceof Error ? err.message : err,
-          );
-        });
+        WhatsAppWebhookUseCase.processWebhook(payload, authorizedIds).catch(
+          (err) => {
+            console.error(
+              "[whatsapp-webhook] Erro no processamento em background:",
+              err instanceof Error ? err.message : err,
+            );
+          },
+        );
       });
     });
   });

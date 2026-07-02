@@ -1,6 +1,4 @@
 import crypto from "crypto";
-import prisma from "../../lib/prisma";
-import { WHATSAPP_CONSTANTS } from "../whatsapp/whatsapp-constants";
 import { isWhatsappEnabledFor } from "../whatsapp/whatsapp-entitlement.service";
 import { WhatsAppRepository } from "../repositories/whatsapp.repository";
 import { WhatsAppInboxRepository } from "../repositories/whatsapp-inbox.repository";
@@ -38,25 +36,16 @@ interface WebhookPayload {
   }>;
 }
 
-/** Idempotência via WebhookEventLog (create + P2002 ⇒ já processado). */
-async function claimWebhookEvent(
-  externalId: string,
-  payload: unknown,
-): Promise<boolean> {
-  try {
-    await (prisma as any).webhookEventLog.create({
-      data: {
-        source: WHATSAPP_CONSTANTS.WEBHOOK_LOG_SOURCE,
-        externalId,
-        payload: payload as any,
-      },
-    });
-    return true;
-  } catch (err: any) {
-    if (err?.code === "P2002") return false;
-    throw err;
-  }
-}
+// NOTA sobre idempotência: NÃO usamos um "claim" no WebhookEventLog ANTES de
+// gravar (padrão dos webhooks de pedido). Ali o claim-antes é seguro porque o
+// processamento é re-executável; aqui ele criaria uma janela de PERDA: se o
+// claim fosse consumido e a gravação falhasse em seguida, o retry da Meta (por
+// até 7 dias) veria P2002 e descartaria a mensagem para sempre. Em vez disso a
+// idempotência é INTRÍNSECA e à prova de falha:
+//   - inbound: WhatsAppMessage.waMessageId @unique (recordInboundMessage
+//     devolve {duplicated:true} no P2002; um retry após falha re-tenta e grava);
+//   - statuses: updateMessageStatus é idempotente (nunca rebaixa o rank; um
+//     status repetido é no-op), então reprocessar é inofensivo.
 
 /** Tipos de mensagem com binário para baixar (campo homônimo traz o media id). */
 const MEDIA_TYPES = new Set([
@@ -151,14 +140,32 @@ export class WhatsAppWebhookUseCase {
    * roteado para a conta pelo metadata.phone_number_id; conta desconhecida ou
    * dono sem entitlement ⇒ descarte silencioso (log). Erros por mensagem não
    * derrubam o lote (espelha o padrão dos webhooks legados).
+   *
+   * `authorizedPhoneNumberIds` são os números cuja assinatura a rota validou
+   * com o segredo DA PRÓPRIA conta. Só eles são processados — impede injeção
+   * cross-tenant (um número assinado com o segredo de outro tenant nunca entra
+   * nesta lista). Ausente ⇒ processa tudo (só para testes diretos do usecase).
    */
-  static async processWebhook(payload: WebhookPayload): Promise<void> {
+  static async processWebhook(
+    payload: WebhookPayload,
+    authorizedPhoneNumberIds?: string[],
+  ): Promise<void> {
+    const authorized = authorizedPhoneNumberIds
+      ? new Set(authorizedPhoneNumberIds)
+      : null;
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         if (change.field !== "messages") continue;
         const value = change.value;
         const phoneNumberId = value?.metadata?.phone_number_id;
         if (!value || !phoneNumberId) continue;
+        // Change de número não autorizado pela assinatura: descarta.
+        if (authorized && !authorized.has(String(phoneNumberId))) {
+          console.warn(
+            `[whatsapp-webhook] Número ${phoneNumberId} não autorizado pela assinatura — change descartado`,
+          );
+          continue;
+        }
 
         try {
           await this.processChange(String(phoneNumberId), value);
@@ -236,9 +243,9 @@ export class WhatsAppWebhookUseCase {
     const from = msg.from ? String(msg.from) : null;
     if (!waMessageId || !from) return;
 
-    // Dedup camada 1: WebhookEventLog (retries da Meta duram até 7 dias).
-    if (!(await claimWebhookEvent(waMessageId, msg))) return;
-
+    // Dedup à prova de falha: o próprio insert é idempotente (waMessageId
+    // @unique) e recordInboundMessage devolve {duplicated:true} no P2002, sem
+    // tocar nos derivados. Não há claim-antes que possa "consumir" um retry.
     const type = String(msg.type ?? "unsupported");
     const media = MEDIA_TYPES.has(type) ? msg[type] : null;
 
@@ -307,9 +314,10 @@ export class WhatsAppWebhookUseCase {
     const status = st.status ? String(st.status) : null;
     if (!waMessageId || !status) return;
 
-    // Dedup por (wamid, status) — cada transição chega num webhook próprio.
-    if (!(await claimWebhookEvent(`${waMessageId}:${status}`, st))) return;
-
+    // Sem claim-antes: updateMessageStatus é idempotente (nunca rebaixa o rank
+    // sent→delivered→read; status repetido é no-op) e não consome nada. Assim
+    // um `delivered` que chegue ANTES da OUTBOUND ser gravada (race) não é
+    // perdido — o retry da Meta reaplica quando a linha já existe.
     const errorCode = st.errors?.[0]?.code != null
       ? String(st.errors[0].code)
       : null;
