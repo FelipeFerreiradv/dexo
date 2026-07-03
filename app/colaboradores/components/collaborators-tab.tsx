@@ -8,12 +8,24 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   FilterIcon,
+  PencilIcon,
   SearchIcon,
+  UserPlusIcon,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SectionHeading } from "@/components/section-heading";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Card,
   CardContent,
@@ -29,7 +41,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getApiBaseUrl } from "@/lib/api";
+import { Switch } from "@/components/ui/switch";
+import { ToastViewport } from "@/components/ui/toast-viewport";
+import { authHeaders, getApiBaseUrl } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { CollaboratorFormDialog } from "./collaborator-form-dialog";
 import { TeamProductivity } from "./team-productivity";
 
 type Collaborator = {
@@ -37,6 +53,13 @@ type Collaborator = {
   name?: string | null;
   email: string;
   avatarUrl?: string | null;
+  isActive?: boolean;
+};
+
+type Toast = {
+  id: string;
+  message: string;
+  type: "success" | "error";
 };
 
 type ActivityLog = {
@@ -105,6 +128,7 @@ function levelVariant(level: ActivityLog["level"]) {
 export function CollaboratorsTab() {
   const { data: session } = useSession();
   const email = session?.user?.email ?? null;
+  const apiToken = (session as { apiToken?: string } | null)?.apiToken;
 
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
@@ -119,6 +143,28 @@ export function CollaboratorsTab() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+
+  // Gestão de colaboradores (aditivo). Modal de criar/editar, confirmação de
+  // desativação e toasts locais (mesmo padrão de budget-crm, sem lib nova).
+  const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [editing, setEditing] = useState<Collaborator | null>(null);
+  const [pendingDeactivate, setPendingDeactivate] =
+    useState<Collaborator | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const showToast = useCallback((message: string, type: Toast["type"]) => {
+    const id =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Math.random().toString(36);
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(
+      () => setToasts((prev) => prev.filter((t) => t.id !== id)),
+      4000,
+    );
+  }, []);
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -148,7 +194,6 @@ export function CollaboratorsTab() {
         if (res.status === 403) {
           // Não deveria acontecer (page.tsx já redirect), mas defesa em profundidade.
           setLogs([]);
-          setCollaborators([]);
           setTotal(0);
           setTotalPages(0);
           return;
@@ -157,9 +202,8 @@ export function CollaboratorsTab() {
       }
       const data = await res.json();
       setLogs(Array.isArray(data.logs) ? data.logs : []);
-      setCollaborators(
-        Array.isArray(data.collaborators) ? data.collaborators : [],
-      );
+      // A lista de colaboradores (com isActive) vem de fetchCollaborators —
+      // não sobrescrevemos aqui para não perder o estado ativo/inativo.
       setTotal(data.total ?? 0);
       setTotalPages(data.totalPages ?? 0);
     } catch (err) {
@@ -172,6 +216,70 @@ export function CollaboratorsTab() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Fonte da lista "Sua equipe" (inclui isActive). Separada da auditoria para
+  // não depender dos filtros e sobreviver a re-buscas após criar/editar/status.
+  const fetchCollaborators = useCallback(async () => {
+    if (!email) return;
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/me/team/collaborators`, {
+        headers: authHeaders({ user: { email }, apiToken }),
+      });
+      if (!res.ok) return; // 403 defensivo — page.tsx já protege a rota.
+      const data = await res.json();
+      setCollaborators(
+        Array.isArray(data.collaborators) ? data.collaborators : [],
+      );
+    } catch (err) {
+      console.error("[CollaboratorsTab] fetchCollaborators error", err);
+    }
+  }, [email, apiToken]);
+
+  useEffect(() => {
+    fetchCollaborators();
+  }, [fetchCollaborators]);
+
+  // Ativa/desativa um colaborador. O corte da sessão ativa (≤60s) é feito pelo
+  // backend (auth.middleware). Aqui só refletimos o novo estado após o PATCH.
+  const applyStatus = useCallback(
+    async (collab: Collaborator, isActive: boolean) => {
+      setStatusBusyId(collab.id);
+      try {
+        const res = await fetch(
+          `${getApiBaseUrl()}/me/team/collaborators/${collab.id}/status`,
+          {
+            method: "PATCH",
+            headers: authHeaders(
+              { user: { email }, apiToken },
+              { "Content-Type": "application/json" },
+            ),
+            body: JSON.stringify({ isActive }),
+          },
+        );
+        if (!res.ok) {
+          let message = "Não foi possível alterar o status.";
+          try {
+            const data = await res.json();
+            if (data?.message) message = data.message;
+          } catch {
+            // sem corpo JSON — mantém a mensagem genérica.
+          }
+          showToast(message, "error");
+          return;
+        }
+        showToast(
+          isActive ? "Colaborador ativado." : "Colaborador desativado.",
+          "success",
+        );
+        await fetchCollaborators();
+      } catch {
+        showToast("Erro de conexão ao alterar o status.", "error");
+      } finally {
+        setStatusBusyId(null);
+      }
+    },
+    [email, apiToken, showToast, fetchCollaborators],
+  );
 
   // Reset de página quando filtros mudam.
   useEffect(() => {
@@ -199,53 +307,118 @@ export function CollaboratorsTab() {
     setEndDate("");
   };
 
+  const openCreate = () => {
+    setFormMode("create");
+    setEditing(null);
+    setFormOpen(true);
+  };
+
+  const openEdit = (collab: Collaborator) => {
+    setFormMode("edit");
+    setEditing(collab);
+    setFormOpen(true);
+  };
+
+  const handleFormSuccess = (message: string) => {
+    showToast(message, "success");
+    fetchCollaborators();
+  };
+
   return (
     <div className="space-y-6">
       <Card className="border border-border/60 bg-card/80 shadow-[0_18px_50px_-38px_rgba(0,0,0,0.45)] backdrop-blur">
         <CardHeader>
-          <SectionHeading
-            eyebrow="Equipe · Membros"
-            title="Sua"
-            accent="equipe"
-            description={
-              collaborators.length === 0
-                ? "Nenhum colaborador vinculado à sua conta"
-                : `${collaborators.length} colaborador(es) vinculado(s) à sua conta`
-            }
-          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <SectionHeading
+              eyebrow="Equipe · Membros"
+              title="Sua"
+              accent="equipe"
+              description={
+                collaborators.length === 0
+                  ? "Nenhum colaborador vinculado à sua conta"
+                  : `${collaborators.length} colaborador(es) vinculado(s) à sua conta`
+              }
+            />
+            <Button
+              onClick={openCreate}
+              className="shrink-0 gap-2 rounded-full"
+            >
+              <UserPlusIcon className="h-4 w-4" />
+              Novo colaborador
+            </Button>
+          </div>
         </CardHeader>
         {collaborators.length > 0 && (
           <CardContent>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {collaborators.map((c) => (
-                <div
-                  key={c.id}
-                  className="flex items-center gap-3 rounded-lg border border-border/60 p-3"
-                >
-                  <div className="h-10 w-10 overflow-hidden rounded-full border border-border/60 bg-muted/30">
-                    {c.avatarUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={c.avatarUrl}
-                        alt={c.name || c.email}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <span className="flex h-full w-full items-center justify-center text-sm font-semibold">
-                        {(c.name || c.email).slice(0, 2).toUpperCase()}
-                      </span>
+              {collaborators.map((c) => {
+                const inactive = c.isActive === false;
+                return (
+                  <div
+                    key={c.id}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg border border-border/60 p-3",
+                      inactive && "opacity-70",
                     )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {c.name || "—"}
+                  >
+                    <div className="h-10 w-10 shrink-0 overflow-hidden rounded-full border border-border/60 bg-muted/30">
+                      {c.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={c.avatarUrl}
+                          alt={c.name || c.email}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <span className="flex h-full w-full items-center justify-center text-sm font-semibold">
+                          {(c.name || c.email).slice(0, 2).toUpperCase()}
+                        </span>
+                      )}
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {c.email}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {c.name || "—"}
+                        </span>
+                        {inactive && (
+                          <Badge variant="secondary" className="shrink-0">
+                            Inativo
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {c.email}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Switch
+                        checked={c.isActive !== false}
+                        disabled={statusBusyId === c.id}
+                        aria-label={
+                          inactive
+                            ? "Ativar colaborador"
+                            : "Desativar colaborador"
+                        }
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            applyStatus(c, true);
+                          } else {
+                            setPendingDeactivate(c);
+                          }
+                        }}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Editar colaborador"
+                        onClick={() => openEdit(c)}
+                      >
+                        <PencilIcon className="h-4 w-4" />
+                      </Button>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         )}
@@ -446,6 +619,63 @@ export function CollaboratorsTab() {
           )}
         </CardContent>
       </Card>
+
+      <CollaboratorFormDialog
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        mode={formMode}
+        session={session}
+        collaborator={editing}
+        onSuccess={handleFormSuccess}
+      />
+
+      <AlertDialog
+        open={pendingDeactivate !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeactivate(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Desativar colaborador?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeactivate
+                ? `${
+                    pendingDeactivate.name || pendingDeactivate.email
+                  } perderá o acesso à plataforma em até 60 segundos. Nenhum dado é apagado — você pode reativar quando quiser.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = pendingDeactivate;
+                setPendingDeactivate(null);
+                if (target) applyStatus(target, false);
+              }}
+            >
+              Desativar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={cn(
+              "rounded-lg px-4 py-3 text-sm font-medium shadow-lg",
+              t.type === "success"
+                ? "bg-green-100 text-green-800 dark:bg-green-900/80 dark:text-green-200"
+                : "bg-destructive text-white",
+            )}
+          >
+            {t.message}
+          </div>
+        ))}
+      </ToastViewport>
     </div>
   );
 }

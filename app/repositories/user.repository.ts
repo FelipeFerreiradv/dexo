@@ -126,6 +126,42 @@ class UserRepositoryPrisma implements UserRepository {
     }
   }
 
+  // EGRESS: lista enxuta de colaboradores p/ a tela de equipe — projeta só as
+  // colunas exibidas (id/nome/e-mail/avatar/status), sem o hash de senha nem os
+  // ~15 campos default* de anúncio que `findChildren` traz. Mesmo padrão das
+  // demais listas do app (findAllForList/pipeline): a edição recarrega o
+  // registro completo quando precisa. NÃO passa por mapUser (a lista usa só o
+  // `isActive` próprio, não o effectiveActive em cascata).
+  async findChildrenPublic(parentUserId: string): Promise<
+    {
+      id: string;
+      email: string;
+      name: string | null;
+      avatarUrl: string | null;
+      parentUserId: string | null;
+      isActive: boolean;
+      createdAt: Date;
+    }[]
+  > {
+    try {
+      return await prisma.user.findMany({
+        where: { parentUserId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          avatarUrl: true,
+          parentUserId: true,
+          isActive: true,
+          createdAt: true,
+        },
+      });
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async update(id: string, data: UserUpdate): Promise<User> {
     try {
       // Hash da senha quando fornecida em texto plano (troca de senha ou rehash
