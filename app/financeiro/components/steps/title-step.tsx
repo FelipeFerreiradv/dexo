@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PAYMENT_METHODS } from "@/app/lib/payment-methods";
+import { paymentMethodsForKind } from "@/app/lib/payment-methods";
 import type { FinanceEntryFormData } from "../../lib/finance-schema";
 import { UnidadeSelect } from "../shared/unidade-select";
 import {
@@ -25,6 +25,9 @@ const PAYMENT_NONE = "__none__";
 interface Props {
   control: Control<FinanceEntryFormData>;
   errors: FieldErrors<FinanceEntryFormData>;
+  // Aba atual: "Fiado" só é ofertado em "a receber". Ausente => trata como
+  // "payable" (default seguro: nunca vaza "Fiado" onde não deve).
+  kind?: "receivable" | "payable";
   // ── Fase 5: venda balcão ──
   // Quando `balcaoEnabled` é true, renderiza o ProductPickerBlock no topo.
   // Sem essas props (ou `false`), o step renderiza exatamente como antes
@@ -45,6 +48,7 @@ interface Props {
 export function TitleStep({
   control,
   errors,
+  kind,
   balcaoEnabled,
   setValue,
   getValues,
@@ -121,7 +125,7 @@ export function TitleStep({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={PAYMENT_NONE}>Não informado</SelectItem>
-                {PAYMENT_METHODS.map((m) => (
+                {paymentMethodsForKind(kind ?? "payable").map((m) => (
                   <SelectItem key={m.code} value={m.code}>
                     {m.label}
                   </SelectItem>

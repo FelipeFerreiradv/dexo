@@ -91,6 +91,7 @@ model Product {
   category               String?
   location               String?
   partNumber             String?
+  partNumberNormalized   String?
   quality                Quality?
   isSecurityItem         Boolean                @default(false)
   isTraceable            Boolean                @default(false)
@@ -129,6 +130,7 @@ model Product {
 
   @@unique([userId, sku])
   @@index([userId, skuNormalized])
+  @@index([userId, partNumberNormalized])
   @@index([userId, createdAt])
   @@index([userId, updatedAt])
   @@index([sku])

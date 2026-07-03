@@ -313,7 +313,7 @@ export function ProductPickerBlock({
                   autoFocus
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Buscar por SKU ou nome..."
+                  placeholder="Buscar por nome, SKU ou part number..."
                   className="h-9 pl-8"
                 />
                 {loading && (

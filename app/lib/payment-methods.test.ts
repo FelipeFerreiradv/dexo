@@ -4,10 +4,11 @@ import {
   PAYMENT_METHOD_CODES,
   PAYMENT_METHOD_LABELS,
   paymentMethodLabel,
+  paymentMethodsForKind,
 } from "./payment-methods";
 
 describe("payment-methods (fonte única)", () => {
-  it("expõe os 6 códigos estáveis esperados", () => {
+  it("expõe os códigos estáveis esperados (6 base + FIADO)", () => {
     expect(PAYMENT_METHOD_CODES).toEqual([
       "PIX",
       "CREDITO",
@@ -15,6 +16,7 @@ describe("payment-methods (fonte única)", () => {
       "BOLETO",
       "DINHEIRO",
       "TRANSFERENCIA",
+      "FIADO",
     ]);
   });
 
@@ -25,6 +27,7 @@ describe("payment-methods (fonte única)", () => {
     expect(PAYMENT_METHOD_LABELS.BOLETO).toBe("Boleto");
     expect(PAYMENT_METHOD_LABELS.DINHEIRO).toBe("Dinheiro");
     expect(PAYMENT_METHOD_LABELS.TRANSFERENCIA).toBe("Transferência / TED");
+    expect(PAYMENT_METHOD_LABELS.FIADO).toBe("Fiado (a receber)");
   });
 
   it("paymentMethodLabel resolve código conhecido", () => {
@@ -45,5 +48,35 @@ describe("payment-methods (fonte única)", () => {
     expect(PAYMENT_METHODS.map((m) => m.code).sort()).toEqual(
       Object.keys(PAYMENT_METHOD_LABELS).sort(),
     );
+  });
+
+  describe("paymentMethodsForKind (gate por aba)", () => {
+    it("receivable inclui FIADO (venda a prazo)", () => {
+      const codes = paymentMethodsForKind("receivable").map((m) => m.code);
+      expect(codes).toContain("FIADO");
+      // Continua ofertando todos os métodos base.
+      expect(codes).toEqual([
+        "PIX",
+        "CREDITO",
+        "DEBITO",
+        "BOLETO",
+        "DINHEIRO",
+        "TRANSFERENCIA",
+        "FIADO",
+      ]);
+    });
+
+    it("payable NUNCA inclui FIADO, mas mantém os 6 métodos base intactos", () => {
+      const codes = paymentMethodsForKind("payable").map((m) => m.code);
+      expect(codes).not.toContain("FIADO");
+      expect(codes).toEqual([
+        "PIX",
+        "CREDITO",
+        "DEBITO",
+        "BOLETO",
+        "DINHEIRO",
+        "TRANSFERENCIA",
+      ]);
+    });
   });
 });

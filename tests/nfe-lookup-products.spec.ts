@@ -54,6 +54,31 @@ describe("NfeRepository.lookupProducts — precisão de SKU", () => {
     expect(JSON.stringify(where)).not.toContain("contains");
   });
 
+  it("query code-like também casa por partNumberNormalized (paridade com SKU)", async () => {
+    const repo = new NfeRepository();
+    await repo.lookupProducts("user-1", "208");
+
+    const where = whereOf();
+    // Part number ganha o mesmo match normalizado (igualdade) que o SKU.
+    expect(where.OR).toEqual(
+      expect.arrayContaining([
+        { skuNormalized: "208" },
+        { partNumberNormalized: "208" },
+      ]),
+    );
+    expect(JSON.stringify(where)).not.toContain("contains");
+  });
+
+  it("part number alfanumérico normaliza (case-insensitive) no ramo code-like", async () => {
+    const repo = new NfeRepository();
+    await repo.lookupProducts("user-1", "ABC-1");
+
+    const where = whereOf();
+    expect(where.OR).toEqual(
+      expect.arrayContaining([{ partNumberNormalized: "abc-1" }]),
+    );
+  });
+
   it("query descritiva mantém contains (recall do picker preservado)", async () => {
     const repo = new NfeRepository();
     await repo.lookupProducts("user-1", "mola");

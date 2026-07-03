@@ -1276,7 +1276,7 @@ export function ProductsList() {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="Nome ou SKU..."
+                  placeholder="Nome, SKU ou part number..."
                   value={searchInput}
                   onChange={(event) => setSearchInput(event.target.value)}
                   className="h-10 rounded-full border border-border/70 bg-muted/20 pl-9"

@@ -323,7 +323,9 @@ export class NfeRepository {
       ? {
           userId,
           OR: [
-            ...(norm ? [{ skuNormalized: norm }] : []),
+            ...(norm
+              ? [{ skuNormalized: norm }, { partNumberNormalized: norm }]
+              : []),
             { sku: { equals: trimmed, mode: "insensitive" } },
             { partNumber: { equals: trimmed, mode: "insensitive" } },
           ],

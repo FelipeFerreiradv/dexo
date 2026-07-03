@@ -411,6 +411,7 @@ export function FinanceDialog({
               <TitleStep
                 control={control}
                 errors={errors}
+                kind={kind}
                 balcaoEnabled={balcaoEnabled}
                 setValue={balcaoEnabled ? setValue : undefined}
                 getValues={balcaoEnabled ? getValues : undefined}
