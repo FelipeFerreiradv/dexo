@@ -44,6 +44,7 @@ import {
   LOGISTICS_CONFIG,
   type LogisticsStatus,
 } from "../lib/logistics";
+import { ImpalaProgress } from "../components/impala-progress";
 
 interface ScrapPart {
   id: string;
@@ -436,6 +437,9 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* Progresso visual da desmontagem (Impala pintado por peça vendida) */}
+      <ImpalaProgress parts={parts} />
 
       {/* Cards de saúde financeira */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
