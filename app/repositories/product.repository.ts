@@ -911,6 +911,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           location: data.location ?? null,
           locationId: data.locationId ?? null,
           partNumber: data.partNumber ?? null,
+          partNumberNormalized: normalizeSku(data.partNumber),
           quality: data.quality ?? null,
           isSecurityItem: data.isSecurityItem ?? false,
           isTraceable: data.isTraceable ?? false,
@@ -1109,15 +1110,24 @@ class ProductRepositoryPrisma implements ProductRepository {
     const search = (filters?.search ?? "").trim();
     const baseWhere = this.buildBaseWhere(filters, userId);
 
-    // Match exato de SKU para buscas que "parecem um código" (numéricas como
-    // "043" ou alfanuméricas como "ABC-1"). Casamos por skuNormalized
-    // (= trim().toLowerCase(), case-insensitive) E pelo sku cru (cobre linhas
-    // antigas/importadas sem skuNormalized) — superset do antigo `{ sku }`,
-    // então é zero-regressão para o caso numérico.
+    // Match exato de SKU/part number para buscas que "parecem um código"
+    // (numéricas como "043" ou alfanuméricas como "ABC-1"). Casamos por
+    // skuNormalized/partNumberNormalized (= trim().toLowerCase(),
+    // case-insensitive) E pelo sku/partNumber crus (cobrem linhas
+    // antigas/importadas sem a coluna normalizada) — superset do antigo
+    // `{ sku }`, então é zero-regressão. O part number ganha o MESMO
+    // tratamento exato-prioritário que o SKU (antes só casava no Tier 1).
     if (search && isCodeLikeQuery(search)) {
       const normalized = normalizeSku(search);
       const whereExact = combineWhereClauses(baseWhere, {
-        OR: normalized ? [{ sku: search }, { skuNormalized: normalized }] : [{ sku: search }],
+        OR: normalized
+          ? [
+              { sku: search },
+              { skuNormalized: normalized },
+              { partNumber: search },
+              { partNumberNormalized: normalized },
+            ]
+          : [{ sku: search }, { partNumber: search }],
       });
       const [items, total] = await Promise.all([
         prisma.product.findMany({
@@ -1663,7 +1673,10 @@ class ProductRepositoryPrisma implements ProductRepository {
         ...(data.category !== undefined && { category: data.category }),
         ...(data.location !== undefined && { location: data.location }),
         ...(data.locationId !== undefined && { locationId: data.locationId }),
-        ...(data.partNumber !== undefined && { partNumber: data.partNumber }),
+        ...(data.partNumber !== undefined && {
+          partNumber: data.partNumber,
+          partNumberNormalized: normalizeSku(data.partNumber),
+        }),
         ...(data.quality !== undefined && { quality: data.quality }),
         ...(data.isSecurityItem !== undefined && {
           isSecurityItem: data.isSecurityItem,

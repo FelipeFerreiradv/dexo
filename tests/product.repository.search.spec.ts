@@ -787,6 +787,52 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     expect(result.products[0].sku).toBe("ABC-1");
   });
 
+  it("part number exato casa no Tier 0 com o MESMO tratamento do SKU (case-insensitive)", async () => {
+    const repo = new ProductRepositoryPrisma();
+    mockQueryRaw.mockResolvedValue([]); // não deve rodar (short-circuit no Tier 0)
+    mockFindMany.mockResolvedValue([
+      {
+        ...baseProduct,
+        id: "prod-pn",
+        sku: "SKU-OUTRO",
+        name: "Bomba d'água",
+        partNumber: "PN-XY-9",
+        price: money(90),
+        stock: 6,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockCount.mockResolvedValue(1);
+
+    // Busca em CAIXA ALTA: o normalizado (pn-xy-9) casa o partNumberNormalized.
+    const result = await repo.findAll(
+      { search: "PN-XY-9", page: 1, limit: 10 },
+      "user-1",
+    );
+
+    // Match exato tem prioridade e curto-circuita — nenhum SQL raw (Tier 1/fuzzy).
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+    expect(result.total).toBe(1);
+    expect(result.products[0]).toMatchObject({
+      id: "prod-pn",
+      partNumber: "PN-XY-9",
+    });
+
+    // O tier exato passou a cobrir part number com a MESMA forma do SKU:
+    // partNumber cru (case-sensitive) + partNumberNormalized (case-insensitive).
+    const where = mockFindMany.mock.calls[0][0].where;
+    const orClause = flattenAndClauses(where).find((c: any) => c.OR) as any;
+    expect(orClause.OR).toEqual(
+      expect.arrayContaining([
+        { sku: "PN-XY-9" },
+        { skuNormalized: "pn-xy-9" },
+        { partNumber: "PN-XY-9" },
+        { partNumberNormalized: "pn-xy-9" },
+      ]),
+    );
+  });
+
   it("SKU/código numérico INEXISTENTE retorna vazio sem cair no fuzzy", async () => {
     const repo = new ProductRepositoryPrisma();
     // Tier 0 (exato): sem match.
