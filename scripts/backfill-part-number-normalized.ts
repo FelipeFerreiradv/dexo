@@ -1,33 +1,35 @@
 import prisma from "../app/lib/prisma";
-import { normalizeSku } from "../app/lib/sku";
-import { chunk } from "../app/lib/chunk";
 
 /**
  * Backfill de `Product.partNumberNormalized` para produtos já existentes.
  *
- * Espelha exatamente a lógica do SKU (`normalizeSku` = trim().toLowerCase()),
- * para que o match exato-prioritário por part number encontre também os
- * produtos antigos (cadastrados antes da coluna existir).
+ * Espelha a lógica do SKU (`normalizeSku` = trim().toLowerCase()) para que o
+ * match exato-prioritário por part number encontre também os produtos antigos.
  *
  * Garantias (zero regressão):
- * - Só grava `partNumberNormalized` onde está `null` (nunca sobrescreve valor
- *   já preenchido) e NÃO toca em nenhum outro campo (`sku`/`skuNormalized`/
- *   `partNumber` ficam intactos).
- * - Idempotente: re-rodar só processa o que ainda falta.
- * - Paginado por cursor (id asc), em lote, para tabelas grandes.
+ * - Só grava onde `partNumberNormalized` está `null` (nunca sobrescreve valor
+ *   já preenchido) e NÃO toca em nenhum outro campo.
+ * - Idempotente: re-rodar processa só o que ainda falta.
+ * - Um único UPDATE em bulk (rápido mesmo com dezenas de milhares de linhas).
+ *   A normalização `lower(trim(...))` é feita no próprio Postgres; part numbers
+ *   que ficam vazios após trim são deixados como estão (sem valor útil).
  *
  * Uso:
  *   tsx scripts/backfill-part-number-normalized.ts           # dry-run (só conta)
  *   tsx scripts/backfill-part-number-normalized.ts --apply   # grava de fato
  */
 
-const PAGE_SIZE = 500;
-const TX_CHUNK = 100;
+const apply = process.argv.includes("--apply");
 
-async function backfill(apply: boolean) {
+// Remove espaços/tabs/quebras das pontas e baixa a caixa — equivalente a
+// normalizeSku no lado do banco. `\s` cobre a mesma faixa do .trim() do JS.
+const NORM = `lower(regexp_replace("partNumber", '^\\s+|\\s+$', '', 'g'))`;
+
+async function run() {
   const pending = await prisma.product.count({
     where: { partNumber: { not: null }, partNumberNormalized: null },
   });
+  console.log(`Produtos com partNumber e sem normalizado: ${pending}`);
 
   if (!apply) {
     const sample = await prisma.product.findMany({
@@ -36,64 +38,33 @@ async function backfill(apply: boolean) {
       orderBy: { id: "asc" },
       select: { id: true, partNumber: true },
     });
-    return {
-      mode: "dry-run" as const,
-      pending,
-      sample: sample.map((p) => ({
-        id: p.id,
-        partNumber: p.partNumber,
-        willSet: normalizeSku(p.partNumber),
-      })),
-      updated: 0,
-    };
+    console.log(
+      "\nAmostra (dry-run):",
+      sample.map((p) => p.partNumber),
+    );
+    console.log(`\nRode com --apply para gravar os ${pending}.`);
+    return;
   }
 
-  // Percorre todos os produtos com partNumber (id asc, cursor) e grava o
-  // normalizado apenas quando ainda está nulo. Usar o id como cursor garante
-  // progresso para frente mesmo que algum partNumber normalize para null.
-  let updated = 0;
-  let cursor: string | undefined;
+  console.log("Aplicando UPDATE em bulk...");
+  const affected = await prisma.$executeRawUnsafe(
+    `UPDATE "Product"
+       SET "partNumberNormalized" = ${NORM}
+     WHERE "partNumber" IS NOT NULL
+       AND "partNumberNormalized" IS NULL
+       AND ${NORM} <> ''`,
+  );
 
-  for (;;) {
-    const batch = await prisma.product.findMany({
-      where: { partNumber: { not: null } },
-      take: PAGE_SIZE,
-      orderBy: { id: "asc" },
-      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      select: { id: true, partNumber: true, partNumberNormalized: true },
-    });
-    if (batch.length === 0) break;
-    cursor = batch[batch.length - 1].id;
-
-    const updates = batch
-      .filter((p) => p.partNumberNormalized === null)
-      .map((p) =>
-        prisma.product.update({
-          where: { id: p.id },
-          data: { partNumberNormalized: normalizeSku(p.partNumber) },
-        }),
-      );
-
-    for (const group of chunk(updates, TX_CHUNK)) {
-      await prisma.$transaction(group);
-      updated += group.length;
-    }
-  }
-
-  return { mode: "apply" as const, pending, updated };
+  const remaining = await prisma.product.count({
+    where: { partNumber: { not: null }, partNumberNormalized: null },
+  });
+  console.log(`\n✅ ${affected} produto(s) normalizado(s).`);
+  console.log(
+    `Restam ${remaining} com partNumber sem normalizado (partNumber vazio/whitespace — sem valor útil).`,
+  );
 }
 
-const apply = process.argv.includes("--apply");
-
-backfill(apply)
-  .then((res) => {
-    console.log("Backfill partNumberNormalized concluído", res);
-    if (res.mode === "dry-run") {
-      console.log(
-        `\n${res.pending} produto(s) pendente(s). Rode com --apply para gravar.`,
-      );
-    }
-  })
+run()
   .catch((err) => {
     console.error(err);
     process.exit(1);
