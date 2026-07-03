@@ -19,17 +19,22 @@ export class UserUseCase {
     password,
     defaultProductDescription,
     avatarUrl,
+    parentUserId,
   }: UserCreate): Promise<User> {
     const verifyUserExists = await this.userRepository.findByEmail(email);
     if (verifyUserExists) {
       throw new Error("User already exists");
     }
+    // parentUserId é opcional e aditivo: o repositório já faz spread condicional,
+    // então `undefined` (chamada legada do POST /users) mantém o comportamento
+    // idêntico ao anterior — o usuário nasce solto, sem vínculo hierárquico.
     const user = await this.userRepository.create({
       name,
       email,
       password,
       defaultProductDescription,
       avatarUrl,
+      parentUserId,
     });
     return user;
   }

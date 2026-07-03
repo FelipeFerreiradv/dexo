@@ -1,7 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
 import { UserRepositoryPrisma } from "../repositories/user.repository";
+import { UserUseCase } from "../usecases/user.usercase";
+import { toPublicUser } from "../lib/user-serializer";
 import { SystemLogService } from "../services/system-log.service";
 import type { LogAction } from "../interfaces/system-log.interface";
 import {
@@ -16,6 +19,12 @@ import {
 import { renderTeamProductivityReport } from "../reports/team-productivity-report";
 
 const userRepository = new UserRepositoryPrisma();
+const userUserCase = new UserUseCase();
+
+// Validação de e-mail alinhada ao input type="email" do front (sem lowercase:
+// o login faz match exato por findByEmail, então normalizar caixa aqui poderia
+// impedir o colaborador de logar). Apenas trim antes de checar/gravar.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function fmtDateTimeBR(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -120,6 +129,7 @@ function publicUser(u: {
   name?: string | null;
   avatarUrl?: string | null;
   parentUserId?: string | null;
+  isActive?: boolean;
   createdAt?: Date;
 }) {
   return {
@@ -128,6 +138,9 @@ function publicUser(u: {
     name: u.name ?? null,
     avatarUrl: u.avatarUrl ?? null,
     parentUserId: u.parentUserId ?? null,
+    // Aditivo: usado pela gestão de colaboradores p/ mostrar ativo/inativo.
+    // Consumidores atuais (GET /me/team, /activity) simplesmente ignoram.
+    isActive: u.isActive ?? true,
     createdAt: u.createdAt ?? null,
   };
 }
@@ -436,6 +449,238 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
             error instanceof Error
               ? error.message
               : "Erro ao gerar o relatório da equipe",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /me/team/collaborators
+   * Lista os colaboradores (filhos) do admin logado, incluindo `isActive` para
+   * a UI de gestão de equipe. Admin-only: blockCollaborator devolve 403 a quem
+   * tem parentUserId (colaborador não gerencia sub-colaboradores).
+   */
+  fastify.get(
+    "/collaborators",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const me = (request as any).user as { id: string };
+        // Projeção enxuta (só as colunas exibidas) p/ egress mínimo na lista.
+        const children = await userRepository.findChildrenPublic(me.id);
+        return reply.send({
+          collaborators: children.map((c) => publicUser(c)),
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao carregar colaboradores",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /me/team/collaborators
+   * Cria um colaborador vinculado ao admin logado. O vínculo (parentUserId) é
+   * FORÇADO no servidor = me.id — jamais vem do body. Admin-only. Nunca devolve
+   * a senha (toPublicUser). E-mail duplicado ⇒ 409.
+   */
+  fastify.post<{
+    Body: { name?: string; email?: string; password?: string };
+  }>(
+    "/collaborators",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request, reply) => {
+      try {
+        const me = (request as any).user as { id: string };
+        const name = (request.body?.name ?? "").trim();
+        const email = (request.body?.email ?? "").trim();
+        const password = request.body?.password ?? "";
+
+        if (!name) {
+          return reply
+            .status(400)
+            .send({ message: "Informe o nome do colaborador." });
+        }
+        if (!EMAIL_RE.test(email)) {
+          return reply
+            .status(400)
+            .send({ message: "Informe um e-mail válido." });
+        }
+        if (password.length < 8) {
+          return reply
+            .status(400)
+            .send({ message: "A senha deve ter no mínimo 8 caracteres." });
+        }
+
+        try {
+          const data = await userUserCase.create({
+            name,
+            email,
+            password,
+            parentUserId: me.id,
+          });
+
+          await SystemLogService.logUserActivity(
+            data.id,
+            `Colaborador criado: ${data.name} (${data.email})`,
+            { resource: "User", resourceId: data.id },
+          );
+
+          return reply.status(201).send(toPublicUser(data));
+        } catch (err) {
+          if (err instanceof Error && err.message === "User already exists") {
+            return reply
+              .status(409)
+              .send({ message: "Já existe um usuário com esse e-mail." });
+          }
+          throw err;
+        }
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error ? error.message : "Erro ao criar colaborador",
+        });
+      }
+    },
+  );
+
+  /**
+   * PATCH /me/team/collaborators/:id
+   * Edita nome e/ou senha de um colaborador DO PRÓPRIO admin (checagem de posse).
+   * Reaproveita updateSettings (rehash de senha + ignora campos undefined). Nunca
+   * toca parentUserId/role; nunca edita o próprio admin por aqui (isso é
+   * /users/me/settings). Senha em branco ⇒ não altera.
+   */
+  fastify.patch<{
+    Params: { id: string };
+    Body: { name?: string; password?: string };
+  }>(
+    "/collaborators/:id",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request, reply) => {
+      try {
+        const me = (request as any).user as { id: string };
+        const { id } = request.params;
+
+        if (id === me.id) {
+          return reply.status(403).send({
+            message:
+              "Use as configurações da sua conta para editar você mesmo.",
+          });
+        }
+
+        const target = await userRepository.findById(id);
+        if (!target) {
+          return reply
+            .status(404)
+            .send({ message: "Colaborador não encontrado." });
+        }
+        if (target.parentUserId !== me.id) {
+          return reply.status(403).send({ message: "Acesso negado" });
+        }
+
+        const patch: { name?: string; password?: string } = {};
+        if (typeof request.body?.name === "string") {
+          const name = request.body.name.trim();
+          if (!name) {
+            return reply
+              .status(400)
+              .send({ message: "Informe o nome do colaborador." });
+          }
+          patch.name = name;
+        }
+        if (
+          typeof request.body?.password === "string" &&
+          request.body.password.length > 0
+        ) {
+          if (request.body.password.length < 8) {
+            return reply
+              .status(400)
+              .send({ message: "A senha deve ter no mínimo 8 caracteres." });
+          }
+          patch.password = request.body.password;
+        }
+
+        const data = await userUserCase.updateSettings(id, patch);
+
+        await SystemLogService.logUserActivity(
+          id,
+          `Colaborador atualizado: ${data.name ?? data.email}`,
+          { resource: "User", resourceId: id },
+        );
+
+        return reply.status(200).send(toPublicUser(data));
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao atualizar colaborador",
+        });
+      }
+    },
+  );
+
+  /**
+   * PATCH /me/team/collaborators/:id/status
+   * Ativa/desativa um colaborador do próprio admin (posse). Reaproveita o campo
+   * isActive; o corte da sessão ativa em ≤60s já é feito pelo auth.middleware
+   * (effectiveActive + cache). Bloqueia auto-desativação.
+   */
+  fastify.patch<{
+    Params: { id: string };
+    Body: { isActive?: boolean };
+  }>(
+    "/collaborators/:id/status",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request, reply) => {
+      try {
+        const me = (request as any).user as { id: string };
+        const { id } = request.params;
+        const isActive = request.body?.isActive;
+
+        if (typeof isActive !== "boolean") {
+          return reply
+            .status(400)
+            .send({ message: "Informe isActive (boolean)." });
+        }
+        if (id === me.id) {
+          return reply
+            .status(403)
+            .send({ message: "Você não pode desativar a própria conta." });
+        }
+
+        const target = await userRepository.findById(id);
+        if (!target) {
+          return reply
+            .status(404)
+            .send({ message: "Colaborador não encontrado." });
+        }
+        if (target.parentUserId !== me.id) {
+          return reply.status(403).send({ message: "Acesso negado" });
+        }
+
+        const data = await userUserCase.updateSettings(id, { isActive });
+
+        await SystemLogService.logUserActivity(
+          id,
+          `Colaborador ${isActive ? "ativado" : "desativado"}: ${
+            data.name ?? data.email
+          }`,
+          { resource: "User", resourceId: id },
+        );
+
+        return reply.status(200).send(toPublicUser(data));
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Erro ao alterar status do colaborador",
         });
       }
     },
