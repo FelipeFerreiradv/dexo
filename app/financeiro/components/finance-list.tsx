@@ -55,7 +55,10 @@ import { SectionHeading } from "@/components/section-heading";
 import { FinanceDialog, FinanceKind } from "./finance-dialog";
 import type { FinanceEntryFormData } from "../lib/finance-schema";
 import { downloadReceipt } from "../lib/download-receipt";
-import { PAYMENT_METHODS, paymentMethodLabel } from "@/app/lib/payment-methods";
+import {
+  paymentMethodsForKind,
+  paymentMethodLabel,
+} from "@/app/lib/payment-methods";
 
 interface FinanceRow {
   id: string;
@@ -358,7 +361,7 @@ export function FinanceList({ kind, onToast, onChanged, unidadeId }: Props) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={METHOD_ALL}>Todas as formas</SelectItem>
-                {PAYMENT_METHODS.map((m) => (
+                {paymentMethodsForKind(kind).map((m) => (
                   <SelectItem key={m.code} value={m.code}>
                     {m.label}
                   </SelectItem>

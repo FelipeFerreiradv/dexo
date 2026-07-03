@@ -382,4 +382,93 @@ describe("Forma de pagamento — create/update/filtro (aditivo)", () => {
     );
     expect(res.json().entry.paymentMethod).toBeNull();
   });
+
+  // ── FIADO — venda a prazo, exclusivo de Contas a Receber ──
+
+  it("CREATE receivable com FIADO persiste (venda a prazo é a receber)", async () => {
+    (prisma as any).customer.findFirst.mockResolvedValue({
+      id: "c1",
+      userId: "user-owner",
+    });
+    (prisma as any).receivable.create.mockResolvedValue(
+      makeCreatedRaw({ paymentMethod: "FIADO" }),
+    );
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: {
+        customerId: "c1",
+        totalAmount: 100,
+        dueDate: "2026-06-01",
+        installments: 1,
+        paymentMethod: "FIADO",
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect((prisma as any).receivable.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ paymentMethod: "FIADO" }),
+      }),
+    );
+    expect(res.json().entry.paymentMethod).toBe("FIADO");
+  });
+
+  it("CREATE payable com FIADO => 400 e não cria (Fiado não é forma de pagar)", async () => {
+    (prisma as any).customer.findFirst.mockResolvedValue({
+      id: "c1",
+      userId: "user-owner",
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/payables",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: {
+        customerId: "c1",
+        totalAmount: 100,
+        dueDate: "2026-06-01",
+        paymentMethod: "FIADO",
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.payload).error).toMatch(/inválido/i);
+    expect((prisma as any).payable.create).not.toHaveBeenCalled();
+  });
+
+  it("UPDATE payable com FIADO é rejeitado (500, convenção do update) e não persiste", async () => {
+    const app = buildApp();
+    const res = await app.inject({
+      method: "PUT",
+      url: "/finance/payables/p1",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: { paymentMethod: "FIADO" },
+    });
+
+    // Update não mapeia "inválido" => 400 (mesma decisão do método inválido
+    // genérico acima): rejeita com 500 e NÃO persiste.
+    expect(res.statusCode).toBe(500);
+    expect((prisma as any).payable.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("LIST receivable ?paymentMethod=FIADO injeta where.paymentMethod", async () => {
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/finance/receivables?paymentMethod=FIADO",
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((prisma as any).receivable.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: "user-owner", paymentMethod: "FIADO" },
+      }),
+    );
+  });
 });

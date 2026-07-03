@@ -16,6 +16,10 @@ export const PAYMENT_METHODS = [
   { code: "BOLETO", label: "Boleto" },
   { code: "DINHEIRO", label: "Dinheiro" },
   { code: "TRANSFERENCIA", label: "Transferência / TED" },
+  // "Fiado" = venda a prazo (cliente comprou, ainda vai pagar). É uma conta A
+  // RECEBER, não uma forma de pagamento efetivada → exclusivo de "a receber"
+  // (flag `receivableOnly`). Nunca deve aparecer em Contas a Pagar.
+  { code: "FIADO", label: "Fiado (a receber)", receivableOnly: true },
 ] as const;
 
 export type PaymentMethodCode = (typeof PAYMENT_METHODS)[number]["code"];
@@ -31,4 +35,17 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = Object.fromEntries(
 // Util de exibição tolerante: código desconhecido/nulo nunca quebra a UI.
 export function paymentMethodLabel(code: string | null | undefined): string {
   return code ? (PAYMENT_METHOD_LABELS[code] ?? code) : "—";
+}
+
+// Métodos válidos para um contexto (aba do Financeiro). Contas a Pagar NUNCA
+// inclui os métodos `receivableOnly` (ex.: "Fiado"). Contas a Receber inclui
+// tudo. Kind ausente → trate como o caso mais restrito (payable), para nunca
+// vazar "Fiado" onde não deve. `PAYMENT_METHOD_CODES`/`PAYMENT_METHOD_LABELS`
+// seguem completos (incluem FIADO), então `paymentMethodLabel("FIADO")` já
+// resolve o rótulo em cupom/listagem sem gambiarra.
+export function paymentMethodsForKind(kind: "receivable" | "payable") {
+  return PAYMENT_METHODS.filter(
+    (m) =>
+      kind === "receivable" || !("receivableOnly" in m && m.receivableOnly),
+  );
 }

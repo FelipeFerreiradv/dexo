@@ -30,6 +30,7 @@ const PAYMENT_METHOD_TO_MEIO: Record<string, MeioPagamento> = {
   BOLETO: "BOLETO",
   DINHEIRO: "DINHEIRO",
   TRANSFERENCIA: "TRANSFERENCIA",
+  FIADO: "CREDITO_LOJA", // crediário próprio (SEFAZ 05) — venda a prazo da loja
 };
 
 function mapPaymentMethodToMeio(
@@ -145,12 +146,19 @@ export class FinanceUseCase {
   // "inválido" (masculino) para mapear a 400 no buildCreateHandler de
   // finance.routes (mesma convenção de assertUnidade/validateItems).
   private validatePaymentMethod(
+    kind: FinanceKind,
     data: FinanceEntryCreate | FinanceEntryUpdate,
   ) {
     const pm = (data as any).paymentMethod;
     if (!pm) return; // ausente/null/"" => fluxo atual
     if (!PAYMENT_METHOD_CODES.includes(pm)) {
       throw new Error("Método de pagamento inválido");
+    }
+    // "Fiado" é uma conta A RECEBER (venda a prazo / crédito na loja), não uma
+    // forma de pagamento efetivada de Contas a Pagar. "inválido" => 400 no
+    // buildCreateHandler (mesma convenção dos demais métodos inválidos).
+    if (pm === "FIADO" && kind !== "receivable") {
+      throw new Error("Método de pagamento inválido para conta a pagar");
     }
   }
 
@@ -165,7 +173,7 @@ export class FinanceUseCase {
     this.validateItems(kind, data);
     // Idem: no-op quando `paymentMethod` ausente/null. Cobre os dois fluxos
     // de create por estar antes do branch newCustomer.
-    this.validatePaymentMethod(data);
+    this.validatePaymentMethod(kind, data);
 
     // ── Cadastro rápido: cria cliente + conta numa ÚNICA transação ──
     // Se a criação da conta falhar, o cliente também sofre rollback
@@ -216,7 +224,7 @@ export class FinanceUseCase {
     // Validação de itens — no-op quando `items` ausente; preserva fluxo atual.
     this.validateItems(kind, data);
     // Idem para forma de pagamento — no-op quando ausente/null.
-    this.validatePaymentMethod(data);
+    this.validatePaymentMethod(kind, data);
     return this.repo.update(kind, id, userId, data);
   }
 
