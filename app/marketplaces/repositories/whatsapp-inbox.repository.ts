@@ -309,14 +309,18 @@ export class WhatsAppInboxRepository {
     const [rows, total] = await Promise.all([
       prisma.whatsAppConversation.findMany({
         where,
-        include: {
-          account: {
-            select: {
-              id: true,
-              displayPhoneNumber: true,
-              verifiedName: true,
-            },
-          },
+        // Projeção enxuta (regra de egress do projeto): endpoint de LISTA só
+        // traz o que o ConversationSummary consome — fora createdAt/updatedAt/
+        // serviceWindowExpiresAt/whatsAppAccountId e o verifiedName da conta.
+        select: {
+          id: true,
+          contactName: true,
+          contactWaId: true,
+          lastMessagePreview: true,
+          lastMessageAt: true,
+          unreadCount: true,
+          lastMessageDirection: true,
+          account: { select: { id: true, displayPhoneNumber: true } },
         },
         orderBy: { lastMessageAt: "desc" },
         take: limit,
@@ -379,6 +383,23 @@ export class WhatsAppInboxRepository {
 
     const rows = await prisma.whatsAppMessage.findMany({
       where: { conversationId },
+      // Projeção enxuta: NÃO puxa `raw` (payload BRUTO do webhook, o maior campo
+      // por linha) nem createdAt/conversationId — nenhum entra no DTO. Reduz o
+      // egress banco→API na abertura da thread (caminho quente: reabre a cada
+      // envio/mark-as-read).
+      select: {
+        id: true,
+        waMessageId: true,
+        text: true,
+        type: true,
+        mediaId: true,
+        mediaMimeType: true,
+        mediaPath: true,
+        status: true,
+        errorCode: true,
+        direction: true,
+        timestamp: true,
+      },
       orderBy: { timestamp: "asc" },
     });
 
@@ -482,8 +503,11 @@ export class WhatsAppInboxRepository {
     whatsAppAccountId: string,
     conversationId: string,
   ) {
+    // O único caller (sendText) usa só id/contactWaId/serviceWindowExpiresAt —
+    // projeção enxuta evita puxar lastMessagePreview (@db.Text) a cada envio.
     return prisma.whatsAppConversation.findFirst({
       where: { id: conversationId, whatsAppAccountId },
+      select: { id: true, contactWaId: true, serviceWindowExpiresAt: true },
     });
   }
 }
