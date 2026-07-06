@@ -70,6 +70,26 @@ const envSchema = z.object({
   MAGALU_WEBHOOK_SECRET: z.string().optional(),
   MAGALU_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
 
+  // WhatsApp (Cloud API oficial da Meta). TODAS opcionais de propósito, mesmo
+  // padrão do bloco Magalu acima: o módulo fica atrás da flag
+  // NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED + gate por usuário, e env.ts é
+  // exit-on-error. Os serviços whatsapp-* validam em runtime
+  // (validateWhatsAppConfig — que também exige MARKETPLACE_TOKEN_ENC_KEY,
+  // pois o token da conta é criptografado em repouso).
+  WHATSAPP_APP_ID: z.string().optional(),
+  WHATSAPP_APP_SECRET: z.string().optional(),
+  WHATSAPP_API_VERSION: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^v\d+\.\d+$/.test(v), {
+      message: "WHATSAPP_API_VERSION deve ter o formato vNN.N (ex.: v25.0)",
+    }),
+  WHATSAPP_GRAPH_BASE_URL: optionalUrlIsh,
+  // Token do handshake GET do webhook (string secreta que nós definimos).
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  // Configuration ID do Embedded Signup (fase futura; MVP é onboarding manual).
+  WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: z.string().optional(),
+
   // URLs
   APP_BACKEND_URL: urlIsh,
   NEXT_PUBLIC_API_URL: urlIsh,

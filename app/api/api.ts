@@ -36,6 +36,7 @@ import { unidadeRoutes } from "../routes/unidade.routes";
 import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
+import { whatsappRoutes } from "../routes/whatsapp.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
@@ -189,6 +190,11 @@ api.register(messagesRoutes, {
 
 api.register(teamRoutes, {
   prefix: "/me/team",
+});
+
+// Canal WhatsApp (Cloud API) — módulo aditivo atrás de flag + gate por usuário.
+api.register(whatsappRoutes, {
+  prefix: "/whatsapp",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

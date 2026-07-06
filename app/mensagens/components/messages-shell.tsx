@@ -102,6 +102,10 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
   >(null);
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [convError, setConvError] = React.useState<string | null>(null);
+  // Canal WhatsApp é por PLANO (gate por usuário no backend): a opção do filtro
+  // só aparece quando GET /messages/accounts confirmar o entitlement do tenant.
+  // Flag global desligada ⇒ o campo nem vem na resposta ⇒ false ⇒ UI idêntica.
+  const [whatsappEnabled, setWhatsappEnabled] = React.useState(false);
 
   React.useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search.trim()), 250);
@@ -119,11 +123,15 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
           signal: controller.signal,
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as { accounts: AccountSummary[] };
+        const data = (await res.json()) as {
+          accounts: AccountSummary[];
+          whatsappEnabled?: boolean;
+        };
         // Não força mais uma conta específica: o default "all" (estado
         // inicial) faz a aba abrir agregando todas as contas. O usuário
         // troca manualmente no Select se quiser uma conta específica.
         setAccounts(data.accounts);
+        setWhatsappEnabled(Boolean(data.whatsappEnabled));
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
         console.error("messages: failed to load accounts", err);
@@ -226,6 +234,15 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
     [],
   );
 
+  // Opções de plataforma: as estáticas + WhatsApp quando o tenant tem o plano.
+  const platformOptions = React.useMemo(
+    () =>
+      whatsappEnabled
+        ? [...PLATFORM_OPTIONS, { value: "WHATSAPP", label: "WhatsApp" }]
+        : PLATFORM_OPTIONS,
+    [whatsappEnabled],
+  );
+
   if (!accounts) {
     return (
       <div className="grid gap-4 md:grid-cols-[320px_1fr]">
@@ -263,7 +280,7 @@ export function MessagesShell({ userEmail }: MessagesShellProps) {
             <SelectValue placeholder="Plataforma" />
           </SelectTrigger>
           <SelectContent>
-            {PLATFORM_OPTIONS.map((opt) => (
+            {platformOptions.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
               </SelectItem>

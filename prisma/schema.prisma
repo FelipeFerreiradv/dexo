@@ -48,6 +48,11 @@ model User {
   // Default true => migração não bloqueia ninguém (zero regressão).
   isActive Boolean @default(true)
 
+  // Gate do módulo WhatsApp (plano pago superior). NULL = sem acesso (estado de
+  // todos os usuários existentes — zero regressão); timestamp = habilitado.
+  // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
+  whatsappEnabledAt DateTime?
+
   // Hierarquia administrador → colaboradores (additive, default NULL).
   // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
   parentUserId String?
@@ -68,6 +73,7 @@ model User {
   nfesEmitidas        NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
   unidades            Unidade[]
+  whatsAppAccounts    WhatsAppAccount[]
 
   @@index([parentUserId])
 }
@@ -1265,4 +1271,94 @@ model MarketplaceAnswer {
   status      String // ACTIVE | DELETED | DISABLED
 
   question MarketplaceQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
+
+// =============================================================================
+// WhatsApp (Cloud API oficial da Meta) — canal de MENSAGENS, não marketplace.
+// Tabelas próprias de propósito: NÃO entra no enum Platform (sem anúncios,
+// pedidos ou OAuth de venda) e NÃO reutiliza MarketplaceQuestion (P&R de
+// anúncio ≠ chat livre por contato). O canal "WHATSAPP" existe só em DTO/UI.
+// Módulo atrás de NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED (kill-switch global) +
+// User.whatsappEnabledAt (gate por plano, por tenant).
+// =============================================================================
+
+// Uma conta = um número conectado (phone_number_id da Cloud API).
+model WhatsAppAccount {
+  id                 String  @id @default(cuid())
+  userId             String
+  wabaId             String
+  phoneNumberId      String  @unique
+  displayPhoneNumber String
+  verifiedName       String?
+  // Token de acesso (System User / Business Integration) — criptografado em
+  // repouso via SecretCipher (AES-256-GCM, chave MARKETPLACE_TOKEN_ENC_KEY).
+  accessToken        String
+  // Onboarding manual multi-cliente: o webhook é configurado por APP Meta, e a
+  // assinatura X-Hub-Signature-256 usa o App Secret do app DO CLIENTE. Ambos
+  // opcionais (fallback para WHATSAPP_APP_ID/WHATSAPP_APP_SECRET do env).
+  appId              String?
+  appSecret          String? // criptografado via SecretCipher
+
+  status    AccountStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user          User                   @relation(fields: [userId], references: [id])
+  conversations WhatsAppConversation[]
+
+  @@index([userId])
+}
+
+// Uma conversa = um contato (wa_id) dentro de um número. O `id` (cuid) é usado
+// como `externalItemId` na UI de mensagens — identidade única global, exigida
+// porque a lista/seleção da aba chaveia só por esse campo.
+model WhatsAppConversation {
+  id                String  @id @default(cuid())
+  whatsAppAccountId String
+  contactWaId       String
+  contactName       String?
+
+  lastMessageAt        DateTime
+  lastMessagePreview   String?   @db.Text
+  // INBOUND | OUTBOUND — deriva "Pendente"/answered na lista (última msg do
+  // cliente sem resposta = pendente).
+  lastMessageDirection String?
+  unreadCount          Int       @default(0)
+  // Janela de atendimento de 24h da Cloud API: última msg INBOUND + 24h.
+  // Fora da janela, texto livre é rejeitado (erro 131047) — só template.
+  serviceWindowExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account  WhatsAppAccount   @relation(fields: [whatsAppAccountId], references: [id])
+  messages WhatsAppMessage[]
+
+  @@unique([whatsAppAccountId, contactWaId])
+  @@index([whatsAppAccountId, lastMessageAt])
+}
+
+// Uma linha por mensagem (entrada e saída). Idempotência pelo wamid.
+model WhatsAppMessage {
+  id             String  @id @default(cuid())
+  conversationId String
+  waMessageId    String  @unique // wamid da Cloud API — dedup/idempotência
+  direction      String // INBOUND | OUTBOUND
+  type           String // text | image | document | audio | unsupported | ...
+  text           String? @db.Text
+  mediaId        String?
+  mediaMimeType  String?
+  // Caminho local PRIVADO (.whatsapp-storage/) após download — mídia de cliente
+  // nunca vai para public/uploads; o serving é por rota autenticada.
+  mediaPath      String?
+  // Status de entrega (só OUTBOUND): sent | delivered | read | failed | played.
+  status         String?
+  errorCode      String?
+  timestamp      DateTime
+  raw            Json?
+  createdAt      DateTime @default(now())
+
+  conversation WhatsAppConversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId, timestamp])
 }

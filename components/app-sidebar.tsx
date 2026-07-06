@@ -13,6 +13,7 @@ import {
   Link2,
   MapPin,
   MessageCircle,
+  MessagesSquare,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -67,6 +68,13 @@ type NavSection = {
 // menu (e a página dá notFound), mantendo o app idêntico ao de hoje.
 const MAGALU_INTEGRATION_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+
+// Módulo WhatsApp: flag global (kill-switch) + gate POR USUÁRIO (plano pago).
+// A flag esconde o item p/ todos; com flag ligada, o item só aparece após o
+// GET /whatsapp/status confirmar o entitlement do tenant (estado em runtime,
+// pois NEXT_PUBLIC_* é build-time e não varia por usuário).
+const WHATSAPP_MODULE_ENABLED =
+  process.env.NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED === "true";
 
 const NAV_SECTIONS: NavSection[] = [
   {
@@ -142,6 +150,18 @@ const NAV_SECTIONS: NavSection[] = [
               label: "Magazine Luiza",
               href: "/integracoes/magalu",
               icon: ShoppingBag,
+            },
+          ]
+        : []),
+      // WhatsApp: além da flag, o item é filtrado em runtime pelo entitlement
+      // do tenant (ver filteredSections) — cliente sem o plano nunca o vê.
+      ...(WHATSAPP_MODULE_ENABLED
+        ? [
+            {
+              id: "whatsapp",
+              label: "WhatsApp",
+              href: "/integracoes/whatsapp",
+              icon: MessagesSquare,
             },
           ]
         : []),
@@ -249,6 +269,9 @@ export function AppSidebar({ session }: AppSidebarProps) {
   const [messagesUnreadCount, setMessagesUnreadCount] = React.useState<
     number | null
   >(null);
+  // Entitlement do módulo WhatsApp (plano pago, por tenant). Default false ⇒
+  // o item fica oculto até a sonda confirmar (sem flash p/ quem não tem).
+  const [whatsappEnabled, setWhatsappEnabled] = React.useState(false);
 
   React.useEffect(() => {
     if (!session) {
@@ -319,6 +342,31 @@ export function AppSidebar({ session }: AppSidebarProps) {
   }, [session?.user?.email]);
 
   React.useEffect(() => {
+    // Sonda do gate por usuário do WhatsApp — 1x por sessão de sidebar, só com
+    // a flag global ligada (flag off ⇒ nenhuma chamada nova, app idêntico).
+    if (!WHATSAPP_MODULE_ENABLED) return;
+    const email = session?.user?.email;
+    if (!email) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/whatsapp/status`, {
+          headers: { email },
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setWhatsappEnabled(Boolean(data?.enabled));
+      } catch (error) {
+        console.error("Sidebar whatsapp status error", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.email]);
+
+  React.useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -343,6 +391,8 @@ export function AppSidebar({ session }: AppSidebarProps) {
         // Esconde itens admin-only quando o usuário logado é colaborador.
         // Para admins, comportamento idêntico ao anterior.
         .filter((item) => !isCollaborator || !ADMIN_ONLY_ITEM_IDS.has(item.id))
+        // WhatsApp é por plano: some para tenants sem entitlement (runtime).
+        .filter((item) => item.id !== "whatsapp" || whatsappEnabled)
         .map((item) => {
           if (item.id === "pedidos" && ordersCount !== null) {
             return { ...item, badge: ordersCount };
@@ -366,7 +416,7 @@ export function AppSidebar({ session }: AppSidebarProps) {
         ),
       }))
       .filter((section) => section.items.length > 0);
-  }, [isCollaborator, messagesUnreadCount, ordersCount, query]);
+  }, [isCollaborator, messagesUnreadCount, ordersCount, query, whatsappEnabled]);
 
   // Busca unificada
   React.useEffect(() => {
