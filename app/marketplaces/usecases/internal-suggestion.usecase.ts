@@ -24,7 +24,6 @@ import type {
   InternalSuggestionFields,
 } from "../../produtos/lib/apply-internal-suggestion";
 import type { AttrMap, CompatLike } from "../../produtos/lib/suggestion-merge";
-import { CategoryRepository } from "../repositories/category.repository";
 import { CategoryResolutionService } from "../services/category-resolution.service";
 import {
   mlModeToLeafCuid,
@@ -247,9 +246,20 @@ export class InternalSuggestionUseCase {
   ): Promise<void> {
     if (fields.mlCategoryId) {
       fields.mlCategoryId = await mlModeToLeafCuid(fields.mlCategoryId, {
-        findById: (cuid) => CategoryRepository.findById(cuid),
+        // Projeções enxutas (egress): buscamos só a coluna necessária de
+        // MarketplaceCategory, não a linha inteira (evita puxar JSON pathFromRoot
+        // etc.). Segue o padrão perf(egress) do projeto.
+        findById: (cuid) =>
+          prisma.marketplaceCategory.findUnique({
+            where: { id: cuid },
+            select: { externalId: true },
+          }),
         ensureLeaf: (ext) => CategoryResolutionService.ensureLeafLocalOnly(ext),
-        findByExternalId: (ext) => CategoryRepository.findByExternalId(ext),
+        findByExternalId: (ext) =>
+          prisma.marketplaceCategory.findUnique({
+            where: { externalId: ext },
+            select: { id: true },
+          }),
       });
     }
     if (fields.shopeeCategoryId) {
