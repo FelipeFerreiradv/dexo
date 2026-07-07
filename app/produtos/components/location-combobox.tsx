@@ -20,7 +20,8 @@ import { cn } from "@/lib/utils";
 import { HighlightText } from "@/app/localizacoes/components/highlight-text";
 import { tokenize } from "@/app/localizacoes/lib/search-utils";
 import {
-  filterLocationOptions,
+  buildLocationSearchIndex,
+  filterLocationIndex,
   type LocationSelectItem,
 } from "@/app/produtos/lib/location-select-filter";
 
@@ -53,9 +54,11 @@ export function LocationCombobox({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
+  // Índice pré-normalizado: reconstruído só quando `options` muda (não por tecla).
+  const searchIndex = useMemo(() => buildLocationSearchIndex(options), [options]);
   const filtered = useMemo(
-    () => filterLocationOptions(options, query),
-    [options, query],
+    () => filterLocationIndex(searchIndex, query),
+    [searchIndex, query],
   );
   const tokens = useMemo(() => tokenize(query), [query]);
 

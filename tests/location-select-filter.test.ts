@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLocationSearchIndex,
+  filterLocationIndex,
   filterLocationOptions,
   LOCATION_SELECT_MAX_RESULTS,
   type LocationSelectItem,
@@ -69,5 +71,32 @@ describe("filterLocationOptions", () => {
       LOCATION_SELECT_MAX_RESULTS,
     );
     expect(filterLocationOptions(many, "raiz", 5)).toHaveLength(5);
+  });
+});
+
+describe("filterLocationIndex (índice pré-normalizado)", () => {
+  it("é equivalente a filterLocationOptions para as mesmas queries", () => {
+    const index = buildLocationSearchIndex(options);
+    for (const q of ["", "  ", "barracao", "a2", "azul", "r1 t1", "xyz", "R1"]) {
+      expect(filterLocationIndex(index, q).map((o) => o.id)).toEqual(
+        filterLocationOptions(options, q).map((o) => o.id),
+      );
+    }
+  });
+
+  it("mantém a tolerância a acento/caixa/substring e múltiplos termos", () => {
+    const index = buildLocationSearchIndex(options);
+    expect(filterLocationIndex(index, "BARRAÇÃO").map((o) => o.id).sort()).toEqual(
+      ["1", "2"],
+    );
+    expect(filterLocationIndex(index, "r1 t1").map((o) => o.id)).toEqual(["2"]);
+  });
+
+  it("respeita o cap com early-break", () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      loc({ id: String(i), code: `C${i}`, fullPath: `Raiz > C${i}` }),
+    );
+    const index = buildLocationSearchIndex(many);
+    expect(filterLocationIndex(index, "raiz", 5)).toHaveLength(5);
   });
 });
