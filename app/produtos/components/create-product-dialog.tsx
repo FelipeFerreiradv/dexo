@@ -64,6 +64,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  LocationCombobox,
+  type LocationSelectItem,
+} from "@/app/produtos/components/location-combobox";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
@@ -502,17 +506,9 @@ export function CreateProductDialog({
   const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
   const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
   const magaluSuggestedRef = useRef(false);
-  const [locationOptions, setLocationOptions] = useState<
-    Array<{
-      id: string;
-      code: string;
-      description?: string;
-      fullPath: string;
-      maxCapacity: number;
-      productsCount: number;
-      isFull: boolean;
-    }>
-  >([]);
+  const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
+    [],
+  );
   const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
     [],
   );
@@ -3156,37 +3152,16 @@ export function CreateProductDialog({
                     name="locationId"
                     control={control}
                     render={({ field }) => (
-                      <Select
-                        onValueChange={(value) => {
-                          field.onChange(value === "__none__" ? null : value);
-                          // Also update the text location field for backward compat
-                          const selected = locationOptions.find(
-                            (l) => l.id === value,
-                          );
-                          setValue("location", selected?.fullPath || "");
+                      <LocationCombobox
+                        id="location"
+                        options={locationOptions}
+                        value={field.value ?? null}
+                        onChange={(locId, fullPath) => {
+                          field.onChange(locId);
+                          // Mantém o campo legado `location` (texto) em sincronia.
+                          setValue("location", fullPath);
                         }}
-                        value={field.value ?? "__none__"}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecione uma localização" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__none__">Nenhuma</SelectItem>
-                          {locationOptions.map((loc) => (
-                            <SelectItem
-                              key={loc.id}
-                              value={loc.id}
-                              disabled={loc.isFull}
-                            >
-                              {loc.fullPath}
-                              {loc.maxCapacity > 0
-                                ? ` (${loc.productsCount}/${loc.maxCapacity})`
-                                : ""}
-                              {loc.isFull ? " — Lotado" : ""}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      />
                     )}
                   />
                 ) : (
