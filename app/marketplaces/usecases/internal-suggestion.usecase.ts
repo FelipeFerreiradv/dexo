@@ -24,6 +24,12 @@ import type {
   InternalSuggestionFields,
 } from "../../produtos/lib/apply-internal-suggestion";
 import type { AttrMap, CompatLike } from "../../produtos/lib/suggestion-merge";
+import { CategoryRepository } from "../repositories/category.repository";
+import { CategoryResolutionService } from "../services/category-resolution.service";
+import {
+  mlModeToLeafCuid,
+  shopeeModeToLeafId,
+} from "../lib/category-leaf-resolver";
 
 export type InternalSuggestResult =
   | { suggestion: InternalSuggestion }
@@ -224,7 +230,33 @@ export class InternalSuggestionUseCase {
     }
 
     if (!row) return INSUFFICIENT;
-    return { suggestion: buildSuggestion(row, parts, confidence) };
+    const suggestion = buildSuggestion(row, parts, confidence);
+    await this.ensureCategoryLeaves(suggestion.fields);
+    return { suggestion };
+  }
+
+  /**
+   * Garante que as categorias sugeridas sejam FOLHAS locais: a moda do
+   * CatalogStat é a mais comum entre produtos já cadastrados e pode ser um
+   * nó-pai (categoria incompleta). Reusa a MESMA descida do publish
+   * (ensureLeafLocalOnly), então a sugestão exibida passa a ser a folha que
+   * seria de fato publicada. Fail-safe: qualquer miss mantém o valor original.
+   */
+  private static async ensureCategoryLeaves(
+    fields: InternalSuggestionFields,
+  ): Promise<void> {
+    if (fields.mlCategoryId) {
+      fields.mlCategoryId = await mlModeToLeafCuid(fields.mlCategoryId, {
+        findById: (cuid) => CategoryRepository.findById(cuid),
+        ensureLeaf: (ext) => CategoryResolutionService.ensureLeafLocalOnly(ext),
+        findByExternalId: (ext) => CategoryRepository.findByExternalId(ext),
+      });
+    }
+    if (fields.shopeeCategoryId) {
+      fields.shopeeCategoryId = await shopeeModeToLeafId(fields.shopeeCategoryId, {
+        ensureLeaf: (ext) => CategoryResolutionService.ensureLeafLocalOnly(ext),
+      });
+    }
   }
 
   /** Apenas para testes — limpa o cache em memória. */
