@@ -1,4 +1,5 @@
 import { wrapText } from "@/app/lib/pdf-label-utils";
+import { openPdfForPrint } from "@/app/lib/open-pdf-for-print";
 
 export interface LabelProduct {
   id: string;
@@ -177,13 +178,5 @@ export async function generateLabelsPdf({
 
   const pdfBytes = await pdfDoc.save();
   const blob = new Blob([pdfBytes], { type: "application/pdf" });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `etiquetas-${products.length}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  return openPdfForPrint(blob, `etiquetas-${products.length}.pdf`);
 }
