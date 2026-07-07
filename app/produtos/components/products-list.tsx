@@ -1169,7 +1169,7 @@ export function ProductsList() {
 
     setIsGeneratingLabels(true);
     try {
-      await generateLabelsPdf({
+      const result = await generateLabelsPdf({
         products: selectedProducts.map((product) => ({
           id: product.id,
           sku: product.sku,
@@ -1178,7 +1178,12 @@ export function ProductsList() {
         })),
         userName: session?.user?.name,
       });
-      showToast("PDF de etiquetas gerado com sucesso!", "success");
+      showToast(
+        result === "downloaded"
+          ? "Pop-up bloqueado: etiquetas baixadas. Abra o arquivo para imprimir."
+          : "PDF de etiquetas gerado com sucesso!",
+        "success",
+      );
     } catch (error) {
       console.error("Erro ao gerar etiquetas", error);
       showToast(

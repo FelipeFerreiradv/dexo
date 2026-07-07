@@ -1060,7 +1060,7 @@ export function LocationsList() {
 
     setIsGeneratingLocationLabels(true);
     try {
-      await generateLocationLabelsPdf({
+      const result = await generateLocationLabelsPdf({
         locations: selected.map((loc) => ({
           id: loc.id,
           code: loc.code,
@@ -1069,7 +1069,9 @@ export function LocationsList() {
         userName: session?.user?.name,
       });
       showToast(
-        `${selected.length} etiqueta(s) gerada(s) com sucesso!`,
+        result === "downloaded"
+          ? `Pop-up bloqueado: ${selected.length} etiqueta(s) baixada(s). Abra o arquivo para imprimir.`
+          : `${selected.length} etiqueta(s) gerada(s) com sucesso!`,
         "success",
       );
     } catch (error) {
