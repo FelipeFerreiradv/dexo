@@ -1,5 +1,6 @@
 import { wrapText } from "@/app/lib/pdf-label-utils";
 import { getLocationScanUrl } from "@/app/lib/qr-payloads";
+import { openPdfForPrint } from "@/app/lib/open-pdf-for-print";
 
 export interface LabelLocation {
   id: string;
@@ -216,13 +217,8 @@ export async function generateLocationLabelsPdf({
 
   const pdfBytes = await pdfDoc.save();
   const blob = new Blob([pdfBytes as BlobPart], { type: "application/pdf" });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `etiquetas-localizacoes-${locations.length}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  return openPdfForPrint(
+    blob,
+    `etiquetas-localizacoes-${locations.length}.pdf`,
+  );
 }
