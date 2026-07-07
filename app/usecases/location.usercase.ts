@@ -265,44 +265,32 @@ export class LocationUseCase {
       isFull: boolean;
     }>
   > {
-    // Get all locations for this user
-    const allLocations = await this.locationRepository.findAll(
-      { limit: 1000 },
-      userId,
-    );
+    // Carrega TODAS as localizações do usuário (qualquer profundidade) de uma
+    // vez. `findAllFlat` traz parentId/code/description/maxCapacity e
+    // productsCount (via _count.products) — diferente de `findAll`, que sem
+    // parentId/search devolve só raízes + 1 nível e por isso truncava o caminho
+    // e omitia as folhas profundas.
+    const flat = await this.locationRepository.findAllFlat(userId);
 
-    const result: Array<{
-      id: string;
-      code: string;
-      description?: string;
-      fullPath: string;
-      maxCapacity: number;
-      productsCount: number;
-      isFull: boolean;
-    }> = [];
+    const locMap = new Map<string, Location>(flat.map((loc) => [loc.id, loc]));
 
-    // Build a map for path resolution
-    const locMap = new Map<string, Location>();
-    // Flatten all locations (roots + children)
-    const flattenAll = (locations: Location[]) => {
-      for (const loc of locations) {
-        locMap.set(loc.id, loc);
-        if (loc.children) flattenAll(loc.children);
+    // Monta o caminho completo subindo a cadeia de parentId até a raiz.
+    // Iterativo + guard anti-ciclo para nunca estourar a pilha em dados
+    // eventualmente corrompidos. Separador " > " (igual ao detalhe do produto).
+    const buildPath = (start: Location): string => {
+      const parts: string[] = [];
+      let cur: Location | undefined = start;
+      let guard = 0;
+      while (cur && guard++ < 50) {
+        parts.unshift(cur.code);
+        cur = cur.parentId ? locMap.get(cur.parentId) : undefined;
       }
-    };
-    flattenAll(allLocations.locations);
-
-    // Build full path for each location
-    const buildPath = (loc: Location): string => {
-      if (loc.parentId && locMap.has(loc.parentId)) {
-        return `${buildPath(locMap.get(loc.parentId)!)} > ${loc.code}`;
-      }
-      return loc.code;
+      return parts.join(" > ");
     };
 
-    for (const [, loc] of locMap) {
+    const result = flat.map((loc) => {
       const productsCount = loc.productsCount ?? 0;
-      result.push({
+      return {
         id: loc.id,
         code: loc.code,
         description: loc.description,
@@ -310,8 +298,8 @@ export class LocationUseCase {
         maxCapacity: loc.maxCapacity,
         productsCount,
         isFull: loc.maxCapacity > 0 && productsCount >= loc.maxCapacity,
-      });
-    }
+      };
+    });
 
     // Sort by fullPath for a nice hierarchy
     result.sort((a, b) => a.fullPath.localeCompare(b.fullPath));
