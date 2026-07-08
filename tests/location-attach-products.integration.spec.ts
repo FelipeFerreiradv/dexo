@@ -52,13 +52,12 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
   },
 }));
 
-// Mock do LocationRepositoryPrisma (usado por buildFullPath e moveProducts)
+// Mock do LocationRepositoryPrisma. `attachProducts` monta o fullPath via
+// `buildFullPathLean` (prisma.location.findFirst enxuto), então o repositório
+// não é exercitado aqui — stub mínimo só para instanciar o service.
 vi.mock("../app/repositories/location.repository", () => ({
   LocationRepositoryPrisma: class {
-    async findById(id: string) {
-      // Para buildFullPath em hierarquia: retorna null para parar a recursão
-      // (testes não exercitam hierarquia)
-      void id;
+    async findById() {
       return null;
     }
   },
@@ -292,6 +291,56 @@ describe("POST /locations/:id/attach-products", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           id: { in: ["p1"] },
+        }),
+      }),
+    );
+  });
+
+  it("Bug A: hierarquia profunda vincula gravando fullPath correto", async () => {
+    // buildFullPathLean sobe loc-sub → loc-prat → loc-gal lendo só
+    // { code, parentId } (fora da transação); a leitura in-tx do alvo também
+    // passa por prisma.location.findFirst. loc-sub carrega ambos os conjuntos
+    // de campos (walk + _count/maxCapacity da tx).
+    (prisma as any).location.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        switch (where.id) {
+          case "loc-sub":
+            return {
+              id: "loc-sub",
+              userId: "user-owner",
+              code: "SUB-03",
+              parentId: "loc-prat",
+              maxCapacity: 0,
+              _count: { products: 0 },
+            };
+          case "loc-prat":
+            return { code: "PRAT-02", parentId: "loc-gal" };
+          case "loc-gal":
+            return { code: "GAL-01", parentId: null };
+          default:
+            return null;
+        }
+      },
+    );
+    (prisma as any).product.findMany.mockResolvedValue([
+      { id: "p1", sku: "SKU1", name: "Peça 1", locationId: null },
+    ]);
+    (prisma as any).product.updateMany.mockResolvedValue({ count: 1 });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/locations/loc-sub/attach-products",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: { productIds: ["p1"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((prisma as any).product.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          locationId: "loc-sub",
+          location: "GAL-01 > PRAT-02 > SUB-03",
         }),
       }),
     );

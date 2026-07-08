@@ -107,6 +107,8 @@ describe("GET /scan/resolve", () => {
   });
 
   it("retorna kind unknown (200) para payload lixo", async () => {
+    // Texto livre agora passa pelo fallback de SKU; sem match → unknown.
+    (prisma as any).product.findFirst.mockResolvedValue(null);
     const app = buildApp();
     const res = await app.inject({
       method: "GET",
@@ -178,6 +180,76 @@ describe("GET /scan/resolve", () => {
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().kind).toBe("unknown");
+  });
+
+  it("resolve product por SKU digitado (case/espaço-insensitive)", async () => {
+    (prisma as any).product.findFirst.mockResolvedValue({
+      id: CUID_PROD,
+      sku: "IBR-1234",
+      name: "Peça SKU",
+      imageUrl: null,
+      locationId: "loc-9",
+      productLocation: { code: "EST-07" },
+    });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/scan/resolve?payload=${encodeURIComponent("  Ibr-1234 ")}`,
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.kind).toBe("product");
+    expect(body.product).toMatchObject({
+      id: CUID_PROD,
+      sku: "IBR-1234",
+      currentLocationId: "loc-9",
+      currentLocationCode: "EST-07",
+    });
+    // normaliza (trim + lowercase) e escopa por tenant
+    expect((prisma as any).product.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: "user-owner", skuNormalized: "ibr-1234" },
+      }),
+    );
+    // não confunde com location
+    expect((prisma as any).location.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("SKU inexistente → unknown (200)", async () => {
+    (prisma as any).product.findFirst.mockResolvedValue(null);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/scan/resolve?payload=${encodeURIComponent("NOPE-999")}`,
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ kind: "unknown" });
+  });
+
+  it("SKU de outro tenant → unknown (não vaza; escopado por userId)", async () => {
+    // findFirst escopado por userId devolve null para SKU de outro tenant.
+    (prisma as any).product.findFirst.mockResolvedValue(null);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/scan/resolve?payload=${encodeURIComponent("OUTRO-SKU")}`,
+      headers: { email: OWNER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ kind: "unknown" });
+    expect((prisma as any).product.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: "user-owner", skuNormalized: "outro-sku" },
+      }),
+    );
   });
 
   it("401 sem header email", async () => {
