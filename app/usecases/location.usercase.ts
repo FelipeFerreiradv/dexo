@@ -329,6 +329,36 @@ export class LocationUseCase {
   }
 
   /**
+   * Versão enxuta de `buildFullPath` para o fluxo de scan: sobe a cadeia de
+   * pais lendo só `{ code, parentId }` por nível — em vez do `findById` pesado
+   * (que traz `parent` + todos os `children` com `_count`). Reduz egress no
+   * attach, que é chamado a cada produto escaneado. Roda FORA de qualquer
+   * transação. Retorna `null` quando a própria localização não existe ou não é
+   * do tenant (dobra como checagem de existência). Guard anti-ciclo (< 50)
+   * igual ao de `listForSelect`. Escopado por `userId` em todos os níveis
+   * (nunca sobe para o pai de outro tenant).
+   */
+  private async buildFullPathLean(
+    locationId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const parts: string[] = [];
+    let currentId: string | null = locationId;
+    let guard = 0;
+    while (currentId && guard++ < 50) {
+      const node: { code: string; parentId: string | null } | null =
+        await prisma.location.findFirst({
+          where: { id: currentId, userId },
+          select: { code: true, parentId: true },
+        });
+      if (!node) break;
+      parts.unshift(node.code);
+      currentId = node.parentId;
+    }
+    return parts.length > 0 ? parts.join(" > ") : null;
+  }
+
+  /**
    * Vincula produtos a uma localização via batch. Aborta o batch inteiro
    * com `CapacityExceededError` se exceder `maxCapacity`.
    *
@@ -351,19 +381,16 @@ export class LocationUseCase {
 
     const uniqueIds = Array.from(new Set(productIds));
 
-    // fullPath é derivado de hierarquia imutável. `buildFullPath` sobe a cadeia
-    // de pais via `locationRepository` (uma query por nível) e antes rodava
-    // DENTRO da `$transaction` — esse walk N+1 segurava a conexão aberta e
-    // estourava o timeout padrão de 5s do Prisma. Calculamos ANTES de abrir a
-    // transação (mesmo padrão de `moveProducts`), deixando a tx trivial
-    // (2 reads + 1 updateMany). O `{ timeout, maxWait }` é só rede de segurança
-    // para contenção do pool (connection_limit=15).
-    const locationForPath = await this.locationRepository.findById(
-      locationId,
-      userId,
-    );
-    if (!locationForPath) throw new Error("Localização não encontrada");
-    const fullPath = await this.buildFullPath(locationForPath, userId);
+    // fullPath é derivado de hierarquia imutável e antes era montado DENTRO da
+    // `$transaction` — o walk de ancestrais segurava a conexão aberta e
+    // estourava o timeout padrão de 5s. Calculamos ANTES de abrir a transação,
+    // deixando a tx trivial (1 read + 1 updateMany). `buildFullPathLean` sobe a
+    // cadeia lendo só { code, parentId } por nível (regra de egress enxuto, em
+    // vez do findById que traz parent + todos os filhos + counts) e já valida a
+    // existência no tenant. O `{ timeout, maxWait }` é só rede de segurança para
+    // contenção do pool (connection_limit=15).
+    const fullPath = await this.buildFullPathLean(locationId, userId);
+    if (fullPath === null) throw new Error("Localização não encontrada");
 
     return prisma.$transaction(
       async (tx) => {

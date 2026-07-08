@@ -52,18 +52,13 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
   },
 }));
 
-// Mock do LocationRepositoryPrisma (usado por attachProducts/buildFullPath).
-// `findById` agora é chamado FORA da transação (pré-cálculo do fullPath), então
-// precisa devolver uma localização válida. Delegamos a um vi.fn hoisted para os
-// testes configurarem a hierarquia por caso.
-const { locationFindByIdMock } = vi.hoisted(() => ({
-  locationFindByIdMock: vi.fn(),
-}));
-
+// Mock do LocationRepositoryPrisma. `attachProducts` monta o fullPath via
+// `buildFullPathLean` (prisma.location.findFirst enxuto), então o repositório
+// não é exercitado aqui — stub mínimo só para instanciar o service.
 vi.mock("../app/repositories/location.repository", () => ({
   LocationRepositoryPrisma: class {
-    findById(id: string, userId?: string) {
-      return locationFindByIdMock(id, userId);
+    async findById() {
+      return null;
     }
   },
 }));
@@ -81,18 +76,6 @@ function buildApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: localização sem pai → buildFullPath devolve só o próprio code.
-  locationFindByIdMock.mockResolvedValue({
-    id: "loc-1",
-    userId: "user-owner",
-    code: "CAIXA01",
-    description: null,
-    maxCapacity: 0,
-    parentId: null,
-    productsCount: 0,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
 });
 
 describe("POST /locations/:id/attach-products", () => {
@@ -314,55 +297,31 @@ describe("POST /locations/:id/attach-products", () => {
   });
 
   it("Bug A: hierarquia profunda vincula gravando fullPath correto", async () => {
-    // buildFullPath sobe loc-sub → loc-prat → loc-gal (fora da transação).
-    const chain: Record<string, any> = {
-      "loc-sub": {
-        id: "loc-sub",
-        userId: "user-owner",
-        code: "SUB-03",
-        description: null,
-        maxCapacity: 0,
-        parentId: "loc-prat",
-        productsCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+    // buildFullPathLean sobe loc-sub → loc-prat → loc-gal lendo só
+    // { code, parentId } (fora da transação); a leitura in-tx do alvo também
+    // passa por prisma.location.findFirst. loc-sub carrega ambos os conjuntos
+    // de campos (walk + _count/maxCapacity da tx).
+    (prisma as any).location.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        switch (where.id) {
+          case "loc-sub":
+            return {
+              id: "loc-sub",
+              userId: "user-owner",
+              code: "SUB-03",
+              parentId: "loc-prat",
+              maxCapacity: 0,
+              _count: { products: 0 },
+            };
+          case "loc-prat":
+            return { code: "PRAT-02", parentId: "loc-gal" };
+          case "loc-gal":
+            return { code: "GAL-01", parentId: null };
+          default:
+            return null;
+        }
       },
-      "loc-prat": {
-        id: "loc-prat",
-        userId: "user-owner",
-        code: "PRAT-02",
-        description: null,
-        maxCapacity: 0,
-        parentId: "loc-gal",
-        productsCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      "loc-gal": {
-        id: "loc-gal",
-        userId: "user-owner",
-        code: "GAL-01",
-        description: null,
-        maxCapacity: 0,
-        parentId: null,
-        productsCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    };
-    locationFindByIdMock.mockImplementation(async (id: string) => chain[id] ?? null);
-
-    (prisma as any).location.findFirst.mockResolvedValue({
-      id: "loc-sub",
-      userId: "user-owner",
-      code: "SUB-03",
-      description: null,
-      maxCapacity: 0,
-      parentId: "loc-prat",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      _count: { products: 0 },
-    });
+    );
     (prisma as any).product.findMany.mockResolvedValue([
       { id: "p1", sku: "SKU1", name: "Peça 1", locationId: null },
     ]);
