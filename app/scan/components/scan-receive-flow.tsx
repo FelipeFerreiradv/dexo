@@ -201,8 +201,11 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
           // URL completa de produto: curto-circuita, vai direto pro attach.
           // Backend trata tenant/idempotência via skipped/alreadyAttached.
           productIdToAttach = parsed.id;
-        } else if (parsed.id) {
-          // CUID puro: usa /scan/resolve para diferenciar product de location
+        } else {
+          // CUID puro OU texto livre (SKU/ID digitado): o backend resolve por
+          // id ou por SKU (skuNormalized). Antes, texto livre sem id caía
+          // direto em "QR não reconhecido" sem consultar o backend; agora
+          // tentamos /scan/resolve, que também resolve SKU do tenant.
           const data = await resolvePayload(text);
           if (!data) return;
           if (data.kind === "location") {
@@ -214,22 +217,18 @@ export function ScanReceiveFlow({ initialLocationId }: ScanReceiveFlowProps) {
           }
           if (data.kind !== "product" || !data.product) {
             setSkipped((prev) => [
-              { text, reason: "QR não reconhecido", scannedAt: now },
+              {
+                text,
+                reason: "Produto ou SKU não encontrado",
+                scannedAt: now,
+              },
               ...prev,
             ]);
-            showToast("QR não reconhecido", "error");
+            showToast("Produto ou SKU não encontrado", "error");
             return;
           }
           productIdToAttach = data.product.id;
           productPreview = data.product;
-        } else {
-          // Payload irreconhecível
-          setSkipped((prev) => [
-            { text, reason: "QR não reconhecido", scannedAt: now },
-            ...prev,
-          ]);
-          showToast("QR não reconhecido", "error");
-          return;
         }
 
         // Chama attach-products com 1 item (backend é idempotente)
