@@ -351,103 +351,105 @@ export class LocationUseCase {
 
     const uniqueIds = Array.from(new Set(productIds));
 
-    return prisma.$transaction(async (tx) => {
-      const location = await tx.location.findFirst({
-        where: { id: locationId, userId },
-        include: { _count: { select: { products: true } } },
-      });
-      if (!location) throw new Error("Localização não encontrada");
+    // fullPath é derivado de hierarquia imutável. `buildFullPath` sobe a cadeia
+    // de pais via `locationRepository` (uma query por nível) e antes rodava
+    // DENTRO da `$transaction` — esse walk N+1 segurava a conexão aberta e
+    // estourava o timeout padrão de 5s do Prisma. Calculamos ANTES de abrir a
+    // transação (mesmo padrão de `moveProducts`), deixando a tx trivial
+    // (2 reads + 1 updateMany). O `{ timeout, maxWait }` é só rede de segurança
+    // para contenção do pool (connection_limit=15).
+    const locationForPath = await this.locationRepository.findById(
+      locationId,
+      userId,
+    );
+    if (!locationForPath) throw new Error("Localização não encontrada");
+    const fullPath = await this.buildFullPath(locationForPath, userId);
 
-      const currentCount = location._count?.products ?? 0;
-
-      const found = await tx.product.findMany({
-        where: { id: { in: uniqueIds }, userId },
-        select: { id: true, sku: true, name: true, locationId: true },
-      });
-
-      const foundMap = new Map(found.map((p) => [p.id, p]));
-      const skipped = uniqueIds
-        .filter((id) => !foundMap.has(id))
-        .map((id) => ({ productId: id, reason: "not_found" as const }));
-
-      const alreadyAttached = found
-        .filter((p) => p.locationId === locationId)
-        .map((p) => ({ id: p.id, sku: p.sku, name: p.name }));
-
-      const toAttachFull = found.filter((p) => p.locationId !== locationId);
-
-      if (location.maxCapacity > 0) {
-        const newTotal = currentCount + toAttachFull.length;
-        if (newTotal > location.maxCapacity) {
-          const acceptedIds: string[] = [];
-          const excededIds: string[] = [];
-          let slots = location.maxCapacity - currentCount;
-          for (const p of toAttachFull) {
-            if (slots > 0) {
-              acceptedIds.push(p.id);
-              slots--;
-            } else {
-              excededIds.push(p.id);
-            }
-          }
-          throw new CapacityExceededError(
-            `Localização "${location.code}" não tem capacidade suficiente (${currentCount}/${location.maxCapacity}, tentando adicionar ${toAttachFull.length})`,
-            {
-              currentCount,
-              maxCapacity: location.maxCapacity,
-              attempting: toAttachFull.length,
-              wouldExceedBy: newTotal - location.maxCapacity,
-              acceptedIds,
-              excededIds,
-            },
-          );
-        }
-      }
-
-      let attached: { id: string; sku: string; name: string }[] = [];
-      let newProductsCount = currentCount;
-
-      if (toAttachFull.length > 0) {
-        // buildFullPath usa locationRepository (fora da transação) — leitura
-        // de hierarquia não-mutável, aceitável.
-        const fullPath = await this.buildFullPath(
-          {
-            id: location.id,
-            userId: location.userId,
-            code: location.code,
-            description: location.description ?? undefined,
-            maxCapacity: location.maxCapacity,
-            parentId: location.parentId ?? undefined,
-            createdAt: location.createdAt,
-            updatedAt: location.updatedAt,
-          } as Location,
-          userId,
-        );
-        const toAttachIds = toAttachFull.map((p) => p.id);
-        await tx.product.updateMany({
-          where: { id: { in: toAttachIds }, userId },
-          data: { locationId, location: fullPath },
+    return prisma.$transaction(
+      async (tx) => {
+        const location = await tx.location.findFirst({
+          where: { id: locationId, userId },
+          include: { _count: { select: { products: true } } },
         });
-        attached = toAttachFull.map((p) => ({
-          id: p.id,
-          sku: p.sku,
-          name: p.name,
-        }));
-        newProductsCount = currentCount + toAttachFull.length;
-      }
+        if (!location) throw new Error("Localização não encontrada");
 
-      return {
-        attached,
-        alreadyAttached,
-        skipped,
-        location: {
-          id: location.id,
-          code: location.code,
-          productsCount: newProductsCount,
-          maxCapacity: location.maxCapacity,
-        },
-      };
-    });
+        const currentCount = location._count?.products ?? 0;
+
+        const found = await tx.product.findMany({
+          where: { id: { in: uniqueIds }, userId },
+          select: { id: true, sku: true, name: true, locationId: true },
+        });
+
+        const foundMap = new Map(found.map((p) => [p.id, p]));
+        const skipped = uniqueIds
+          .filter((id) => !foundMap.has(id))
+          .map((id) => ({ productId: id, reason: "not_found" as const }));
+
+        const alreadyAttached = found
+          .filter((p) => p.locationId === locationId)
+          .map((p) => ({ id: p.id, sku: p.sku, name: p.name }));
+
+        const toAttachFull = found.filter((p) => p.locationId !== locationId);
+
+        if (location.maxCapacity > 0) {
+          const newTotal = currentCount + toAttachFull.length;
+          if (newTotal > location.maxCapacity) {
+            const acceptedIds: string[] = [];
+            const excededIds: string[] = [];
+            let slots = location.maxCapacity - currentCount;
+            for (const p of toAttachFull) {
+              if (slots > 0) {
+                acceptedIds.push(p.id);
+                slots--;
+              } else {
+                excededIds.push(p.id);
+              }
+            }
+            throw new CapacityExceededError(
+              `Localização "${location.code}" não tem capacidade suficiente (${currentCount}/${location.maxCapacity}, tentando adicionar ${toAttachFull.length})`,
+              {
+                currentCount,
+                maxCapacity: location.maxCapacity,
+                attempting: toAttachFull.length,
+                wouldExceedBy: newTotal - location.maxCapacity,
+                acceptedIds,
+                excededIds,
+              },
+            );
+          }
+        }
+
+        let attached: { id: string; sku: string; name: string }[] = [];
+        let newProductsCount = currentCount;
+
+        if (toAttachFull.length > 0) {
+          const toAttachIds = toAttachFull.map((p) => p.id);
+          await tx.product.updateMany({
+            where: { id: { in: toAttachIds }, userId },
+            data: { locationId, location: fullPath },
+          });
+          attached = toAttachFull.map((p) => ({
+            id: p.id,
+            sku: p.sku,
+            name: p.name,
+          }));
+          newProductsCount = currentCount + toAttachFull.length;
+        }
+
+        return {
+          attached,
+          alreadyAttached,
+          skipped,
+          location: {
+            id: location.id,
+            code: location.code,
+            productsCount: newProductsCount,
+            maxCapacity: location.maxCapacity,
+          },
+        };
+      },
+      { timeout: 20_000, maxWait: 10_000 },
+    );
   }
 
   private async enrichWithOccupancy(

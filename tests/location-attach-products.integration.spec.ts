@@ -52,14 +52,18 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
   },
 }));
 
-// Mock do LocationRepositoryPrisma (usado por buildFullPath e moveProducts)
+// Mock do LocationRepositoryPrisma (usado por attachProducts/buildFullPath).
+// `findById` agora é chamado FORA da transação (pré-cálculo do fullPath), então
+// precisa devolver uma localização válida. Delegamos a um vi.fn hoisted para os
+// testes configurarem a hierarquia por caso.
+const { locationFindByIdMock } = vi.hoisted(() => ({
+  locationFindByIdMock: vi.fn(),
+}));
+
 vi.mock("../app/repositories/location.repository", () => ({
   LocationRepositoryPrisma: class {
-    async findById(id: string) {
-      // Para buildFullPath em hierarquia: retorna null para parar a recursão
-      // (testes não exercitam hierarquia)
-      void id;
-      return null;
+    findById(id: string, userId?: string) {
+      return locationFindByIdMock(id, userId);
     }
   },
 }));
@@ -77,6 +81,18 @@ function buildApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: localização sem pai → buildFullPath devolve só o próprio code.
+  locationFindByIdMock.mockResolvedValue({
+    id: "loc-1",
+    userId: "user-owner",
+    code: "CAIXA01",
+    description: null,
+    maxCapacity: 0,
+    parentId: null,
+    productsCount: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
 });
 
 describe("POST /locations/:id/attach-products", () => {
@@ -292,6 +308,80 @@ describe("POST /locations/:id/attach-products", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           id: { in: ["p1"] },
+        }),
+      }),
+    );
+  });
+
+  it("Bug A: hierarquia profunda vincula gravando fullPath correto", async () => {
+    // buildFullPath sobe loc-sub → loc-prat → loc-gal (fora da transação).
+    const chain: Record<string, any> = {
+      "loc-sub": {
+        id: "loc-sub",
+        userId: "user-owner",
+        code: "SUB-03",
+        description: null,
+        maxCapacity: 0,
+        parentId: "loc-prat",
+        productsCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      "loc-prat": {
+        id: "loc-prat",
+        userId: "user-owner",
+        code: "PRAT-02",
+        description: null,
+        maxCapacity: 0,
+        parentId: "loc-gal",
+        productsCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      "loc-gal": {
+        id: "loc-gal",
+        userId: "user-owner",
+        code: "GAL-01",
+        description: null,
+        maxCapacity: 0,
+        parentId: null,
+        productsCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    };
+    locationFindByIdMock.mockImplementation(async (id: string) => chain[id] ?? null);
+
+    (prisma as any).location.findFirst.mockResolvedValue({
+      id: "loc-sub",
+      userId: "user-owner",
+      code: "SUB-03",
+      description: null,
+      maxCapacity: 0,
+      parentId: "loc-prat",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      _count: { products: 0 },
+    });
+    (prisma as any).product.findMany.mockResolvedValue([
+      { id: "p1", sku: "SKU1", name: "Peça 1", locationId: null },
+    ]);
+    (prisma as any).product.updateMany.mockResolvedValue({ count: 1 });
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/locations/loc-sub/attach-products",
+      headers: { email: OWNER, "content-type": "application/json" },
+      payload: { productIds: ["p1"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect((prisma as any).product.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          locationId: "loc-sub",
+          location: "GAL-01 > PRAT-02 > SUB-03",
         }),
       }),
     );
