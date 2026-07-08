@@ -1371,7 +1371,7 @@ paths:
       operationId: uploadProductImage
       summary: Faz upload de imagem (multipart)
       description: |
-        Pré-requisito antes de criar produto. Aceita JPEG/PNG/WebP, até **5 MB**.
+        Pré-requisito antes de criar produto. Aceita JPEG/PNG/WebP, até **20 MB**.
 
         ## Auth
 
@@ -1396,7 +1396,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Imagem (JPEG/PNG/WebP, até 5MB). O nome do campo é flexível.
+                  description: Imagem (JPEG/PNG/WebP, até 20MB). O nome do campo é flexível.
       responses:
         "200":
           description: Upload concluído
@@ -1443,7 +1443,7 @@ paths:
           contato, sem precisar do fluxo de cadastro de produto.
 
         ## Entrada
-        - `file`: imagem `JPEG/PNG/WebP`, até **5 MB**.
+        - `file`: imagem `JPEG/PNG/WebP`, até **20 MB**.
         - `removeBackground` (opcional, default `true`): remove o fundo.
         - `addShadow` (opcional, default `false`): sombra de contato; **exige
           recorte** — é ignorada quando `removeBackground=false`.
@@ -1477,7 +1477,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Imagem (JPEG/PNG/WebP, até 5 MB).
+                  description: Imagem (JPEG/PNG/WebP, até 20 MB).
                 removeBackground:
                   type: string
                   enum: ["true", "false"]

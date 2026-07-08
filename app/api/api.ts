@@ -116,7 +116,7 @@ api.register(fastifyCors, {
 
 api.register(fastifyMultipart, {
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 20 * 1024 * 1024, // 20MB
   },
 });
 

@@ -39,7 +39,7 @@ const SECRET = "test-secret-com-mais-de-16-chars";
 
 async function makeApp() {
   const app = fastify();
-  await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } });
+  await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
   // imageRoutes já registra o authMiddleware real no preHandler.
   await app.register(imageRoutes, { prefix: "/v1/images" });
   await app.ready();

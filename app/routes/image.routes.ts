@@ -12,7 +12,7 @@ const ALLOWED_MIME = new Set([
   "image/png",
   "image/webp",
 ]);
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB — alinhado com /upload/image
+const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — alinhado com /upload/image
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value === null) return fallback;
@@ -39,7 +39,7 @@ export async function imageRoutes(app: FastifyInstance) {
    * sistemas externos (ex.: Desmont Hub).
    *
    * Multipart:
-   *  - file: imagem (jpeg/jpg/png/webp), até 5 MB
+   *  - file: imagem (jpeg/jpg/png/webp), até 20 MB
    *  - removeBackground (opcional): "true" | "false" (default "true")
    *  - addShadow (opcional): "true" | "false" (default "false"). Sombra de
    *    contato; exige recorte — ignorado quando removeBackground=false.
@@ -86,7 +86,7 @@ export async function imageRoutes(app: FastifyInstance) {
             try {
               buffer = await part.toBuffer();
             } catch (e: unknown) {
-              // Oversize (>5 MB) estoura o limite global do @fastify/multipart
+              // Oversize (>20 MB) estoura o limite global do @fastify/multipart
               // durante o toBuffer(). O código FST_REQ_FILE_TOO_LARGE fica em
               // `e.code` (NÃO em `e.message`), então casamos pelo code — assim
               // devolvemos 400 conforme o contrato (o padrão copiado do
@@ -100,7 +100,7 @@ export async function imageRoutes(app: FastifyInstance) {
               ) {
                 return reply.status(400).send({
                   error: "Arquivo muito grande",
-                  message: "O tamanho máximo permitido é 5MB",
+                  message: "O tamanho máximo permitido é 20MB",
                 });
               }
               throw e;
@@ -141,7 +141,7 @@ export async function imageRoutes(app: FastifyInstance) {
         if (buffer.byteLength > MAX_BYTES) {
           return reply.status(400).send({
             error: "Arquivo muito grande",
-            message: "O tamanho máximo permitido é 5MB",
+            message: "O tamanho máximo permitido é 20MB",
           });
         }
 

@@ -72,8 +72,8 @@ export function MultiImageUpload({
         onError?.("Apenas arquivos de imagem são permitidos");
         return { url: null };
       }
-      if (file.size > 5 * 1024 * 1024) {
-        onError?.("O arquivo deve ter no máximo 5MB");
+      if (file.size > 20 * 1024 * 1024) {
+        onError?.("O arquivo deve ter no máximo 20MB");
         return { url: null };
       }
 
@@ -330,7 +330,7 @@ export function MultiImageUpload({
                     : "Adicionar mais imagens"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  JPEG, PNG ou WebP até 5MB • Máx. {maxImages} imagens (
+                  JPEG, PNG ou WebP até 20MB • Máx. {maxImages} imagens (
                   {maxImages - value.length} restantes)
                 </p>
               </div>

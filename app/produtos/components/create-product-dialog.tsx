@@ -3041,7 +3041,7 @@ export function CreateProductDialog({
                 )}
                 <p className="text-xs text-muted-foreground">
                   Faça upload de fotos do produto. A primeira imagem será a
-                  principal. Máximo 10 imagens, 5MB cada (JPG, PNG, WebP).
+                  principal. Máximo 10 imagens, 20MB cada (JPG, PNG, WebP).
                 </p>
               </div>
             </div>

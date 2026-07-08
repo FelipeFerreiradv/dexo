@@ -91,10 +91,10 @@ describe("POST /v1/images/process", () => {
     processUploadedImageMock.mockReset();
 
     app = fastify();
-    // Limite igual ao de produção (api.ts): 5 MB exatos. Assim o teste de
+    // Limite igual ao de produção (api.ts): 20 MB exatos. Assim o teste de
     // oversize exercita o caminho REAL (o toBuffer estoura o limite global).
     await app.register(multipart, {
-      limits: { fileSize: 5 * 1024 * 1024 },
+      limits: { fileSize: 20 * 1024 * 1024 },
     });
     await app.register(imageRoutes, { prefix: "/v1/images" });
   });
@@ -143,10 +143,10 @@ describe("POST /v1/images/process", () => {
     expect(JSON.parse(res.payload).error).toMatch(/Tipo/i);
   });
 
-  it("rejeita arquivo > 5MB com 400 (não 413/500)", async () => {
-    // Arquivo acima do limite global do multipart (5 MB). O toBuffer() estoura
+  it("rejeita arquivo > 20MB com 400 (não 413/500)", async () => {
+    // Arquivo acima do limite global do multipart (20 MB). O toBuffer() estoura
     // com FST_REQ_FILE_TOO_LARGE; o handler detecta pelo code e devolve 400.
-    const file = Buffer.alloc(5 * 1024 * 1024 + 1024, 0xff);
+    const file = Buffer.alloc(20 * 1024 * 1024 + 1024, 0xff);
     const { headers, body } = buildForm({
       file,
       filename: "big.jpg",

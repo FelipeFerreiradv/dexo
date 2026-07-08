@@ -108,7 +108,7 @@ internet ao abrir a página, mas **nada é instalado no projeto**.
 - `POST /products/{id}/compatibilities/batch`
 
 ### Uploads (1)
-- `POST /upload/image` — multipart, max 5MB
+- `POST /upload/image` — multipart, max 20MB
 
 ### Image Processing (1)
 - `POST /v1/images/process` — remoção de fundo + sombra, **stateless** (resposta binária)

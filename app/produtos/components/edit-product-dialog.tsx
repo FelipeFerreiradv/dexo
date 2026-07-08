@@ -2415,7 +2415,7 @@ export function EditProductDialog({
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
-                Faça upload de uma nova foto ou mantenha a atual. Máximo 5MB,
+                Faça upload de uma nova foto ou mantenha a atual. Máximo 20MB,
                 formatos: JPG, PNG, WebP.
               </p>
             </div>

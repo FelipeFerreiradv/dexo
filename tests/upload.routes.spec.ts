@@ -89,7 +89,7 @@ describe("POST /upload/image", () => {
 
     app = fastify();
     await app.register(multipart, {
-      limits: { fileSize: 5 * 1024 * 1024 + 1024 },
+      limits: { fileSize: 20 * 1024 * 1024 + 1024 },
     });
     await app.register(uploadRoutes, { prefix: "/upload" });
   });
@@ -138,9 +138,9 @@ describe("POST /upload/image", () => {
     expect(JSON.parse(res.payload).error).toMatch(/Tipo/i);
   });
 
-  it("rejeita arquivo > 5MB", async () => {
-    // Cria um buffer maior que 5MB no campo file.
-    const file = Buffer.alloc(5 * 1024 * 1024 + 10, 0xff);
+  it("rejeita arquivo > 20MB", async () => {
+    // Cria um buffer maior que 20MB no campo file.
+    const file = Buffer.alloc(20 * 1024 * 1024 + 10, 0xff);
     const { headers, body } = buildForm({
       file,
       filename: "big.jpg",

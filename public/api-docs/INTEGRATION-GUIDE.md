@@ -283,7 +283,7 @@ Content-Type: multipart/form-data
 
 | Campo | Tipo | Obrigatório | Default | Descrição |
 |-------|------|-------------|---------|-----------|
-| `file` | binary | sim | — | Imagem `jpeg/jpg/png/webp`, ≤ 5 MB. |
+| `file` | binary | sim | — | Imagem `jpeg/jpg/png/webp`, ≤ 20 MB. |
 | `removeBackground` | string | não | `true` | `"true"`/`"false"`. Remove o fundo. |
 | `addShadow` | string | não | `false` | `"true"`/`"false"`. Sombra de contato; exige recorte — ignorada se `removeBackground=false`. |
 
@@ -484,7 +484,7 @@ categoria (`tags.required`) precisam estar presentes no `attributes` do produto.
   `POST /products`.
 - Envie a primeira como `imageUrl` e o conjunto completo (incluindo a primeira)
   como `imageUrls[]`.
-- Limite: **5 MB por arquivo**, formatos: `image/jpeg`, `image/png`, `image/webp`.
+- Limite: **20 MB por arquivo**, formatos: `image/jpeg`, `image/png`, `image/webp`.
 - Se você está migrando do Desmont Hub que já tem imagens em CDN próprio,
   baixe-e-reupload — o Dexo **só aceita** URLs servidas por ele próprio.
 
@@ -536,7 +536,7 @@ Antes de promover sua integração para produção, verifique:
 - [ ] **Polling**: backoff exponencial implementado no `GET /listings/status`.
 - [ ] **Preflight Shopee**: chamado antes de qualquer bulk com `shopeeAccountId`.
 - [ ] **Compatibilidades**: usadas via seletor guiado, não texto livre.
-- [ ] **Imagens**: pré-uploadadas via `/upload/image`, dentro de 5MB.
+- [ ] **Imagens**: pré-uploadadas via `/upload/image`, dentro de 20MB.
 - [ ] **Logs**: sua aplicação registra `productId`, `jobId` e `request.id` para auditoria.
 - [ ] **Monitoramento**: dashboard com volume de `POST /products`, taxa de erro
       `4xx`/`5xx` e tempo até `status=ACTIVE`.

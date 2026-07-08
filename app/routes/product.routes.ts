@@ -214,7 +214,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
                 return reply.status(400).send({
                   error: "Arquivo muito grande",
-                  message: "O tamanho máximo permitido é 5MB",
+                  message: "O tamanho máximo permitido é 20MB",
                 });
               }
               throw e;
