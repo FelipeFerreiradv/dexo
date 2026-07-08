@@ -23,16 +23,24 @@ docs/api/
     │   ├── 02-create-product-simple.sh
     │   ├── 03-create-product-with-listings.sh
     │   ├── 04-bulk-listings.sh
-    │   └── 05-poll-status.sh
+    │   ├── 05-poll-status.sh
+    │   └── 06-process-image.sh
     └── nodejs/
-        └── desmont-hub-integration.mjs   ← Cliente end-to-end (Node 18+)
+        ├── desmont-hub-integration.mjs   ← Cliente end-to-end (Node 18+)
+        └── process-image.mjs             ← Remoção de fundo + sombra
 ```
 
 ```
 public/api-docs/
 ├── index.html                            ← Swagger UI estático (CDN)
+├── guide.html                            ← Render do guia (marked)
+├── INTEGRATION-GUIDE.md                  ← Cópia servida do guia
 └── openapi.yaml                          ← Cópia servida ao browser
 ```
+
+> As cópias em `public/api-docs/` (`openapi.yaml` e `INTEGRATION-GUIDE.md`) são
+> servidas em `/api-docs` pelo `@fastify/static` e devem ser mantidas idênticas
+> aos fontes em `docs/api/`.
 
 ---
 
@@ -56,7 +64,7 @@ internet ao abrir a página, mas **nada é instalado no projeto**.
 
 ---
 
-## Endpoints documentados (24)
+## Endpoints documentados (25)
 
 ### Authentication & Accounts (7)
 - `POST /marketplace/ml/auth` — inicia OAuth ML
@@ -100,7 +108,10 @@ internet ao abrir a página, mas **nada é instalado no projeto**.
 - `POST /products/{id}/compatibilities/batch`
 
 ### Uploads (1)
-- `POST /upload/image` — multipart, max 5MB
+- `POST /upload/image` — multipart, max 20MB
+
+### Image Processing (1)
+- `POST /v1/images/process` — remoção de fundo + sombra, **stateless** (resposta binária)
 
 ---
 
@@ -133,7 +144,9 @@ três razões:
 | [`docs/api/examples/curl/03-create-product-with-listings.sh`](./examples/curl/03-create-product-with-listings.sh) | Exemplo cURL | ~70 |
 | [`docs/api/examples/curl/04-bulk-listings.sh`](./examples/curl/04-bulk-listings.sh) | Exemplo cURL | ~55 |
 | [`docs/api/examples/curl/05-poll-status.sh`](./examples/curl/05-poll-status.sh) | Exemplo cURL | ~22 |
+| [`docs/api/examples/curl/06-process-image.sh`](./examples/curl/06-process-image.sh) | Exemplo cURL | ~30 |
 | [`docs/api/examples/nodejs/desmont-hub-integration.mjs`](./examples/nodejs/desmont-hub-integration.mjs) | Cliente Node.js | ~190 |
+| [`docs/api/examples/nodejs/process-image.mjs`](./examples/nodejs/process-image.mjs) | Cliente Node.js | ~55 |
 | [`public/api-docs/index.html`](../../public/api-docs/index.html) | Swagger UI estático | ~60 |
 | [`public/api-docs/openapi.yaml`](../../public/api-docs/openapi.yaml) | Cópia da spec | (mesmo conteúdo) |
 
@@ -211,7 +224,7 @@ seguida sem perda.
 
 ## Próximos passos
 
-A spec está em [`v1.0.0`](./openapi.yaml#L4). Servers já apontam para os
+A spec está em [`v1.1.0`](./openapi.yaml#L4). Servers já apontam para os
 ambientes reais:
 
 - **Produção**: `https://api.usedexo.com.br` (frontend: `https://usedexo.com.br/`)
@@ -226,6 +239,29 @@ Itens recomendados (não bloqueantes):
    NFe token) tiver vazado em chats, transcripts ou logs, gere novos e atualize
    o `.env`. Os secrets continuam sendo carregados pelo `dotenv`; apenas
    troque os valores no provedor (Supabase, ML developer console, etc.).
+
+---
+
+## Changelog
+
+Versionamento semântico em `info.version` (regras em `Manutenção`).
+
+### v1.1.0 — 2026-07-08
+
+- **Novo** `POST /v1/images/process` (tag `Image Processing`): serviço público e
+  **stateless** de remoção de fundo + sombra de contato. Reutiliza o mesmo
+  pipeline do `POST /upload/image`, mas devolve os **bytes** da imagem na
+  resposta (metadados em headers `X-*`) e **não persiste** nada em disco.
+- **Novo** `securitySchemes.BearerAuth` (JWT) documentado, refletindo o
+  `authMiddleware` (Bearer preferido; header `email` no modo legacy).
+- **Correção de doc** em `POST /upload/image`: removido o `security: []` e o
+  texto "não exige o header email" — o endpoint **sempre** exigiu `authMiddleware`.
+  O comportamento do endpoint **não mudou** (correção puramente documental).
+
+### v1.0.0
+
+- Versão inicial: fluxos de criação de produto e anúncio (Mercado Livre + Shopee),
+  mais os endpoints auxiliares (upload, categorias, ficha técnica, compatibilidade).
 
 ---
 

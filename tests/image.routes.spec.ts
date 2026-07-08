@@ -4,7 +4,9 @@ import multipart from "@fastify/multipart";
 import FormData from "form-data";
 import sharp from "sharp";
 
-// Mock fs/promises para evitar criar arquivos reais nos testes.
+// Mock fs/promises: o endpoint /v1/images/process é STATELESS e não deve
+// escrever nada em disco. Se qualquer writeFile/mkdir for chamado, os asserts
+// abaixo (não chamado) falham — garantindo a propriedade stateless.
 const writeFileMock = vi.fn().mockResolvedValue(undefined);
 const mkdirMock = vi.fn().mockResolvedValue(undefined);
 
@@ -13,21 +15,23 @@ vi.mock("fs/promises", () => ({
   mkdir: (...args: any[]) => mkdirMock(...args),
 }));
 
-// Mock do service para isolar o teste do endpoint da lógica de imagem
-// (que já tem cobertura em tests/image-processing.spec.ts).
+// Mock do service para isolar o teste do endpoint da lógica de imagem (que já
+// tem cobertura em tests/image-processing.spec.ts, inclusive o mock do sidecar
+// via rembgFetcher). Aqui validamos o CONTRATO da rota: parsing, validação,
+// content-type, headers X-* e resposta binária.
 const processUploadedImageMock = vi.fn();
 vi.mock("../app/marketplaces/services/image-resize.service", () => ({
   processUploadedImage: (...args: any[]) => processUploadedImageMock(...args),
 }));
 
-// authMiddleware agora protege POST /upload/image. Aqui mockamos para um
-// no-op (passa direto) — o foco destes testes é o pipeline de imagem, não a
-// auth (coberta em tests/security/api-auth-token.spec.ts).
+// authMiddleware protege POST /v1/images/process. Aqui mockamos para no-op
+// (passa direto) — a auth real (401/strict) é coberta em
+// tests/image.routes.auth.spec.ts.
 vi.mock("../app/middlewares/auth.middleware", () => ({
   authMiddleware: async () => {},
 }));
 
-import { uploadRoutes } from "../app/routes/upload.routes";
+import { imageRoutes } from "../app/routes/image.routes";
 
 async function makeImage(
   width = 400,
@@ -78,20 +82,21 @@ function buildForm({
   };
 }
 
-describe("POST /upload/image", () => {
+describe("POST /v1/images/process", () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
-    process.env.APP_BACKEND_URL = "http://test.local";
     writeFileMock.mockClear();
     mkdirMock.mockClear();
     processUploadedImageMock.mockReset();
 
     app = fastify();
+    // Limite igual ao de produção (api.ts): 20 MB exatos. Assim o teste de
+    // oversize exercita o caminho REAL (o toBuffer estoura o limite global).
     await app.register(multipart, {
-      limits: { fileSize: 20 * 1024 * 1024 + 1024 },
+      limits: { fileSize: 20 * 1024 * 1024 },
     });
-    await app.register(uploadRoutes, { prefix: "/upload" });
+    await app.register(imageRoutes, { prefix: "/v1/images" });
   });
 
   afterEach(async () => {
@@ -102,7 +107,7 @@ describe("POST /upload/image", () => {
   it("rejeita requisição sem multipart", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({ foo: "bar" }),
     });
@@ -113,7 +118,7 @@ describe("POST /upload/image", () => {
     const { headers, body } = buildForm({});
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
@@ -130,7 +135,7 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
@@ -138,9 +143,10 @@ describe("POST /upload/image", () => {
     expect(JSON.parse(res.payload).error).toMatch(/Tipo/i);
   });
 
-  it("rejeita arquivo > 20MB", async () => {
-    // Cria um buffer maior que 20MB no campo file.
-    const file = Buffer.alloc(20 * 1024 * 1024 + 10, 0xff);
+  it("rejeita arquivo > 20MB com 400 (não 413/500)", async () => {
+    // Arquivo acima do limite global do multipart (20 MB). O toBuffer() estoura
+    // com FST_REQ_FILE_TOO_LARGE; o handler detecta pelo code e devolve 400.
+    const file = Buffer.alloc(20 * 1024 * 1024 + 1024, 0xff);
     const { headers, body } = buildForm({
       file,
       filename: "big.jpg",
@@ -148,15 +154,64 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.payload).error).toMatch(/grande/i);
+    // Nada foi processado nem persistido.
+    expect(processUploadedImageMock).not.toHaveBeenCalled();
+    expect(writeFileMock).not.toHaveBeenCalled();
   });
 
-  it("upload válido com removeBackground=false salva original + WebP processada", async () => {
+  it("removeBackground=true + addShadow=true → PNG binário + headers X-*", async () => {
+    const file = await makeImage(800, 600, "jpeg");
+    const processed = await makeImage(1600, 1200, "png");
+    processUploadedImageMock.mockResolvedValue({
+      processed,
+      format: "png",
+      removedBackground: true,
+      shadowApplied: true,
+      width: 1600,
+      height: 1200,
+    });
+
+    const { headers, body } = buildForm({
+      file,
+      filename: "p.jpg",
+      mimetype: "image/jpeg",
+      removeBackground: "true",
+      addShadow: "true",
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/images/process",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/png");
+    expect(res.headers["x-removed-background"]).toBe("true");
+    expect(res.headers["x-shadow-applied"]).toBe("true");
+    expect(res.headers["x-image-format"]).toBe("png");
+    expect(res.headers["x-image-width"]).toBe("1600");
+    expect(res.headers["x-image-height"]).toBe("1200");
+    expect(res.headers["x-warning"]).toBeUndefined();
+    // O corpo é exatamente os bytes processados.
+    expect(Buffer.compare(res.rawPayload, processed)).toBe(0);
+    // Reusa o pipeline com os flags certos.
+    expect(processUploadedImageMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ removeBackground: true, addShadow: true }),
+    );
+    // STATELESS: nada escrito em disco.
+    expect(writeFileMock).not.toHaveBeenCalled();
+    expect(mkdirMock).not.toHaveBeenCalled();
+  });
+
+  it("removeBackground=false → WebP binário + X-Removed-Background:false", async () => {
     const file = await makeImage(800, 600, "jpeg");
     const processed = await makeImage(800, 600, "webp");
     processUploadedImageMock.mockResolvedValue({
@@ -175,39 +230,33 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
 
     expect(res.statusCode).toBe(200);
-    const payload = JSON.parse(res.payload);
-    expect(payload.success).toBe(true);
-    expect(payload.removedBackground).toBe(false);
-    expect(payload.format).toBe("webp");
-    expect(payload.imageUrl).toMatch(
-      /^http:\/\/test\.local\/uploads\/.+\.webp$/,
-    );
-    expect(payload.originalUrl).toMatch(
-      /^http:\/\/test\.local\/uploads\/.+\.orig\.jpg$/,
-    );
-    expect(payload.warning).toBeUndefined();
-    // writeFile foi chamado 2x: original + processada.
-    expect(writeFileMock).toHaveBeenCalledTimes(2);
-    // processUploadedImage foi chamado com removeBackground=false.
+    expect(res.headers["content-type"]).toBe("image/webp");
+    expect(res.headers["x-removed-background"]).toBe("false");
+    expect(res.headers["x-shadow-applied"]).toBe("false");
+    expect(res.headers["x-image-format"]).toBe("webp");
+    expect(Buffer.compare(res.rawPayload, processed)).toBe(0);
     expect(processUploadedImageMock).toHaveBeenCalledWith(
       expect.any(Buffer),
       expect.objectContaining({ removeBackground: false }),
     );
+    expect(writeFileMock).not.toHaveBeenCalled();
   });
 
-  it("upload com removeBackground=true devolve PNG transparente", async () => {
+  it("degradação graceful (sidecar offline) → 200 + WebP + X-Warning ASCII", async () => {
     const file = await makeImage(800, 600, "jpeg");
-    const processed = await makeImage(800, 600, "png");
+    const processed = await makeImage(800, 600, "webp");
     processUploadedImageMock.mockResolvedValue({
       processed,
-      format: "png",
-      removedBackground: true,
+      format: "webp",
+      removedBackground: false,
+      warning:
+        "Remoção de fundo indisponível; usamos a imagem otimizada original.",
       width: 800,
       height: 600,
     });
@@ -220,50 +269,20 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
 
+    // Nunca 500: falha do sidecar é degradação graceful.
     expect(res.statusCode).toBe(200);
-    const payload = JSON.parse(res.payload);
-    expect(payload.removedBackground).toBe(true);
-    expect(payload.format).toBe("png");
-    expect(payload.imageUrl).toMatch(/\.png$/);
-    expect(processUploadedImageMock).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      expect.objectContaining({ removeBackground: true }),
+    expect(res.headers["content-type"]).toBe("image/webp");
+    expect(res.headers["x-removed-background"]).toBe("false");
+    // Header ASCII-folded: sem acentos (latin1-safe), ainda legível.
+    expect(res.headers["x-warning"]).toBe(
+      "Remocao de fundo indisponivel; usamos a imagem otimizada original.",
     );
-  });
-
-  it("propaga warning quando o pipeline degradou (sidecar offline)", async () => {
-    const file = await makeImage(800, 600, "jpeg");
-    const processed = await makeImage(800, 600, "webp");
-    processUploadedImageMock.mockResolvedValue({
-      processed,
-      format: "webp",
-      removedBackground: false,
-      warning:
-        "Remoção de fundo indisponível; usamos a imagem otimizada original.",
-    });
-
-    const { headers, body } = buildForm({
-      file,
-      filename: "p.jpg",
-      mimetype: "image/jpeg",
-      removeBackground: "true",
-    });
-    const res = await app.inject({
-      method: "POST",
-      url: "/upload/image",
-      headers,
-      payload: body,
-    });
-
-    expect(res.statusCode).toBe(200);
-    const payload = JSON.parse(res.payload);
-    expect(payload.removedBackground).toBe(false);
-    expect(payload.warning).toMatch(/indisponível/i);
+    expect(Buffer.compare(res.rawPayload, processed)).toBe(0);
   });
 
   it("default do removeBackground é true quando o campo é omitido", async () => {
@@ -282,7 +301,7 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
@@ -294,78 +313,14 @@ describe("POST /upload/image", () => {
     );
   });
 
-  it("preserva o original em arquivo .orig.<ext>", async () => {
-    const file = await makeImage(800, 600, "png");
-    processUploadedImageMock.mockResolvedValue({
-      processed: file,
-      format: "webp",
-      removedBackground: false,
-    });
-
-    const { headers, body } = buildForm({
-      file,
-      filename: "p.png",
-      mimetype: "image/png",
-      removeBackground: "false",
-    });
-    await app.inject({
-      method: "POST",
-      url: "/upload/image",
-      headers,
-      payload: body,
-    });
-
-    // O primeiro writeFile é o original (`.orig.png`).
-    const originalCall = writeFileMock.mock.calls[0];
-    expect(originalCall[0]).toMatch(/\.orig\.png$/);
-    // O segundo é a processada (`.webp`).
-    const processedCall = writeFileMock.mock.calls[1];
-    expect(processedCall[0]).toMatch(/\.webp$/);
-  });
-
-  it("repassa addShadow=true e devolve shadowApplied na resposta", async () => {
+  it("omite X-Image-Width/Height quando o serviço não devolve dimensões", async () => {
     const file = await makeImage(800, 600, "jpeg");
     const processed = await makeImage(800, 600, "png");
     processUploadedImageMock.mockResolvedValue({
       processed,
       format: "png",
       removedBackground: true,
-      shadowApplied: true,
-      width: 800,
-      height: 600,
-    });
-
-    const { headers, body } = buildForm({
-      file,
-      filename: "p.jpg",
-      mimetype: "image/jpeg",
-      removeBackground: "true",
-      addShadow: "true",
-    });
-    const res = await app.inject({
-      method: "POST",
-      url: "/upload/image",
-      headers,
-      payload: body,
-    });
-
-    expect(res.statusCode).toBe(200);
-    const payload = JSON.parse(res.payload);
-    expect(payload.shadowApplied).toBe(true);
-    expect(processUploadedImageMock).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      expect.objectContaining({ removeBackground: true, addShadow: true }),
-    );
-  });
-
-  it("default do addShadow é false quando o campo é omitido", async () => {
-    const file = await makeImage(800, 600, "jpeg");
-    const processed = await makeImage(800, 600, "png");
-    processUploadedImageMock.mockResolvedValue({
-      processed,
-      format: "png",
-      removedBackground: true,
-      shadowApplied: false,
+      // sem width/height
     });
 
     const { headers, body } = buildForm({
@@ -375,17 +330,13 @@ describe("POST /upload/image", () => {
     });
     const res = await app.inject({
       method: "POST",
-      url: "/upload/image",
+      url: "/v1/images/process",
       headers,
       payload: body,
     });
 
     expect(res.statusCode).toBe(200);
-    const payload = JSON.parse(res.payload);
-    expect(payload.shadowApplied).toBe(false);
-    expect(processUploadedImageMock).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      expect.objectContaining({ addShadow: false }),
-    );
+    expect(res.headers["x-image-width"]).toBeUndefined();
+    expect(res.headers["x-image-height"]).toBeUndefined();
   });
 });

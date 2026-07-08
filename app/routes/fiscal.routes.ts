@@ -153,7 +153,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
               const msg = e instanceof Error ? e.message : String(e);
               if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
                 return reply.status(400).send({
-                  error: "Arquivo muito grande. O limite é 5MB.",
+                  error: "Arquivo muito grande. O limite é 20MB.",
                 });
               }
               throw e;

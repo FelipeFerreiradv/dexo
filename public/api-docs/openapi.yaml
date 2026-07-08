@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Dexo API — Product & Listing Creation
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Proprietary
     url: https://usedexo.com.br/
@@ -34,7 +34,8 @@ info:
 
     - Servidor: **Fastify 5** standalone (porta `3333`).
     - Banco de dados: PostgreSQL via Prisma.
-    - Autenticação da API: header `email` (ver `securitySchemes.EmailAuth`).
+    - Autenticação da API: `Bearer` JWT (preferido) ou header `email` legado
+      (ver `securitySchemes.BearerAuth` / `securitySchemes.EmailAuth`).
     - Autenticação dos marketplaces: OAuth 2.0 (configurado **uma vez por usuário** —
       ver tag `Authentication & Accounts`).
     - Datas: ISO-8601 UTC.
@@ -83,6 +84,13 @@ tags:
     description: Compatibilidade veicular dos produtos (CRUD).
   - name: Uploads
     description: Upload de imagens (pré-requisito antes de criar produto).
+  - name: Image Processing
+    description: |
+      Processamento de imagem **stateless** — remoção de fundo e sombra de
+      contato — exposto como serviço reutilizável por sistemas externos
+      (ex.: Desmont Hub). Reaproveita o mesmo pipeline do upload de produto,
+      mas devolve os **bytes** da imagem na resposta e **não persiste** nada
+      no servidor.
 
 security:
   - EmailAuth: []
@@ -1363,19 +1371,20 @@ paths:
       operationId: uploadProductImage
       summary: Faz upload de imagem (multipart)
       description: |
-        Pré-requisito antes de criar produto. Aceita JPEG/PNG/WebP, até **5 MB**.
+        Pré-requisito antes de criar produto. Aceita JPEG/PNG/WebP, até **20 MB**.
 
         ## Auth
 
-        ⚠️ Este endpoint **não exige** o header `email` no Fastify atual
-        (não tem `authMiddleware`). Recomendamos enviar mesmo assim para
-        coerência futura.
+        Este endpoint **exige autenticação** (`authMiddleware`): envie um token
+        `Authorization: Bearer <jwt>` ou, no modo legacy, o header `email`.
 
         ## Resposta
 
         Retorna `imageUrl` absoluta — use exatamente esse valor em `imageUrl`
         e `imageUrls[]` ao chamar `POST /products`.
-      security: []
+      security:
+        - BearerAuth: []
+        - EmailAuth: []
       requestBody:
         required: true
         content:
@@ -1387,7 +1396,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Imagem (JPEG/PNG/WebP, até 5MB). O nome do campo é flexível.
+                  description: Imagem (JPEG/PNG/WebP, até 20MB). O nome do campo é flexível.
       responses:
         "200":
           description: Upload concluído
@@ -1412,10 +1421,139 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ──────────────────────────────────────────────────────────────────
+  # Image Processing
+  # ──────────────────────────────────────────────────────────────────
+
+  /v1/images/process:
+    post:
+      tags: [Image Processing]
+      operationId: processImage
+      summary: Remove fundo e aplica sombra, devolvendo os bytes da imagem
+      description: |
+        Serviço **stateless** de processamento de imagem, reutilizável por
+        sistemas externos (ex.: **Desmont Hub**). Recebe uma imagem via
+        multipart, remove o fundo (via sidecar de IA) e opcionalmente aplica
+        uma sombra de contato, devolvendo os **bytes** da imagem processada no
+        corpo da resposta. **Nada é persistido** no servidor — o custo é apenas
+        CPU/RAM durante a chamada.
+
+        ## Quando usar
+        - Recorte de foto de produto/peça (fundo transparente) e/ou sombra de
+          contato, sem precisar do fluxo de cadastro de produto.
+
+        ## Entrada
+        - `file`: imagem `JPEG/PNG/WebP`, até **20 MB**.
+        - `removeBackground` (opcional, default `true`): remove o fundo.
+        - `addShadow` (opcional, default `false`): sombra de contato; **exige
+          recorte** — é ignorada quando `removeBackground=false`.
+
+        ## Saída
+        - `200`: o **corpo é a imagem** processada (bytes). `Content-Type`
+          `image/png` quando houve recorte, ou `image/webp` (otimizado/fallback).
+          Os metadados vão em headers `X-*` (ver abaixo). A imagem é
+          redimensionada para a janela **1000–1600 px**.
+
+        ## Degradação graceful
+        Se a remoção de fundo estiver indisponível, o endpoint **não falha**:
+        devolve `200` com a imagem otimizada (`image/webp`),
+        `X-Removed-Background: false` e um header `X-Warning`. Trate esse caso
+        no seu cliente (ex.: reprocessar mais tarde).
+
+        > Processamento pode levar alguns segundos (depende do sidecar de IA).
+        > Use timeouts generosos e retry com backoff. O endpoint compartilha o
+        > rate limit global (300 req/min por IP).
+      security:
+        - BearerAuth: []
+        - EmailAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Imagem (JPEG/PNG/WebP, até 20 MB).
+                removeBackground:
+                  type: string
+                  enum: ["true", "false"]
+                  default: "true"
+                  description: Remove o fundo via sidecar. Default `true`.
+                addShadow:
+                  type: string
+                  enum: ["true", "false"]
+                  default: "false"
+                  description: |
+                    Sombra de contato. Exige recorte — ignorada se
+                    `removeBackground=false`. Default `false`.
+      responses:
+        "200":
+          description: |
+            Imagem processada — os **bytes** vêm no corpo; os metadados nos
+            headers `X-*`.
+          headers:
+            X-Removed-Background:
+              schema: { type: string, enum: ["true", "false"] }
+              description: Se o fundo foi de fato removido.
+            X-Shadow-Applied:
+              schema: { type: string, enum: ["true", "false"] }
+              description: Se a sombra de contato foi aplicada.
+            X-Image-Format:
+              schema: { type: string, enum: [png, webp] }
+              description: Formato da imagem devolvida.
+            X-Image-Width:
+              schema: { type: integer }
+              description: Largura em px (quando disponível).
+            X-Image-Height:
+              schema: { type: integer }
+              description: Altura em px (quando disponível).
+            X-Warning:
+              schema: { type: string }
+              description: |
+                Presente **apenas** em degradação graceful (remoção de fundo
+                indisponível). Ex.: "Remocao de fundo indisponivel; usamos a
+                imagem otimizada original."
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Conta desativada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "Conta desativada" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 # ────────────────────────────────────────────────────────────────────
 components:
 
   securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token JWT assinado (`Authorization: Bearer <jwt>`), verificado por
+        [`api-token.ts`](../../app/lib/api-token.ts) (HS256). Caminho de auth
+        preferido — funciona nos modos `legacy` e `strict` do
+        [`auth.middleware.ts`](../../app/middlewares/auth.middleware.ts).
     EmailAuth:
       type: apiKey
       in: header
@@ -1427,9 +1565,10 @@ components:
         valida o e-mail no banco (com cache in-memory de 60s) e anexa o `User`
         à requisição. Fallback aceito: query param `?email=`.
 
-        > **Nota para Desmont Hub**: este é o mecanismo atual; pode evoluir
-        > para JWT Bearer em versões futuras. Encapsule a leitura/envio em
-        > seu cliente para minimizar acoplamento.
+        > **Nota para Desmont Hub**: mecanismo legado; o caminho recomendado é o
+        > `BearerAuth`. No modo `strict` (`API_AUTH_MODE=strict`) apenas o Bearer
+        > é aceito. Encapsule a leitura/envio em seu cliente para minimizar
+        > acoplamento.
 
   responses:
     BadRequest:

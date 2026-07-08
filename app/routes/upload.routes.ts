@@ -14,7 +14,7 @@ const ALLOWED_MIME = new Set([
   "image/png",
   "image/webp",
 ]);
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB — alinhado com a UI
+const MAX_BYTES = 20 * 1024 * 1024; // 20 MB — alinhado com a UI
 
 const FORMAT_EXTENSION: Record<ProcessedImageFormat, string> = {
   webp: ".webp",
@@ -43,7 +43,7 @@ export async function uploadRoutes(app: FastifyInstance) {
    * POST /upload/image
    *
    * Multipart:
-   *  - file: imagem (jpg/png/webp), até 5 MB
+   *  - file: imagem (jpg/png/webp), até 20 MB
    *  - removeBackground (opcional): "true" | "false" (default "true")
    *  - addShadow (opcional): "true" | "false" (default "false"). Adiciona
    *    sombra de contato; exige recorte — ignorado se removeBackground=false.
@@ -104,7 +104,7 @@ export async function uploadRoutes(app: FastifyInstance) {
               if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
                 return reply.status(400).send({
                   error: "Arquivo muito grande",
-                  message: "O tamanho máximo permitido é 5MB",
+                  message: "O tamanho máximo permitido é 20MB",
                 });
               }
               throw e;
@@ -145,7 +145,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         if (buffer.byteLength > MAX_BYTES) {
           return reply.status(400).send({
             error: "Arquivo muito grande",
-            message: "O tamanho máximo permitido é 5MB",
+            message: "O tamanho máximo permitido é 20MB",
           });
         }
 

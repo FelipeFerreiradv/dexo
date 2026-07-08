@@ -45,8 +45,8 @@ export function ImageUpload({
         onError?.("Apenas arquivos de imagem são permitidos");
         return;
       }
-      if (file.size > 5 * 1024 * 1024) {
-        onError?.("O arquivo deve ter no máximo 5MB");
+      if (file.size > 20 * 1024 * 1024) {
+        onError?.("O arquivo deve ter no máximo 20MB");
         return;
       }
 
@@ -235,7 +235,7 @@ export function ImageUpload({
                     Clique para selecionar ou arraste uma imagem
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    JPEG, PNG ou WebP até 5MB
+                    JPEG, PNG ou WebP até 20MB
                   </p>
                 </div>
               </>

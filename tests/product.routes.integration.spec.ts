@@ -1317,7 +1317,7 @@ describe("POST /products/nfe/parse (integration)", () => {
   beforeEach(async () => {
     nfeApp = fastify();
     await nfeApp.register(fastifyMultipart, {
-      limits: { fileSize: 5 * 1024 * 1024 },
+      limits: { fileSize: 20 * 1024 * 1024 },
     });
     await nfeApp.register(productRoutes, { prefix: "/products" });
     // authMiddleware resolve o usuário autenticado por email.
