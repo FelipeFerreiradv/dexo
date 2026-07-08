@@ -23,6 +23,7 @@ import { marketplaceRoutes } from "../routes/marketplace.routes";
 import { dashboardRoutes } from "../routes/dashboard.routes";
 import { orderRoutes } from "../routes/order.routes";
 import { uploadRoutes } from "../routes/upload.routes";
+import { imageRoutes } from "../routes/image.routes";
 import { listingRoutes } from "../routes/listing.routes";
 import { systemLogRoutes } from "../routes/system-log.routes";
 import { locationRoutes } from "../routes/location.routes";
@@ -100,6 +101,17 @@ api.register(fastifyCors, {
   origin: corsOrigin || "http://localhost:3000",
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  // Permite que clientes browser cross-origin leiam os metadados do
+  // POST /v1/images/process (a resposta é a imagem; os dados vão em headers).
+  // Consumidores server-side (ex.: Desmont Hub) já leem qualquer header.
+  exposedHeaders: [
+    "X-Removed-Background",
+    "X-Shadow-Applied",
+    "X-Image-Format",
+    "X-Image-Width",
+    "X-Image-Height",
+    "X-Warning",
+  ],
 });
 
 api.register(fastifyMultipart, {
@@ -138,6 +150,12 @@ api.register(orderRoutes, {
 
 api.register(uploadRoutes, {
   prefix: "/upload",
+});
+
+// Processamento de imagem público/stateless (remoção de fundo + sombra),
+// reutilizando o mesmo pipeline do /upload/image. Aditivo — não persiste em disco.
+api.register(imageRoutes, {
+  prefix: "/v1/images",
 });
 
 api.register(listingRoutes, {

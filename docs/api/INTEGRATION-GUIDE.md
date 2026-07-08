@@ -11,14 +11,15 @@ passo-a-passo, exemplos prontos e checklist de produção.
 1. [Visão geral](#1-visão-geral)
 2. [Setup inicial (uma vez por usuário)](#2-setup-inicial-uma-vez-por-usuário)
 3. [Fluxo end-to-end recomendado](#3-fluxo-end-to-end-recomendado)
-4. [Idempotência](#4-idempotência)
-5. [Rate limits e caches](#5-rate-limits-e-caches)
-6. [Webhooks (somente para conhecimento)](#6-webhooks-somente-para-conhecimento)
-7. [Boas práticas](#7-boas-práticas)
-8. [Tratamento de erros](#8-tratamento-de-erros)
-9. [Checklist de integração para produção](#9-checklist-de-integração-para-produção)
-10. [Exemplos prontos](#10-exemplos-prontos)
-11. [Notas e roadmap](#11-notas-e-roadmap)
+4. [Serviço de remoção de fundo e sombra (uso por sistemas externos)](#4-serviço-de-remoção-de-fundo-e-sombra-uso-por-sistemas-externos)
+5. [Idempotência](#5-idempotência)
+6. [Rate limits e caches](#6-rate-limits-e-caches)
+7. [Webhooks (somente para conhecimento)](#7-webhooks-somente-para-conhecimento)
+8. [Boas práticas](#8-boas-práticas)
+9. [Tratamento de erros](#9-tratamento-de-erros)
+10. [Checklist de integração para produção](#10-checklist-de-integração-para-produção)
+11. [Exemplos prontos](#11-exemplos-prontos)
+12. [Notas e roadmap](#12-notas-e-roadmap)
 
 ---
 
@@ -148,7 +149,7 @@ curl 'http://localhost:3333/products/next-sku' -H "email: $EMAIL"
 
 → `{ "sku": "DEXO-00043" }`. **Recomendamos** que o Desmont Hub use seu próprio
 padrão (ex.: `DESMONT-{externalId}`) para manter rastreabilidade reversa — assim
-o SKU funciona como chave idempotente natural (ver [§4](#4-idempotência)).
+o SKU funciona como chave idempotente natural (ver [§5](#5-idempotência)).
 
 ### Passo 3 — Sugerir categoria ML
 
@@ -172,7 +173,7 @@ curl 'http://localhost:3333/marketplace/shopee/category-suggest?title=Mangueira%
 → Retorna `suggestions[]` similar ao ML.
 
 > **Lembre**: a Shopee só aceita criar anúncio em **categoria folha**. Se você
-> não tem certeza, faça preflight depois ([§7](#7-boas-práticas)).
+> não tem certeza, faça preflight depois ([§8](#8-boas-práticas)).
 
 ### Passo 5 — Criar produto + dispatch de anúncios
 
@@ -253,7 +254,121 @@ você pode interromper o polling e checar mais tarde.
 
 ---
 
-## 4. Idempotência
+## 4. Serviço de remoção de fundo e sombra (uso por sistemas externos)
+
+O Dexo expõe o mesmo pipeline de tratamento de imagem usado no cadastro de
+produto como um **endpoint público e stateless**: você envia uma imagem, ele
+**remove o fundo** (via IA) e, opcionalmente, aplica uma **sombra de contato**,
+e devolve os **bytes da imagem processada** na resposta. **Nada é persistido** no
+servidor — ideal para o Desmont Hub tratar fotos de peças sob demanda.
+
+### Quando usar
+
+- Recorte de foto de produto/peça com fundo transparente.
+- Sombra de contato para dar profundidade à peça recortada.
+- Sempre que precisar do tratamento de imagem **sem** cadastrar um produto.
+
+### Autenticação
+
+Igual ao resto da API: envie `Authorization: Bearer <jwt>` (recomendado) ou, no
+modo legacy, o header `email: <email-cadastrado>` (ver
+[§2.1](#21-credenciais-internas-para-a-api-do-dexo)).
+
+### Requisição
+
+```
+POST /v1/images/process
+Content-Type: multipart/form-data
+```
+
+| Campo | Tipo | Obrigatório | Default | Descrição |
+|-------|------|-------------|---------|-----------|
+| `file` | binary | sim | — | Imagem `jpeg/jpg/png/webp`, ≤ 5 MB. |
+| `removeBackground` | string | não | `true` | `"true"`/`"false"`. Remove o fundo. |
+| `addShadow` | string | não | `false` | `"true"`/`"false"`. Sombra de contato; exige recorte — ignorada se `removeBackground=false`. |
+
+### Resposta (binária)
+
+A resposta **é a imagem** — os bytes vêm no corpo. Salve-os onde quiser (a
+URL/armazenamento é responsabilidade do seu sistema). Os metadados vêm em
+headers:
+
+| Header | Exemplo | Significado |
+|--------|---------|-------------|
+| `Content-Type` | `image/png` | `image/png` (recorte) ou `image/webp` (otimizado/fallback). |
+| `X-Removed-Background` | `true` | Se o fundo foi de fato removido. |
+| `X-Shadow-Applied` | `true` | Se a sombra foi aplicada. |
+| `X-Image-Format` | `png` | Formato devolvido. |
+| `X-Image-Width` / `X-Image-Height` | `1600` / `1200` | Dimensões (quando disponíveis). A imagem é redimensionada para a janela **1000–1600 px**. |
+| `X-Warning` | (ver abaixo) | Presente **apenas** em degradação graceful. |
+
+### Degradação graceful (importante)
+
+Se a remoção de fundo estiver **temporariamente indisponível**, o endpoint **não
+retorna erro**: você recebe `200` com a imagem apenas otimizada
+(`Content-Type: image/webp`), `X-Removed-Background: false` e um header
+`X-Warning`. Trate esse caso — por exemplo, marque a imagem para reprocessar
+mais tarde.
+
+### Exemplo cURL
+
+```bash
+# -D -  imprime os headers de resposta (X-Removed-Background, X-Warning, etc.)
+# -o    grava os bytes da imagem processada em arquivo
+curl -X POST 'http://localhost:3333/v1/images/process' \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'file=@./parte.jpg' \
+  -F 'removeBackground=true' \
+  -F 'addShadow=true' \
+  -D - \
+  -o parte-processada.png
+```
+
+### Exemplo Node.js (fetch nativo, Node 18+)
+
+```javascript
+import { readFile, writeFile } from "node:fs/promises";
+
+const API_BASE = process.env.API_BASE ?? "http://localhost:3333";
+const TOKEN = process.env.API_TOKEN; // ou envie o header `email`
+
+const buf = await readFile("./parte.jpg");
+const fd = new FormData();
+fd.append("file", new Blob([buf], { type: "image/jpeg" }), "parte.jpg");
+fd.append("removeBackground", "true");
+fd.append("addShadow", "true");
+
+const res = await fetch(`${API_BASE}/v1/images/process`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${TOKEN}` },
+  body: fd,
+});
+if (!res.ok) throw new Error(`process falhou: HTTP ${res.status}`);
+
+const removed = res.headers.get("X-Removed-Background") === "true";
+if (!removed) {
+  console.warn("fundo não removido:", res.headers.get("X-Warning"));
+}
+
+// A resposta É a imagem — grave os bytes onde quiser.
+const out = Buffer.from(await res.arrayBuffer());
+await writeFile("parte-processada.png", out);
+```
+
+### Boas práticas
+
+- **Timeout generoso + retry com backoff**: o processamento pode levar alguns
+  segundos (depende do sidecar de IA). Recomendamos timeout ≥ 60s.
+- **Rate limit**: este endpoint compartilha o limite global de **300 req/min por
+  IP**. Para lotes grandes, serialize/agrupe as chamadas.
+- **`X-Removed-Background: false`**: significa que só otimizamos a imagem (sem
+  recorte). Decida se aceita assim ou reenvia mais tarde.
+- **Armazenamento é seu**: o Dexo não guarda a imagem — persista o resultado no
+  seu próprio storage/CDN.
+
+---
+
+## 5. Idempotência
 
 O Dexo **não suporta** o header `Idempotency-Key`. Use o **SKU como chave de
 deduplicação natural**:
@@ -281,7 +396,7 @@ Onde `externalId` é o ID interno do Desmont Hub. Isso dá:
 
 ---
 
-## 5. Rate limits e caches
+## 6. Rate limits e caches
 
 A API Fastify **não impõe rate limit explícito** hoje. Há, no entanto, caches
 internos que afetam a frequência ideal de chamada do cliente:
@@ -306,7 +421,7 @@ internos que afetam a frequência ideal de chamada do cliente:
 
 ---
 
-## 6. Webhooks (somente para conhecimento)
+## 7. Webhooks (somente para conhecimento)
 
 O Dexo **recebe** webhooks dos marketplaces, mas **não dispara** webhooks para
 sistemas externos hoje:
@@ -322,7 +437,7 @@ sistemas externos hoje:
 
 ---
 
-## 7. Boas práticas
+## 8. Boas práticas
 
 ### Categoria
 
@@ -384,7 +499,7 @@ categoria (`tags.required`) precisam estar presentes no `attributes` do produto.
 
 ---
 
-## 8. Tratamento de erros
+## 9. Tratamento de erros
 
 | HTTP | Causa típica | Como o cliente deve tratar |
 |------|---------------|-----------------------------|
@@ -410,7 +525,7 @@ ou (mais comum em validações simples):
 
 ---
 
-## 9. Checklist de integração para produção
+## 10. Checklist de integração para produção
 
 Antes de promover sua integração para produção, verifique:
 
@@ -428,7 +543,7 @@ Antes de promover sua integração para produção, verifique:
 
 ---
 
-## 10. Exemplos prontos
+## 11. Exemplos prontos
 
 ### cURL
 
@@ -439,12 +554,14 @@ Veja a pasta [`./examples/curl/`](./examples/curl/):
 - [`03-create-product-with-listings.sh`](./examples/curl/03-create-product-with-listings.sh)
 - [`04-bulk-listings.sh`](./examples/curl/04-bulk-listings.sh)
 - [`05-poll-status.sh`](./examples/curl/05-poll-status.sh)
+- [`06-process-image.sh`](./examples/curl/06-process-image.sh) — remoção de fundo + sombra (resposta binária)
 
 ### Node.js
 
 Cliente end-to-end com `fetch` nativo (Node 18+):
 
 - [`./examples/nodejs/desmont-hub-integration.mjs`](./examples/nodejs/desmont-hub-integration.mjs)
+- [`./examples/nodejs/process-image.mjs`](./examples/nodejs/process-image.mjs) — remoção de fundo + sombra (resposta binária)
 
 ```bash
 node ./examples/nodejs/desmont-hub-integration.mjs
@@ -452,7 +569,7 @@ node ./examples/nodejs/desmont-hub-integration.mjs
 
 ---
 
-## 11. Notas e roadmap
+## 12. Notas e roadmap
 
 ### Diferenças entre ambientes
 
