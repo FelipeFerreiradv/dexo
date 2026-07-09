@@ -15,11 +15,17 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authHeaders, getApiBaseUrl } from "@/lib/api";
+import {
+  PagePermissionsToggles,
+  pagePermsFromValue,
+  type PagePerms,
+} from "./page-permissions-toggles";
 
 export type CollaboratorLite = {
   id: string;
   name?: string | null;
   email: string;
+  pagePermissions?: Record<string, boolean> | null;
 };
 
 // Sessão compatível com authHeaders (email legado + apiToken). Aceita o objeto
@@ -65,6 +71,7 @@ export function CollaboratorFormDialog({
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [perms, setPerms] = useState<PagePerms>(() => pagePermsFromValue(null));
 
   // Repopula os campos toda vez que o modal abre (ou muda de alvo/modo).
   useEffect(() => {
@@ -77,6 +84,7 @@ export function CollaboratorFormDialog({
     setShowConfirm(false);
     setError(null);
     setSubmitting(false);
+    setPerms(pagePermsFromValue(collaborator?.pagePermissions));
   }, [open, mode, collaborator]);
 
   const trimmedName = name.trim();
@@ -107,7 +115,11 @@ export function CollaboratorFormDialog({
 
       let res: Response;
       if (isEdit && collaborator) {
-        const body: { name: string; password?: string } = { name: trimmedName };
+        const body: {
+          name: string;
+          password?: string;
+          pagePermissions: PagePerms;
+        } = { name: trimmedName, pagePermissions: perms };
         if (passwordProvided) body.password = password;
         res = await fetch(
           `${apiBase}/me/team/collaborators/${collaborator.id}`,
@@ -121,6 +133,7 @@ export function CollaboratorFormDialog({
             name: trimmedName,
             email: trimmedEmail,
             password,
+            pagePermissions: perms,
           }),
         });
       }
@@ -265,6 +278,12 @@ export function CollaboratorFormDialog({
               )}
             </div>
           )}
+
+          <PagePermissionsToggles
+            value={perms}
+            onChange={setPerms}
+            disabled={submitting}
+          />
 
           {error && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

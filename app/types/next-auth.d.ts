@@ -8,6 +8,7 @@ declare module "next-auth" {
     image?: string | null;
     parentUserId?: string | null;
     role?: string | null;
+    pagePermissions?: Record<string, boolean> | null;
   }
 
   interface Session {
@@ -16,6 +17,7 @@ declare module "next-auth" {
       image?: string | null;
       parentUserId?: string | null;
       role?: string | null;
+      pagePermissions?: Record<string, boolean> | null;
     };
   }
 }
@@ -26,5 +28,6 @@ declare module "next-auth/jwt" {
     image?: string | null;
     parentUserId?: string | null;
     role?: string | null;
+    pagePermissions?: Record<string, boolean> | null;
   }
 }

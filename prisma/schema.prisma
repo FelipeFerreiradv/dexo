@@ -53,6 +53,12 @@ model User {
   // Colaboradores herdam do admin pai (a checagem usa sempre o dataOwnerId).
   whatsappEnabledAt DateTime?
 
+  // Permissões de acesso por página (colaboradores). Mapa { [pageId]: boolean }.
+  // NULL/ausente = acesso a TUDO (default → zero regressão); pageId=false =
+  // bloqueado. Só afeta colaboradores; admin/superadmin sempre têm acesso total.
+  // Migração: ALTER TABLE "User" ADD COLUMN "pagePermissions" JSONB;
+  pagePermissions Json?
+
   // Hierarquia administrador → colaboradores (additive, default NULL).
   // Para usuários sem parentUserId, comportamento é idêntico ao anterior.
   parentUserId String?
@@ -551,6 +557,10 @@ model SystemLog {
 enum Role {
   ADMIN
   USER
+  // Equipe Dexo (superadmin). Aditivo — marcado manualmente no banco; app
+  // reconhece o valor e libera as telas/rotas de Superadmin. Migração:
+  // ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'SUPERADMIN';
+  SUPERADMIN
 }
 
 enum Quality {

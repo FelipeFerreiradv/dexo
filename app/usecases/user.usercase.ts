@@ -20,14 +20,19 @@ export class UserUseCase {
     defaultProductDescription,
     avatarUrl,
     parentUserId,
+    role,
+    defaultCostPrice,
+    defaultStock,
   }: UserCreate): Promise<User> {
     const verifyUserExists = await this.userRepository.findByEmail(email);
     if (verifyUserExists) {
       throw new Error("User already exists");
     }
-    // parentUserId é opcional e aditivo: o repositório já faz spread condicional,
-    // então `undefined` (chamada legada do POST /users) mantém o comportamento
-    // idêntico ao anterior — o usuário nasce solto, sem vínculo hierárquico.
+    // parentUserId/role/defaults são opcionais e aditivos: o repositório faz
+    // spread condicional (`!== undefined`), então quando ausentes (POST /users e
+    // POST /me/team/collaborators atuais) o comportamento é IDÊNTICO ao anterior
+    // — role cai no @default(USER) e os defaults ficam nulos. Só o Superadmin
+    // envia esses campos (via /superadmin/users).
     const user = await this.userRepository.create({
       name,
       email,
@@ -35,6 +40,9 @@ export class UserUseCase {
       defaultProductDescription,
       avatarUrl,
       parentUserId,
+      role,
+      defaultCostPrice,
+      defaultStock,
     });
     return user;
   }

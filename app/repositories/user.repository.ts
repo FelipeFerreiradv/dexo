@@ -47,6 +47,10 @@ class UserRepositoryPrisma implements UserRepository {
       // Cascata: colaborador cai junto quando o admin pai é bloqueado.
       effectiveActive: ownActive && parentActive,
 
+      // Permissões por página (colaboradores). null = acesso total.
+      pagePermissions:
+        (u.pagePermissions as Record<string, boolean> | null) ?? null,
+
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
     };
@@ -66,6 +70,16 @@ class UserRepositoryPrisma implements UserRepository {
           defaultCostPrice: data.defaultCostPrice,
           ...(data.parentUserId !== undefined && {
             parentUserId: data.parentUserId,
+          }),
+          // Aditivos: só gravam quando enviados (Superadmin). Ausentes → role
+          // cai no @default(USER) e defaultStock fica no @default(0) do schema,
+          // mantendo o INSERT byte-idêntico para os chamadores atuais.
+          ...(data.role !== undefined && { role: data.role }),
+          ...(data.defaultStock !== undefined && {
+            defaultStock: data.defaultStock,
+          }),
+          ...(data.pagePermissions !== undefined && {
+            pagePermissions: data.pagePermissions ?? undefined,
           }),
         },
       });
@@ -140,11 +154,12 @@ class UserRepositoryPrisma implements UserRepository {
       avatarUrl: string | null;
       parentUserId: string | null;
       isActive: boolean;
+      pagePermissions: Record<string, boolean> | null;
       createdAt: Date;
     }[]
   > {
     try {
-      return await prisma.user.findMany({
+      const rows = await prisma.user.findMany({
         where: { parentUserId },
         orderBy: { createdAt: "asc" },
         select: {
@@ -154,9 +169,61 @@ class UserRepositoryPrisma implements UserRepository {
           avatarUrl: true,
           parentUserId: true,
           isActive: true,
+          pagePermissions: true,
           createdAt: true,
         },
       });
+      return rows.map((r) => ({
+        ...r,
+        pagePermissions:
+          (r.pagePermissions as Record<string, boolean> | null) ?? null,
+      }));
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  // EGRESS: lista enxuta de TODOS os usuários p/ a área de Superadmin (Equipe
+  // Dexo). Projeta só o necessário para a tela (hierarquia + defaults), sem o
+  // hash de senha nem os ~15 campos default* de anúncio.
+  async findAllForSuperadmin(): Promise<
+    {
+      id: string;
+      email: string;
+      name: string | null;
+      role: Role;
+      parentUserId: string | null;
+      isActive: boolean;
+      defaultCostPrice: number | null;
+      defaultStock: number | null;
+      pagePermissions: Record<string, boolean> | null;
+      createdAt: Date;
+    }[]
+  > {
+    try {
+      const rows = await prisma.user.findMany({
+        orderBy: [{ parentUserId: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          parentUserId: true,
+          isActive: true,
+          defaultCostPrice: true,
+          defaultStock: true,
+          pagePermissions: true,
+          createdAt: true,
+        },
+      });
+      return rows.map((u) => ({
+        ...u,
+        role: u.role as Role,
+        defaultCostPrice:
+          u.defaultCostPrice != null ? Number(u.defaultCostPrice) : null,
+        pagePermissions:
+          (u.pagePermissions as Record<string, boolean> | null) ?? null,
+      }));
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
@@ -224,6 +291,11 @@ class UserRepositoryPrisma implements UserRepository {
 
           // Acesso liberado/bloqueado (somente se fornecido)
           ...(data.isActive !== undefined && { isActive: data.isActive }),
+
+          // Permissões por página (somente se fornecido; undefined → não altera)
+          ...(data.pagePermissions !== undefined && {
+            pagePermissions: data.pagePermissions ?? undefined,
+          }),
         },
       });
       return this.mapUser(result);

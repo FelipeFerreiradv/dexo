@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { CustomersList } from "./components/customers-list";
 import { ClientesTabs } from "./components/clientes-tabs";
@@ -23,6 +24,8 @@ export default async function ClientesPage() {
   if (!session) {
     redirect("/login");
   }
+
+  await assertPageAccess(session, "clientes");
 
   return (
     <div className="space-y-8">

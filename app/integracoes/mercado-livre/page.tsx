@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { MLDashboard } from "./components/ml-dashboard";
 
@@ -18,6 +19,8 @@ export default async function MercadoLivrePage() {
   if (!session) {
     redirect("/login");
   }
+
+  await assertPageAccess(session, "mercado-livre");
 
   return (
     <div className="space-y-8">

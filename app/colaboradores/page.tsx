@@ -3,8 +3,10 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { isSuperadmin } from "@/app/lib/roles";
 import { PageHeader } from "@/components/page-header";
 import { CollaboratorsTab } from "./components/collaborators-tab";
+import { SuperadminTeam } from "./components/superadmin-team";
 
 export const metadata: Metadata = {
   title: "Colaboradores",
@@ -32,6 +34,10 @@ export default async function ColaboradoresPage() {
         title="Colaboradores"
         subtitle="Histórico de ações realizadas pelos seus colaboradores na plataforma."
       />
+
+      {/* Área da equipe Dexo — só aparece para Superadmin (aditivo; o admin
+          comum vê exatamente a tela de sempre). */}
+      {isSuperadmin(session) && <SuperadminTeam />}
 
       <CollaboratorsTab />
     </div>

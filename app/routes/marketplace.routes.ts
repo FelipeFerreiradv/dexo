@@ -820,24 +820,11 @@ small{color:#666}</style></head><body>
 
   /**
    * POST /marketplace/ml/import
-   * Importa itens do Mercado Livre (multi-contas) e tenta vincular por SKU
+   * Importa anúncios ATIVOS de TODAS as contas ACTIVE do dono e cria+vincula os
+   * produtos (dedup por SKU via núcleo). Responde 202 com importId; a aba faz
+   * polling em GET /ml/import/:importId. `accountId` opcional restringe a 1 conta.
    */
-  app.post<{
-    Reply: {
-      success: boolean;
-      totalItems: number;
-      linkedItems: number;
-      unlinkedItems: number;
-      items: Array<{
-        externalListingId: string;
-        title: string;
-        sku: string | null;
-        linkedProductId: string | null;
-        status: string;
-      }>;
-      errors: string[];
-    };
-  }>(
+  app.post(
     "/ml/import",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -851,47 +838,53 @@ small{color:#666}</style></head><body>
         const accountId =
           accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        // Responder 202 imediatamente para evitar 504 do nginx em importações longas
-        reply.status(202).send({
+        const job = await SyncUseCase.startMLImportJob(userId, accountId);
+
+        return reply.status(202).send({
           success: true,
-          message: "Importação iniciada em segundo plano",
-          totalItems: 0,
-          linkedItems: 0,
-          unlinkedItems: 0,
-          items: [],
-          errors: [],
-        });
-
-        // Processar import em background (fire-and-forget)
-        setImmediate(async () => {
-          try {
-            const result = await SyncUseCase.importMLItems(userId, accountId);
-
-            await SystemLogService.logSyncComplete(
-              userId,
-              "IMPORT",
-              "MercadoLivre",
-              {
-                totalItems: result.totalItems,
-                linkedItems: result.linkedItems,
-                unlinkedItems: result.unlinkedItems,
-                errors: result.errors.length,
-              },
-            );
-            console.log(
-              `[ml/import] Background import complete: ${result.linkedItems}/${result.totalItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
-            );
-          } catch (bgErr) {
-            console.error(
-              `[ml/import] Background import error:`,
-              bgErr instanceof Error ? bgErr.message : bgErr,
-            );
-          }
+          importId: job.importId,
+          status: job.status,
+          message: job.message,
         });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao iniciar importação do Mercado Livre",
           message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/ml/import/:importId — status/resultado do job de importação.
+   */
+  app.get<{ Params: { importId: string } }>(
+    "/ml/import/:importId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { importId } = request.params as { importId: string };
+        const status = await SyncUseCase.getGenericImportJobStatus(
+          userId,
+          importId,
+        );
+        return reply.send({
+          success: true,
+          importId: status.importId,
+          status: status.status,
+          progress: status.progress,
+          result: status.result,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
+        return reply.status(statusCode).send({
+          error: "Erro ao consultar importação do Mercado Livre",
+          message,
         });
       }
     },
@@ -2392,8 +2385,9 @@ small{color:#666}</style></head><body>
   );
 
   /**
-   * POST /marketplace/magalu/import — importa anúncios da Magalu e vincula por SKU.
-   * Responde 202 e processa em background (espelha /ml/import).
+   * POST /marketplace/magalu/import — importa anúncios ATIVOS de TODAS as contas
+   * ACTIVE do dono e cria+vincula os produtos (dedup por SKU via núcleo).
+   * Responde 202 com importId; a aba faz polling em GET /magalu/import/:importId.
    */
   app.post(
     "/magalu/import",
@@ -2409,42 +2403,53 @@ small{color:#666}</style></head><body>
         const accountId =
           accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
-        reply.status(202).send({
-          success: true,
-          message: "Importação iniciada em segundo plano",
-          totalItems: 0,
-          linkedItems: 0,
-          unlinkedItems: 0,
-          items: [],
-          errors: [],
-        });
+        const job = await SyncUseCase.startMagaluImportJob(userId, accountId);
 
-        setImmediate(async () => {
-          try {
-            const result = await SyncUseCase.importMagaluItems(
-              userId,
-              accountId,
-            );
-            await SystemLogService.logSyncComplete(userId, "IMPORT", "Magalu", {
-              totalItems: result.totalItems,
-              linkedItems: result.linkedItems,
-              unlinkedItems: result.unlinkedItems,
-              errors: result.errors.length,
-            });
-            console.log(
-              `[magalu/import] Background import complete: ${result.linkedItems}/${result.totalItems} linked, ${result.unlinkedItems} unlinked, ${result.errors.length} errors`,
-            );
-          } catch (bgErr) {
-            console.error(
-              `[magalu/import] Background import error:`,
-              bgErr instanceof Error ? bgErr.message : bgErr,
-            );
-          }
+        return reply.status(202).send({
+          success: true,
+          importId: job.importId,
+          status: job.status,
+          message: job.message,
         });
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao iniciar importação da Magalu",
           message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/magalu/import/:importId — status/resultado do job.
+   */
+  app.get<{ Params: { importId: string } }>(
+    "/magalu/import/:importId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { importId } = request.params as { importId: string };
+        const status = await SyncUseCase.getGenericImportJobStatus(
+          userId,
+          importId,
+        );
+        return reply.send({
+          success: true,
+          importId: status.importId,
+          status: status.status,
+          progress: status.progress,
+          result: status.result,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
+        return reply.status(statusCode).send({
+          error: "Erro ao consultar importação da Magalu",
+          message,
         });
       }
     },
