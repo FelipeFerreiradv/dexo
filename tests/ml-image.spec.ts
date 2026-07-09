@@ -94,6 +94,27 @@ describe("normalizeMLItem — imagem", () => {
     expect(n.imageUrl).toBe("https://http2.mlstatic.com/D_1-MLB2_012023-O.jpg");
   });
 
+  it("importa a GALERIA inteira, na ordem do anúncio, em tamanho original", () => {
+    const n = ListingAutodetectUseCase.normalizeMLItem(
+      account,
+      mlItem({
+        thumbnail: "http://http2.mlstatic.com/D_1-MLB2_012023-I.jpg",
+        pictures: [
+          { id: "p1", url: "http://http2.mlstatic.com/D_1-MLB2_012023-I.jpg", secure_url: "" },
+          { id: "p2", url: "", secure_url: "http://http2.mlstatic.com/D_3-MLB4_012023-V.webp" },
+          { id: "p3", url: "https://http2.mlstatic.com/D_5-MLB6_012023-O.jpg", secure_url: "" },
+        ],
+      }),
+    );
+    expect(n.imageUrls).toEqual([
+      "https://http2.mlstatic.com/D_1-MLB2_012023-O.jpg",
+      "https://http2.mlstatic.com/D_3-MLB4_012023-O.webp",
+      "https://http2.mlstatic.com/D_5-MLB6_012023-O.jpg",
+    ]);
+    // capa = primeira da galeria
+    expect(n.imageUrl).toBe(n.imageUrls![0]);
+  });
+
   it("sem pictures, cai no thumbnail JÁ convertido para tamanho original", () => {
     const n = ListingAutodetectUseCase.normalizeMLItem(
       account,
@@ -103,6 +124,7 @@ describe("normalizeMLItem — imagem", () => {
       }),
     );
     expect(n.imageUrl).toBe("https://http2.mlstatic.com/D_9-MLB8_012023-O.jpg");
+    expect(n.imageUrls).toEqual([]);
   });
 
   it("sem imagem alguma → null", () => {
@@ -111,5 +133,30 @@ describe("normalizeMLItem — imagem", () => {
       mlItem({ thumbnail: "", pictures: [] }),
     );
     expect(n.imageUrl).toBeNull();
+    expect(n.imageUrls).toEqual([]);
+  });
+});
+
+describe("normalizeMagaluItem — galeria", () => {
+  it("importa todas as referências de imagem; capa = primeira", () => {
+    const n = ListingAutodetectUseCase.normalizeMagaluItem(account, {
+      seller_sku: "SKU-1",
+      title: "Farol",
+      images: [
+        { reference: "http://img/a.jpg" },
+        { reference: "" },
+        { reference: "http://img/b.jpg" },
+      ],
+    } as any);
+    expect(n.imageUrls).toEqual(["http://img/a.jpg", "http://img/b.jpg"]);
+    expect(n.imageUrl).toBe("http://img/a.jpg");
+  });
+
+  it("sem imagens → imageUrl null e galeria vazia", () => {
+    const n = ListingAutodetectUseCase.normalizeMagaluItem(account, {
+      seller_sku: "SKU-2",
+    } as any);
+    expect(n.imageUrl).toBeNull();
+    expect(n.imageUrls).toEqual([]);
   });
 });
