@@ -226,6 +226,13 @@ export class ListingAutodetectUseCase {
         item.image.image_url_list[0]) ||
       null;
 
+    // A API da Shopee devolve `item_status` (não `status`); NORMAL/ausente →
+    // "active" (mesma convenção dos demais listings). Sem isso o status ia
+    // undefined e o upsert do listing falhava ("Argument status is missing") —
+    // o autodetect criava o produto mas NÃO o listing (venda não baixava estoque).
+    const rawStatus = (item as { item_status?: string }).item_status ?? item.status;
+    const listingStatus = rawStatus && rawStatus !== "NORMAL" ? rawStatus : "active";
+
     return {
       platform: Platform.SHOPEE,
       account,
@@ -234,7 +241,7 @@ export class ListingAutodetectUseCase {
       title: item.item_name,
       price,
       stock: SyncUseCase.getShopeeItemAvailableStock(item),
-      status: item.status,
+      status: listingStatus,
       permalink: null,
       imageUrl,
       createdAt: new Date((item.create_time ?? 0) * 1000),

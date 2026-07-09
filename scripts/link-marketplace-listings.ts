@@ -300,7 +300,7 @@ async function processAccount(
         externalListingId: it.externalListingId,
         externalSku: it.rawSku || undefined,
         permalink: it.permalink,
-        status: it.status,
+        status: it.status || "active",
       });
       rep.linked++;
       existing.add(it.externalListingId);
