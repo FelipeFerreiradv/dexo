@@ -110,6 +110,59 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     );
   });
 
+  it("(c2) repassa a GALERIA (imageUrls) do anúncio ao criar o produto", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null);
+    const create = vi
+      .spyOn(ProductUseCase.prototype, "create")
+      .mockResolvedValue({ id: "p-gal" } as any);
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "l1",
+      productId: "p-gal",
+    } as any);
+
+    await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({
+        rawSku: "GAL-1",
+        imageUrl: "http://img/1.jpg",
+        imageUrls: ["http://img/1.jpg", "http://img/2.jpg"],
+      }),
+    );
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imageUrl: "http://img/1.jpg",
+        imageUrls: ["http://img/1.jpg", "http://img/2.jpg"],
+      }),
+    );
+  });
+
+  it("(c3) item sem galeria → imageUrls vira [] (zero regressão)", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue(null);
+    const create = vi
+      .spyOn(ProductUseCase.prototype, "create")
+      .mockResolvedValue({ id: "p-nogal" } as any);
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockResolvedValue({
+      id: "l1",
+      productId: "p-nogal",
+    } as any);
+
+    await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ rawSku: "NOGAL-1" }),
+    );
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ imageUrls: [] }),
+    );
+  });
+
   it("(d) sem SKU → cria com autoSku (sku vazio) e não busca por SKU", async () => {
     vi.spyOn(
       ListingRepository,
