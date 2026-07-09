@@ -28,15 +28,15 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  */
 
 type RawRow = Record<string, unknown>;
-type Phase = "scraps" | "products" | "listings" | "images" | "nfes";
+type Phase = "locations" | "scraps" | "products" | "listings" | "images" | "nfes";
 
-const DEFAULT_USER_ID = ""; // sem default: exige --user-id=<id do cliente IBR>
+const DEFAULT_USER_ID = ""; // sem default: exige --user-id=<id do cliente>
 const DATA_DIR = path.resolve(__dirname, "data", "migracao-ibr");
 const OUT_DIR = path.resolve(__dirname, "out");
 const ML_API = "https://api.mercadolibre.com";
 const MAX_IMAGES = 10;
-const LEGACY_TENANT = "IBR";
-const ALL_PHASES: Phase[] = ["scraps", "products", "listings", "images", "nfes"];
+let LEGACY_TENANT = "IBR"; // default; sobrescrito por --tenant no main (ex.: MESQUITA)
+const ALL_PHASES: Phase[] = ["locations", "scraps", "products", "listings", "images", "nfes"];
 
 interface Flags {
   userId: string;
@@ -50,9 +50,11 @@ interface Flags {
   skipZeroPrice: boolean;
   verifyMlInDryRun: boolean;
   skipSeqAdvance: boolean;
+  tenant: string;
   produtos: string;
   sucatas: string;
   nfes: string;
+  locationsFile: string;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -94,9 +96,11 @@ function parseFlags(argv: string[]): Flags {
     skipZeroPrice: has("skip-zero-price"),
     verifyMlInDryRun: has("verify-ml-in-dry-run"),
     skipSeqAdvance: has("skip-seq-advance"),
+    tenant: get("tenant") ?? "IBR",
     produtos: get("produtos") ?? path.join(DATA_DIR, "produtos.xlsx"),
     sucatas: get("sucatas") ?? path.join(DATA_DIR, "sucatas.xlsx"),
     nfes: get("nfes") ?? path.join(DATA_DIR, "notas-emitidas.xlsx"),
+    locationsFile: get("locations-file") ?? path.join(DATA_DIR, "localizacoes.xlsx"),
   };
 }
 
@@ -260,9 +264,13 @@ function normLote(raw: unknown): string | null {
 function parseMlb(raw: unknown): string | null {
   const s = asString(raw);
   if (!s) return null;
-  let t = s.trim().toUpperCase();
-  if (/^\d+$/.test(t)) t = "MLB" + t;
-  return /^MLB\d+$/.test(t) ? t : null;
+  // Pode vir múltiplos separados por "/" (ex.: "MLB123 / MLB456") — usa o 1º válido.
+  for (const part of s.split("/")) {
+    let t = part.trim().toUpperCase();
+    if (/^\d+$/.test(t)) t = "MLB" + t;
+    if (/^MLB\d+$/.test(t)) return t;
+  }
+  return null;
 }
 
 /** Extrai o chassi embutido em "Informações Complementares". */
@@ -412,7 +420,9 @@ async function fetchMlItem(
     };
   } catch (e) {
     const st = (e as { response?: { status?: number } }).response?.status;
-    if (st === 404) return null;
+    // 404 = anúncio não existe; 403 = token não tem acesso (anúncio de outra
+    // conta/antigo) → em ambos não dá p/ verificar posse: trata como skip.
+    if (st === 404 || st === 403) return null;
     throw e;
   }
 }
@@ -1396,18 +1406,82 @@ function printSummary(
   console.log("==================\n");
 }
 
+/* -------------------------- Fase Localizações -------------------------- */
+
+/** Cria (idempotente) as localizações listadas num arquivo de 1 coluna. */
+async function phaseLocations(flags: Flags): Promise<void> {
+  const resolved = path.resolve(flags.locationsFile);
+  if (!fs.existsSync(resolved)) {
+    console.log(`[locations] arquivo não encontrado (${resolved}) — pulando`);
+    return;
+  }
+  const wb = XLSX.readFile(resolved);
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[wb.SheetNames[0]], {
+    header: 1,
+    defval: null,
+  });
+  const codes = Array.from(
+    new Set(
+      rows
+        .flat()
+        .map((v) => {
+          const s = asString(v);
+          return s ? s.toUpperCase().replace(/\s+/g, " ").trim() : null;
+        })
+        .filter((c): c is string => !!c),
+    ),
+  );
+  const existing = new Set(
+    (
+      await prisma.location.findMany({
+        where: { userId: flags.userId },
+        select: { code: true },
+      })
+    ).map((l) => l.code),
+  );
+  let created = 0;
+  let skipped = 0;
+  for (const code of codes) {
+    if (existing.has(code)) {
+      skipped++;
+      continue;
+    }
+    if (flags.dryRun) {
+      created++;
+      continue;
+    }
+    try {
+      await prisma.location.create({
+        data: { userId: flags.userId, code, description: code } as Prisma.LocationUncheckedCreateInput,
+        select: { id: true },
+      });
+      created++;
+    } catch (err) {
+      if (isUniqueViolation(err)) skipped++;
+      else throw err;
+    }
+  }
+  reportRef.locations = { total: codes.length, created, skipped };
+  console.log(
+    `[locations] códigos=${codes.length} criadas=${created} puladas(existentes)=${skipped}`,
+  );
+}
+
 /* -------------------------------- Main --------------------------------- */
 
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
   const flags = parseFlags(process.argv.slice(2));
+  LEGACY_TENANT = flags.tenant; // marcador por cliente (attributes.migration, notes, filtros)
   console.log(
-    `[migracao-ibr] userId=${flags.userId || "(vazio)"} modo=${flags.dryRun ? "DRY-RUN" : "APPLY"} only=${[...flags.only].join(",")}`,
+    `[migracao-ibr] userId=${flags.userId || "(vazio)"} tenant=${flags.tenant} modo=${flags.dryRun ? "DRY-RUN" : "APPLY"} only=${[...flags.only].join(",")}`,
   );
 
   await assertUser(flags.userId);
   const baseline = await counts(flags.userId);
   console.log("[baseline]", JSON.stringify(baseline));
+
+  if (flags.only.has("locations")) await phaseLocations(flags);
 
   let idx: ScrapIndex = { byLote: new Map(), byPlaca: new Map(), byChassi: new Map() };
   if (flags.only.has("scraps")) {

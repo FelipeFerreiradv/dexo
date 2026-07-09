@@ -1689,7 +1689,7 @@ export class SyncUseCase {
         (attr) =>
           attr.id === "SELLER_SKU" ||
           attr.id === "SKU" ||
-          attr.id.toLowerCase().includes("sku"),
+          (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
       );
       if (skuAttr?.value_name) {
         return skuAttr.value_name;
