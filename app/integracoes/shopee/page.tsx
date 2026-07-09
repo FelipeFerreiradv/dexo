@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { ShopeeDashboard } from "./components/shopee-dashboard";
 
@@ -18,6 +19,8 @@ export default async function ShopeePage() {
   if (!session) {
     redirect("/login");
   }
+
+  await assertPageAccess(session, "shopee");
 
   return (
     <div className="space-y-8">

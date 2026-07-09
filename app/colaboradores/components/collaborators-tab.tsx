@@ -54,6 +54,7 @@ type Collaborator = {
   email: string;
   avatarUrl?: string | null;
   isActive?: boolean;
+  pagePermissions?: Record<string, boolean> | null;
 };
 
 type Toast = {

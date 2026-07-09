@@ -65,6 +65,9 @@ export const authOptions: NextAuthOptions = {
           // pra esconder UI (ex.: botões de conectar marketplace) e lookup da equipe.
           parentUserId: user.parentUserId ?? null,
           role: user.role,
+          // Permissões por página (colaboradores) → sidebar esconde itens
+          // bloqueados. Enforcement real é server-side (guardPage, leitura fresca).
+          pagePermissions: user.pagePermissions ?? null,
         };
       },
     }),
@@ -77,6 +80,7 @@ export const authOptions: NextAuthOptions = {
         token.image = (user as any).image;
         token.parentUserId = (user as any).parentUserId ?? null;
         token.role = (user as any).role ?? null;
+        token.pagePermissions = (user as any).pagePermissions ?? null;
       }
       return token;
     },
@@ -88,6 +92,8 @@ export const authOptions: NextAuthOptions = {
         session.user.parentUserId =
           (token.parentUserId as string | null) ?? null;
         session.user.role = (token.role as string | null) ?? null;
+        session.user.pagePermissions =
+          (token.pagePermissions as Record<string, boolean> | null) ?? null;
 
         // PR-A2: token HS256 assinado para o front enviar à API Fastify como
         // Authorization: Bearer. A API verifica a assinatura (não confia mais

@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 
 import { getApiBaseUrl } from "@/lib/api";
+import { hasPageAccess } from "@/app/lib/page-access";
 
 import {
   Sidebar,
@@ -382,6 +383,14 @@ export function AppSidebar({ session }: AppSidebarProps) {
   }, [setOpen]);
 
   const isCollaborator = Boolean((session?.user as any)?.parentUserId);
+  const accessUser = (session?.user ?? null) as {
+    parentUserId?: string | null;
+    role?: string | null;
+    pagePermissions?: Record<string, boolean> | null;
+  } | null;
+  // Chave estável p/ o useMemo reagir só quando as permissões mudam (o objeto
+  // accessUser é recriado a cada render).
+  const pagePermsKey = JSON.stringify(accessUser?.pagePermissions ?? null);
 
   const filteredSections = React.useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -393,6 +402,14 @@ export function AppSidebar({ session }: AppSidebarProps) {
         .filter((item) => !isCollaborator || !ADMIN_ONLY_ITEM_IDS.has(item.id))
         // WhatsApp é por plano: some para tenants sem entitlement (runtime).
         .filter((item) => item.id !== "whatsapp" || whatsappEnabled)
+        // Entrega C: permissões por página (colaboradores). Cosmético — o gate
+        // real é server-side (guardPage). O bloco fiscal usa a chave "fiscal".
+        .filter((item) =>
+          hasPageAccess(
+            accessUser,
+            section.id === "fiscal" ? "fiscal" : item.id,
+          ),
+        )
         .map((item) => {
           if (item.id === "pedidos" && ordersCount !== null) {
             return { ...item, badge: ordersCount };
@@ -416,7 +433,15 @@ export function AppSidebar({ session }: AppSidebarProps) {
         ),
       }))
       .filter((section) => section.items.length > 0);
-  }, [isCollaborator, messagesUnreadCount, ordersCount, query, whatsappEnabled]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isCollaborator,
+    pagePermsKey,
+    messagesUnreadCount,
+    ordersCount,
+    query,
+    whatsappEnabled,
+  ]);
 
   // Busca unificada
   React.useEffect(() => {

@@ -130,6 +130,7 @@ function publicUser(u: {
   avatarUrl?: string | null;
   parentUserId?: string | null;
   isActive?: boolean;
+  pagePermissions?: Record<string, boolean> | null;
   createdAt?: Date;
 }) {
   return {
@@ -141,8 +142,25 @@ function publicUser(u: {
     // Aditivo: usado pela gestão de colaboradores p/ mostrar ativo/inativo.
     // Consumidores atuais (GET /me/team, /activity) simplesmente ignoram.
     isActive: u.isActive ?? true,
+    // Aditivo (Entrega C): permissões por página p/ prefill do modal de edição.
+    pagePermissions: u.pagePermissions ?? null,
     createdAt: u.createdAt ?? null,
   };
+}
+
+// Entrega C: aceita só um mapa { [pageId]: boolean }. Qualquer outra coisa
+// (ausente/tipo errado) → undefined ⇒ o repositório não altera o campo.
+function sanitizePagePermissions(
+  input: unknown,
+): Record<string, boolean> | undefined {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof v === "boolean") out[k] = v;
+  }
+  return out;
 }
 
 async function loadPresence(userIds: string[]): Promise<PresenceMap> {
@@ -489,7 +507,12 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
    * a senha (toPublicUser). E-mail duplicado ⇒ 409.
    */
   fastify.post<{
-    Body: { name?: string; email?: string; password?: string };
+    Body: {
+      name?: string;
+      email?: string;
+      password?: string;
+      pagePermissions?: Record<string, boolean> | null;
+    };
   }>(
     "/collaborators",
     { preHandler: [authMiddleware, blockCollaborator] },
@@ -499,6 +522,9 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
         const name = (request.body?.name ?? "").trim();
         const email = (request.body?.email ?? "").trim();
         const password = request.body?.password ?? "";
+        const pagePermissions = sanitizePagePermissions(
+          request.body?.pagePermissions,
+        );
 
         if (!name) {
           return reply
@@ -522,6 +548,8 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
             email,
             password,
             parentUserId: me.id,
+            // Aditivo (Entrega C): só vai quando enviado; ausente → não grava.
+            ...(pagePermissions !== undefined && { pagePermissions }),
           });
 
           await SystemLogService.logUserActivity(
@@ -557,7 +585,11 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.patch<{
     Params: { id: string };
-    Body: { name?: string; password?: string };
+    Body: {
+      name?: string;
+      password?: string;
+      pagePermissions?: Record<string, boolean> | null;
+    };
   }>(
     "/collaborators/:id",
     { preHandler: [authMiddleware, blockCollaborator] },
@@ -583,7 +615,11 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
           return reply.status(403).send({ message: "Acesso negado" });
         }
 
-        const patch: { name?: string; password?: string } = {};
+        const patch: {
+          name?: string;
+          password?: string;
+          pagePermissions?: Record<string, boolean> | null;
+        } = {};
         if (typeof request.body?.name === "string") {
           const name = request.body.name.trim();
           if (!name) {
@@ -603,6 +639,11 @@ export const teamRoutes = async (fastify: FastifyInstance) => {
               .send({ message: "A senha deve ter no mínimo 8 caracteres." });
           }
           patch.password = request.body.password;
+        }
+        // Aditivo (Entrega C): permissões por página (só altera quando enviado).
+        const pp = sanitizePagePermissions(request.body?.pagePermissions);
+        if (pp !== undefined) {
+          patch.pagePermissions = pp;
         }
 
         const data = await userUserCase.updateSettings(id, patch);

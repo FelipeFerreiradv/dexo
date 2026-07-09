@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { MagaluDashboard } from "./components/magalu-dashboard";
 
@@ -27,6 +28,8 @@ export default async function MagaluPage() {
   if (!MAGALU_ENABLED) {
     notFound();
   }
+
+  await assertPageAccess(session, "magalu");
 
   return (
     <div className="space-y-8">

@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { ScrapsWorkspace } from "./components/scraps-workspace";
 
@@ -18,6 +19,8 @@ export default async function ScrapsPage() {
   if (!session) {
     redirect("/login");
   }
+
+  await assertPageAccess(session, "sucatas");
 
   return (
     <div className="space-y-8">

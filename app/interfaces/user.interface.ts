@@ -32,6 +32,9 @@ export interface User {
   // Calculado em mapUser; é o que as checagens de bloqueio devem usar.
   effectiveActive: boolean;
 
+  // Permissões de acesso por página (colaboradores). null = acesso total.
+  pagePermissions?: Record<string, boolean> | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -43,8 +46,10 @@ export interface UserCreate {
   avatarUrl?: string | null;
   defaultProductDescription?: string | null;
   defaultCostPrice?: number | null;
+  defaultStock?: number | null;
   role?: Role;
   parentUserId?: string | null;
+  pagePermissions?: Record<string, boolean> | null;
 }
 
 export interface UserUpdate {
@@ -73,6 +78,9 @@ export interface UserUpdate {
   isActive?: boolean;
 
   role?: Role;
+
+  // Permissões de acesso por página (colaboradores). undefined => não altera.
+  pagePermissions?: Record<string, boolean> | null;
 }
 
 export interface UserRepository {

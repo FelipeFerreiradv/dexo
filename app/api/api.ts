@@ -38,6 +38,7 @@ import { fiscalRoutes } from "../routes/fiscal.routes";
 import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
 import { whatsappRoutes } from "../routes/whatsapp.routes";
+import { superadminRoutes } from "../routes/superadmin.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
@@ -213,6 +214,11 @@ api.register(teamRoutes, {
 // Canal WhatsApp (Cloud API) — módulo aditivo atrás de flag + gate por usuário.
 api.register(whatsappRoutes, {
   prefix: "/whatsapp",
+});
+
+// Área da equipe Dexo (Superadmin) — rotas guardadas por requireSuperadmin.
+api.register(superadminRoutes, {
+  prefix: "/superadmin",
 });
 
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";

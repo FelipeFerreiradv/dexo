@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "@/app/lib/auth";
+import { assertPageAccess } from "@/app/lib/guard-page";
 import { PageHeader } from "@/components/page-header";
 import { FinanceView } from "./components/finance-view";
 
@@ -15,6 +16,8 @@ export const metadata: Metadata = {
 export default async function FinancePage() {
   const session = await getServerSession(authOptions);
   if (!session) redirect("/login");
+
+  await assertPageAccess(session, "financeiro");
 
   return (
     <div className="space-y-8">
