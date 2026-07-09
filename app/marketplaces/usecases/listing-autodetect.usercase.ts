@@ -1,6 +1,7 @@
 import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { normalizeSku } from "@/app/lib/sku";
+import { toFullSizeMLImage } from "@/app/lib/ml-image";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { ListingRepository } from "../repositories/listing.repository";
 import { SyncUseCase } from "./sync.usercase";
@@ -184,9 +185,15 @@ export class ListingAutodetectUseCase {
     account: { id: string; userId: string },
     item: MLItemDetails,
   ): NormalizedMarketplaceItem {
+    // `item.thumbnail` é a MINIATURA (-I, ~100px) — usá-la deixava a foto do
+    // produto minúscula na Dexo. As `pictures[]` trazem a imagem original (-O),
+    // que é o que o resto do repo consome (migrações, catálogo, backfill).
+    // O thumbnail vira só último recurso, já normalizado p/ tamanho original.
+    const picture = Array.isArray(item.pictures) ? item.pictures[0] : undefined;
     const imageUrl =
-      item.thumbnail ||
-      (Array.isArray(item.pictures) && item.pictures[0]?.url) ||
+      toFullSizeMLImage(picture?.secure_url) ||
+      toFullSizeMLImage(picture?.url) ||
+      toFullSizeMLImage(item.thumbnail) ||
       null;
 
     return {
