@@ -35,6 +35,16 @@ export interface ImportResult {
   linkedItems: number;
   unlinkedItems: number;
   errorCount?: number;
+  // Contadores aditivos (opcionais) do fluxo "criar+vincular" via núcleo de
+  // auto-detecção. Ausentes nos chamadores legados → zero regressão.
+  /** Produtos NOVOS criados a partir de anúncios ativos sem produto. */
+  createdProducts?: number;
+  /** Anúncios cujo listing já existia (reimport idempotente / no-op). */
+  alreadyLinked?: number;
+  /** Anúncios religados após perder corrida de criação concorrente (raced). */
+  skippedDuplicates?: number;
+  /** Quantidade de contas ACTIVE processadas (importação multi-conta). */
+  accountsProcessed?: number;
   itemsPreviewTruncated?: boolean;
   errorsPreviewTruncated?: boolean;
   errors: string[];
@@ -97,6 +107,39 @@ interface ShopeeImportProgress {
   errorsPreviewTruncated?: boolean;
   message?: string;
   finishedAt?: string;
+}
+
+// Job genérico de importação "criar+vincular" (usado por ML e Magalu, cujas
+// abas hoje eram fire-and-forget sem contagens). A Shopee mantém seu job rico
+// próprio. Estado persistido no payload de um SyncLog.
+type GenericImportJobState = "running" | "completed" | "failed";
+
+interface GenericImportJobPayload {
+  kind: "GENERIC_IMPORT";
+  platform: Platform;
+  state: GenericImportJobState;
+  startedAt: string;
+  finishedAt?: string;
+  accountsTotal: number;
+  accountsDone: number;
+  processedItems: number;
+  message?: string;
+  result?: ImportResult;
+}
+
+export interface GenericImportJobStatus {
+  importId: string;
+  status: GenericImportJobState;
+  progress: {
+    state: GenericImportJobState;
+    accountsTotal: number;
+    accountsDone: number;
+    processedItems: number;
+    startedAt: string;
+    finishedAt?: string;
+    message?: string;
+  };
+  result?: ImportResult;
 }
 
 export interface SyncResult {
@@ -195,19 +238,65 @@ export class SyncUseCase {
   }
 
   /**
-   * Importa todos os itens do Mercado Livre e tenta vincular automaticamente por SKU
-   * Nota: Apenas cria listings para itens que podem ser vinculados a produtos existentes
+   * Contabiliza o resultado do núcleo de auto-detecção nos contadores aditivos
+   * do ImportResult. `linked_existing_product` não incrementa aqui — é contado
+   * como `linkedItems` pelo chamador (o produto já existia e foi só vinculado).
+   */
+  private static tallyAutodetect(
+    result: ImportResult,
+    action:
+      | "listing_exists"
+      | "linked_existing_product"
+      | "created_product"
+      | "raced",
+  ): void {
+    if (action === "created_product") {
+      result.createdProducts = (result.createdProducts ?? 0) + 1;
+    } else if (action === "listing_exists") {
+      result.alreadyLinked = (result.alreadyLinked ?? 0) + 1;
+    } else if (action === "raced") {
+      result.skippedDuplicates = (result.skippedDuplicates ?? 0) + 1;
+    }
+  }
+
+  /**
+   * Importa todos os itens do Mercado Livre. Vincula por SKU quando o produto já
+   * existe e, para anúncios ATIVOS sem produto, cria o produto e vincula via o
+   * núcleo idempotente `ListingAutodetectUseCase` (anti-duplicação por SKU).
+   * NÃO aplica gate de baseline (importa todos os ativos, não só os novos).
    */
   static async importMLItems(
     userId: string,
     accountId?: string,
+    options?: {
+      skipFinalLog?: boolean;
+      onProgress?: (progress: {
+        processedItems: number;
+        totalItems: number;
+        linkedItems: number;
+        createdProducts: number;
+      }) => Promise<void> | void;
+    },
   ): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
       unlinkedItems: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
       errors: [],
       items: [],
+    };
+
+    // Preview de itens com truncamento (corrige referência ausente do fluxo
+    // legado, que chamava pushItemPreview sem defini-la neste escopo).
+    const pushItemPreview = (item: ImportItemResult) => {
+      if (result.items.length < this.IMPORT_ITEMS_PREVIEW_LIMIT) {
+        result.items.push(item);
+        return;
+      }
+      result.itemsPreviewTruncated = true;
     };
 
     // 1. Buscar conta do marketplace
@@ -262,18 +351,25 @@ export class SyncUseCase {
       ),
     );
 
-    // Buscar listings existentes em lote
+    // Buscar listings existentes em lote (EGRESS: só as colunas usadas abaixo).
     const existingListings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
         externalListingId: { in: externalItemIds },
+      },
+      select: {
+        id: true,
+        externalListingId: true,
+        status: true,
+        permalink: true,
+        productId: true,
       },
     });
     const existingListingsMap = new Map(
       existingListings.map((listing) => [listing.externalListingId, listing]),
     );
 
-    // Buscar produtos por SKU em lote
+    // Buscar produtos por SKU em lote (EGRESS: só id + skuNormalized).
     const products =
       normalizedSkus.length > 0
         ? await prisma.product.findMany({
@@ -281,6 +377,7 @@ export class SyncUseCase {
               skuNormalized: { in: normalizedSkus },
               userId: account.userId,
             },
+            select: { id: true, skuNormalized: true },
           })
         : [];
     const productsMap = new Map(
@@ -331,28 +428,43 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else {
-          // Tentar vincular por SKU se disponÃ­vel
-          const linkedProductId = product ? product.id : null;
-
-          // Se encontrou produto, criar listing
-          if (linkedProductId) {
-            await ListingRepository.createListing({
-              productId: linkedProductId,
-              marketplaceAccountId: account.id,
-              externalListingId: item.id,
-              externalSku: sku || undefined,
-              permalink: item.permalink || null,
-              status: item.status,
-            });
-          }
+        } else if (product) {
+          // SKU casa com produto existente do dono → só cria o listing
+          // (comportamento atual, mantido).
+          await ListingRepository.createListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId: item.id,
+            externalSku: sku || undefined,
+            permalink: item.permalink || null,
+            status: item.status,
+          });
 
           processedItem = {
             externalListingId: item.id,
             title: item.title,
             sku,
-            linkedProductId,
-            status: linkedProductId ? "linked" : "unlinked",
+            linkedProductId: product.id,
+            status: "linked",
+          };
+        } else {
+          // NOVO: anúncio ativo sem produto → cria o produto e vincula via o
+          // núcleo idempotente (dedup por SKU garantida; sem gate de baseline).
+          const outcome =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              ListingAutodetectUseCase.normalizeMLItem(
+                { id: account.id, userId: account.userId },
+                item,
+              ),
+            );
+          this.tallyAutodetect(result, outcome.action);
+
+          processedItem = {
+            externalListingId: item.id,
+            title: item.title,
+            sku,
+            linkedProductId: outcome.productId,
+            status: outcome.productId ? "linked" : "unlinked",
           };
         }
 
@@ -369,6 +481,14 @@ export class SyncUseCase {
           console.log(
             `[IMPORT] Processed ${processedCount}/${result.totalItems} items (${result.linkedItems} linked, ${result.unlinkedItems} unlinked)`,
           );
+          if (options?.onProgress) {
+            await options.onProgress({
+              processedItems: processedCount,
+              totalItems: result.totalItems,
+              linkedItems: result.linkedItems,
+              createdProducts: result.createdProducts ?? 0,
+            });
+          }
         }
       } catch (error) {
         const errorMessage =
@@ -390,13 +510,15 @@ export class SyncUseCase {
     );
 
     // 5. Registrar log da importaÃ§Ã£o
-    await this.logSync(
-      account.id,
-      SyncType.PRODUCT_SYNC,
-      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Importados ${result.totalItems} itens, ${result.linkedItems} vinculados`,
-      { totalItems: result.totalItems, linkedItems: result.linkedItems },
-    );
+    if (!options?.skipFinalLog) {
+      await this.logSync(
+        account.id,
+        SyncType.PRODUCT_SYNC,
+        result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+        `Importados ${result.totalItems} itens, ${result.linkedItems} vinculados`,
+        { totalItems: result.totalItems, linkedItems: result.linkedItems },
+      );
+    }
 
     return result;
   }
@@ -408,11 +530,23 @@ export class SyncUseCase {
   static async importMagaluItems(
     userId: string,
     accountId?: string,
+    options?: {
+      skipFinalLog?: boolean;
+      onProgress?: (progress: {
+        processedItems: number;
+        totalItems: number;
+        linkedItems: number;
+        createdProducts: number;
+      }) => Promise<void> | void;
+    },
   ): Promise<ImportResult> {
     const result: ImportResult = {
       totalItems: 0,
       linkedItems: 0,
       unlinkedItems: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
       errors: [],
       items: [],
     };
@@ -428,11 +562,19 @@ export class SyncUseCase {
       throw new Error("Conta da Magalu não conectada ou sem credenciais");
     }
 
-    // TODO(paginação): listSkus retorna a primeira página; quando a paginação
-    // real da Magalu for confirmada, iterar até esgotar o portfólio.
-    const skus = await MagaluApiService.listSkus(account.accessToken, {
-      limit: 100,
-    });
+    // Paginação: itera o portfólio por offset até esgotar (página < limit),
+    // com trava de segurança. Importa TODOS os SKUs ativos (não só a 1ª página).
+    const MAGALU_PAGE_SIZE = 100;
+    const MAGALU_MAX_PAGES = 500; // trava (até 50k SKUs) contra loop infinito
+    const skus: MagaluSku[] = [];
+    for (let page = 0; page < MAGALU_MAX_PAGES; page++) {
+      const pageSkus = await MagaluApiService.listSkus(account.accessToken, {
+        limit: MAGALU_PAGE_SIZE,
+        offset: page * MAGALU_PAGE_SIZE,
+      });
+      skus.push(...pageSkus);
+      if (pageSkus.length < MAGALU_PAGE_SIZE) break;
+    }
     if (skus.length === 0) {
       return result;
     }
@@ -471,6 +613,7 @@ export class SyncUseCase {
       ),
     );
 
+    // EGRESS: só as colunas usadas (id/externalListingId/externalSku/status/permalink/productId).
     const existingListings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
@@ -480,6 +623,14 @@ export class SyncUseCase {
             ? [{ externalSku: { in: rawSkus } }]
             : []),
         ],
+      },
+      select: {
+        id: true,
+        externalListingId: true,
+        externalSku: true,
+        status: true,
+        permalink: true,
+        productId: true,
       },
     });
     const existingListingsMap = new Map(
@@ -501,6 +652,7 @@ export class SyncUseCase {
               skuNormalized: { in: normalizedSkus },
               userId: account.userId,
             },
+            select: { id: true, skuNormalized: true },
           })
         : [];
     const productsMap = new Map(
@@ -557,6 +709,18 @@ export class SyncUseCase {
             permalink,
             status,
           });
+        } else {
+          // NOVO: SKU sem produto → cria o produto e vincula via o núcleo
+          // idempotente (dedup por SKU; sem gate de baseline).
+          const outcome =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              ListingAutodetectUseCase.normalizeMagaluItem(
+                { id: account.id, userId: account.userId },
+                s,
+              ),
+            );
+          this.tallyAutodetect(result, outcome.action);
+          linkedProductId = outcome.productId;
         }
 
         if (result.items.length < PREVIEW_CAP) {
@@ -575,6 +739,19 @@ export class SyncUseCase {
           error instanceof Error ? error.message : "Erro desconhecido";
         result.errors.push(`Item ${externalListingId}: ${errorMessage}`);
       }
+    }
+
+    if (options?.onProgress) {
+      await options.onProgress({
+        processedItems: result.totalItems,
+        totalItems: result.totalItems,
+        linkedItems: result.linkedItems,
+        createdProducts: result.createdProducts ?? 0,
+      });
+    }
+
+    if (options?.skipFinalLog) {
+      return result;
     }
 
     await this.logSync(
@@ -604,6 +781,9 @@ export class SyncUseCase {
       linkedItems: 0,
       unlinkedItems: 0,
       errorCount: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
       itemsPreviewTruncated: false,
       errorsPreviewTruncated: false,
       errors: [],
@@ -951,6 +1131,14 @@ export class SyncUseCase {
       }
     }
 
+    // Mapa itemId → ShopeeItem completo, p/ enriquecer preço/estoque/imagem ao
+    // criar produtos de variações sem produto (o FlatItem não carrega esses
+    // campos). Mantém a identidade por VARIAÇÃO (externalId item_id:model_id).
+    const itemDetailsMap = new Map<number, ShopeeItem>();
+    for (const it of itemDetails) {
+      itemDetailsMap.set(it.item_id, it);
+    }
+
     result.totalItems = flatItems.length || result.totalItems;
     console.log(
       `[IMPORT] Starting to process ${result.totalItems} Shopee items (flattened)...`,
@@ -964,11 +1152,17 @@ export class SyncUseCase {
     });
 
     const externalItemIds = flatItems.map((fi) => fi.externalId);
-    // Buscar listings existentes
+    // Buscar listings existentes (EGRESS: só id/externalListingId/status/productId).
     const existingListings = await prisma.productListing.findMany({
       where: {
         marketplaceAccountId: account.id,
         externalListingId: { in: externalItemIds },
+      },
+      select: {
+        id: true,
+        externalListingId: true,
+        status: true,
+        productId: true,
       },
     });
     const existingListingsMap = new Map(
@@ -1050,27 +1244,66 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else {
-          // Tentar vincular por SKU se disponÃ­vel
-          const linkedProductId = product ? product.id : null;
-
-          // Se encontrou produto, criar listing
-          if (linkedProductId) {
-            await ListingRepository.createListing({
-              productId: linkedProductId,
-              marketplaceAccountId: account.id,
-              externalListingId: externalId,
-              externalSku: sku || undefined,
-              status: item.status,
-            });
-          }
+        } else if (product) {
+          // SKU casa com produto existente do dono → só cria o listing
+          // (comportamento atual, mantido).
+          await ListingRepository.createListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId: externalId,
+            externalSku: sku || undefined,
+            status: item.status,
+          });
 
           processedItem = {
             externalListingId: externalId,
             title: item.title,
             sku,
-            linkedProductId,
-            status: linkedProductId ? "linked" : "unlinked",
+            linkedProductId: product.id,
+            status: "linked",
+          };
+        } else {
+          // NOVO: variação ativa sem produto → cria o produto e vincula via o
+          // núcleo idempotente, preservando a granularidade por VARIAÇÃO
+          // (externalListingId = item_id:model_id). Preço/estoque/imagem vêm do
+          // item completo quando disponível; o sync reconcilia depois.
+          const full = itemDetailsMap.get(item.itemId);
+          const normalized = full
+            ? {
+                ...ListingAutodetectUseCase.normalizeShopeeItem(
+                  { id: account.id, userId: account.userId },
+                  full,
+                ),
+                externalListingId: externalId,
+                rawSku: sku ?? null,
+                title: item.title,
+                status: item.status,
+              }
+            : {
+                platform: Platform.SHOPEE,
+                account: { id: account.id, userId: account.userId },
+                externalListingId: externalId,
+                rawSku: sku ?? null,
+                title: item.title,
+                price: 0,
+                stock: 0,
+                status: item.status,
+                permalink: null,
+                imageUrl: null,
+                createdAt: new Date(0),
+              };
+          const outcome =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              normalized,
+            );
+          this.tallyAutodetect(result, outcome.action);
+
+          processedItem = {
+            externalListingId: externalId,
+            title: item.title,
+            sku,
+            linkedProductId: outcome.productId,
+            status: outcome.productId ? "linked" : "unlinked",
           };
         }
 
@@ -1208,12 +1441,96 @@ export class SyncUseCase {
           true,
         );
 
-        const result = await this.importShopeeItems(userId, accountId, {
-          skipFinalLog: true,
-          onProgress: async (progress) => {
-            await flushProgress(progress);
-          },
-        });
+        // Importa de TODAS as contas ACTIVE do dono (ou só `accountId` quando
+        // informado). Sequencial, com falha isolada por conta e progresso
+        // acumulado entre contas.
+        const shopeeAccounts = accountId
+          ? [account]
+          : await MarketplaceRepository.findAllByUserIdAndPlatform(
+              userId,
+              Platform.SHOPEE,
+            );
+        const accountsToRun =
+          shopeeAccounts.length > 0 ? shopeeAccounts : [account];
+
+        const agg: ImportResult = {
+          totalItems: 0,
+          linkedItems: 0,
+          unlinkedItems: 0,
+          errorCount: 0,
+          createdProducts: 0,
+          alreadyLinked: 0,
+          skippedDuplicates: 0,
+          itemsPreviewTruncated: false,
+          errorsPreviewTruncated: false,
+          errors: [],
+          items: [],
+        };
+
+        for (let i = 0; i < accountsToRun.length; i++) {
+          const acc = accountsToRun[i];
+          const label =
+            accountsToRun.length > 1
+              ? `Conta ${i + 1}/${accountsToRun.length}: `
+              : "";
+          try {
+            const r = await this.importShopeeItems(userId, acc.id, {
+              skipFinalLog: true,
+              onProgress: async (progress) => {
+                await flushProgress({
+                  ...progress,
+                  totalItems: agg.totalItems + (progress.totalItems ?? 0),
+                  processedItems:
+                    agg.linkedItems +
+                    agg.unlinkedItems +
+                    (progress.processedItems ?? 0),
+                  linkedItems: agg.linkedItems + (progress.linkedItems ?? 0),
+                  unlinkedItems:
+                    agg.unlinkedItems + (progress.unlinkedItems ?? 0),
+                  errorCount:
+                    (agg.errorCount ?? 0) + (progress.errorCount ?? 0),
+                  message: `${label}${progress.message ?? ""}`,
+                });
+              },
+            });
+            agg.totalItems += r.totalItems;
+            agg.linkedItems += r.linkedItems;
+            agg.unlinkedItems += r.unlinkedItems;
+            agg.errorCount =
+              (agg.errorCount ?? 0) + (r.errorCount ?? r.errors.length);
+            agg.createdProducts =
+              (agg.createdProducts ?? 0) + (r.createdProducts ?? 0);
+            agg.alreadyLinked =
+              (agg.alreadyLinked ?? 0) + (r.alreadyLinked ?? 0);
+            agg.skippedDuplicates =
+              (agg.skippedDuplicates ?? 0) + (r.skippedDuplicates ?? 0);
+            for (const it of r.items) {
+              if (agg.items.length < this.IMPORT_ITEMS_PREVIEW_LIMIT) {
+                agg.items.push(it);
+              } else {
+                agg.itemsPreviewTruncated = true;
+              }
+            }
+            for (const e of r.errors) {
+              if (agg.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
+                agg.errors.push(e);
+              } else {
+                agg.errorsPreviewTruncated = true;
+              }
+            }
+          } catch (accErr) {
+            const msg =
+              accErr instanceof Error ? accErr.message : "Erro desconhecido";
+            agg.errorCount = (agg.errorCount ?? 0) + 1;
+            if (agg.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
+              agg.errors.push(`Conta ${acc.id}: ${msg}`);
+            } else {
+              agg.errorsPreviewTruncated = true;
+            }
+          }
+        }
+        agg.accountsProcessed = accountsToRun.length;
+        const result = agg;
 
         await flushProgress(
           {
@@ -1373,6 +1690,308 @@ export class SyncUseCase {
     };
   }
 
+  private static readonly GENERIC_IMPORT_STALE_MS = 15 * 60 * 1000;
+
+  /**
+   * Orquestra a importação "criar+vincular" em TODAS as contas ACTIVE do dono
+   * (ou só `accountId`), sequencialmente e com falha isolada por conta.
+   * Reaproveita importMLItems/importMagaluItems (que já roteiam anúncios sem
+   * produto pelo núcleo idempotente). NÃO aplica gate de baseline.
+   */
+  static async importAndBuildAllAccounts(
+    userId: string,
+    platform: Platform,
+    accountId?: string,
+    onProgress?: (p: {
+      accountsTotal: number;
+      accountsDone: number;
+      processedItems: number;
+      message?: string;
+    }) => Promise<void> | void,
+  ): Promise<ImportResult> {
+    const accounts = accountId
+      ? await (async () => {
+          const a = await MarketplaceRepository.findByIdAndUser(
+            accountId,
+            userId,
+          );
+          return a ? [a] : [];
+        })()
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+
+    const aggregate: ImportResult = {
+      totalItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      errorCount: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
+      accountsProcessed: 0,
+      itemsPreviewTruncated: false,
+      errorsPreviewTruncated: false,
+      errors: [],
+      items: [],
+    };
+
+    if (accounts.length === 0) {
+      throw new Error(
+        platform === Platform.MERCADO_LIVRE
+          ? "Nenhuma conta do Mercado Livre conectada"
+          : platform === Platform.MAGALU
+            ? "Nenhuma conta da Magalu conectada"
+            : "Nenhuma conta conectada",
+      );
+    }
+
+    for (let i = 0; i < accounts.length; i++) {
+      const acc = accounts[i];
+      try {
+        const r =
+          platform === Platform.MERCADO_LIVRE
+            ? await this.importMLItems(userId, acc.id, { skipFinalLog: true })
+            : await this.importMagaluItems(userId, acc.id, {
+                skipFinalLog: true,
+              });
+        aggregate.totalItems += r.totalItems;
+        aggregate.linkedItems += r.linkedItems;
+        aggregate.unlinkedItems += r.unlinkedItems;
+        aggregate.errorCount =
+          (aggregate.errorCount ?? 0) + (r.errorCount ?? r.errors.length);
+        aggregate.createdProducts =
+          (aggregate.createdProducts ?? 0) + (r.createdProducts ?? 0);
+        aggregate.alreadyLinked =
+          (aggregate.alreadyLinked ?? 0) + (r.alreadyLinked ?? 0);
+        aggregate.skippedDuplicates =
+          (aggregate.skippedDuplicates ?? 0) + (r.skippedDuplicates ?? 0);
+        for (const it of r.items) {
+          if (aggregate.items.length < this.IMPORT_ITEMS_PREVIEW_LIMIT) {
+            aggregate.items.push(it);
+          } else {
+            aggregate.itemsPreviewTruncated = true;
+          }
+        }
+        for (const e of r.errors) {
+          if (aggregate.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
+            aggregate.errors.push(e);
+          } else {
+            aggregate.errorsPreviewTruncated = true;
+          }
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        aggregate.errorCount = (aggregate.errorCount ?? 0) + 1;
+        if (aggregate.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
+          aggregate.errors.push(`Conta ${acc.id}: ${msg}`);
+        } else {
+          aggregate.errorsPreviewTruncated = true;
+        }
+      }
+      aggregate.accountsProcessed = (aggregate.accountsProcessed ?? 0) + 1;
+      if (onProgress) {
+        await onProgress({
+          accountsTotal: accounts.length,
+          accountsDone: i + 1,
+          processedItems: aggregate.totalItems,
+          message: `Conta ${i + 1}/${accounts.length} concluída`,
+        });
+      }
+    }
+
+    return aggregate;
+  }
+
+  /**
+   * Job genérico (ML/Magalu): enfileira a importação multi-conta em background e
+   * persiste estado/resultado num SyncLog. Espelha o modelo assíncrono da
+   * Shopee (POST responde com importId; a aba faz polling do status).
+   */
+  static async startGenericImportJob(
+    userId: string,
+    platform: Platform,
+    accountId?: string,
+  ): Promise<{ importId: string; status: GenericImportJobState; message: string }> {
+    const accounts = accountId
+      ? await (async () => {
+          const a = await MarketplaceRepository.findByIdAndUser(
+            accountId,
+            userId,
+          );
+          return a ? [a] : [];
+        })()
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+    if (accounts.length === 0) {
+      throw new Error(
+        platform === Platform.MERCADO_LIVRE
+          ? "Nenhuma conta do Mercado Livre conectada"
+          : "Nenhuma conta da Magalu conectada",
+      );
+    }
+
+    const startedAt = new Date().toISOString();
+    const base: GenericImportJobPayload = {
+      kind: "GENERIC_IMPORT",
+      platform,
+      state: "running",
+      startedAt,
+      accountsTotal: accounts.length,
+      accountsDone: 0,
+      processedItems: 0,
+      message: "Importação enfileirada",
+    };
+    const created = await prisma.syncLog.create({
+      data: {
+        marketplaceAccountId: accounts[0].id,
+        type: SyncType.PRODUCT_SYNC,
+        status: SyncStatus.WARNING,
+        message: base.message ?? "",
+        payload: base as object,
+      },
+    });
+
+    const label = platform === Platform.MERCADO_LIVRE ? "MercadoLivre" : "Magalu";
+
+    setImmediate(async () => {
+      const writePayload = async (
+        payload: GenericImportJobPayload,
+        status: SyncStatus,
+      ) => {
+        await prisma.syncLog.update({
+          where: { id: created.id },
+          data: { status, message: payload.message ?? "", payload: payload as object },
+        });
+      };
+      try {
+        const result = await this.importAndBuildAllAccounts(
+          userId,
+          platform,
+          accountId,
+          async (p) => {
+            await writePayload(
+              {
+                ...base,
+                accountsDone: p.accountsDone,
+                processedItems: p.processedItems,
+                message: p.message,
+              },
+              SyncStatus.WARNING,
+            );
+          },
+        );
+        await writePayload(
+          {
+            ...base,
+            state: "completed",
+            accountsDone: result.accountsProcessed ?? base.accountsTotal,
+            processedItems: result.totalItems,
+            finishedAt: new Date().toISOString(),
+            message: `Importação concluída: ${result.createdProducts ?? 0} criado(s), ${result.linkedItems} vinculado(s)`,
+            result,
+          },
+          (result.errorCount ?? 0) > 0 ? SyncStatus.WARNING : SyncStatus.SUCCESS,
+        );
+        await SystemLogService.logSyncComplete(userId, "IMPORT", label, {
+          totalItems: result.totalItems,
+          linkedItems: result.linkedItems,
+          createdProducts: result.createdProducts ?? 0,
+          errors: result.errorCount ?? result.errors.length,
+          importId: created.id,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        await writePayload(
+          {
+            ...base,
+            state: "failed",
+            finishedAt: new Date().toISOString(),
+            message: msg,
+          },
+          SyncStatus.FAILURE,
+        );
+        await SystemLogService.logSyncError(
+          userId,
+          "IMPORT",
+          label,
+          `${msg} (importId=${created.id})`,
+        );
+        console.error(
+          `[GenericImportJob][${label}] importId=${created.id} failed:`,
+          error instanceof Error ? error.stack : error,
+        );
+      }
+    });
+
+    return { importId: created.id, status: "running", message: base.message ?? "" };
+  }
+
+  static startMLImportJob(userId: string, accountId?: string) {
+    return this.startGenericImportJob(userId, Platform.MERCADO_LIVRE, accountId);
+  }
+
+  static startMagaluImportJob(userId: string, accountId?: string) {
+    return this.startGenericImportJob(userId, Platform.MAGALU, accountId);
+  }
+
+  static async getGenericImportJobStatus(
+    userId: string,
+    importId: string,
+  ): Promise<GenericImportJobStatus> {
+    const syncLog = await prisma.syncLog.findFirst({
+      where: { id: importId, marketplaceAccount: { userId } },
+      // EGRESS: só o payload (estado do job) + createdAt (fallback do stale).
+      select: { id: true, payload: true, createdAt: true },
+    });
+    if (!syncLog) {
+      throw new Error("Importação não encontrada");
+    }
+    let payload = syncLog.payload as unknown as GenericImportJobPayload;
+    if (!payload || payload.kind !== "GENERIC_IMPORT") {
+      throw new Error("Importação não encontrada");
+    }
+
+    const lastMs = payload.finishedAt
+      ? Date.parse(payload.finishedAt)
+      : payload.startedAt
+        ? Date.parse(payload.startedAt)
+        : syncLog.createdAt.getTime();
+    if (
+      payload.state === "running" &&
+      Date.now() - lastMs > this.GENERIC_IMPORT_STALE_MS
+    ) {
+      payload = {
+        ...payload,
+        state: "failed",
+        finishedAt: new Date().toISOString(),
+        message: "Importação expirada antes da conclusão. Inicie uma nova.",
+      };
+      await prisma.syncLog.update({
+        where: { id: syncLog.id },
+        data: {
+          status: SyncStatus.FAILURE,
+          message: payload.message ?? "",
+          payload: payload as object,
+        },
+      });
+    }
+
+    return {
+      importId: syncLog.id,
+      status: payload.state,
+      progress: {
+        state: payload.state,
+        accountsTotal: payload.accountsTotal,
+        accountsDone: payload.accountsDone,
+        processedItems: payload.processedItems,
+        startedAt: payload.startedAt,
+        finishedAt: payload.finishedAt,
+        message: payload.message,
+      },
+      result:
+        payload.state === "completed" || payload.state === "failed"
+          ? payload.result
+          : undefined,
+    };
+  }
 
   // Sincroniza categorias do Mercado Livre para DB (siteId ex: "MLB")
   static async syncMLCategories(
