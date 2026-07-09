@@ -1,7 +1,7 @@
 import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { normalizeSku } from "@/app/lib/sku";
-import { toFullSizeMLImage } from "@/app/lib/ml-image";
+import { toFullSizeMLImage, toFullSizeMLImages } from "@/app/lib/ml-image";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { ListingRepository } from "../repositories/listing.repository";
 import { SyncUseCase } from "./sync.usercase";
@@ -23,7 +23,12 @@ export interface NormalizedMarketplaceItem {
   stock: number;
   status: string;
   permalink: string | null;
-  imageUrl: string | null;
+  imageUrl: string | null; // capa (= imageUrls[0] quando há galeria)
+  /**
+   * Galeria completa do anúncio, na ordem do marketplace. Opcional/aditivo:
+   * chamadores antigos que não preenchem seguem funcionando (vira []).
+   */
+  imageUrls?: string[];
   createdAt: Date; // ML date_created | Shopee create_time*1000 (informativo)
 }
 
@@ -142,6 +147,9 @@ export class ListingAutodetectUseCase {
       stock: item.stock,
       price: item.price,
       imageUrl: item.imageUrl ?? "",
+      // Galeria completa do anúncio (o repositório já persiste `imageUrls`).
+      // Ausente => [] (comportamento anterior, zero regressão).
+      imageUrls: item.imageUrls ?? [],
       createdFromMarketplace: true,
       originPlatform: item.platform,
     };
@@ -188,13 +196,13 @@ export class ListingAutodetectUseCase {
     // `item.thumbnail` é a MINIATURA (-I, ~100px) — usá-la deixava a foto do
     // produto minúscula na Dexo. As `pictures[]` trazem a imagem original (-O),
     // que é o que o resto do repo consome (migrações, catálogo, backfill).
+    // Importamos a GALERIA inteira, na ordem do anúncio; a capa é a primeira.
     // O thumbnail vira só último recurso, já normalizado p/ tamanho original.
-    const picture = Array.isArray(item.pictures) ? item.pictures[0] : undefined;
-    const imageUrl =
-      toFullSizeMLImage(picture?.secure_url) ||
-      toFullSizeMLImage(picture?.url) ||
-      toFullSizeMLImage(item.thumbnail) ||
-      null;
+    const pictures = Array.isArray(item.pictures) ? item.pictures : [];
+    const imageUrls = toFullSizeMLImages(
+      pictures.map((p) => p?.secure_url || p?.url),
+    );
+    const imageUrl = imageUrls[0] ?? toFullSizeMLImage(item.thumbnail) ?? null;
 
     return {
       platform: Platform.MERCADO_LIVRE,
@@ -210,6 +218,7 @@ export class ListingAutodetectUseCase {
       status: item.status,
       permalink: item.permalink || null,
       imageUrl,
+      imageUrls,
       createdAt: this.parseDate(item.date_created),
     };
   }
@@ -228,10 +237,13 @@ export class ListingAutodetectUseCase {
     const price = this.coercePrice(
       priceInfo?.current_price ?? priceInfo?.original_price ?? 0,
     );
-    const imageUrl =
-      (Array.isArray(item.image?.image_url_list) &&
-        item.image.image_url_list[0]) ||
-      null;
+    // Galeria completa do anúncio Shopee (já vem em tamanho cheio no CDN).
+    const imageUrls = Array.isArray(item.image?.image_url_list)
+      ? item.image.image_url_list.filter(
+          (u): u is string => typeof u === "string" && u.trim().length > 0,
+        )
+      : [];
+    const imageUrl = imageUrls[0] ?? null;
 
     // A API da Shopee devolve `item_status` (não `status`); NORMAL/ausente →
     // "active" (mesma convenção dos demais listings). Sem isso o status ia
@@ -251,6 +263,7 @@ export class ListingAutodetectUseCase {
       status: listingStatus,
       permalink: null,
       imageUrl,
+      imageUrls,
       createdAt: new Date((item.create_time ?? 0) * 1000),
     };
   }
@@ -277,9 +290,16 @@ export class ListingAutodetectUseCase {
     // (idempotente por externalListingId) não duplica o vínculo.
     const externalListingId = String(rawSku ?? sku.id ?? "");
     // imagens: [{ reference, type }] (defensivo — shape do type é aberto).
+    // Importa a galeria inteira; a capa é a primeira referência válida.
     const images = (sku as { images?: Array<{ reference?: string }> }).images;
-    const imageUrl =
-      (Array.isArray(images) && images[0]?.reference) || null;
+    const imageUrls = Array.isArray(images)
+      ? images
+          .map((i) => i?.reference)
+          .filter(
+            (u): u is string => typeof u === "string" && u.trim().length > 0,
+          )
+      : [];
+    const imageUrl = imageUrls[0] ?? null;
     // url pública: permalink | url | url_marketplace[0].url.
     const urlMarketplace = (
       sku as { url_marketplace?: Array<{ url?: string }> }
@@ -307,6 +327,7 @@ export class ListingAutodetectUseCase {
       status: (sku.status as string) || "active",
       permalink,
       imageUrl,
+      imageUrls,
       createdAt: this.parseDate(
         (sku as { created_at?: string }).created_at,
       ),
