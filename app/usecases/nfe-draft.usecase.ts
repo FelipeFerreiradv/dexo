@@ -3,6 +3,7 @@ import { CompanyFiscalRepository } from "../repositories/company-fiscal.reposito
 import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
 import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
+import type { Customer } from "../interfaces/customer.interface";
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -111,14 +112,29 @@ export class NfeDraftUseCase {
     }
 
     // Casa o comprador a um Customer do dono para autopreencher o destinatário.
-    let matched = customerId
-      ? await this.customerRepo.findById(customerId, userId)
-      : null;
-    if (!matched && order.customerEmail) {
-      matched = await this.customerRepo.findByEmail(order.customerEmail, userId);
-    }
-    if (!matched && order.customerName) {
-      matched = await this.customerRepo.findByName(order.customerName, userId);
+    // Best-effort: uma falha no lookup NUNCA bloqueia o rascunho — cai no
+    // destinatário mínimo (nome/e-mail do pedido), preservando o comportamento
+    // anterior.
+    let matched: Customer | null = null;
+    try {
+      if (customerId) {
+        matched = await this.customerRepo.findById(customerId, userId);
+      }
+      if (!matched && order.customerEmail) {
+        matched = await this.customerRepo.findByEmail(
+          order.customerEmail,
+          userId,
+        );
+      }
+      if (!matched && order.customerName) {
+        matched = await this.customerRepo.findByName(order.customerName, userId);
+      }
+    } catch (err) {
+      console.error(
+        "[nfe-draft] lookup de cliente falhou (segue com nome/e-mail):",
+        err instanceof Error ? err.message : err,
+      );
+      matched = null;
     }
 
     const mapped = matched ? mapCustomerToDestinatario(matched) : null;
