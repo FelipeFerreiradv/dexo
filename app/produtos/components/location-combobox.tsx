@@ -107,9 +107,16 @@ export function LocationCombobox({
             onValueChange={setQuery}
             placeholder="Buscar por código, descrição ou caminho..."
           />
-          <CommandList>
+          {/* overflow-x-auto vence overflow-x-hidden da primitiva (twMerge);
+              vertical (overflow-y-auto + max-h) permanece. No mobile o caminho
+              hierárquico longo agora rola para o lado em vez de truncar. */}
+          <CommandList className="overflow-x-auto max-h-[min(300px,60vh)]">
             <CommandEmpty>Nenhuma localização encontrada.</CommandEmpty>
-            <CommandItem value="__none__" onSelect={() => pick(null, "")}>
+            <CommandItem
+              value="__none__"
+              className="min-w-full w-max"
+              onSelect={() => pick(null, "")}
+            >
               <Check
                 className={cn(
                   "mr-2 h-4 w-4 shrink-0",
@@ -126,6 +133,7 @@ export function LocationCombobox({
                   key={loc.id}
                   value={loc.id}
                   disabled={blocked}
+                  className="min-w-full w-max"
                   onSelect={() => {
                     if (blocked) return;
                     pick(loc.id, loc.fullPath);
@@ -137,7 +145,7 @@ export function LocationCombobox({
                       value === loc.id ? "opacity-100" : "opacity-0",
                     )}
                   />
-                  <span className="truncate text-sm">
+                  <span className="whitespace-nowrap text-sm">
                     <HighlightText text={loc.fullPath} tokens={tokens} />
                   </span>
                   <span className="ml-2 shrink-0 text-xs text-muted-foreground">
