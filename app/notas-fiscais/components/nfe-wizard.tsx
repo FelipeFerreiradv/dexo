@@ -204,6 +204,7 @@ export function NfeWizard() {
         cpfCnpj: dest.cpfCnpj ?? "",
         nome: dest.nome ?? "",
         inscricaoEstadual: dest.inscricaoEstadual ?? null,
+        indicadorIE: dest.indicadorIE ?? "9",
         email: dest.email ?? null,
         telefone: dest.telefone ?? null,
         cep: dest.cep ?? null,

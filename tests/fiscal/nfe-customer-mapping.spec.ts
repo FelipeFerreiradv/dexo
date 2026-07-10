@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { mapDestinatarioToCustomer } from "../../app/usecases/nfe-customer-mapping";
+import {
+  mapDestinatarioToCustomer,
+  mapCustomerToDestinatario,
+  mapMarketplaceBillingToDestinatario,
+  resolveIndicadorIE,
+} from "../../app/usecases/nfe-customer-mapping";
 
 describe("mapDestinatarioToCustomer", () => {
   it("mapeia PF: CPF preenchido, sem campos PJ", () => {
@@ -67,5 +72,226 @@ describe("mapDestinatarioToCustomer", () => {
     expect(c.cpf).toBeNull();
     expect(c.cnpj).toBeNull();
     expect(c.name).toBe("");
+  });
+});
+
+describe("resolveIndicadorIE", () => {
+  it("prioriza o valor cadastrado quando válido", () => {
+    expect(resolveIndicadorIE("1", false, null)).toBe("1");
+    expect(resolveIndicadorIE("2", true, "12345")).toBe("2");
+    expect(resolveIndicadorIE("9", true, "12345")).toBe("9");
+  });
+  it("ignora valor inválido e cai no fallback", () => {
+    expect(resolveIndicadorIE("7", true, "12345")).toBe("1");
+    expect(resolveIndicadorIE("", true, null)).toBe("9");
+  });
+  it("deriva: PJ com IE → 1, ISENTO → 2, PF/sem IE → 9", () => {
+    expect(resolveIndicadorIE(null, true, "123456")).toBe("1");
+    expect(resolveIndicadorIE(null, true, "isento")).toBe("2");
+    expect(resolveIndicadorIE(null, false, "123456")).toBe("9"); // PF → não contribuinte
+    expect(resolveIndicadorIE(null, false, null)).toBe("9");
+    expect(resolveIndicadorIE(null, true, null)).toBe("9"); // PJ sem IE
+  });
+});
+
+describe("mapCustomerToDestinatario", () => {
+  it("mapeia PF completo com endereço e telefone (mobile fallback)", () => {
+    const d = mapCustomerToDestinatario({
+      personType: "PF",
+      name: "Maria Souza",
+      cpf: "52998224725",
+      mobile: "11988887777",
+      cep: "01001-000",
+      street: "Praça da Sé",
+      number: "10",
+      neighborhood: "Sé",
+      city: "São Paulo",
+      state: "SP",
+      ibge: "3550308",
+    });
+    expect(d.tipoPessoa).toBe("PF");
+    expect(d.cpfCnpj).toBe("52998224725");
+    expect(d.nome).toBe("Maria Souza");
+    expect(d.indicadorIE).toBe("9");
+    expect(d.telefone).toBe("11988887777");
+    expect(d.municipio).toBe("São Paulo");
+    expect(d.codMunicipio).toBe("3550308");
+    expect(d.uf).toBe("SP");
+    expect(d.codPais).toBe("1058");
+  });
+
+  it("mapeia PJ com IE → indicadorIE 1, usa razão social e CNPJ", () => {
+    const d = mapCustomerToDestinatario({
+      personType: "PJ",
+      name: "Fantasia Peças",
+      razaoSocial: "Peças Brasil LTDA",
+      cnpj: "11444777000161",
+      inscricaoEstadual: "123456789",
+    });
+    expect(d.tipoPessoa).toBe("PJ");
+    expect(d.cpfCnpj).toBe("11444777000161");
+    expect(d.nome).toBe("Peças Brasil LTDA");
+    expect(d.inscricaoEstadual).toBe("123456789");
+    expect(d.indicadorIE).toBe("1");
+  });
+
+  it("PJ isento → indicadorIE 2", () => {
+    const d = mapCustomerToDestinatario({
+      cnpj: "11444777000161",
+      razaoSocial: "ACME",
+      inscricaoEstadual: "ISENTO",
+    });
+    expect(d.tipoPessoa).toBe("PJ");
+    expect(d.indicadorIE).toBe("2");
+  });
+
+  it("prefere o indicadorIE cadastrado no cliente", () => {
+    const d = mapCustomerToDestinatario({
+      personType: "PJ",
+      cnpj: "11444777000161",
+      razaoSocial: "ACME",
+      inscricaoEstadual: "123",
+      indicadorIE: "9",
+    });
+    expect(d.indicadorIE).toBe("9");
+  });
+
+  it("cliente sem documento não quebra (PF, campos vazios)", () => {
+    const d = mapCustomerToDestinatario({ name: "Sem Doc" });
+    expect(d.tipoPessoa).toBe("PF");
+    expect(d.cpfCnpj).toBe("");
+    expect(d.nome).toBe("Sem Doc");
+    expect(d.indicadorIE).toBe("9");
+  });
+
+  it("infere PJ pelo CNPJ legado de entrega (deliveryCnpj)", () => {
+    const d = mapCustomerToDestinatario({
+      name: "Cliente",
+      deliveryCnpj: "11444777000161",
+      deliveryCorporateName: "Entrega LTDA",
+    });
+    expect(d.tipoPessoa).toBe("PJ");
+    expect(d.cpfCnpj).toBe("11444777000161");
+    expect(d.nome).toBe("Entrega LTDA");
+  });
+
+  it("auto-infere EXTERIOR quando codPais ≠ 1058", () => {
+    const d = mapCustomerToDestinatario({
+      name: "Foreign Buyer",
+      codPais: "2496",
+      pais: "URUGUAI",
+    });
+    expect(d.tipoPessoa).toBe("EXTERIOR");
+    expect(d.codPais).toBe("2496");
+    expect(d.pais).toBe("URUGUAI");
+  });
+});
+
+describe("mapMarketplaceBillingToDestinatario", () => {
+  it("PF (CPF) com endereço → destinatário completo", () => {
+    const d = mapMarketplaceBillingToDestinatario(
+      {
+        name: "Andre",
+        lastName: "Sousa",
+        docType: "CPF",
+        docNumber: "529.982.247-25",
+        cep: "01001-000",
+        street: "Praça da Sé",
+        number: "100",
+        neighborhood: "Sé",
+        city: "São Paulo",
+        uf: "BR-SP", // ML devolve ISO 3166-2
+        countryId: "BR",
+      },
+      "ANDRESOUSA8025",
+      null,
+    );
+    expect(d).not.toBeNull();
+    expect(d!.tipoPessoa).toBe("PF");
+    expect(d!.cpfCnpj).toBe("52998224725");
+    expect(d!.nome).toBe("Andre Sousa");
+    expect(d!.indicadorIE).toBe("9");
+    expect(d!.cep).toBe("01001-000");
+    expect(d!.municipio).toBe("São Paulo");
+    expect(d!.uf).toBe("SP"); // normalizado de "BR-SP"
+    expect(d!.codMunicipio).toBeNull(); // ML não fornece IBGE
+    expect(d!.codPais).toBe("1058");
+  });
+
+  it("PJ (CNPJ 14 dígitos) → PJ", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Empresa X",
+      docType: "CNPJ",
+      docNumber: "11444777000161",
+    });
+    expect(d!.tipoPessoa).toBe("PJ");
+    expect(d!.cpfCnpj).toBe("11444777000161");
+  });
+
+  it("sem documento → null (mantém o fallback nome do pedido)", () => {
+    expect(
+      mapMarketplaceBillingToDestinatario({ name: "Sem Doc" }, "Nick"),
+    ).toBeNull();
+  });
+
+  it("usa o nome do pedido quando o billing não traz nome", () => {
+    const d = mapMarketplaceBillingToDestinatario(
+      { docType: "CPF", docNumber: "52998224725" },
+      "ANDRESOUSA8025",
+    );
+    expect(d!.nome).toBe("ANDRESOUSA8025");
+  });
+
+  it("país estrangeiro → EXTERIOR", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      docType: "CPF",
+      docNumber: "52998224725",
+      countryId: "UY",
+      countryName: "Uruguai",
+    });
+    expect(d!.tipoPessoa).toBe("EXTERIOR");
+    expect(d!.pais).toBe("Uruguai");
+  });
+
+  it("shape Magalu (customer_type 'cnpj' minúsculo) → PJ, com e-mail e telefone", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Loja do Edu",
+      docType: "cnpj",
+      docNumber: "18901029000100",
+      email: "edu@loja.br",
+      phone: "21998746332",
+      cep: "12345-678",
+      street: "Avenida Paulista",
+      number: "1000",
+      neighborhood: "Bela Vista",
+      city: "São Paulo",
+      uf: "SP",
+    });
+    expect(d!.tipoPessoa).toBe("PJ");
+    expect(d!.cpfCnpj).toBe("18901029000100");
+    expect(d!.email).toBe("edu@loja.br");
+    expect(d!.telefone).toBe("21998746332");
+    expect(d!.municipio).toBe("São Paulo");
+  });
+
+  it("só endereço, sem documento (ex.: Shopee sem CPF) → preenche endereço, cpfCnpj vazio", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Comprador Shopee",
+      cep: "01001-000",
+      street: "Rua X, 100, Centro",
+      city: "São Paulo",
+      uf: "SP",
+    });
+    expect(d).not.toBeNull();
+    expect(d!.cpfCnpj).toBe("");
+    expect(d!.nome).toBe("Comprador Shopee");
+    expect(d!.cep).toBe("01001-000");
+    expect(d!.municipio).toBe("São Paulo");
+  });
+
+  it("só nome, sem doc nem endereço → null (mantém fallback)", () => {
+    expect(
+      mapMarketplaceBillingToDestinatario({ name: "Só Nome" }, "Nick"),
+    ).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { Platform } from "@prisma/client";
 import prisma from "@/app/lib/prisma";
 import { normalizeSku } from "@/app/lib/sku";
+import { areTitlesSimilar } from "@/app/lib/title-similarity";
 import { toFullSizeMLImage, toFullSizeMLImages } from "@/app/lib/ml-image";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -75,19 +76,38 @@ export class ListingAutodetectUseCase {
 
     // 2. Casa por SKU dentro do dono (mesmo critério do importMLItems).
     const normalizedSku = normalizeSku(item.rawSku);
-    const matchedId = normalizedSku
-      ? await this.findProductIdBySku(account.userId, normalizedSku)
+    const matched = normalizedSku
+      ? await this.findProductBySku(account.userId, normalizedSku)
       : null;
+    const matchedId = matched?.id ?? null;
+
+    // Guarda de "SKU de caixa": só NÃO agrupa quando (a) o produto casado já tem
+    // um anúncio NESTA conta (SKU reutilizado na conta) E (b) o título deste
+    // anúncio é CLARAMENTE diferente do produto casado (produto distinto). Se os
+    // títulos são parecidos, é o mesmo produto reanunciado → agrupa (hoje).
+    // Contas diferentes com o mesmo SKU seguem agrupando (multi-conta legítimo).
+    const isBoxLabel =
+      matched != null &&
+      (await ListingRepository.productHasListingInAccount(
+        matched.id,
+        account.id,
+      )) &&
+      !areTitlesSimilar(item.title, matched.name);
 
     let productId: string;
     let action: AutodetectAction;
 
-    if (matchedId) {
+    if (matchedId && !isBoxLabel) {
       productId = matchedId;
       action = "linked_existing_product";
     } else {
-      // 3. Cria o produto (caminho novo) com a flag de origem.
-      const created = await this.createProductFromItem(item, normalizedSku);
+      // 3. Cria o produto (caminho novo) com a flag de origem. Box label usa
+      // SKU sintético único para não colidir/re-agrupar.
+      const created = await this.createProductFromItem(
+        item,
+        normalizedSku,
+        isBoxLabel,
+      );
       productId = created.productId;
       action = created.raced ? "raced" : "created_product";
     }
@@ -125,20 +145,21 @@ export class ListingAutodetectUseCase {
     return { action, productId };
   }
 
-  private static async findProductIdBySku(
+  private static async findProductBySku(
     userId: string,
     normalizedSku: string,
-  ): Promise<string | null> {
+  ): Promise<{ id: string; name: string } | null> {
     const product = await prisma.product.findFirst({
       where: { userId, skuNormalized: normalizedSku },
-      select: { id: true },
+      select: { id: true, name: true },
     });
-    return product?.id ?? null;
+    return product ?? null;
   }
 
   private static async createProductFromItem(
     item: NormalizedMarketplaceItem,
     normalizedSku: string | null,
+    isBoxLabel = false,
   ): Promise<{ productId: string; raced: boolean }> {
     const productUseCase = new ProductUseCase();
     const base = {
@@ -154,26 +175,45 @@ export class ListingAutodetectUseCase {
       originPlatform: item.platform,
     };
 
+    // SKU do produto novo:
+    //  - box label (SKU reutilizado em vários anúncios da conta): sintético e
+    //    único por anúncio (VAAPT-<id>), para não colidir com o produto casado
+    //    nem re-agrupar via o mesmo SKU;
+    //  - anúncio com SKU próprio: usa o SKU do vendedor;
+    //  - sem SKU: autoSku (contador sequencial).
+    const syntheticSku = `VAAPT-${item.externalListingId}`;
     try {
-      const product = item.rawSku
-        ? await productUseCase.create({
-            ...base,
-            sku: item.rawSku,
-            autoSku: false,
-          })
-        : await productUseCase.create({ ...base, sku: "", autoSku: true });
+      let product;
+      if (isBoxLabel) {
+        product = await productUseCase.create({
+          ...base,
+          sku: syntheticSku,
+          autoSku: false,
+        });
+      } else if (item.rawSku) {
+        product = await productUseCase.create({
+          ...base,
+          sku: item.rawSku,
+          autoSku: false,
+        });
+      } else {
+        product = await productUseCase.create({ ...base, sku: "", autoSku: true });
+      }
       return { productId: product.id, raced: false };
     } catch (err) {
-      // Corrida de SKU real: outro processo criou o produto entre o passo 2 e o
-      // insert. O `create` lança "Produto com esse sku já existe" (via
-      // @@unique([userId, sku])). Re-resolve por SKU e vincula, sem duplicar.
-      if (normalizedSku && this.isDuplicateSkuError(err)) {
-        const racedId = await this.findProductIdBySku(
-          item.account.userId,
-          normalizedSku,
-        );
-        if (racedId) {
-          return { productId: racedId, raced: true };
+      if (this.isDuplicateSkuError(err)) {
+        // Corrida de SKU: re-resolve pelo SKU efetivamente usado e vincula.
+        // Box label re-resolve pelo sintético (único por anúncio); demais pelo
+        // SKU do vendedor. Sem duplicar produto.
+        const resolveKey = isBoxLabel ? normalizeSku(syntheticSku) : normalizedSku;
+        if (resolveKey) {
+          const raced = await this.findProductBySku(
+            item.account.userId,
+            resolveKey,
+          );
+          if (raced) {
+            return { productId: raced.id, raced: true };
+          }
         }
       }
       throw err;

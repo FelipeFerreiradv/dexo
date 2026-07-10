@@ -38,6 +38,24 @@ function isPlaceholderExternalListingId(externalListingId?: string | null) {
   return normalizeText(externalListingId)?.startsWith("PENDING_") ?? false;
 }
 
+/**
+ * Monta a URL curta canônica do Mercado Livre a partir do externalListingId.
+ * O ML exige o hífen entre o prefixo de site e os dígitos (`MLB-1234567890`);
+ * o id é armazenado sem hífen (`MLB1234567890`). Aceita id já com hífen
+ * (idempotente). Retorna null se o formato não casar (ex.: placeholder).
+ */
+export function buildMercadoLivreShortUrl(
+  externalListingId?: string | null,
+): string | null {
+  const id = normalizeText(externalListingId);
+  if (!id) return null;
+  const match = id.match(/^([A-Za-z]{2,4})-?(\d+)$/);
+  if (!match) return null;
+  const site = match[1].toUpperCase();
+  const num = match[2];
+  return `https://produto.mercadolivre.com.br/${site}-${num}`;
+}
+
 function getShopeeItemId(listing: MarketplaceListingLinkInput) {
   const externalListingId = normalizeText(listing.externalListingId);
 
@@ -105,10 +123,19 @@ export function resolveMarketplaceListingLinkState(
   }
 
   if (listing.platform === "MERCADO_LIVRE") {
+    // A URL curta pública do ML exige o hífen entre o site e os dígitos
+    // (`MLB-1234567890`). O externalListingId é gravado sem hífen
+    // (`MLB1234567890`), e sem ele o ML não resolve o item e cai na
+    // busca/categoria. Insere o hífen (idempotente se já vier com ele).
+    const href = buildMercadoLivreShortUrl(externalListingId);
+    if (href) {
+      return { href, isOpenable: true, disabledReason: null };
+    }
+    // Formato inesperado do id → degrada como o Magalu (não abre link torto).
     return {
-      href: `https://produto.mercadolivre.com.br/${externalListingId}`,
-      isOpenable: true,
-      disabledReason: null,
+      href: null,
+      isOpenable: false,
+      disabledReason: `Anuncio do ${label} ainda nao tem link disponivel.`,
     };
   }
 

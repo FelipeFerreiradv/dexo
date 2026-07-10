@@ -90,10 +90,13 @@ export class ProductUseCase {
     // no mesmo prisma.product.create (nested write). Não duplicar aqui.
     const created = await this.productRepository.create(productData);
 
-    // Mantém o contador de sequência humana atualizado. Só os fluxos da UI
-    // passam por aqui — importações de estoque chamam prisma.product.create
-    // direto, por isso o counter não recebe códigos externos.
-    await this.tryBumpSkuCounter(productData.userId, productData.sku);
+    // Mantém o contador de sequência humana atualizado. Produtos de marketplace
+    // (auto-detecção de anúncios) chegam aqui com createdFromMarketplace=true e
+    // NÃO tocam o contador — assim o SKU custom do vendedor (ex.: "13340") não
+    // contamina a sugestão de próximo SKU da sequência humana.
+    if (!productData.createdFromMarketplace) {
+      await this.tryBumpSkuCounter(productData.userId, productData.sku);
+    }
 
     return created;
   }
@@ -202,8 +205,9 @@ export class ProductUseCase {
 
   private async tryBumpSkuCounter(userId: string, sku: string): Promise<void> {
     // Só conta SKUs numéricos puros até 6 dígitos — o formato que o
-    // getNextSku gera (`padStart(3, "0")`). SKUs legados `PROD-XXX` e SKUs
-    // custom de importação não atualizam o counter.
+    // getNextSku gera (`padStart(3, "0")`). SKUs legados `PROD-XXX` não
+    // atualizam o counter. O call-site já filtra produtos de marketplace
+    // (createdFromMarketplace), então SKUs de anúncio não chegam aqui.
     const match = sku.match(/^(\d{1,6})$/);
     if (!match) return;
     const n = parseInt(match[1], 10);
@@ -834,10 +838,11 @@ export class ProductUseCase {
 
   /**
    * Gera o próximo SKU disponível
-   * Formato: 001, 002, etc. Lê o contador `User.lastSkuSequential`, que é
-   * incrementado apenas em `create()` (rota UI). Importações de estoque
-   * gravam direto em Product e não tocam aqui — assim a sequência humana
-   * fica isolada de códigos externos vindos de planilha.
+   * Formato: 001, 002, etc. Lê o contador `User.lastSkuSequential` (só produtos
+   * de origem humana o incrementam — imports de marketplace são pulados no
+   * `create()`). Migrações que atribuem SKUs numéricos externos (ex.: código do
+   * sistema de origem) podem exigir um reset explícito do contador via
+   * `scripts/backfill-last-sku-sequential.ts --value`.
    */
   async getNextSku(userId: string): Promise<string> {
     let n = (await this.userRepository.getLastSkuSequential(userId)) ?? 0;

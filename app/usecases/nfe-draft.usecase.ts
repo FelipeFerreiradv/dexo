@@ -1,6 +1,29 @@
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
+import {
+  mapCustomerToDestinatario,
+  mapMarketplaceBillingToDestinatario,
+  type MarketplaceBillingSnapshot,
+} from "./nfe-customer-mapping";
+import type { Customer } from "../interfaces/customer.interface";
+import { MLApiService } from "../marketplaces/services/ml-api.service";
+import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
+import { MagaluApiService } from "../marketplaces/services/magalu-api.service";
+import { MagaluOAuthService } from "../marketplaces/services/magalu-oauth.service";
+
+/** Conta de origem do pedido usada p/ buscar dados fiscais do comprador. */
+type BillingAccount = {
+  id: string;
+  platform: string;
+  shopId: number | null;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+};
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -27,10 +50,12 @@ export interface NfeDraftFromReceivableInput {
 export class NfeDraftUseCase {
   private nfeRepo: NfeRepository;
   private configRepo: CompanyFiscalRepository;
+  private customerRepo: CustomerRepository;
 
   constructor() {
     this.nfeRepo = new NfeRepository();
     this.configRepo = new CompanyFiscalRepository();
+    this.customerRepo = new CustomerRepository();
   }
 
   async create(
@@ -60,6 +85,7 @@ export class NfeDraftUseCase {
         input.orderId,
         ambiente,
         serie,
+        input.customerId ?? null,
       );
     }
 
@@ -82,45 +108,86 @@ export class NfeDraftUseCase {
 
   // Pré-popula um rascunho a partir de um pedido de marketplace. Mesmo padrão
   // de `createPopulatedFromReceivable` (venda balcão): cria draft fresco +
-  // updateDraft. Preenche SÓ o que o pedido conhece de fato:
-  //  - destinatário: nome/email (Order não guarda CPF/CNPJ nem endereço →
-  //    ficam em branco para o usuário completar via lookup no wizard);
+  // updateDraft. Preenche:
+  //  - destinatário: tenta casar o comprador a um Customer do mesmo dono
+  //    (customerId explícito → e-mail do pedido → nome) e, se achar, preenche
+  //    tudo (doc, IE, indicadorIE, telefone, endereço). Sem match, mantém o
+  //    comportamento anterior (só nome + e-mail) — zero regressão;
   //  - itens: código (SKU), descrição (nome), quantidade, valor unit./total;
   //  - pagamento: valor = soma dos itens, meio "OUTROS" (pedido de marketplace
   //    não traz forma de pagamento fiscal) — o usuário ajusta.
   // NCM e CFOP entram VAZIOS de propósito: Product não tem NCM, e o CFOP
-  // depende da UF do destinatário (desconhecida aqui — Order não tem endereço);
-  // hardcodar daria nota errada. São obrigatórios na emissão, então o usuário
+  // depende da UF do destinatário; São obrigatórios na emissão, então o usuário
   // completa no editor — o wizard e a emissão seguem 100% intactos.
   private async createPopulatedFromOrder(
     userId: string,
     orderId: string,
     ambiente: "HOMOLOGACAO" | "PRODUCAO",
     serie: number,
+    customerId?: string | null,
   ): Promise<NfeDraftResponse> {
     const order = await orderRepository.findForFiscalDraft(orderId, userId);
     if (!order) {
       throw new Error("Pedido não encontrado");
     }
 
-    const destinatario: NfeDestinatario = {
-      tipoPessoa: "PF",
-      cpfCnpj: "",
-      nome: order.customerName ?? "",
-      inscricaoEstadual: null,
-      email: order.customerEmail ?? null,
-      telefone: null,
-      cep: null,
-      logradouro: null,
-      numero: null,
-      complemento: null,
-      bairro: null,
-      municipio: null,
-      codMunicipio: null,
-      uf: null,
-      codPais: "1058",
-      pais: "BRASIL",
-    };
+    // Casa o comprador a um Customer do dono para autopreencher o destinatário.
+    // Best-effort: uma falha no lookup NUNCA bloqueia o rascunho — cai no
+    // destinatário mínimo (nome/e-mail do pedido), preservando o comportamento
+    // anterior.
+    let matched: Customer | null = null;
+    try {
+      if (customerId) {
+        matched = await this.customerRepo.findById(customerId, userId);
+      }
+      if (!matched && order.customerEmail) {
+        matched = await this.customerRepo.findByEmail(
+          order.customerEmail,
+          userId,
+        );
+      }
+      if (!matched && order.customerName) {
+        matched = await this.customerRepo.findByName(order.customerName, userId);
+      }
+    } catch (err) {
+      console.error(
+        "[nfe-draft] lookup de cliente falhou (segue com nome/e-mail):",
+        err instanceof Error ? err.message : err,
+      );
+      matched = null;
+    }
+
+    const mapped = matched ? mapCustomerToDestinatario(matched) : null;
+    // Sem Customer casado, tenta os dados fiscais REAIS do comprador no
+    // marketplace (ML billing_info) — nome, CPF/CNPJ e endereço. Best-effort.
+    const fromBilling = mapped ? null : await this.tryMarketplaceBilling(order);
+    const destinatario: NfeDestinatario = mapped
+      ? {
+          ...mapped,
+          // Preserva e-mail/nome do pedido quando o cadastro não tiver (não
+          // sobrescreve a razão social já resolvida para PJ).
+          nome: mapped.nome || order.customerName || "",
+          email: mapped.email ?? order.customerEmail ?? null,
+        }
+      : (fromBilling ?? {
+          tipoPessoa: "PF",
+          cpfCnpj: "",
+          nome: order.customerName ?? "",
+          inscricaoEstadual: null,
+          indicadorIE: "9",
+          email: order.customerEmail ?? null,
+          telefone: null,
+          cep: null,
+          logradouro: null,
+          numero: null,
+          complemento: null,
+          bairro: null,
+          municipio: null,
+          codMunicipio: null,
+          uf: null,
+          codPais: "1058",
+          pais: "BRASIL",
+        });
 
     const itens: NfeDraftItem[] = order.items.map((it, idx) => {
       const valorUnitario = it.unitPrice;
@@ -166,6 +233,181 @@ export class NfeDraftUseCase {
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", { orderId });
 
     return filled;
+  }
+
+  // Best-effort: dados fiscais do comprador (nome/CPF/endereço) na API do
+  // marketplace quando o pedido não casa um Customer. Despacha por plataforma;
+  // falha/ausência → null (cai no fallback nome). NÃO loga os dados (LGPD).
+  private async tryMarketplaceBilling(order: {
+    externalOrderId: string;
+    customerName: string | null;
+    customerEmail: string | null;
+    marketplaceAccount: BillingAccount | null;
+  }): Promise<NfeDestinatario | null> {
+    const acc = order.marketplaceAccount;
+    if (!acc) return null;
+    try {
+      let snap: MarketplaceBillingSnapshot | null = null;
+      if (acc.platform === "MERCADO_LIVRE") {
+        snap = await this.mlBillingSnapshot(acc, order.externalOrderId);
+      } else if (acc.platform === "SHOPEE") {
+        snap = await this.shopeeBillingSnapshot(acc, order.externalOrderId);
+      } else if (acc.platform === "MAGALU") {
+        snap = await this.magaluBillingSnapshot(acc, order.externalOrderId);
+      }
+      if (!snap) return null;
+      return mapMarketplaceBillingToDestinatario(
+        snap,
+        order.customerName,
+        order.customerEmail,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async mlBillingSnapshot(
+    acc: BillingAccount,
+    orderId: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await MLOAuthService.refreshAccessTokenForAccount(
+            acc.id,
+            acc.refreshToken,
+          )
+        ).accessToken;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const billing = await MLApiService.getOrderBillingInfo(token, orderId);
+    const bi = billing?.buyer?.billing_info;
+    if (!bi) return null;
+    return {
+      name: bi.name,
+      lastName: bi.last_name,
+      docType: bi.identification?.type,
+      docNumber: bi.identification?.number,
+      cep: bi.address?.zip_code,
+      street: bi.address?.street_name,
+      number: bi.address?.street_number,
+      neighborhood: bi.address?.neighborhood,
+      city: bi.address?.city_name,
+      uf: bi.address?.state?.code,
+      countryId: bi.address?.country_id,
+      countryName: bi.address?.state?.name,
+    };
+  }
+
+  private async shopeeBillingSnapshot(
+    acc: BillingAccount,
+    orderSn: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    if (!acc.shopId) return null;
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await ShopeeOAuthService.refreshAccessToken(acc.refreshToken, acc.shopId)
+        ).access_token;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const od: any = await ShopeeApiService.getOrderFiscalInfo(
+      token,
+      acc.shopId,
+      orderSn,
+    );
+    if (!od) return null;
+    const ra = od.recipient_address ?? {};
+    const inv = od.invoice_data ?? {};
+    // CPF do comprador (Shopee BR): campos variam — tenta os mais prováveis.
+    const doc =
+      od.buyer_cpf_id ?? inv.tax_id ?? inv.number ?? inv.cpf ?? inv.document ?? null;
+    const name = ra.name ?? inv.name ?? null;
+    return {
+      name,
+      docNumber: doc,
+      phone: ra.phone ?? null,
+      cep: ra.zipcode ?? null,
+      // Shopee dá o endereço num único `full_address`; sem número separado.
+      street: ra.full_address ?? ra.town ?? null,
+      neighborhood: ra.district ?? null,
+      city: ra.city ?? null,
+      uf: ra.state ?? null,
+      countryId: "BR",
+    };
+  }
+
+  private async magaluBillingSnapshot(
+    acc: BillingAccount,
+    orderId: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await MagaluOAuthService.refreshAccessTokenForAccount(
+            acc.id,
+            acc.refreshToken,
+          )
+        ).accessToken;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const order: any = await MagaluApiService.getOrder(token, orderId).catch(
+      () => null,
+    );
+    if (!order) return null;
+    const c = order.customer ?? {};
+    const p = Array.isArray(c.phones) ? c.phones[0] : null;
+    const phone = p ? `${p.area_code ?? ""}${p.number ?? ""}` || null : null;
+    const addr = this.pickMagaluAddress(order);
+    return {
+      name: c.name ?? null,
+      docType: c.customer_type ?? null, // "cpf" | "cnpj"
+      docNumber: c.document_number ?? null,
+      email: c.email ?? null,
+      phone,
+      cep: addr?.zipcode ?? null,
+      street: addr?.street ?? null,
+      number: addr?.number ?? null,
+      neighborhood: addr?.district ?? null,
+      city: addr?.city ?? null,
+      uf: addr?.state ?? null,
+      countryId: "BR",
+    };
+  }
+
+  /** Endereço postal do pedido Magalu (1º com CEP/rua entre drop/pickup/recipient). */
+  private pickMagaluAddress(order: any): any | null {
+    const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
+    for (const d of deliveries) {
+      const sh = d?.shipping ?? {};
+      for (const cand of [
+        sh.recipient?.address,
+        sh.drop_details?.address,
+        sh.pickup_details?.address,
+      ]) {
+        if (cand && (cand.zipcode || cand.street)) return cand;
+      }
+    }
+    return null;
+  }
+
+  private tokenSoon(acc: BillingAccount): boolean {
+    return (
+      !acc.accessToken ||
+      (acc.expiresAt ? acc.expiresAt.getTime() - Date.now() < 60_000 : false)
+    );
   }
 
   async getById(

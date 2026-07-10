@@ -106,6 +106,11 @@ describe("SyncUseCase.importMagaluItems — dedup do placeholder PENDING_", () =
     vi.spyOn(prisma.product, "findMany").mockResolvedValue([
       { id: "p9", skuNormalized: normalizeSku("SKU-NEW") },
     ] as any);
+    // Produto casado NÃO tem anúncio nesta conta → agrupamento legítimo (link).
+    vi.spyOn(
+      ListingRepository,
+      "productHasListingInAccount",
+    ).mockResolvedValue(false);
     const update = vi
       .spyOn(ListingRepository, "updateListing")
       .mockResolvedValue({} as any);

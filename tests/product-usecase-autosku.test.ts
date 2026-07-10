@@ -164,3 +164,34 @@ describe("ProductUseCase.createWithAutoSku — concorrência", () => {
     expect(fakes.userRepository.bumpLastSkuSequential).not.toHaveBeenCalled();
   });
 });
+
+describe("ProductUseCase.create — contador ignora SKU de marketplace", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("SKU numérico humano incrementa o contador (comportamento preservado)", async () => {
+    const fakes = makeFakes({ counterStart: 5120 });
+    const uc = makeUseCase(fakes);
+
+    const r = await uc.create(base({ autoSku: false, sku: "5121" }));
+    expect(r.sku).toBe("5121");
+    expect(fakes.userRepository.bumpLastSkuSequential).toHaveBeenCalledWith(
+      "u1",
+      5121,
+    );
+  });
+
+  it("SKU numérico de anúncio de marketplace NÃO incrementa o contador", async () => {
+    // Auto-detecção de anúncio: createdFromMarketplace=true + SKU numérico alto
+    // do vendedor (ex.: "13340") não pode contaminar a sequência humana.
+    const fakes = makeFakes({ counterStart: 5120 });
+    const uc = makeUseCase(fakes);
+
+    const r = await uc.create(
+      base({ autoSku: false, sku: "13340", createdFromMarketplace: true }),
+    );
+    expect(r.sku).toBe("13340");
+    expect(fakes.userRepository.bumpLastSkuSequential).not.toHaveBeenCalled();
+  });
+});

@@ -1774,8 +1774,14 @@ class ProductRepositoryPrisma implements ProductRepository {
 
   async getMaxSkuNumber(userId?: string): Promise<number> {
     try {
+      // Só produtos de origem humana entram na sequência. Anúncios auto-
+      // detectados (createdFromMarketplace) trazem SKUs custom do vendedor que
+      // não pertencem à numeração sequencial e inflariam o máximo.
       const rows = await prisma.product.findMany({
-        where: userId ? { userId } : {},
+        where: {
+          createdFromMarketplace: false,
+          ...(userId ? { userId } : {}),
+        },
         select: { sku: true },
       });
       return computeMaxNumericSku(rows.map((r) => r.sku));

@@ -35,11 +35,20 @@ type PrismaOrderWithRelations = PrismaOrder & {
         code: string;
         description: string | null;
       } | null;
+      listings?: {
+        id: string;
+        externalListingId: string;
+        permalink: string | null;
+        status?: string | null;
+        marketplaceAccount?: { platform: string } | null;
+      }[];
     };
     listing?: {
       id: string;
       externalListingId: string;
       permalink: string | null;
+      status?: string | null;
+      marketplaceAccount?: { platform: string } | null;
     };
   })[];
   marketplaceAccount?: {
@@ -64,11 +73,20 @@ function mapPrismaToOrderItem(
         code: string;
         description: string | null;
       } | null;
+      listings?: {
+        id: string;
+        externalListingId: string;
+        permalink: string | null;
+        status?: string | null;
+        marketplaceAccount?: { platform: string } | null;
+      }[];
     };
     listing?: {
       id: string;
       externalListingId: string;
       permalink: string | null;
+      status?: string | null;
+      marketplaceAccount?: { platform: string } | null;
     };
   },
 ): OrderItem {
@@ -94,6 +112,13 @@ function mapPrismaToOrderItem(
                 description: item.product.productLocation.description ?? null,
               }
             : null,
+          listings: item.product.listings?.map((l) => ({
+            id: l.id,
+            externalListingId: l.externalListingId,
+            permalink: l.permalink ?? null,
+            status: l.status ?? null,
+            platform: l.marketplaceAccount?.platform ?? null,
+          })),
         }
       : undefined,
     listing: item.listing
@@ -101,6 +126,8 @@ function mapPrismaToOrderItem(
           id: item.listing.id,
           externalListingId: item.listing.externalListingId,
           permalink: item.listing.permalink ?? undefined,
+          status: item.listing.status ?? undefined,
+          platform: item.listing.marketplaceAccount?.platform ?? undefined,
         }
       : undefined,
   };
@@ -254,13 +281,30 @@ class OrderRepositoryPrisma implements OrderRepository {
                       description: true,
                     },
                   },
+                  // Fallback do "Ver anúncio" quando o OrderItem não tem listing
+                  // vinculado (import legado/fallback): o sheet resolve o anúncio
+                  // preferido do PRODUTO. Só no detalhe (egress bounded).
+                  listings: {
+                    select: {
+                      id: true,
+                      externalListingId: true,
+                      permalink: true,
+                      status: true,
+                      marketplaceAccount: { select: { platform: true } },
+                    },
+                    orderBy: { updatedAt: "desc" },
+                  },
                 },
               },
+              // status + platform da conta permitem o detalhe do pedido usar o
+              // MESMO resolvedor de link do modal (URL correta / gating).
               listing: {
                 select: {
                   id: true,
                   externalListingId: true,
                   permalink: true,
+                  status: true,
+                  marketplaceAccount: { select: { platform: true } },
                 },
               },
             },
@@ -298,6 +342,16 @@ class OrderRepositoryPrisma implements OrderRepository {
     externalOrderId: string;
     customerName: string | null;
     customerEmail: string | null;
+    // Conta de origem: permite ao prefill buscar os dados fiscais reais do
+    // comprador no marketplace (ex.: ML billing_info) quando não há Customer.
+    marketplaceAccount: {
+      id: string;
+      platform: string;
+      shopId: number | null;
+      accessToken: string | null;
+      refreshToken: string | null;
+      expiresAt: Date | null;
+    } | null;
     items: Array<{
       productId: string;
       quantity: number;
@@ -312,6 +366,16 @@ class OrderRepositoryPrisma implements OrderRepository {
         externalOrderId: true,
         customerName: true,
         customerEmail: true,
+        marketplaceAccount: {
+          select: {
+            id: true,
+            platform: true,
+            shopId: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+          },
+        },
         items: {
           select: {
             productId: true,
@@ -328,6 +392,16 @@ class OrderRepositoryPrisma implements OrderRepository {
       externalOrderId: result.externalOrderId,
       customerName: result.customerName,
       customerEmail: result.customerEmail,
+      marketplaceAccount: result.marketplaceAccount
+        ? {
+            id: result.marketplaceAccount.id,
+            platform: result.marketplaceAccount.platform,
+            shopId: result.marketplaceAccount.shopId,
+            accessToken: result.marketplaceAccount.accessToken,
+            refreshToken: result.marketplaceAccount.refreshToken,
+            expiresAt: result.marketplaceAccount.expiresAt,
+          }
+        : null,
       items: result.items.map((it) => ({
         productId: it.productId,
         quantity: it.quantity,

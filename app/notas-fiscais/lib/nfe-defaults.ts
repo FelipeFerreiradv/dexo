@@ -21,6 +21,7 @@ export const DEFAULT_NFE_DRAFT: NfeDraftFormData = {
     cpfCnpj: "",
     nome: "",
     inscricaoEstadual: null,
+    indicadorIE: "9",
     email: null,
     telefone: null,
     cep: null,

@@ -21,6 +21,7 @@ import { fetchAddressByCep } from "@/app/lib/cep-service";
 import { maskCep, onlyDigits } from "@/app/lib/masks";
 import type { NfeDraftFormData } from "../../lib/nfe-form-schema";
 import type { CustomerLookup } from "@/app/interfaces/nfe.interface";
+import { mapCustomerToDestinatario } from "@/app/usecases/nfe-customer-mapping";
 
 interface Props {
   control: Control<NfeDraftFormData>;
@@ -128,26 +129,25 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
   };
 
   const selectCustomer = (c: CustomerLookup) => {
-    // PJ de 1ª classe (cnpj/razaoSocial) tem prioridade; cai no CNPJ de entrega
-    // legado para registros antigos.
-    const isPj = c.personType === "PJ" || !!c.cnpj || !!c.deliveryCnpj;
-    const doc = c.cnpj ?? c.deliveryCnpj ?? c.cpf ?? "";
-    const nome = c.razaoSocial ?? c.deliveryCorporateName ?? c.name;
+    // Fonte única da regra (tipoPessoa, indicadorIE, EXTERIOR, documento/nome
+    // PF vs PJ) — mesma função usada no pedido e no balcão.
+    const dest = mapCustomerToDestinatario(c);
     setValue("customerId", c.id);
-    setValue("destinatario.tipoPessoa", isPj ? "PJ" : "PF");
-    setValue("destinatario.cpfCnpj", doc);
-    setValue("destinatario.nome", isPj ? nome : c.name);
-    setValue("destinatario.inscricaoEstadual", c.inscricaoEstadual ?? null);
-    setValue("destinatario.email", c.email);
-    setValue("destinatario.telefone", c.phone ?? c.mobile);
-    setValue("destinatario.cep", c.cep);
-    setValue("destinatario.logradouro", c.street);
-    setValue("destinatario.numero", c.number);
-    setValue("destinatario.complemento", c.complement);
-    setValue("destinatario.bairro", c.neighborhood);
-    setValue("destinatario.municipio", c.city);
-    setValue("destinatario.codMunicipio", c.ibge);
-    setValue("destinatario.uf", c.state);
+    setValue("destinatario.tipoPessoa", dest.tipoPessoa);
+    setValue("destinatario.cpfCnpj", dest.cpfCnpj);
+    setValue("destinatario.nome", dest.nome);
+    setValue("destinatario.inscricaoEstadual", dest.inscricaoEstadual ?? null);
+    setValue("destinatario.indicadorIE", dest.indicadorIE ?? "9");
+    setValue("destinatario.email", dest.email ?? null);
+    setValue("destinatario.telefone", dest.telefone ?? null);
+    setValue("destinatario.cep", dest.cep ?? null);
+    setValue("destinatario.logradouro", dest.logradouro ?? null);
+    setValue("destinatario.numero", dest.numero ?? null);
+    setValue("destinatario.complemento", dest.complemento ?? null);
+    setValue("destinatario.bairro", dest.bairro ?? null);
+    setValue("destinatario.municipio", dest.municipio ?? null);
+    setValue("destinatario.codMunicipio", dest.codMunicipio ?? null);
+    setValue("destinatario.uf", dest.uf ?? null);
     setShowResults(false);
     setSearchQuery(c.name);
   };
@@ -257,6 +257,17 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
                 <Input
                   {...field}
                   value={field.value ?? ""}
+                  onChange={(e) => {
+                    field.onChange(e.target.value);
+                    // Preenchimento manual: infere PF/PJ pelo nº de dígitos.
+                    // Não mexe em EXTERIOR (documento estrangeiro não bate 11/14).
+                    const digits = e.target.value.replace(/\D/g, "");
+                    if (digits.length === 14) {
+                      setValue("destinatario.tipoPessoa", "PJ");
+                    } else if (digits.length === 11) {
+                      setValue("destinatario.tipoPessoa", "PF");
+                    }
+                  }}
                   placeholder="Documento do destinatário"
                 />
               )}
@@ -280,6 +291,29 @@ export function StepDestinatario({ control, errors, setValue, email }: Props) {
                   onChange={(e) => field.onChange(e.target.value || null)}
                   placeholder="Inscrição estadual ou ISENTO"
                 />
+              )}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Indicador IE</label>
+            <Controller
+              control={control}
+              name="destinatario.indicadorIE"
+              render={({ field }) => (
+                <Select
+                  value={field.value ?? "9"}
+                  onValueChange={(v) => field.onChange(v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 - Contribuinte ICMS</SelectItem>
+                    <SelectItem value="2">2 - Isento</SelectItem>
+                    <SelectItem value="9">9 - Não contribuinte</SelectItem>
+                  </SelectContent>
+                </Select>
               )}
             />
           </div>

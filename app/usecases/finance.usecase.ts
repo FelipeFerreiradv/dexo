@@ -16,6 +16,7 @@ import { FinanceRepository } from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
+import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
 import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
 
@@ -539,29 +540,11 @@ export class FinanceUseCase {
     if (!customer) {
       throw new Error("Cliente da conta não encontrado");
     }
-    const c = customer as any;
-
-    // Destinatário (PF vs PJ). Cliente sem CPF/CNPJ é permitido aqui — o
-    // editor fiscal sinaliza o campo obrigatório antes da emissão.
-    const isPJ = !!c.deliveryCnpj;
-    const destinatario = {
-      tipoPessoa: isPJ ? ("PJ" as const) : ("PF" as const),
-      cpfCnpj: (isPJ ? c.deliveryCnpj : c.cpf) ?? "",
-      nome: (isPJ ? c.deliveryCorporateName : c.name) ?? c.name ?? "",
-      inscricaoEstadual: null,
-      email: c.email ?? null,
-      telefone: c.phone ?? c.mobile ?? null,
-      cep: c.cep ?? null,
-      logradouro: c.street ?? null,
-      numero: c.number ?? null,
-      complemento: c.complement ?? null,
-      bairro: c.neighborhood ?? null,
-      municipio: c.city ?? null,
-      codMunicipio: c.ibge ?? null,
-      uf: c.state ?? null,
-      codPais: "1058",
-      pais: "BRASIL",
-    };
+    // Destinatário completo a partir do cadastro do cliente: tipoPessoa
+    // (personType/cnpj), documento, IE real, indicadorIE, e-mail, telefone e
+    // endereço. Mesma regra usada no pedido e na busca manual do wizard.
+    // Cliente sem CPF/CNPJ é permitido — o editor fiscal sinaliza antes de emitir.
+    const destinatario = mapCustomerToDestinatario(customer);
 
     // Itens — defaults seguros conforme decisão da Fase 1.
     const itens = entry.items.map((it, idx) => ({
