@@ -69,6 +69,11 @@ describe("SyncUseCase.importMLItems — roteia anúncios ativos sem produto pelo
     const createListing = vi
       .spyOn(ListingRepository, "createListing")
       .mockResolvedValue({ id: "l-match" } as any);
+    // Produto casado NÃO tem anúncio nesta conta → agrupamento legítimo (link).
+    vi.spyOn(
+      ListingRepository,
+      "productHasListingInAccount",
+    ).mockResolvedValue(false);
     const core = vi
       .spyOn(ListingAutodetectUseCase, "upsertProductFromMarketplaceItem")
       .mockResolvedValue({ action: "created_product", productId: "p-new" });
