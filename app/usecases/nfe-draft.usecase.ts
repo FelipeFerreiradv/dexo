@@ -326,17 +326,15 @@ export class NfeDraftUseCase {
     );
     if (!od) return null;
     const ra = od.recipient_address ?? {};
-    const inv = od.invoice_data ?? {};
-    // CPF do comprador (Shopee BR): campos variam — tenta os mais prováveis.
-    const doc =
-      od.buyer_cpf_id ?? inv.tax_id ?? inv.number ?? inv.cpf ?? inv.document ?? null;
-    const name = ra.name ?? inv.name ?? null;
+    // A Shopee NÃO expõe o CPF do comprador: `invoice_data.number` é o número da
+    // NF-e (não o documento). Verificado via probe na VPS. Preenche nome +
+    // endereço + telefone; o CPF/CNPJ fica em branco p/ o usuário informar.
     return {
-      name,
-      docNumber: doc,
+      name: ra.name ?? null,
+      docNumber: null,
       phone: ra.phone ?? null,
       cep: ra.zipcode ?? null,
-      // Shopee dá o endereço num único `full_address`; sem número separado.
+      // Shopee dá o endereço num único `full_address` (sem número separado).
       street: ra.full_address ?? ra.town ?? null,
       neighborhood: ra.district ?? null,
       city: ra.city ?? null,
