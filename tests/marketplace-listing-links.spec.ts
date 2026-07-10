@@ -25,13 +25,55 @@ describe("marketplace-listing-links", () => {
     expect(disabledReason(listing)).toBeNull();
   });
 
-  it("falls back to Mercado Livre item URL when only externalListingId exists", () => {
+  it("falls back to Mercado Livre canonical short URL (com hífen) when only externalListingId exists", () => {
     expect(
       buildHref({
         platform: "MERCADO_LIVRE",
         externalListingId: "MLB987654321",
       }),
-    ).toBe("https://produto.mercadolivre.com.br/MLB987654321");
+    ).toBe("https://produto.mercadolivre.com.br/MLB-987654321");
+  });
+
+  it("preserves an already-hyphenated Mercado Livre id in the fallback URL", () => {
+    expect(
+      buildHref({
+        platform: "MERCADO_LIVRE",
+        externalListingId: "MLB-987654321",
+      }),
+    ).toBe("https://produto.mercadolivre.com.br/MLB-987654321");
+  });
+
+  it("keeps the fallback URL correct regardless of status (under_review/closed sem permalink)", () => {
+    for (const status of ["under_review", "closed", "paused"]) {
+      expect(
+        buildHref({
+          platform: "MERCADO_LIVRE",
+          externalListingId: "MLB123456789",
+          status,
+        }),
+      ).toBe("https://produto.mercadolivre.com.br/MLB-123456789");
+    }
+  });
+
+  it("degrades gracefully when the Mercado Livre id has an unexpected format", () => {
+    const listing: MarketplaceListingLinkInput = {
+      platform: "MERCADO_LIVRE",
+      externalListingId: "not-an-mlb-id",
+    };
+    expect(buildHref(listing)).toBeNull();
+    expect(isOpenable(listing)).toBe(false);
+    expect(disabledReason(listing)).toBe(
+      "Anuncio do Mercado Livre ainda nao tem link disponivel.",
+    );
+  });
+
+  it("keeps Mercado Livre PENDING_ placeholders disabled", () => {
+    const listing: MarketplaceListingLinkInput = {
+      platform: "MERCADO_LIVRE",
+      externalListingId: "PENDING_MLB_1",
+    };
+    expect(isOpenable(listing)).toBe(false);
+    expect(buildHref(listing)).toBeNull();
   });
 
   it("uses Shopee permalink when available", () => {

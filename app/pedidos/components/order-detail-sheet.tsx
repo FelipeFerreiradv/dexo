@@ -30,6 +30,10 @@ import {
 } from "@/components/ui/select";
 import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
 import { getApiBaseUrl } from "@/lib/api";
+import {
+  resolveMarketplaceListingLinkState,
+  type MarketplaceListingPlatform,
+} from "@/app/lib/marketplace-listing-links";
 
 const isFiscalEnabled =
   process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED === "true";
@@ -536,7 +540,19 @@ export function OrderDetailSheet({
                       item.product?.productLocation?.description ?? null;
                     const productName =
                       item.product?.name || "Produto não encontrado";
-                    const permalink = item.listing?.permalink ?? null;
+                    // Mesmo resolvedor do modal: URL canônica do ML (com hífen)
+                    // quando falta permalink + gating. Sem listing vinculado
+                    // (listingId nulo) não renderiza nada, como antes.
+                    const linkState = item.listing
+                      ? resolveMarketplaceListingLinkState({
+                          platform: (item.listing.platform ??
+                            order.marketplaceAccount?.platform ??
+                            "MERCADO_LIVRE") as MarketplaceListingPlatform,
+                          externalListingId: item.listing.externalListingId,
+                          permalink: item.listing.permalink,
+                          status: item.listing.status,
+                        })
+                      : null;
                     return (
                       <div
                         key={item.id}
@@ -565,16 +581,26 @@ export function OrderDetailSheet({
                                 </span>
                               ) : null}
                             </div>
-                            {permalink ? (
-                              <a
-                                href={permalink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                              >
-                                <ExternalLink className="size-3" />
-                                Ver anúncio
-                              </a>
+                            {linkState ? (
+                              linkState.isOpenable && linkState.href ? (
+                                <a
+                                  href={linkState.href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                                >
+                                  <ExternalLink className="size-3" />
+                                  Ver anúncio
+                                </a>
+                              ) : (
+                                <span
+                                  className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground"
+                                  title={linkState.disabledReason ?? undefined}
+                                >
+                                  <ExternalLink className="size-3" />
+                                  Ver anúncio
+                                </span>
+                              )
                             ) : null}
                           </div>
                         </div>

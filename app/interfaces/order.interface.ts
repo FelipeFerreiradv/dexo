@@ -37,6 +37,10 @@ export interface OrderItem {
     id: string;
     externalListingId: string;
     permalink?: string | null;
+    // status + plataforma da conta → permitem o detalhe do pedido resolver o
+    // link "Ver anúncio" pelo mesmo resolvedor do modal (URL correta/gating).
+    status?: string | null;
+    platform?: string | null;
   };
 }
 

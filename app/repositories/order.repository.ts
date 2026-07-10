@@ -40,6 +40,8 @@ type PrismaOrderWithRelations = PrismaOrder & {
       id: string;
       externalListingId: string;
       permalink: string | null;
+      status?: string | null;
+      marketplaceAccount?: { platform: string } | null;
     };
   })[];
   marketplaceAccount?: {
@@ -69,6 +71,8 @@ function mapPrismaToOrderItem(
       id: string;
       externalListingId: string;
       permalink: string | null;
+      status?: string | null;
+      marketplaceAccount?: { platform: string } | null;
     };
   },
 ): OrderItem {
@@ -101,6 +105,8 @@ function mapPrismaToOrderItem(
           id: item.listing.id,
           externalListingId: item.listing.externalListingId,
           permalink: item.listing.permalink ?? undefined,
+          status: item.listing.status ?? undefined,
+          platform: item.listing.marketplaceAccount?.platform ?? undefined,
         }
       : undefined,
   };
@@ -256,11 +262,15 @@ class OrderRepositoryPrisma implements OrderRepository {
                   },
                 },
               },
+              // status + platform da conta permitem o detalhe do pedido usar o
+              // MESMO resolvedor de link do modal (URL correta / gating).
               listing: {
                 select: {
                   id: true,
                   externalListingId: true,
                   permalink: true,
+                  status: true,
+                  marketplaceAccount: { select: { platform: true } },
                 },
               },
             },

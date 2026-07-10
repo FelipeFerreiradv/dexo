@@ -407,10 +407,12 @@ export class SyncUseCase {
         let processedItem: ImportResult["items"][0];
 
         if (existingListing) {
-          // JÃ¡ existe, atualizar status/permalink se necessÃ¡rio
+          // JÃ¡ existe, atualizar status/permalink se necessÃ¡rio.
+          // Write-on-change (antes era write-once): se o permalink mudou no ML
+          // (ex.: slug do título editado), corrige no nosso banco.
           const needsStatusUpdate = existingListing.status !== item.status;
           const needsPermalinkUpdate =
-            !existingListing.permalink && !!item.permalink;
+            !!item.permalink && existingListing.permalink !== item.permalink;
 
           if (needsStatusUpdate || needsPermalinkUpdate) {
             await ListingRepository.updateListing(existingListing.id, {
@@ -690,8 +692,9 @@ export class SyncUseCase {
             !!externalListingId &&
             existingListing.externalListingId !== externalListingId;
           const needsStatusUpdate = existingListing.status !== status;
+          // Write-on-change: corrige permalink que mudou no marketplace.
           const needsPermalinkUpdate =
-            !existingListing.permalink && !!permalink;
+            !!permalink && existingListing.permalink !== permalink;
           if (needsIdUpgrade || needsStatusUpdate || needsPermalinkUpdate) {
             await ListingRepository.updateListing(existingListing.id, {
               externalListingId: needsIdUpgrade ? externalListingId : undefined,
