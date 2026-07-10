@@ -20,6 +20,9 @@ export interface NfeDestinatario {
   cpfCnpj: string;
   nome: string;
   inscricaoEstadual?: string | null;
+  // 1=Contribuinte | 2=Isento | 9=Não contribuinte. Só popula o formulário/
+  // rascunho — os geradores de XML seguem derivando o indIEDest (sem regressão).
+  indicadorIE?: string | null;
   email?: string | null;
   telefone?: string | null;
   // endereço

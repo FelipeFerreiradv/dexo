@@ -1,6 +1,8 @@
 import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
+import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
+import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -27,10 +29,12 @@ export interface NfeDraftFromReceivableInput {
 export class NfeDraftUseCase {
   private nfeRepo: NfeRepository;
   private configRepo: CompanyFiscalRepository;
+  private customerRepo: CustomerRepository;
 
   constructor() {
     this.nfeRepo = new NfeRepository();
     this.configRepo = new CompanyFiscalRepository();
+    this.customerRepo = new CustomerRepository();
   }
 
   async create(
@@ -60,6 +64,7 @@ export class NfeDraftUseCase {
         input.orderId,
         ambiente,
         serie,
+        input.customerId ?? null,
       );
     }
 
@@ -82,45 +87,68 @@ export class NfeDraftUseCase {
 
   // Pré-popula um rascunho a partir de um pedido de marketplace. Mesmo padrão
   // de `createPopulatedFromReceivable` (venda balcão): cria draft fresco +
-  // updateDraft. Preenche SÓ o que o pedido conhece de fato:
-  //  - destinatário: nome/email (Order não guarda CPF/CNPJ nem endereço →
-  //    ficam em branco para o usuário completar via lookup no wizard);
+  // updateDraft. Preenche:
+  //  - destinatário: tenta casar o comprador a um Customer do mesmo dono
+  //    (customerId explícito → e-mail do pedido → nome) e, se achar, preenche
+  //    tudo (doc, IE, indicadorIE, telefone, endereço). Sem match, mantém o
+  //    comportamento anterior (só nome + e-mail) — zero regressão;
   //  - itens: código (SKU), descrição (nome), quantidade, valor unit./total;
   //  - pagamento: valor = soma dos itens, meio "OUTROS" (pedido de marketplace
   //    não traz forma de pagamento fiscal) — o usuário ajusta.
   // NCM e CFOP entram VAZIOS de propósito: Product não tem NCM, e o CFOP
-  // depende da UF do destinatário (desconhecida aqui — Order não tem endereço);
-  // hardcodar daria nota errada. São obrigatórios na emissão, então o usuário
+  // depende da UF do destinatário; São obrigatórios na emissão, então o usuário
   // completa no editor — o wizard e a emissão seguem 100% intactos.
   private async createPopulatedFromOrder(
     userId: string,
     orderId: string,
     ambiente: "HOMOLOGACAO" | "PRODUCAO",
     serie: number,
+    customerId?: string | null,
   ): Promise<NfeDraftResponse> {
     const order = await orderRepository.findForFiscalDraft(orderId, userId);
     if (!order) {
       throw new Error("Pedido não encontrado");
     }
 
-    const destinatario: NfeDestinatario = {
-      tipoPessoa: "PF",
-      cpfCnpj: "",
-      nome: order.customerName ?? "",
-      inscricaoEstadual: null,
-      email: order.customerEmail ?? null,
-      telefone: null,
-      cep: null,
-      logradouro: null,
-      numero: null,
-      complemento: null,
-      bairro: null,
-      municipio: null,
-      codMunicipio: null,
-      uf: null,
-      codPais: "1058",
-      pais: "BRASIL",
-    };
+    // Casa o comprador a um Customer do dono para autopreencher o destinatário.
+    let matched = customerId
+      ? await this.customerRepo.findById(customerId, userId)
+      : null;
+    if (!matched && order.customerEmail) {
+      matched = await this.customerRepo.findByEmail(order.customerEmail, userId);
+    }
+    if (!matched && order.customerName) {
+      matched = await this.customerRepo.findByName(order.customerName, userId);
+    }
+
+    const mapped = matched ? mapCustomerToDestinatario(matched) : null;
+    const destinatario: NfeDestinatario = mapped
+      ? {
+          ...mapped,
+          // Preserva e-mail/nome do pedido quando o cadastro não tiver (não
+          // sobrescreve a razão social já resolvida para PJ).
+          nome: mapped.nome || order.customerName || "",
+          email: mapped.email ?? order.customerEmail ?? null,
+        }
+      : {
+          tipoPessoa: "PF",
+          cpfCnpj: "",
+          nome: order.customerName ?? "",
+          inscricaoEstadual: null,
+          indicadorIE: "9",
+          email: order.customerEmail ?? null,
+          telefone: null,
+          cep: null,
+          logradouro: null,
+          numero: null,
+          complemento: null,
+          bairro: null,
+          municipio: null,
+          codMunicipio: null,
+          uf: null,
+          codPais: "1058",
+          pais: "BRASIL",
+        };
 
     const itens: NfeDraftItem[] = order.items.map((it, idx) => {
       const valorUnitario = it.unitPrice;

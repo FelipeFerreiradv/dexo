@@ -156,6 +156,45 @@ export class CustomerRepository {
     return result ? toCustomer(result) : null;
   }
 
+  /**
+   * Busca por e-mail (exato, case-insensitive) dentro do dono. Usado para casar
+   * o comprador de um pedido de marketplace a um Customer e autopreencher o
+   * destinatário da NF-e. Retorna o mais antigo em caso de empate.
+   */
+  async findByEmail(
+    email: string,
+    userId: string,
+    tx?: Db,
+  ): Promise<Customer | null> {
+    const db: Db = tx ?? prisma;
+    const clean = email.trim();
+    if (!clean) return null;
+    const result = await db.customer.findFirst({
+      where: { userId, email: { equals: clean, mode: "insensitive" } },
+      orderBy: { createdAt: "asc" },
+    });
+    return result ? toCustomer(result) : null;
+  }
+
+  /**
+   * Busca por nome (exato, case-insensitive) dentro do dono. Fallback fraco
+   * quando o pedido não casa por e-mail. Retorna o mais antigo em caso de empate.
+   */
+  async findByName(
+    name: string,
+    userId: string,
+    tx?: Db,
+  ): Promise<Customer | null> {
+    const db: Db = tx ?? prisma;
+    const clean = name.trim();
+    if (clean.length < 2) return null;
+    const result = await db.customer.findFirst({
+      where: { userId, name: { equals: clean, mode: "insensitive" } },
+      orderBy: { createdAt: "asc" },
+    });
+    return result ? toCustomer(result) : null;
+  }
+
   async findAll(
     filters: CustomerListFilters,
     userId: string,
