@@ -309,6 +309,7 @@ async function main() {
 
   // Fase 3: imprime (e aplica).
   let created = 0;
+  let errors = 0;
   for (const { product, keeper, splits } of plans) {
     console.log(
       `\n■ ${product.id} "${product.name}" (sku="${product.sku}") — keeper ${keeper.externalListingId} [${keeper.status}]`,
@@ -326,28 +327,39 @@ async function main() {
       );
 
       if (apply) {
-        await prisma.$transaction(async (tx) => {
-          const createdProduct = await tx.product.create({
-            data: {
-              userId: dataOwnerId,
-              name: newName,
-              sku: newSku,
-              skuNormalized: normalizeSku(newSku),
-              price: (e?.price ?? product.price) as any,
-              stock: product.stock,
-              imageUrl: e?.imageUrl ?? product.imageUrl,
-              imageUrls: e?.imageUrls ?? [],
-              createdFromMarketplace: true,
-              originPlatform: (product.originPlatform as any) ?? undefined,
-            },
-            select: { id: true },
+        // Cada split é atômico e isolado: uma falha (ex.: SKU sintético já
+        // existente) não interrompe o lote — loga e segue. Re-rodar retoma os
+        // restantes (listing já re-apontado deixa de ser candidato).
+        try {
+          await prisma.$transaction(async (tx) => {
+            const createdProduct = await tx.product.create({
+              data: {
+                userId: dataOwnerId,
+                name: newName,
+                sku: newSku,
+                skuNormalized: normalizeSku(newSku),
+                price: (e?.price ?? product.price) as any,
+                stock: product.stock,
+                imageUrl: e?.imageUrl ?? product.imageUrl,
+                imageUrls: e?.imageUrls ?? [],
+                createdFromMarketplace: true,
+                originPlatform: (product.originPlatform as any) ?? undefined,
+              },
+              select: { id: true },
+            });
+            await tx.productListing.update({
+              where: { id: s.id },
+              data: { productId: createdProduct.id },
+            });
           });
-          await tx.productListing.update({
-            where: { id: s.id },
-            data: { productId: createdProduct.id },
-          });
-        });
-        created++;
+          created++;
+        } catch (err) {
+          errors++;
+          console.error(
+            `  ✗ falha ao separar ${s.externalListingId}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
       }
     }
   }
@@ -358,7 +370,7 @@ async function main() {
   );
   console.log(
     apply
-      ? `APPLY: ${created} produto(s) criados e listing(s) re-apontados.`
+      ? `APPLY: ${created} produto(s) criados e listing(s) re-apontados; ${errors} falha(s).`
       : `DRY-RUN — nada gravado (use --apply).`,
   );
 }
