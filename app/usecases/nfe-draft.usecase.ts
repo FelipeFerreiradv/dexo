@@ -2,8 +2,13 @@ import { NfeRepository } from "../repositories/nfe.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { CustomerRepository } from "../repositories/customer.repository";
 import { orderRepository } from "../repositories/order.repository";
-import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
+import {
+  mapCustomerToDestinatario,
+  mapMarketplaceBillingToDestinatario,
+} from "./nfe-customer-mapping";
 import type { Customer } from "../interfaces/customer.interface";
+import { MLApiService } from "../marketplaces/services/ml-api.service";
+import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -138,6 +143,9 @@ export class NfeDraftUseCase {
     }
 
     const mapped = matched ? mapCustomerToDestinatario(matched) : null;
+    // Sem Customer casado, tenta os dados fiscais REAIS do comprador no
+    // marketplace (ML billing_info) — nome, CPF/CNPJ e endereço. Best-effort.
+    const fromBilling = mapped ? null : await this.tryMarketplaceBilling(order);
     const destinatario: NfeDestinatario = mapped
       ? {
           ...mapped,
@@ -146,7 +154,7 @@ export class NfeDraftUseCase {
           nome: mapped.nome || order.customerName || "",
           email: mapped.email ?? order.customerEmail ?? null,
         }
-      : {
+      : (fromBilling ?? {
           tipoPessoa: "PF",
           cpfCnpj: "",
           nome: order.customerName ?? "",
@@ -164,7 +172,7 @@ export class NfeDraftUseCase {
           uf: null,
           codPais: "1058",
           pais: "BRASIL",
-        };
+        });
 
     const itens: NfeDraftItem[] = order.items.map((it, idx) => {
       const valorUnitario = it.unitPrice;
@@ -210,6 +218,66 @@ export class NfeDraftUseCase {
     await this.nfeRepo.addAuditLog(draft.id, userId, "CRIADA", { orderId });
 
     return filled;
+  }
+
+  // Best-effort: dados fiscais do comprador via ML billing_info quando o pedido
+  // não casa um Customer. Falha/ausência → null (cai no fallback nome). NÃO loga
+  // os dados pessoais do comprador (LGPD).
+  private async tryMarketplaceBilling(order: {
+    externalOrderId: string;
+    customerName: string | null;
+    customerEmail: string | null;
+    marketplaceAccount: {
+      id: string;
+      platform: string;
+      accessToken: string | null;
+      refreshToken: string | null;
+      expiresAt: Date | null;
+    } | null;
+  }): Promise<NfeDestinatario | null> {
+    const acc = order.marketplaceAccount;
+    if (!acc || acc.platform !== "MERCADO_LIVRE") return null;
+    try {
+      let token = acc.accessToken;
+      const soon =
+        !token ||
+        (acc.expiresAt ? acc.expiresAt.getTime() - Date.now() < 60_000 : false);
+      if (soon && acc.refreshToken) {
+        token = (
+          await MLOAuthService.refreshAccessTokenForAccount(
+            acc.id,
+            acc.refreshToken,
+          )
+        ).accessToken;
+      }
+      if (!token) return null;
+      const billing = await MLApiService.getOrderBillingInfo(
+        token,
+        order.externalOrderId,
+      );
+      const bi = billing?.buyer?.billing_info;
+      if (!bi) return null;
+      return mapMarketplaceBillingToDestinatario(
+        {
+          name: bi.name,
+          lastName: bi.last_name,
+          docType: bi.identification?.type,
+          docNumber: bi.identification?.number,
+          cep: bi.address?.zip_code,
+          street: bi.address?.street_name,
+          number: bi.address?.street_number,
+          neighborhood: bi.address?.neighborhood,
+          city: bi.address?.city_name,
+          uf: bi.address?.state?.code,
+          countryId: bi.address?.country_id,
+          countryName: bi.address?.state?.name,
+        },
+        order.customerName,
+        order.customerEmail,
+      );
+    } catch {
+      return null;
+    }
   }
 
   async getById(

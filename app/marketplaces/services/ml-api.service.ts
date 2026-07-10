@@ -186,6 +186,27 @@ export function __resetCompatCacheForTests(): void {
  * 2. Obter detalhes de items
  * 3. Atualizar estoque e preÃ§o
  */
+
+/** Dados fiscais do comprador (GET /orders/:id/billing_info, x-version 2). */
+export interface MLOrderBillingInfo {
+  buyer?: {
+    billing_info?: {
+      name?: string | null;
+      last_name?: string | null;
+      identification?: { type?: string | null; number?: string | null } | null;
+      address?: {
+        street_name?: string | null;
+        street_number?: string | null;
+        city_name?: string | null;
+        neighborhood?: string | null;
+        state?: { code?: string | null; name?: string | null } | null;
+        zip_code?: string | null;
+        country_id?: string | null;
+      } | null;
+    } | null;
+  } | null;
+}
+
 export class MLApiService {
   // cache simples para app access token obtido via client_credentials
   private static appToken: { token: string; exp: number } | null = null;
@@ -1162,6 +1183,33 @@ export class MLApiService {
         );
       }
       throw error;
+    }
+  }
+
+  /**
+   * Dados fiscais do comprador (nome, documento, endereço) de um pedido ML,
+   * usados para preencher o destinatário da NF-e. Endpoint separado por
+   * privacidade (x-version 2). Best-effort: retorna null em qualquer erro —
+   * o prefill cai no fallback (nome do pedido). NÃO logar os dados (LGPD).
+   */
+  static async getOrderBillingInfo(
+    accessToken: string,
+    orderId: string,
+  ): Promise<MLOrderBillingInfo | null> {
+    try {
+      const response = await axios.get<MLOrderBillingInfo>(
+        `${ML_CONSTANTS.API_URL}/orders/${orderId}/billing_info`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "x-version": "2",
+          },
+          timeout: 10000,
+        },
+      );
+      return response.data;
+    } catch {
+      return null;
     }
   }
 

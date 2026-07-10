@@ -124,6 +124,75 @@ export function inferTipoPessoaFromCustomer(
   return "PF";
 }
 
+/**
+ * Snapshot achatado dos dados fiscais do comprador de um pedido de marketplace
+ * (ex.: ML billing_info). Puro/estrutural — o caller (usecase) achata a
+ * resposta da API para cá, mantendo este módulo sem dependência do serviço ML.
+ */
+export interface MarketplaceBillingSnapshot {
+  name?: string | null;
+  lastName?: string | null;
+  docType?: string | null; // "CPF" | "CNPJ" | ...
+  docNumber?: string | null;
+  cep?: string | null;
+  street?: string | null;
+  number?: string | null;
+  neighborhood?: string | null;
+  city?: string | null;
+  uf?: string | null;
+  countryId?: string | null; // "BR" | ...
+  countryName?: string | null;
+}
+
+/**
+ * Dados fiscais do comprador (marketplace) → destinatário da NF-e. Retorna null
+ * quando não há documento (sem CPF/CNPJ não vale sobrescrever o fallback).
+ * `fallbackNome`/`fallbackEmail` = nome/e-mail do pedido, usados quando o
+ * billing não os traz.
+ */
+/** ML devolve a UF em ISO 3166-2 ("BR-PA"); a NF-e usa a sigla ("PA"). */
+function normalizeUf(raw?: string | null): string | null {
+  if (!raw) return null;
+  const parts = raw.trim().toUpperCase().split("-");
+  const uf = parts[parts.length - 1];
+  return uf.length === 2 ? uf : raw.trim() || null;
+}
+
+export function mapMarketplaceBillingToDestinatario(
+  b: MarketplaceBillingSnapshot,
+  fallbackNome?: string | null,
+  fallbackEmail?: string | null,
+): NfeDestinatario | null {
+  const doc = (b.docNumber ?? "").replace(/\D/g, "");
+  if (!doc) return null;
+  const isPj = (b.docType ?? "").toUpperCase() === "CNPJ" || doc.length === 14;
+  const nome =
+    [b.name, b.lastName].filter(Boolean).join(" ").trim() ||
+    (fallbackNome ?? "");
+  const country = (b.countryId ?? "BR").toUpperCase();
+  const isExterior = country !== "BR" && country !== "BRA" && country !== "1058";
+  return {
+    tipoPessoa: isExterior ? "EXTERIOR" : isPj ? "PJ" : "PF",
+    cpfCnpj: doc,
+    nome,
+    inscricaoEstadual: null,
+    indicadorIE: resolveIndicadorIE(null, isPj, null),
+    email: fallbackEmail ?? null,
+    telefone: null,
+    cep: b.cep ?? null,
+    logradouro: b.street ?? null,
+    numero: b.number ?? null,
+    complemento: null,
+    bairro: b.neighborhood ?? null,
+    municipio: b.city ?? null,
+    // ML não fornece código IBGE — fica nulo; o wizard/CEP completa.
+    codMunicipio: null,
+    uf: normalizeUf(b.uf),
+    codPais: isExterior ? null : "1058",
+    pais: isExterior ? (b.countryName ?? null) : "BRASIL",
+  };
+}
+
 export function mapCustomerToDestinatario(
   c: CustomerForDestinatario,
 ): NfeDestinatario {

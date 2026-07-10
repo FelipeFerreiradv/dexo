@@ -342,6 +342,15 @@ class OrderRepositoryPrisma implements OrderRepository {
     externalOrderId: string;
     customerName: string | null;
     customerEmail: string | null;
+    // Conta de origem: permite ao prefill buscar os dados fiscais reais do
+    // comprador no marketplace (ex.: ML billing_info) quando não há Customer.
+    marketplaceAccount: {
+      id: string;
+      platform: string;
+      accessToken: string | null;
+      refreshToken: string | null;
+      expiresAt: Date | null;
+    } | null;
     items: Array<{
       productId: string;
       quantity: number;
@@ -356,6 +365,15 @@ class OrderRepositoryPrisma implements OrderRepository {
         externalOrderId: true,
         customerName: true,
         customerEmail: true,
+        marketplaceAccount: {
+          select: {
+            id: true,
+            platform: true,
+            accessToken: true,
+            refreshToken: true,
+            expiresAt: true,
+          },
+        },
         items: {
           select: {
             productId: true,
@@ -372,6 +390,15 @@ class OrderRepositoryPrisma implements OrderRepository {
       externalOrderId: result.externalOrderId,
       customerName: result.customerName,
       customerEmail: result.customerEmail,
+      marketplaceAccount: result.marketplaceAccount
+        ? {
+            id: result.marketplaceAccount.id,
+            platform: result.marketplaceAccount.platform,
+            accessToken: result.marketplaceAccount.accessToken,
+            refreshToken: result.marketplaceAccount.refreshToken,
+            expiresAt: result.marketplaceAccount.expiresAt,
+          }
+        : null,
       items: result.items.map((it) => ({
         productId: it.productId,
         quantity: it.quantity,

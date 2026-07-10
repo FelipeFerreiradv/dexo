@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   mapDestinatarioToCustomer,
   mapCustomerToDestinatario,
+  mapMarketplaceBillingToDestinatario,
   resolveIndicadorIE,
 } from "../../app/usecases/nfe-customer-mapping";
 
@@ -183,5 +184,72 @@ describe("mapCustomerToDestinatario", () => {
     expect(d.tipoPessoa).toBe("EXTERIOR");
     expect(d.codPais).toBe("2496");
     expect(d.pais).toBe("URUGUAI");
+  });
+});
+
+describe("mapMarketplaceBillingToDestinatario", () => {
+  it("PF (CPF) com endereço → destinatário completo", () => {
+    const d = mapMarketplaceBillingToDestinatario(
+      {
+        name: "Andre",
+        lastName: "Sousa",
+        docType: "CPF",
+        docNumber: "529.982.247-25",
+        cep: "01001-000",
+        street: "Praça da Sé",
+        number: "100",
+        neighborhood: "Sé",
+        city: "São Paulo",
+        uf: "BR-SP", // ML devolve ISO 3166-2
+        countryId: "BR",
+      },
+      "ANDRESOUSA8025",
+      null,
+    );
+    expect(d).not.toBeNull();
+    expect(d!.tipoPessoa).toBe("PF");
+    expect(d!.cpfCnpj).toBe("52998224725");
+    expect(d!.nome).toBe("Andre Sousa");
+    expect(d!.indicadorIE).toBe("9");
+    expect(d!.cep).toBe("01001-000");
+    expect(d!.municipio).toBe("São Paulo");
+    expect(d!.uf).toBe("SP"); // normalizado de "BR-SP"
+    expect(d!.codMunicipio).toBeNull(); // ML não fornece IBGE
+    expect(d!.codPais).toBe("1058");
+  });
+
+  it("PJ (CNPJ 14 dígitos) → PJ", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Empresa X",
+      docType: "CNPJ",
+      docNumber: "11444777000161",
+    });
+    expect(d!.tipoPessoa).toBe("PJ");
+    expect(d!.cpfCnpj).toBe("11444777000161");
+  });
+
+  it("sem documento → null (mantém o fallback nome do pedido)", () => {
+    expect(
+      mapMarketplaceBillingToDestinatario({ name: "Sem Doc" }, "Nick"),
+    ).toBeNull();
+  });
+
+  it("usa o nome do pedido quando o billing não traz nome", () => {
+    const d = mapMarketplaceBillingToDestinatario(
+      { docType: "CPF", docNumber: "52998224725" },
+      "ANDRESOUSA8025",
+    );
+    expect(d!.nome).toBe("ANDRESOUSA8025");
+  });
+
+  it("país estrangeiro → EXTERIOR", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      docType: "CPF",
+      docNumber: "52998224725",
+      countryId: "UY",
+      countryName: "Uruguai",
+    });
+    expect(d!.tipoPessoa).toBe("EXTERIOR");
+    expect(d!.pais).toBe("Uruguai");
   });
 });
