@@ -832,6 +832,32 @@ export class ShopeeApiService {
   }
 
   /**
+   * Dados do comprador/entrega de UM pedido (nome, documento, endereço) p/
+   * preencher o destinatário da NF-e. Pede os response_optional_fields fiscais.
+   * Best-effort: retorna null em qualquer erro. NÃO logar (LGPD).
+   */
+  static async getOrderFiscalInfo(
+    accessToken: string,
+    shopId: number,
+    orderSn: string,
+  ): Promise<any | null> {
+    try {
+      const query = new URLSearchParams({
+        order_sn_list: orderSn,
+        response_optional_fields:
+          "recipient_address,buyer_username,buyer_user_id,invoice_data",
+      }).toString();
+      const response = await this.makeAuthenticatedRequest<
+        ShopeeApiResponse<{ order_list: any[] }>
+      >("GET", `/api/v2/order/get_order_detail?${query}`, accessToken, shopId);
+      if (response.error) return null;
+      return response.response?.order_list?.[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Lista comentários/perguntas (product/get_comment). Sem item_id ⇒ shop-wide
    * (usado pelo polling); com item_id ⇒ só daquele anúncio (pull on-demand).
    * Paginação por cursor (more + next_cursor), igual ao get_order_list.

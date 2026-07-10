@@ -252,4 +252,46 @@ describe("mapMarketplaceBillingToDestinatario", () => {
     expect(d!.tipoPessoa).toBe("EXTERIOR");
     expect(d!.pais).toBe("Uruguai");
   });
+
+  it("shape Magalu (customer_type 'cnpj' minúsculo) → PJ, com e-mail e telefone", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Loja do Edu",
+      docType: "cnpj",
+      docNumber: "18901029000100",
+      email: "edu@loja.br",
+      phone: "21998746332",
+      cep: "12345-678",
+      street: "Avenida Paulista",
+      number: "1000",
+      neighborhood: "Bela Vista",
+      city: "São Paulo",
+      uf: "SP",
+    });
+    expect(d!.tipoPessoa).toBe("PJ");
+    expect(d!.cpfCnpj).toBe("18901029000100");
+    expect(d!.email).toBe("edu@loja.br");
+    expect(d!.telefone).toBe("21998746332");
+    expect(d!.municipio).toBe("São Paulo");
+  });
+
+  it("só endereço, sem documento (ex.: Shopee sem CPF) → preenche endereço, cpfCnpj vazio", () => {
+    const d = mapMarketplaceBillingToDestinatario({
+      name: "Comprador Shopee",
+      cep: "01001-000",
+      street: "Rua X, 100, Centro",
+      city: "São Paulo",
+      uf: "SP",
+    });
+    expect(d).not.toBeNull();
+    expect(d!.cpfCnpj).toBe("");
+    expect(d!.nome).toBe("Comprador Shopee");
+    expect(d!.cep).toBe("01001-000");
+    expect(d!.municipio).toBe("São Paulo");
+  });
+
+  it("só nome, sem doc nem endereço → null (mantém fallback)", () => {
+    expect(
+      mapMarketplaceBillingToDestinatario({ name: "Só Nome" }, "Nick"),
+    ).toBeNull();
+  });
 });

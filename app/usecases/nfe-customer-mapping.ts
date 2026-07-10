@@ -134,6 +134,8 @@ export interface MarketplaceBillingSnapshot {
   lastName?: string | null;
   docType?: string | null; // "CPF" | "CNPJ" | ...
   docNumber?: string | null;
+  email?: string | null;
+  phone?: string | null;
   cep?: string | null;
   street?: string | null;
   number?: string | null;
@@ -164,7 +166,10 @@ export function mapMarketplaceBillingToDestinatario(
   fallbackEmail?: string | null,
 ): NfeDestinatario | null {
   const doc = (b.docNumber ?? "").replace(/\D/g, "");
-  if (!doc) return null;
+  // Vale preencher se há documento OU endereço (algumas plataformas dão o
+  // endereço mas não o CPF — melhor que só o nome). Só-nome → null (= fallback).
+  const hasAddress = !!(b.cep || b.street || b.city);
+  if (!doc && !hasAddress) return null;
   const isPj = (b.docType ?? "").toUpperCase() === "CNPJ" || doc.length === 14;
   const nome =
     [b.name, b.lastName].filter(Boolean).join(" ").trim() ||
@@ -177,8 +182,8 @@ export function mapMarketplaceBillingToDestinatario(
     nome,
     inscricaoEstadual: null,
     indicadorIE: resolveIndicadorIE(null, isPj, null),
-    email: fallbackEmail ?? null,
-    telefone: null,
+    email: b.email ?? fallbackEmail ?? null,
+    telefone: b.phone ?? null,
     cep: b.cep ?? null,
     logradouro: b.street ?? null,
     numero: b.number ?? null,

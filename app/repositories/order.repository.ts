@@ -347,6 +347,7 @@ class OrderRepositoryPrisma implements OrderRepository {
     marketplaceAccount: {
       id: string;
       platform: string;
+      shopId: number | null;
       accessToken: string | null;
       refreshToken: string | null;
       expiresAt: Date | null;
@@ -369,6 +370,7 @@ class OrderRepositoryPrisma implements OrderRepository {
           select: {
             id: true,
             platform: true,
+            shopId: true,
             accessToken: true,
             refreshToken: true,
             expiresAt: true,
@@ -394,6 +396,7 @@ class OrderRepositoryPrisma implements OrderRepository {
         ? {
             id: result.marketplaceAccount.id,
             platform: result.marketplaceAccount.platform,
+            shopId: result.marketplaceAccount.shopId,
             accessToken: result.marketplaceAccount.accessToken,
             refreshToken: result.marketplaceAccount.refreshToken,
             expiresAt: result.marketplaceAccount.expiresAt,

@@ -5,10 +5,25 @@ import { orderRepository } from "../repositories/order.repository";
 import {
   mapCustomerToDestinatario,
   mapMarketplaceBillingToDestinatario,
+  type MarketplaceBillingSnapshot,
 } from "./nfe-customer-mapping";
 import type { Customer } from "../interfaces/customer.interface";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
+import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { ShopeeOAuthService } from "../marketplaces/services/shopee-oauth.service";
+import { MagaluApiService } from "../marketplaces/services/magalu-api.service";
+import { MagaluOAuthService } from "../marketplaces/services/magalu-oauth.service";
+
+/** Conta de origem do pedido usada p/ buscar dados fiscais do comprador. */
+type BillingAccount = {
+  id: string;
+  platform: string;
+  shopId: number | null;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+};
 import type {
   NfeDraftCreateInput,
   NfeDraftUpdateInput,
@@ -220,64 +235,179 @@ export class NfeDraftUseCase {
     return filled;
   }
 
-  // Best-effort: dados fiscais do comprador via ML billing_info quando o pedido
-  // não casa um Customer. Falha/ausência → null (cai no fallback nome). NÃO loga
-  // os dados pessoais do comprador (LGPD).
+  // Best-effort: dados fiscais do comprador (nome/CPF/endereço) na API do
+  // marketplace quando o pedido não casa um Customer. Despacha por plataforma;
+  // falha/ausência → null (cai no fallback nome). NÃO loga os dados (LGPD).
   private async tryMarketplaceBilling(order: {
     externalOrderId: string;
     customerName: string | null;
     customerEmail: string | null;
-    marketplaceAccount: {
-      id: string;
-      platform: string;
-      accessToken: string | null;
-      refreshToken: string | null;
-      expiresAt: Date | null;
-    } | null;
+    marketplaceAccount: BillingAccount | null;
   }): Promise<NfeDestinatario | null> {
     const acc = order.marketplaceAccount;
-    if (!acc || acc.platform !== "MERCADO_LIVRE") return null;
+    if (!acc) return null;
     try {
-      let token = acc.accessToken;
-      const soon =
-        !token ||
-        (acc.expiresAt ? acc.expiresAt.getTime() - Date.now() < 60_000 : false);
-      if (soon && acc.refreshToken) {
-        token = (
-          await MLOAuthService.refreshAccessTokenForAccount(
-            acc.id,
-            acc.refreshToken,
-          )
-        ).accessToken;
+      let snap: MarketplaceBillingSnapshot | null = null;
+      if (acc.platform === "MERCADO_LIVRE") {
+        snap = await this.mlBillingSnapshot(acc, order.externalOrderId);
+      } else if (acc.platform === "SHOPEE") {
+        snap = await this.shopeeBillingSnapshot(acc, order.externalOrderId);
+      } else if (acc.platform === "MAGALU") {
+        snap = await this.magaluBillingSnapshot(acc, order.externalOrderId);
       }
-      if (!token) return null;
-      const billing = await MLApiService.getOrderBillingInfo(
-        token,
-        order.externalOrderId,
-      );
-      const bi = billing?.buyer?.billing_info;
-      if (!bi) return null;
+      if (!snap) return null;
       return mapMarketplaceBillingToDestinatario(
-        {
-          name: bi.name,
-          lastName: bi.last_name,
-          docType: bi.identification?.type,
-          docNumber: bi.identification?.number,
-          cep: bi.address?.zip_code,
-          street: bi.address?.street_name,
-          number: bi.address?.street_number,
-          neighborhood: bi.address?.neighborhood,
-          city: bi.address?.city_name,
-          uf: bi.address?.state?.code,
-          countryId: bi.address?.country_id,
-          countryName: bi.address?.state?.name,
-        },
+        snap,
         order.customerName,
         order.customerEmail,
       );
     } catch {
       return null;
     }
+  }
+
+  private async mlBillingSnapshot(
+    acc: BillingAccount,
+    orderId: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await MLOAuthService.refreshAccessTokenForAccount(
+            acc.id,
+            acc.refreshToken,
+          )
+        ).accessToken;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const billing = await MLApiService.getOrderBillingInfo(token, orderId);
+    const bi = billing?.buyer?.billing_info;
+    if (!bi) return null;
+    return {
+      name: bi.name,
+      lastName: bi.last_name,
+      docType: bi.identification?.type,
+      docNumber: bi.identification?.number,
+      cep: bi.address?.zip_code,
+      street: bi.address?.street_name,
+      number: bi.address?.street_number,
+      neighborhood: bi.address?.neighborhood,
+      city: bi.address?.city_name,
+      uf: bi.address?.state?.code,
+      countryId: bi.address?.country_id,
+      countryName: bi.address?.state?.name,
+    };
+  }
+
+  private async shopeeBillingSnapshot(
+    acc: BillingAccount,
+    orderSn: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    if (!acc.shopId) return null;
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await ShopeeOAuthService.refreshAccessToken(acc.refreshToken, acc.shopId)
+        ).access_token;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const od: any = await ShopeeApiService.getOrderFiscalInfo(
+      token,
+      acc.shopId,
+      orderSn,
+    );
+    if (!od) return null;
+    const ra = od.recipient_address ?? {};
+    const inv = od.invoice_data ?? {};
+    // CPF do comprador (Shopee BR): campos variam — tenta os mais prováveis.
+    const doc =
+      od.buyer_cpf_id ?? inv.tax_id ?? inv.number ?? inv.cpf ?? inv.document ?? null;
+    const name = ra.name ?? inv.name ?? null;
+    return {
+      name,
+      docNumber: doc,
+      phone: ra.phone ?? null,
+      cep: ra.zipcode ?? null,
+      // Shopee dá o endereço num único `full_address`; sem número separado.
+      street: ra.full_address ?? ra.town ?? null,
+      neighborhood: ra.district ?? null,
+      city: ra.city ?? null,
+      uf: ra.state ?? null,
+      countryId: "BR",
+    };
+  }
+
+  private async magaluBillingSnapshot(
+    acc: BillingAccount,
+    orderId: string,
+  ): Promise<MarketplaceBillingSnapshot | null> {
+    let token = acc.accessToken;
+    if (this.tokenSoon(acc) && acc.refreshToken) {
+      try {
+        token = (
+          await MagaluOAuthService.refreshAccessTokenForAccount(
+            acc.id,
+            acc.refreshToken,
+          )
+        ).accessToken;
+      } catch {
+        /* mantém o token atual */
+      }
+    }
+    if (!token) return null;
+    const order: any = await MagaluApiService.getOrder(token, orderId).catch(
+      () => null,
+    );
+    if (!order) return null;
+    const c = order.customer ?? {};
+    const p = Array.isArray(c.phones) ? c.phones[0] : null;
+    const phone = p ? `${p.area_code ?? ""}${p.number ?? ""}` || null : null;
+    const addr = this.pickMagaluAddress(order);
+    return {
+      name: c.name ?? null,
+      docType: c.customer_type ?? null, // "cpf" | "cnpj"
+      docNumber: c.document_number ?? null,
+      email: c.email ?? null,
+      phone,
+      cep: addr?.zipcode ?? null,
+      street: addr?.street ?? null,
+      number: addr?.number ?? null,
+      neighborhood: addr?.district ?? null,
+      city: addr?.city ?? null,
+      uf: addr?.state ?? null,
+      countryId: "BR",
+    };
+  }
+
+  /** Endereço postal do pedido Magalu (1º com CEP/rua entre drop/pickup/recipient). */
+  private pickMagaluAddress(order: any): any | null {
+    const deliveries = Array.isArray(order.deliveries) ? order.deliveries : [];
+    for (const d of deliveries) {
+      const sh = d?.shipping ?? {};
+      for (const cand of [
+        sh.recipient?.address,
+        sh.drop_details?.address,
+        sh.pickup_details?.address,
+      ]) {
+        if (cand && (cand.zipcode || cand.street)) return cand;
+      }
+    }
+    return null;
+  }
+
+  private tokenSoon(acc: BillingAccount): boolean {
+    return (
+      !acc.accessToken ||
+      (acc.expiresAt ? acc.expiresAt.getTime() - Date.now() < 60_000 : false)
+    );
   }
 
   async getById(
