@@ -1,35 +1,37 @@
 import "dotenv/config";
+import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { normalizeSku } from "../app/lib/sku";
 import {
   areTitlesSimilar,
   titleSimilarity,
 } from "../app/lib/title-similarity";
+import { MLApiService } from "../app/marketplaces/services/ml-api.service";
+import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
+import { ListingAutodetectUseCase } from "../app/marketplaces/usecases/listing-autodetect.usercase";
 
 /**
- * Limpeza de produtos MAL-AGRUPADOS por "SKU de caixa".
+ * Limpeza de produtos MAL-AGRUPADOS por "SKU de caixa" (split in-place + enrich).
  *
- * Quando o vendedor reusa um rótulo de caixa/palete como SKU do anúncio
- * (`Caixa mangueiras`, `Caixote 2`, `Palete chicote`) em vários anúncios
- * diferentes, o import antigo colapsava todos num único Product. Isto detecta
- * produtos onde UMA conta tem 2+ anúncios (sinal de reuso) e SEPARA os anúncios
- * excedentes em produtos próprios (split in-place):
- *   - mantém no produto original o anúncio cujo título (do slug do permalink)
- *     mais casa com o nome atual do produto;
- *   - cada outro anúncio vira um Product novo (nome derivado do slug do
- *     permalink, SKU sintético VAAPT-<externalListingId>, createdFromMarketplace)
- *     e o listing é re-apontado para ele.
+ * Quando o vendedor reusa um rótulo de caixa/palete como SKU (`Caixa mangueiras`,
+ * `Caixote 2`) em vários anúncios diferentes, o import antigo colapsava todos num
+ * único Product. Detecta produtos onde UMA conta tem 2+ anúncios com título
+ * CLARAMENTE diferente do keeper e SEPARA cada excedente num produto próprio:
+ *   - mantém no produto original o anúncio cujo título mais casa com o nome atual;
+ *   - cada outro anúncio vira um Product novo e o listing é re-apontado.
  *
- * NÃO agrupamento legítimo multi-conta (1 anúncio por conta) NÃO é tocado.
- * Preço/estoque/imagem do produto novo herdam do original (placeholder); um
- * re-import posterior reconcilia. Título vem do slug (aproximado).
+ * ENRICH (padrão ON): busca o anúncio REAL no Mercado Livre por externalListingId
+ * (qualquer status) e usa nome/preço/imagens verdadeiros no produto novo. Sem
+ * enrich (ou fora do ML), cai no nome do slug do permalink + preço/imagem
+ * herdados do original (placeholder). PRESERVA todos os listings e o histórico.
  *
  * Uso:
- *   tsx scripts/split-boxlabel-products.ts --email=x@y.com            # dry-run
- *   tsx scripts/split-boxlabel-products.ts --user-id=... --limit=10   # dry-run
- *   tsx scripts/split-boxlabel-products.ts --email=x@y.com --apply    # grava
+ *   tsx scripts/split-boxlabel-products.ts --email=x@y.com                # dry-run + enrich
+ *   tsx scripts/split-boxlabel-products.ts --email=x@y.com --no-enrich    # dry-run rápido (slug)
+ *   tsx scripts/split-boxlabel-products.ts --email=x@y.com --limit=10     # amostra
+ *   tsx scripts/split-boxlabel-products.ts --email=x@y.com --apply        # grava (com enrich)
  *
- * Sem `--apply` é DRY-RUN (não grava nada).
+ * Sem `--apply` é DRY-RUN (não grava nada). O enrich é read-only nos dois modos.
  */
 
 function parseArgs() {
@@ -45,6 +47,7 @@ function parseArgs() {
     userId: get("user-id"),
     limit: rawLimit ? parseInt(rawLimit, 10) : undefined,
     apply: args.includes("--apply"),
+    enrich: !args.includes("--no-enrich"),
   };
 }
 
@@ -68,6 +71,15 @@ function titleFromPermalink(permalink: string | null): string | null {
     .slice(0, 200);
 }
 
+type Account = {
+  id: string;
+  accountName: string | null;
+  platform: Platform;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+};
+
 type L = {
   id: string;
   productId: string;
@@ -87,8 +99,86 @@ type L = {
   };
 };
 
+type EnrichData = {
+  title: string;
+  price: number;
+  imageUrl: string | null;
+  imageUrls: string[];
+};
+
+// Token ML válido (refresca se perto de expirar). null se indisponível.
+async function getMlToken(acc: Account): Promise<string | null> {
+  const soon =
+    !acc.accessToken ||
+    (acc.expiresAt ? acc.expiresAt.getTime() - Date.now() < 5 * 60 * 1000 : false);
+  if (soon && acc.refreshToken) {
+    try {
+      const r = await MLOAuthService.refreshAccessTokenForAccount(
+        acc.id,
+        acc.refreshToken,
+      );
+      return r.accessToken;
+    } catch (e) {
+      console.error(
+        `  refresh token falhou p/ ${acc.accountName}:`,
+        e instanceof Error ? e.message : e,
+      );
+      return acc.accessToken;
+    }
+  }
+  return acc.accessToken;
+}
+
+async function enrichFromMl(
+  splitListings: L[],
+  accounts: Account[],
+  dataOwnerId: string,
+): Promise<Map<string, EnrichData>> {
+  const map = new Map<string, EnrichData>();
+  const mlAccts = accounts.filter((a) => a.platform === Platform.MERCADO_LIVRE);
+  const byAcct = new Map<string, string[]>();
+  for (const l of splitListings) {
+    if (!mlAccts.some((a) => a.id === l.marketplaceAccountId)) continue;
+    const arr = byAcct.get(l.marketplaceAccountId) ?? [];
+    arr.push(l.externalListingId);
+    byAcct.set(l.marketplaceAccountId, arr);
+  }
+  for (const [acctId, ids] of byAcct) {
+    const acc = mlAccts.find((a) => a.id === acctId)!;
+    const token = await getMlToken(acc);
+    if (!token) {
+      console.log(`  enrich ${acc.accountName}: sem token → fallback slug`);
+      continue;
+    }
+    try {
+      const items = await MLApiService.getItemsDetails(token, ids);
+      for (const item of items) {
+        const n = ListingAutodetectUseCase.normalizeMLItem(
+          { id: acc.id, userId: dataOwnerId },
+          item,
+        );
+        map.set(item.id, {
+          title: n.title,
+          price: n.price,
+          imageUrl: n.imageUrl,
+          imageUrls: n.imageUrls ?? [],
+        });
+      }
+      console.log(
+        `  enrich ${acc.accountName}: ${items.length}/${ids.length} anúncios reais`,
+      );
+    } catch (e) {
+      console.error(
+        `  enrich ${acc.accountName} falhou → fallback slug:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+  return map;
+}
+
 async function main() {
-  const { email, userId, limit, apply } = parseArgs();
+  const { email, userId, limit, apply, enrich } = parseArgs();
   if (!email && !userId) {
     throw new Error("Informe --email=<e-mail> ou --user-id=<id> do dono dos dados.");
   }
@@ -99,8 +189,20 @@ async function main() {
   if (!owner) throw new Error("Usuário não encontrado.");
   const dataOwnerId = owner.parentUserId ?? owner.id;
   console.log(
-    `Modo: ${apply ? "APPLY (grava)" : "DRY-RUN (não grava)"} | dono ${owner.email} (${dataOwnerId})\n`,
+    `Modo: ${apply ? "APPLY (grava)" : "DRY-RUN (não grava)"} | enrich=${enrich ? "ON" : "OFF"} | dono ${owner.email}\n`,
   );
+
+  const accounts = (await prisma.marketplaceAccount.findMany({
+    where: { userId: dataOwnerId },
+    select: {
+      id: true,
+      accountName: true,
+      platform: true,
+      accessToken: true,
+      refreshToken: true,
+      expiresAt: true,
+    },
+  })) as Account[];
 
   const rows = (await prisma.productListing.findMany({
     where: { product: { userId: dataOwnerId } },
@@ -154,16 +256,14 @@ async function main() {
       );
     if ([...perAccount.values()].some((c) => c >= 2)) candidates.push(pid);
   }
-
-  console.log(`Produtos candidatos (conta com 2+ anúncios): ${candidates.length}`);
   const targets = limit ? candidates.slice(0, limit) : candidates;
-  if (limit && candidates.length > limit) {
-    console.log(`(limitando a ${limit} pelo --limit)\n`);
-  }
+  console.log(
+    `Produtos candidatos: ${candidates.length}${limit ? ` (limitado a ${targets.length})` : ""}`,
+  );
 
-  let splitsPlanned = 0;
-  let productsCreated = 0;
-
+  // Fase 1: coleta todos os splits (keeper por casamento de título).
+  type Plan = { product: L["product"]; keeper: L; splits: L[] };
+  const plans: Plan[] = [];
   for (const pid of targets) {
     const listings = byProduct.get(pid)!;
     const product = listings[0].product;
@@ -174,7 +274,6 @@ async function main() {
         (perAccount.get(l.marketplaceAccountId) ?? 0) + 1,
       );
 
-    // Keeper = anúncio cujo título (slug) mais casa com o nome atual do produto.
     let keeper = listings[0];
     let best = -1;
     for (const l of listings) {
@@ -188,50 +287,56 @@ async function main() {
     }
     const keeperTitle = titleFromPermalink(keeper.permalink) ?? product.name;
 
-    // Splits = não-keeper, em contas com 2+ anúncios (preserva 1-por-conta
-    // legítimo) E com título CLARAMENTE diferente do keeper. Títulos parecidos
-    // (mesmo produto reanunciado várias vezes) NÃO são separados.
     const splits = listings.filter(
       (l) =>
         l.id !== keeper.id &&
         (perAccount.get(l.marketplaceAccountId) ?? 0) >= 2 &&
-        !areTitlesSimilar(
-          titleFromPermalink(l.permalink) ?? "",
-          keeperTitle,
-        ),
+        !areTitlesSimilar(titleFromPermalink(l.permalink) ?? "", keeperTitle),
     );
-    if (splits.length === 0) continue;
+    if (splits.length > 0) plans.push({ product, keeper, splits });
+  }
 
+  const allSplits = plans.flatMap((p) => p.splits);
+  console.log(
+    `A separar: ${allSplits.length} anúncio(s) em ${plans.length} produto(s).\n`,
+  );
+
+  // Fase 2: enrich (read-only) dos anúncios a separar, via ML.
+  const enrichMap = enrich
+    ? await enrichFromMl(allSplits, accounts, dataOwnerId)
+    : new Map<string, EnrichData>();
+  if (enrich) console.log("");
+
+  // Fase 3: imprime (e aplica).
+  let created = 0;
+  for (const { product, keeper, splits } of plans) {
     console.log(
-      `\n■ Produto ${product.id} "${product.name}" (sku="${product.sku}") — ${listings.length} anúncios`,
-    );
-    console.log(
-      `  keeper: ${keeper.externalListingId} [${keeper.status}] ${keeper.accountName}`,
+      `\n■ ${product.id} "${product.name}" (sku="${product.sku}") — keeper ${keeper.externalListingId} [${keeper.status}]`,
     );
     for (const s of splits) {
-      const newName = titleFromPermalink(s.permalink) ?? `Anúncio ${s.externalListingId}`;
+      const e = enrichMap.get(s.externalListingId);
+      const newName =
+        e?.title ??
+        titleFromPermalink(s.permalink) ??
+        `Anúncio ${s.externalListingId}`;
       const newSku = `VAAPT-${s.externalListingId}`;
+      const src = e ? "ML" : "slug";
       console.log(
-        `  split → ${s.externalListingId} [${s.status}] ${s.accountName} :: "${newName}" (sku ${newSku})`,
+        `  split → ${s.externalListingId} [${s.status}] ${s.accountName} :: "${newName}" (${src}, sku ${newSku})`,
       );
-    }
-    splitsPlanned += splits.length;
 
-    if (apply) {
-      for (const s of splits) {
-        const newName =
-          titleFromPermalink(s.permalink) ?? `Anúncio ${s.externalListingId}`;
-        const newSku = `VAAPT-${s.externalListingId}`;
+      if (apply) {
         await prisma.$transaction(async (tx) => {
-          const created = await tx.product.create({
+          const createdProduct = await tx.product.create({
             data: {
               userId: dataOwnerId,
               name: newName,
               sku: newSku,
               skuNormalized: normalizeSku(newSku),
-              price: product.price as any,
+              price: (e?.price ?? product.price) as any,
               stock: product.stock,
-              imageUrl: product.imageUrl,
+              imageUrl: e?.imageUrl ?? product.imageUrl,
+              imageUrls: e?.imageUrls ?? [],
               createdFromMarketplace: true,
               originPlatform: (product.originPlatform as any) ?? undefined,
             },
@@ -239,21 +344,22 @@ async function main() {
           });
           await tx.productListing.update({
             where: { id: s.id },
-            data: { productId: created.id },
+            data: { productId: createdProduct.id },
           });
         });
-        productsCreated++;
+        created++;
       }
     }
   }
 
   console.log(
-    `\nResumo: ${splitsPlanned} anúncio(s) a separar em ${targets.length} produto(s) candidato(s).`,
+    `\nResumo: ${allSplits.length} split(s) em ${plans.length} produto(s). ` +
+      `Enriquecidos do ML: ${enrichMap.size}.`,
   );
   console.log(
     apply
-      ? `APPLY: ${productsCreated} produto(s) criados e listing(s) re-apontados.`
-      : `DRY-RUN — nada gravado (use --apply). Rode um re-import depois p/ reconciliar preço/estoque/imagem.`,
+      ? `APPLY: ${created} produto(s) criados e listing(s) re-apontados.`
+      : `DRY-RUN — nada gravado (use --apply).`,
   );
 }
 
