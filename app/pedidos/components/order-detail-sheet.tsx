@@ -32,6 +32,7 @@ import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   resolveMarketplaceListingLinkState,
+  pickPreferredListingsByPlatform,
   type MarketplaceListingPlatform,
 } from "@/app/lib/marketplace-listing-links";
 
@@ -541,18 +542,36 @@ export function OrderDetailSheet({
                     const productName =
                       item.product?.name || "Produto não encontrado";
                     // Mesmo resolvedor do modal: URL canônica do ML (com hífen)
-                    // quando falta permalink + gating. Sem listing vinculado
-                    // (listingId nulo) não renderiza nada, como antes.
-                    const linkState = item.listing
+                    // quando falta permalink + gating.
+                    const orderPlatform = (order.marketplaceAccount?.platform ??
+                      "MERCADO_LIVRE") as MarketplaceListingPlatform;
+                    let linkState = item.listing
                       ? resolveMarketplaceListingLinkState({
                           platform: (item.listing.platform ??
-                            order.marketplaceAccount?.platform ??
-                            "MERCADO_LIVRE") as MarketplaceListingPlatform,
+                            orderPlatform) as MarketplaceListingPlatform,
                           externalListingId: item.listing.externalListingId,
                           permalink: item.listing.permalink,
                           status: item.listing.status,
                         })
                       : null;
+                    // Fallback: item sem listing vinculado (listingId nulo,
+                    // import legado) → resolve o anúncio PREFERIDO do produto
+                    // (prefere a conta do pedido; senão o primeiro disponível).
+                    if (!linkState && item.product?.listings?.length) {
+                      const preferred = pickPreferredListingsByPlatform(
+                        item.product.listings.map((l) => ({
+                          platform: (l.platform ??
+                            orderPlatform) as MarketplaceListingPlatform,
+                          externalListingId: l.externalListingId,
+                          permalink: l.permalink,
+                          status: l.status,
+                        })),
+                      );
+                      const chosen =
+                        preferred.find((p) => p.platform === orderPlatform) ??
+                        preferred[0];
+                      linkState = chosen?.linkState ?? null;
+                    }
                     return (
                       <div
                         key={item.id}

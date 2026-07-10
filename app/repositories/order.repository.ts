@@ -35,6 +35,13 @@ type PrismaOrderWithRelations = PrismaOrder & {
         code: string;
         description: string | null;
       } | null;
+      listings?: {
+        id: string;
+        externalListingId: string;
+        permalink: string | null;
+        status?: string | null;
+        marketplaceAccount?: { platform: string } | null;
+      }[];
     };
     listing?: {
       id: string;
@@ -66,6 +73,13 @@ function mapPrismaToOrderItem(
         code: string;
         description: string | null;
       } | null;
+      listings?: {
+        id: string;
+        externalListingId: string;
+        permalink: string | null;
+        status?: string | null;
+        marketplaceAccount?: { platform: string } | null;
+      }[];
     };
     listing?: {
       id: string;
@@ -98,6 +112,13 @@ function mapPrismaToOrderItem(
                 description: item.product.productLocation.description ?? null,
               }
             : null,
+          listings: item.product.listings?.map((l) => ({
+            id: l.id,
+            externalListingId: l.externalListingId,
+            permalink: l.permalink ?? null,
+            status: l.status ?? null,
+            platform: l.marketplaceAccount?.platform ?? null,
+          })),
         }
       : undefined,
     listing: item.listing
@@ -259,6 +280,19 @@ class OrderRepositoryPrisma implements OrderRepository {
                       code: true,
                       description: true,
                     },
+                  },
+                  // Fallback do "Ver anúncio" quando o OrderItem não tem listing
+                  // vinculado (import legado/fallback): o sheet resolve o anúncio
+                  // preferido do PRODUTO. Só no detalhe (egress bounded).
+                  listings: {
+                    select: {
+                      id: true,
+                      externalListingId: true,
+                      permalink: true,
+                      status: true,
+                      marketplaceAccount: { select: { platform: true } },
+                    },
+                    orderBy: { updatedAt: "desc" },
                   },
                 },
               },

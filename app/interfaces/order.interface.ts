@@ -32,6 +32,15 @@ export interface OrderItem {
       code: string;
       description?: string | null;
     } | null;
+    // Fallback do "Ver anúncio" quando o item não tem listing vinculado:
+    // o sheet resolve o anúncio preferido do produto.
+    listings?: {
+      id: string;
+      externalListingId: string;
+      permalink?: string | null;
+      status?: string | null;
+      platform?: string | null;
+    }[];
   };
   listing?: {
     id: string;
