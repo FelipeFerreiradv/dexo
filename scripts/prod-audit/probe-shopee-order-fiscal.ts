@@ -83,7 +83,10 @@ async function main() {
   ) {
     try {
       token = (
-        await ShopeeOAuthService.refreshAccessToken(acc.refreshToken, acc.shopId)
+        await ShopeeOAuthService.refreshAccessToken(
+          acc.refreshToken,
+          acc.shopId!,
+        )
       ).access_token;
       console.log("(token refrescado)");
     } catch (e) {
