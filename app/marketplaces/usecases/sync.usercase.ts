@@ -430,9 +430,15 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (product) {
-          // SKU casa com produto existente do dono → só cria o listing
-          // (comportamento atual, mantido).
+        } else if (
+          product &&
+          !(await ListingRepository.productHasListingInAccount(
+            product.id,
+            account.id,
+          ))
+        ) {
+          // SKU casa com produto existente do dono e o produto NÃO tem anúncio
+          // nesta conta → só cria o listing (comportamento atual, mantido).
           await ListingRepository.createListing({
             productId: product.id,
             marketplaceAccountId: account.id,
@@ -450,8 +456,9 @@ export class SyncUseCase {
             status: "linked",
           };
         } else {
-          // NOVO: anúncio ativo sem produto → cria o produto e vincula via o
-          // núcleo idempotente (dedup por SKU garantida; sem gate de baseline).
+          // NOVO anúncio sem produto, OU SKU de caixa (produto casado já tem
+          // anúncio nesta conta → SKU reutilizado como rótulo): cria produto
+          // próprio via o núcleo idempotente (que aplica a guarda de box-label).
           const outcome =
             await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
               ListingAutodetectUseCase.normalizeMLItem(
@@ -702,7 +709,13 @@ export class SyncUseCase {
               permalink: needsPermalinkUpdate ? permalink : undefined,
             });
           }
-        } else if (product) {
+        } else if (
+          product &&
+          !(await ListingRepository.productHasListingInAccount(
+            product.id,
+            account.id,
+          ))
+        ) {
           linkedProductId = product.id;
           await ListingRepository.createListing({
             productId: product.id,
@@ -713,8 +726,9 @@ export class SyncUseCase {
             status,
           });
         } else {
-          // NOVO: SKU sem produto → cria o produto e vincula via o núcleo
-          // idempotente (dedup por SKU; sem gate de baseline).
+          // NOVO SKU sem produto, OU SKU de caixa (produto casado já tem anúncio
+          // nesta conta): cria produto próprio via o núcleo idempotente (que
+          // aplica a guarda de box-label).
           const outcome =
             await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
               ListingAutodetectUseCase.normalizeMagaluItem(
@@ -1247,9 +1261,15 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (product) {
-          // SKU casa com produto existente do dono → só cria o listing
-          // (comportamento atual, mantido).
+        } else if (
+          product &&
+          !(await ListingRepository.productHasListingInAccount(
+            product.id,
+            account.id,
+          ))
+        ) {
+          // SKU casa com produto existente do dono e o produto NÃO tem anúncio
+          // nesta conta → só cria o listing (comportamento atual, mantido).
           await ListingRepository.createListing({
             productId: product.id,
             marketplaceAccountId: account.id,
@@ -1266,8 +1286,9 @@ export class SyncUseCase {
             status: "linked",
           };
         } else {
-          // NOVO: variação ativa sem produto → cria o produto e vincula via o
-          // núcleo idempotente, preservando a granularidade por VARIAÇÃO
+          // NOVO (sem produto) OU SKU de caixa (produto casado já tem anúncio
+          // nesta conta): cria produto próprio via o núcleo idempotente, que
+          // aplica a guarda de box-label, preservando a granularidade por VARIAÇÃO
           // (externalListingId = item_id:model_id). Preço/estoque/imagem vêm do
           // item completo quando disponível; o sync reconcilia depois.
           const full = itemDetailsMap.get(item.itemId);

@@ -48,7 +48,7 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
-  it("(b) SKU casa com produto do dono → só vincula, NÃO cria produto", async () => {
+  it("(b) SKU casa com produto do dono (sem anúncio nesta conta) → só vincula", async () => {
     vi.spyOn(
       ListingRepository,
       "findProductIdByExternalListingId",
@@ -56,6 +56,11 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
     vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
       id: "p-existing",
     } as any);
+    // Produto casado NÃO tem anúncio nesta conta → agrupamento legítimo.
+    vi.spyOn(
+      ListingRepository,
+      "productHasListingInAccount",
+    ).mockResolvedValue(false);
     const create = vi.spyOn(ProductUseCase.prototype, "create");
     const upsert = vi
       .spyOn(ListingRepository, "upsertAutodetectedListing")
@@ -75,6 +80,84 @@ describe("ListingAutodetectUseCase.upsertProductFromMarketplaceItem", () => {
         externalListingId: "MLB123",
         externalSku: "ABC-1",
       }),
+    );
+  });
+
+  it("(b2) SKU de caixa (produto casado na conta + título DIFERENTE) → NÃO agrupa, cria produto próprio com SKU sintético", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
+      id: "p-box",
+      name: "Mangueira Hidrovacuo Renault Kangoo 2010 2018 Usado",
+    } as any);
+    // Produto casado JÁ tem anúncio nesta conta → SKU reutilizado (rótulo).
+    vi.spyOn(
+      ListingRepository,
+      "productHasListingInAccount",
+    ).mockResolvedValue(true);
+    const create = vi
+      .spyOn(ProductUseCase.prototype, "create")
+      .mockResolvedValue({ id: "p-split" } as any);
+    const upsert = vi
+      .spyOn(ListingRepository, "upsertAutodetectedListing")
+      .mockResolvedValue({ id: "l1", productId: "p-split" } as any);
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({
+        rawSku: "Caixa mangueiras",
+        externalListingId: "MLB999",
+        title: "Mangueira Combustivel Pajero Tr4 4x2 Flex 2010 2012",
+      }),
+    );
+
+    expect(res.action).toBe("created_product");
+    expect(res.productId).toBe("p-split");
+    // SKU sintético único por anúncio (não o rótulo de caixa reutilizado).
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sku: "VAAPT-MLB999",
+        autoSku: false,
+        createdFromMarketplace: true,
+      }),
+    );
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: "p-split" }),
+    );
+  });
+
+  it("(b3) SKU repetido na conta MAS título ~idêntico (mesmo produto reanunciado) → AGRUPA, não cria produto", async () => {
+    vi.spyOn(
+      ListingRepository,
+      "findProductIdByExternalListingId",
+    ).mockResolvedValue(null);
+    vi.spyOn(prisma.product, "findFirst").mockResolvedValue({
+      id: "p-dup",
+      name: "Par Tela Autofalantes 12cm",
+    } as any);
+    vi.spyOn(
+      ListingRepository,
+      "productHasListingInAccount",
+    ).mockResolvedValue(true);
+    const create = vi.spyOn(ProductUseCase.prototype, "create");
+    const upsert = vi
+      .spyOn(ListingRepository, "upsertAutodetectedListing")
+      .mockResolvedValue({ id: "l2", productId: "p-dup" } as any);
+
+    const res = await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({
+        rawSku: "Prateleira pecas novas",
+        externalListingId: "MLB888",
+        title: "Par Tela Autofalantes 12cm",
+      }),
+    );
+
+    expect(res.action).toBe("linked_existing_product");
+    expect(res.productId).toBe("p-dup");
+    expect(create).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: "p-dup" }),
     );
   });
 

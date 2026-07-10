@@ -206,6 +206,25 @@ export class ListingRepository {
     });
   }
 
+  /**
+   * Detecção de "SKU de caixa": um produto que já tem um anúncio NESTA conta e
+   * casaria com um NOVO anúncio pelo mesmo SKU indica que o SKU foi reutilizado
+   * como rótulo de caixa/palete (não é um SKU único por item). Nesse caso o novo
+   * anúncio NÃO deve ser agrupado — vira produto próprio. Anúncios da MESMA conta
+   * sinalizam reuso; contas diferentes (mesmo SKU) são agrupamento legítimo.
+   * EGRESS-light: só existência.
+   */
+  static async productHasListingInAccount(
+    productId: string,
+    marketplaceAccountId: string,
+  ): Promise<boolean> {
+    const found = await prisma.productListing.findFirst({
+      where: { productId, marketplaceAccountId },
+      select: { id: true },
+    });
+    return found != null;
+  }
+
   static async upsertFromOrderFallback(data: {
     productId: string;
     marketplaceAccountId: string;
