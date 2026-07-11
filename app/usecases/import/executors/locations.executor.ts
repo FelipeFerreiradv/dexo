@@ -18,6 +18,7 @@ import {
   newReport,
 } from "../import.types";
 import { mapVaaptLocations } from "../mappers/vaapt-localizacoes.mapper";
+import { mapWdLocations } from "../mappers/wd-localizacoes.mapper";
 import { fileOfKind } from "../import-detector";
 
 export interface LocationPlanItem {
@@ -156,6 +157,35 @@ export async function runVaaptLocations(
   bump(report, "linhas_no_arquivo", mapped.totalRows);
   bump(report, "linhas_sem_localizacao", mapped.rowsWithoutLocation);
   bump(report, "localizacoes_distintas", mapped.items.length);
+  await executeLocationPlan(ctx, report, mapped.items, deps);
+  return report;
+}
+
+/** Runner WEBDESMONTE/LOCALIZACOES — árvore de locations.csv (Level asc). */
+export async function runWdLocations(
+  ctx: ImportContext,
+  deps: LocationExecDeps = defaultLocationDeps,
+): Promise<ImportReport> {
+  const file = fileOfKind(ctx.files, "WD_LOCATIONS");
+  if (!file) {
+    throw new ImportValidationError(
+      "Arquivo locations.csv (WebDesmonte) não encontrado.",
+    );
+  }
+  const report = newReport(
+    "WEBDESMONTE",
+    "LOCALIZACOES",
+    ctx.targetUserId,
+    ctx.dryRun,
+  );
+  const mapped = mapWdLocations(file);
+  bump(report, "linhas_no_arquivo", mapped.totalRows);
+  bump(report, "linhas_invalidas", mapped.invalidRows);
+  bump(report, "localizacoes_distintas", mapped.items.length);
+  for (const aviso of mapped.avisos) {
+    bump(report, "avisos");
+    addIssue(report.avisos, aviso);
+  }
   await executeLocationPlan(ctx, report, mapped.items, deps);
   return report;
 }

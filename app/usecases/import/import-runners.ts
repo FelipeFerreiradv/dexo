@@ -12,11 +12,15 @@ import type {
   ImportSystem,
 } from "./import.types";
 import { ImportValidationError } from "./import.types";
-import { runVaaptLocations } from "./executors/locations.executor";
+import {
+  runVaaptLocations,
+  runWdLocations,
+} from "./executors/locations.executor";
 import {
   runVaaptCustomers,
   runWdCustomers,
 } from "./executors/customers.executor";
+import { runVaaptScraps, runWdScraps } from "./executors/scraps.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -24,7 +28,10 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
   {
     "VAAPT/LOCALIZACOES": runVaaptLocations,
     "VAAPT/CLIENTES": runVaaptCustomers,
+    "VAAPT/SUCATAS": runVaaptScraps,
+    "WEBDESMONTE/LOCALIZACOES": runWdLocations,
     "WEBDESMONTE/CLIENTES": runWdCustomers,
+    "WEBDESMONTE/SUCATAS": runWdScraps,
   };
 
 export function resolveRunner(
