@@ -97,7 +97,13 @@ export async function runWdPacote(
       bump(r, "avisos");
       addIssue(r.avisos, aviso);
     }
-    scrapKeyToId = await executeScrapsPlan(ctx, r, mapped.items, deps.scraps);
+    scrapKeyToId = await executeScrapsPlan(
+      ctx,
+      r,
+      mapped.items,
+      deps.scraps,
+      locCodeToId,
+    );
     report.porFase["sucatas"] = r;
   }
 

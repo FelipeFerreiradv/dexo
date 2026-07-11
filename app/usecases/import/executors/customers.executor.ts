@@ -38,6 +38,7 @@ export interface ExistingCustomerRef {
   cnpj: string | null;
   name: string | null;
   phone: string | null;
+  mobile: string | null;
   notes: string | null;
 }
 
@@ -51,7 +52,14 @@ export const defaultCustomersDeps: CustomersExecDeps = {
   loadExistingCustomers: (userId) =>
     prisma.customer.findMany({
       where: { userId },
-      select: { cpf: true, cnpj: true, name: true, phone: true, notes: true },
+      select: {
+        cpf: true,
+        cnpj: true,
+        name: true,
+        phone: true,
+        mobile: true,
+        notes: true,
+      },
     }),
 };
 
@@ -66,11 +74,15 @@ export async function executeCustomersPlan(
   const exCnpj = new Set(
     existing.map((c) => c.cnpj).filter((v): v is string => !!v),
   );
-  const exNamePhone = new Set(
-    existing
-      .filter((c) => c.name && c.phone)
-      .map((c) => `${normName(c.name as string)}|${onlyDigits(c.phone)}`),
-  );
+  // Heurística nome+contato: indexa telefone E celular do banco (clientes
+  // WebDesmonte muitas vezes só têm CellPhone).
+  const exNamePhone = new Set<string>();
+  for (const c of existing) {
+    if (!c.name) continue;
+    const nome = normName(c.name);
+    if (c.phone) exNamePhone.add(`${nome}|${onlyDigits(c.phone)}`);
+    if (c.mobile) exNamePhone.add(`${nome}|${onlyDigits(c.mobile)}`);
+  }
   const exLegacyCod = new Set<string>();
   for (const c of existing) {
     const cod = parseCustomerMarker(c.notes);
@@ -97,8 +109,9 @@ export async function executeCustomersPlan(
       bump(report, "ja_existiam_cnpj");
       continue;
     }
-    if (!item.cpf && !item.cnpj && item.phone) {
-      if (exNamePhone.has(`${normName(item.name)}|${item.phone}`)) {
+    const contato = item.phone ?? item.mobile;
+    if (!item.cpf && !item.cnpj && contato) {
+      if (exNamePhone.has(`${normName(item.name)}|${contato}`)) {
         bump(report, "ja_existiam_nome_telefone");
         continue;
       }
@@ -158,9 +171,7 @@ export async function executeCustomersPlan(
     if (item.cod) exLegacyCod.add(item.cod);
     if (item.cpf) exCpf.add(item.cpf);
     if (item.cnpj) exCnpj.add(item.cnpj);
-    if (item.phone) {
-      exNamePhone.add(`${normName(item.name)}|${item.phone}`);
-    }
+    if (contato) exNamePhone.add(`${normName(item.name)}|${contato}`);
   }
 
   ctx.onProgress?.({

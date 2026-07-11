@@ -21,48 +21,71 @@ export interface ParsedWorkbook extends ParsedTable {
   shiftedLabels: boolean;
 }
 
+/**
+ * Guarda anti-bomba de dimensão: sheet_to_json materializa TODA a faixa
+ * declarada em `!ref` — um xlsx pequeno com dimensão forjada (A1:ZZ1048576)
+ * geraria centenas de milhões de células null e derrubaria o processo. O
+ * maior arquivo real (peças Vaapt) tem ~36,6k linhas × 18 colunas ≈ 660k.
+ */
+const MAX_SHEET_CELLS = 5_000_000;
+
 export function readXlsxBuffer(buffer: Buffer): ParsedWorkbook {
   const wb = XLSX.read(buffer, { type: "buffer" });
   const sheetName = wb.SheetNames[0];
   if (!sheetName) throw new Error("Planilha sem abas");
   const sheet = wb.Sheets[sheetName];
-  const raw = XLSX.utils.sheet_to_json<ImportRow>(sheet, { defval: null });
-
-  // Header "de verdade" = chaves do sheet_to_json. Se elas não parecem
-  // rótulos (ex.: título "Relatório de Notas Fiscal Emitidas" numa coluna
-  // só + __EMPTY_*), a 1ª linha de dados é a de rótulos → formato deslocado.
-  const headerKeys = raw.length > 0 ? Object.keys(raw[0]) : [];
-  const emptyish = headerKeys.filter((k) => k.startsWith("__EMPTY")).length;
-  const shiftedLabels =
-    headerKeys.length > 0 && emptyish >= Math.max(1, headerKeys.length - 2);
-
-  if (!shiftedLabels) {
-    const keyByNorm = new Map<string, string>();
-    for (const k of headerKeys) keyByNorm.set(normKey(k), k);
-    const get = (row: ImportRow, label: string): unknown => {
-      const k = keyByNorm.get(normKey(label));
-      return k !== undefined ? (row[k] ?? null) : null;
-    };
-    return { sheetName, header: headerKeys, rows: raw, get, shiftedLabels };
-  }
-
-  // Formato deslocado: rows[0] carrega os rótulos; dados = slice(1).
-  const labelRow = raw[0] ?? {};
-  const labelToKey = new Map<string, string>();
-  const header: string[] = [];
-  for (const key of Object.keys(labelRow)) {
-    const lbl = asString(labelRow[key]);
-    if (lbl) {
-      labelToKey.set(normKey(lbl), key);
-      header.push(lbl);
+  const ref = sheet?.["!ref"];
+  if (ref) {
+    const range = XLSX.utils.decode_range(ref);
+    const cells =
+      (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
+    if (cells > MAX_SHEET_CELLS) {
+      throw new Error(
+        `Planilha declara ${cells.toLocaleString("pt-BR")} células — acima do limite suportado. Confira se o arquivo não está corrompido.`,
+      );
     }
   }
-  const rows = raw.slice(1);
+  const raw = XLSX.utils.sheet_to_json<ImportRow>(sheet, { defval: null });
+
+  // Header "de verdade" = chaves do sheet_to_json. Formato deslocado
+  // (invoicy): o header é a linha de TÍTULO — exatamente 1 célula nomeada e
+  // o resto __EMPTY_* — e os rótulos reais estão na 1ª linha de dados.
+  // Heurística estrita para não engolir planilha normal com colunas sem
+  // nome: precisa de ≥4 colunas, quase tudo __EMPTY, E a linha candidata a
+  // rótulos precisa render ≥3 rótulos de verdade.
+  const headerKeys = raw.length > 0 ? Object.keys(raw[0]) : [];
+  const emptyish = headerKeys.filter((k) => k.startsWith("__EMPTY")).length;
+  const shiftedCandidate =
+    headerKeys.length >= 4 && emptyish >= headerKeys.length - 1;
+
+  if (shiftedCandidate) {
+    const labelRow = raw[0] ?? {};
+    const labelToKey = new Map<string, string>();
+    const header: string[] = [];
+    for (const key of Object.keys(labelRow)) {
+      const lbl = asString(labelRow[key]);
+      if (lbl) {
+        labelToKey.set(normKey(lbl), key);
+        header.push(lbl);
+      }
+    }
+    if (header.length >= 3) {
+      const rows = raw.slice(1);
+      const get = (row: ImportRow, label: string): unknown => {
+        const k = labelToKey.get(normKey(label));
+        return k !== undefined ? (row[k] ?? null) : null;
+      };
+      return { sheetName, header, rows, get, shiftedLabels: true };
+    }
+  }
+
+  const keyByNorm = new Map<string, string>();
+  for (const k of headerKeys) keyByNorm.set(normKey(k), k);
   const get = (row: ImportRow, label: string): unknown => {
-    const k = labelToKey.get(normKey(label));
+    const k = keyByNorm.get(normKey(label));
     return k !== undefined ? (row[k] ?? null) : null;
   };
-  return { sheetName, header, rows, get, shiftedLabels };
+  return { sheetName, header: headerKeys, rows: raw, get, shiftedLabels: false };
 }
 
 /** Sniff do formato pelo magic number (nunca pela extensão do nome). */

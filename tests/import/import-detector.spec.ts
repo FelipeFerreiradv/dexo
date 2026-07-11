@@ -160,6 +160,35 @@ describe("import/parse — preservação de zeros à esquerda", () => {
     expect(t.rows[0].A).toBe("x, y");
     expect(t.rows[0].B).toBe('com "aspas"');
   });
+  it("planilha NORMAL com coluna extra sem header NÃO vira formato deslocado", () => {
+    // 2 colunas nomeadas + 1 célula extra na linha de dados (coluna sem
+    // header) — a heurística antiga engoliria a 1ª linha de dados.
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ["# Cod Peca", "Localizacao"],
+        ["100", "LOCAL 1", "sobra"],
+        ["200", "LOCAL 2"],
+      ]),
+      "Planilha1",
+    );
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    const t = readXlsxBuffer(buffer);
+    expect(t.shiftedLabels).toBe(false);
+    expect(t.rows).toHaveLength(2);
+    expect(t.get(t.rows[0], "# Cod Peca")).toBe("100");
+  });
+
+  it("XLSX com dimensão forjada (bomba de células) é rejeitado", () => {
+    const wb = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([["A", "B"], ["1", "2"]]);
+    sheet["!ref"] = "A1:ZZ1048576"; // ~700M células declaradas
+    XLSX.utils.book_append_sheet(wb, sheet, "Planilha1");
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    expect(() => readXlsxBuffer(buffer)).toThrow(/células/);
+  });
+
   it("XLSX com header normal usa getter tolerante a acento/caixa", () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(

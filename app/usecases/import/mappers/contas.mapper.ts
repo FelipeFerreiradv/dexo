@@ -89,6 +89,11 @@ export function mapContas(file: DetectedFile): FinanceMapResult {
   const items: FinancePlanItem[] = [];
   const erros: ImportRowIssue[] = [];
   const avisos: ImportRowIssue[] = [];
+  // Ocorrências por hash-base: duas linhas LEGÍTIMAS idênticas (ex.: duas
+  // contas iguais do mesmo fornecedor no mesmo dia) recebem markers
+  // distintos (#0, #1…) — determinístico na ordem do arquivo, então a
+  // reimportação continua casando 1:1 com o que foi criado.
+  const hashOccurrences = new Map<string, number>();
 
   for (let i = 0; i < file.rows.length; i++) {
     const row = file.rows[i];
@@ -181,13 +186,25 @@ export function mapContas(file: DetectedFile): FinanceMapResult {
 
     const document = asString(get("documento"));
     const observacao = asString(get("observacao"));
-    const markerHash = shortLineHash([
+    const installments = Math.max(1, asInt(get("parcelas")) ?? 1);
+    // O hash cobre TODOS os campos que distinguem uma conta (status,
+    // parcelas, forma e observação inclusos) — duas linhas diferentes nunca
+    // colapsam no mesmo marker; idênticas são separadas pela ocorrência.
+    const baseHash = shortLineHash([
       kind,
       document,
       docDigits || customerName,
       totalAmount,
       dueDate.toISOString().slice(0, 10),
+      status,
+      paidAt ? paidAt.toISOString().slice(0, 10) : "",
+      paymentMethod,
+      installments,
+      observacao,
     ]);
+    const occurrence = hashOccurrences.get(baseHash) ?? 0;
+    hashOccurrences.set(baseHash, occurrence + 1);
+    const markerHash = shortLineHash([baseHash, occurrence]);
     const reasonParts = [observacao, importFinanceMarker(markerHash)].filter(
       (p): p is string => !!p,
     );
@@ -204,7 +221,7 @@ export function mapContas(file: DetectedFile): FinanceMapResult {
       status,
       paidAt,
       paymentMethod,
-      installments: Math.max(1, asInt(get("parcelas")) ?? 1),
+      installments,
       reason: reasonParts.join(" "),
       markerHash,
     });

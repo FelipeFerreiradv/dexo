@@ -31,11 +31,12 @@ export function importFinanceMarker(lineHash: string): string {
 /**
  * Extrai o código legado de um marker de CLIENTE — cobre o formato novo
  * ("Import Dexo · cliente #12") e o legado dos scripts
- * ("Legado 704 · cliente #12"). Aceita código numérico (Vaapt) e GUID
- * (WebDesmonte customers.csv).
+ * ("Legado 704 · cliente #12"). Aceita código numérico (Vaapt), GUID
+ * (WebDesmonte) e o pseudo-código "nd-<hash>" gerado para clientes sem
+ * código na origem.
  */
 export function parseCustomerMarker(notes: string | null | undefined): string | null {
-  const m = notes?.match(/cliente #([0-9a-fA-F-]+)/);
+  const m = notes?.match(/cliente #([0-9a-zA-Z-]+)/);
   return m ? m[1] : null;
 }
 

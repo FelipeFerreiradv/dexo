@@ -142,6 +142,8 @@ export async function executeFinancePlan(
         vencimento: item.dueDate.toISOString().slice(0, 10),
         status: item.status,
       });
+      // Simetria prévia×apply: a prévia simula o MESMO dedup do apply.
+      existingMarkers.add(item.markerHash);
       continue;
     }
 

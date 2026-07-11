@@ -70,6 +70,13 @@ export async function executeScrapsPlan(
   report: ImportReport,
   items: ScrapPlanItem[],
   deps: ScrapsExecDeps = defaultScrapsDeps,
+  /**
+   * Mapa code→id vindo da fase de localizações da MESMA execução (modo
+   * pacote/vínculos). Sem ele, resolve contra o banco — mas na PRÉVIA do
+   * pacote as localizações ainda não existem no banco, e só o mapa (com os
+   * ids "dry") evita avisos falsos de "localização não existe".
+   */
+  locCodeToIdFromRun?: Map<string, string>,
 ): Promise<Map<string, string>> {
   const existing = await deps.loadExistingScraps(ctx.targetUserId);
   const codToId = new Map<string, string>();
@@ -83,8 +90,8 @@ export async function executeScrapsPlan(
   }
 
   // Resolve locationCode → id (só quando algum item traz localização).
-  let locCodeToId: Map<string, string> | null = null;
-  if (items.some((i) => i.locationCode)) {
+  let locCodeToId: Map<string, string> | null = locCodeToIdFromRun ?? null;
+  if (!locCodeToId && items.some((i) => i.locationCode)) {
     const codes = await deps.loadLocationCodes(ctx.targetUserId);
     locCodeToId = new Map(codes.map((c) => [c.code, c.id]));
   }
@@ -127,6 +134,12 @@ export async function executeScrapsPlan(
           motivo: `Sucata ${item.cod}: localização "${item.locationCode}" não existe no Dexo — importe as localizações antes`,
         });
         bump(report, "avisos");
+      } else if (ctx.dryRun && locationId.startsWith("<dry-")) {
+        // Prévia do pacote: a localização será criada na mesma execução —
+        // conta como resolvida, mas não passa id fake ao create (que nem
+        // roda em dry-run).
+        locationId = undefined;
+        bump(report, "localizacao_resolvida_na_execucao");
       }
     }
 

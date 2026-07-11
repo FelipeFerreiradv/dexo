@@ -139,10 +139,11 @@ describe("import/nfe — executor (histórico, nunca SEFAZ)", () => {
     expect(created).toHaveLength(0);
     expect(seqCalls).toHaveLength(0);
     expect(report.contadores.a_criar).toBe(2);
-    expect(report.avisos.some((a) => a.motivo.includes("será ajustada para 35"))).toBe(true);
+    // Só a nota COM chave (nº 33) entra no cálculo da sequência.
+    expect(report.avisos.some((a) => a.motivo.includes("será ajustada para 34"))).toBe(true);
   });
 
-  it("APPLY grava histórico com shapes da listagem e avança a sequência para max+1", async () => {
+  it("APPLY grava histórico e avança a sequência SÓ pelas notas com chave (série confiável)", async () => {
     const { deps, created, seqCalls } = makeDeps();
     const report = await runVaaptNfes(ctx(false, FILE()), deps);
     expect(created).toHaveLength(2);
@@ -156,9 +157,13 @@ describe("import/nfe — executor (histórico, nunca SEFAZ)", () => {
     });
     expect(n33.totaisJson).toMatchObject({ totalNota: 150, totalProdutos: 150 });
     expect(n33.emitenteJson).toEqual({ cnpj: "12345678000195" });
-    expect(seqCalls).toEqual([{ serie: 1, novo: 35 }]);
+    // GUARDA: nº 34 não tem chave (série assumida) → NÃO avança a sequência.
+    expect(seqCalls).toEqual([{ serie: 1, novo: 34 }]);
     expect(report.contadores.criadas).toBe(2);
     expect(report.contadores.sequencias_ajustadas).toBe(1);
+    expect(
+      report.avisos.some((a) => a.motivo.includes("NÃO avançam a NfeSequence")),
+    ).toBe(true);
   });
 
   it("dedup por chave e por série/número (idempotência); sequência já à frente = no-op", async () => {

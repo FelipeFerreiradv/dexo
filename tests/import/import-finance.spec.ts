@@ -115,6 +115,37 @@ describe("import/contas — mapper (validações do template)", () => {
     expect(r.items[0].paidAt?.toISOString().slice(0, 10)).toBe("2024-05-31");
     expect(r.avisos.some((a) => a.motivo.includes("pago_em"))).toBe(true);
   });
+
+  it("linhas distintas NUNCA colidem no marker; idênticas legítimas ganham markers próprios", () => {
+    const r = mapContas(
+      contasCsv([
+        // Diferem só na observação → contas diferentes, markers diferentes.
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,,compra A",
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,,compra B",
+        // Diferem só nas parcelas → idem.
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,2,compra A",
+        // 100% idêntica à 1ª (duas contas iguais legítimas) → ocorrência #1.
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,,compra A",
+      ]),
+    );
+    expect(r.items).toHaveLength(4);
+    const hashes = r.items.map((i) => i.markerHash);
+    expect(new Set(hashes).size).toBe(4); // nenhum colapso silencioso
+  });
+
+  it("APPLY cria as duas contas idênticas legítimas (markers distintos)", async () => {
+    const { deps, created } = makeDeps([{ id: "c1", name: "Fornecedor X" }]);
+    const mapped = mapContas(
+      contasCsv([
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,,compra A",
+        "pagar,,,Fornecedor X,350,10/08/2026,pendente,,,,compra A",
+      ]),
+    );
+    const report = newReport("DEXO", "CONTAS", "admin-1", false);
+    await executeFinancePlan(ctx(false), report, mapped.items, deps);
+    expect(created).toHaveLength(2);
+    expect(report.contadores.ja_existiam_marker ?? 0).toBe(0);
+  });
 });
 
 describe("import/contas — executor", () => {

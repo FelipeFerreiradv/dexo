@@ -14,6 +14,7 @@ import {
   asString,
   cleanUndefined,
   isPlaceholderName,
+  normName,
   onlyDigits,
   toCep,
   toEmail,
@@ -22,6 +23,16 @@ import {
   validCPF,
 } from "../lib/normalize";
 import { importCustomerMarker } from "../lib/markers";
+import { shortLineHash } from "../lib/preview-hash";
+
+/**
+ * Cliente SEM código na origem: sem isto ele não teria NENHUMA camada de
+ * dedup quando também não tem documento/telefone (cada re-execução criaria
+ * um novo). Pseudo-código determinístico do conteúdo garante o marker.
+ */
+export function pseudoCustomerCod(parts: Array<string | null | undefined>): string {
+  return `nd-${shortLineHash(parts)}`;
+}
 
 export interface CustomerPlanItem {
   linha: number;
@@ -71,8 +82,17 @@ export function mapVaaptCustomers(file: DetectedFile): CustomersMapResult {
     const get = (label: string) => file.get(row, label);
     const linha = i + 1;
 
-    const cod = asString(get("# Cod Cliente"));
     const rawName = asString(get("Nome Cliente"));
+    const cod =
+      asString(get("# Cod Cliente")) ??
+      (rawName
+        ? pseudoCustomerCod([
+            normName(rawName),
+            asString(get("Email")),
+            onlyDigits(get("Telefone")),
+            asString(get("Cidade")),
+          ])
+        : null);
     const personType =
       (asString(get("TipoPessoa")) ?? "PF").toUpperCase() === "PJ"
         ? "PJ"

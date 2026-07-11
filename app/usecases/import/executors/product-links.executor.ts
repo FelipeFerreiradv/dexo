@@ -181,7 +181,19 @@ export async function executeLinksPlan(
       }
       continue;
     }
-    for (const it of itemsOfSku) matched.push({ item: it, product: refs[0] });
+    // Duas linhas com SKUs CRUS distintos que normalizam igual ("X10" e
+    // "x10") casariam o MESMO produto com destinos possivelmente
+    // divergentes — flip-flop a cada re-execução. Só a 1ª linha vale
+    // (determinístico); as demais são contadas e avisadas.
+    matched.push({ item: itemsOfSku[0], product: refs[0] });
+    if (itemsOfSku.length > 1) {
+      bump(report, "linhas_extras_mesmo_sku", itemsOfSku.length - 1);
+      bump(report, "avisos");
+      addIssue(report.avisos, {
+        linha: itemsOfSku[1].linha,
+        motivo: `SKU "${itemsOfSku[1].sku}" repete "${itemsOfSku[0].sku}" (diferem só em caixa/espaço) — apenas a 1ª linha vincula`,
+      });
+    }
   }
 
   bump(report, "produtos_casados", matched.length);
@@ -217,6 +229,10 @@ export async function executeLinksPlan(
       bump(report, "local_ja_correto");
       continue;
     }
+    // Produto já tinha OUTRA localização (ex.: corrigida à mão no Dexo): o
+    // arquivo é a fonte da importação e vence, mas a sobrescrita fica
+    // visível no relatório em vez de silenciosa.
+    if (product.locationId) bump(report, "local_sobrescrito");
     const arr = byLocation.get(target) ?? [];
     arr.push(product.id);
     byLocation.set(target, arr);
@@ -255,11 +271,30 @@ export async function executeLinksPlan(
         }
       } catch (err) {
         if (err instanceof CapacityExceededError) {
-          // Reporta a localização lotada e SEGUE — o job nunca aborta.
+          // Preenche ATÉ O TETO e segue — o attach aborta o batch inteiro,
+          // mas o erro informa exatamente quais ids ainda cabem
+          // (acceptedIds); os excedentes são reportados e o job nunca aborta.
           capacityBlocked = true;
-          bump(report, "capacidade_excedida", part.length);
+          const { acceptedIds, excededIds } = err.detail;
+          if (acceptedIds.length > 0) {
+            try {
+              const res = await deps.attachProducts(
+                locationId,
+                acceptedIds,
+                ctx.targetUserId,
+              );
+              bump(report, "local_vinculado", res.attached.length);
+              bump(report, "local_ja_correto", res.alreadyAttached.length);
+            } catch {
+              // Corrida (outro processo ocupou as vagas): conta como excedido.
+              bump(report, "capacidade_excedida", acceptedIds.length);
+            }
+          }
+          bump(report, "capacidade_excedida", excededIds.length);
           bump(report, "avisos");
-          addIssue(report.avisos, { motivo: err.message });
+          addIssue(report.avisos, {
+            motivo: `${err.message} — vinculados até o teto; ${excededIds.length} produto(s) ficaram sem vínculo`,
+          });
         } else {
           const msg = err instanceof Error ? err.message : String(err);
           bump(report, "erros", part.length);
@@ -308,6 +343,8 @@ export async function executeLinksPlan(
       bump(report, "sucata_ja_correta");
       continue;
     }
+    // Sobrescrita de vínculo divergente visível no relatório (idem local).
+    if (product.scrapId) bump(report, "sucata_sobrescrita");
     const arr = byScrap.get(target) ?? [];
     arr.push(product.id);
     byScrap.set(target, arr);
@@ -511,6 +548,7 @@ export async function runWdLinks(
       scrapReport,
       scrapMapped.items,
       deps.scraps,
+      locCodeToId,
     );
     report.porFase["sucatas"] = scrapReport;
   }

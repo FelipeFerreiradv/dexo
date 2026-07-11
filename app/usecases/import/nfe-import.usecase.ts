@@ -207,12 +207,28 @@ export async function runVaaptNfes(
   // Avança a sequência por série (max importado + 1) — SÓ para frente. A
   // próxima emissão real do cliente continua a numeração; se a sequência já
   // está à frente, o serviço rejeita e contabilizamos como no-op.
+  //
+  // GUARDA: nota SEM chave tem a série ASSUMIDA (=1) — um chute não pode
+  // avançar a NfeSequence (o avanço é irreversível: ajustarProximoNumero
+  // nunca retrocede, e um pulo indevido cria gap fiscal na numeração real).
+  // Só notas com chave (série extraída da própria chave) entram no cálculo.
   const maxPorSerie = new Map<number, number>();
+  let semChaveForaDaSequencia = 0;
   for (const item of mapped.items) {
+    if (!item.chaveAcesso) {
+      semChaveForaDaSequencia++;
+      continue;
+    }
     maxPorSerie.set(
       item.serie,
       Math.max(maxPorSerie.get(item.serie) ?? 0, item.numero),
     );
+  }
+  if (semChaveForaDaSequencia > 0) {
+    bump(report, "avisos");
+    addIssue(report.avisos, {
+      motivo: `${semChaveForaDaSequencia} nota(s) sem chave de acesso foram importadas com série assumida = 1 e NÃO avançam a NfeSequence (a série real não é verificável sem a chave)`,
+    });
   }
   for (const [serie, maxNumero] of maxPorSerie) {
     const alvo = maxNumero + 1;

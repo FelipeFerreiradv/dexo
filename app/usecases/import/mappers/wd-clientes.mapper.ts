@@ -10,6 +10,7 @@ import type { DetectedFile, ImportRowIssue } from "../import.types";
 import {
   asString,
   isPlaceholderName,
+  normName,
   onlyDigits,
   toCep,
   toEmail,
@@ -18,9 +19,10 @@ import {
   validCPF,
 } from "../lib/normalize";
 import { importCustomerMarker } from "../lib/markers";
-import type {
-  CustomerPlanItem,
-  CustomersMapResult,
+import {
+  pseudoCustomerCod,
+  type CustomerPlanItem,
+  type CustomersMapResult,
 } from "./vaapt-clientes.mapper";
 
 export function mapWdCustomers(file: DetectedFile): CustomersMapResult {
@@ -37,12 +39,19 @@ export function mapWdCustomers(file: DetectedFile): CustomersMapResult {
     const get = (label: string) => file.get(row, label);
     const linha = i + 1;
 
-    const cod = asString(get("Id"));
     const rawName = asString(get("Name"));
     if (!rawName || isPlaceholderName(rawName)) {
       skippedPlaceholder++;
       continue;
     }
+    const cod =
+      asString(get("Id")) ??
+      pseudoCustomerCod([
+        normName(rawName),
+        asString(get("Email")),
+        onlyDigits(get("Phone")),
+        onlyDigits(get("CellPhone")),
+      ]);
 
     // PF/PJ pelo comprimento do documento; Type ("F"/"J") como desempate.
     const docDigits = onlyDigits(get("Document"));

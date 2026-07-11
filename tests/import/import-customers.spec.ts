@@ -82,6 +82,7 @@ function makeDeps(
         cnpj: e.cnpj ?? null,
         name: e.name ?? null,
         phone: e.phone ?? null,
+        mobile: null,
         notes: e.notes ?? null,
       })),
     ),
@@ -228,6 +229,29 @@ describe("import/clientes — executor (dedup em camadas + idempotência)", () =
     await executeCustomersPlan(ctx(true), report, items(), deps);
     expect(deps.customerUseCase.create).not.toHaveBeenCalled();
     expect(report.contadores.a_criar).toBe(2);
+  });
+
+  it("cliente SEM cod/doc/telefone ganha pseudo-cod determinístico e não duplica na 2ª rodada", async () => {
+    const file = clientesFile([
+      [null, "Cliente Sem Nada", null, null, null, null, null, null, null, null, null, null, null, null, null, "PF"],
+    ]);
+    const mapped = mapVaaptCustomers(file);
+    expect(mapped.items[0].cod).toMatch(/^nd-[0-9a-f]{8}$/);
+    expect(mapped.items[0].notes).toContain(`cliente #${mapped.items[0].cod}`);
+
+    // 1ª rodada cria; 2ª rodada (marker no banco) deduplica.
+    const { deps, created } = makeDeps([]);
+    const r1 = newReport("VAAPT", "CLIENTES", "admin-1", false);
+    await executeCustomersPlan(ctx(false), r1, mapped.items, deps);
+    expect(created).toHaveLength(1);
+
+    const { deps: deps2, created: created2 } = makeDeps([
+      { name: "Cliente Sem Nada", notes: String(created[0].notes) },
+    ]);
+    const r2 = newReport("VAAPT", "CLIENTES", "admin-1", false);
+    await executeCustomersPlan(ctx(false), r2, mapped.items, deps2);
+    expect(created2).toHaveLength(0);
+    expect(r2.contadores.ja_existiam_marker).toBe(1);
   });
 
   it("'Já existe um cliente com esse CPF' do usecase vira skip, não erro", async () => {

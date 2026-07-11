@@ -36,34 +36,43 @@ interface MultipartPayload {
 }
 
 /**
+ * O @fastify/multipart põe o código do erro em `err.code` (a mensagem é só
+ * "request file too large") — casar por message nunca acerta (mesmo bug já
+ * corrigido em image.routes.ts). Testa code E message por robustez.
+ */
+function isFileTooLargeError(e: unknown): boolean {
+  const code = (e as { code?: string } | null)?.code ?? "";
+  const msg = e instanceof Error ? e.message : String(e);
+  return /(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(`${code} ${msg}`);
+}
+
+/**
  * Lê o multipart inteiro em memória (limite global de 20MB por arquivo,
- * registrado em api.ts). Mesmo padrão de POST /products/nfe/parse.
+ * registrado em api.ts). O erro de tamanho pode estourar tanto no
+ * toBuffer() quanto no próprio iterador parts() — o catch cobre os dois.
  */
 async function readMultipart(request: FastifyRequest): Promise<MultipartPayload> {
   const fields: Record<string, string> = {};
   const files: ImportFile[] = [];
-  for await (const part of request.parts()) {
-    if (part.type === "file") {
-      let buffer: Buffer;
-      try {
-        buffer = await part.toBuffer();
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
-          throw new ImportValidationError(
-            "Arquivo muito grande — o tamanho máximo permitido é 20MB.",
-          );
-        }
-        throw e;
+  try {
+    for await (const part of request.parts()) {
+      if (part.type === "file") {
+        files.push({
+          fieldname: part.fieldname,
+          filename: part.filename ?? part.fieldname,
+          buffer: await part.toBuffer(),
+        });
+      } else {
+        fields[part.fieldname] = String(part.value ?? "");
       }
-      files.push({
-        fieldname: part.fieldname,
-        filename: part.filename ?? part.fieldname,
-        buffer,
-      });
-    } else {
-      fields[part.fieldname] = String(part.value ?? "");
     }
+  } catch (e: unknown) {
+    if (isFileTooLargeError(e)) {
+      throw new ImportValidationError(
+        "Arquivo muito grande — o tamanho máximo permitido é 20MB.",
+      );
+    }
+    throw e;
   }
   return { fields, files };
 }

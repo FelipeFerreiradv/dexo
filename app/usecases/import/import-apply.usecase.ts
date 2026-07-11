@@ -19,6 +19,13 @@ import { computePreviewHash } from "./lib/preview-hash";
 import type { ImportJobStore } from "./import-job.store";
 import { SystemLogImportJobStore } from "./import-job.store";
 
+// Trava EM PROCESSO por admin-alvo: o findRunning (persistido) sozinho é
+// check-then-act — dois POST /apply quase simultâneos passariam ambos pela
+// checagem antes do primeiro create. A API roda num único processo Node,
+// então este Set fecha a janela de corrida de verdade; o findRunning segue
+// cobrindo jobs que sobreviveram a um restart.
+const applyingTargets = new Set<string>();
+
 export class ImportApplyUseCase {
   constructor(
     private readonly store: ImportJobStore = new SystemLogImportJobStore(),
@@ -33,41 +40,57 @@ export class ImportApplyUseCase {
     /** Superadmin que disparou (vai para a auditoria no SystemLog). */
     actorUserId?: string;
   }): Promise<{ jobId: string }> {
-    const target = await assertTargetAdmin(input.targetUserId);
-
-    const expected = computePreviewHash(input);
-    if (!input.previewHash || input.previewHash !== expected) {
-      throw new ImportConflictError(
-        "Prévia desatualizada (arquivo, alvo ou versão do motor mudaram). Gere uma nova prévia antes de aplicar.",
-      );
-    }
-
-    const running = await this.store.findRunning(input.targetUserId);
-    if (running) {
+    if (applyingTargets.has(input.targetUserId)) {
       throw new ImportConflictError(
         "Já existe uma importação em andamento para este administrador. Aguarde terminar.",
       );
     }
+    applyingTargets.add(input.targetUserId);
+    let jobStarted = false;
+    try {
+      const target = await assertTargetAdmin(input.targetUserId);
 
-    // Valida tudo ANTES de criar o job (falha vira 400 síncrono, não job ERROR).
-    const runner = resolveRunner(input.system, input.entity);
-    const detected = detectAndValidate(input.system, input.entity, input.files);
+      const expected = computePreviewHash(input);
+      if (!input.previewHash || input.previewHash !== expected) {
+        throw new ImportConflictError(
+          "Prévia desatualizada (arquivo, alvo ou versão do motor mudaram). Gere uma nova prévia antes de aplicar.",
+        );
+      }
 
-    const jobId = await this.store.create({
-      targetUserId: input.targetUserId,
-      system: input.system,
-      entity: input.entity,
-      previewHash: input.previewHash,
-      progress: { fase: "iniciando", processadas: 0, total: 0 },
-      actorUserId: input.actorUserId,
-      targetLabel: target.email,
-    });
+      const running = await this.store.findRunning(input.targetUserId);
+      if (running) {
+        throw new ImportConflictError(
+          "Já existe uma importação em andamento para este administrador. Aguarde terminar.",
+        );
+      }
 
-    setImmediate(() => {
-      void this.runJob(jobId, input, detected, runner);
-    });
+      // Valida tudo ANTES de criar o job (falha vira 400 síncrono, não job ERROR).
+      const runner = resolveRunner(input.system, input.entity);
+      const detected = detectAndValidate(input.system, input.entity, input.files);
 
-    return { jobId };
+      const jobId = await this.store.create({
+        targetUserId: input.targetUserId,
+        system: input.system,
+        entity: input.entity,
+        previewHash: input.previewHash,
+        progress: { fase: "iniciando", processadas: 0, total: 0 },
+        actorUserId: input.actorUserId,
+        targetLabel: target.email,
+      });
+
+      jobStarted = true;
+      setImmediate(() => {
+        void this.runJob(jobId, input, detected, runner).finally(() => {
+          applyingTargets.delete(input.targetUserId);
+        });
+      });
+
+      return { jobId };
+    } finally {
+      // Falhou antes do job nascer ⇒ libera a trava já; com job rodando, a
+      // liberação fica com o finally do worker.
+      if (!jobStarted) applyingTargets.delete(input.targetUserId);
+    }
   }
 
   private async runJob(
