@@ -283,7 +283,9 @@ class OrderRepositoryPrisma implements OrderRepository {
                   },
                   // Fallback do "Ver anúncio" quando o OrderItem não tem listing
                   // vinculado (import legado/fallback): o sheet resolve o anúncio
-                  // preferido do PRODUTO. Só no detalhe (egress bounded).
+                  // preferido do PRODUTO. EGRESS: só campos do link + take 8 mais
+                  // recentes (o preferido/ativo está entre eles); pickPreferred
+                  // escolhe. Evita trafegar a cauda de anúncios de um produto.
                   listings: {
                     select: {
                       id: true,
@@ -293,6 +295,7 @@ class OrderRepositoryPrisma implements OrderRepository {
                       marketplaceAccount: { select: { platform: true } },
                     },
                     orderBy: { updatedAt: "desc" },
+                    take: 8,
                   },
                 },
               },
