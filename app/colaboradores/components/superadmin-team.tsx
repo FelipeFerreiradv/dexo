@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
-import { UserPlus, Users2, KeyRound, Loader2, Search } from "lucide-react";
+import {
+  UserPlus,
+  Users2,
+  KeyRound,
+  Loader2,
+  Search,
+  FileUp,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +34,7 @@ import {
 import { authHeaders, getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { MLConnectScriptDialog } from "./ml-connect-script-dialog";
+import { ImportDataDialog } from "./import-data-dialog";
 import {
   PagePermissionsToggles,
   pagePermsFromValue,
@@ -70,6 +78,9 @@ export function SuperadminTeam() {
 
   // Diálogo do gerador de script ML (Entrega D)
   const [scriptTarget, setScriptTarget] = useState<SuperUser | null>(null);
+
+  // Diálogo de importação de dados legados (Vaapt/WebDesmonte) por admin.
+  const [importTarget, setImportTarget] = useState<SuperUser | null>(null);
 
   // Diálogo de permissões por página de um colaborador (Entrega C, via superadmin)
   const [permsTarget, setPermsTarget] = useState<SuperUser | null>(null);
@@ -331,6 +342,14 @@ export function SuperadminTeam() {
                             <KeyRound className="mr-2 h-4 w-4" />
                             Gerar script ML
                           </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setImportTarget(u)}
+                          >
+                            <FileUp className="mr-2 h-4 w-4" />
+                            Importar dados
+                          </Button>
                         </>
                       )}
                       {!isAdmin && (
@@ -487,6 +506,17 @@ export function SuperadminTeam() {
           onOpenChange={(o) => !o && setScriptTarget(null)}
           userId={scriptTarget.id}
           userLabel={label(scriptTarget)}
+        />
+      )}
+
+      {/* Importação de dados legados (Vaapt/WebDesmonte) para o admin-alvo */}
+      {importTarget && (
+        <ImportDataDialog
+          open={!!importTarget}
+          onOpenChange={(o) => !o && setImportTarget(null)}
+          targetUserId={importTarget.id}
+          targetLabel={label(importTarget)}
+          targetEmail={importTarget.email}
         />
       )}
 
