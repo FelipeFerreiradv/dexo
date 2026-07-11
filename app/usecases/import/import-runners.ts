@@ -26,6 +26,7 @@ import {
   runWdLinks,
 } from "./executors/product-links.executor";
 import { runWdPacote } from "./executors/wd-pacote.executor";
+import { runContas } from "./executors/finance.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -40,6 +41,7 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "WEBDESMONTE/SUCATAS": runWdScraps,
     "WEBDESMONTE/VINCULOS": runWdLinks,
     "WEBDESMONTE/PACOTE": runWdPacote,
+    "DEXO/CONTAS": runContas,
   };
 
 export function resolveRunner(
