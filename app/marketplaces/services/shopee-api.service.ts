@@ -844,8 +844,9 @@ export class ShopeeApiService {
     try {
       const query = new URLSearchParams({
         order_sn_list: orderSn,
-        response_optional_fields:
-          "recipient_address,buyer_username,buyer_user_id,invoice_data",
+        // recipient_address = nome + endereço + telefone do destinatário.
+        // (A Shopee não expõe o CPF do comprador — ver nfe-draft.usecase.)
+        response_optional_fields: "recipient_address",
       }).toString();
       const response = await this.makeAuthenticatedRequest<
         ShopeeApiResponse<{ order_list: any[] }>

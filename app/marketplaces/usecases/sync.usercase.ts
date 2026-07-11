@@ -395,6 +395,24 @@ export class SyncUseCase {
       `[IMPORT] Found ${existingListings.length} existing listings and ${products.length} matching products`,
     );
 
+    // EGRESS/PERF: pré-carrega em UMA query os produtos casados que já têm
+    // anúncio NESTA conta (guarda de box-label). Evita o N+1 de 1 findFirst por
+    // item casado por SKU. `withListing.add` no link do lote mantém idêntico.
+    const matchedProductIds = products.map((p) => p.id);
+    const withListing = new Set<string>(
+      (matchedProductIds.length > 0
+        ? await prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              productId: { in: matchedProductIds },
+            },
+            select: { productId: true },
+            distinct: ["productId"],
+          })
+        : []
+      ).map((l) => l.productId),
+    );
+
     // 5. Processar cada item
     let processedCount = 0;
     for (const item of activeItems) {
@@ -430,13 +448,7 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (
-          product &&
-          !(await ListingRepository.productHasListingInAccount(
-            product.id,
-            account.id,
-          ))
-        ) {
+        } else if (product && !withListing.has(product.id)) {
           // SKU casa com produto existente do dono e o produto NÃO tem anúncio
           // nesta conta → só cria o listing (comportamento atual, mantido).
           await ListingRepository.createListing({
@@ -447,6 +459,9 @@ export class SyncUseCase {
             permalink: item.permalink || null,
             status: item.status,
           });
+          // Agora o produto tem anúncio nesta conta: itens seguintes com o mesmo
+          // SKU caem na guarda de box-label (idêntico ao findFirst live).
+          withListing.add(product.id);
 
           processedItem = {
             externalListingId: item.id,
@@ -673,6 +688,23 @@ export class SyncUseCase {
         ),
     );
 
+    // EGRESS/PERF: pré-carrega em UMA query os produtos casados que já têm
+    // anúncio NESTA conta (guarda de box-label sem N+1).
+    const matchedProductIds = products.map((p) => p.id);
+    const withListing = new Set<string>(
+      (matchedProductIds.length > 0
+        ? await prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              productId: { in: matchedProductIds },
+            },
+            select: { productId: true },
+            distinct: ["productId"],
+          })
+        : []
+      ).map((l) => l.productId),
+    );
+
     const PREVIEW_CAP = 50;
     for (const s of skus) {
       const externalListingId = extractExternalId(s);
@@ -709,13 +741,7 @@ export class SyncUseCase {
               permalink: needsPermalinkUpdate ? permalink : undefined,
             });
           }
-        } else if (
-          product &&
-          !(await ListingRepository.productHasListingInAccount(
-            product.id,
-            account.id,
-          ))
-        ) {
+        } else if (product && !withListing.has(product.id)) {
           linkedProductId = product.id;
           await ListingRepository.createListing({
             productId: product.id,
@@ -725,6 +751,7 @@ export class SyncUseCase {
             permalink,
             status,
           });
+          withListing.add(product.id);
         } else {
           // NOVO SKU sem produto, OU SKU de caixa (produto casado já tem anúncio
           // nesta conta): cria produto próprio via o núcleo idempotente (que
@@ -1210,6 +1237,23 @@ export class SyncUseCase {
       if (key) productsMap.set(key, p);
     }
 
+    // EGRESS/PERF: pré-carrega em UMA query os produtos casados que já têm
+    // anúncio NESTA conta (guarda de box-label sem N+1 por variação).
+    const matchedProductIds = userProducts.map((p) => p.id);
+    const withListing = new Set<string>(
+      (matchedProductIds.length > 0
+        ? await prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              productId: { in: matchedProductIds },
+            },
+            select: { productId: true },
+            distinct: ["productId"],
+          })
+        : []
+      ).map((l) => l.productId),
+    );
+
     const itemsWithSku = flatItems.filter((i) => normalizeSku(i.sku)).length;
     const matchedSkus = flatItems.filter(
       (i) => {
@@ -1261,13 +1305,7 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (
-          product &&
-          !(await ListingRepository.productHasListingInAccount(
-            product.id,
-            account.id,
-          ))
-        ) {
+        } else if (product && !withListing.has(product.id)) {
           // SKU casa com produto existente do dono e o produto NÃO tem anúncio
           // nesta conta → só cria o listing (comportamento atual, mantido).
           await ListingRepository.createListing({
@@ -1277,6 +1315,7 @@ export class SyncUseCase {
             externalSku: sku || undefined,
             status: item.status,
           });
+          withListing.add(product.id);
 
           processedItem = {
             externalListingId: externalId,
