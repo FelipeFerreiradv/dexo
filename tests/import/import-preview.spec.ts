@@ -146,13 +146,13 @@ describe("import/preview — dry-run obrigatório", () => {
     ).rejects.toThrow(ImportValidationError);
   });
 
-  it("entidade ainda não habilitada → erro claro", async () => {
+  it("entidade não habilitada para o sistema → erro claro", async () => {
     const usecase = new ImportPreviewUseCase();
     await expect(
       usecase.preview({
         targetUserId: "admin-1",
         system: "DEXO",
-        entity: "CONTAS",
+        entity: "NFE", // DEXO só tem CONTAS — combinação inexistente
         files: [pecasXlsx()],
       }),
     ).rejects.toThrow(/não está disponível/i);
