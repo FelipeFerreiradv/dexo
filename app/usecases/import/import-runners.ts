@@ -21,6 +21,11 @@ import {
   runWdCustomers,
 } from "./executors/customers.executor";
 import { runVaaptScraps, runWdScraps } from "./executors/scraps.executor";
+import {
+  runVaaptLinks,
+  runWdLinks,
+} from "./executors/product-links.executor";
+import { runWdPacote } from "./executors/wd-pacote.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -29,9 +34,12 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "VAAPT/LOCALIZACOES": runVaaptLocations,
     "VAAPT/CLIENTES": runVaaptCustomers,
     "VAAPT/SUCATAS": runVaaptScraps,
+    "VAAPT/VINCULOS": runVaaptLinks,
     "WEBDESMONTE/LOCALIZACOES": runWdLocations,
     "WEBDESMONTE/CLIENTES": runWdCustomers,
     "WEBDESMONTE/SUCATAS": runWdScraps,
+    "WEBDESMONTE/VINCULOS": runWdLinks,
+    "WEBDESMONTE/PACOTE": runWdPacote,
   };
 
 export function resolveRunner(

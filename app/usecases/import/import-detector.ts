@@ -101,7 +101,9 @@ export function expectedKinds(
       CLIENTES: { required: [["VAAPT_CLIENTES"]], optional: [] },
       LOCALIZACOES: { required: [["VAAPT_PECAS"]], optional: [] },
       SUCATAS: { required: [["VAAPT_VEICULOS"]], optional: [] },
-      VINCULOS: { required: [["VAAPT_PECAS"]], optional: [] },
+      // O vínculo cria as localizações faltantes do próprio arquivo-ponte
+      // (idempotente) e aceita o arquivo de veículos junto p/ criar sucatas.
+      VINCULOS: { required: [["VAAPT_PECAS"]], optional: ["VAAPT_VEICULOS"] },
       NFE: { required: [["VAAPT_NFE"]], optional: [] },
     },
     WEBDESMONTE: {
@@ -113,7 +115,7 @@ export function expectedKinds(
       CLIENTES: { required: [["WD_CUSTOMERS"]], optional: [] },
       VINCULOS: {
         required: [["WD_PRODUCTS"], ["WD_LOCATIONS"]],
-        optional: [],
+        optional: ["WD_PURCHASE_WASTE"],
       },
       PACOTE: {
         // No pacote, qualquer combinação ≥1 dos CSVs do export.

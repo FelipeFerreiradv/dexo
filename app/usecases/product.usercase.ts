@@ -632,6 +632,62 @@ export class ProductUseCase {
     }
   }
 
+  /**
+   * Religa um produto JÁ existente à sua sucata de origem (`Product.scrapId`).
+   * Caminho validado para o vínculo por SKU da importação de dados legados —
+   * antes desta extensão, `scrapId` só era aceito na criação do produto.
+   *
+   * Vai DIRETO ao repositório (que valida a posse da sucata pelo tenant, a
+   * mesma guarda do create) e NÃO passa por `update()` de propósito:
+   * `scrapId` não afeta anúncio/estoque, então não deve disparar limpeza de
+   * overrides, stock log nem sync de marketplace. `scrapId = null` desvincula.
+   */
+  async linkScrap(
+    productId: string,
+    scrapId: string | null,
+    userId: string,
+  ): Promise<Product> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    if (!productId) throw new Error("Produto não informado");
+    return this.productRepository.update(productId, { scrapId }, userId);
+  }
+
+  /**
+   * Vincula VÁRIOS produtos a uma sucata num único `updateMany` — versão em
+   * lote de `linkScrap` para a importação (products.csv do WebDesmonte tem
+   * ~13,7k linhas; 1 update por produto seriam 13k round-trips). Espelha o
+   * desenho de `LocationUseCase.attachProducts`: guarda de tenant da sucata
+   * + cap de 200 por chamada + escopo `userId` no updateMany (produto de
+   * outro tenant é simplesmente não afetado).
+   */
+  async linkScrapMany(
+    scrapId: string,
+    productIds: string[],
+    userId: string,
+  ): Promise<{ count: number }> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    if (!scrapId) throw new Error("Sucata não informada");
+    if (!productIds.length) throw new Error("Nenhum produto selecionado");
+    if (productIds.length > 200) {
+      throw new Error("Limite de 200 produtos por batch");
+    }
+    const ownsScrap = await prisma.scrap.findFirst({
+      where: { id: scrapId, userId },
+      select: { id: true },
+    });
+    if (!ownsScrap) {
+      throw new Error(
+        "Vínculo de sucata inválido: sucata não encontrada para este usuário",
+      );
+    }
+    const unique = Array.from(new Set(productIds));
+    const res = await prisma.product.updateMany({
+      where: { id: { in: unique }, userId },
+      data: { scrapId },
+    });
+    return { count: res.count };
+  }
+
   async update(
     id: string,
     data: ProductUpdate,
