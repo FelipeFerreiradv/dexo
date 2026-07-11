@@ -76,7 +76,70 @@ function toDraftResponse(row: any): NfeDraftResponse {
   };
 }
 
+/**
+ * NF-e HISTÓRICA (importação de dados legados): registro de nota JÁ emitida
+ * no sistema antigo do cliente. Nunca nasce DRAFT, nunca passa pela SEFAZ e
+ * não mexe em NfeSequence (o import ajusta a sequência à parte, via
+ * NfeSequenceService.ajustarProximoNumero — que só avança).
+ */
+export interface NfeHistoricCreate {
+  userId: string;
+  ambiente: string; // "PRODUCAO" | "HOMOLOGACAO"
+  serie: number;
+  numero: number;
+  chaveAcesso?: string | null;
+  tipoOperacao: string;
+  finalidade: string;
+  destinoOperacao: string;
+  naturezaOperacao: string;
+  indPresenca: string;
+  informacoesComplementares?: string | null;
+  dataEmissao?: Date | null;
+  dataAutorizacao?: Date | null;
+  /** Shape lido por nfe-listing: { nome, cpfCnpj }. */
+  destinatarioJson: Record<string, unknown>;
+  emitenteJson?: Record<string, unknown> | null;
+  /** Shape lido por nfe-listing: { totalNota, totalProdutos, totalIcms… }. */
+  totaisJson: Record<string, unknown>;
+  /** AUTHORIZED | CANCELLED | INUTILIZED | REJECTED (derivado da origem). */
+  status: string;
+}
+
 export class NfeRepository {
+  /**
+   * Cria o registro histórico (ver NfeHistoricCreate). Caminho SEPARADO do
+   * createDraft de propósito — o pipeline de emissão real fica intocado. A
+   * unicidade fica com o banco: chaveAcesso @unique e
+   * @@unique([userId, ambiente, serie, numero]) (P2002 = já importada).
+   */
+  async createHistoric(data: NfeHistoricCreate): Promise<{ id: string }> {
+    const row = await (prisma as any).nfeEmitida.create({
+      data: {
+        userId: data.userId,
+        ambiente: data.ambiente,
+        modelo: "55",
+        serie: data.serie,
+        numero: data.numero,
+        chaveAcesso: data.chaveAcesso ?? null,
+        tipoOperacao: data.tipoOperacao,
+        finalidade: data.finalidade,
+        destinoOperacao: data.destinoOperacao,
+        naturezaOperacao: data.naturezaOperacao,
+        indPresenca: data.indPresenca,
+        informacoesComplementares: data.informacoesComplementares ?? null,
+        dataEmissao: data.dataEmissao ?? null,
+        dataAutorizacao: data.dataAutorizacao ?? null,
+        destinatarioJson: data.destinatarioJson as any,
+        emitenteJson: (data.emitenteJson as any) ?? null,
+        totaisJson: data.totaisJson as any,
+        status: data.status,
+        emittedByUserId: data.userId,
+      },
+      select: { id: true },
+    });
+    return { id: row.id };
+  }
+
   async findExistingDraft(userId: string): Promise<NfeDraftResponse | null> {
     const row = await (prisma as any).nfeEmitida.findFirst({
       where: { userId, status: "DRAFT" },

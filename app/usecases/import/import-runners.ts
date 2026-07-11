@@ -27,6 +27,7 @@ import {
 } from "./executors/product-links.executor";
 import { runWdPacote } from "./executors/wd-pacote.executor";
 import { runContas } from "./executors/finance.executor";
+import { runVaaptNfes } from "./nfe-import.usecase";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -36,6 +37,7 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "VAAPT/CLIENTES": runVaaptCustomers,
     "VAAPT/SUCATAS": runVaaptScraps,
     "VAAPT/VINCULOS": runVaaptLinks,
+    "VAAPT/NFE": runVaaptNfes,
     "WEBDESMONTE/LOCALIZACOES": runWdLocations,
     "WEBDESMONTE/CLIENTES": runWdCustomers,
     "WEBDESMONTE/SUCATAS": runWdScraps,
