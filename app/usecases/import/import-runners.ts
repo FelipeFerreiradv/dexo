@@ -13,12 +13,18 @@ import type {
 } from "./import.types";
 import { ImportValidationError } from "./import.types";
 import { runVaaptLocations } from "./executors/locations.executor";
+import {
+  runVaaptCustomers,
+  runWdCustomers,
+} from "./executors/customers.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
 const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> =
   {
     "VAAPT/LOCALIZACOES": runVaaptLocations,
+    "VAAPT/CLIENTES": runVaaptCustomers,
+    "WEBDESMONTE/CLIENTES": runWdCustomers,
   };
 
 export function resolveRunner(
