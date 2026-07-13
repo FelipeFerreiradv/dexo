@@ -33,7 +33,7 @@ function makeDeps(existing: Array<{ id: string; code: string }> = []) {
   let seq = 0;
   const deps: LocationExecDeps = {
     locationUseCase: {
-      create: vi.fn(async (data: { code: string; parentId?: string }) => {
+      createLean: vi.fn(async (data: { code: string; parentId?: string }) => {
         created.push({ code: data.code, parentId: data.parentId });
         return { id: `loc-${++seq}`, code: data.code } as never;
       }),
@@ -83,7 +83,7 @@ describe("import/locations — executor", () => {
       { code: "LOCAL2", description: "Local 2" },
     ];
     await executeLocationPlan(ctxBase(true), report, items, deps);
-    expect(deps.locationUseCase.create).not.toHaveBeenCalled();
+    expect(deps.locationUseCase.createLean).not.toHaveBeenCalled();
     expect(report.contadores.ja_existiam).toBe(1);
     expect(report.contadores.a_criar).toBe(1);
   });
@@ -138,11 +138,12 @@ describe("import/locations — executor", () => {
   it("corrida benigna ('já existe' no create) vira skip, não erro", async () => {
     const deps: LocationExecDeps = {
       locationUseCase: {
-        create: vi.fn(async () => {
+        createLean: vi.fn(async () => {
           throw new Error("Já existe uma localização com essa sigla");
         }),
       },
       loadExistingCodes: vi.fn(async () => []),
+      findIdByCode: vi.fn(async () => ({ id: "loc-existente" })),
     };
     const report = newReport("VAAPT", "LOCALIZACOES", "admin-1", false);
     await executeLocationPlan(ctxBase(false), report, [{ code: "A" }], deps);
@@ -162,6 +163,6 @@ describe("import/locations — executor", () => {
     );
     expect(report.contadores.localizacoes_distintas).toBe(2);
     expect(report.contadores.a_criar).toBe(2);
-    expect(deps.locationUseCase.create).not.toHaveBeenCalled();
+    expect(deps.locationUseCase.createLean).not.toHaveBeenCalled();
   });
 });

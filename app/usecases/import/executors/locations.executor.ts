@@ -32,11 +32,17 @@ export interface LocationPlanItem {
 }
 
 export interface LocationExecDeps {
-  locationUseCase: Pick<LocationUseCase, "create">;
+  /** `createLean`: mesmas validações do create, projeções mínimas (egress). */
+  locationUseCase: Pick<LocationUseCase, "createLean">;
   /** Preload read-only dos códigos existentes do tenant. */
   loadExistingCodes: (
     userId: string,
   ) => Promise<Array<{ id: string; code: string }>>;
+  /** Lookup pontual (caminho de corrida) — evita recarregar o preload. */
+  findIdByCode?: (
+    userId: string,
+    code: string,
+  ) => Promise<{ id: string } | null>;
 }
 
 export const defaultLocationDeps: LocationExecDeps = {
@@ -45,6 +51,11 @@ export const defaultLocationDeps: LocationExecDeps = {
     prisma.location.findMany({
       where: { userId },
       select: { id: true, code: true },
+    }),
+  findIdByCode: (userId, code) =>
+    prisma.location.findFirst({
+      where: { userId, code },
+      select: { id: true },
     }),
 };
 
@@ -104,7 +115,7 @@ export async function executeLocationPlan(
     }
 
     try {
-      const created = await deps.locationUseCase.create({
+      const created = await deps.locationUseCase.createLean({
         userId: ctx.targetUserId,
         code: item.code,
         description: item.description,
@@ -116,12 +127,15 @@ export async function executeLocationPlan(
       bump(report, "criadas");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Corrida benigna (código criado entre o preload e o create) ⇒ skip.
+      // Corrida benigna (código criado entre o preload e o create) ⇒ skip;
+      // resolve o id com lookup PONTUAL (não recarrega o preload inteiro).
       if (/existe/i.test(msg)) {
         bump(report, "ja_existiam");
-        const again = await deps
-          .loadExistingCodes(ctx.targetUserId)
-          .then((all) => all.find((l) => l.code === item.code));
+        const again = deps.findIdByCode
+          ? await deps.findIdByCode(ctx.targetUserId, item.code)
+          : await deps
+              .loadExistingCodes(ctx.targetUserId)
+              .then((all) => all.find((l) => l.code === item.code) ?? null);
         if (again) codeToId.set(item.code, again.id);
         continue;
       }

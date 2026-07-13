@@ -29,7 +29,7 @@ function makeDeps() {
   let seq = 0;
   const deps: LocationExecDeps = {
     locationUseCase: {
-      create: vi.fn(
+      createLean: vi.fn(
         async (data: { code: string; maxCapacity: number; parentId?: string }) => {
           created.push({
             code: data.code,
@@ -94,7 +94,7 @@ describe("import/wd-locations — árvore do locations.csv", () => {
 
   it("runner: idempotência (códigos já existentes = 0 criações)", async () => {
     const deps: LocationExecDeps = {
-      locationUseCase: { create: vi.fn() },
+      locationUseCase: { createLean: vi.fn() },
       loadExistingCodes: vi.fn(async () => [
         { id: "a", code: "GALPÃO" },
         { id: "b", code: "GALPÃO > CAIXA 22" },
@@ -105,7 +105,7 @@ describe("import/wd-locations — árvore do locations.csv", () => {
       { targetUserId: "admin-1", files: [locationsCsv(CSV)], dryRun: false },
       deps,
     );
-    expect(deps.locationUseCase.create).not.toHaveBeenCalled();
+    expect(deps.locationUseCase.createLean).not.toHaveBeenCalled();
     expect(report.contadores.ja_existiam).toBe(3);
   });
 });

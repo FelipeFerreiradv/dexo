@@ -239,7 +239,7 @@ describe("import/vinculos — runner composto Vaapt (localizações + vínculo)"
     let locSeq = 0;
     const locations: LocationExecDeps = {
       locationUseCase: {
-        create: vi.fn(async (d: { code: string }) => ({
+        createLean: vi.fn(async (d: { code: string }) => ({
           id: `loc-${++locSeq}`,
           code: d.code,
         })) as never,
