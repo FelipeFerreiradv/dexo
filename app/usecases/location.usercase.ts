@@ -58,6 +58,53 @@ export class LocationUseCase {
     return this.locationRepository.create(data);
   }
 
+  /**
+   * Variante ENXUTA de `create` para fluxos em LOTE (importação de dados
+   * legados): MESMAS validações e mesmo efeito, com projeções mínimas.
+   * O `create` original valida o pai via `findById`, que carrega o pai com
+   * TODOS os filhos (+_count) — numa árvore importada pais-antes-de-filhos
+   * isso vira O(n²) de egress (cada filho refaz o fetch do pai com os
+   * irmãos já criados). Regra de egress enxuto (keen-lederberg): projeção
+   * mínima. Aditivo — `create` e todos os chamadores atuais intocados.
+   */
+  async createLean(
+    data: LocationCreate,
+  ): Promise<{ id: string; code: string }> {
+    if (!data.userId) throw new Error("Usuário não encontrado");
+    if (!data.code || typeof data.code !== "string") {
+      throw new Error("Sigla é obrigatória");
+    }
+    if (data.maxCapacity < 0) {
+      throw new Error("Capacidade máxima não pode ser negativa");
+    }
+    const existing = await prisma.location.findFirst({
+      where: { code: data.code, userId: data.userId },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new Error(`Já existe uma localização com a sigla "${data.code}"`);
+    }
+    if (data.parentId) {
+      const parent = await prisma.location.findFirst({
+        where: { id: data.parentId, userId: data.userId },
+        select: { id: true },
+      });
+      if (!parent) {
+        throw new Error("Localização pai não encontrada");
+      }
+    }
+    return prisma.location.create({
+      data: {
+        userId: data.userId,
+        code: data.code,
+        description: data.description ?? null,
+        maxCapacity: data.maxCapacity,
+        parentId: data.parentId ?? null,
+      },
+      select: { id: true, code: true },
+    });
+  }
+
   async findById(
     id: string,
     userId?: string,

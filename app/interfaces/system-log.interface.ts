@@ -45,7 +45,10 @@ export type LogAction =
   | "STOCK_SYNC_FAILED"
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
-  | "ML_REACTIVATION_RISK";
+  | "ML_REACTIVATION_RISK"
+  // Job de importação de dados legados (Superadmin). O registro carrega o
+  // estado/relatório do job em `details` (ver app/usecases/import/).
+  | "IMPORT_JOB";
 
 export interface SystemLog {
   id: string;

@@ -1657,6 +1657,21 @@ class ProductRepositoryPrisma implements ProductRepository {
             : []
           : undefined;
 
+      // Tenant guard do vínculo de sucata (espelha a guarda do create, linhas
+      // ~877-893): scrapId novo só grava se a sucata pertencer ao MESMO
+      // userId. Ausente (undefined) = não mexe; null = desvincula (sem guard).
+      if (data.scrapId && userId) {
+        const ownsScrap = await prisma.scrap.findFirst({
+          where: { id: data.scrapId, userId },
+          select: { id: true },
+        });
+        if (!ownsScrap) {
+          throw new Error(
+            "Vínculo de sucata inválido: sucata não encontrada para este usuário",
+          );
+        }
+      }
+
       const productData: Prisma.ProductUpdateInput = {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.description !== undefined && {
@@ -1673,6 +1688,7 @@ class ProductRepositoryPrisma implements ProductRepository {
         ...(data.category !== undefined && { category: data.category }),
         ...(data.location !== undefined && { location: data.location }),
         ...(data.locationId !== undefined && { locationId: data.locationId }),
+        ...(data.scrapId !== undefined && { scrapId: data.scrapId }),
         ...(data.partNumber !== undefined && {
           partNumber: data.partNumber,
           partNumberNormalized: normalizeSku(data.partNumber),

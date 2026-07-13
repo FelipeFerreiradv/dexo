@@ -217,6 +217,13 @@ export interface ProductUpdate {
   stock?: number;
   price?: number;
 
+  // Vínculo do produto à sucata de origem (religa produto JÁ existente —
+  // usado por ProductUseCase.linkScrap e pela importação de dados legados).
+  // Aditivo: ausente (undefined) = não mexe (byte-compatível com todos os
+  // chamadores atuais); null = desvincula. O repositório valida que a sucata
+  // pertence ao mesmo tenant (mesma guarda do create).
+  scrapId?: string | null;
+
   costPrice?: number;
   markup?: number;
   brand?: string;

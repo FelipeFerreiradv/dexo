@@ -39,6 +39,7 @@ import { messagesRoutes } from "../routes/messages.routes";
 import { teamRoutes } from "../routes/team.routes";
 import { whatsappRoutes } from "../routes/whatsapp.routes";
 import { superadminRoutes } from "../routes/superadmin.routes";
+import { superadminImportRoutes } from "../routes/superadmin-import.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
@@ -218,6 +219,12 @@ api.register(whatsappRoutes, {
 
 // Área da equipe Dexo (Superadmin) — rotas guardadas por requireSuperadmin.
 api.register(superadminRoutes, {
+  prefix: "/superadmin",
+});
+
+// Importação de dados legados (Superadmin) — preview/apply/status, tudo
+// guardado por requireSuperadmin e escopado pelo targetUserId (admin-alvo).
+api.register(superadminImportRoutes, {
   prefix: "/superadmin",
 });
 
