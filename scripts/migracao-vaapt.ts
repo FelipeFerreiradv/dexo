@@ -40,7 +40,7 @@ const DATA_DIR = path.resolve(__dirname, "data", "migracao-704");
 const OUT_DIR = path.resolve(__dirname, "out");
 const ML_API = "https://api.mercadolibre.com";
 const MAX_IMAGES = 10;
-const LEGACY_TENANT = "704";
+let LEGACY_TENANT = "704"; // sobrescrito por --tenant no main (ex.: MAGOO)
 const ALL_PHASES: Phase[] = [
   "scraps",
   "customers",
@@ -64,6 +64,7 @@ interface Flags {
   pecas: string;
   veiculos: string;
   clientes: string;
+  tenant: string;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -116,6 +117,7 @@ function parseFlags(argv: string[]): Flags {
     pecas: get("pecas") ?? path.join(DATA_DIR, "Backup Pecas - 704.xlsx"),
     veiculos: get("veiculos") ?? path.join(DATA_DIR, "Backup Veiculos - 704.xlsx"),
     clientes: get("clientes") ?? path.join(DATA_DIR, "Clientes - 704.xlsx"),
+    tenant: get("tenant") ?? "704",
   };
 }
 
@@ -1513,8 +1515,9 @@ function printSummary(
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
   const flags = parseFlags(process.argv.slice(2));
+  LEGACY_TENANT = flags.tenant; // marcador por cliente (attributes.migration, notes)
   console.log(
-    `[migracao-704] userId=${flags.userId} modo=${flags.dryRun ? "DRY-RUN" : "APPLY"} only=${[...flags.only].join(",")}`,
+    `[migracao-704] userId=${flags.userId} tenant=${LEGACY_TENANT} modo=${flags.dryRun ? "DRY-RUN" : "APPLY"} only=${[...flags.only].join(",")}`,
   );
 
   await assertUser(flags.userId);

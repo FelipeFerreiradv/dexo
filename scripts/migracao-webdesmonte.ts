@@ -25,13 +25,13 @@ import { normalizeSku } from "../app/lib/sku";
  */
 
 type Row = Record<string, string | null>;
-type Phase = "locations" | "scraps" | "products" | "images";
+type Phase = "locations" | "customers" | "scraps" | "products" | "images";
 
 const DEFAULT_USER_ID = "";
 const DEFAULT_DATA_DIR = path.resolve(__dirname, "data", "migracao-webdesmonte");
 const OUT_DIR = path.resolve(__dirname, "out");
 const MAX_IMAGES = 12;
-const ALL_PHASES: Phase[] = ["locations", "scraps", "products", "images"];
+const ALL_PHASES: Phase[] = ["locations", "customers", "scraps", "products", "images"];
 let TENANT = "WEBDESMONTE";
 
 interface Flags {
@@ -235,15 +235,16 @@ function cleanPlate(raw: unknown): string | null {
 
 /* ------------------------------ Relatório ------------------------------ */
 
-const reportRef: Record<string, unknown> = { locations: null, scraps: null, products: null, images: null };
+const reportRef: Record<string, unknown> = { locations: null, customers: null, scraps: null, products: null, images: null };
 
 async function counts(userId: string): Promise<Record<string, number>> {
-  const [products, scraps, locations] = await Promise.all([
+  const [products, scraps, locations, customers] = await Promise.all([
     prisma.product.count({ where: { userId } }),
     prisma.scrap.count({ where: { userId } }),
     prisma.location.count({ where: { userId } }),
+    prisma.customer.count({ where: { userId } }),
   ]);
-  return { products, scraps, locations };
+  return { products, scraps, locations, customers };
 }
 
 async function assertUser(userId: string): Promise<void> {
@@ -409,6 +410,157 @@ async function phaseScraps(flags: Flags): Promise<Map<string, string>> {
   reportRef.scraps = sum;
   console.log(`[scraps] total=${sum.total} criadas=${sum.created} existentes=${sum.skipped_existing} erros=${sum.errors}`);
   return wdToDexo;
+}
+
+/* -------------------------------- Clientes ----------------------------- */
+
+/** Só dígitos; placeholder (todos iguais) → null. */
+function cleanDoc(raw: unknown, len: number): string | null {
+  const s = asString(raw);
+  if (!s) return null;
+  let d = s.replace(/\D/g, "");
+  if (d.length === 0) return null;
+  if (d.length < len && len - d.length <= 2) d = d.padStart(len, "0");
+  if (d.length !== len) return null;
+  if (/^(.)\1*$/.test(d)) return null;
+  return d;
+}
+function cleanCep(raw: unknown): string | null {
+  const s = asString(raw);
+  if (!s) return null;
+  let d = s.replace(/\D/g, "");
+  if (d.length > 0 && d.length < 8 && 8 - d.length <= 2) d = d.padStart(8, "0");
+  return d.length === 8 ? d : null;
+}
+function cleanPhone(raw: unknown): string | null {
+  const s = asString(raw);
+  if (!s) return null;
+  const d = s.replace(/\D/g, "");
+  return d.length >= 8 ? d : null;
+}
+
+/** Clientes do WebDesmonte (customers.csv) → `Customer`. Idempotente. */
+async function phaseCustomers(flags: Flags): Promise<void> {
+  let rows: Row[] = [];
+  try {
+    rows = readCsv(flags.dataDir, "customers.csv");
+  } catch {
+    console.log("[customers] customers.csv ausente — fase pulada");
+    return;
+  }
+  const sliced = sliceRows(rows, flags);
+  const sum = {
+    rows: rows.length,
+    processed: sliced.length,
+    created: 0,
+    skipped_existing: 0,
+    skipped_no_name: 0,
+    pj: 0,
+    errors: 0,
+    details: [] as unknown[],
+  };
+
+  // Preload p/ dedup em memória (cpf/cnpj/telefone + marcador wdId em notes).
+  const existing = await prisma.customer.findMany({
+    where: { userId: flags.userId },
+    select: { cpf: true, cnpj: true, phone: true, mobile: true, notes: true },
+  });
+  const byCpf = new Set(existing.map((c) => c.cpf).filter(Boolean) as string[]);
+  const byCnpj = new Set(existing.map((c) => c.cnpj).filter(Boolean) as string[]);
+  const byPhone = new Set(
+    existing.flatMap((c) => [c.phone, c.mobile]).filter(Boolean) as string[],
+  );
+  const byWd = new Set<string>();
+  for (const c of existing) {
+    const m = c.notes?.match(/cliente #(\d+)/);
+    if (m) byWd.add(m[1]);
+  }
+  console.log(`[customers] preload: ${existing.length} clientes existentes`);
+
+  for (const r of sliced) {
+    const wdId = asString(r.Id);
+    const name = asString(r.Name);
+    if (!name) {
+      sum.skipped_no_name++;
+      continue;
+    }
+    if (wdId && byWd.has(wdId)) {
+      sum.skipped_existing++;
+      continue;
+    }
+    const doc = asString(r.Document)?.replace(/\D/g, "") ?? "";
+    const cnpj = doc.length > 11 ? cleanDoc(r.Document, 14) : null;
+    const cpf = doc.length > 0 && doc.length <= 11 ? cleanDoc(r.Document, 11) : null;
+    const phone = cleanPhone(r.Phone);
+    const mobile = cleanPhone(r.CellPhone);
+    if ((cpf && byCpf.has(cpf)) || (cnpj && byCnpj.has(cnpj))) {
+      sum.skipped_existing++;
+      continue;
+    }
+    if (!cpf && !cnpj && (phone || mobile) && ((phone && byPhone.has(phone)) || (mobile && byPhone.has(mobile)))) {
+      sum.skipped_existing++;
+      continue;
+    }
+    const isPj = !!cnpj;
+    if (isPj) sum.pj++;
+
+    if (flags.dryRun) {
+      sum.created++;
+      if (wdId) byWd.add(wdId);
+      if (cpf) byCpf.add(cpf);
+      if (cnpj) byCnpj.add(cnpj);
+      continue;
+    }
+    try {
+      await prisma.customer.create({
+        data: {
+          userId: flags.userId,
+          personType: isPj ? "PJ" : "PF",
+          name,
+          cpf,
+          cnpj,
+          razaoSocial: isPj ? name : null,
+          nomeFantasia: asString(r.FantasyName),
+          rg: !isPj ? asString(r.RgIe) : null,
+          inscricaoEstadual: isPj ? asString(r.RgIe) : null,
+          email: asString(r.Email),
+          phone,
+          mobile,
+          cep: cleanCep(r.ZipCode),
+          street: asString(r.Address),
+          number: asString(r.Number),
+          complement: asString(r.Complement),
+          neighborhood: asString(r.Neightborhood),
+          city: asString(r.City),
+          state: asString(r.Uf),
+          reference: asString(r.Reference),
+          deliveryCep: cleanCep(r.DeliveryZipCode),
+          deliveryCity: asString(r.DeliveryCity),
+          deliveryState: asString(r.DeliveryUf),
+          deliveryStreet: asString(r.DeliveryAddress),
+          deliveryNeighborhood: asString(r.DeliveryNeightborhood),
+          deliveryNumber: asString(r.DeliveryNumber),
+          deliveryComplement: asString(r.DeliveryComplement),
+          notes: wdId ? `Legado ${TENANT} · cliente #${wdId}` : `Legado ${TENANT}`,
+        } as Prisma.CustomerUncheckedCreateInput,
+        select: { id: true },
+      });
+      sum.created++;
+      if (wdId) byWd.add(wdId);
+      if (cpf) byCpf.add(cpf);
+      if (cnpj) byCnpj.add(cnpj);
+      if (phone) byPhone.add(phone);
+      if (mobile) byPhone.add(mobile);
+    } catch (err) {
+      sum.errors++;
+      pushCap(sum.details, { wdId, name, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  reportRef.customers = sum;
+  console.log(
+    `[customers] criados=${sum.created} existentes=${sum.skipped_existing} semNome=${sum.skipped_no_name} PJ=${sum.pj} erros=${sum.errors}`,
+  );
 }
 
 async function loadScrapMap(flags: Flags): Promise<Map<string, string>> {
@@ -673,6 +825,7 @@ async function main(): Promise<void> {
   let scrapMap = new Map<string, string>();
 
   if (flags.only.has("locations")) locMap = await phaseLocations(flags);
+  if (flags.only.has("customers")) await phaseCustomers(flags);
   if (flags.only.has("scraps")) scrapMap = await phaseScraps(flags);
 
   if (flags.only.has("products")) {
@@ -698,7 +851,7 @@ async function main(): Promise<void> {
 
   console.log(`\n===== RESUMO ${TENANT} =====`);
   console.log(`modo: ${flags.dryRun ? "DRY-RUN (0 escritas)" : "APPLY"}`);
-  for (const k of ["locations", "scraps", "products"]) {
+  for (const k of ["locations", "customers", "scraps", "products"]) {
     console.log(`  ${k.padEnd(10)} ${String(baseline[k]).padStart(7)} → ${String(final[k]).padStart(7)}  (Δ ${final[k] - baseline[k]})`);
   }
   console.log("=========================\n");
