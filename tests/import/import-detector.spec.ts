@@ -98,6 +98,32 @@ describe("import/detector — detecção por ASSINATURA de colunas (nunca por no
     expect(detected.get(detected.rows[0], "Status da NFe")).toBe("Autorizada");
   });
 
+  it("estoque.csv do IBR tabular → IBR_ESTOQUE", () => {
+    const f = csv(
+      "ProductId,SKU,BarCode,Description,Brand,Model,Active,QuantidadeEstoque,EstoqueMinimo,CustoAtual,CustoReal,ValorVenda,Ncm,Cest,LocationId,LocalizacaoSiglas,LocalizacaoDescricao\n100,2492,,Farol,Ford,KA,t,3,0,0.01,15,160,8708,,,BARR. > CX 1,Barracao\n",
+      "estoque.csv",
+    );
+    expect(detectFile(f).kind).toBe("IBR_ESTOQUE");
+  });
+
+  it("nfe_emitidas.csv do IBR tabular → IBR_NFE (não confunde com Vaapt NFE)", () => {
+    const f = csv(
+      "NotaFiscalId,NumeroNotaFiscal,Serie,ChaveDeAcesso,DataEmissao,NomeDestinatario,CustomerId,ValorTotal,Status,TipoNF\n53025,1413,1,4123061387108700011455001,2023,MARIA,127450,40,0,1\n",
+      "nfe_emitidas.csv",
+    );
+    expect(detectFile(f).kind).toBe("IBR_NFE");
+  });
+
+  it("estoque.csv rejeitado se o operador escolheu WebDesmonte clássico", () => {
+    const estoque = csv(
+      "ProductId,SKU,QuantidadeEstoque,ValorVenda,LocalizacaoSiglas\n1,2492,3,160,BARR.\n",
+      "estoque.csv",
+    );
+    expect(() =>
+      detectAndValidate("WEBDESMONTE", "PACOTE", [estoque]),
+    ).toThrow(ImportValidationError);
+  });
+
   it("arquivo irreconhecível → erro claro (nunca chuta)", () => {
     const f = csv("foo,bar\n1,2\n");
     expect(() => detectAndValidate("VAAPT", "CLIENTES", [f])).toThrow(
