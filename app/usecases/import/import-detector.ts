@@ -29,6 +29,8 @@ const KIND_LABEL: Record<DetectedKind, string> = {
   WD_PRODUCTS: "WebDesmonte — products.csv (arquivo-ponte)",
   WD_CUSTOMERS: "WebDesmonte — customers.csv",
   DEXO_CONTAS: "Dexo — template de contas (CSV)",
+  IBR_ESTOQUE: "IBR — estoque.csv (produtos + localização)",
+  IBR_NFE: "IBR — nfe_emitidas.csv (notas fiscais)",
   DESCONHECIDO: "formato não reconhecido",
 };
 
@@ -38,6 +40,15 @@ export function kindLabel(kind: DetectedKind): string {
 
 /** Assinaturas: todas as chaves (normKey) precisam estar no header. */
 const SIGNATURES: Array<{ kind: DetectedKind; requires: string[] }> = [
+  // IBR "tabular" (colunas próprias, distintas de tudo — checadas primeiro).
+  {
+    kind: "IBR_ESTOQUE",
+    requires: ["sku", "quantidadeestoque", "valorvenda", "localizacaosiglas"],
+  },
+  {
+    kind: "IBR_NFE",
+    requires: ["numeronotafiscal", "chavedeacesso", "nomedestinatario"],
+  },
   // Mais específicas primeiro (products.csv tem 111 colunas e engloba muita coisa).
   { kind: "WD_PRODUCTS", requires: ["code", "locationid", "purchasewasteid"] },
   { kind: "WD_LOCATIONS", requires: ["initialspath", "parentid", "level"] },
@@ -133,6 +144,12 @@ export function expectedKinds(
     DEXO: {
       CONTAS: { required: [["DEXO_CONTAS"]], optional: [] },
     },
+    IBR: {
+      // estoque.csv sozinho: cria localizações (árvore do texto), vincula por
+      // SKU e cria os produtos faltantes.
+      ESTOQUE: { required: [["IBR_ESTOQUE"]], optional: [] },
+      NFE: { required: [["IBR_NFE"]], optional: [] },
+    },
   };
 
   const found = table[system]?.[entity];
@@ -163,8 +180,16 @@ export function detectAndValidate(
 
   for (const f of detected) {
     if (f.kind === "DESCONHECIDO") {
+      const origem =
+        system === "VAAPT"
+          ? "Vaapt"
+          : system === "WEBDESMONTE"
+            ? "WebDesmonte (IBR clássico)"
+            : system === "IBR"
+              ? "IBR — export tabular (estoque/NF-e)"
+              : "contas (template Dexo)";
       throw new ImportValidationError(
-        `"${f.filename}": não reconheci as colunas deste arquivo. Confira se é o export correto de ${system === "VAAPT" ? "Vaapt" : system === "WEBDESMONTE" ? "WebDesmonte (IBR)" : "contas (template Dexo)"}.`,
+        `"${f.filename}": não reconheci as colunas deste arquivo. Confira se é o export correto de ${origem}.`,
       );
     }
     if (!allAccepted.has(f.kind)) {

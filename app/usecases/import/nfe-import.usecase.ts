@@ -32,7 +32,8 @@ import {
   newReport,
 } from "./import.types";
 import { fileOfKind } from "./import-detector";
-import { mapVaaptNfes } from "./mappers/vaapt-nfes.mapper";
+import { mapVaaptNfes, type NfePlanItem } from "./mappers/vaapt-nfes.mapper";
+import { mapIbrNfes } from "./mappers/ibr-nfes.mapper";
 
 /**
  * Notas históricas são sempre de PRODUÇÃO (foram emitidas de verdade no
@@ -113,6 +114,55 @@ export async function runVaaptNfes(
     });
   }
 
+  await executeNfeHistoricPlan(ctx, report, mapped.items, deps);
+  return report;
+}
+
+/**
+ * Runner IBR/NFE — nfe_emitidas.csv (export tabular) → registros históricos.
+ * Reaproveita 100% da execução do Vaapt (createHistoric + dedup + avanço de
+ * sequência); só o mapper difere.
+ */
+export async function runIbrNfes(
+  ctx: ImportContext,
+  deps: NfeImportDeps = defaultNfeImportDeps,
+): Promise<ImportReport> {
+  const file = fileOfKind(ctx.files, "IBR_NFE");
+  if (!file) {
+    throw new ImportValidationError(
+      "Arquivo de notas emitidas (IBR) não encontrado.",
+    );
+  }
+  const report = newReport("IBR", "NFE", ctx.targetUserId, ctx.dryRun);
+  const mapped = mapIbrNfes(file);
+  bump(report, "linhas_no_arquivo", mapped.totalRows);
+  bump(report, "sem_numero", mapped.semNumero);
+  bump(report, "numeros_distintos", mapped.items.length);
+  bump(report, "reemissoes_colapsadas", mapped.duplicadosColapsados);
+  bump(report, "sem_chave", mapped.semChave);
+  for (const [status, n] of Object.entries(mapped.porStatus)) {
+    bump(report, `status_${status.toLowerCase()}`, n);
+  }
+  for (const aviso of mapped.avisos) {
+    bump(report, "avisos");
+    addIssue(report.avisos, aviso);
+  }
+  await executeNfeHistoricPlan(ctx, report, mapped.items, deps);
+  return report;
+}
+
+/**
+ * Execução histórica comum (Vaapt e IBR): preload de dedup, criação via
+ * createHistoric e avanço da NfeSequence (só para frente, só por notas com
+ * chave). Não altera o comportamento pré-existente do Vaapt — apenas foi
+ * extraída para reuso.
+ */
+export async function executeNfeHistoricPlan(
+  ctx: ImportContext,
+  report: ImportReport,
+  items: NfePlanItem[],
+  deps: NfeImportDeps,
+): Promise<void> {
   // Preload (idempotência): chaves e pares série/número já no tenant.
   const existing = await deps.loadExisting(ctx.targetUserId, AMBIENTE);
   const chavesExistentes = new Set(
@@ -123,13 +173,13 @@ export async function runVaaptNfes(
   );
 
   let processadas = 0;
-  for (const item of mapped.items) {
+  for (const item of items) {
     processadas++;
-    if (processadas % 50 === 0 || processadas === mapped.items.length) {
+    if (processadas % 50 === 0 || processadas === items.length) {
       ctx.onProgress?.({
         fase: "nfe",
         processadas,
-        total: mapped.items.length,
+        total: items.length,
       });
     }
 
@@ -214,7 +264,7 @@ export async function runVaaptNfes(
   // Só notas com chave (série extraída da própria chave) entram no cálculo.
   const maxPorSerie = new Map<number, number>();
   let semChaveForaDaSequencia = 0;
-  for (const item of mapped.items) {
+  for (const item of items) {
     if (!item.chaveAcesso) {
       semChaveForaDaSequencia++;
       continue;
@@ -258,6 +308,4 @@ export async function runVaaptNfes(
       });
     }
   }
-
-  return report;
 }

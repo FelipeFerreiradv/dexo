@@ -19,7 +19,12 @@ const jobStore = new SystemLogImportJobStore();
 const previewUseCase = new ImportPreviewUseCase();
 const applyUseCase = new ImportApplyUseCase(jobStore);
 
-const VALID_SYSTEMS = new Set<ImportSystem>(["VAAPT", "WEBDESMONTE", "DEXO"]);
+const VALID_SYSTEMS = new Set<ImportSystem>([
+  "VAAPT",
+  "WEBDESMONTE",
+  "DEXO",
+  "IBR",
+]);
 const VALID_ENTITIES = new Set<ImportEntity>([
   "CLIENTES",
   "LOCALIZACOES",
@@ -28,6 +33,7 @@ const VALID_ENTITIES = new Set<ImportEntity>([
   "CONTAS",
   "NFE",
   "PACOTE",
+  "ESTOQUE",
 ]);
 
 interface MultipartPayload {
@@ -90,7 +96,7 @@ function parseCommonFields(fields: Record<string, string>): {
   }
   if (!VALID_SYSTEMS.has(system)) {
     throw new ImportValidationError(
-      "Sistema inválido. Use VAAPT, WEBDESMONTE ou DEXO.",
+      "Sistema inválido. Use VAAPT, WEBDESMONTE, IBR ou DEXO.",
     );
   }
   if (!VALID_ENTITIES.has(entity)) {

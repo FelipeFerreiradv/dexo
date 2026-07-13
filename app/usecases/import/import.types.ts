@@ -11,7 +11,11 @@
  * diretas (são read-only).
  */
 
-export type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO";
+// IBR = export "tabular" novo do IBR/WebDesmonte (issue IBR-4243): estoque.csv
+// (produtos + localização em texto) e nfe_emitidas.csv (NF-e emitidas). É um
+// FORMATO distinto do WEBDESMONTE "clássico" (locations/purchase_waste/
+// products/customers com GUIDs), por isso um sistema próprio.
+export type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO" | "IBR";
 
 export type ImportEntity =
   | "CLIENTES"
@@ -20,7 +24,10 @@ export type ImportEntity =
   | "VINCULOS"
   | "CONTAS"
   | "NFE"
-  | "PACOTE";
+  | "PACOTE"
+  // Estoque IBR: cria a árvore de localizações do próprio arquivo, casa o
+  // produto por SKU (vincula a localização) e cria os produtos faltantes.
+  | "ESTOQUE";
 
 /** Arquivo recebido no multipart, já em memória (limite global de 20MB). */
 export interface ImportFile {
@@ -44,6 +51,8 @@ export type DetectedKind =
   | "WD_PRODUCTS" // products.csv (Code/LocationId/PurchaseWasteId) — arquivo-ponte IBR
   | "WD_CUSTOMERS" // customers.csv (Name/Document/Type)
   | "DEXO_CONTAS" // template CSV Dexo de contas a pagar/receber
+  | "IBR_ESTOQUE" // estoque.csv (SKU + localização em texto hierárquico)
+  | "IBR_NFE" // nfe_emitidas.csv (chave/série/número/destinatário/status)
   | "DESCONHECIDO";
 
 /** Linha crua parseada (célula pode vir number/string/null do xlsx). */

@@ -27,7 +27,8 @@ import {
 } from "./executors/product-links.executor";
 import { runWdPacote } from "./executors/wd-pacote.executor";
 import { runContas } from "./executors/finance.executor";
-import { runVaaptNfes } from "./nfe-import.usecase";
+import { runVaaptNfes, runIbrNfes } from "./nfe-import.usecase";
+import { runIbrEstoque } from "./executors/ibr-estoque.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -44,6 +45,8 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "WEBDESMONTE/VINCULOS": runWdLinks,
     "WEBDESMONTE/PACOTE": runWdPacote,
     "DEXO/CONTAS": runContas,
+    "IBR/ESTOQUE": runIbrEstoque,
+    "IBR/NFE": runIbrNfes,
   };
 
 export function resolveRunner(

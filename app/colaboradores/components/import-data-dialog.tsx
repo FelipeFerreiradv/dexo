@@ -34,7 +34,7 @@ import { authHeaders, getApiBaseUrl } from "@/lib/api";
 
 /* ------------------------------- Tipos --------------------------------- */
 
-type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO";
+type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO" | "IBR";
 type ImportEntity =
   | "CLIENTES"
   | "LOCALIZACOES"
@@ -42,7 +42,8 @@ type ImportEntity =
   | "VINCULOS"
   | "CONTAS"
   | "NFE"
-  | "PACOTE";
+  | "PACOTE"
+  | "ESTOQUE";
 
 interface RowIssue {
   linha?: number;
@@ -87,7 +88,8 @@ interface AvailableEntity {
 
 const SYSTEM_LABELS: Record<ImportSystem, string> = {
   VAAPT: "Vaapt (Vapt)",
-  WEBDESMONTE: "IBR — WebDesmonte (CSV)",
+  WEBDESMONTE: "IBR — WebDesmonte clássico (CSV)",
+  IBR: "IBR — export tabular (estoque/NF-e)",
   DEXO: "Template Dexo (CSV)",
 };
 
@@ -99,6 +101,7 @@ const ENTITY_LABELS: Record<ImportEntity, string> = {
   CONTAS: "Contas a pagar / receber",
   NFE: "NF-e históricas",
   PACOTE: "Pacote completo (vários CSVs)",
+  ESTOQUE: "Estoque (produtos + localização por SKU)",
 };
 
 const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
@@ -118,6 +121,10 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
     "Envie purchase_waste.csv (junte locations.csv para vincular a localização da sucata).",
   "DEXO/CONTAS":
     "CSV no template Dexo: tipo, documento, cliente_cpf_cnpj, cliente_nome, valor, vencimento, status, pago_em, forma_pagamento, parcelas, observacao.",
+  "IBR/ESTOQUE":
+    "Envie o estoque.csv (colunas SKU, QuantidadeEstoque, ValorVenda, LocalizacaoSiglas). Vincula a localização aos produtos existentes por SKU e cria os que faltam.",
+  "IBR/NFE":
+    "Envie o nfe_emitidas.csv (colunas NumeroNotaFiscal, ChaveDeAcesso, NomeDestinatario). Importa as notas como histórico, sem passar pela SEFAZ.",
 };
 
 const ORDEM_RECOMENDADA =
