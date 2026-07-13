@@ -45,6 +45,30 @@ export interface UpsertAutodetectResult {
 }
 
 /**
+ * Cache OPCIONAL para o "Importar anúncios" (importação em LOTE). Os
+ * importadores já pré-carregam em lote tudo o que os passos 1-3 do núcleo
+ * consultariam por item (listings existentes, produtos por skuNormalized e a
+ * guarda de box-label) — sem o cache, cada item novo re-consultava 2-3 vezes
+ * o que o lote já sabia. WRITE-THROUGH obrigatório: o núcleo registra aqui
+ * cada produto/listing que cria, para o item SEGUINTE do mesmo lote com o
+ * MESMO SKU enxergá-lo (no caminho sem cache é a query fresca que garante
+ * isso). Backstops de duplicação continuam intocados: unique (userId, sku) +
+ * P2002 re-resolve no create, e upsert na unique (conta, externalListingId).
+ * Webhook/pollings NÃO passam cache → caminho fresco de hoje, byte a byte.
+ */
+export interface AutodetectImportCache {
+  /** skuNormalized → produto do dono (pré-carregado + creates do lote). */
+  productsBySku: Map<string, { id: string; name: string }>;
+  /** productIds que JÁ têm anúncio NESTA conta (guarda de box-label). */
+  productIdsWithListing: Set<string>;
+  /**
+   * externalListingIds do lote que JÁ têm listing nesta conta. O preload
+   * cobre TODOS os ids do lote — ausente do Set = inexistente garantido.
+   */
+  knownExternalListingIds: Set<string>;
+}
+
+/**
  * Núcleo da detecção automática de anúncios criados direto no marketplace.
  *
  * Recebe um item já normalizado e, de forma idempotente e anti-duplicação, cria
@@ -61,23 +85,34 @@ export interface UpsertAutodetectResult {
 export class ListingAutodetectUseCase {
   static async upsertProductFromMarketplaceItem(
     item: NormalizedMarketplaceItem,
+    cache?: AutodetectImportCache,
   ): Promise<UpsertAutodetectResult> {
     const { account, externalListingId } = item;
 
     // 1. Idempotência por listing: vínculo (conta, anúncio) já existe → no-op.
-    // EGRESS-light: só o productId, não o Product inteiro.
-    const existing = await ListingRepository.findProductIdByExternalListingId(
-      account.id,
-      externalListingId,
-    );
+    // EGRESS-light: só o productId, não o Product inteiro. Com cache (lote):
+    // ausente do Set = inexistente garantido, sem query; presente → confere
+    // fresco como sempre. Corrida com webhook no meio do lote degrada para o
+    // upsert idempotente + limpeza de órfão abaixo (mesmo caminho de hoje).
+    const existing =
+      cache && !cache.knownExternalListingIds.has(externalListingId)
+        ? null
+        : await ListingRepository.findProductIdByExternalListingId(
+            account.id,
+            externalListingId,
+          );
     if (existing) {
       return { action: "listing_exists", productId: existing.productId };
     }
 
-    // 2. Casa por SKU dentro do dono (mesmo critério do importMLItems).
+    // 2. Casa por SKU dentro do dono (mesmo critério do importMLItems). Com
+    // cache: o preload cobre todos os SKUs do lote e os creates entram via
+    // write-through — hit/miss equivalem à query fresca.
     const normalizedSku = normalizeSku(item.rawSku);
     const matched = normalizedSku
-      ? await this.findProductBySku(account.userId, normalizedSku)
+      ? cache
+        ? (cache.productsBySku.get(normalizedSku) ?? null)
+        : await this.findProductBySku(account.userId, normalizedSku)
       : null;
     const matchedId = matched?.id ?? null;
 
@@ -88,10 +123,12 @@ export class ListingAutodetectUseCase {
     // Contas diferentes com o mesmo SKU seguem agrupando (multi-conta legítimo).
     const isBoxLabel =
       matched != null &&
-      (await ListingRepository.productHasListingInAccount(
-        matched.id,
-        account.id,
-      )) &&
+      (cache
+        ? cache.productIdsWithListing.has(matched.id)
+        : await ListingRepository.productHasListingInAccount(
+            matched.id,
+            account.id,
+          )) &&
       !areTitlesSimilar(item.title, matched.name);
 
     let productId: string;
@@ -123,6 +160,13 @@ export class ListingAutodetectUseCase {
       status: item.status,
     });
 
+    // WRITE-THROUGH do listing recém-criado/mantido: o item seguinte do lote
+    // com o mesmo produto/anúncio precisa enxergar o estado novo.
+    if (cache) {
+      cache.knownExternalListingIds.add(externalListingId);
+      cache.productIdsWithListing.add(listing?.productId ?? productId);
+    }
+
     // Corrida sem SKU: se criamos um produto novo agora mas o listing já existia
     // apontando p/ OUTRO produto (uma entrega concorrente do mesmo anúncio
     // venceu), o nosso virou órfão → remove p/ não duplicar no catálogo.
@@ -139,7 +183,30 @@ export class ListingAutodetectUseCase {
             e instanceof Error ? e.message : e,
           ),
         );
+      // Write-through com o VENCEDOR da corrida (nunca o órfão removido).
+      if (cache && normalizedSku && !isBoxLabel) {
+        cache.productsBySku.set(normalizedSku, {
+          id: listing.productId,
+          name: item.title,
+        });
+      }
       return { action: "raced", productId: listing.productId };
+    }
+
+    // WRITE-THROUGH do produto criado (ou vencedor de corrida de SKU): itens
+    // SEGUINTES do lote com o MESMO SKU casam com ele em vez de recriar — no
+    // caminho sem cache é a query fresca por item que dá essa garantia. Box
+    // label fica de fora (SKU sintético único por anúncio, ninguém casa nele).
+    if (
+      cache &&
+      normalizedSku &&
+      !isBoxLabel &&
+      action !== "linked_existing_product"
+    ) {
+      cache.productsBySku.set(normalizedSku, {
+        id: productId,
+        name: item.title,
+      });
     }
 
     return { action, productId };

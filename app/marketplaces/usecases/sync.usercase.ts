@@ -19,7 +19,10 @@ import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingUseCase } from "./listing.usercase";
-import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
+import {
+  ListingAutodetectUseCase,
+  type AutodetectImportCache,
+} from "./listing-autodetect.usercase";
 import { SystemLogService } from "@/app/services/system-log.service";
 import type { MLItemDetails } from "../types/ml-api.types";
 import type { MLItemUpdatePayload } from "../types/ml-api.types";
@@ -369,7 +372,9 @@ export class SyncUseCase {
       existingListings.map((listing) => [listing.externalListingId, listing]),
     );
 
-    // Buscar produtos por SKU em lote (EGRESS: só id + skuNormalized).
+    // Buscar produtos por SKU em lote (EGRESS: id + skuNormalized + name — o
+    // name alimenta a guarda de título do box-label via cache, substituindo a
+    // query fresca por item do núcleo).
     const products =
       normalizedSkus.length > 0
         ? await prisma.product.findMany({
@@ -377,7 +382,7 @@ export class SyncUseCase {
               skuNormalized: { in: normalizedSkus },
               userId: account.userId,
             },
-            select: { id: true, skuNormalized: true },
+            select: { id: true, skuNormalized: true, name: true },
           })
         : [];
     const productsMap = new Map(
@@ -412,6 +417,20 @@ export class SyncUseCase {
         : []
       ).map((l) => l.productId),
     );
+
+    // Cache write-through do núcleo (só no IMPORT em lote; webhook fica
+    // fresco): os preloads acima já respondem os passos 1-3 do núcleo, e o
+    // núcleo registra de volta cada produto/listing criado — item seguinte
+    // com o mesmo SKU enxerga, exatamente como a query fresca garantia.
+    const importCache: AutodetectImportCache = {
+      productsBySku: new Map(
+        [...productsMap].map(([k, p]) => [k, { id: p.id, name: p.name }]),
+      ),
+      productIdsWithListing: withListing,
+      knownExternalListingIds: new Set(
+        existingListings.map((l) => l.externalListingId),
+      ),
+    };
 
     // 5. Processar cada item
     let processedCount = 0;
@@ -480,6 +499,7 @@ export class SyncUseCase {
                 { id: account.id, userId: account.userId },
                 item,
               ),
+              importCache,
             );
           this.tallyAutodetect(result, outcome.action);
 
@@ -676,7 +696,8 @@ export class SyncUseCase {
               skuNormalized: { in: normalizedSkus },
               userId: account.userId,
             },
-            select: { id: true, skuNormalized: true },
+            // name alimenta a guarda de título do box-label via cache.
+            select: { id: true, skuNormalized: true, name: true },
           })
         : [];
     const productsMap = new Map(
@@ -704,6 +725,17 @@ export class SyncUseCase {
         : []
       ).map((l) => l.productId),
     );
+
+    // Cache write-through do núcleo (mesmo desenho do import ML).
+    const importCache: AutodetectImportCache = {
+      productsBySku: new Map(
+        [...productsMap].map(([k, p]) => [k, { id: p.id, name: p.name }]),
+      ),
+      productIdsWithListing: withListing,
+      knownExternalListingIds: new Set(
+        existingListings.map((l) => l.externalListingId),
+      ),
+    };
 
     const PREVIEW_CAP = 50;
     for (const s of skus) {
@@ -762,6 +794,7 @@ export class SyncUseCase {
                 { id: account.id, userId: account.userId },
                 s,
               ),
+              importCache,
             );
           this.tallyAutodetect(result, outcome.action);
           linkedProductId = outcome.productId;
@@ -1225,12 +1258,13 @@ export class SyncUseCase {
     const userProducts = uniqueSkus.length
       ? await prisma.product.findMany({
           where: { userId: account.userId, skuNormalized: { in: uniqueSkus } },
-          select: { id: true, sku: true, skuNormalized: true },
+          // name alimenta a guarda de título do box-label via cache.
+          select: { id: true, sku: true, skuNormalized: true, name: true },
         })
       : [];
     const productsMap = new Map<
       string,
-      { id: string; sku: string; skuNormalized: string | null }
+      { id: string; sku: string; skuNormalized: string | null; name: string }
     >();
     for (const p of userProducts) {
       const key = p.skuNormalized;
@@ -1276,6 +1310,17 @@ export class SyncUseCase {
     console.log(
       `[IMPORT] Account userId=${account.userId}, marketplaceAccountId=${account.id}`,
     );
+
+    // Cache write-through do núcleo (mesmo desenho do import ML).
+    const importCache: AutodetectImportCache = {
+      productsBySku: new Map(
+        [...productsMap].map(([k, p]) => [k, { id: p.id, name: p.name }]),
+      ),
+      productIdsWithListing: withListing,
+      knownExternalListingIds: new Set(
+        existingListings.map((l) => l.externalListingId),
+      ),
+    };
 
     // 5. Processar cada item
     let processedCount = 0;
@@ -1358,6 +1403,7 @@ export class SyncUseCase {
           const outcome =
             await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
               normalized,
+              importCache,
             );
           this.tallyAutodetect(result, outcome.action);
 

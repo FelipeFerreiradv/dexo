@@ -100,6 +100,12 @@ describe("SyncUseCase.importMLItems — roteia anúncios ativos sem produto pelo
         rawSku: "NEW-1",
         account: expect.objectContaining({ id: "acc1", userId: "u1" }),
       }),
+      // Cache write-through do lote (preloads do import passados ao núcleo).
+      expect.objectContaining({
+        productsBySku: expect.any(Map),
+        productIdsWithListing: expect.any(Set),
+        knownExternalListingIds: expect.any(Set),
+      }),
     );
     // contadores: 1 criado, 2 vinculados (casado + criado), 0 não vinculados
     expect(result.createdProducts).toBe(1);
@@ -128,6 +134,7 @@ describe("SyncUseCase.importMLItems — roteia anúncios ativos sem produto pelo
     expect(core).toHaveBeenCalledTimes(1);
     expect(core).toHaveBeenCalledWith(
       expect.objectContaining({ externalListingId: "MLB9", rawSku: null }),
+      expect.anything(), // cache do lote
     );
     expect(result.createdProducts).toBe(1);
     expect(result.unlinkedItems).toBe(0);
