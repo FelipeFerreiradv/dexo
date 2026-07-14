@@ -34,7 +34,7 @@ import { authHeaders, getApiBaseUrl } from "@/lib/api";
 
 /* ------------------------------- Tipos --------------------------------- */
 
-type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO" | "IBR";
+type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO" | "IBR" | "IBRSOFT";
 type ImportEntity =
   | "CLIENTES"
   | "LOCALIZACOES"
@@ -90,6 +90,7 @@ const SYSTEM_LABELS: Record<ImportSystem, string> = {
   VAAPT: "Vaapt (Vapt)",
   WEBDESMONTE: "IBR — WebDesmonte clássico (CSV)",
   IBR: "IBR — export tabular (estoque/NF-e)",
+  IBRSOFT: "IBR Soft — export completo (anexe todos os CSVs)",
   DEXO: "Template Dexo (CSV)",
 };
 
@@ -125,6 +126,8 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
     "Envie o estoque.csv (colunas SKU, QuantidadeEstoque, ValorVenda, LocalizacaoSiglas). Vincula a localização aos produtos existentes por SKU e cria os que faltam.",
   "IBR/NFE":
     "Envie o nfe_emitidas.csv (colunas NumeroNotaFiscal, ChaveDeAcesso, NomeDestinatario). Importa as notas como histórico, sem passar pela SEFAZ.",
+  "IBRSOFT/PACOTE":
+    "Anexe TODOS os CSVs do export IBR Soft de uma vez (produtos, sucatas, localizacoes, costumers, nfe, contas_a_pagar, contas_a_receber). O sistema identifica cada arquivo pelas colunas, ignora os que não reconhecer e importa tudo na ordem certa. Reimportar não duplica.",
 };
 
 const ORDEM_RECOMENDADA =

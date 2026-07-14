@@ -29,6 +29,7 @@ import { runWdPacote } from "./executors/wd-pacote.executor";
 import { runContas } from "./executors/finance.executor";
 import { runVaaptNfes, runIbrNfes } from "./nfe-import.usecase";
 import { runIbrEstoque } from "./executors/ibr-estoque.executor";
+import { runIbrsoftPacote } from "./executors/ibrsoft-pacote.executor";
 
 export type ImportRunner = (ctx: ImportContext) => Promise<ImportReport>;
 
@@ -47,6 +48,7 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "DEXO/CONTAS": runContas,
     "IBR/ESTOQUE": runIbrEstoque,
     "IBR/NFE": runIbrNfes,
+    "IBRSOFT/PACOTE": runIbrsoftPacote,
   };
 
 export function resolveRunner(
