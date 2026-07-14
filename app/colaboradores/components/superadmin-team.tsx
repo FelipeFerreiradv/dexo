@@ -379,7 +379,7 @@ export function SuperadminTeam() {
 
       {/* Modal de criação */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {role === "ADMIN" ? "Novo administrador" : "Novo colaborador"}
@@ -525,7 +525,7 @@ export function SuperadminTeam() {
         open={!!permsTarget}
         onOpenChange={(o) => !o && setPermsTarget(null)}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Permissões de acesso</DialogTitle>
             <DialogDescription>
