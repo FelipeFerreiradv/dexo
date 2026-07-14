@@ -51,13 +51,26 @@ export class ImportPreviewUseCase {
     await assertTargetAdmin(input.targetUserId);
     // Resolve o runner ANTES de parsear: entidade indisponível falha rápido.
     const runner = resolveRunner(input.system, input.entity);
-    const detected = detectAndValidate(input.system, input.entity, input.files);
+    const { files: detected, ignored } = detectAndValidate(
+      input.system,
+      input.entity,
+      input.files,
+    );
 
     const report = await runner({
       targetUserId: input.targetUserId,
       files: detected,
       dryRun: true,
     });
+
+    const dicas = buildDicas(report);
+    if (ignored.length > 0) {
+      dicas.unshift(
+        `${ignored.length} arquivo(s) foram ignorados (não pertencem a esta importação): ${ignored
+          .map((i) => `${i.filename} — ${i.motivo}`)
+          .join("; ")}.`,
+      );
+    }
 
     return {
       system: input.system,
@@ -70,7 +83,7 @@ export class ImportPreviewUseCase {
         linhas: f.rows.length,
         tipo: f.kind,
       })),
-      dicas: buildDicas(report),
+      dicas,
       report,
     };
   }

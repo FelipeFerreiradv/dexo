@@ -64,9 +64,15 @@ export class ImportApplyUseCase {
         );
       }
 
-      // Valida tudo ANTES de criar o job (falha vira 400 síncrono, não job ERROR).
+      // Valida tudo ANTES de criar o job (falha vira 400 síncrono, não job
+      // ERROR). Arquivos extras não-pertencentes são ignorados (mesma
+      // tolerância da prévia); só os aceitos vão para o runner.
       const runner = resolveRunner(input.system, input.entity);
-      const detected = detectAndValidate(input.system, input.entity, input.files);
+      const { files: detected } = detectAndValidate(
+        input.system,
+        input.entity,
+        input.files,
+      );
 
       const jobId = await this.store.create({
         targetUserId: input.targetUserId,
@@ -96,7 +102,7 @@ export class ImportApplyUseCase {
   private async runJob(
     jobId: string,
     input: { targetUserId: string },
-    files: ReturnType<typeof detectAndValidate>,
+    files: ReturnType<typeof detectAndValidate>["files"],
     runner: ReturnType<typeof resolveRunner>,
   ): Promise<void> {
     try {
