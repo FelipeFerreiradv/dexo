@@ -15,7 +15,16 @@
 // (produtos + localização em texto) e nfe_emitidas.csv (NF-e emitidas). É um
 // FORMATO distinto do WEBDESMONTE "clássico" (locations/purchase_waste/
 // products/customers com GUIDs), por isso um sistema próprio.
-export type ImportSystem = "VAAPT" | "WEBDESMONTE" | "DEXO" | "IBR";
+// IBRSOFT = export COMPLETO do IBR Soft moderno (CSV separado por ";", colunas
+// em português snake_case): produtos.csv, sucatas.csv, localizacoes.csv,
+// costumers.csv, nfe.csv, contas_a_pagar.csv, contas_a_receber.csv. Um único
+// PACOTE cobre todas as entidades.
+export type ImportSystem =
+  | "VAAPT"
+  | "WEBDESMONTE"
+  | "DEXO"
+  | "IBR"
+  | "IBRSOFT";
 
 export type ImportEntity =
   | "CLIENTES"
@@ -53,6 +62,14 @@ export type DetectedKind =
   | "DEXO_CONTAS" // template CSV Dexo de contas a pagar/receber
   | "IBR_ESTOQUE" // estoque.csv (SKU + localização em texto hierárquico)
   | "IBR_NFE" // nfe_emitidas.csv (chave/série/número/destinatário/status)
+  // IBR Soft completo (CSV ";", colunas PT snake_case):
+  | "IBRSOFT_PRODUTOS" // produtos.csv (codigo=SKU, sigla_localizacao, placa/lote)
+  | "IBRSOFT_SUCATAS" // sucatas.csv (codigo_sequencial, placa, chassi, valor_compra)
+  | "IBRSOFT_LOCALIZACOES" // localizacoes.csv (sigla, caminho_siglas, id_pai)
+  | "IBRSOFT_CLIENTES" // costumers.csv (nome_razao_social, cpf_cnpj, tipo)
+  | "IBRSOFT_NFE" // nfe.csv (numero_nota, chave_acesso, destinatario, status)
+  | "IBRSOFT_CONTAS_PAGAR" // contas_a_pagar.csv (favorecido, valor_inicial)
+  | "IBRSOFT_CONTAS_RECEBER" // contas_a_receber.csv (cliente, valor_recebido)
   | "DESCONHECIDO";
 
 /** Linha crua parseada (célula pode vir number/string/null do xlsx). */

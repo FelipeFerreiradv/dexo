@@ -24,6 +24,7 @@ const VALID_SYSTEMS = new Set<ImportSystem>([
   "WEBDESMONTE",
   "DEXO",
   "IBR",
+  "IBRSOFT",
 ]);
 const VALID_ENTITIES = new Set<ImportEntity>([
   "CLIENTES",

@@ -31,6 +31,13 @@ const KIND_LABEL: Record<DetectedKind, string> = {
   DEXO_CONTAS: "Dexo — template de contas (CSV)",
   IBR_ESTOQUE: "IBR — estoque.csv (produtos + localização)",
   IBR_NFE: "IBR — nfe_emitidas.csv (notas fiscais)",
+  IBRSOFT_PRODUTOS: "IBR Soft — produtos.csv",
+  IBRSOFT_SUCATAS: "IBR Soft — sucatas.csv",
+  IBRSOFT_LOCALIZACOES: "IBR Soft — localizacoes.csv",
+  IBRSOFT_CLIENTES: "IBR Soft — clientes (costumers.csv)",
+  IBRSOFT_NFE: "IBR Soft — nfe.csv",
+  IBRSOFT_CONTAS_PAGAR: "IBR Soft — contas_a_pagar.csv",
+  IBRSOFT_CONTAS_RECEBER: "IBR Soft — contas_a_receber.csv",
   DESCONHECIDO: "formato não reconhecido",
 };
 
@@ -40,6 +47,35 @@ export function kindLabel(kind: DetectedKind): string {
 
 /** Assinaturas: todas as chaves (normKey) precisam estar no header. */
 const SIGNATURES: Array<{ kind: DetectedKind; requires: string[] }> = [
+  // IBR Soft completo (colunas PT snake_case, muito específicas).
+  {
+    kind: "IBRSOFT_PRODUTOS",
+    requires: ["codigo", "valorvenda", "siglalocalizacao", "custocompra"],
+  },
+  {
+    kind: "IBRSOFT_SUCATAS",
+    requires: ["codigosequencial", "valorcompra", "certidaobaixa", "chassi"],
+  },
+  {
+    kind: "IBRSOFT_LOCALIZACOES",
+    requires: ["caminhosiglas", "idpai", "nivel", "aceitaestoque"],
+  },
+  {
+    kind: "IBRSOFT_CLIENTES",
+    requires: ["nomerazaosocial", "cpfcnpj", "nomefantasia", "tipo"],
+  },
+  {
+    kind: "IBRSOFT_NFE",
+    requires: ["numeronota", "chaveacesso", "destinatario", "naturezaoperacao"],
+  },
+  {
+    kind: "IBRSOFT_CONTAS_PAGAR",
+    requires: ["favorecido", "documentofavorecido", "valorinicial", "vencimento"],
+  },
+  {
+    kind: "IBRSOFT_CONTAS_RECEBER",
+    requires: ["valorrecebido", "documentocliente", "valorinicial", "vencimento"],
+  },
   // IBR "tabular" (colunas próprias, distintas de tudo — checadas primeiro).
   {
     kind: "IBR_ESTOQUE",
@@ -149,6 +185,32 @@ export function expectedKinds(
       // SKU e cria os produtos faltantes.
       ESTOQUE: { required: [["IBR_ESTOQUE"]], optional: [] },
       NFE: { required: [["IBR_NFE"]], optional: [] },
+    },
+    IBRSOFT: {
+      // Pacote completo: qualquer combinação ≥1 dos CSVs do export IBR Soft. As
+      // fases rodam na ordem certa; arquivos ausentes são pulados.
+      PACOTE: {
+        required: [
+          [
+            "IBRSOFT_CLIENTES",
+            "IBRSOFT_LOCALIZACOES",
+            "IBRSOFT_SUCATAS",
+            "IBRSOFT_PRODUTOS",
+            "IBRSOFT_NFE",
+            "IBRSOFT_CONTAS_PAGAR",
+            "IBRSOFT_CONTAS_RECEBER",
+          ],
+        ],
+        optional: [
+          "IBRSOFT_CLIENTES",
+          "IBRSOFT_LOCALIZACOES",
+          "IBRSOFT_SUCATAS",
+          "IBRSOFT_PRODUTOS",
+          "IBRSOFT_NFE",
+          "IBRSOFT_CONTAS_PAGAR",
+          "IBRSOFT_CONTAS_RECEBER",
+        ],
+      },
     },
   };
 
