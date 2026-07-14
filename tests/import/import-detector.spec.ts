@@ -217,6 +217,47 @@ describe("import/parse — preservação de zeros à esquerda", () => {
     expect(t.rows[0].A).toBe("x, y");
     expect(t.rows[0].B).toBe('com "aspas"');
   });
+
+  it("auto-detecta separador ponto-e-vírgula (CSV BR do Excel)", () => {
+    // Mesmo conteúdo, separado por ";" — não pode virar 1 coluna só.
+    const t = readCsvBuffer(
+      Buffer.from("Code;Document;Preco\n007;01234567890;1.234,56\n", "utf8"),
+    );
+    expect(t.header).toEqual(["Code", "Document", "Preco"]);
+    expect(t.rows[0].Code).toBe("007"); // zero à esquerda preservado
+    expect(t.rows[0].Document).toBe("01234567890");
+    expect(t.rows[0].Preco).toBe("1.234,56");
+  });
+
+  it("auto-detecta separador TAB", () => {
+    const t = readCsvBuffer(
+      Buffer.from("Code\tName\n007\tFarol\n", "utf8"),
+    );
+    expect(t.header).toEqual(["Code", "Name"]);
+    expect(t.rows[0].Name).toBe("Farol");
+  });
+
+  it("separador dentro de aspas não confunde a detecção (; ganha)", () => {
+    // O valor tem vírgulas, mas o separador real é ";".
+    const t = readCsvBuffer(
+      Buffer.from('A;B;C\n"1,2,3";x;y\n', "utf8"),
+    );
+    expect(t.header).toEqual(["A", "B", "C"]);
+    expect(t.rows[0].A).toBe("1,2,3");
+    expect(t.rows[0].C).toBe("y");
+  });
+
+  it("estoque.csv com ; é reconhecido como IBR_ESTOQUE (separador não bloqueia)", () => {
+    const f = {
+      fieldname: "file",
+      filename: "estoque.csv",
+      buffer: Buffer.from(
+        "ProductId;SKU;QuantidadeEstoque;ValorVenda;LocalizacaoSiglas\n1;2492;3;160;BARR.\n",
+        "utf8",
+      ),
+    };
+    expect(detectFile(f).kind).toBe("IBR_ESTOQUE");
+  });
   it("planilha NORMAL com coluna extra sem header NÃO vira formato deslocado", () => {
     // 2 colunas nomeadas + 1 célula extra na linha de dados (coluna sem
     // header) — a heurística antiga engoliria a 1ª linha de dados.
