@@ -161,16 +161,33 @@ export function expectedKinds(
   return found;
 }
 
+export interface IgnoredFile {
+  filename: string;
+  motivo: string;
+}
+
+export interface DetectResult {
+  files: DetectedFile[];
+  /** Arquivos enviados que não pertencem a esta entidade — ignorados (não é
+   *  erro). O operador pode arrastar o pacote inteiro; o motor usa só os que
+   *  precisa. */
+  ignored: IgnoredFile[];
+}
+
 /**
  * Detecta todos os arquivos e valida a coerência com sistema+entidade.
- * Arquivo com papel desconhecido ou fora do esperado ⇒ erro claro (nunca
- * "chuta" o que importar).
+ *
+ * TOLERANTE A EXTRAS: arquivos que não pertencem à entidade (formato
+ * desconhecido OU papel de outra entidade) são IGNORADOS com aviso, não
+ * derrubam a importação — assim o operador pode anexar o pacote inteiro do
+ * cliente e o motor usa só o que precisa. O que continua sendo ERRO: faltar o
+ * arquivo OBRIGATÓRIO da entidade, ou receber 2 arquivos do mesmo papel.
  */
 export function detectAndValidate(
   system: ImportSystem,
   entity: ImportEntity,
   files: ImportFile[],
-): DetectedFile[] {
+): DetectResult {
   if (files.length === 0) {
     throw new ImportValidationError("Envie ao menos um arquivo.");
   }
@@ -178,40 +195,25 @@ export function detectAndValidate(
   const { required, optional } = expectedKinds(system, entity);
   const allAccepted = new Set<DetectedKind>([...required.flat(), ...optional]);
 
+  const accepted: DetectedFile[] = [];
+  const ignored: IgnoredFile[] = [];
   for (const f of detected) {
-    if (f.kind === "DESCONHECIDO") {
-      const origem =
-        system === "VAAPT"
-          ? "Vaapt"
-          : system === "WEBDESMONTE"
-            ? "WebDesmonte (IBR clássico)"
-            : system === "IBR"
-              ? "IBR — export tabular (estoque/NF-e)"
-              : "contas (template Dexo)";
-      throw new ImportValidationError(
-        `"${f.filename}": não reconheci as colunas deste arquivo. Confira se é o export correto de ${origem}.`,
-      );
-    }
-    if (!allAccepted.has(f.kind)) {
-      throw new ImportValidationError(
-        `"${f.filename}" parece ser "${kindLabel(f.kind)}", que não é usado na importação de ${entity} (${system}).`,
-      );
+    if (allAccepted.has(f.kind)) {
+      accepted.push(f);
+    } else {
+      ignored.push({
+        filename: f.filename,
+        motivo:
+          f.kind === "DESCONHECIDO"
+            ? "colunas não reconhecidas"
+            : `parece ser "${kindLabel(f.kind)}"`,
+      });
     }
   }
 
-  for (const slot of required) {
-    const ok = detected.some((f) => slot.includes(f.kind));
-    if (!ok) {
-      const names = slot.map((k) => kindLabel(k)).join(" ou ");
-      throw new ImportValidationError(
-        `Falta o arquivo: ${names}. Envie-o junto para importar ${entity}.`,
-      );
-    }
-  }
-
-  // Papéis repetidos (2 arquivos com a mesma assinatura) = ambiguidade.
+  // Papéis repetidos ENTRE OS ACEITOS = ambiguidade (erro).
   const byKind = new Map<DetectedKind, number>();
-  for (const f of detected) {
+  for (const f of accepted) {
     byKind.set(f.kind, (byKind.get(f.kind) ?? 0) + 1);
   }
   for (const [kind, count] of byKind) {
@@ -222,7 +224,22 @@ export function detectAndValidate(
     }
   }
 
-  return detected;
+  // Obrigatórios: cada slot precisa de um arquivo aceito. Se falta, erro claro
+  // — mencionando o que foi ignorado (ajuda a diagnosticar sistema errado).
+  for (const slot of required) {
+    const ok = accepted.some((f) => slot.includes(f.kind));
+    if (!ok) {
+      const names = slot.map((k) => kindLabel(k)).join(" ou ");
+      const extra = ignored.length
+        ? ` (ignorei ${ignored.length} arquivo(s) que não são desta importação: ${ignored.map((i) => i.filename).join(", ")})`
+        : "";
+      throw new ImportValidationError(
+        `Falta o arquivo obrigatório: ${names}. Confira se você escolheu o SISTEMA certo e envie-o para importar ${entity}.${extra}`,
+      );
+    }
+  }
+
+  return { files: accepted, ignored };
 }
 
 /** Acha o arquivo de um papel específico (após detectAndValidate). */

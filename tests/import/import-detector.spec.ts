@@ -131,14 +131,45 @@ describe("import/detector — detecção por ASSINATURA de colunas (nunca por no
     );
   });
 
-  it("arquivo de outro papel → erro citando o papel detectado", () => {
+  it("arquivo de outro papel (sem o obrigatório) → erro 'falta o obrigatório'", () => {
     const clientes = xlsxOf([
       ["# Cod Cliente", "Nome Cliente", "CPF"],
       ["1", "MARIA", "52998224725"],
     ]);
+    // clientes não é aceito em LOCALIZACOES → é ignorado; o obrigatório
+    // (VAAPT_PECAS) está ausente → erro claro pedindo o arquivo certo.
     expect(() =>
       detectAndValidate("VAAPT", "LOCALIZACOES", [clientes]),
-    ).toThrow(/clientes/i);
+    ).toThrow(/Falta o arquivo obrigatório/i);
+  });
+
+  it("TOLERÂNCIA: pacote IBR inteiro em IBR/ESTOQUE usa estoque.csv e ignora o resto", () => {
+    const estoque = csv(
+      "ProductId,SKU,QuantidadeEstoque,ValorVenda,LocalizacaoSiglas\n1,2492,3,160,BARR.\n",
+      "estoque.csv",
+    );
+    const nfe = csv(
+      "NotaFiscalId,NumeroNotaFiscal,Serie,ChaveDeAcesso,DataEmissao,NomeDestinatario,CustomerId,ValorTotal,Status,TipoNF\n1,1413,1,4123,2023,MARIA,1,40,0,1\n",
+      "nfe_emitidas.csv",
+    );
+    const empresa = csv("Id,CompanyName,CNPJ\n260,RIBEIRO,138\n", "empresa.csv");
+    const vendas = csv(
+      "VendaId,VendaProdutoId,ProductId,SKU,Produto,Quantidade,ValorUnitario\n1,2,3,9,X,1,10\n",
+      "vendas_produtos.csv",
+    );
+    const { files, ignored } = detectAndValidate("IBR", "ESTOQUE", [
+      estoque,
+      nfe,
+      empresa,
+      vendas,
+    ]);
+    // Só o estoque.csv é usado; os 3 outros são ignorados (não derrubam).
+    expect(files.map((f) => f.kind)).toEqual(["IBR_ESTOQUE"]);
+    expect(ignored.map((i) => i.filename).sort()).toEqual([
+      "empresa.csv",
+      "nfe_emitidas.csv",
+      "vendas_produtos.csv",
+    ]);
   });
 
   it("XML é recusado com mensagem de fase futura", () => {
