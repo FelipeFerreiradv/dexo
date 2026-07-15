@@ -12,8 +12,8 @@ import type {
   ImportSystem,
 } from "./import.types";
 import { ImportConflictError } from "./import.types";
-import { detectAndValidate } from "./import-detector";
 import { resolveRunner } from "./import-runners";
+import { resolveEffectiveSelection } from "./import-selection";
 import { assertTargetAdmin } from "./import-target";
 import { computePreviewHash } from "./lib/preview-hash";
 import type { ImportJobStore } from "./import-job.store";
@@ -50,7 +50,23 @@ export class ImportApplyUseCase {
     try {
       const target = await assertTargetAdmin(input.targetUserId);
 
-      const expected = computePreviewHash(input);
+      // Resolve o (sistema, entidade) EFETIVO pelos arquivos (mesma lógica da
+      // prévia) ANTES do hash — a auto-detecção pode ter ajustado o sistema na
+      // prévia, então o hash tem de ser calculado sobre o par efetivo, senão
+      // daria 409. Também valida a coerência (falha vira 400 síncrono, não job
+      // ERROR); arquivos extras são ignorados, só os aceitos vão ao runner.
+      const {
+        system,
+        entity,
+        files: detected,
+      } = resolveEffectiveSelection(input.system, input.entity, input.files);
+
+      const expected = computePreviewHash({
+        targetUserId: input.targetUserId,
+        system,
+        entity,
+        files: input.files,
+      });
       if (!input.previewHash || input.previewHash !== expected) {
         throw new ImportConflictError(
           "Prévia desatualizada (arquivo, alvo ou versão do motor mudaram). Gere uma nova prévia antes de aplicar.",
@@ -64,20 +80,12 @@ export class ImportApplyUseCase {
         );
       }
 
-      // Valida tudo ANTES de criar o job (falha vira 400 síncrono, não job
-      // ERROR). Arquivos extras não-pertencentes são ignorados (mesma
-      // tolerância da prévia); só os aceitos vão para o runner.
-      const runner = resolveRunner(input.system, input.entity);
-      const { files: detected } = detectAndValidate(
-        input.system,
-        input.entity,
-        input.files,
-      );
+      const runner = resolveRunner(system, entity);
 
       const jobId = await this.store.create({
         targetUserId: input.targetUserId,
-        system: input.system,
-        entity: input.entity,
+        system,
+        entity,
         previewHash: input.previewHash,
         progress: { fase: "iniciando", processadas: 0, total: 0 },
         actorUserId: input.actorUserId,
@@ -102,7 +110,7 @@ export class ImportApplyUseCase {
   private async runJob(
     jobId: string,
     input: { targetUserId: string },
-    files: ReturnType<typeof detectAndValidate>["files"],
+    files: ReturnType<typeof resolveEffectiveSelection>["files"],
     runner: ReturnType<typeof resolveRunner>,
   ): Promise<void> {
     try {

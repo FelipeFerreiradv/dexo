@@ -15,8 +15,8 @@ import type {
   ImportSystem,
   PreviewResult,
 } from "./import.types";
-import { detectAndValidate } from "./import-detector";
 import { resolveRunner } from "./import-runners";
+import { resolveEffectiveSelection, SYSTEM_LABELS } from "./import-selection";
 import { assertTargetAdmin } from "./import-target";
 import { computePreviewHash } from "./lib/preview-hash";
 
@@ -49,13 +49,17 @@ export class ImportPreviewUseCase {
     files: ImportFile[];
   }): Promise<PreviewResult> {
     await assertTargetAdmin(input.targetUserId);
-    // Resolve o runner ANTES de parsear: entidade indisponível falha rápido.
-    const runner = resolveRunner(input.system, input.entity);
-    const { files: detected, ignored } = detectAndValidate(
-      input.system,
-      input.entity,
-      input.files,
-    );
+    // Resolve o (sistema, entidade) EFETIVO: honra a seleção do operador
+    // quando bate com os arquivos; se não bater, deduz o sistema pelos
+    // próprios arquivos (resgata o "escolhi o sistema errado").
+    const {
+      system,
+      entity,
+      files: detected,
+      ignored,
+      autoDetected,
+    } = resolveEffectiveSelection(input.system, input.entity, input.files);
+    const runner = resolveRunner(system, entity);
 
     const report = await runner({
       targetUserId: input.targetUserId,
@@ -71,12 +75,24 @@ export class ImportPreviewUseCase {
           .join("; ")}.`,
       );
     }
+    if (autoDetected) {
+      dicas.unshift(
+        `Detectei que os arquivos são do sistema “${SYSTEM_LABELS[system]}” — ajustei a importação automaticamente. Confira a prévia abaixo antes de aplicar.`,
+      );
+    }
 
     return {
-      system: input.system,
-      entity: input.entity,
+      // Devolve o EFETIVO (o hash e o apply usam este par); assim o front
+      // reflete o sistema realmente usado, mesmo se o operador errou o seletor.
+      system,
+      entity,
       targetUserId: input.targetUserId,
-      previewHash: computePreviewHash(input),
+      previewHash: computePreviewHash({
+        targetUserId: input.targetUserId,
+        system,
+        entity,
+        files: input.files,
+      }),
       arquivos: detected.map((f) => ({
         campo: f.fieldname,
         nome: f.filename,

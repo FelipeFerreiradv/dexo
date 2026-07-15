@@ -65,6 +65,9 @@ interface ImportReport {
 }
 
 interface PreviewResult {
+  /** Sistema/entidade EFETIVOS (podem diferir do selecionado se auto-detectado). */
+  system: ImportSystem;
+  entity: ImportEntity;
   previewHash: string;
   arquivos: Array<{ campo: string; nome: string; linhas: number; tipo: string }>;
   dicas: string[];
@@ -88,9 +91,9 @@ interface AvailableEntity {
 
 const SYSTEM_LABELS: Record<ImportSystem, string> = {
   VAAPT: "Vaapt (Vapt)",
-  WEBDESMONTE: "IBR — WebDesmonte clássico (CSV)",
-  IBR: "IBR — export tabular (estoque/NF-e)",
-  IBRSOFT: "IBR Soft — export completo (anexe todos os CSVs)",
+  IBRSOFT: "IBR Soft (novo) — anexe TODOS os CSVs do export",
+  WEBDESMONTE: "IBR clássico (WebDesmonte) — locations/products/customers.csv",
+  IBR: "IBR tabular — estoque.csv / nfe_emitidas.csv",
   DEXO: "Template Dexo (CSV)",
 };
 
@@ -405,6 +408,10 @@ export function ImportDataDialog({
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Na dúvida, escolha qualquer um e anexe os arquivos: o sistema
+                    reconhece o formato pelas colunas e se ajusta sozinho.
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label>O que importar</Label>
@@ -453,6 +460,16 @@ export function ImportDataDialog({
                 <span className="text-sm font-medium">Prévia (nada foi gravado)</span>
                 <Badge variant="secondary">dry-run</Badge>
               </div>
+
+              {preview.system && SYSTEM_LABELS[preview.system] && (
+                <div className="text-xs text-muted-foreground">
+                  Importando como:{" "}
+                  <span className="font-medium text-foreground">
+                    {SYSTEM_LABELS[preview.system]}
+                  </span>{" "}
+                  · {ENTITY_LABELS[preview.entity] ?? preview.entity}
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                 {preview.arquivos.map((a) => (

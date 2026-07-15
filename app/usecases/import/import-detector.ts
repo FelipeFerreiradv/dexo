@@ -311,3 +311,66 @@ export function fileOfKind(
 ): DetectedFile | null {
   return files.find((f) => f.kind === kind) ?? null;
 }
+
+/**
+ * (sistema, entidade) → kinds que aquele "pacote" reconhece. Usado para
+ * INFERIR a origem só pelos arquivos, quando o operador escolheu o sistema
+ * errado no seletor (os 3 rótulos "IBR…" são fáceis de confundir). Vaapt fica
+ * de fora de propósito: um mesmo arquivo Vaapt serve a várias entidades
+ * (VÍNCULOS vs SUCATAS), então não há inferência única — o operador escolhe.
+ */
+const INFERENCE_CANDIDATES: Array<{
+  system: ImportSystem;
+  entity: ImportEntity;
+  kinds: DetectedKind[];
+}> = [
+  {
+    system: "IBRSOFT",
+    entity: "PACOTE",
+    kinds: [
+      "IBRSOFT_CLIENTES",
+      "IBRSOFT_LOCALIZACOES",
+      "IBRSOFT_SUCATAS",
+      "IBRSOFT_PRODUTOS",
+      "IBRSOFT_NFE",
+      "IBRSOFT_CONTAS_PAGAR",
+      "IBRSOFT_CONTAS_RECEBER",
+    ],
+  },
+  {
+    system: "WEBDESMONTE",
+    entity: "PACOTE",
+    kinds: ["WD_LOCATIONS", "WD_PURCHASE_WASTE", "WD_PRODUCTS", "WD_CUSTOMERS"],
+  },
+  { system: "IBR", entity: "ESTOQUE", kinds: ["IBR_ESTOQUE"] },
+  { system: "IBR", entity: "NFE", kinds: ["IBR_NFE"] },
+  { system: "DEXO", entity: "CONTAS", kinds: ["DEXO_CONTAS"] },
+];
+
+/**
+ * Infere (sistema, entidade) SÓ pelos arquivos, para resgatar o operador que
+ * escolheu o sistema errado. Confiante apenas quando TODOS os arquivos
+ * reconhecidos pertencem a UM único candidato; se abrangerem mais de um
+ * (ex.: IBR Soft + WebDesmonte juntos) ou nada for reconhecido, devolve null
+ * (nunca chuta). Determinístico. Não escreve nada.
+ */
+export function inferSystemEntity(
+  files: ImportFile[],
+): { system: ImportSystem; entity: ImportEntity } | null {
+  const kinds = new Set<DetectedKind>();
+  for (const f of files) {
+    const k = detectFile(f).kind;
+    if (k !== "DESCONHECIDO") kinds.add(k);
+  }
+  if (kinds.size === 0) return null;
+
+  const matches = INFERENCE_CANDIDATES.filter((c) =>
+    c.kinds.some((k) => kinds.has(k)),
+  );
+  if (matches.length !== 1) return null; // 0 = nada bate; >1 = ambíguo
+  const cand = matches[0];
+  const belongs = new Set(cand.kinds);
+  // Coerência: nenhum arquivo reconhecido pode ser de OUTRO pacote.
+  for (const k of kinds) if (!belongs.has(k)) return null;
+  return { system: cand.system, entity: cand.entity };
+}

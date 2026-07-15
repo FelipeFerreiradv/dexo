@@ -64,6 +64,14 @@ export function resolveRunner(
   return runner;
 }
 
+/** Há runner registrado para a combinação? (usado pela auto-detecção). */
+export function isRunnerAvailable(
+  system: ImportSystem,
+  entity: ImportEntity,
+): boolean {
+  return !!RUNNERS[`${system}/${entity}`];
+}
+
 /** Entidades disponíveis por sistema (consumido pela UI do modal). */
 export function availableEntities(): Array<{
   system: ImportSystem;
