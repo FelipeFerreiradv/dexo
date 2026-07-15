@@ -14,6 +14,7 @@
  */
 
 import { create } from "xmlbuilder2";
+import { createHash } from "crypto";
 
 import type { NfeDraftResponse, NfeDraftItem } from "../../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
@@ -51,6 +52,21 @@ export interface NfeXmlSefazBuildResult {
   infNFeId: string;
 }
 
+/**
+ * Responsável Técnico (NT 2018.005) — software house. É o MESMO para todos os
+ * tenants (não vem de CompanyFiscalConfig, que é por empresa), então é
+ * resolvido do ambiente pelo caller (provider) e injetado aqui, mantendo o
+ * builder puro. `idCSRT`/`csrt` são condicionais (só quando a UF exige CSRT).
+ */
+export interface NfeRespTec {
+  cnpj: string;
+  xContato: string;
+  email: string;
+  fone: string;
+  idCSRT?: string;
+  csrt?: string;
+}
+
 export interface NfeXmlSefazBuildOptions {
   draft: NfeDraftResponse;
   config: CompanyFiscalConfig;
@@ -61,6 +77,12 @@ export interface NfeXmlSefazBuildOptions {
   cNF?: string;
   /** Tipo de emissão (1=normal, 6=SVC-AN, 7=SVC-RS). Default: 1. */
   tpEmis?: 1 | 6 | 7;
+  /**
+   * Responsável Técnico. Quando ausente (undefined), o grupo <infRespTec> NÃO é
+   * emitido e o XML fica byte-a-byte igual ao anterior (kill-switch off). O
+   * caller (SefazDirectProvider) resolve do env via resolveRespTecFromEnv().
+   */
+  respTec?: NfeRespTec;
 }
 
 export class NfeXmlBuilderSefazService {
@@ -123,6 +145,9 @@ export class NfeXmlBuilderSefazService {
     this.buildCobr(infNFe, draft);
     this.buildPag(infNFe, draft);
     this.buildInfAdic(infNFe, draft);
+    // <infRespTec> e o ULTIMO grupo dentro de infNFe (leiaute 4.00). Fica dentro
+    // do conteudo assinado (a assinatura e feita depois, sobre o infNFe completo).
+    this.buildInfRespTec(infNFe, opts.respTec, chaveAcesso);
 
     const xml = doc.end({ headless: true, format: "xml" });
     return { xml, chaveAcesso, chaveParts: partes, infNFeId };
@@ -588,6 +613,60 @@ export class NfeXmlBuilderSefazService {
     const infAdic = parent.ele("infAdic");
     infAdic.ele("infCpl").txt(infCpl).up();
     infAdic.up();
+  }
+
+  // ── <infRespTec> (Responsável Técnico — NT 2018.005) ──
+
+  private buildInfRespTec(
+    parent: any,
+    respTec: NfeRespTec | undefined,
+    chaveAcesso: string,
+  ): void {
+    // KILL-SWITCH: sem respTec (env NFE_RESP_TEC_CNPJ vazio), NADA e emitido —
+    // o XML fica identico ao anterior. Ver resolveRespTecFromEnv.
+    if (!respTec) return;
+
+    const cnpj = onlyDigits(respTec.cnpj);
+    const xContato = truncate(respTec.xContato ?? "", 60);
+    const email = truncate(respTec.email ?? "", 60);
+    const fone = onlyDigits(respTec.fone);
+
+    // Validacao defensiva: NAO emitir um grupo pela metade (a SEFAZ rejeita).
+    // Falha local com mensagem clara (no espirito de NfeEmissionUseCase.validate)
+    // em vez de deixar a rejeicao generica da SEFAZ.
+    if (cnpj.length !== 14) {
+      throw new Error(
+        "infRespTec: CNPJ do Responsavel Tecnico invalido (NFE_RESP_TEC_CNPJ deve ter 14 digitos).",
+      );
+    }
+    const faltantes: string[] = [];
+    if (!xContato) faltantes.push("xContato (NFE_RESP_TEC_XCONTATO)");
+    if (!email) faltantes.push("email (NFE_RESP_TEC_EMAIL)");
+    if (!fone) faltantes.push("fone (NFE_RESP_TEC_FONE)");
+    if (faltantes.length > 0) {
+      throw new Error(
+        `infRespTec habilitado mas incompleto — preencha: ${faltantes.join(", ")}.`,
+      );
+    }
+
+    const grp = parent.ele("infRespTec");
+    grp.ele("CNPJ").txt(cnpj).up();
+    grp.ele("xContato").txt(xContato).up();
+    grp.ele("email").txt(email).up();
+    grp.ele("fone").txt(fone).up();
+
+    // CSRT (condicional): SO emite idCSRT+hashCSRT quando AMBOS estao setados.
+    // hashCSRT = Base64( SHA-1( CSRT + chaveAcesso ) ). Off por padrao (GO/produção
+    // sem CSRT resolve so com CNPJ/xContato/email/fone).
+    if (respTec.idCSRT && respTec.csrt) {
+      const hash = createHash("sha1")
+        .update(respTec.csrt + chaveAcesso, "utf8")
+        .digest("base64");
+      grp.ele("idCSRT").txt(respTec.idCSRT).up();
+      grp.ele("hashCSRT").txt(hash).up();
+    }
+
+    grp.up();
   }
 }
 

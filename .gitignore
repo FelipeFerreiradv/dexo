@@ -44,6 +44,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...exceto o template de documentacao (sem segredos): variaveis do RT da NF-e.
+!.env.example
 
 #prisma
 prisma/migrations/

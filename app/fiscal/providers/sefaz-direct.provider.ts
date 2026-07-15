@@ -48,6 +48,7 @@ import {
   NfeXmlBuilderSefazService,
   type NfeXmlSefazBuildOptions,
 } from "../sefaz/nfe-xml-builder-sefaz.service";
+import { resolveRespTecFromEnv } from "../sefaz/resp-tec";
 import {
   EventoXmlBuilderService,
   type EventoBuildOptions,
@@ -172,6 +173,9 @@ export class SefazDirectProvider implements INfeProvider {
         dhEmi: payload.dhEmi,
         cNF: payload.cNF,
         tpEmis: effectiveTpEmis,
+        // Responsável Técnico (NT 2018.005): resolvido do env aqui (I/O), fora do
+        // builder puro. undefined => grupo <infRespTec> omitido (kill-switch).
+        respTec: resolveRespTecFromEnv(),
       });
     } catch (error) {
       return makeEmitErrorResult(
