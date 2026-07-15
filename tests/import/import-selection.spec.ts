@@ -79,12 +79,12 @@ describe("import/inferSystemEntity", () => {
     ).toEqual({ system: "WEBDESMONTE", entity: "PACOTE" });
   });
 
-  it("IBR tabular estoque.csv → IBR/ESTOQUE", () => {
+  it("IBR tabular estoque.csv sozinho → IBR/PACOTE (pacote roda só a fase de estoque)", () => {
     expect(
       inferSystemEntity([
         f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
       ]),
-    ).toEqual({ system: "IBR", entity: "ESTOQUE" });
+    ).toEqual({ system: "IBR", entity: "PACOTE" });
   });
 
   it("AMBÍGUO: IBR Soft + WebDesmonte juntos → null (nunca chuta)", () => {
@@ -96,13 +96,28 @@ describe("import/inferSystemEntity", () => {
     ).toBeNull();
   });
 
-  it("AMBÍGUO: IBR estoque + IBR nfe (entidades distintas) → null", () => {
+  it("IBR estoque + IBR nfe juntos → IBR/PACOTE (não é mais ambíguo)", () => {
+    // Antes eram 2 candidatos (ESTOQUE e NFE) → ambíguo → null. Agora um único
+    // candidato PACOTE é dono dos dois kinds → desambigua o export completo.
     expect(
       inferSystemEntity([
         f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
         f(H.ibrNfe, "1233,1,41240,Fulano,Autorizada,100", "nfe_emitidas.csv"),
       ]),
-    ).toBeNull();
+    ).toEqual({ system: "IBR", entity: "PACOTE" });
+  });
+
+  it("IBR estoque + nfe + arquivos extras irreconhecíveis (vendas/empresa) → IBR/PACOTE", () => {
+    // Cenário real do operador: arrasta o export tabular INTEIRO. Os extras não
+    // reconhecidos não quebram a coerência (só contam kinds reconhecidos).
+    expect(
+      inferSystemEntity([
+        f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
+        f(H.ibrNfe, "1233,1,41240,Fulano,Autorizada,100", "nfe_emitidas.csv"),
+        f("VendaId,VendaProdutoId,ProductId,SKU,Produto,Quantidade", "1,2,3,9,X,1", "vendas_produtos.csv"),
+        f("Id,CompanyName,CNPJ", "260,RIBEIRO,138", "empresa.csv"),
+      ]),
+    ).toEqual({ system: "IBR", entity: "PACOTE" });
   });
 
   it("nada reconhecido → null", () => {
@@ -133,6 +148,44 @@ describe("import/resolveEffectiveSelection", () => {
     const r = resolveEffectiveSelection("IBR", "ESTOQUE", IBRSOFT_FILES());
     expect(r.system).toBe("IBRSOFT");
     expect(r.autoDetected).toBe(true);
+  });
+
+  it("seleção CORRETA IBR/PACOTE (estoque+nfe) é honrada, sem auto-detecção", () => {
+    const files = [
+      f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
+      f(H.ibrNfe, "1233,1,41240,Fulano,Autorizada,100", "nfe_emitidas.csv"),
+    ];
+    const r = resolveEffectiveSelection("IBR", "PACOTE", files);
+    expect(r.system).toBe("IBR");
+    expect(r.entity).toBe("PACOTE");
+    expect(r.autoDetected).toBe(false);
+    expect(r.files.length).toBe(2);
+  });
+
+  it("ZERO-REGRESSÃO: seleção CORRETA IBR/ESTOQUE (só estoque) segue honrada", () => {
+    const files = [
+      f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
+    ];
+    const r = resolveEffectiveSelection("IBR", "ESTOQUE", files);
+    expect(r.system).toBe("IBR");
+    expect(r.entity).toBe("ESTOQUE");
+    expect(r.autoDetected).toBe(false);
+  });
+
+  it("CENÁRIO DO OPERADOR: escolheu IBR Soft mas anexou o export TABULAR → corrige p/ IBR/PACOTE", () => {
+    // Exatamente o bug reportado: seletor em IBRSOFT/PACOTE, arquivos tabulares
+    // (estoque+nfe) + extras ignorados. Não bloqueia: auto-detecta IBR/PACOTE.
+    const files = [
+      f(H.ibrEstoque, "100,2492,,Farol,Ford,KA,t,3,15.5,160,,BARR", "estoque.csv"),
+      f(H.ibrNfe, "1233,1,41240,Fulano,Autorizada,100", "nfe_emitidas.csv"),
+      f("VendaId,DataVenda,Valor,Cliente", "1,2023,10,X", "vendas.csv"),
+    ];
+    const r = resolveEffectiveSelection("IBRSOFT", "PACOTE", files);
+    expect(r.system).toBe("IBR");
+    expect(r.entity).toBe("PACOTE");
+    expect(r.autoDetected).toBe(true);
+    expect(r.files.map((x) => x.kind).sort()).toEqual(["IBR_ESTOQUE", "IBR_NFE"]);
+    expect(r.ignored.map((i) => i.filename)).toContain("vendas.csv");
   });
 
   it("seleção CORRETA WebDesmonte é honrada intacta (zero-regressão)", () => {

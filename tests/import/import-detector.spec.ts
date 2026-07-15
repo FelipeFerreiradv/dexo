@@ -172,6 +172,34 @@ describe("import/detector — detecção por ASSINATURA de colunas (nunca por no
     ]);
   });
 
+  it("IBR/PACOTE aceita estoque+nfe juntos e ignora extras (vendas/empresa)", () => {
+    const estoque = csv(
+      "ProductId,SKU,QuantidadeEstoque,ValorVenda,LocalizacaoSiglas\n1,2492,3,160,BARR.\n",
+      "estoque.csv",
+    );
+    const nfe = csv(
+      "NotaFiscalId,NumeroNotaFiscal,Serie,ChaveDeAcesso,DataEmissao,NomeDestinatario,CustomerId,ValorTotal,Status,TipoNF\n1,1413,1,4123,2023,MARIA,1,40,0,1\n",
+      "nfe_emitidas.csv",
+    );
+    const empresa = csv("Id,CompanyName,CNPJ\n260,RIBEIRO,138\n", "empresa.csv");
+    const { files, ignored } = detectAndValidate("IBR", "PACOTE", [
+      estoque,
+      nfe,
+      empresa,
+    ]);
+    expect(files.map((f) => f.kind).sort()).toEqual(["IBR_ESTOQUE", "IBR_NFE"]);
+    expect(ignored.map((i) => i.filename)).toEqual(["empresa.csv"]);
+  });
+
+  it("IBR/PACOTE aceita subconjunto parcial (só nfe_emitidas.csv, sem estoque)", () => {
+    const nfe = csv(
+      "NotaFiscalId,NumeroNotaFiscal,Serie,ChaveDeAcesso,DataEmissao,NomeDestinatario,CustomerId,ValorTotal,Status,TipoNF\n1,1413,1,4123,2023,MARIA,1,40,0,1\n",
+      "nfe_emitidas.csv",
+    );
+    const { files } = detectAndValidate("IBR", "PACOTE", [nfe]);
+    expect(files.map((f) => f.kind)).toEqual(["IBR_NFE"]);
+  });
+
   it("XML é recusado com mensagem de fase futura", () => {
     const f = csv('<?xml version="1.0"?><nfe/>', "nota.xml");
     expect(() => detectFile(f)).toThrow(/XML/);
