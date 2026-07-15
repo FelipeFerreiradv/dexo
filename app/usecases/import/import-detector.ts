@@ -185,6 +185,13 @@ export function expectedKinds(
       // SKU e cria os produtos faltantes.
       ESTOQUE: { required: [["IBR_ESTOQUE"]], optional: [] },
       NFE: { required: [["IBR_NFE"]], optional: [] },
+      // Pacote do export tabular: qualquer combinação ≥1 de estoque.csv e/ou
+      // nfe_emitidas.csv. As fases rodam na ordem certa; o que não vier é
+      // pulado e os arquivos extras (vendas*, empresa…) são ignorados.
+      PACOTE: {
+        required: [["IBR_ESTOQUE", "IBR_NFE"]],
+        optional: ["IBR_ESTOQUE", "IBR_NFE"],
+      },
     },
     IBRSOFT: {
       // Pacote completo: qualquer combinação ≥1 dos CSVs do export IBR Soft. As
@@ -342,8 +349,12 @@ const INFERENCE_CANDIDATES: Array<{
     entity: "PACOTE",
     kinds: ["WD_LOCATIONS", "WD_PURCHASE_WASTE", "WD_PRODUCTS", "WD_CUSTOMERS"],
   },
-  { system: "IBR", entity: "ESTOQUE", kinds: ["IBR_ESTOQUE"] },
-  { system: "IBR", entity: "NFE", kinds: ["IBR_NFE"] },
+  // IBR tabular: um ÚNICO candidato dono de estoque + nfe. Antes havia dois
+  // (ESTOQUE e NFE separados), o que tornava {estoque, nfe} ambíguo (2 matches
+  // → null) e impedia a auto-detecção de resgatar o operador que arrastava o
+  // export inteiro. Como o PACOTE roda as mesmas fases individuais quando só um
+  // arquivo vem, inferir p/ PACOTE é equivalente e desambigua o caso completo.
+  { system: "IBR", entity: "PACOTE", kinds: ["IBR_ESTOQUE", "IBR_NFE"] },
   { system: "DEXO", entity: "CONTAS", kinds: ["DEXO_CONTAS"] },
 ];
 

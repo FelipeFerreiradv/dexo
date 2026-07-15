@@ -93,7 +93,7 @@ const SYSTEM_LABELS: Record<ImportSystem, string> = {
   VAAPT: "Vaapt (Vapt)",
   IBRSOFT: "IBR Soft (novo) — anexe TODOS os CSVs do export",
   WEBDESMONTE: "IBR clássico (WebDesmonte) — locations/products/customers.csv",
-  IBR: "IBR tabular — estoque.csv / nfe_emitidas.csv",
+  IBR: "IBR tabular — anexe estoque.csv e/ou nfe_emitidas.csv (Pacote)",
   DEXO: "Template Dexo (CSV)",
 };
 
@@ -129,6 +129,8 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
     "Envie o estoque.csv (colunas SKU, QuantidadeEstoque, ValorVenda, LocalizacaoSiglas). Vincula a localização aos produtos existentes por SKU e cria os que faltam.",
   "IBR/NFE":
     "Envie o nfe_emitidas.csv (colunas NumeroNotaFiscal, ChaveDeAcesso, NomeDestinatario). Importa as notas como histórico, sem passar pela SEFAZ.",
+  "IBR/PACOTE":
+    "Anexe os CSVs do export tabular de uma vez (estoque.csv e/ou nfe_emitidas.csv). O sistema identifica cada arquivo pelas colunas, ignora os que não reconhecer (vendas, empresa…) e importa produtos e NF-e na ordem certa. Enviar só parte dos arquivos é permitido; reimportar não duplica.",
   "IBRSOFT/PACOTE":
     "Anexe TODOS os CSVs do export IBR Soft de uma vez (produtos, sucatas, localizacoes, costumers, nfe, contas_a_pagar, contas_a_receber). O sistema identifica cada arquivo pelas colunas, ignora os que não reconhecer e importa tudo na ordem certa. Reimportar não duplica.",
 };
