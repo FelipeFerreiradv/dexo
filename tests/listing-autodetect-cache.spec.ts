@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Platform } from "@prisma/client";
 
 import prisma from "@/app/lib/prisma";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
+import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
 import {
   ListingAutodetectUseCase,
   type AutodetectImportCache,
@@ -42,6 +43,14 @@ const emptyCache = (): AutodetectImportCache => ({
 });
 
 describe("ListingAutodetectUseCase — cache do import em lote", () => {
+  beforeEach(() => {
+    // Perf/egress: o import resolve o dono do lote UMA vez (cache.owner) via
+    // findById e injeta no ProductUseCase. Devolve um usuário fake para o
+    // createProductFromItem prosseguir sem tocar o banco.
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue({
+      id: "u1",
+    } as never);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -93,6 +102,38 @@ describe("ListingAutodetectUseCase — cache do import em lote", () => {
     expect(freshListingLookup).not.toHaveBeenCalled();
     expect(freshSkuLookup).not.toHaveBeenCalled();
     expect(freshBoxGuard).not.toHaveBeenCalled();
+  });
+
+  it("PERF: resolve o dono do lote UMA vez (cache.owner) mesmo criando varios produtos", async () => {
+    const create = vi
+      .spyOn(ProductUseCase.prototype, "create")
+      .mockImplementation(
+        async (data: { sku?: string; name: string }) =>
+          ({ id: `p-${data.sku}`, name: data.name }) as never,
+      );
+    vi.spyOn(ListingRepository, "upsertAutodetectedListing").mockImplementation(
+      async (input: { productId: string }) =>
+        ({ id: "l-x", productId: input.productId }) as never,
+    );
+
+    const cache = emptyCache();
+    // 2 itens NOVOS com SKUs distintos → 2 produtos criados.
+    await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB1", rawSku: "SKU-A" }),
+      cache,
+    );
+    await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+      item({ externalListingId: "MLB2", rawSku: "SKU-B" }),
+      cache,
+    );
+
+    // O dono foi resolvido 1x (memoizado em cache.owner) apesar de 2 creates —
+    // evita N findById(userId) na importação.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(UserRepositoryPrisma.prototype.findById),
+    ).toHaveBeenCalledTimes(1);
+    expect(cache.owner).toEqual({ id: "u1" });
   });
 
   it("box-label no lote: título CLARAMENTE diferente cria produto sintético e o SKU do cache continua apontando para o original", async () => {

@@ -293,6 +293,11 @@ export interface ProductUpdateResult {
 export interface ProductRepository {
   create(data: ProductCreate): Promise<Product>;
   findBySku(sku: string, userId: string): Promise<Product | null>;
+  /**
+   * Só a existência (SELECT id) — evita puxar o Product inteiro (com colunas
+   * JSONB) quando o chamador usa o retorno apenas como booleano. Ver findBySku.
+   */
+  existsBySku(sku: string, userId: string): Promise<boolean>;
   findById(id: string, userId?: string): Promise<Product | null>;
   findAll(
     filters?: ProductListFilters,

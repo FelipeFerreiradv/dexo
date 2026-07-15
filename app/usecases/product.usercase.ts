@@ -53,9 +53,14 @@ export interface BulkDeleteResponse {
 export class ProductUseCase {
   private productRepository: ProductRepository;
   private userRepository: UserRepository;
-  constructor() {
+  // Dono pré-resolvido (opcional): a importação em lote resolve o dono UMA vez e
+  // injeta aqui via construtor para evitar um findById por produto criado.
+  // undefined = resolver sob demanda em create()/createWithAutoSku (hoje).
+  private readonly preloadedOwner?: User | null;
+  constructor(preloadedOwner?: User | null) {
     this.productRepository = new ProductRepositoryPrisma();
     this.userRepository = new UserRepositoryPrisma();
+    this.preloadedOwner = preloadedOwner;
   }
 
   async create(productData: ProductCreate): Promise<Product> {
@@ -70,17 +75,22 @@ export class ProductUseCase {
       throw new Error("Usuário não encontrado");
     }
 
-    // Parallel: fetch user + check SKU uniqueness
-    const [user, existsProduct] = await Promise.all([
-      this.userRepository.findById(productData.userId),
-      this.productRepository.findBySku(productData.sku, productData.userId),
+    // Parallel: resolve user + check SKU uniqueness.
+    // - this.preloadedOwner (importação em lote resolve o dono UMA vez) evita um
+    //   findById por produto criado; sem ele (undefined), busca como hoje.
+    // - existsBySku puxa só o id — o retorno so e usado como booleano.
+    const [user, skuExists] = await Promise.all([
+      this.preloadedOwner !== undefined
+        ? Promise.resolve(this.preloadedOwner)
+        : this.userRepository.findById(productData.userId),
+      this.productRepository.existsBySku(productData.sku, productData.userId),
     ]);
 
     if (!user) {
       throw new Error("Usuário não encontrado");
     }
 
-    if (existsProduct) {
+    if (skuExists) {
       throw new Error("Produto com esse sku já existe");
     }
 
@@ -135,7 +145,12 @@ export class ProductUseCase {
       throw new Error("Usuário não encontrado");
     }
 
-    const user = await this.userRepository.findById(productData.userId);
+    // this.preloadedOwner (importação em lote) evita um findById por produto;
+    // sem ele (undefined), busca como hoje. Ver create().
+    const user =
+      this.preloadedOwner !== undefined
+        ? this.preloadedOwner
+        : await this.userRepository.findById(productData.userId);
     if (!user) {
       throw new Error("Usuário não encontrado");
     }
@@ -172,7 +187,7 @@ export class ProductUseCase {
 
       // Pula números já ocupados por importação dentro da janela sequencial
       // sem gastar um insert que falharia.
-      const taken = await this.productRepository.findBySku(
+      const taken = await this.productRepository.existsBySku(
         candidate,
         productData.userId,
       );
@@ -908,7 +923,7 @@ export class ProductUseCase {
     // create estouraria o índice único (userId, sku).
     for (let i = 0; i < 1000; i++) {
       const candidate = n.toString().padStart(3, "0");
-      const existing = await this.productRepository.findBySku(candidate, userId);
+      const existing = await this.productRepository.existsBySku(candidate, userId);
       if (!existing) return candidate;
       n++;
     }

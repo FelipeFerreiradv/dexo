@@ -149,8 +149,8 @@ describe("POST /products (integration)", () => {
     );
 
     // Ensure SKU uniqueness check returns null (no existing product)
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     // Spy on repository.create to return a Product-like object
@@ -241,8 +241,8 @@ describe("POST /products (integration)", () => {
       UserRepositoryPrisma.prototype,
       "reserveNextSkuSequential",
     ).mockResolvedValue(301);
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
     const createSpy = vi
       .spyOn(ProductRepositoryPrisma.prototype, "create")
@@ -295,8 +295,8 @@ describe("POST /products (integration)", () => {
     vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
       fakeUser,
     );
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     const createSpy = vi
@@ -372,8 +372,8 @@ describe("POST /products (integration)", () => {
     vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
       fakeUser,
     );
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
     const createSpy = vi
       .spyOn(ProductRepositoryPrisma.prototype, "create")
@@ -436,8 +436,8 @@ describe("POST /products (integration)", () => {
       fakeUser,
     );
 
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
@@ -494,8 +494,8 @@ describe("POST /products (integration)", () => {
       fakeUser,
     );
 
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
@@ -569,8 +569,8 @@ describe("POST /products (integration)", () => {
       fakeUser,
     );
 
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
@@ -638,8 +638,8 @@ describe("POST /products (integration)", () => {
       fakeUser,
     );
 
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
 
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
@@ -1027,8 +1027,8 @@ describe("POST /products — auto-fill de dimensões via CSV + 400 só se CSV n�
     vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
       fakeUser,
     );
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null,
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
     );
     // Re-mock CategoryResolutionService: o vi.mock module-level (topo do
     // arquivo) usa vi.fn().mockResolvedValue(...), e vi.restoreAllMocks() em

@@ -4,6 +4,8 @@ import { normalizeSku } from "@/app/lib/sku";
 import { areTitlesSimilar } from "@/app/lib/title-similarity";
 import { toFullSizeMLImage, toFullSizeMLImages } from "@/app/lib/ml-image";
 import { ProductUseCase } from "@/app/usecases/product.usercase";
+import { UserRepositoryPrisma } from "@/app/repositories/user.repository";
+import { User } from "@/app/interfaces/user.interface";
 import { ListingRepository } from "../repositories/listing.repository";
 import { SyncUseCase } from "./sync.usercase";
 import { MLItemDetails } from "../types/ml-api.types";
@@ -66,6 +68,12 @@ export interface AutodetectImportCache {
    * cobre TODOS os ids do lote — ausente do Set = inexistente garantido.
    */
   knownExternalListingIds: Set<string>;
+  /**
+   * Dono do lote, resolvido UMA vez (lazy, no 1º produto criado) e reusado por
+   * todos os creates — evita um findById(userId) por produto novo. Repassado a
+   * ProductUseCase.create como `preloadedUser`. undefined = ainda não resolvido.
+   */
+  owner?: User | null;
 }
 
 /**
@@ -144,6 +152,7 @@ export class ListingAutodetectUseCase {
         item,
         normalizedSku,
         isBoxLabel,
+        cache,
       );
       productId = created.productId;
       action = created.raced ? "raced" : "created_product";
@@ -227,8 +236,21 @@ export class ListingAutodetectUseCase {
     item: NormalizedMarketplaceItem,
     normalizedSku: string | null,
     isBoxLabel = false,
+    cache?: AutodetectImportCache,
   ): Promise<{ productId: string; raced: boolean }> {
-    const productUseCase = new ProductUseCase();
+    // Dono resolvido UMA vez por lote (cache.owner, lazy) e injetado no
+    // ProductUseCase — evita um findById(userId) por produto criado. Sem cache
+    // (webhook/polling), fica undefined e create() faz o findById como hoje.
+    let preloadedUser: User | null | undefined = undefined;
+    if (cache) {
+      if (cache.owner === undefined) {
+        cache.owner = await new UserRepositoryPrisma().findById(
+          item.account.userId,
+        );
+      }
+      preloadedUser = cache.owner;
+    }
+    const productUseCase = new ProductUseCase(preloadedUser);
     const base = {
       userId: item.account.userId,
       name: item.title,
