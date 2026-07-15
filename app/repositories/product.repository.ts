@@ -971,6 +971,17 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
+  // Existência por SKU sem trafegar o Product inteiro (evita as colunas JSONB
+  // — attributes, mlCatalogSnapshot, imageUrls…). Usado nos checks booleanos
+  // do create/getNextSku, quentes em importação. Ver findBySku.
+  async existsBySku(sku: string, userId: string): Promise<boolean> {
+    const item = await prisma.product.findFirst({
+      where: { sku, userId },
+      select: { id: true },
+    });
+    return item !== null;
+  }
+
   /**
    * Tier 1 da busca: AND por termo. Cada grupo de variantes precisa casar em
    * algum dos campos indexados; ordena por score de relevância. Mantém o

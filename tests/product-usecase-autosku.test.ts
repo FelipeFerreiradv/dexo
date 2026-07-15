@@ -38,6 +38,9 @@ function makeFakes(opts?: {
       async (sku: string, userId: string) =>
         products.get(`${userId}::${sku}`) ?? null,
     ),
+    existsBySku: vi.fn(
+      async (sku: string, userId: string) => products.has(`${userId}::${sku}`),
+    ),
     getMaxSkuNumber: vi.fn(async (userId?: string) => {
       let max = 0;
       for (const key of products.keys()) {
@@ -193,5 +196,19 @@ describe("ProductUseCase.create — contador ignora SKU de marketplace", () => {
     );
     expect(r.sku).toBe("13340");
     expect(fakes.userRepository.bumpLastSkuSequential).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProductUseCase — existsBySku (perf/egress no check de duplicidade)", () => {
+  it("usa existsBySku (SELECT id), nao findBySku, ao checar SKU ja existente", async () => {
+    const fakes = makeFakes({ existingSkus: ["ABC"] });
+    const uc = makeUseCase(fakes);
+
+    await expect(
+      uc.create(base({ sku: "ABC", autoSku: false })),
+    ).rejects.toThrow(/já existe/i);
+
+    expect(fakes.productRepository.existsBySku).toHaveBeenCalledWith("ABC", "u1");
+    expect(fakes.productRepository.findBySku).not.toHaveBeenCalled();
   });
 });

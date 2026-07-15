@@ -17,10 +17,11 @@ describe("ProductUseCase — default description handling", () => {
       defaultProductDescription: "Descricao padrao do usuario",
     } as any);
 
-    // ensure SKU check returns null (no duplicate)
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null as any,
-    );
+    // ensure SKU check returns false (no duplicate) — create() usa existsBySku
+    vi.spyOn(
+      ProductRepositoryPrisma.prototype,
+      "existsBySku",
+    ).mockResolvedValue(false as any);
 
     // capture created product
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
@@ -46,9 +47,10 @@ describe("ProductUseCase — default description handling", () => {
       defaultProductDescription: "Descricao padrao",
     } as any);
 
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findBySku").mockResolvedValue(
-      null as any,
-    );
+    vi.spyOn(
+      ProductRepositoryPrisma.prototype,
+      "existsBySku",
+    ).mockResolvedValue(false as any);
     vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
       async (data: any) => ({ id: "prod-x", ...data }) as any,
     );
