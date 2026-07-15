@@ -288,12 +288,20 @@ export function NfeWizard() {
     return true;
   };
 
-  const saveCurrentStep = useCallback(() => {
-    if (!draftId) return;
+  const [isEmitting, setIsEmitting] = useState(false);
+
+  // saveCurrentStep e async e RETORNA a promise do saveDraft, para que a
+  // emissao possa aguardar (await) o PUT do rascunho terminar ANTES do POST
+  // /issue — sem isso o save do ultimo passo corria com a emissao e podia
+  // aterrissar depois da autorizacao, rebaixando a nota para DRAFT. A guarda
+  // de status no servidor (updateDraft) e a defesa real; aqui so tornamos o
+  // cliente deterministico. Tambem nao salva enquanto isEmitting.
+  const saveCurrentStep = useCallback(async () => {
+    if (!draftId || isEmitting) return;
     const data = getValues();
 
     if (currentStep === 1) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         serie: data.serie,
         tipoOperacao: data.tipoOperacao,
         finalidade: data.finalidade,
@@ -307,34 +315,34 @@ export function NfeWizard() {
         dataSaida: data.dataSaida,
       });
     } else if (currentStep === 2) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         customerId: data.customerId,
         destinatario: data.destinatario,
       } as any);
     } else if (currentStep === 3) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         itens: data.itens,
       } as any);
     } else if (currentStep === 4) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         modalidadeFrete: data.modalidadeFrete,
         transportadora: data.transportadora,
       } as any);
     } else if (currentStep === 5) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         volumes: data.volumes,
       } as any);
     } else if (currentStep === 6) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         duplicatas: data.duplicatas,
       } as any);
     } else if (currentStep === 7) {
-      saveDraft(draftId, {
+      return saveDraft(draftId, {
         pagamentos: data.pagamentos,
       } as any);
     }
     // Steps 8 and 9 are read-only — no save needed
-  }, [draftId, currentStep, getValues, saveDraft]);
+  }, [draftId, currentStep, getValues, saveDraft, isEmitting]);
 
   const handleNext = async () => {
     const ok = await validateCurrentStep();
@@ -363,13 +371,14 @@ export function NfeWizard() {
     }
   };
 
-  const [isEmitting, setIsEmitting] = useState(false);
-
   const handleEmitir = async () => {
     if (!draftId || isEmitting) return;
 
-    // Save current step data before emitting
-    saveCurrentStep();
+    // Aguarda o save do passo atual TERMINAR antes de emitir. saveCurrentStep
+    // agora retorna a promise do PUT /draft/:id — assim o rascunho e gravado
+    // ANTES do POST /issue, eliminando a corrida cliente-side em que o save
+    // aterrissava depois da autorizacao e rebaixava a nota para DRAFT.
+    await saveCurrentStep();
 
     setIsEmitting(true);
     try {

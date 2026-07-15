@@ -166,8 +166,12 @@ export class NfeEmissionUseCase {
         draft.itens[i].tributosJson = calcResult.itens[i];
       }
 
-      // Update draft with calculated totals and item tributos
-      await this.nfeRepo.updateDraft(userId, nfeId, {
+      // Persiste totais + tributos calculados SEM alterar o status. Usa
+      // persistCalculo (nao updateDraft) porque a nota ja esta em VALIDATING
+      // aqui: a guarda de status adicionada em updateDraft (contra a corrida do
+      // autosave que rebaixava a nota autorizada para DRAFT) bloquearia a
+      // propria emissao. Ver NfeRepository.persistCalculo / updateDraft.
+      await this.nfeRepo.persistCalculo(nfeId, {
         totaisJson: calcResult.totais,
         itens: draft.itens,
       });

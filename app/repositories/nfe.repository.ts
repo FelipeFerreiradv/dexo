@@ -105,6 +105,37 @@ export interface NfeHistoricCreate {
   status: string;
 }
 
+/**
+ * Mapeia um item de rascunho para o payload de create do NfeItem. Extraido para
+ * ser reutilizado por updateDraft (edicao do usuario) e persistCalculo
+ * (persistencia dos tributos calculados na emissao) — mesma forma, para os dois
+ * caminhos nunca divergirem.
+ */
+function buildNfeItemCreateData(
+  nfeId: string,
+  item: NfeDraftItem,
+  idx: number,
+) {
+  return {
+    nfeId,
+    productId: item.productId ?? null,
+    numero: item.numero ?? idx + 1,
+    codigo: item.codigo,
+    descricao: item.descricao,
+    ncm: item.ncm,
+    cfop: item.cfop,
+    cest: item.cest ?? null,
+    origem: item.origem,
+    unidade: item.unidade,
+    quantidade: item.quantidade,
+    valorUnitario: item.valorUnitario,
+    valorTotal: item.valorTotal,
+    desconto: item.desconto ?? null,
+    observacoes: item.observacoes ?? null,
+    tributosJson: item.tributosJson ?? null,
+  };
+}
+
 export class NfeRepository {
   /**
    * Cria o registro histórico (ver NfeHistoricCreate). Caminho SEPARADO do
@@ -200,16 +231,9 @@ export class NfeRepository {
     id: string,
     input: NfeDraftUpdateInput,
   ): Promise<NfeDraftResponse> {
-    // SEGURANÇA (multi-tenant): garante que o rascunho pertence ao userId antes
-    // de qualquer escrita. Antes o `where` usava só `id` => qualquer usuário
-    // podia editar a NF-e de outro tenant conhecendo o id.
-    const owned = await (prisma as any).nfeEmitida.findFirst({
-      where: { id, userId },
-      select: { id: true },
-    });
-    if (!owned) throw new Error("Rascunho de NF-e não encontrado");
-
-    // Build update data — only set fields that were provided
+    // Build update data — only set fields that were provided. A guarda atomica
+    // abaixo (updateMany condicional a userId + status) substitui a antiga
+    // pre-checagem de posse: uma linha de outro tenant nunca casa o where.
     const data: Record<string, any> = {};
 
     if (input.serie !== undefined) data.serie = input.serie;
@@ -249,46 +273,104 @@ export class NfeRepository {
     if (input.exportacaoJson !== undefined)
       data.exportacaoJson = input.exportacaoJson;
 
-    // Handle items — replace strategy: delete all then re-create
-    if (input.itens !== undefined) {
-      await (prisma as any).nfeItem.deleteMany({ where: { nfeId: id } });
-
-      if (input.itens.length > 0) {
-        await (prisma as any).nfeItem.createMany({
-          data: input.itens.map((item: NfeDraftItem, idx: number) => ({
-            nfeId: id,
-            productId: item.productId ?? null,
-            numero: item.numero ?? idx + 1,
-            codigo: item.codigo,
-            descricao: item.descricao,
-            ncm: item.ncm,
-            cfop: item.cfop,
-            cest: item.cest ?? null,
-            origem: item.origem,
-            unidade: item.unidade,
-            quantidade: item.quantidade,
-            valorUnitario: item.valorUnitario,
-            valorTotal: item.valorTotal,
-            desconto: item.desconto ?? null,
-            observacoes: item.observacoes ?? null,
-            tributosJson: item.tributosJson ?? null,
-          })),
-        });
-      }
-    }
-
-    // Editar reabre como DRAFT e limpa a rejeicao anterior. Como este metodo
-    // so e alcancado via findDraftById (DRAFT|REJECTED), e seguro/idempotente:
-    // numa nota ja DRAFT nao muda nada; numa REJECTED, reabre para reemissao.
+    // Editar reabre como DRAFT e limpa a rejeicao anterior.
     data.status = "DRAFT";
     data.motivoRejeicao = null;
 
-    const row = await (prisma as any).nfeEmitida.update({
-      where: { id },
-      data,
-      include: { itens: { orderBy: { numero: "asc" } } },
+    // GUARDA ATOMICA (anti-corrida do BUG "nota autorizada some da listagem"):
+    // a escrita SO acontece quando o status atual e DRAFT ou REJECTED. Um
+    // autosave atrasado que aterrisse DEPOIS de a emissao ter reivindicado a
+    // nota (VALIDATING/SIGNING/SENDING) ou autorizado (AUTHORIZED) e um NO-OP
+    // SILENCIOSO: nao rebaixa o status para DRAFT nem troca os itens (o front ja
+    // trata saveDraft como best-effort silencioso). A emissao NAO passa mais por
+    // aqui para persistir totais — usa persistCalculo (que preserva o status),
+    // senao esta guarda bloquearia a propria emissao.
+    const buildResponse = async (db: any): Promise<NfeDraftResponse> => {
+      const row = await db.nfeEmitida.findFirst({
+        where: { id },
+        include: { itens: { orderBy: { numero: "asc" } } },
+      });
+      return toDraftResponse(row);
+    };
+    const noopOrThrow = async (db: any): Promise<NfeDraftResponse> => {
+      const current = await db.nfeEmitida.findFirst({
+        where: { id, userId },
+        include: { itens: { orderBy: { numero: "asc" } } },
+      });
+      if (!current) throw new Error("Rascunho de NF-e não encontrado");
+      return toDraftResponse(current);
+    };
+
+    // PERF/EGRESS: sem troca de itens (a maioria dos autosaves de step do wizard
+    // NAO manda `itens`), o updateMany condicional ao status JA e atomico como
+    // statement unico — evitamos a $transaction interativa (BEGIN/COMMIT segura
+    // conexao do pool). So abrimos transacao quando ha itens a trocar, pois ai a
+    // guarda + delete/create precisam ser atomicos juntos. Reduz retencao de
+    // conexao no caminho quente (ver incidente do pooler Supabase).
+    if (input.itens === undefined) {
+      const claim = await (prisma as any).nfeEmitida.updateMany({
+        where: { id, userId, status: { in: ["DRAFT", "REJECTED"] } },
+        data,
+      });
+      if (claim.count === 0) return noopOrThrow(prisma);
+      return buildResponse(prisma);
+    }
+
+    // Com troca de itens: guarda + swap na MESMA transacao/pre-condicao, para um
+    // save atrasado nunca apagar/recriar itens de uma nota ja emitida. Captura
+    // `itens` num const (ja narrowed p/ NfeDraftItem[] apos o early-return) — o
+    // TS re-alarga input.itens dentro da closure async.
+    const itens = input.itens;
+    return await (prisma as any).$transaction(async (tx: any) => {
+      const claim = await tx.nfeEmitida.updateMany({
+        where: { id, userId, status: { in: ["DRAFT", "REJECTED"] } },
+        data,
+      });
+      if (claim.count === 0) return noopOrThrow(tx);
+
+      await tx.nfeItem.deleteMany({ where: { nfeId: id } });
+      if (itens.length > 0) {
+        await tx.nfeItem.createMany({
+          data: itens.map((item: NfeDraftItem, idx: number) =>
+            buildNfeItemCreateData(id, item, idx),
+          ),
+        });
+      }
+      return buildResponse(tx);
     });
-    return toDraftResponse(row);
+  }
+
+  /**
+   * Persiste os totais e os tributos calculados dos itens DURANTE a emissao,
+   * SEM tocar em status/motivoRejeicao. Diferente de updateDraft (que forca
+   * DRAFT e agora e guardado a DRAFT/REJECTED), este metodo preserva o status
+   * atual — a essa altura a nota ja esta em VALIDATING, reivindicada pela
+   * emissao. Por isso a emissao NAO pode usar updateDraft aqui: a guarda de
+   * status bloquearia a propria emissao. Ver NfeEmissionUseCase.emit.
+   */
+  async persistCalculo(
+    nfeId: string,
+    input: { totaisJson: any; itens?: NfeDraftItem[] },
+  ): Promise<void> {
+    await (prisma as any).$transaction(async (tx: any) => {
+      // select:{id} — o retorno e descartado (metodo void), entao nao ha por que
+      // trafegar de volta as ~9 colunas JSONB do snapshot da nota (R1 egress).
+      await tx.nfeEmitida.update({
+        where: { id: nfeId },
+        data: { totaisJson: input.totaisJson },
+        select: { id: true },
+      });
+      if (input.itens !== undefined) {
+        await tx.nfeItem.deleteMany({ where: { nfeId } });
+        if (input.itens.length > 0) {
+          await tx.nfeItem.createMany({
+            data: input.itens.map((item, idx) =>
+              buildNfeItemCreateData(nfeId, item, idx),
+            ),
+          });
+        }
+      }
+    });
   }
 
   async deleteDraft(userId: string, id: string): Promise<void> {
