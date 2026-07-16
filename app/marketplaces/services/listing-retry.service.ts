@@ -837,32 +837,55 @@ export class ListingRetryService {
             `[ListingRetryService] createItem error for ${cand.id}: ${rawMsg}`,
           );
 
-          const isTitleInvalid =
+          // `let`: a retentativa com family_name abaixo pode revelar que o
+          // title é o problema, e aí os fallbacks de title precisam rodar.
+          let isTitleInvalid =
             rawMsg.toLowerCase().includes("invalid_fields") &&
             rawMsg.toLowerCase().includes("title");
           const missingFamilyName = rawMsg
             .toLowerCase()
             .includes("family_name");
 
-          // Se a categoria exigir family_name e ele não foi enviado, tente novamente com family_name
+          // Se a categoria exigir family_name e ele não foi enviado, tente novamente com family_name.
+          //
+          // Sem title: categorias que exigem family_name são fluxo User
+          // Product e REJEITAM title+family_name juntos. Mandar os dois faz o
+          // ML responder `body.invalid_fields [title]`, e a tentativa se perde.
+          // Paridade com ListingUseCase.createMLListing, que dropa o title
+          // preventivamente aqui desde a evidência de MLB438074, MLB191833,
+          // MLB193531 e MLB116479. Este serviço tinha uma cópia mais antiga da
+          // escada e repetia o erro que o fluxo principal já resolveu.
           if (!mlItem && missingFamilyName && !payload.family_name) {
             try {
               const withFamily: MLItemCreatePayload = {
                 ...(payload as any),
                 family_name: sanitizeTitle(product.name || "", product, 60),
               } as any;
+              delete (withFamily as any).title;
               // propagate family_name into payload BEFORE call for subsequent retries
               (payload as any).family_name = withFamily.family_name;
               console.warn(
-                `[ListingRetryService] retrying createItem WITH family_name for ${cand.id}`,
+                `[ListingRetryService] retrying createItem WITH family_name (sem title) for ${cand.id}`,
               );
               mlItem = await MLApiService.createItem(
                 account.accessToken,
                 withFamily as any,
               );
             } catch (famErr) {
+              const famMsg = errMsg(famErr);
+              // Se a retentativa revelou que o title é o problema, ligar a flag
+              // para os fallbacks de title abaixo rodarem. Sem isto, eles eram
+              // pulados: isTitleInvalid vinha só do erro ORIGINAL (family_name),
+              // e a escada desistia sem usar as variantes que tem.
+              if (
+                !isTitleInvalid &&
+                famMsg.toLowerCase().includes("invalid_fields") &&
+                famMsg.toLowerCase().includes("title")
+              ) {
+                isTitleInvalid = true;
+              }
               console.warn(
-                `[ListingRetryService] family_name retry failed for ${cand.id}: ${errMsg(famErr)}`,
+                `[ListingRetryService] family_name retry failed for ${cand.id}: ${famMsg}`,
               );
             }
           }
