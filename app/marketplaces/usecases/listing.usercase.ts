@@ -5197,7 +5197,17 @@ export class ListingUseCase {
       // descriçao tem endpoint dedicado, usado depois do PUT principal
     }
     if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
-      payload.price = fields.priceOverride;
+      // Espelha a validação que o caminho Shopee já faz: preço <= 0 significa
+      // "herdar o preço do produto", e o ML rejeita price=0 (item.price.invalid).
+      const priceNum = Number(fields.priceOverride);
+      if (!Number.isFinite(priceNum) || priceNum <= 0) {
+        return {
+          success: false,
+          error:
+            "Preço inválido para anúncio do Mercado Livre (deve ser número positivo)",
+        };
+      }
+      payload.price = priceNum;
     }
     if (
       Array.isArray(fields.imageUrlsOverride) &&

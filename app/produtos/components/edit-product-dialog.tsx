@@ -1892,6 +1892,16 @@ export function EditProductDialog({
           const b = productVal == null ? null : Number(productVal);
           return a === b ? null : a;
         };
+        // Preço do anúncio zerado significa "herdar o preço do produto", nunca
+        // "publicar por R$ 0" (o ML rejeita price=0). Um override <= 0 nunca é
+        // persistido: vira null = herda.
+        const diffPrice = (
+          newVal: number | null | undefined,
+          productVal: number | null | undefined,
+        ): number | null => {
+          const diff = diffNum(newVal, productVal);
+          return diff !== null && diff > 0 ? diff : null;
+        };
         const diffJson = (newVal: unknown, productVal: unknown): unknown => {
           try {
             return JSON.stringify(newVal ?? null) ===
@@ -1973,7 +1983,7 @@ export function EditProductDialog({
           // Campos do produto que viram overrides — apenas quando diferentes
           titleOverride: diffStr(data.name, product.name),
           descriptionOverride: diffStr(data.description, product.description),
-          priceOverride: diffNum(data.price, product.price),
+          priceOverride: diffPrice(data.price, product.price),
           brandOverride: diffStr(cleanData.brand, product.brand),
           modelOverride: diffStr(cleanData.model, product.model),
           yearOverride: diffStr(cleanData.year, product.year),

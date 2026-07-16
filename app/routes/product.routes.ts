@@ -847,11 +847,12 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           const mlListingCfg = (
             bgListings as Array<{
               platform?: string;
+              listingPrice?: number;
               crossAccountIncrease?: { enabled?: boolean; percent?: number };
             }>
           ).find((l) => l.platform === "MERCADO_LIVRE");
           const caCfg = mlListingCfg?.crossAccountIncrease;
-          const overrideTemplate = caCfg?.enabled
+          let overrideTemplate = caCfg?.enabled
             ? ListingDispatcher.buildCrossAccountOverride(
                 dispatchRequests,
                 await ListingDispatcher.resolveCrossAccountPercent(
@@ -860,6 +861,32 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                 ),
               )
             : null;
+
+          // "Valor do Anúncio" do modal: preço só deste anúncio, sem alterar o
+          // preço do produto. Viaja pelo mesmo `perProductOverrides` que o
+          // fluxo em massa (modo Revisão individual) já usa, e o dispatcher
+          // aplica no override pós-create. Só > 0 vira override: vazio/zero
+          // significa herdar o preço do produto, nunca publicar por R$ 0.
+          const mlListingPrice = mlListingCfg?.listingPrice;
+          if (typeof mlListingPrice === "number" && mlListingPrice > 0) {
+            overrideTemplate = {
+              ...(overrideTemplate ?? {}),
+              perProductOverrides: {
+                ...(overrideTemplate?.perProductOverrides ?? {}),
+                [data.id as string]: {
+                  ...(overrideTemplate?.perProductOverrides?.[
+                    data.id as string
+                  ] ?? {}),
+                  ml: {
+                    ...(overrideTemplate?.perProductOverrides?.[
+                      data.id as string
+                    ]?.ml ?? {}),
+                    listingPrice: mlListingPrice,
+                  },
+                },
+              },
+            };
+          }
 
           if (dispatchRequests.length > 0) {
             ListingDispatcher.dispatch({

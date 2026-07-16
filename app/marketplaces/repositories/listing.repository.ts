@@ -507,8 +507,16 @@ export class ListingRepository {
           data.descriptionOverride === undefined
             ? undefined
             : data.descriptionOverride,
+        // Override de preço <= 0 significa "herdar o preço do produto" (null),
+        // nunca "publicar por R$ 0". Normaliza na escrita para que o valor
+        // inválido não chegue ao banco por nenhum caminho (rota, dispatcher,
+        // import). `undefined` continua sendo "não mexer no campo".
         priceOverride:
-          data.priceOverride === undefined ? undefined : data.priceOverride,
+          data.priceOverride === undefined
+            ? undefined
+            : data.priceOverride !== null && data.priceOverride > 0
+              ? data.priceOverride
+              : null,
         brandOverride:
           data.brandOverride === undefined ? undefined : data.brandOverride,
         modelOverride:

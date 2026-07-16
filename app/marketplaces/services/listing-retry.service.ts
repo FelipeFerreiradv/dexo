@@ -10,6 +10,10 @@ import { UserRepositoryPrisma } from "../../repositories/user.repository";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
+// Candidatos por passada. Cada um custa ~13-23 chamadas sequenciais ao ML, e
+// não há rate limit no serviço — lotes grandes fazem a passada durar dezenas
+// de minutos.
+const RETRY_BATCH_SIZE = Number(process.env.LISTING_RETRY_BATCH || 25);
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
@@ -151,14 +155,42 @@ const SHOPEE_TERMINAL_RE = /excede os limites de todos os canais|duplicates? ano
 export class ListingRetryService {
   private static running = false;
   private static intervalId: NodeJS.Timeout | null = null;
+  /** Trava de reentrância de runOnce. `running` só controla o setInterval. */
+  private static passInFlight = false;
 
   /**
    * Run a single pass: find placeholders / pending retries and try to create them on ML.
+   *
+   * Guarda contra passadas sobrepostas: cada candidato faz ~13-23 chamadas
+   * sequenciais ao ML, então uma passada cheia pode durar mais que o intervalo
+   * do setInterval (e o endpoint POST /ml/retry-pending dispara runOnce em
+   * paralelo ao cron). Sem a trava, duas passadas leem o mesmo lote — a
+   * primeira escrita de um candidato só acontece no fim do seu ciclo — e
+   * chamam createItem para os mesmos listings, criando anúncios DUPLICADOS
+   * e órfãos no ML (sem linha no banco, invisíveis à plataforma).
    */
   static async runOnce() {
+    if (this.passInFlight) {
+      console.log(
+        "[ListingRetryService] passada anterior ainda em execução — ignorando este disparo",
+      );
+      return;
+    }
+    this.passInFlight = true;
+    try {
+      return await this.runPass();
+    } finally {
+      this.passInFlight = false;
+    }
+  }
+
+  private static async runPass() {
     console.log("[ListingRetryService] runOnce start");
     const now = new Date();
-    const candidates = await ListingRepository.findPendingRetries(now, 200);
+    const candidates = await ListingRepository.findPendingRetries(
+      now,
+      RETRY_BATCH_SIZE,
+    );
     console.log(`[ListingRetryService] candidates=${candidates?.length || 0}`);
 
     for (const cand of candidates) {
@@ -295,10 +327,18 @@ export class ListingRetryService {
         // é montado, createItem falha, volta para a fila, repete. Marcamos
         // retryEnabled=false para o job sair da rotação até o usuário
         // corrigir os dados do produto e recriar o anúncio.
-        const hasValidStock =
-          typeof product.stock === "number" && product.stock > 0;
-        const hasValidPrice =
-          typeof product.price === "number" && product.price > 0;
+        //
+        // `cand.product` vem do `include: { product: true }` de
+        // findPendingRetries, ou seja, é o Product CRU do Prisma: `price` é um
+        // Decimal (typeof === "object"), não number. Comparar com
+        // `typeof === "number"` reprovava TODO produto, com qualquer preço, e
+        // marcava o anúncio como terminal com a mensagem falsa "price=0" —
+        // sobrescrevendo o lastError real. Converter antes de comparar, como o
+        // resto do arquivo já faz ao montar o payload.
+        const stockNum = Number(product.stock);
+        const priceNum = Number(product.price);
+        const hasValidStock = Number.isFinite(stockNum) && stockNum > 0;
+        const hasValidPrice = Number.isFinite(priceNum) && priceNum > 0;
         if (!hasValidStock || !hasValidPrice) {
           const reason = !hasValidStock && !hasValidPrice
             ? "sem estoque e sem preço"
@@ -1020,10 +1060,15 @@ export class ListingRetryService {
       } catch (err) {
         // unexpected error
         try {
+          // Respeita MAX_ATTEMPTS como os demais ramos: `retryEnabled: true`
+          // fixo reagendava o candidato a cada 60s para sempre — o loop
+          // infinito que o guard terminal acima existe para cortar.
+          const attempts = (cand.retryAttempts || 0) + 1;
+          const shouldRetry = attempts < MAX_ATTEMPTS;
           await ListingRepository.incrementRetryAttempts(cand.id, {
             lastError: errMsg(err),
-            nextRetryAt: new Date(Date.now() + 60 * 1000),
-            retryEnabled: true,
+            nextRetryAt: shouldRetry ? new Date(Date.now() + 60 * 1000) : null,
+            retryEnabled: shouldRetry,
           });
         } catch (e) {
           /* ignore */

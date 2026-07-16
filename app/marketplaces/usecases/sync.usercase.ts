@@ -4587,6 +4587,25 @@ export class SyncUseCase {
    *  4. Se falha: reverte externalListingId para o oldId original (anúncio
    *     antigo permanece intocado).
    */
+  /**
+   * Estado de retry a gravar junto com o revert do placeholder.
+   *
+   * `createMLListing` REUSA a linha do listing (findByProductAndAccount), e os
+   * ramos de falha da escada dele gravam `retryEnabled: true` nessa mesma
+   * linha. Ao reverter, a linha volta a apontar o anúncio ANTIGO — que segue
+   * vivo e ativo no ML — então não há nada a retentar: sem este reset, a linha
+   * fica com `externalListingId` real + `retryEnabled: true`, o
+   * ListingRetryService a considera candidata (o filtro dele passa por
+   * retryEnabled, sem exigir prefixo PENDING_) e chama createItem, criando um
+   * anúncio DUPLICADO no ML e deixando o antigo órfão (vivo lá, sem linha
+   * aqui). Não dá para filtrar por PENDING_ no retry: os candidatos legítimos
+   * do Shopee têm id real.
+   */
+  private static readonly REVERTED_RETRY_STATE = {
+    retryEnabled: false,
+    nextRetryAt: null,
+  } as const;
+
   static async republishUpListing(args: {
     userId: string;
     productId: string;
@@ -4652,6 +4671,7 @@ export class SyncUseCase {
       await ListingRepository.updateListing(listing.id, {
         externalListingId: oldExternalListingId,
         status: (currentItem.status as string) || "active",
+        ...SyncUseCase.REVERTED_RETRY_STATE,
       });
       throw createErr;
     }
@@ -4661,6 +4681,7 @@ export class SyncUseCase {
       await ListingRepository.updateListing(listing.id, {
         externalListingId: oldExternalListingId,
         status: (currentItem.status as string) || "active",
+        ...SyncUseCase.REVERTED_RETRY_STATE,
       });
       throw new Error(
         `createMLListing retornou success=false: ${result.error || "sem detalhes"}`,

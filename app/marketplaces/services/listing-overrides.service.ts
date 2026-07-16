@@ -81,7 +81,12 @@ export function effectiveListingValues(
         : null;
 
   const productPrice = asNumber(p.price);
-  const overridePrice = toNumber(listing.priceOverride ?? null);
+  const overridePriceRaw = toNumber(listing.priceOverride ?? null);
+  // Override de preço <= 0 = ausente = herda o produto. `??` sozinho não basta:
+  // ele só cai no fallback para null/undefined, então um override 0 viraria
+  // preço efetivo 0 — contradizendo o contrato acima e publicando por R$ 0.
+  const overridePrice =
+    overridePriceRaw !== null && overridePriceRaw > 0 ? overridePriceRaw : null;
 
   const effectiveImages = isStringArray(listing.imageUrlsOverride)
     ? listing.imageUrlsOverride
@@ -174,10 +179,13 @@ export function applyOverridesToProduct<T extends AnyProduct>(
 
   result.name = eff.title;
   result.description = eff.description;
-  // Preço: mantém o tipo original quando override é null (preserva Decimal),
-  // só sobrescreve se houver override explícito.
-  if (listing.priceOverride !== null && listing.priceOverride !== undefined) {
-    result.price = eff.price ?? result.price;
+  // Preço: mantém o tipo original quando não há override (preserva Decimal),
+  // só sobrescreve com override explícito e válido (> 0). Um override <= 0
+  // significa herdar — sem o guard, zerava o price do produto efetivo e fazia
+  // os callers acharem que o produto não tem preço.
+  const overridePrice = toNumber(listing.priceOverride ?? null);
+  if (overridePrice !== null && overridePrice > 0) {
+    result.price = overridePrice;
   }
   result.brand = eff.brand;
   result.model = eff.model;
