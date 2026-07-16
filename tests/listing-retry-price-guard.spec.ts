@@ -23,6 +23,7 @@ import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findPendingRetries: vi.fn(),
+    claimRetryCandidate: vi.fn(),
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),
     findByProductAndAccount: vi.fn(),
@@ -87,6 +88,7 @@ const terminalPriceErrors = () =>
 describe("ListingRetryService — guard de preço com Decimal do Prisma", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(true);
     (MLApiService.getSellerItemIds as any).mockResolvedValue([]);
     // A criação é delegada ao createMLListing; aqui só interessa se o
     // candidato chegou até ela ou foi barrado pelo guard.
@@ -163,6 +165,7 @@ describe("ListingRetryService — guard de preço com Decimal do Prisma", () => 
 describe("ListingRetryService — trava de reentrância", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(true);
   });
 
   it("ignora um disparo enquanto a passada anterior está em voo", async () => {

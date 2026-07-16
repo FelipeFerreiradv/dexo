@@ -20,6 +20,7 @@ import { CategoryResolutionService } from "../app/marketplaces/services/category
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findPendingRetries: vi.fn(),
+    claimRetryCandidate: vi.fn(),
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),
   },
@@ -94,6 +95,7 @@ const makeCandidate = (expiresAt: Date) =>
 describe("ListingRetryService — refresh de token do ML", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(true);
     (MLApiService.getSellerItemIds as any).mockResolvedValue([]);
     // Encerra o candidato logo depois do capability check.
     (CategoryResolutionService.resolveMLCategory as any).mockRejectedValue(

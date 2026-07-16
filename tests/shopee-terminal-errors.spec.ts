@@ -14,6 +14,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findPendingRetries: vi.fn(),
+    // Claim atomico entre processos: concedido por default nos testes.
+    claimRetryCandidate: vi.fn(async () => true),
     findByProductAndAccount: vi.fn(),
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),

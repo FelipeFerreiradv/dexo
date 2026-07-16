@@ -23,6 +23,7 @@ import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findPendingRetries: vi.fn(),
+    claimRetryCandidate: vi.fn(),
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),
     findByProductAndAccount: vi.fn(),
@@ -83,6 +84,7 @@ const makeCandidate = (overrides: Record<string, unknown> = {}) =>
 describe("ListingRetryService — delega a criação ML ao createMLListing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (ListingRepository.claimRetryCandidate as any).mockResolvedValue(true);
     (MLApiService.getSellerItemIds as any).mockResolvedValue([]);
     (ListingRepository.findPendingRetries as any).mockResolvedValue([
       makeCandidate(),
