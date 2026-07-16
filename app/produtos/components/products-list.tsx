@@ -69,6 +69,7 @@ import { type MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-l
 import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
+import { StandaloneLabelDialog } from "@/app/produtos/components/standalone-label-dialog";
 import {
   DEFAULT_PRODUCT_FILTERS,
   ProductFilterMarketplace,
@@ -1663,6 +1664,11 @@ export function ProductsList() {
                     <QrCode className="size-4" />
                     {isGeneratingLabels ? "Gerando..." : "Gerar etiquetas"}
                   </Button>
+
+                  <StandaloneLabelDialog
+                    userName={session?.user?.name}
+                    onToast={showToast}
+                  />
 
                   <Button
                     variant="outline"
