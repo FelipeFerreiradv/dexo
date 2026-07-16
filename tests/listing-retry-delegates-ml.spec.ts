@@ -26,6 +26,7 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),
     findByProductAndAccount: vi.fn(),
+    findRetryStateById: vi.fn(),
   },
 }));
 
@@ -86,7 +87,7 @@ describe("ListingRetryService — delega a criação ML ao createMLListing", () 
     (ListingRepository.findPendingRetries as any).mockResolvedValue([
       makeCandidate(),
     ]);
-    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+    (ListingRepository.findRetryStateById as any).mockResolvedValue({
       id: "pl-1",
       retryEnabled: true,
     });
@@ -170,7 +171,7 @@ describe("ListingRetryService — delega a criação ML ao createMLListing", () 
       success: false,
       error: "Conta sem permissão para publicar (PolicyAgent)",
     });
-    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+    (ListingRepository.findRetryStateById as any).mockResolvedValue({
       id: "pl-1",
       retryEnabled: false,
     });

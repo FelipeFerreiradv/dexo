@@ -1115,6 +1115,67 @@ export class ListingUseCase {
         );
       }
 
+      // 1.5. Guard anti-duplicata: se o produto JÁ tem um anúncio vivo nesta
+      // conta, criar outro publica um anúncio DUPLICADO no ML (que penaliza
+      // duplicatas) — e, no sucesso, o update final sobrescreveria o
+      // externalListingId de uma linha cujo item continua vivo lá, deixando-o
+      // órfão (publicado no ML, sem linha no banco). A base tem milhares de
+      // pares (produto, conta) com mais de uma linha (o autodetect cria uma
+      // por anúncio), então isso acontece de verdade — foi flagrado pelo
+      // piloto de reabilitação do retry. `closed` não bloqueia: recriar um
+      // anúncio encerrado é o fluxo legítimo de republicação (o
+      // republishUpListing troca a linha por placeholder ANTES de chamar
+      // aqui, então também não se auto-bloqueia).
+      const liveListing = await ListingRepository.findLiveByProductAndAccount(
+        productId,
+        acc.id,
+      );
+      if (liveListing) {
+        const liveDesc = liveListing.status === "paused" ? "pausado" : "ativo";
+        // Se existe um placeholder de retry para este par, ele NUNCA vai
+        // conseguir criar — o motivo terminal verdadeiro é este. Marca para o
+        // cron parar de gastar tentativas com uma recusa determinística.
+        try {
+          const placeholder = await ListingRepository.findByProductAndAccount(
+            productId,
+            acc.id,
+          );
+          if (
+            placeholder &&
+            placeholder.externalListingId?.startsWith("PENDING_") &&
+            placeholder.retryEnabled
+          ) {
+            await ListingRepository.updateListing(placeholder.id, {
+              status: "error",
+              lastError: `[TERMINAL] Produto já tem anúncio ${liveDesc} nesta conta (${liveListing.externalListingId}) — exclua este pendente ou encerre o anúncio existente antes de recriar`,
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+          }
+        } catch (markErr) {
+          console.warn(
+            "[ListingUseCase] falha ao marcar placeholder duplicado como terminal:",
+            markErr instanceof Error ? markErr.message : markErr,
+          );
+        }
+        console.warn(
+          JSON.stringify({
+            event: "ml.create_item.duplicate_refused",
+            productId,
+            accountId: acc.id,
+            liveExternalListingId: liveListing.externalListingId,
+            liveStatus: liveListing.status,
+          }),
+        );
+        return {
+          success: false,
+          skipped: true,
+          listingId: liveListing.id,
+          externalListingId: liveListing.externalListingId,
+          error: `Produto já tem anúncio ${liveDesc} nesta conta (${liveListing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+        };
+      }
+
       // 2. Buscar dados do produto
       const product =
         await ListingUseCase.productRepository.findById(productId);

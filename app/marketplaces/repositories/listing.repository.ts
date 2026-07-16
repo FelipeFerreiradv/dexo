@@ -277,9 +277,45 @@ export class ListingRepository {
   }
 
   /**
-   * Busca listing por produto e conta de marketplace
+   * Busca listing por produto e conta de marketplace.
+   *
+   * Um par (produto, conta) pode ter VÁRIAS linhas: o autodetect cria uma por
+   * anúncio, e a base tem milhares de pares assim (SKUs repetidos entre
+   * anúncios do ML, anúncios duplicados). O findFirst sem orderBy devolvia uma
+   * linha ARBITRÁRIA — o createMLListing chegou a reusar a linha de um anúncio
+   * vivo em vez do placeholder do candidato, marcando retry nela (o cron
+   * recriaria = duplicata) e, no sucesso, sobrescreveria o externalListingId
+   * do anúncio vivo (órfão no ML).
+   *
+   * Preferência determinística: placeholder PENDING_ mais recente (a linha
+   * "em criação", que é o que os callers de reuso querem); senão, a linha
+   * mais recente.
    */
   static async findByProductAndAccount(
+    productId: string,
+    marketplaceAccountId: string,
+  ) {
+    const rows = await prisma.productListing.findMany({
+      where: {
+        productId,
+        marketplaceAccountId,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (rows.length === 0) return null;
+    return (
+      rows.find((r) => r.externalListingId?.startsWith("PENDING_")) ?? rows[0]
+    );
+  }
+
+  /**
+   * Anúncio VIVO (active/paused, com id real) do par (produto, conta), se
+   * houver. Usado pelo guard anti-duplicata do createMLListing: criar outro
+   * anúncio enquanto este existe gera duplicata no ML. `closed` NÃO conta —
+   * recriar um anúncio encerrado é o fluxo legítimo de republicação.
+   * EGRESS: select mínimo.
+   */
+  static async findLiveByProductAndAccount(
     productId: string,
     marketplaceAccountId: string,
   ) {
@@ -287,7 +323,23 @@ export class ListingRepository {
       where: {
         productId,
         marketplaceAccountId,
+        status: { in: ["active", "paused"] },
+        NOT: { externalListingId: { startsWith: "PENDING_" } },
       },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, externalListingId: true, status: true },
+    });
+  }
+
+  /**
+   * EGRESS-lean: só o estado de retry de uma linha, pelo id. Usado pelo cron
+   * para re-ler o PRÓPRIO candidato após a delegação — (produto, conta) pode
+   * ter várias linhas, então re-ler por par pegaria a linha errada.
+   */
+  static async findRetryStateById(listingId: string) {
+    return prisma.productListing.findUnique({
+      where: { id: listingId },
+      select: { id: true, retryEnabled: true },
     });
   }
 
