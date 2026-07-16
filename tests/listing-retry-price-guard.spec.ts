@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { ListingRetryService } from "../app/marketplaces/services/listing-retry.service";
 import { ListingRepository } from "../app/marketplaces/repositories/listing.repository";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
-import { CategoryResolutionService } from "../app/marketplaces/services/category-resolution.service";
+import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 
 /**
  * Regressão: o guard terminal de preço reprovava TODO produto.
@@ -25,43 +25,28 @@ vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
     findPendingRetries: vi.fn(),
     incrementRetryAttempts: vi.fn(),
     updateListing: vi.fn(),
+    findByProductAndAccount: vi.fn(),
   },
 }));
 
 vi.mock("../app/marketplaces/services/ml-api.service", () => ({
-  MLApiService: {
-    getSellerItemIds: vi.fn(),
-    createItem: vi.fn(),
-  },
+  MLApiService: { getSellerItemIds: vi.fn(), createItem: vi.fn() },
+}));
+
+vi.mock("../app/marketplaces/usecases/listing.usercase", () => ({
+  ListingUseCase: { createMLListing: vi.fn(), createShopeeListing: vi.fn() },
+}));
+
+vi.mock("../app/marketplaces/services/ml-oauth.service", () => ({
+  MLOAuthService: { refreshAccessTokenForAccount: vi.fn() },
+}));
+
+vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
+  MarketplaceRepository: { updateTokens: vi.fn(), updateStatus: vi.fn() },
 }));
 
 vi.mock("../app/services/system-log.service", () => ({
   SystemLogService: { logError: vi.fn(), log: vi.fn() },
-}));
-
-// Deps que tocam banco/rede depois do guard. O fluxo pós-guard não é o objeto
-// deste teste — só precisamos que ele pare de forma controlada.
-vi.mock("../app/repositories/user.repository", () => ({
-  UserRepositoryPrisma: vi.fn(() => ({ findById: vi.fn(async () => null) })),
-}));
-
-vi.mock("../app/marketplaces/services/category-resolution.service", () => ({
-  CategoryResolutionService: {
-    resolveMLCategory: vi.fn(),
-    ensureLeafLocalOnly: vi.fn(),
-  },
-}));
-
-vi.mock("../app/repositories/product.repository", () => ({
-  ProductRepositoryPrisma: vi.fn(() => ({})),
-}));
-
-vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
-  MarketplaceRepository: { findByIdAndUser: vi.fn(), updateStatus: vi.fn() },
-}));
-
-vi.mock("../app/marketplaces/services/image-resize.service", () => ({
-  ensureMLMinImageSize: vi.fn(),
 }));
 
 const makeCandidate = (price: Prisma.Decimal | number, stock = 1) =>
@@ -83,29 +68,36 @@ const makeCandidate = (price: Prisma.Decimal | number, stock = 1) =>
     },
     marketplaceAccount: {
       id: "acct-1",
+      accountName: "LOJA",
       accessToken: "tok",
+      refreshToken: "ref",
+      expiresAt: new Date(Date.now() + 3600_000),
       platform: "MERCADO_LIVRE",
       userId: "user-1",
       externalUserId: "123",
     },
   }) as any;
 
-const errorsMatching = (needle: string) =>
+/** Erros terminais de preço gravados nesta passada. */
+const terminalPriceErrors = () =>
   (ListingRepository.incrementRetryAttempts as any).mock.calls.filter(
-    (call: any[]) => String(call[1]?.lastError || "").includes(needle),
+    (call: any[]) => String(call[1]?.lastError || "").includes("sem preço"),
   );
 
 describe("ListingRetryService — guard de preço com Decimal do Prisma", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // O capability check roda ANTES do guard: precisa passar para o guard ser
-    // exercitado de verdade.
     (MLApiService.getSellerItemIds as any).mockResolvedValue([]);
-    // Primeiro efeito depois do guard. Falhar aqui encerra o candidato de
-    // forma controlada, sem tocar banco nem ML.
-    (CategoryResolutionService.resolveMLCategory as any).mockRejectedValue(
-      new Error("stop-after-guard"),
-    );
+    // A criação é delegada ao createMLListing; aqui só interessa se o
+    // candidato chegou até ela ou foi barrado pelo guard.
+    (ListingUseCase.createMLListing as any).mockResolvedValue({
+      success: false,
+      error: "erro qualquer do ML",
+    });
+    (ListingRepository.findByProductAndAccount as any).mockResolvedValue({
+      id: "pl-price-guard",
+      retryEnabled: true,
+    });
   });
 
   it("NÃO marca como terminal um produto com preço válido em Decimal", async () => {
@@ -115,19 +107,24 @@ describe("ListingRetryService — guard de preço com Decimal do Prisma", () => 
 
     await ListingRetryService.runOnce();
 
-    expect(errorsMatching("sem preço")).toHaveLength(0);
+    expect(terminalPriceErrors()).toHaveLength(0);
   });
 
-  it("passa do guard e segue o fluxo quando o preço é um Decimal válido", async () => {
+  it("passa do guard e delega a criação quando o preço é um Decimal válido", async () => {
     (ListingRepository.findPendingRetries as any).mockResolvedValue([
       makeCandidate(new Prisma.Decimal("1350.00")),
     ]);
 
     await ListingRetryService.runOnce();
 
-    // O guard dava `continue` antes de resolver categoria. Chegar aqui prova
-    // que o candidato passou pelo guard.
-    expect(CategoryResolutionService.resolveMLCategory).toHaveBeenCalled();
+    // O guard dava `continue` antes de qualquer tentativa de criar. Chegar na
+    // delegação prova que o candidato passou por ele.
+    expect(ListingUseCase.createMLListing).toHaveBeenCalledWith(
+      "user-1",
+      "prod-1",
+      "MLB999",
+      "acct-1",
+    );
   });
 
   it("continua marcando como terminal quando o preço é realmente zero", async () => {
@@ -137,14 +134,14 @@ describe("ListingRetryService — guard de preço com Decimal do Prisma", () => 
 
     await ListingRetryService.runOnce();
 
-    const calls = errorsMatching("sem preço");
+    const calls = terminalPriceErrors();
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toMatchObject({
       retryEnabled: false,
       nextRetryAt: null,
     });
     // Preço inválido nunca é aceito pelo ML: não gasta a criação.
-    expect(CategoryResolutionService.resolveMLCategory).not.toHaveBeenCalled();
+    expect(ListingUseCase.createMLListing).not.toHaveBeenCalled();
   });
 
   it("continua marcando como terminal quando não há estoque", async () => {
@@ -154,7 +151,12 @@ describe("ListingRetryService — guard de preço com Decimal do Prisma", () => 
 
     await ListingRetryService.runOnce();
 
-    expect(errorsMatching("sem estoque (stock=0)")).toHaveLength(1);
+    const calls = (
+      ListingRepository.incrementRetryAttempts as any
+    ).mock.calls.filter((call: any[]) =>
+      String(call[1]?.lastError || "").includes("sem estoque (stock=0)"),
+    );
+    expect(calls).toHaveLength(1);
   });
 });
 
