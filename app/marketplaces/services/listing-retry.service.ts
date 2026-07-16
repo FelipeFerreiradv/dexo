@@ -7,6 +7,7 @@ import { MLItemCreatePayload } from "../types/ml-api.types";
 import { CategoryResolutionService } from "./category-resolution.service";
 import { ensureMLMinImageSize } from "./image-resize.service";
 import { UserRepositoryPrisma } from "../../repositories/user.repository";
+import { MLOAuthService } from "./ml-oauth.service";
 
 const BACKOFF_SECONDS = [30, 60, 120, 300, 900]; // exponential-ish backoff
 const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
@@ -277,6 +278,64 @@ export class ListingRetryService {
             `[ListingRetryService] skipping ${cand.id} (no account/token)`,
           );
           continue;
+        }
+
+        // Token do ML expirado: renovar antes de falar com a API.
+        //
+        // O fluxo interativo (ListingUseCase.createMLListing) já faz isso, e
+        // por isso o cron raramente pegava token vencido: quando um anúncio
+        // falha e entra na fila, o token acabou de ser renovado por lá. Mas o
+        // cron também processa candidatos que ficaram parados (fila drenando
+        // após um deploy, backlog reabilitado em lote) — aí o token pode ter
+        // vencido no meio do caminho. Sem renovar, o capability check abaixo
+        // falha, as tentativas se esgotam e o anúncio é desligado por token
+        // vencido, não por problema no anúncio: um motivo falso no lugar do
+        // outro que este serviço acabou de deixar de dar.
+        //
+        // Renova o objeto em memória (como createMLListing faz com `acc`), de
+        // modo que os usos seguintes de account.accessToken peguem o valor
+        // novo sem tocar em cada call site.
+        if (account.expiresAt < new Date()) {
+          try {
+            console.log(
+              `[ListingRetryService] ML token expirado (conta ${account.id}) — renovando`,
+            );
+            const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
+            await MarketplaceRepository.updateTokens(account.id, {
+              accessToken: refreshed.accessToken,
+              refreshToken: refreshed.refreshToken,
+              expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+            });
+            account.accessToken = refreshed.accessToken;
+            account.refreshToken = refreshed.refreshToken;
+          } catch (refreshErr) {
+            // Deliberadamente NÃO marca a conta como ERROR (o createMLListing
+            // marca). Um erro transitório de rede aqui derrubaria a conta para
+            // todos os fluxos — sync, pedidos, mensagens — a partir de um cron
+            // sem contexto de usuário. Reagenda: se o refreshToken estiver
+            // mesmo inválido, as tentativas se esgotam e o anúncio para com uma
+            // mensagem acionável, e a reconexão passa pelo fluxo interativo.
+            const attempts = (cand.retryAttempts || 0) + 1;
+            const shouldRetry = attempts < MAX_ATTEMPTS;
+            const nextDelay =
+              BACKOFF_SECONDS[
+                Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)
+              ];
+            console.warn(
+              `[ListingRetryService] falha ao renovar token da conta ${account.id}: ${errMsg(refreshErr)}`,
+            );
+            await ListingRepository.incrementRetryAttempts(cand.id, {
+              lastError: `Token do Mercado Livre expirado e não foi possível renovar — reconecte a conta "${account.accountName || account.id}" em Integrações`,
+              nextRetryAt: shouldRetry
+                ? new Date(Date.now() + nextDelay * 1000)
+                : null,
+              retryEnabled: shouldRetry,
+            });
+            continue;
+          }
         }
 
         // Quick capability check
