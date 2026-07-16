@@ -11,7 +11,7 @@ import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
  *
  * A cadeia do bug:
  *   1. republishUpListing troca o externalListingId por um placeholder e chama
- *      createMLListing, que REUSA a mesma linha (findByProductAndAccount).
+ *      createMLListing, que REUSA a mesma linha do par (produto, conta).
  *   2. createMLListing falha (ex.: family_name/PART_NUMBER) e sua escada grava
  *      `retryEnabled: true` NESSA MESMA LINHA.
  *   3. O revert restaura o MLB antigo (vivo e ativo no ML) + status active —
@@ -55,7 +55,7 @@ const revertCall = () =>
 
 describe("republishUpListing — revert desliga o retry", () => {
   beforeEach(() => {
-    vi.spyOn(ListingRepository, "findByProductAndAccount").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
       listingRow,
     );
     vi.spyOn(ListingRepository, "updateListing").mockResolvedValue({} as any);

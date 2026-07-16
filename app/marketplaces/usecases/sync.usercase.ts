@@ -4625,13 +4625,17 @@ export class SyncUseCase {
       newTitle,
     } = args;
 
-    const listing = await ListingRepository.findByProductAndAccount(
-      productId,
+    // Busca pela unique (conta, externalListingId) — a linha EXATA do anúncio
+    // sendo republicado. Buscar por (produto, conta) pegava uma linha
+    // arbitrária quando o par tem várias (autodetect cria uma por anúncio), e
+    // o swap de placeholder abaixo podia sequestrar a linha de OUTRO anúncio.
+    const listing = await ListingRepository.findByExternalListingId(
       accountId,
+      oldExternalListingId,
     );
     if (!listing) {
       throw new Error(
-        `Listing não encontrado no banco para product ${productId} / account ${accountId}`,
+        `Listing não encontrado no banco para item ${oldExternalListingId} / account ${accountId}`,
       );
     }
 

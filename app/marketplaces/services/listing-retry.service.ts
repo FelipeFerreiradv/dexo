@@ -315,12 +315,12 @@ export class ListingRetryService {
         // `retryEnabled: true` fixo, sem olhar MAX_ATTEMPTS — e o loop infinito
         // que este servico existe para cortar. Reaplicamos o backoff daqui.
         //
-        // Antes, relemos a linha: se o createMLListing classificou o erro como
-        // TERMINAL (ex.: PolicyAgent, que tambem marca a conta como ERROR), ele
+        // Antes, relemos a linha DO CANDIDATO (pelo id — o par produto/conta
+        // pode ter varias linhas): se o createMLListing classificou o erro como
+        // TERMINAL (ex.: PolicyAgent, ou anuncio duplicado nesta conta), ele
         // deixa retryEnabled=false e nao devemos ressuscitar o candidato.
-        const afterAttempt = await ListingRepository.findByProductAndAccount(
-          cand.productId,
-          account.id,
+        const afterAttempt = await ListingRepository.findRetryStateById(
+          cand.id,
         );
         if (afterAttempt && afterAttempt.retryEnabled === false) {
           console.warn(
