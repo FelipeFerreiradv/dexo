@@ -20,6 +20,10 @@ import { UserRepositoryPrisma } from "../../repositories/user.repository";
 import { ensureMLMinImageSize } from "../services/image-resize.service";
 import { ListingPreflightService } from "../services/listing-preflight.service";
 import {
+  pickActionableMLError,
+  type MLCause,
+} from "../services/ml-error-message.service";
+import {
   classifyMLRemoveError,
   classifyShopeeRemoveError,
   withRetry,
@@ -2010,6 +2014,19 @@ export class ListingUseCase {
           }),
         );
 
+        // Causas de cada tentativa, em ordem cronológica. O ML valida o corpo
+        // antes dos atributos, então a 1ª tentativa só reclama de family_name e
+        // a causa REAL (ex.: PART_NUMBER ausente) só aparece nas retentativas.
+        // Como a escada re-lança o erro original quando esgota, sem isso o
+        // operador nunca vê o motivo que ele consegue corrigir.
+        const attemptCauses: MLCause[][] = [
+          Array.isArray(parsedMl?.cause) ? parsedMl.cause : [],
+        ];
+        const recordAttemptCause = (retryErr: any) => {
+          const causes = retryErr?.mlError?.cause;
+          if (Array.isArray(causes)) attemptCauses.push(causes);
+        };
+
         const isCategoryInvalid = !!parsedMl?.cause?.some(
           (c: any) => c?.code === "item.category_id.invalid",
         );
@@ -2149,6 +2166,7 @@ export class ListingUseCase {
             const famMsg =
               famErr instanceof Error ? famErr.message : String(famErr);
             const famMl = famErr?.mlError || null;
+            recordAttemptCause(famErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2225,6 +2243,7 @@ export class ListingUseCase {
             );
           } catch (retryTitleErr: any) {
             const stMl = retryTitleErr?.mlError || null;
+            recordAttemptCause(retryTitleErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2264,6 +2283,7 @@ export class ListingUseCase {
             );
           } catch (dynErr: any) {
             const dynMl = dynErr?.mlError || null;
+            recordAttemptCause(dynErr);
             console.warn(
               JSON.stringify({
                 event: "ml.create_item.retry_failed",
@@ -2323,6 +2343,7 @@ export class ListingUseCase {
                 // adicionando family_name e removendo title.
                 const innerMl =
                   innerErr && innerErr.mlError ? innerErr.mlError : null;
+                recordAttemptCause(innerErr);
                 const innerMsg = JSON.stringify(innerMl || innerErr?.message || "")
                   .toLowerCase();
                 const innerNeedsFamily =
@@ -2345,6 +2366,7 @@ export class ListingUseCase {
                       "ML createItem suggested+family",
                     );
                   } catch (innerErr2: any) {
+                    recordAttemptCause(innerErr2);
                     const inner2Msg = JSON.stringify(
                       (innerErr2 && innerErr2.mlError) || innerErr2?.message || "",
                     ).toLowerCase();
@@ -2606,12 +2628,34 @@ export class ListingUseCase {
 
         // If we recovered and have mlItem, continue normal flow; otherwise rethrow
         if (!mlItem) {
+          // A escada esgotou. `err` é o erro da PRIMEIRA tentativa — em
+          // categorias de catálogo isso é sempre `family_name`, que a escada
+          // já resolveu e que o operador não tem como corrigir. A causa que
+          // ele resolve (ex.: PART_NUMBER em branco) só aparece nas
+          // retentativas. Reporta a mais acionável; sem nenhuma reconhecida,
+          // mantém a mensagem de hoje.
+          const actionable = pickActionableMLError(
+            attemptCauses,
+            categoryIdForML,
+          );
+          if (actionable) {
+            console.warn(
+              JSON.stringify({
+                event: "ml.create_item.actionable_error",
+                productId: product.id,
+                categoryId: categoryIdForML,
+                actionable,
+                originalMessage: errMsg,
+              }),
+            );
+          }
+
           // marcar placeholder com erro genÃ©rico para retry e exibir ao usuÃ¡rio
           const nextRetryMs = 60 * 1000;
           try {
             await ListingRepository.updateListing(listing.id, {
               status: "error",
-              lastError: errMsg,
+              lastError: actionable || errMsg,
               retryEnabled: true,
               nextRetryAt: new Date(Date.now() + nextRetryMs),
               requestedCategoryId: payload.category_id || null,
@@ -2621,6 +2665,18 @@ export class ListingUseCase {
               "[ListingUseCase] Failed to flag placeholder after generic ML error:",
               updateErr,
             );
+          }
+
+          if (actionable) {
+            // Retorno (em vez de throw) para a mensagem chegar ao usuário sem
+            // virar "Erro desconhecido" no catch externo. `mlError` preserva o
+            // erro bruto do ML para diagnóstico.
+            return {
+              success: false,
+              listingId: listing.id,
+              error: actionable,
+              mlError: errMsg,
+            };
           }
 
           throw err;
