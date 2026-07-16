@@ -344,6 +344,41 @@ export class ListingRepository {
   }
 
   /**
+   * Claim atômico de um candidato de retry — a trava ENTRE PROCESSOS do cron.
+   *
+   * A trava de reentrância do ListingRetryService (`passInFlight`) é por
+   * processo. Em produção já rodaram DOIS crons em paralelo — o pm2 gerencia
+   * um wrapper `npm exec` e, num restart de deploy, o node neto do deploy
+   * anterior sobreviveu como órfão por vários minutos, processando os mesmos
+   * candidatos com código antigo (flagrado em 16/07: escritas de duas versões
+   * na mesma janela). Dois processos criando o mesmo anúncio = item DUPLICADO
+   * no ML.
+   *
+   * O UPDATE condicional é atômico no Postgres: exige que o candidato ainda
+   * esteja elegível (retryEnabled + nextRetryAt vencido) e o empurra `leaseMs`
+   * para a frente. Só um processo vê `count === 1`; qualquer outro (segunda
+   * instância, órfão de deploy, POST /ml/retry-pending concorrente) perde a
+   * corrida e pula o candidato. Se o processo morrer no meio, o lease expira
+   * e o candidato volta à fila sozinho.
+   *
+   * Advisory lock de sessão foi deliberadamente descartado: com o pool de
+   * conexões do Prisma, o unlock pode rodar em outra conexão e o lock ficaria
+   * preso para sempre (o cron nunca mais rodaria); e segurar uma transação
+   * pela passada inteira esbarra no idle_in_transaction_session_timeout.
+   */
+  static async claimRetryCandidate(listingId: string, leaseMs: number) {
+    const res = await prisma.productListing.updateMany({
+      where: {
+        id: listingId,
+        retryEnabled: true,
+        OR: [{ nextRetryAt: { lte: new Date() } }, { nextRetryAt: null }],
+      },
+      data: { nextRetryAt: new Date(Date.now() + leaseMs) },
+    });
+    return res.count === 1;
+  }
+
+  /**
    * Lista todos os listings de uma conta de marketplace
    */
   static async findAllByAccount(marketplaceAccountId: string) {

@@ -10,6 +10,12 @@ const MAX_ATTEMPTS = BACKOFF_SECONDS.length;
 // nao ha rate limit no servico — lotes grandes fazem a passada durar dezenas
 // de minutos.
 const RETRY_BATCH_SIZE = Number(process.env.LISTING_RETRY_BATCH || 25);
+// Lease do claim atômico por candidato (trava entre processos). Precisa
+// cobrir o pior caso de UM candidato (escada completa + upload de imagens,
+// ~1-2min); se o processo morrer no meio, o candidato volta à fila sozinho
+// quando o lease expira. Os caminhos normais sobrescrevem o lease no fim
+// (sucesso desliga o retry; falha grava o backoff real).
+const CLAIM_LEASE_MS = 10 * 60 * 1000;
 const errMsg = (err: unknown) =>
   err instanceof Error ? err.message : String(err);
 
@@ -60,6 +66,24 @@ export class ListingRetryService {
     for (const cand of candidates) {
       try {
         console.log(`[ListingRetryService] processing candidate ${cand.id}`);
+
+        // Claim atômico ANTES de qualquer efeito: a trava `passInFlight` só
+        // vale dentro deste processo, e em produção já houve um segundo cron
+        // em paralelo (node órfão de um restart do pm2, rodando código de um
+        // deploy anterior). Sem o claim, dois processos leem o mesmo lote e
+        // criam o mesmo anúncio duas vezes no ML. O UPDATE condicional é
+        // atômico — quem perder a corrida pula o candidato.
+        const claimed = await ListingRepository.claimRetryCandidate(
+          cand.id,
+          CLAIM_LEASE_MS,
+        );
+        if (!claimed) {
+          console.log(
+            `[ListingRetryService] skipping ${cand.id} (claimed por outro processo ou estado mudou)`,
+          );
+          continue;
+        }
+
         // only handle placeholders (externals starting with PENDING_) or retryEnabled
         if (
           !cand.externalListingId?.startsWith("PENDING_") &&
