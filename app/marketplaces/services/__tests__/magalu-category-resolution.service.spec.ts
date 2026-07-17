@@ -8,6 +8,9 @@ vi.mock("../magalu-api.service");
 beforeEach(() => {
   vi.restoreAllMocks();
   for (const k of Object.keys(MAGALU_CATEGORY_MAP)) delete MAGALU_CATEGORY_MAP[k];
+  // O cache por termo da busca ao vivo é module-level — sem o reset, um []
+  // cacheado num teste responde pelos mocks do teste seguinte.
+  MagaluCategoryResolutionService.__clearSearchCache();
 });
 
 describe("MagaluCategoryResolutionService.resolveCategoryId", () => {
