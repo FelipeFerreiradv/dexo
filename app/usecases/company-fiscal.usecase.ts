@@ -99,6 +99,23 @@ export class CompanyFiscalUseCase {
         throw new Error("CEP deve ter 8 dígitos");
       }
     }
+    if (data.serieNfce !== undefined && data.serieNfce !== null) {
+      // Série da NFC-e: mesma regra da série da NF-e (inteiro 1–999).
+      if (
+        !Number.isInteger(data.serieNfce) ||
+        data.serieNfce < 1 ||
+        data.serieNfce > 999
+      ) {
+        throw new Error("Série da NFC-e deve ser um inteiro entre 1 e 999");
+      }
+    }
+    if (data.ncmPadrao !== undefined && data.ncmPadrao !== null) {
+      // NCM padrão: vazio (limpa) ou exatamente 8 dígitos.
+      const ncmDigits = data.ncmPadrao.replace(/\D/g, "");
+      if (ncmDigits.length !== 0 && ncmDigits.length !== 8) {
+        throw new Error("NCM padrão deve ter 8 dígitos");
+      }
+    }
     if (data.serieNfe !== undefined && data.serieNfe !== null) {
       // Série da NF-e: inteiro 1–999 (SEFAZ aceita 0–999, mas o wizard usa ≥1).
       if (

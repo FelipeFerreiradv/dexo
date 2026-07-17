@@ -56,6 +56,13 @@ export class CompanyFiscalRepository {
         typeof data.serieNfe === "number" && Number.isInteger(data.serieNfe)
           ? data.serieNfe
           : 1,
+      // ── NFC-e (Fase 2) — mesmos padrões de saneamento dos campos acima. ──
+      serieNfce:
+        typeof data.serieNfce === "number" && Number.isInteger(data.serieNfce)
+          ? data.serieNfce
+          : 1,
+      cscId: data.cscId?.trim() || null,
+      ncmPadrao: onlyDigits(data.ncmPadrao),
     };
 
     // providerToken é segredo e NÃO trafega de volta ao cliente (ver
@@ -67,10 +74,25 @@ export class CompanyFiscalRepository {
       data.providerToken.trim().length > 0;
     const tokenValue = tokenProvided ? data.providerToken!.trim() : null;
 
+    // cscToken (NFC-e) segue EXATAMENTE o mesmo padrão preserve-when-blank do
+    // providerToken: segredo sanitizado no GET, form reenvia vazio ⇒ preserva.
+    const cscProvided =
+      typeof data.cscToken === "string" && data.cscToken.trim().length > 0;
+    const cscValue = cscProvided ? data.cscToken!.trim() : null;
+
+    const secretsCreate: Record<string, unknown> = {
+      providerToken: tokenValue,
+      cscToken: cscValue,
+    };
+    const secretsUpdate: Record<string, unknown> = {
+      ...(tokenProvided ? { providerToken: tokenValue } : {}),
+      ...(cscProvided ? { cscToken: cscValue } : {}),
+    };
+
     const row = await (prisma as any).companyFiscalConfig.upsert({
       where: { userId },
-      create: { userId, ...base, providerToken: tokenValue },
-      update: tokenProvided ? { ...base, providerToken: tokenValue } : base,
+      create: { userId, ...base, ...secretsCreate },
+      update: { ...base, ...secretsUpdate },
     });
     return toConfig(row);
   }

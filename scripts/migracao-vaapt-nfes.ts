@@ -317,7 +317,7 @@ async function main(): Promise<void> {
   const effectiveSeqStart = flags.seqStart ?? sum.numero_max + 1;
   {
     const existingSeq = await prisma.nfeSequence.findUnique({
-      where: { userId_ambiente_serie: { userId: flags.userId, ambiente: AMBIENTE, serie: 1 } },
+      where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" } },
       select: { proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
     sum.seq_para = novo;
     if (!flags.dryRun && !flags.skipSeqAdvance && (novo !== current || !existingSeq)) {
       await prisma.nfeSequence.upsert({
-        where: { userId_ambiente_serie: { userId: flags.userId, ambiente: AMBIENTE, serie: 1 } },
+        where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" } },
         create: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, proximoNumero: novo },
         update: { proximoNumero: novo },
       });

@@ -31,7 +31,7 @@ import type {
  *   - certificadoCnpjConfirmado: reconfere o CNPJ do cert (do CN persistido)
  *     contra o emissor, para o aviso de risco sobreviver a um reload.
  */
-function sanitizeFiscalConfig(
+export function sanitizeFiscalConfig(
   config: Awaited<ReturnType<CompanyFiscalUseCase["getByUserId"]>> | null,
 ): Record<string, unknown> | null {
   if (!config) return null;
@@ -53,10 +53,14 @@ function sanitizeFiscalConfig(
     certificadoConfigurado: Boolean(config.certificadoPath),
     certificadoCnpjConfirmado,
     providerTokenConfigurado: Boolean(config.providerToken),
+    // NFC-e (Fase 2): o CSC é segredo — exposto só como booleano, mesmo
+    // padrão do providerToken (form reenvia vazio = preserva o salvo).
+    cscConfigurado: Boolean(config.cscToken),
   };
   delete safe.certificadoSenhaEnc;
   delete safe.certificadoPath;
   delete safe.providerToken;
+  delete safe.cscToken;
   return safe;
 }
 

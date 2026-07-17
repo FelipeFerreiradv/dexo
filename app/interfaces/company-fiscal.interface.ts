@@ -37,6 +37,17 @@ export interface CompanyFiscalConfig {
   /** Série padrão das NF-e (o número é sequencial automático por série). */
   serieNfe: number;
 
+  // ── NFC-e (modelo 65) — Fase 2. Campos OPCIONAIS na interface para não
+  // quebrar construções literais existentes (projeção from-xml, fixtures). ──
+  /** Série própria da NFC-e (numeração independente por modelo). */
+  serieNfce?: number;
+  /** idCSC (cIdToken) cadastrado na SEFAZ. */
+  cscId?: string | null;
+  /** CSC — segredo do hash do QR Code (nunca volta ao cliente). */
+  cscToken?: string | null;
+  /** NCM padrão (8 dígitos) p/ autopreencher itens sem NCM. */
+  ncmPadrao?: string | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -68,4 +79,13 @@ export interface CompanyFiscalConfigUpsert {
 
   /** Série padrão das NF-e (inteiro 1–999). Default 1. */
   serieNfe?: number | null;
+
+  // ── NFC-e (Fase 2) — todos opcionais; ausentes = comportamento atual. ──
+  /** Série da NFC-e (inteiro 1–999). Default 1. */
+  serieNfce?: number | null;
+  cscId?: string | null;
+  /** Vazio/ausente preserva o CSC salvo (padrão providerToken). */
+  cscToken?: string | null;
+  /** NCM padrão (8 dígitos) ou vazio p/ limpar. */
+  ncmPadrao?: string | null;
 }
