@@ -619,9 +619,28 @@ export class ListingUseCase {
     if (model) attrs.push({ id: "MODEL", value_name: model });
     if (year) attrs.push({ id: "YEAR", value_name: String(year) });
 
-    // inferir posição para portas (ajuda a atender requisitos do domínio)
+    // inferir posição para portas (ajuda a atender requisitos do domínio).
+    // O valor explícito do operador (ficha técnica → product.attributes.POSITION)
+    // SEMPRE vence: a inferência por regex do nome é apenas fallback quando o
+    // operador NÃO informou o lado/posição. POSITION vazio ({} ou em branco)
+    // conta como ausente, então o fallback ainda dispara nessas 2 categorias.
     const positionCategories = new Set(["MLB101763", "MLB458642"]);
-    if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
+    const opPos =
+      product.attributes && typeof product.attributes === "object"
+        ? (product.attributes as Record<string, any>).POSITION
+        : null;
+    const hasOperatorPosition =
+      !!opPos &&
+      typeof opPos === "object" &&
+      ((typeof opPos.value_id === "string" &&
+        opPos.value_id.trim().length > 0) ||
+        (typeof opPos.value_name === "string" &&
+          opPos.value_name.trim().length > 0));
+    if (
+      !hasOperatorPosition &&
+      resolvedCategoryId &&
+      positionCategories.has(resolvedCategoryId)
+    ) {
       const name = (product.name || "").toLowerCase();
       const pos = /dianteir|frente/.test(name)
         ? "Dianteira"
