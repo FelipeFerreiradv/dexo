@@ -481,6 +481,9 @@ export function CreateProductDialog({
   >(null);
   const [titleSuggestion, setTitleSuggestion] = useState("");
   const [mlCategorySearch, setMlCategorySearch] = useState("");
+  // Escape hatch do filtro de nicho: por padrão a lista ML vem restrita a
+  // autopeças/veículos; ligar mostra TODAS as categorias (?all=1).
+  const [mlShowAllCats, setMlShowAllCats] = useState(false);
   const [mlCategoryDropdownOpen, setMlCategoryDropdownOpen] = useState(false);
   const [shopeeOptions, setShopeeOptions] = useState<
     { id: string; value: string }[]
@@ -1000,45 +1003,49 @@ export function CreateProductDialog({
   }, [watchCostPrice, watchPrice, setValue]);
 
   // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
-  const mlCategoriesLoadedRef = useRef(false);
+  // Guarda o MODO de nicho já carregado (null = nunca; false = filtrado;
+  // true = todas). Recarrega quando o operador liga/desliga "mostrar todas".
+  const mlCategoriesLoadedRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (
-      (currentStep === 6 || watchCreateMLListing) &&
-      mlOptions.length === 0 &&
-      !mlCategoriesLoadedRef.current
-    ) {
-      mlCategoriesLoadedRef.current = true;
-      (async () => {
-        try {
-          const base = getApiBaseUrl();
-          const respCat = await fetch(`${base}/marketplace/ml/categories`, {
-            headers: { email: session?.user?.email || "" },
-          });
-          if (respCat.ok) {
-            const catJson = await respCat.json();
-            const cats = Array.isArray(catJson?.categories)
-              ? catJson.categories
-              : [];
-            if (cats.length > 0) {
-              setMlOptions(cats);
-            }
+    if (!(currentStep === 6 || watchCreateMLListing)) return;
+    if (mlCategoriesLoadedRef.current === mlShowAllCats) return;
+    mlCategoriesLoadedRef.current = mlShowAllCats;
+    let cancelled = false;
+    (async () => {
+      try {
+        const base = getApiBaseUrl();
+        const url = `${base}/marketplace/ml/categories${mlShowAllCats ? "?all=1" : ""}`;
+        const respCat = await fetch(url, {
+          headers: { email: session?.user?.email || "" },
+        });
+        if (respCat.ok) {
+          const catJson = await respCat.json();
+          const cats = Array.isArray(catJson?.categories)
+            ? catJson.categories
+            : [];
+          if (!cancelled && cats.length > 0) {
+            setMlOptions(cats);
           }
-        } catch (catErr) {
-          console.error("Erro ao buscar categorias ML:", catErr);
         }
-      })();
-    }
+      } catch (catErr) {
+        console.error("Erro ao buscar categorias ML:", catErr);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
+    mlShowAllCats,
     currentStep,
     watchCreateMLListing,
-    mlOptions.length,
     session?.user?.email,
   ]);
 
   // Reset lazy-load flag when dialog closes
   useEffect(() => {
     if (!open) {
-      mlCategoriesLoadedRef.current = false;
+      mlCategoriesLoadedRef.current = null;
+      setMlShowAllCats(false);
       shopeeCategoriesLoadedRef.current = false;
       magaluSuggestedRef.current = false;
       setMagaluOptions([]);
@@ -3607,6 +3614,15 @@ export function CreateProductDialog({
                     <Label htmlFor="mlCategory">
                       Categoria no Mercado Livre
                     </Label>
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={mlShowAllCats}
+                        onChange={(e) => setMlShowAllCats(e.target.checked)}
+                        className="h-3 w-3"
+                      />
+                      Mostrar todas as categorias (inclui fora de autopeças)
+                    </label>
                     <Controller
                       name="mlCategory"
                       control={control}

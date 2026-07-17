@@ -43,8 +43,8 @@ export function __resetCategoryGuardCacheForTests() {
 
 /**
  * Carrega (e cacheia) o conjunto de externalIds que descendem da raiz
- * veicular (MLB1747) usando a árvore local. Uma chamada, reaproveitada
- * por todos os callers durante o TTL.
+ * veicular (MLB5672 — "Acessórios para Veículos") usando a árvore local. Uma
+ * chamada, reaproveitada por todos os callers durante o TTL.
  */
 async function loadVehicleRootSet(
   siteId: string = "MLB",
@@ -87,8 +87,23 @@ async function loadVehicleRootSet(
 }
 
 /**
+ * Wrapper público do conjunto veicular (externalIds sob MLB5672). Reaproveita o
+ * cache de 10min de `loadVehicleRootSet`. É a FONTE ÚNICA de nicho usada pela
+ * busca manual de categorias e pela sugestão (MLB), para o filtro ficar
+ * consistente em todos os pontos de entrada. Fail-open embutido: devolve um set
+ * vazio quando a árvore não está sincronizada (o caller não deve filtrar nesse
+ * caso).
+ */
+export async function getVehicleRootSet(
+  siteId: string = "MLB",
+  rootExternalId: string = ML_VEHICLE_ROOT_EXTERNAL_ID,
+): Promise<Set<string>> {
+  return loadVehicleRootSet(siteId, rootExternalId);
+}
+
+/**
  * Máscara de leitura: para produtos veiculares (brand+model+year) cuja
- * `mlCategoryId` persistida caia fora do nicho veicular (MLB1747), zera
+ * `mlCategoryId` persistida caia fora do nicho veicular (MLB5672), zera
  * os campos ML no objeto retornado. NÃO escreve no DB — apenas mascara
  * na resposta. Falha-aberto: se a árvore não estiver sincronizada (set
  * vazio), não mascara nada para não bloquear usuário por falta de dados.
@@ -364,7 +379,7 @@ export class CategoryResolutionService {
   }
 
   /**
-   * Verifica se um externalId está sob a raiz de Veículos (MLB1747).
+   * Verifica se um externalId está sob a raiz de Veículos (MLB5672).
    * Usa a árvore local sincronizada (CategoryRepository.listWithParents).
    * Se a categoria não estiver na árvore (sincronização incompleta), retorna
    * `ok: true` com `reason: "not_in_tree"` para fail-open — não queremos

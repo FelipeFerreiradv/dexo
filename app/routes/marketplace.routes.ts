@@ -23,6 +23,13 @@ import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-w
 import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
 import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
+import {
+  ML_BLOCKED_BRANCHES,
+  SHOPEE_AUTOMOTIVE_MARKERS,
+  SHOPEE_BLOCKED_BRANCHES,
+  normalizePath,
+} from "../marketplaces/lib/category-inference/map-generation";
 import { AccountStatus } from "@prisma/client";
 
 /**
@@ -459,9 +466,30 @@ small{color:#666}</style></head><body>
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const q = request.query as any;
+        const showAll = q?.all === "1" || q?.all === "true";
         const raw = await CategoryRepository.listFlattenedOptions("MLB");
+        let list = raw || [];
+        // Restrição de nicho: só categorias sob a raiz veicular (MLB5672),
+        // excluindo ramos bloqueados (ex.: motos). Fonte única com a sugestão
+        // (getVehicleRootSet). Fail-open: árvore não sincronizada (set vazio)
+        // → não filtra, não trava o usuário. Escape hatch: ?all=1.
+        if (!showAll) {
+          const set = await getVehicleRootSet("MLB");
+          if (set.size > 0) {
+            const niche = list.filter((c: any) => {
+              const extId = c.externalId || c.id;
+              if (!set.has(extId)) return false;
+              const p = normalizePath(c.fullPath || c.name || "");
+              return !ML_BLOCKED_BRANCHES.some((b) => p.includes(b));
+            });
+            // fail-open-to-raw: se o filtro esvaziaria uma lista não-vazia
+            // (árvore parcial/dessincronizada), devolve a lista crua.
+            if (niche.length > 0) list = niche;
+          }
+        }
         // Normalizar para o formato esperado pelo front: { id, value }
-        const categories = (raw || []).map((c: any) => ({
+        const categories = list.map((c: any) => ({
           id: c.externalId || c.id,
           value: c.fullPath || c.name || c.externalId || c.id,
         }));
@@ -1134,10 +1162,28 @@ small{color:#666}</style></head><body>
   app.get(
     "/shopee/categories",
     { preHandler: [authMiddleware] },
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        const q = request.query as any;
+        const showAll = q?.all === "1" || q?.all === "true";
         const raw = await CategoryRepository.listFlattenedOptions("SHP");
-        const categories = (raw || []).map((c: any) => ({
+        let list = raw || [];
+        // Nicho Shopee: ramos bloqueados (motos/barcos/pesados) são hard-drop;
+        // marcadores automotivos são SOFT (fail-open-to-raw se esvaziarem a
+        // lista, para não sumir categoria legítima com path atípico).
+        // Escape hatch: ?all=1.
+        if (!showAll) {
+          const noBlocked = list.filter((c: any) => {
+            const p = normalizePath(c.fullPath || c.name || "");
+            return !SHOPEE_BLOCKED_BRANCHES.some((b) => p.includes(b));
+          });
+          const inNiche = noBlocked.filter((c: any) => {
+            const p = normalizePath(c.fullPath || c.name || "");
+            return SHOPEE_AUTOMOTIVE_MARKERS.some((m) => p.includes(m));
+          });
+          list = inNiche.length > 0 ? inNiche : noBlocked;
+        }
+        const categories = list.map((c: any) => ({
           id: c.externalId || c.id,
           value: c.fullPath || c.name || c.externalId || c.id,
         }));
@@ -2339,10 +2385,13 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const search = (request.query as any)?.search as string | undefined;
+        const q = request.query as any;
+        const search = q?.search as string | undefined;
+        const showAll = q?.all === "1" || q?.all === "true";
         const categories = await ListingUseCase.searchMagaluCategories(
           userId,
           search ?? "",
+          { all: showAll },
         );
         return reply.send({ categories });
       } catch (error) {
