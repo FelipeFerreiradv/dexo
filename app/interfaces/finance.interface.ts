@@ -119,6 +119,10 @@ export interface FinanceListFilters {
   unidadeId?: string;
   // Filtro por forma de pagamento (código). Ausente/"" = todas (atual).
   paymentMethod?: string;
+  // Filtro "só vendas balcão" (contas com itens) — usado pelo PDV. Ausente/
+  // false = todas (comportamento atual, where inalterado). receivable-only:
+  // em payable é ignorado (Payable não tem relação items).
+  hasItems?: boolean;
   from?: string;
   to?: string;
   page?: number;
