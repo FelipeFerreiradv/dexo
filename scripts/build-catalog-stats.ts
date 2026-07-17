@@ -230,11 +230,31 @@ async function main() {
       // `name` (não das colunas) para alinhar com o título que o usuário digita.
       const parts = parseTitleToParts(p.name);
       const partType = parts.partType;
+      if (!partType) continue;
+      if (args.partTypeFilter && partType !== args.partTypeFilter) continue;
+
+      // Família partType-only (partType|*|*|*): alimenta o Sinal B do motor de
+      // inferência de categoria para produtos SEM marca/modelo no título. A
+      // cascata do /internal/suggest exige brand+model reais e tem guard
+      // explícito contra "*" — estas linhas nunca vazam lá.
+      const ptCols = buildLookupColumns({
+        partType,
+        brand: null,
+        model: null,
+        version: null,
+      });
+      const ptKey = `${ptCols.partType}|*|*|*`;
+      let ptFam = families.get(ptKey);
+      if (!ptFam) {
+        ptFam = emptyFamily(ptCols.partType, "*", "*", "*");
+        families.set(ptKey, ptFam);
+      }
+      pushProduct(ptFam, p);
+
       const brand = kebab(parts.brand);
       const model = kebab(parts.model);
-      // Todos os níveis exigem partType + brand + model (alinhado à cascata).
-      if (!partType || !brand || !model) continue;
-      if (args.partTypeFilter && partType !== args.partTypeFilter) continue;
+      // Níveis por família exigem partType + brand + model (alinhado à cascata).
+      if (!brand || !model) continue;
       contributing++;
 
       const versionKebab = kebab(p.version);

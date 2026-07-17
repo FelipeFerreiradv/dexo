@@ -15,6 +15,7 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
 import {
+  ANY,
   buildLookupColumns,
   normalizeText,
   parseTitleToParts,
@@ -168,6 +169,11 @@ export class InternalSuggestionUseCase {
       model: parts.model,
       version: parts.version,
     });
+    // Cinto-e-suspensório: o CatalogStat agora também guarda famílias
+    // partType-only (brand="*"/model="*") para o motor de inferência de
+    // categoria. A cascata daqui exige entidades REAIS — nunca casar "*".
+    if (cols.partType === ANY || cols.brand === ANY || cols.model === ANY)
+      return INSUFFICIENT;
     const year = parts.year;
     const baseWhere = {
       partType: cols.partType,
