@@ -41,8 +41,16 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const { unidadeId } = request.query as { unidadeId?: string };
-        const summary = await useCase.summary(userId, unidadeId || undefined);
+        const { unidadeId, hasItems } = request.query as {
+          unidadeId?: string;
+          hasItems?: string;
+        };
+        const summary = await useCase.summary(
+          userId,
+          unidadeId || undefined,
+          // Só o literal "true" ativa (PDV); ausente/lixo => idêntico ao atual.
+          hasItems === "true" ? true : undefined,
+        );
         return reply.status(200).send({ summary });
       } catch (error) {
         return reply.status(500).send({
@@ -86,6 +94,7 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
           customerId,
           unidadeId,
           paymentMethod,
+          hasItems,
           from,
           to,
           page,
@@ -99,6 +108,9 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             customerId: customerId || undefined,
             unidadeId: unidadeId || undefined,
             paymentMethod: paymentMethod || undefined,
+            // Só o literal "true" ativa o filtro (PDV); qualquer outro valor
+            // (ausente/""/lixo) mantém o comportamento atual.
+            hasItems: hasItems === "true" ? true : undefined,
             from: from || undefined,
             to: to || undefined,
             page: page ? parseInt(page) : 1,

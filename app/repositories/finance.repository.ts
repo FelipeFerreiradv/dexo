@@ -398,6 +398,10 @@ export class FinanceRepository {
     }
     // Filtro por forma de pagamento: ausente/"" => não filtra (idêntico ao atual).
     if (filters.paymentMethod) where.paymentMethod = filters.paymentMethod;
+    // Filtro "só vendas balcão" (PDV): ausente/false => não filtra (where
+    // byte-idêntico ao atual). O guard de kind é obrigatório — Payable não
+    // tem a relação `items` e o filtro quebraria a query.
+    if (kind === "receivable" && filters.hasItems) where.items = { some: {} };
     if (filters.from || filters.to) {
       where.dueDate = {};
       if (filters.from) where.dueDate.gte = new Date(filters.from);
@@ -464,7 +468,11 @@ export class FinanceRepository {
     if (res.count === 0) throw new Error("Registro financeiro não encontrado");
   }
 
-  async summary(userId: string, unidadeId?: string): Promise<FinanceSummary> {
+  async summary(
+    userId: string,
+    unidadeId?: string,
+    hasItems?: boolean,
+  ): Promise<FinanceSummary> {
     const now = new Date();
 
     // Sem filtro de unidade => objeto vazio => where idêntico ao comportamento
@@ -474,11 +482,18 @@ export class FinanceRepository {
         ? {}
         : { unidadeId: unidadeId === "sem_unidade" ? null : unidadeId };
 
-    async function stats(m: any) {
+    // Filtro "só vendas balcão" (PDV): aplicado APENAS ao modelo receivable
+    // (Payable não tem relação items). Ausente/false => fragmento vazio =>
+    // where byte-idêntico ao atual.
+    const receivableItemsWhere: Record<string, unknown> = hasItems
+      ? { items: { some: {} } }
+      : {};
+
+    async function stats(m: any, extraWhere: Record<string, unknown> = {}) {
       const [grouped, overdue] = await Promise.all([
         m.groupBy({
           by: ["status"],
-          where: { userId, ...unidadeWhere },
+          where: { userId, ...unidadeWhere, ...extraWhere },
           _sum: { totalAmount: true },
           _count: { _all: true },
         }),
@@ -486,6 +501,7 @@ export class FinanceRepository {
           where: {
             userId,
             ...unidadeWhere,
+            ...extraWhere,
             status: { in: ["PENDENTE", "VENCIDA"] },
             dueDate: { lt: now },
           },
@@ -518,7 +534,7 @@ export class FinanceRepository {
     }
 
     const [receivables, payables] = await Promise.all([
-      stats(prisma.receivable),
+      stats(prisma.receivable, receivableItemsWhere),
       stats(prisma.payable),
     ]);
 

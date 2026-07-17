@@ -487,8 +487,11 @@ export class FinanceUseCase {
   async summary(
     userId: string,
     unidadeId?: string,
+    // PDV (aditivo): true => bucket de receivables só com vendas balcão
+    // (contas com itens). Ausente => comportamento atual inalterado.
+    hasItems?: boolean,
   ): Promise<FinanceSummary> {
-    return this.repo.summary(userId, unidadeId);
+    return this.repo.summary(userId, unidadeId, hasItems);
   }
 
   // Lookup de produto para a UI do financeiro (autocompletar por SKU/nome).

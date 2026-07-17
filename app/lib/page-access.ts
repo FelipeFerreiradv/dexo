@@ -20,6 +20,7 @@ export type PageId =
   | "pedidos"
   | "clientes"
   | "financeiro"
+  | "pdv"
   | "mensagens"
   | "mercado-livre"
   | "shopee"
@@ -37,6 +38,7 @@ export const PAGE_DEFS: { id: PageId; label: string }[] = [
   { id: "pedidos", label: "Pedidos" },
   { id: "clientes", label: "Clientes" },
   { id: "financeiro", label: "Financeiro" },
+  { id: "pdv", label: "PDV Balcão" },
   { id: "mensagens", label: "Mensagens" },
   { id: "mercado-livre", label: "Mercado Livre" },
   { id: "shopee", label: "Shopee" },

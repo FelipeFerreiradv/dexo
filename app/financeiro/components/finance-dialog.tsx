@@ -105,6 +105,14 @@ interface FinanceDialogProps {
   };
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onSaved: () => void;
+  // PDV Balcão (aditivo): força a UX de venda balcão independente da flag
+  // NEXT_PUBLIC_BALCAO_SALE_ENABLED. Só o literal `true` muda algo;
+  // undefined/false ⇒ comportamento byte-idêntico ao atual (financeiro não
+  // passa esta prop).
+  forceBalcao?: boolean;
+  // PDV Balcão (aditivo): expõe a entry salva (id + paymentMethod) para o
+  // caller encadear o recebimento (POST /pay). Ausente ⇒ código morto.
+  onSavedEntry?: (entry: { id: string; paymentMethod?: string | null }) => void;
 }
 
 export function FinanceDialog({
@@ -114,6 +122,8 @@ export function FinanceDialog({
   initialData,
   onToast,
   onSaved,
+  forceBalcao,
+  onSavedEntry,
 }: FinanceDialogProps) {
   const { data: session } = useSession();
   const [currentStep, setCurrentStep] = useState(1);
@@ -148,7 +158,8 @@ export function FinanceDialog({
   // Balcão só é habilitado em receivable (payable nunca tem items — backend
   // também rejeita). Verifica o flag e o kind para gatear toda a UX de venda
   // balcão (bloco de produtos + serialização de items no payload).
-  const balcaoEnabled = BALCAO_SALE_ENABLED && kind === "receivable";
+  const balcaoEnabled =
+    (BALCAO_SALE_ENABLED || forceBalcao === true) && kind === "receivable";
 
   // ProductMeta (SKU/nome/estoque por productId) vive no dialog para sobreviver
   // à navegação entre steps (TitleStep desmonta ao mudar de step). É (re)seedado
@@ -315,6 +326,11 @@ export function FinanceDialog({
         }
       }
 
+      // PDV (aditivo): entrega a entry salva ao caller ANTES de fechar, para
+      // encadear o recebimento. Sem onSavedEntry (financeiro) nada muda.
+      if (onSavedEntry && result?.entry?.id) {
+        onSavedEntry(result.entry);
+      }
       onSaved();
       onOpenChange(false);
     } catch (e) {

@@ -20,6 +20,7 @@ import {
   QrCode,
   Search,
   ShoppingBag,
+  ShoppingCart,
   Store,
   ChevronDown,
   Car,
@@ -77,6 +78,10 @@ const MAGALU_INTEGRATION_ENABLED =
 const WHATSAPP_MODULE_ENABLED =
   process.env.NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED === "true";
 
+// Módulo PDV Balcão 100% aditivo atrás da flag. Desligada ⇒ item escondido no
+// menu (e a página dá notFound), mantendo o app idêntico ao de hoje.
+const PDV_ENABLED = process.env.NEXT_PUBLIC_PDV_ENABLED === "true";
+
 const NAV_SECTIONS: NavSection[] = [
   {
     id: "primary",
@@ -120,6 +125,16 @@ const NAV_SECTIONS: NavSection[] = [
         href: "/financeiro",
         icon: Wallet,
       },
+      ...(PDV_ENABLED
+        ? [
+            {
+              id: "pdv",
+              label: "PDV Balcão",
+              href: "/pdv",
+              icon: ShoppingCart,
+            },
+          ]
+        : []),
       {
         id: "mensagens",
         label: "Mensagens",
