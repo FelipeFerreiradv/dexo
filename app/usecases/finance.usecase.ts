@@ -554,6 +554,16 @@ export class FinanceUseCase {
     if (!entry) {
       throw new Error("Conta a receber não encontrada");
     }
+    return this.createFiscalDraftFromEntry(entry, userId, opts);
+  }
+
+  // Corpo do rascunho a partir de um entry JÁ carregado — o fluxo NFC-e do
+  // PDV precisa do entry para os guards e reusa a mesma carga aqui (egress).
+  private async createFiscalDraftFromEntry(
+    entry: FinanceEntry,
+    userId: string,
+    opts?: { modelo?: "55" | "65" },
+  ) {
     if (!entry.items || entry.items.length === 0) {
       throw new Error(
         "Conta sem itens é inválida para cupom fiscal — adicione produtos antes de emitir.",
@@ -673,16 +683,15 @@ export class FinanceUseCase {
     }
 
     // DRAFT/REJECTED existente → reemite a MESMA linha (sem draft duplicado);
-    // nada → cria o rascunho 65 (série própria + NCM padrão) e emite.
+    // nada → cria o rascunho 65 (série própria + NCM padrão) e emite. Reusa o
+    // `entry` já carregado pelos guards acima (evita o 2º fetch do receivable).
     let nfeId: string;
     if (existing) {
       nfeId = existing.id;
     } else {
-      const draft = await this.createFiscalDraftFromReceivable(
-        receivableId,
-        userId,
-        { modelo: "65" },
-      );
+      const draft = await this.createFiscalDraftFromEntry(entry, userId, {
+        modelo: "65",
+      });
       nfeId = draft.id;
     }
 
