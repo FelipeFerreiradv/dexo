@@ -481,6 +481,9 @@ export function CreateProductDialog({
   >(null);
   const [titleSuggestion, setTitleSuggestion] = useState("");
   const [mlCategorySearch, setMlCategorySearch] = useState("");
+  // Escape hatch do filtro de nicho: por padrão a lista ML vem restrita a
+  // autopeças/veículos; ligar mostra TODAS as categorias (?all=1).
+  const [mlShowAllCats, setMlShowAllCats] = useState(false);
   const [mlCategoryDropdownOpen, setMlCategoryDropdownOpen] = useState(false);
   const [shopeeOptions, setShopeeOptions] = useState<
     { id: string; value: string }[]
@@ -1000,45 +1003,68 @@ export function CreateProductDialog({
   }, [watchCostPrice, watchPrice, setValue]);
 
   // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
-  const mlCategoriesLoadedRef = useRef(false);
+  // Guarda o MODO de nicho já carregado (null = nada válido; false = filtrado;
+  // true = todas). Só re-busca quando o modo desejado difere do carregado —
+  // REABRIR o modal com a lista de nicho já carregada NÃO re-busca (paridade
+  // com o comportamento original de buscar uma única vez). Falha, lista vazia
+  // ou descarte em voo invalidam o ref para a próxima passada re-tentar
+  // (paridade com o retry-após-falha original).
+  const mlCategoriesLoadedRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (
-      (currentStep === 6 || watchCreateMLListing) &&
-      mlOptions.length === 0 &&
-      !mlCategoriesLoadedRef.current
-    ) {
-      mlCategoriesLoadedRef.current = true;
-      (async () => {
-        try {
-          const base = getApiBaseUrl();
-          const respCat = await fetch(`${base}/marketplace/ml/categories`, {
-            headers: { email: session?.user?.email || "" },
-          });
-          if (respCat.ok) {
-            const catJson = await respCat.json();
-            const cats = Array.isArray(catJson?.categories)
-              ? catJson.categories
-              : [];
-            if (cats.length > 0) {
-              setMlOptions(cats);
-            }
-          }
-        } catch (catErr) {
+    if (!open) return;
+    if (!(currentStep === 6 || watchCreateMLListing)) return;
+    if (mlCategoriesLoadedRef.current === mlShowAllCats) return;
+    const mode = mlShowAllCats;
+    mlCategoriesLoadedRef.current = mode; // guard de voo (evita fetch duplo)
+    let settled = false;
+    let cancelled = false;
+    (async () => {
+      try {
+        const base = getApiBaseUrl();
+        const url = `${base}/marketplace/ml/categories${mode ? "?all=1" : ""}`;
+        const respCat = await fetch(url, {
+          headers: { email: session?.user?.email || "" },
+        });
+        const catJson = respCat.ok ? await respCat.json() : null;
+        const cats = Array.isArray(catJson?.categories)
+          ? catJson.categories
+          : [];
+        settled = true;
+        if (cancelled) return;
+        if (cats.length > 0) {
+          setMlOptions(cats);
+        } else {
+          mlCategoriesLoadedRef.current = null; // falha/vazio → retry depois
+        }
+      } catch (catErr) {
+        settled = true;
+        if (!cancelled) {
+          mlCategoriesLoadedRef.current = null;
           console.error("Erro ao buscar categorias ML:", catErr);
         }
-      })();
-    }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // Resposta descartada em voo: sem isto o ref ficaria marcado como
+      // carregado sem os dados terem chegado (dropdown preso no fallback).
+      if (!settled) mlCategoriesLoadedRef.current = null;
+    };
   }, [
+    open,
+    mlShowAllCats,
     currentStep,
     watchCreateMLListing,
-    mlOptions.length,
     session?.user?.email,
   ]);
 
   // Reset lazy-load flag when dialog closes
   useEffect(() => {
     if (!open) {
-      mlCategoriesLoadedRef.current = false;
+      // NÃO invalida mlCategoriesLoadedRef aqui: com o nicho carregado, o
+      // reopen reaproveita a lista (zero fetch). Se o toggle estava em
+      // "todas", ref(true) !== false já força a re-busca do nicho no reopen.
+      setMlShowAllCats(false);
       shopeeCategoriesLoadedRef.current = false;
       magaluSuggestedRef.current = false;
       setMagaluOptions([]);
@@ -3607,6 +3633,15 @@ export function CreateProductDialog({
                     <Label htmlFor="mlCategory">
                       Categoria no Mercado Livre
                     </Label>
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={mlShowAllCats}
+                        onChange={(e) => setMlShowAllCats(e.target.checked)}
+                        className="h-3 w-3"
+                      />
+                      Mostrar todas as categorias (inclui fora de autopeças)
+                    </label>
                     <Controller
                       name="mlCategory"
                       control={control}

@@ -3597,13 +3597,20 @@ export class ListingUseCase {
   static async searchMagaluCategories(
     userId: string,
     search: string,
+    opts?: { all?: boolean },
   ): Promise<Array<{ id: string; value: string }>> {
     const term = String(search ?? "").trim();
     if (!term) return [];
     const token = await this.resolveMagaluToken(userId);
     if (!token) return [];
     const cats = await MagaluApiService.searchCategories(token, { name: term });
-    return cats
+    // Nicho: mesma preferência de domínio (CATEGORY_ROOT_HINT) que a resolução
+    // automática já aplica, para a busca manual não trazer categorias de outros
+    // domínios. SOFT (fail-open-to-raw). Escape hatch: opts.all.
+    const scoped = opts?.all
+      ? cats
+      : MagaluCategoryResolutionService.filterCategoriesByRootHint(cats);
+    return scoped
       .filter((c) => c.id)
       .map((c) => ({
         id: String(c.id),

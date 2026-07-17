@@ -7,6 +7,7 @@ import {
 } from "../lib/category-inference/engine";
 import { fuseVotes, shouldAutoApply } from "../lib/category-inference/fuse";
 import type { CategoryVote } from "../lib/category-inference/types";
+import { getVehicleRootSet } from "./category-resolution.service";
 
 type AttributeSuggestion = {
   brand?: string;
@@ -1312,7 +1313,36 @@ export class CategorySuggestionService {
       }
       filtered.push(s);
     }
-    filtered.sort((a, b) => {
+
+    // ── Restrição de nicho (MLB) — fonte única com a busca manual ──
+    // Mantém só categorias sob a raiz veicular (MLB5672), inclusive para
+    // títulos ambíguos (independe de detectedDomain, pois o app é de autopeças).
+    // Fail-open em DOIS casos, sem cachear (evita servir lista não-filtrada por
+    // até 1h após o sync): (1) árvore não sincronizada (set vazio); (2) o filtro
+    // zeraria TODAS as sugestões — provável árvore parcial/dessincronizada, não
+    // vale esconder autopeça legítima por dado incompleto ("nunca zera").
+    // Shopee/Magalu seguem seus próprios caminhos (domainPathMarkers / hint).
+    let scoped = filtered;
+    let skipCache = false;
+    if (siteId === "MLB") {
+      try {
+        const set = await getVehicleRootSet("MLB");
+        if (set.size > 0) {
+          const nicheFiltered = filtered.filter((s) => set.has(s.categoryId));
+          if (nicheFiltered.length > 0) {
+            scoped = nicheFiltered;
+          } else if (filtered.length > 0) {
+            skipCache = true; // fail-open: mantém 'filtered', não cacheia
+          }
+        } else {
+          skipCache = true;
+        }
+      } catch {
+        skipCache = true;
+      }
+    }
+
+    scoped.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return (b.fullPath || "").length - (a.fullPath || "").length;
     });
@@ -1327,14 +1357,16 @@ export class CategorySuggestionService {
     const result = {
       normalizedTitle,
       tokens,
-      suggestions: filtered.slice(0, 5),
+      suggestions: scoped.slice(0, 5),
     };
 
-    if (this.suggestResultCache.size >= this.SUGGEST_CACHE_MAX_ENTRIES) {
-      const firstKey = this.suggestResultCache.keys().next().value;
-      if (firstKey !== undefined) this.suggestResultCache.delete(firstKey);
+    if (!skipCache) {
+      if (this.suggestResultCache.size >= this.SUGGEST_CACHE_MAX_ENTRIES) {
+        const firstKey = this.suggestResultCache.keys().next().value;
+        if (firstKey !== undefined) this.suggestResultCache.delete(firstKey);
+      }
+      this.suggestResultCache.set(cacheKey, { cachedAt: Date.now(), result });
     }
-    this.suggestResultCache.set(cacheKey, { cachedAt: Date.now(), result });
 
     return result;
   }

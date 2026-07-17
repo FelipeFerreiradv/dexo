@@ -96,6 +96,27 @@ export class MagaluCategoryResolutionService {
   }
 
   /**
+   * Filtro SOFT de nicho por CATEGORY_ROOT_HINT para a BUSCA MANUAL de
+   * categorias: mantém os resultados cujo `path` começa pelo hint. Se isso
+   * esvaziar uma lista não-vazia (ou o hint estiver vazio), devolve a lista
+   * crua (fail-open-to-raw) — não sumir categoria legítima. Casa a busca
+   * manual com a resolução automática (resolveCategoryId), que já usa o hint.
+   */
+  static filterCategoriesByRootHint(
+    cats: MagaluCategory[],
+    hintOverride?: string,
+  ): MagaluCategory[] {
+    const hint = this.normalize(
+      hintOverride ?? MAGALU_CONSTANTS.CATEGORY_ROOT_HINT,
+    );
+    if (!hint || !cats.length) return cats;
+    const inDomain = cats.filter((c) =>
+      this.normalize(c.path).startsWith(hint),
+    );
+    return inDomain.length > 0 ? inDomain : cats;
+  }
+
+  /**
    * Tipo de peça extraído do título + entrada do mapa de inferência. null
    * quando o tipo é desconhecido, ambíguo ("tampa", "suporte") ou o título é
    * COMPOSTO (componente de outra peça — "REATOR farol" não pode virar busca
