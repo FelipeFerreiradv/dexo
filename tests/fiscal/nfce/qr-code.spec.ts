@@ -90,7 +90,7 @@ describe("montarQrCodeNfce (QR v2 online)", () => {
   it("UF sem tabela → erro claro; CSC/id invalidos → erro claro", () => {
     const chave = chave65();
     expect(() =>
-      montarQrCodeNfce({ ...base, chaveAcesso: chave, uf: "SP" as any }),
+      montarQrCodeNfce({ ...base, chaveAcesso: chave, uf: "AM" as any }),
     ).toThrow(/sem URLs de QR Code NFC-e/);
     expect(() =>
       montarQrCodeNfce({ ...base, chaveAcesso: chave, cscToken: "  " }),

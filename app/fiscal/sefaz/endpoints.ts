@@ -538,7 +538,11 @@ export function getSvcEndpoint(
 // conferido (tenants atuais = SC, atendida pelo SVRS-NFC-e). UF ausente →
 // erro claro no fail-fast da emissão, nunca um host errado.
 //
-// Última conferência: 2026-07-17 (SVRS). Atualize a data ao revisar.
+// Última conferência: 2026-07-17 — cruzamento ACBrNFeServicos.ini × sped-nfe
+// wsnfe_4.00_mod65.xml (v4.00). Só entra UF em que as DUAS fontes coincidem.
+// AM ficou FORA: as fontes divergem no host de homologação
+// (nfce-services-nac vs nfce-services) e o autorizador exige mTLS, sem
+// desempate possível — adicionar sob demanda conferindo na SEFAZ-AM.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type NfceServicosPorAmbiente = Record<NfceServico, string>;
@@ -574,20 +578,166 @@ export interface NfceEndpointsUF {
   producao: NfceServicosPorAmbiente;
 }
 
+// ── Autorizadores NFC-e PRÓPRIOS (v4.00) — ACBr × sped-nfe coincidem. ──────
+
+const GO_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://homolog.sefaz.go.gov.br/nfe/services/NFeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://homolog.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://homolog.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4",
+  NfeStatusServico4:
+    "https://homolog.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+  RecepcaoEvento4:
+    "https://homolog.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4",
+};
+
+const GO_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfe.sefaz.go.gov.br/nfe/services/NFeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://nfe.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://nfe.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4",
+  NfeStatusServico4:
+    "https://nfe.sefaz.go.gov.br/nfe/services/NFeStatusServico4",
+  RecepcaoEvento4:
+    "https://nfe.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4",
+};
+
+const MG_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://hnfce.fazenda.mg.gov.br/nfce/services/NFeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://hnfce.fazenda.mg.gov.br/nfce/services/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://hnfce.fazenda.mg.gov.br/nfce/services/NFeConsultaProtocolo4",
+  NfeStatusServico4:
+    "https://hnfce.fazenda.mg.gov.br/nfce/services/NFeStatusServico4",
+  RecepcaoEvento4:
+    "https://hnfce.fazenda.mg.gov.br/nfce/services/NFeRecepcaoEvento4",
+};
+
+const MG_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfce.fazenda.mg.gov.br/nfce/services/NFeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://nfce.fazenda.mg.gov.br/nfce/services/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://nfce.fazenda.mg.gov.br/nfce/services/NFeConsultaProtocolo4",
+  NfeStatusServico4:
+    "https://nfce.fazenda.mg.gov.br/nfce/services/NFeStatusServico4",
+  RecepcaoEvento4:
+    "https://nfce.fazenda.mg.gov.br/nfce/services/NFeRecepcaoEvento4",
+};
+
+const MS_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://hom.nfce.sefaz.ms.gov.br/ws/NFeAutorizacao4",
+  NFeRetAutorizacao4: "https://hom.nfce.sefaz.ms.gov.br/ws/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://hom.nfce.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4",
+  NfeStatusServico4: "https://hom.nfce.sefaz.ms.gov.br/ws/NFeStatusServico4",
+  RecepcaoEvento4: "https://hom.nfce.sefaz.ms.gov.br/ws/NFeRecepcaoEvento4",
+};
+
+const MS_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfce.sefaz.ms.gov.br/ws/NFeAutorizacao4",
+  NFeRetAutorizacao4: "https://nfce.sefaz.ms.gov.br/ws/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4: "https://nfce.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4",
+  NfeStatusServico4: "https://nfce.sefaz.ms.gov.br/ws/NFeStatusServico4",
+  RecepcaoEvento4: "https://nfce.sefaz.ms.gov.br/ws/NFeRecepcaoEvento4",
+};
+
+// MT usa nomes de serviço SEM o sufixo "Protocolo"/"Status" padronizado.
+const MT_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4:
+    "https://homologacao.sefaz.mt.gov.br/nfcews/services/NfeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://homologacao.sefaz.mt.gov.br/nfcews/services/NfeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://homologacao.sefaz.mt.gov.br/nfcews/services/NfeConsulta4",
+  NfeStatusServico4:
+    "https://homologacao.sefaz.mt.gov.br/nfcews/services/NfeStatusServico4",
+  RecepcaoEvento4:
+    "https://homologacao.sefaz.mt.gov.br/nfcews/services/RecepcaoEvento4",
+};
+
+const MT_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfce.sefaz.mt.gov.br/nfcews/services/NfeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://nfce.sefaz.mt.gov.br/nfcews/services/NfeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://nfce.sefaz.mt.gov.br/nfcews/services/NfeConsulta4",
+  NfeStatusServico4:
+    "https://nfce.sefaz.mt.gov.br/nfcews/services/NfeStatusServico4",
+  RecepcaoEvento4: "https://nfce.sefaz.mt.gov.br/nfcews/services/RecepcaoEvento4",
+};
+
+const PR_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeAutorizacao4",
+  NFeRetAutorizacao4:
+    "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeConsultaProtocolo4",
+  NfeStatusServico4:
+    "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeStatusServico4",
+  RecepcaoEvento4:
+    "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeRecepcaoEvento4",
+};
+
+const PR_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfce.sefa.pr.gov.br/nfce/NFeAutorizacao4",
+  NFeRetAutorizacao4: "https://nfce.sefa.pr.gov.br/nfce/NFeRetAutorizacao4",
+  NfeConsultaProtocolo4:
+    "https://nfce.sefa.pr.gov.br/nfce/NFeConsultaProtocolo4",
+  NfeStatusServico4: "https://nfce.sefa.pr.gov.br/nfce/NFeStatusServico4",
+  RecepcaoEvento4: "https://nfce.sefa.pr.gov.br/nfce/NFeRecepcaoEvento4",
+};
+
+const SP_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4:
+    "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeAutorizacao4.asmx",
+  NFeRetAutorizacao4:
+    "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeRetAutorizacao4.asmx",
+  NfeConsultaProtocolo4:
+    "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeConsultaProtocolo4.asmx",
+  NfeStatusServico4:
+    "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeStatusServico4.asmx",
+  RecepcaoEvento4:
+    "https://homologacao.nfce.fazenda.sp.gov.br/ws/NFeRecepcaoEvento4.asmx",
+};
+
+const SP_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4: "https://nfce.fazenda.sp.gov.br/ws/NFeAutorizacao4.asmx",
+  NFeRetAutorizacao4:
+    "https://nfce.fazenda.sp.gov.br/ws/NFeRetAutorizacao4.asmx",
+  NfeConsultaProtocolo4:
+    "https://nfce.fazenda.sp.gov.br/ws/NFeConsultaProtocolo4.asmx",
+  NfeStatusServico4: "https://nfce.fazenda.sp.gov.br/ws/NFeStatusServico4.asmx",
+  RecepcaoEvento4: "https://nfce.fazenda.sp.gov.br/ws/NFeRecepcaoEvento4.asmx",
+};
+
 /**
- * UFs atendidas pelo SVRS-NFC-e (conferir Portal Nacional ao expandir):
- * inclui SC (tenant base). UFs com autorizador NFC-e próprio (SP, MG, PR, MS,
- * MT, GO, AM, BA, PE...) serão adicionadas sob demanda.
+ * SVRS-NFC-e: além das UFs clássicas do SVRS, BA/CE/PA/PE usam o SVRS no
+ * SOAP da NFC-e (só QR/consulta é próprio) — ACBr (`Usar=NFCe_SVRS`) e
+ * sped-nfe (sem entrada SOAP própria) coincidem. Autorizadores próprios:
+ * GO, MG, MS, MT, PR, SP. AM fica fora (fontes divergem — ver bloco acima).
  */
 export const NFCE_ENDPOINTS: Partial<Record<UF, NfceEndpointsUF>> = {
   AC: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   AL: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   AP: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  BA: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  CE: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   DF: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   ES: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  GO: { homologacao: GO_NFCE_HOM, producao: GO_NFCE_PROD },
   MA: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  MG: { homologacao: MG_NFCE_HOM, producao: MG_NFCE_PROD },
+  MS: { homologacao: MS_NFCE_HOM, producao: MS_NFCE_PROD },
+  MT: { homologacao: MT_NFCE_HOM, producao: MT_NFCE_PROD },
+  PA: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   PB: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  PE: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   PI: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  PR: { homologacao: PR_NFCE_HOM, producao: PR_NFCE_PROD },
   RJ: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   RN: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   RO: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
@@ -595,6 +745,7 @@ export const NFCE_ENDPOINTS: Partial<Record<UF, NfceEndpointsUF>> = {
   RS: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   SC: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
   SE: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  SP: { homologacao: SP_NFCE_HOM, producao: SP_NFCE_PROD },
   TO: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
 };
 

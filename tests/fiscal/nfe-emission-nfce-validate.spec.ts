@@ -111,9 +111,9 @@ describe("NfeEmissionUseCase.emit — guards do modelo 65 (antes do claim)", () 
     expect(h.updateMany).not.toHaveBeenCalled();
   });
 
-  it("UF sem autorizador NFC-e (SP) → erro claro; sem claim", async () => {
+  it("UF sem autorizador NFC-e (AM) → erro claro; sem claim", async () => {
     h.draftRef.value = draft65();
-    h.configRef.value = config65({ uf: "SP", codMunicipio: "3550308" });
+    h.configRef.value = config65({ uf: "AM", codMunicipio: "1302603" });
     const uc = new NfeEmissionUseCase();
     await expect(uc.emit("u1", "nfe-1")).rejects.toThrow(
       /nao suportada para NFC-e/,
