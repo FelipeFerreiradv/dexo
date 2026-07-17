@@ -17,6 +17,8 @@ export type MLDynamicAttribute = {
   variationRequired?: boolean;
   allowedValues?: Array<{ id: string; name: string }>;
   valueMaxLength?: number;
+  /** Sinal do próprio ML (tags.hidden) de que o atributo não deve ser exibido. */
+  hidden?: boolean;
 };
 
 /**
@@ -45,11 +47,19 @@ export const FIXED_FIELD_ATTRS = new Set([
   "SELLER_PACKAGE_WEIGHT",
 ]);
 
-/** Atributos exibidos na ficha técnica: os que não têm campo fixo dedicado. */
+/**
+ * Atributos exibidos na ficha técnica: os que não têm campo fixo dedicado e
+ * que o ML não marcou como `hidden`. NUNCA esconde um obrigatório — required
+ * (required/catalog_required/fixed) sempre vence `hidden`, para não quebrar a
+ * publicação. Nenhuma blocklist de domínio agressiva: a categoria correta
+ * (restrição de nicho) é a alavanca; aqui só respeitamos o sinal do próprio ML.
+ */
 export function getVisibleAttributes(
   attrs: MLDynamicAttribute[],
 ): MLDynamicAttribute[] {
-  return attrs.filter((a) => !FIXED_FIELD_ATTRS.has(a.id));
+  return attrs.filter(
+    (a) => !FIXED_FIELD_ATTRS.has(a.id) && !(a.hidden && !a.required),
+  );
 }
 
 /** Renderiza como Select (lista) quando a categoria expõe valores permitidos. */

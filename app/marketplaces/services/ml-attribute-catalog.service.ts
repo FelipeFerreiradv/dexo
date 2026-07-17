@@ -14,6 +14,12 @@ export interface NormalizedMLAttribute {
   variationRequired: boolean;
   allowedValues?: Array<{ id: string; name: string }>;
   valueMaxLength?: number;
+  /**
+   * Sinal do PRÓPRIO ML (tags.hidden) de que o atributo não deve aparecer no
+   * formulário. Opcional para retrocompatibilidade com o cache de 24h: linhas
+   * antigas sem o campo = undefined (falsy) = comportamento atual.
+   */
+  hidden?: boolean;
 }
 
 interface RawMLAttribute {
@@ -43,6 +49,7 @@ function normalize(raw: RawMLAttribute): NormalizedMLAttribute {
     valueType: raw.value_type || "string",
     required,
     variationRequired,
+    hidden: Boolean(tags.hidden),
     allowedValues: Array.isArray(raw.values)
       ? raw.values
           .filter((v) => v && v.id && v.name)
