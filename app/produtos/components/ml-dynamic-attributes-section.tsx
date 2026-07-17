@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,20 +18,15 @@ import {
 } from "@/components/ui/collapsible";
 import { getApiBaseUrl } from "@/lib/api";
 
-export type MLAttributeValue = {
-  value_id?: string;
-  value_name?: string;
-};
+import {
+  getVisibleAttributes,
+  isListAttribute,
+  positionNeedsInput,
+  type MLAttributeValue,
+  type MLDynamicAttribute,
+} from "./ml-dynamic-attributes.logic";
 
-export type MLDynamicAttribute = {
-  id: string;
-  name: string;
-  valueType: string;
-  required: boolean;
-  variationRequired?: boolean;
-  allowedValues?: Array<{ id: string; name: string }>;
-  valueMaxLength?: number;
-};
+export type { MLAttributeValue, MLDynamicAttribute };
 
 interface MLDynamicAttributesSectionProps {
   categoryId: string | null | undefined;
@@ -41,28 +36,6 @@ interface MLDynamicAttributesSectionProps {
   /** Override do email para o middleware. Se ausente, mantém o cookie de sessão. */
   email?: string;
 }
-
-/**
- * Atributos cobertos por outros campos do formulário (Marca, Modelo, Ano,
- * Part Number, SKU, dimensões/peso, condição). Não devem ser duplicados na
- * seção de ficha técnica para evitar input conflitante e regressões.
- */
-const FIXED_FIELD_ATTRS = new Set([
-  "BRAND",
-  "MODEL",
-  "YEAR",
-  "VEHICLE_YEAR",
-  "PART_NUMBER",
-  "MPN",
-  "OEM",
-  "SELLER_SKU",
-  "ITEM_CONDITION",
-  "POSITION",
-  "SELLER_PACKAGE_HEIGHT",
-  "SELLER_PACKAGE_WIDTH",
-  "SELLER_PACKAGE_LENGTH",
-  "SELLER_PACKAGE_WEIGHT",
-]);
 
 /**
  * Renderiza a "ficha técnica secundária" oficial da categoria do Mercado Livre
@@ -119,10 +92,24 @@ export function MLDynamicAttributesSection({
     };
   }, [categoryId, email]);
 
-  const visible = useMemo(
-    () => attrs.filter((a) => !FIXED_FIELD_ATTRS.has(a.id)),
-    [attrs],
+  const visible = useMemo(() => getVisibleAttributes(attrs), [attrs]);
+
+  // Descoberta do lado/posição: quando a categoria expõe POSITION e o operador
+  // ainda não informou, destacamos e auto-abrimos a ficha (uma vez por
+  // categoria) para o campo não passar despercebido na seção recolhida.
+  const needsPosition = useMemo(
+    () => positionNeedsInput(visible, value),
+    [visible, value],
   );
+  const autoExpandedFor = useRef<string | null>(null);
+  useEffect(() => {
+    const id = (categoryId || "").trim();
+    if (!id || autoExpandedFor.current === id) return;
+    if (needsPosition) {
+      setFichaOpen(true);
+      autoExpandedFor.current = id;
+    }
+  }, [categoryId, needsPosition]);
 
   if (!categoryId) return null;
   if (loading) {
@@ -162,6 +149,11 @@ export function MLDynamicAttributesSection({
             <span className="font-normal text-muted-foreground">
               · {visible.length} campos
             </span>
+            {needsPosition && (
+              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                Informe o lado/posição
+              </span>
+            )}
           </div>
           <div className="text-xs text-muted-foreground">
             Campos oficiais desta categoria. Os obrigatórios são marcados com{" "}
@@ -176,12 +168,7 @@ export function MLDynamicAttributesSection({
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {visible.map((attr) => {
             const current = value[attr.id] || {};
-            const isList =
-              (attr.valueType === "list" ||
-                attr.valueType === "boolean" ||
-                !!attr.allowedValues) &&
-              Array.isArray(attr.allowedValues) &&
-              attr.allowedValues.length > 0;
+            const isList = isListAttribute(attr);
 
             if (isList) {
               return (
