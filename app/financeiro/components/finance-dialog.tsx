@@ -110,9 +110,14 @@ interface FinanceDialogProps {
   // undefined/false ⇒ comportamento byte-idêntico ao atual (financeiro não
   // passa esta prop).
   forceBalcao?: boolean;
-  // PDV Balcão (aditivo): expõe a entry salva (id + paymentMethod) para o
-  // caller encadear o recebimento (POST /pay). Ausente ⇒ código morto.
-  onSavedEntry?: (entry: { id: string; paymentMethod?: string | null }) => void;
+  // PDV Balcão (aditivo): expõe a entry salva (id + paymentMethod +
+  // totalAmount, p/ regra de limite da NFC-e) para o caller encadear o
+  // recebimento (POST /pay). Ausente ⇒ código morto.
+  onSavedEntry?: (entry: {
+    id: string;
+    paymentMethod?: string | null;
+    totalAmount?: number;
+  }) => void;
 }
 
 export function FinanceDialog({

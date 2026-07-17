@@ -329,6 +329,39 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // ── NFC-e em 1 clique (Fase 2 do PDV) — cria rascunho modelo 65 e EMITE ──
+  // Chamada separada, DEPOIS do /pay: falha aqui nunca desfaz a venda.
+  // Idempotente por venda (numeroPedido="receivable:<id>" + modelo 65).
+  fastify.post(
+    "/receivables/:id/nfce",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const nfce = await useCase.emitNfceFromReceivable(id, userId);
+        return reply.status(200).send({ nfce });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao emitir NFC-e";
+        // Convenção do fiscal-draft + regras próprias da NFC-e:
+        // limite de valor → 422; pré-requisito de configuração → 400.
+        const status = message.includes("R$ 10.000")
+          ? 422
+          : message.includes("não encontrada") ||
+              message.includes("não encontrado")
+            ? 404
+            : message.includes("inválida") ||
+                message.includes("inválido") ||
+                message.includes("configurado") ||
+                message.includes("configuracao fiscal")
+              ? 400
+              : 500;
+        return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
   // ── Cupom sem validade fiscal (apenas Receivable) ──
   fastify.get(
     "/receivables/:id/receipt",

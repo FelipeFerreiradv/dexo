@@ -25,6 +25,8 @@ interface Props {
   certStatus: CertificateStatus | null;
   onCertUploaded: (status: CertificateStatus) => void;
   providerTokenConfigured: boolean;
+  // NFC-e (Fase 2): opcional — ausente ⇒ CSC tratado como não configurado.
+  cscConfigured?: boolean;
 }
 
 export function FiscalEnvironmentStep({
@@ -36,6 +38,7 @@ export function FiscalEnvironmentStep({
   certStatus,
   onCertUploaded,
   providerTokenConfigured,
+  cscConfigured = false,
 }: Props) {
   const providerName = useWatch({ control, name: "providerName" });
   const uf = useWatch({ control, name: "uf" });
@@ -122,6 +125,106 @@ export function FiscalEnvironmentStep({
             por série — você não precisa controlar manualmente.
           </p>
         </div>
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Série da NFC-e (PDV)</label>
+          <Controller
+            control={control}
+            name="serieNfce"
+            render={({ field }) => (
+              <Input
+                type="number"
+                min={1}
+                max={999}
+                value={field.value ?? 1}
+                onChange={(e) => field.onChange(Number(e.target.value))}
+              />
+            )}
+          />
+          {errors.serieNfce && (
+            <p className="text-xs text-destructive">
+              {errors.serieNfce.message}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Numeração da NFC-e (modelo 65) é independente da NF-e — a mesma
+            série pode existir nos dois modelos sem conflito.
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-sm font-medium">NCM padrão</label>
+          <Controller
+            control={control}
+            name="ncmPadrao"
+            render={({ field }) => (
+              <Input
+                {...field}
+                value={field.value ?? ""}
+                placeholder="Ex.: 87089990 (8 dígitos)"
+                maxLength={10}
+              />
+            )}
+          />
+          {errors.ncmPadrao && (
+            <p className="text-xs text-destructive">
+              {errors.ncmPadrao.message}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Autopreenche o NCM de itens sem NCM na NFC-e do PDV e ao adicionar
+            produtos na NF-e. Você sempre pode ajustar por item.
+          </p>
+        </div>
+
+        {/* CSC — obrigatório para NFC-e via SEFAZ Direto (hash do QR Code). */}
+        {isSefazDirect && (
+          <>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">CSC — Id (idCSC)</label>
+              <Controller
+                control={control}
+                name="cscId"
+                render={({ field }) => (
+                  <Input
+                    {...field}
+                    value={field.value ?? ""}
+                    placeholder="Ex.: 000001"
+                    autoComplete="off"
+                  />
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                Identificador do CSC cadastrado na SEFAZ da sua UF (NFC-e).
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">CSC — Código</label>
+              <Controller
+                control={control}
+                name="cscToken"
+                render={({ field }) => (
+                  <Input
+                    {...field}
+                    value={field.value ?? ""}
+                    type="password"
+                    placeholder={
+                      cscConfigured
+                        ? "•••••••• (CSC salvo — deixe em branco para manter)"
+                        : "Código de Segurança do Contribuinte"
+                    }
+                    autoComplete="off"
+                  />
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                {cscConfigured
+                  ? "Há um CSC salvo. Deixe em branco para mantê-lo, ou digite um novo para substituir."
+                  : "Obtido no portal da SEFAZ da sua UF. Usado no QR Code da NFC-e — nunca é exibido de volta."}
+              </p>
+            </div>
+          </>
+        )}
 
         {/* Token Focus — só quando o provedor é Focus NFe */}
         {!isSefazDirect && (

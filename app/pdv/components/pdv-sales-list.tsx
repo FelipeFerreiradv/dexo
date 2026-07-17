@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, ReceiptText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +49,9 @@ interface Props {
   loading: boolean;
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onChanged?: () => void;
+  // Fase 2 (NFC-e): quando presente, vendas PAGAs ganham o botão "NFC-e"
+  // (emitir depois/reemitir/consultar — idempotente). Ausente ⇒ UI da Fase 1.
+  onNfce?: (receivableId: string, totalAmount?: number) => Promise<void>;
 }
 
 const SHOWN = 10;
@@ -70,9 +73,26 @@ function formatWhen(iso: string) {
   })} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function PdvSalesList({ rows, loading, onToast, onChanged }: Props) {
+export function PdvSalesList({
+  rows,
+  loading,
+  onToast,
+  onChanged,
+  onNfce,
+}: Props) {
   const { data: session } = useSession();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [nfceBusyId, setNfceBusyId] = useState<string | null>(null);
+
+  const handleNfce = async (r: PdvSaleRow) => {
+    if (!onNfce) return;
+    setNfceBusyId(r.id);
+    try {
+      await onNfce(r.id, r.totalAmount);
+    } finally {
+      setNfceBusyId(null);
+    }
+  };
 
   const shown = rows.slice(0, SHOWN);
 
@@ -176,21 +196,39 @@ export function PdvSalesList({ rows, loading, onToast, onChanged }: Props) {
                     {formatToBRL(r.totalAmount)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {r.status !== "PAGA" && r.status !== "CANCELADA" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busyId === r.id}
-                        onClick={() => handleReceive(r)}
-                      >
-                        {busyId === r.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <CheckCircle2 className="h-4 w-4 text-green-600" />
-                        )}
-                        Receber
-                      </Button>
-                    )}
+                    <div className="flex items-center justify-end gap-2">
+                      {r.status !== "PAGA" && r.status !== "CANCELADA" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busyId === r.id}
+                          onClick={() => handleReceive(r)}
+                        >
+                          {busyId === r.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                          )}
+                          Receber
+                        </Button>
+                      )}
+                      {onNfce && r.status === "PAGA" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="Emitir/consultar NFC-e desta venda"
+                          disabled={nfceBusyId === r.id}
+                          onClick={() => handleNfce(r)}
+                        >
+                          {nfceBusyId === r.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ReceiptText className="h-4 w-4" />
+                          )}
+                          NFC-e
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
