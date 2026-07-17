@@ -338,6 +338,13 @@ export class DanfePdfService {
     avatar?: DanfeAvatar | null,
   ): Promise<Uint8Array> {
     const parsed = parseNfeXml(xml);
+    // NFC-e (modelo 65): delega ao renderer de cupom 80mm (Fase 2 do PDV).
+    // Branch ADITIVO — o caminho 55 abaixo segue byte-identico. Import dinamico
+    // evita ciclo de modulos (o cupom reusa projectParsedNfeToDraft daqui).
+    if (parsed.ide?.mod === "65") {
+      const { DanfeNfcePdfService } = await import("./danfe-nfce-pdf.service");
+      return new DanfeNfcePdfService().generateFromXml(xml);
+    }
     // PAR-4: DANFE so deve ser gerado para NF-e efetivamente AUTORIZADA. Se o
     // XML traz protNFe com cStat que NAO e autorizacao (100/150), recusamos —
     // gerar um "DANFE" de nota denegada (110) ou rejeitada induziria o operador

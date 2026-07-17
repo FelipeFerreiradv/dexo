@@ -22,6 +22,9 @@ import type { UF, SefazAmbiente } from "../sefaz/endpoints";
 export function createNfeProvider(
   providerName: string | null,
   ambiente: "HOMOLOGACAO" | "PRODUCAO",
+  // NFC-e (Fase 2): opcional e ADITIVO — ausente ⇒ modelo 55 (call sites
+  // existentes intactos). Só o Focus consome (path /v2/nfce).
+  opts?: { modelo?: "55" | "65" },
 ): INfeProvider {
   const amb: SefazAmbiente =
     ambiente === "PRODUCAO" ? "producao" : "homologacao";
@@ -33,7 +36,7 @@ export function createNfeProvider(
       );
     case "FOCUS_NFE":
     default:
-      return new FocusNfeProvider(amb);
+      return new FocusNfeProvider(amb, opts?.modelo ?? "55");
   }
 }
 

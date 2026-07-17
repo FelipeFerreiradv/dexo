@@ -76,6 +76,11 @@ export interface NfeDraftCreateInput {
   ambiente?: "HOMOLOGACAO" | "PRODUCAO";
   /** Série inicial do rascunho. Default 1 quando não informada. */
   serie?: number;
+  /**
+   * Modelo do documento (Fase 2 — NFC-e). Ausente ⇒ "55" (comportamento
+   * atual byte-idêntico). "65" = NFC-e emitida pelo PDV.
+   */
+  modelo?: "55" | "65";
 }
 
 export interface NfeDraftUpdateInput {

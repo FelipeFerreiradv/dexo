@@ -32,10 +32,16 @@ import {
 import {
   getSefazEndpoint,
   getSvcEndpoint,
+  getNfceEndpoint,
   COD_UF,
   type SefazAmbiente,
   type UF,
 } from "../sefaz/endpoints";
+import {
+  montarQrCodeNfce,
+  buildInfNFeSuplXml,
+  injectInfNFeSupl,
+} from "../nfce/qr-code";
 import { getTpEmisForSvc } from "../sefaz/contingencia.service";
 import {
   extractIntValue,
@@ -157,6 +163,19 @@ export class SefazDirectProvider implements INfeProvider {
       );
     }
 
+    // NFC-e (Fase 2): modelo vem do draft; ausente ⇒ "55" (fluxo atual intacto).
+    const modelo: "55" | "65" =
+      (payload.draft as any)?.modelo === "65" ? "65" : "55";
+    // NFC-e NAO tem SVC — contingencia dela e offline (tpEmis=9, fora de
+    // escopo). Guard defensivo: o use case ja pula o fallback SVC para 65.
+    if (modelo === "65" && payload.contingencia) {
+      return makeEmitErrorResult(
+        "erro",
+        "NFC-e (modelo 65) nao suporta contingencia SVC — emissao deve ser online",
+        input.ref,
+      );
+    }
+
     // 1. Build XML modelo 55 v4.00
     // Se contingencia foi solicitada, força tpEmis correspondente (6 ou 7).
     // Caso contrário, respeita payload.tpEmis (default 1 dentro do builder).
@@ -203,6 +222,34 @@ export class SefazDirectProvider implements INfeProvider {
       );
     }
 
+    // 2b. NFC-e: injeta <infNFeSupl> (QR Code + urlChave) DEPOIS da assinatura
+    // (a assinatura cobre apenas o infNFe — posicao valida pelo schema). O
+    // nfeProc arquivado carrega o QR, entao o cupom re-renderiza sem recalculo.
+    if (modelo === "65") {
+      try {
+        const cfg = payload.config as any;
+        const qr = montarQrCodeNfce({
+          chaveAcesso: built.chaveAcesso,
+          tpAmb: this.ambiente === "producao" ? "1" : "2",
+          cscId: cfg.cscId ?? "",
+          cscToken: cfg.cscToken ?? "",
+          uf: this.uf,
+          ambiente: this.ambiente,
+        });
+        signedXml = injectInfNFeSupl(
+          signedXml,
+          buildInfNFeSuplXml(qr.qrCode, qr.urlChave),
+        );
+      } catch (error) {
+        return makeEmitErrorResult(
+          "erro",
+          `Falha ao montar QR Code da NFC-e: ${(error as Error).message}`,
+          input.ref,
+          built.chaveAcesso,
+        );
+      }
+    }
+
     // 3. Wrap in SOAP envelope
     const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
     const idLote = payload.idLote ?? defaultIdLote();
@@ -213,10 +260,13 @@ export class SefazDirectProvider implements INfeProvider {
       indSinc: "1", // síncrono — recomendado NT 2018.005
     });
 
-    // 4. Send — em contingencia, roteia para SVC; senão SEFAZ origem
+    // 4. Send — em contingencia, roteia para SVC; NFC-e vai ao autorizador
+    // proprio do modelo 65; senão SEFAZ origem (55, caminho atual intacto)
     const endpoint = payload.contingencia
       ? getSvcEndpoint(this.uf, this.ambiente, "NFeAutorizacao4")
-      : getSefazEndpoint(this.uf, this.ambiente, "NFeAutorizacao4");
+      : modelo === "65"
+        ? getNfceEndpoint(this.uf, this.ambiente, "NFeAutorizacao4")
+        : getSefazEndpoint(this.uf, this.ambiente, "NFeAutorizacao4");
     let response: SoapResponse;
     try {
       response = await this.soapClient.send({
@@ -268,11 +318,12 @@ export class SefazDirectProvider implements INfeProvider {
 
     const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
     const envelope = buildConsSitNFeEnvelope({ tpAmb, chNFe: chave });
-    const endpoint = getSefazEndpoint(
-      this.uf,
-      this.ambiente,
-      "NfeConsultaProtocolo4",
-    );
+    // Modelo derivado da propria chave (posicoes 20-21): 65 consulta no
+    // autorizador NFC-e; 55 segue no endpoint atual (intacto).
+    const endpoint =
+      chave.slice(20, 22) === "65"
+        ? getNfceEndpoint(this.uf, this.ambiente, "NfeConsultaProtocolo4")
+        : getSefazEndpoint(this.uf, this.ambiente, "NfeConsultaProtocolo4");
 
     let response: SoapResponse;
     try {
@@ -328,11 +379,12 @@ export class SefazDirectProvider implements INfeProvider {
   ): Promise<NfeProviderConsultaResult> {
     const tpAmb: "1" | "2" = this.ambiente === "producao" ? "1" : "2";
     const envelope = buildConsReciNFeEnvelope({ tpAmb, nRec });
-    const endpoint = getSefazEndpoint(
-      this.uf,
-      this.ambiente,
-      "NFeRetAutorizacao4",
-    );
+    // Recibo de lote NFC-e deve ser consultado no autorizador NFC-e (modelo
+    // derivado da chave). 55 segue no endpoint atual (intacto).
+    const endpoint =
+      (chaveAcesso ?? "").replace(/\D/g, "").slice(20, 22) === "65"
+        ? getNfceEndpoint(this.uf, this.ambiente, "NFeRetAutorizacao4")
+        : getSefazEndpoint(this.uf, this.ambiente, "NFeRetAutorizacao4");
 
     let response: SoapResponse;
     try {
@@ -451,7 +503,12 @@ export class SefazDirectProvider implements INfeProvider {
       idLote: defaultIdLote(),
     });
 
-    const endpoint = getSefazEndpoint(this.uf, this.ambiente, "RecepcaoEvento4");
+    // Cancelamento de NFC-e vai ao RecepcaoEvento4 do autorizador NFC-e
+    // (modelo derivado da chave). 55 segue no endpoint atual (intacto).
+    const endpoint =
+      chave.slice(20, 22) === "65"
+        ? getNfceEndpoint(this.uf, this.ambiente, "RecepcaoEvento4")
+        : getSefazEndpoint(this.uf, this.ambiente, "RecepcaoEvento4");
     let response: SoapResponse;
     try {
       response = await this.soapClient.send({
@@ -494,6 +551,8 @@ export class SefazDirectProvider implements INfeProvider {
         ambiente: this.ambiente,
         cnpj: input.cnpj,
         ano,
+        // Inutilizacao de NFC-e (65) esta FORA de escopo da Fase 2 — este
+        // fluxo segue exclusivo do modelo 55.
         modelo: "55",
         serie: input.serie,
         nNFIni: input.numeroInicial,

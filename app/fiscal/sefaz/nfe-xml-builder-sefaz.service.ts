@@ -97,7 +97,13 @@ export class NfeXmlBuilderSefazService {
         "CompanyFiscalConfig.codMunicipio obrigatorio para SEFAZ direto",
       );
     }
-    if (!draft.destinatarioJson) {
+    // NFC-e (Fase 2): modelo vem do draft; ausente/qualquer-outro ⇒ "55"
+    // (comportamento atual byte-idêntico). TODA diferença de 65 abaixo é
+    // guardada por `modelo === "65"`.
+    const modelo: "55" | "65" = draft.modelo === "65" ? "65" : "55";
+
+    // No modelo 65 o destinatário é OPCIONAL (consumidor não identificado).
+    if (modelo !== "65" && !draft.destinatarioJson) {
       throw new Error("destinatarioJson ausente — destinatario e obrigatorio");
     }
     if (!draft.itens || draft.itens.length === 0) {
@@ -116,7 +122,7 @@ export class NfeXmlBuilderSefazService {
       ano: bp.year,
       mes: bp.month,
       cnpj,
-      modelo: "55",
+      modelo,
       serie: draft.serie,
       numero,
       tpEmis,
@@ -129,20 +135,23 @@ export class NfeXmlBuilderSefazService {
     const nfe = doc.ele("NFe", { xmlns: NFE_NS });
     const infNFe = nfe.ele("infNFe", { Id: infNFeId, versao: "4.00" });
 
-    this.buildIde(infNFe, draft, partes, dhEmi, tpEmis, config);
+    this.buildIde(infNFe, draft, partes, dhEmi, tpEmis, config, modelo);
     this.buildEmit(infNFe, config);
-    this.buildDest(infNFe, draft);
+    this.buildDest(infNFe, draft, modelo);
     draft.itens.forEach((item, idx) =>
       this.buildDet(
         infNFe,
         item,
         idx + 1,
         config.regimeTributario as RegimeTributario,
+        modelo,
+        draft.ambiente,
       ),
     );
     this.buildTotal(infNFe, draft);
-    this.buildTransp(infNFe, draft);
-    this.buildCobr(infNFe, draft);
+    this.buildTransp(infNFe, draft, modelo);
+    // <cobr> (duplicatas) nao existe no modelo 65.
+    if (modelo !== "65") this.buildCobr(infNFe, draft);
     this.buildPag(infNFe, draft);
     this.buildInfAdic(infNFe, draft);
     // <infRespTec> e o ULTIMO grupo dentro de infNFe (leiaute 4.00). Fica dentro
@@ -162,13 +171,20 @@ export class NfeXmlBuilderSefazService {
     dhEmi: Date,
     tpEmis: number,
     config: CompanyFiscalConfig,
+    modelo: "55" | "65" = "55",
   ): void {
+    const isNfce = modelo === "65";
     const tpAmb = draft.ambiente === "PRODUCAO" ? "1" : "2";
     const tpNF = draft.tipoOperacao === ("SAIDA" as TipoOperacao) ? "1" : "0";
-    const idDest =
-      DESTINO_OPERACAO_COD[draft.destinoOperacao as DestinoOperacao] ?? "1";
+    // NFC-e: operacao SEMPRE interna (idDest=1).
+    const idDest = isNfce
+      ? "1"
+      : (DESTINO_OPERACAO_COD[draft.destinoOperacao as DestinoOperacao] ?? "1");
     const indFinal = "1"; // consumidor final — pode evoluir conforme draft
-    const indPres = IND_PRESENCA_COD[draft.indPresenca as IndicadorPresenca] ?? "0";
+    // NFC-e: indPres nao pode ser 0 — fallback presencial (1).
+    const indPresMapped =
+      IND_PRESENCA_COD[draft.indPresenca as IndicadorPresenca] ?? "0";
+    const indPres = isNfce && indPresMapped === "0" ? "1" : indPresMapped;
     const finNFe = FINALIDADE_NFE_COD[draft.finalidade as FinalidadeNfe] ?? "1";
 
     const ide = parent.ele("ide");
@@ -181,14 +197,16 @@ export class NfeXmlBuilderSefazService {
     ide.ele("nNF").txt(String(Number(partes.nNF))).up();
     ide.ele("dhEmi").txt(formatDhEmi(dhEmi)).up();
 
-    if (draft.dataSaida && tpNF === "1") {
+    // dhSaiEnt NAO e permitido no modelo 65.
+    if (!isNfce && draft.dataSaida && tpNF === "1") {
       ide.ele("dhSaiEnt").txt(formatDhEmi(new Date(draft.dataSaida))).up();
     }
 
     ide.ele("tpNF").txt(tpNF).up();
     ide.ele("idDest").txt(idDest).up();
     ide.ele("cMunFG").txt(config.codMunicipio ?? "").up();
-    ide.ele("tpImp").txt("1").up(); // 1 = retrato (DANFE)
+    // tpImp: 1 = DANFE retrato (55); 4 = DANFE NFC-e (cupom).
+    ide.ele("tpImp").txt(isNfce ? "4" : "1").up();
     ide.ele("tpEmis").txt(String(tpEmis)).up();
     ide.ele("cDV").txt(partes.cDV).up();
     ide.ele("tpAmb").txt(tpAmb).up();
@@ -239,8 +257,35 @@ export class NfeXmlBuilderSefazService {
 
   // ── <dest> ──
 
-  private buildDest(parent: any, draft: NfeDraftResponse): void {
+  private buildDest(
+    parent: any,
+    draft: NfeDraftResponse,
+    modelo: "55" | "65" = "55",
+  ): void {
     const dest = draft.destinatarioJson;
+    // Modelo 65: destinatario e OPCIONAL (consumidor nao identificado —
+    // grupo <dest> simplesmente omitido). Sem CPF/CNPJ util ⇒ omite tambem.
+    if (modelo === "65") {
+      if (!dest) return;
+      const doc65 = onlyDigits(dest.cpfCnpj);
+      if (!doc65) return;
+      const destEl = parent.ele("dest");
+      if (doc65.length <= 11) {
+        destEl.ele("CPF").txt(doc65.padStart(11, "0")).up();
+      } else {
+        destEl.ele("CNPJ").txt(doc65).up();
+      }
+      // Mesma regra 598 de homologacao do 55 (literal obrigatorio no xNome).
+      const xNome65 =
+        draft.ambiente === "HOMOLOGACAO"
+          ? HOMOLOG_DEST_XNOME
+          : truncate(dest.nome, 60);
+      if (xNome65) destEl.ele("xNome").txt(xNome65).up();
+      // NFC-e: consumidor final nao contribuinte; SEM enderDest / IE.
+      destEl.ele("indIEDest").txt("9").up();
+      return;
+    }
+
     if (!dest) return; // já validado em build()
 
     const destEl = parent.ele("dest");
@@ -314,14 +359,23 @@ export class NfeXmlBuilderSefazService {
     item: NfeDraftItem,
     nItem: number,
     regime: RegimeTributario,
+    modelo: "55" | "65" = "55",
+    ambiente?: string,
   ): void {
     const det = parent.ele("det", { nItem: String(nItem) });
+
+    // NFC-e em HOMOLOGACAO: a SEFAZ exige o literal no xProd do PRIMEIRO item
+    // (equivalente da regra 598 do xNome, que no 65 pode nao ter <dest>).
+    const xProd =
+      modelo === "65" && ambiente === "HOMOLOGACAO" && nItem === 1
+        ? HOMOLOG_NFCE_XPROD
+        : truncate(item.descricao, 120);
 
     // <prod>
     const prod = det.ele("prod");
     prod.ele("cProd").txt(truncate(item.codigo, 60)).up();
     prod.ele("cEAN").txt("SEM GTIN").up();
-    prod.ele("xProd").txt(truncate(item.descricao, 120)).up();
+    prod.ele("xProd").txt(xProd).up();
     prod.ele("NCM").txt(onlyDigits(item.ncm)).up();
     if (item.cest) {
       prod.ele("CEST").txt(onlyDigits(item.cest)).up();
@@ -347,7 +401,8 @@ export class NfeXmlBuilderSefazService {
     const tributos = (item.tributosJson ?? emptyTributos()) as NfeItemTributos;
 
     this.buildIcms(imposto, item, regime, tributos);
-    this.buildIpi(imposto, item, tributos);
+    // <IPI> nao se aplica ao modelo 65 (venda a consumidor final).
+    if (modelo !== "65") this.buildIpi(imposto, item, tributos);
     this.buildPis(imposto, item, regime, tributos);
     this.buildCofins(imposto, item, regime, tributos);
   }
@@ -530,12 +585,24 @@ export class NfeXmlBuilderSefazService {
 
   // ── <transp> ──
 
-  private buildTransp(parent: any, draft: NfeDraftResponse): void {
+  private buildTransp(
+    parent: any,
+    draft: NfeDraftResponse,
+    modelo: "55" | "65" = "55",
+  ): void {
     const transp = parent.ele("transp");
-    const mod = MODALIDADE_FRETE_COD[
-      (draft.modalidadeFrete ?? "SEM_FRETE") as ModalidadeFrete
-    ] ?? "9";
+    // NFC-e: entrega no balcao — sempre sem frete (9) e sem transportadora.
+    const mod = modelo === "65"
+      ? "9"
+      : (MODALIDADE_FRETE_COD[
+          (draft.modalidadeFrete ?? "SEM_FRETE") as ModalidadeFrete
+        ] ?? "9");
     transp.ele("modFrete").txt(mod).up();
+
+    if (modelo === "65") {
+      transp.up();
+      return;
+    }
 
     const t = draft.transportadoraJson as any;
     if (t?.cpfCnpj || t?.nome) {
@@ -673,6 +740,10 @@ export class NfeXmlBuilderSefazService {
 /** Literal obrigatorio no xNome do destinatario em homologacao (Rejeicao 598). */
 const HOMOLOG_DEST_XNOME =
   "NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL";
+
+/** Literal obrigatorio no xProd do 1o item da NFC-e em homologacao. */
+const HOMOLOG_NFCE_XPROD =
+  "NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL";
 
 // ── Helpers puros ──
 

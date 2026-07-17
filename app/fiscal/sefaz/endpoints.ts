@@ -27,6 +27,18 @@ export type SefazServico =
   | "NfeInutilizacao4"
   | "RecepcaoEvento4";
 
+/**
+ * Serviços da NFC-e (modelo 65). Mesmos nomes/versões/SOAP actions da NF-e,
+ * porém hospedados em endpoints PRÓPRIOS por UF (autorizador NFC-e).
+ * Sem `NfeInutilizacao4`: inutilização de 65 está fora de escopo (Fase 2).
+ */
+export type NfceServico =
+  | "NFeAutorizacao4"
+  | "NFeRetAutorizacao4"
+  | "NfeConsultaProtocolo4"
+  | "NfeStatusServico4"
+  | "RecepcaoEvento4";
+
 export type SefazAmbiente = "homologacao" | "producao";
 
 export type UF =
@@ -514,4 +526,98 @@ export function getSvcEndpoint(
   const which = SVC_FALLBACK[uf];
   const table = which === "SVC_AN" ? SVC_AN_ENDPOINTS : SVC_RS_ENDPOINTS;
   return table[ambiente][servico];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NFC-e (modelo 65) — Fase 2 do PDV. Bloco 100% ADITIVO: nada acima muda.
+//
+// A NFC-e tem autorizadores PRÓPRIOS por UF (hosts distintos dos da NF-e 55) e
+// NÃO possui SVC — a contingência dela é offline (tpEmis=9, fora de escopo).
+//
+// Conservador de propósito: só listamos UFs cujo autorizador NFC-e foi
+// conferido (tenants atuais = SC, atendida pelo SVRS-NFC-e). UF ausente →
+// erro claro no fail-fast da emissão, nunca um host errado.
+//
+// Última conferência: 2026-07-17 (SVRS). Atualize a data ao revisar.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type NfceServicosPorAmbiente = Record<NfceServico, string>;
+
+const SVRS_NFCE_HOM: NfceServicosPorAmbiente = {
+  NFeAutorizacao4:
+    "https://nfce-homologacao.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx",
+  NFeRetAutorizacao4:
+    "https://nfce-homologacao.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx",
+  NfeConsultaProtocolo4:
+    "https://nfce-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx",
+  NfeStatusServico4:
+    "https://nfce-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx",
+  RecepcaoEvento4:
+    "https://nfce-homologacao.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx",
+};
+
+const SVRS_NFCE_PROD: NfceServicosPorAmbiente = {
+  NFeAutorizacao4:
+    "https://nfce.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx",
+  NFeRetAutorizacao4:
+    "https://nfce.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx",
+  NfeConsultaProtocolo4:
+    "https://nfce.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx",
+  NfeStatusServico4:
+    "https://nfce.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx",
+  RecepcaoEvento4:
+    "https://nfce.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx",
+};
+
+export interface NfceEndpointsUF {
+  homologacao: NfceServicosPorAmbiente;
+  producao: NfceServicosPorAmbiente;
+}
+
+/**
+ * UFs atendidas pelo SVRS-NFC-e (conferir Portal Nacional ao expandir):
+ * inclui SC (tenant base). UFs com autorizador NFC-e próprio (SP, MG, PR, MS,
+ * MT, GO, AM, BA, PE...) serão adicionadas sob demanda.
+ */
+export const NFCE_ENDPOINTS: Partial<Record<UF, NfceEndpointsUF>> = {
+  AC: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  AL: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  AP: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  DF: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  ES: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  MA: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  PB: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  PI: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  RJ: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  RN: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  RO: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  RR: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  RS: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  SC: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  SE: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+  TO: { homologacao: SVRS_NFCE_HOM, producao: SVRS_NFCE_PROD },
+};
+
+/**
+ * Retorna a URL do serviço do AUTORIZADOR NFC-e para uma UF + ambiente.
+ * UF sem tabela conferida → erro claro (fail-fast pré-numeração na emissão).
+ */
+export function getNfceEndpoint(
+  uf: UF,
+  ambiente: SefazAmbiente,
+  servico: NfceServico,
+): string {
+  const cfg = NFCE_ENDPOINTS[uf];
+  if (!cfg) {
+    throw new Error(
+      `UF ${uf} nao suportada para NFC-e — adicione o autorizador em endpoints.ts (NFCE_ENDPOINTS)`,
+    );
+  }
+  const url = cfg[ambiente][servico];
+  if (!url) {
+    throw new Error(
+      `Servico ${servico} indisponivel para NFC-e UF=${uf} ambiente=${ambiente}`,
+    );
+  }
+  return url;
 }

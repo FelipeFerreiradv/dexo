@@ -41,14 +41,24 @@ export class FocusNfeProvider implements INfeProvider {
   readonly name = "FOCUS_NFE";
 
   private ambiente: "homologacao" | "producao";
+  /**
+   * Segmento de path da API Focus: "nfe" (modelo 55, default — comportamento
+   * atual byte-idêntico) ou "nfce" (modelo 65). O Focus infere o modelo pelo
+   * path e cuida do CSC/QR Code no painel deles (nada local).
+   */
+  private readonly path: "nfe" | "nfce";
 
-  constructor(ambiente: "homologacao" | "producao" = "homologacao") {
+  constructor(
+    ambiente: "homologacao" | "producao" = "homologacao",
+    modelo: "55" | "65" = "55",
+  ) {
     this.ambiente = ambiente;
+    this.path = modelo === "65" ? "nfce" : "nfe";
   }
 
   async emitir(input: NfeProviderEmitInput): Promise<NfeProviderEmitResult> {
     const baseUrl = getBaseUrl(this.ambiente);
-    const url = `${baseUrl}/v2/nfe?ref=${encodeURIComponent(input.ref)}`;
+    const url = `${baseUrl}/v2/${this.path}?ref=${encodeURIComponent(input.ref)}`;
 
     try {
       const res = await fetch(url, {
@@ -125,7 +135,7 @@ export class FocusNfeProvider implements INfeProvider {
     token: string,
   ): Promise<NfeProviderConsultaResult> {
     const baseUrl = getBaseUrl(this.ambiente);
-    const url = `${baseUrl}/v2/nfe/${encodeURIComponent(ref)}`;
+    const url = `${baseUrl}/v2/${this.path}/${encodeURIComponent(ref)}`;
 
     try {
       const res = await fetch(url, {
@@ -171,7 +181,7 @@ export class FocusNfeProvider implements INfeProvider {
 
   async buscarXml(ref: string, token: string): Promise<string | null> {
     const baseUrl = getBaseUrl(this.ambiente);
-    const url = `${baseUrl}/v2/nfe/${encodeURIComponent(ref)}.xml`;
+    const url = `${baseUrl}/v2/${this.path}/${encodeURIComponent(ref)}.xml`;
 
     try {
       const res = await fetch(url, {
@@ -193,7 +203,7 @@ export class FocusNfeProvider implements INfeProvider {
   ): Promise<NfeProviderCancelResult> {
     const baseUrl = getBaseUrl(this.ambiente);
     // Focus cancela pelo REF usado na emissão (não pela chave de acesso)
-    const url = `${baseUrl}/v2/nfe/${encodeURIComponent(input.ref)}`;
+    const url = `${baseUrl}/v2/${this.path}/${encodeURIComponent(input.ref)}`;
 
     try {
       const res = await fetch(url, {
@@ -225,6 +235,7 @@ export class FocusNfeProvider implements INfeProvider {
     input: NfeProviderInutilizacaoInput,
   ): Promise<NfeProviderInutilizacaoResult> {
     const baseUrl = getBaseUrl(input.ambiente);
+    // Inutilizacao segue exclusiva do modelo 55 (65 fora de escopo — Fase 2).
     const url = `${baseUrl}/v2/nfe/inutilizacao`;
 
     try {

@@ -22,6 +22,11 @@ import {
   isAutoFallbackEnabled,
 } from "../fiscal/sefaz/contingencia.service";
 import type { UF } from "../fiscal/sefaz/endpoints";
+import { getNfceEndpoint } from "../fiscal/sefaz/endpoints";
+import { NFCE_LIMITE_VALOR } from "../fiscal/domain/nfce";
+import { getNfceQrUrls } from "../fiscal/nfce/nfce-urls";
+import { montarQrCodeNfce } from "../fiscal/nfce/qr-code";
+import { DanfeNfcePdfService } from "../fiscal/generators/danfe-nfce-pdf.service";
 import type {
   NfeItemInput,
   RegimeTributario,
@@ -92,6 +97,10 @@ export class NfeEmissionUseCase {
     if (draft.status !== "DRAFT" && draft.status !== "REJECTED") {
       throw new Error(`NF-e nao pode ser emitida (status: ${draft.status})`);
     }
+
+    // NFC-e (Fase 2): modelo vem do draft; ausente ⇒ "55" (pipeline atual
+    // intacto). Todos os desvios de 65 abaixo sao guardados por este valor.
+    const modelo: "55" | "65" = draft.modelo === "65" ? "65" : "55";
 
     // ── 2. Load config ──
     const config = await this.configRepo.findByUserId(userId);
@@ -202,6 +211,7 @@ export class NfeEmissionUseCase {
             userId,
             ambiente,
             draft.serie,
+            modelo,
           );
 
       // Update numero on the NFe. The draft row was created with an initial
@@ -296,7 +306,9 @@ export class NfeEmissionUseCase {
             certificadoPath: config.certificadoPath,
             certificadoSenhaEnc: config.certificadoSenhaEnc,
           })
-        : createNfeProvider(config.providerName, config.ambiente as any);
+        : createNfeProvider(config.providerName, config.ambiente as any, {
+            modelo,
+          });
 
       // Ponto-de-nao-retorno: a partir daqui a SEFAZ pode ter recebido/autorizado.
       sentToSefaz = true;
@@ -316,8 +328,10 @@ export class NfeEmissionUseCase {
         });
       }
 
-      // ── 7b. Contingencia SVC (so SEFAZ direto, opt-in via env) ──
-      if (isSefazDirect && isAutoFallbackEnabled() && config.uf) {
+      // ── 7b. Contingencia SVC (so SEFAZ direto + modelo 55, opt-in via env).
+      // NFC-e NAO tem SVC — falha de rede/SEFAZ vira nota pendente/rejeitada
+      // com reemissao manual (decisao Fase 2; contingencia offline futura). ──
+      if (isSefazDirect && modelo !== "65" && isAutoFallbackEnabled() && config.uf) {
         const decision = shouldFallbackToSvc(providerResult);
         const svcType = getSvcType(config.uf as UF);
 
@@ -618,29 +632,69 @@ export class NfeEmissionUseCase {
       throw new Error("A nota deve ter ao menos 1 produto");
     }
 
-    const dest = draft.destinatarioJson;
-    if (!dest || !dest.cpfCnpj || !dest.nome) {
-      throw new Error("Destinatario incompleto (CPF/CNPJ e nome obrigatorios)");
+    const isNfce = draft.modelo === "65";
+
+    // ── NFC-e (modelo 65): guards proprios — TODOS falham AQUI, antes do
+    // claim atomico e da reserva de numero (nenhum numero e queimado). ──
+    if (isNfce) {
+      const total =
+        Number((draft.totaisJson as any)?.totalNota) ||
+        draft.itens.reduce(
+          (acc, it) => acc + (Number(it.valorTotal) || 0),
+          0,
+        );
+      if (total > NFCE_LIMITE_VALOR) {
+        throw new Error(
+          "NFC-e limitada a R$ 10.000,00 — emita pela NF-e (modelo 55)",
+        );
+      }
+      const pagamentos = (draft.pagamentosJson as any[]) ?? [];
+      if (pagamentos.length === 0) {
+        throw new Error("NFC-e exige ao menos uma forma de pagamento");
+      }
+      if (config.providerName === "SEFAZ_DIRECT") {
+        if (!config.cscId || !config.cscToken) {
+          throw new Error(
+            "CSC nao configurado — informe Id e Codigo do CSC na configuracao fiscal para emitir NFC-e",
+          );
+        }
+        // Fail-fast de UF suportada: autorizador NFC-e + URLs do QR Code.
+        const amb =
+          config.ambiente === "PRODUCAO" ? "producao" : "homologacao";
+        getNfceEndpoint(config.uf as UF, amb as any, "NFeAutorizacao4");
+        getNfceQrUrls(config.uf as UF, amb as any);
+      }
     }
 
-    // Endereco do destinatario e OBRIGATORIO para NFe modelo 55 nacional
-    // (so dispensavel para EXTERIOR). Validamos localmente para dar uma
-    // mensagem clara em vez da rejeicao generica da SEFAZ "NF-e sem a
-    // informacao de endereco do destinatario". O cMun (codigo IBGE 7 digitos)
-    // costuma ser o campo faltante.
-    if (dest.tipoPessoa !== "EXTERIOR") {
-      const faltantes: string[] = [];
-      if (!dest.logradouro) faltantes.push("logradouro");
-      if (!dest.numero) faltantes.push("numero");
-      if (!dest.bairro) faltantes.push("bairro");
-      if (!dest.municipio) faltantes.push("municipio");
-      if (!dest.codMunicipio) faltantes.push("codigo IBGE do municipio (cMun)");
-      if (!dest.uf) faltantes.push("UF");
-      if (!dest.cep) faltantes.push("CEP");
-      if (faltantes.length > 0) {
+    const dest = draft.destinatarioJson;
+    // NFC-e: destinatario OPCIONAL (consumidor nao identificado). Quando
+    // presente, basta CPF/CNPJ — endereco dispensado no modelo 65.
+    if (!isNfce) {
+      if (!dest || !dest.cpfCnpj || !dest.nome) {
         throw new Error(
-          `Endereco do destinatario incompleto. Preencha no cadastro do cliente: ${faltantes.join(", ")}.`,
+          "Destinatario incompleto (CPF/CNPJ e nome obrigatorios)",
         );
+      }
+
+      // Endereco do destinatario e OBRIGATORIO para NFe modelo 55 nacional
+      // (so dispensavel para EXTERIOR). Validamos localmente para dar uma
+      // mensagem clara em vez da rejeicao generica da SEFAZ "NF-e sem a
+      // informacao de endereco do destinatario". O cMun (codigo IBGE 7 digitos)
+      // costuma ser o campo faltante.
+      if (dest.tipoPessoa !== "EXTERIOR") {
+        const faltantes: string[] = [];
+        if (!dest.logradouro) faltantes.push("logradouro");
+        if (!dest.numero) faltantes.push("numero");
+        if (!dest.bairro) faltantes.push("bairro");
+        if (!dest.municipio) faltantes.push("municipio");
+        if (!dest.codMunicipio) faltantes.push("codigo IBGE do municipio (cMun)");
+        if (!dest.uf) faltantes.push("UF");
+        if (!dest.cep) faltantes.push("CEP");
+        if (faltantes.length > 0) {
+          throw new Error(
+            `Endereco do destinatario incompleto. Preencha no cadastro do cliente: ${faltantes.join(", ")}.`,
+          );
+        }
       }
     }
 
@@ -653,7 +707,14 @@ export class NfeEmissionUseCase {
     // ("CFOP de saida para NF-e de entrada" / vice-versa). Validamos localmente.
     const ehSaida = draft.tipoOperacao === "SAIDA";
     for (const item of draft.itens) {
-      if (!item.ncm) throw new Error(`Item "${item.descricao}" sem NCM`);
+      if (!item.ncm) {
+        // NFC-e (1 clique do PDV): mensagem acionavel apontando o NCM padrao.
+        throw new Error(
+          isNfce
+            ? `Item "${item.descricao}" sem NCM — cadastre o NCM ou defina o "NCM padrao" na configuracao fiscal`
+            : `Item "${item.descricao}" sem NCM`,
+        );
+      }
       if (!item.cfop) throw new Error(`Item "${item.descricao}" sem CFOP`);
       const cfop1 = String(item.cfop).replace(/\D/g, "").charAt(0);
       const cfopEhSaida = cfop1 === "5" || cfop1 === "6" || cfop1 === "7";
@@ -755,13 +816,44 @@ export class NfeEmissionUseCase {
       }
       if (!pdfBytes) {
         const nfeData = await this.loadNfe(nfeId);
-        pdfBytes = await this.danfeService.generate(
-          nfeData,
-          config,
-          chaveAcesso,
-          protocolo,
-          danfeAvatar,
-        );
+        if (nfeData.modelo === "65") {
+          // Cupom NFC-e (fallback sem XML inline): QR recomputado quando ha
+          // CSC local (SEFAZ direto); sem CSC (Focus) o cupom sai sem a imagem
+          // QR — o dado fiscal canonico esta no XML autorizado.
+          let qr: { qrCode: string; urlChave: string } | null = null;
+          try {
+            if (config.cscId && config.cscToken && config.uf) {
+              qr = montarQrCodeNfce({
+                chaveAcesso,
+                tpAmb: nfeData.ambiente === "PRODUCAO" ? "1" : "2",
+                cscId: config.cscId,
+                cscToken: config.cscToken,
+                uf: config.uf as UF,
+                ambiente:
+                  nfeData.ambiente === "PRODUCAO" ? "producao" : "homologacao",
+              });
+            }
+          } catch {
+            qr = null;
+          }
+          pdfBytes = await new DanfeNfcePdfService().generate({
+            draft: nfeData,
+            config,
+            chaveAcesso,
+            protocolo,
+            dataAutorizacao,
+            qrCode: qr?.qrCode ?? null,
+            urlChave: qr?.urlChave ?? null,
+          });
+        } else {
+          pdfBytes = await this.danfeService.generate(
+            nfeData,
+            config,
+            chaveAcesso,
+            protocolo,
+            danfeAvatar,
+          );
+        }
       }
       danfePdfPath = await this.storage.saveDanfePdf(userId, nfeId, pdfBytes);
     } catch {
