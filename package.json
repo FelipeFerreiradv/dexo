@@ -18,6 +18,7 @@
     "scan:ml:family": "tsx scripts/scan-ml-family-name.ts",
     "backfill:listingIds": "tsx scripts/backfill-listing-ids.ts",
     "backfill:partNumberNormalized": "tsx scripts/backfill-part-number-normalized.ts",
+    "backfill:mlPosition": "tsx scripts/backfill-ml-position.ts",
     "fix:mlImageSize": "tsx scripts/fix-ml-product-image-size.ts",
     "sync:listingMetrics": "tsx scripts/sync-listing-metrics.ts",
     "sync:listingMetrics:loop": "tsx scripts/sync-listing-metrics-loop.ts",
