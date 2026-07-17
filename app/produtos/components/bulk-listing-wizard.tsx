@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Megaphone,
   Settings2,
@@ -214,6 +214,11 @@ export function BulkListingWizard({
   const [retrying, setRetrying] = useState(false);
   const [finishedNotified, setFinishedNotified] = useState(false);
   const [preflightLoading, setPreflightLoading] = useState(false);
+  // Guardas por REF (imunes a stale-closure em código assíncrono): uma única
+  // finalização da revisão em voo; e nenhum modal de confirmação reaberto
+  // depois que um job desta sessão já foi disparado.
+  const finalizeInFlightRef = useRef(false);
+  const jobStartedRef = useRef(false);
   const [preflightIssues, setPreflightIssues] = useState<
     Array<{
       productId: string;
@@ -300,6 +305,8 @@ export function BulkListingWizard({
       setParentJobIdForRetry(null);
       setFinishedNotified(false);
       setPreflightIssues([]);
+      finalizeInFlightRef.current = false;
+      jobStartedRef.current = false;
       setMlOptions([]);
       setShopeeOptions([]);
       ppResetAll();
@@ -641,6 +648,27 @@ export function BulkListingWizard({
       // Avança produto a produto; só confirma no último.
       const advanced = ppGoNext();
       if (advanced) return;
+      // REENTRÂNCIA/IDEMPOTÊNCIA: o caminho abaixo é assíncrono (re-preflight
+      // no servidor). Com servidor lento + cliques repetidos no Finalizar,
+      // várias invocações ficavam em voo e cada uma reabria o modal de
+      // confirmação — inclusive DEPOIS do job já disparado, gerando um 2º job
+      // que a Shopee rejeitava como duplicata (e que sobrescrevia o status
+      // das linhas criadas com sucesso pelo 1º). Uma invocação por vez; nada
+      // reabre o modal depois que um job desta sessão começou.
+      if (finalizeInFlightRef.current || submitting || jobId) return;
+      finalizeInFlightRef.current = true;
+      try {
+        await runFinalizePreflightAndConfirm();
+      } finally {
+        finalizeInFlightRef.current = false;
+      }
+      return;
+    }
+  };
+
+  /** Passo final da revisão: re-preflight com as categorias efetivas + gate. */
+  const runFinalizePreflightAndConfirm = async () => {
+    {
       // Re-roda o preflight com as categorias EFETIVAS da revisão (as mesmas
       // que o dispatch envia via perProductOverrides). O preflight da entrada
       // da etapa validou a categoria PERSISTIDA no produto — para produto
@@ -658,6 +686,9 @@ export function BulkListingWizard({
         if (cat) categoryOverrides[productId] = cat;
       }
       const freshIssues = await runPreflight(categoryOverrides);
+      // Se um job já começou enquanto o preflight estava em voo, NUNCA reabrir
+      // a confirmação (era o mecanismo do duplo-submit em servidor lento).
+      if (jobStartedRef.current) return;
       // Produto excluído da Shopee nesta revisão não vai para a Shopee — o
       // issue dele (pela persistida) não pode bloquear o lote.
       const blockingIssues = freshIssues.filter(
@@ -700,6 +731,12 @@ export function BulkListingWizard({
   };
 
   const handleSubmit = async () => {
+    // Idempotência: um job por sessão do wizard (o retry-failed tem botão
+    // próprio). Cliques repetidos no "Sim" — ou um modal reaberto por engano —
+    // não podem disparar um 2º job (a Shopee rejeita como duplicata e o
+    // fracasso sobrescreve as linhas criadas com sucesso pelo 1º).
+    if (submitting || jobStartedRef.current) return;
+    jobStartedRef.current = true;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -745,6 +782,8 @@ export function BulkListingWizard({
       setStep(4);
       onJobStarted?.(data.jobId as string);
     } catch (e) {
+      // Falha ao INICIAR o job → nenhum job existe; libera nova tentativa.
+      jobStartedRef.current = false;
       setSubmitError(e instanceof Error ? e.message : "Erro ao iniciar job");
     } finally {
       setSubmitting(false);
@@ -1022,7 +1061,10 @@ export function BulkListingWizard({
             <StepperFooter
               currentStep={step}
               totalSteps={3}
-              isSubmitting={submitting}
+              // preflightLoading: o Finalizar re-valida no servidor antes de
+              // confirmar — desabilita o botão enquanto valida (servidor lento
+              // + cliques repetidos geravam confirmações e jobs duplicados).
+              isSubmitting={submitting || preflightLoading}
               onBack={handleReviewBack}
               onNext={handleReviewNext}
               onSubmit={handleReviewNext}
