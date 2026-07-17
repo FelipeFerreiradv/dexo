@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { hasPageAccess } from "@/app/lib/page-access";
+import { hasPageAccess, PAGE_DEFS } from "@/app/lib/page-access";
 
 const admin = { parentUserId: null, role: "ADMIN" as const };
 const superadmin = { parentUserId: null, role: "SUPERADMIN" as const };
@@ -45,5 +45,23 @@ describe("hasPageAccess", () => {
 
   it("dashboard é SEMPRE acessível (anti-loop), mesmo se marcado false", () => {
     expect(hasPageAccess(collab({ dashboard: false }), "dashboard")).toBe(true);
+  });
+});
+
+// PDV Balcão — PageId "pdv" aditivo. Blocos NOVOS (os acima ficam intocados).
+describe("PageId 'pdv' (PDV Balcão — aditivo)", () => {
+  it("PAGE_DEFS contém 'pdv' (toggle do admin em /colaboradores aparece sozinho)", () => {
+    expect(PAGE_DEFS.some((p) => p.id === "pdv")).toBe(true);
+  });
+
+  it("colaborador com perms legado (objeto sem a chave 'pdv') → liberado", () => {
+    expect(hasPageAccess(collab({ financeiro: false }), "pdv")).toBe(true);
+  });
+
+  it("colaborador com pdv=false → bloqueado; admin ignora o mapa", () => {
+    expect(hasPageAccess(collab({ pdv: false }), "pdv")).toBe(false);
+    expect(
+      hasPageAccess({ ...admin, pagePermissions: { pdv: false } }, "pdv"),
+    ).toBe(true);
   });
 });
