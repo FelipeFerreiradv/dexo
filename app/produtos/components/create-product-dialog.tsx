@@ -1003,38 +1003,55 @@ export function CreateProductDialog({
   }, [watchCostPrice, watchPrice, setValue]);
 
   // Lazy-load ML categories only when user navigates to ML step (avoids 12k+ item fetch on dialog open)
-  // Guarda o MODO de nicho já carregado (null = nunca; false = filtrado;
-  // true = todas). Recarrega quando o operador liga/desliga "mostrar todas".
+  // Guarda o MODO de nicho já carregado (null = nada válido; false = filtrado;
+  // true = todas). Só re-busca quando o modo desejado difere do carregado —
+  // REABRIR o modal com a lista de nicho já carregada NÃO re-busca (paridade
+  // com o comportamento original de buscar uma única vez). Falha, lista vazia
+  // ou descarte em voo invalidam o ref para a próxima passada re-tentar
+  // (paridade com o retry-após-falha original).
   const mlCategoriesLoadedRef = useRef<boolean | null>(null);
   useEffect(() => {
+    if (!open) return;
     if (!(currentStep === 6 || watchCreateMLListing)) return;
     if (mlCategoriesLoadedRef.current === mlShowAllCats) return;
-    mlCategoriesLoadedRef.current = mlShowAllCats;
+    const mode = mlShowAllCats;
+    mlCategoriesLoadedRef.current = mode; // guard de voo (evita fetch duplo)
+    let settled = false;
     let cancelled = false;
     (async () => {
       try {
         const base = getApiBaseUrl();
-        const url = `${base}/marketplace/ml/categories${mlShowAllCats ? "?all=1" : ""}`;
+        const url = `${base}/marketplace/ml/categories${mode ? "?all=1" : ""}`;
         const respCat = await fetch(url, {
           headers: { email: session?.user?.email || "" },
         });
-        if (respCat.ok) {
-          const catJson = await respCat.json();
-          const cats = Array.isArray(catJson?.categories)
-            ? catJson.categories
-            : [];
-          if (!cancelled && cats.length > 0) {
-            setMlOptions(cats);
-          }
+        const catJson = respCat.ok ? await respCat.json() : null;
+        const cats = Array.isArray(catJson?.categories)
+          ? catJson.categories
+          : [];
+        settled = true;
+        if (cancelled) return;
+        if (cats.length > 0) {
+          setMlOptions(cats);
+        } else {
+          mlCategoriesLoadedRef.current = null; // falha/vazio → retry depois
         }
       } catch (catErr) {
-        console.error("Erro ao buscar categorias ML:", catErr);
+        settled = true;
+        if (!cancelled) {
+          mlCategoriesLoadedRef.current = null;
+          console.error("Erro ao buscar categorias ML:", catErr);
+        }
       }
     })();
     return () => {
       cancelled = true;
+      // Resposta descartada em voo: sem isto o ref ficaria marcado como
+      // carregado sem os dados terem chegado (dropdown preso no fallback).
+      if (!settled) mlCategoriesLoadedRef.current = null;
     };
   }, [
+    open,
     mlShowAllCats,
     currentStep,
     watchCreateMLListing,
@@ -1044,7 +1061,9 @@ export function CreateProductDialog({
   // Reset lazy-load flag when dialog closes
   useEffect(() => {
     if (!open) {
-      mlCategoriesLoadedRef.current = null;
+      // NÃO invalida mlCategoriesLoadedRef aqui: com o nicho carregado, o
+      // reopen reaproveita a lista (zero fetch). Se o toggle estava em
+      // "todas", ref(true) !== false já força a re-busca do nicho no reopen.
       setMlShowAllCats(false);
       shopeeCategoriesLoadedRef.current = false;
       magaluSuggestedRef.current = false;

@@ -475,17 +475,23 @@ small{color:#666}</style></head><body>
         // (getVehicleRootSet). Fail-open: árvore não sincronizada (set vazio)
         // → não filtra, não trava o usuário. Escape hatch: ?all=1.
         if (!showAll) {
-          const set = await getVehicleRootSet("MLB");
-          if (set.size > 0) {
-            const niche = list.filter((c: any) => {
-              const extId = c.externalId || c.id;
-              if (!set.has(extId)) return false;
-              const p = normalizePath(c.fullPath || c.name || "");
-              return !ML_BLOCKED_BRANCHES.some((b) => p.includes(b));
-            });
-            // fail-open-to-raw: se o filtro esvaziaria uma lista não-vazia
-            // (árvore parcial/dessincronizada), devolve a lista crua.
-            if (niche.length > 0) list = niche;
+          try {
+            const set = await getVehicleRootSet("MLB");
+            if (set.size > 0) {
+              const niche = list.filter((c: any) => {
+                const extId = c.externalId || c.id;
+                if (!set.has(extId)) return false;
+                const p = normalizePath(c.fullPath || c.name || "");
+                return !ML_BLOCKED_BRANCHES.some((b) => p.includes(b));
+              });
+              // fail-open-to-raw: se o filtro esvaziaria uma lista não-vazia
+              // (árvore parcial/dessincronizada), devolve a lista crua.
+              if (niche.length > 0) list = niche;
+            }
+          } catch {
+            // fail-open: falha transitória ao montar o set veicular não pode
+            // derrubar a listagem — devolve a lista crua (mesma filosofia da
+            // sugestão, que faz skipCache/sem-filtro no throw).
           }
         }
         // Normalizar para o formato esperado pelo front: { id, value }
