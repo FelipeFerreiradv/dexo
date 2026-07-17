@@ -40,16 +40,43 @@ const DOOR_CATEGORIES = new Set(["MLB101763", "MLB458642"]);
 const APPLY = process.env.POSITION_BACKFILL === "apply";
 const APPLY_DELAY_MS = 250; // respeita rate-limit do ML entre PUTs
 
+/** Remove sufixos internos "-NN" (ids sintéticos do front persistidos em
+ * produtos antigos) — paridade com a normalização do fluxo de criação. Sem
+ * isto, "MLB101763-01" não casaria DOOR_CATEGORIES nem o --category=. */
+const normalizeCategoryId = (id: unknown): string | null => {
+  const s = id === null || id === undefined ? "" : String(id).trim();
+  if (!s) return null;
+  return s.replace(/-\d+$/, "");
+};
+
 const args = process.argv.slice(2);
 const getArg = (name: string) =>
   args.find((a) => a.startsWith(`--${name}=`))?.split("=")[1] ?? null;
 const userId = getArg("user");
 const accountIdOverride = getArg("account-id");
 const accountNameOverride = getArg("account-name");
-const allAccounts = args.includes("--all-accounts") || !accountIdOverride && !accountNameOverride;
-const categoryFilter = getArg("category");
+if (
+  args.includes("--all-accounts") &&
+  (accountIdOverride || accountNameOverride)
+) {
+  console.error(
+    "[backfill-position] --all-accounts não combina com --account-id/--account-name.",
+  );
+  process.exit(1);
+}
+const allAccounts =
+  args.includes("--all-accounts") ||
+  (!accountIdOverride && !accountNameOverride);
+const categoryFilter = normalizeCategoryId(getArg("category"));
 const skipSold = args.includes("--skip-sold");
-const limit = Number(getArg("limit") ?? "0") || 0;
+// --limit inválido NÃO pode degradar silenciosamente para "sem teto" (em
+// APPLY isso removeria o limite de segurança): valida e aborta.
+const limitRaw = getArg("limit");
+const limit = limitRaw === null ? 0 : Number(limitRaw);
+if (limitRaw !== null && (!Number.isFinite(limit) || limit < 0)) {
+  console.error(`[backfill-position] --limit inválido: ${limitRaw}`);
+  process.exit(1);
+}
 
 interface PosValue {
   value_id?: string;
@@ -93,11 +120,23 @@ function currentPosition(item: any): PosValue | null {
   return { value_id: p.value_id ?? undefined, value_name: p.value_name ?? undefined };
 }
 
-/** Igualdade: por value_id quando o pretendido tem id; senão por value_name. */
+const normPos = (s?: string) =>
+  (s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toLowerCase();
+
+/** Igualdade: por value_id quando AMBOS têm id; senão por value_name
+ * NORMALIZADO (case/acento-insensível). O ML canonicaliza value_name (ex.:
+ * "dianteira" → "Dianteira") — comparação exata marcaria "mudaria=SIM"
+ * perpétuo e geraria PUT redundante em toda execução apply. */
 function samePosition(intended: PosValue, current: PosValue | null): boolean {
   if (!current) return false;
-  if (intended.value_id) return intended.value_id === current.value_id;
-  return (intended.value_name || "") === (current.value_name || "");
+  if (intended.value_id && current.value_id)
+    return intended.value_id === current.value_id;
+  const a = normPos(intended.value_name);
+  return a !== "" && a === normPos(current.value_name);
 }
 
 const tokenCache = new Map<string, string>();
@@ -220,8 +259,9 @@ async function main(): Promise<void> {
       if (limit && scanned >= limit) break outer;
       const itemId = listing.externalListingId;
       const eff = applyOverridesToProduct(product as any, listing as any);
-      const resolvedCategoryId =
-        (eff as any).mlCategoryId || (eff as any).mlCategory || null;
+      const resolvedCategoryId = normalizeCategoryId(
+        (eff as any).mlCategoryId || (eff as any).mlCategory || null,
+      );
 
       if (categoryFilter && resolvedCategoryId !== categoryFilter) continue;
       scanned++;
@@ -267,8 +307,19 @@ async function main(): Promise<void> {
       const soldQty = Number(item?.sold_quantity ?? 0);
       const current = currentPosition(item);
 
+      // Dono do item: o token já é o da conta dona da linha, mas conferimos
+      // explicitamente o seller_id do item vivo contra o externalUserId da
+      // conta antes de qualquer PUT (defesa extra contra vínculo corrompido).
+      const accExternalUserId = (listing.marketplaceAccount as any)
+        .externalUserId as string | null | undefined;
+      const ownerMismatch =
+        !!accExternalUserId &&
+        item?.seller_id != null &&
+        String(item.seller_id) !== String(accExternalUserId);
+
       let skipReason = "";
-      if (liveStatus !== "active") skipReason = `status=${liveStatus}`;
+      if (ownerMismatch) skipReason = "dono-divergente";
+      else if (liveStatus !== "active") skipReason = `status=${liveStatus}`;
       else if (skipSold && soldQty > 0) skipReason = `sold=${soldQty}`;
       else if (samePosition(intended, current)) skipReason = "ja-igual";
 
