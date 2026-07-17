@@ -136,6 +136,17 @@ vi.mock("../app/marketplaces/repositories/category.repository", () => ({
   default: { listWithParents: mockListWithParents },
 }));
 
+// Este spec testa o scoring de ALIAS/KEYWORD isolado. A inferência por tipo de
+// peça (camada nova, coberta em category-suggestion-fusion.spec.ts) fica muda
+// aqui — sem isso, o mapa curado real reconhece "porta"/"amortecedor" e
+// aumentaria a confiança, mudando o que este spec quer medir (além de tocar o
+// prisma real do engine em ambiente de teste).
+vi.mock("../app/marketplaces/lib/category-inference/engine", () => ({
+  CategoryInferenceEngine: {
+    collectVotes: vi.fn(async () => ({ votes: [], pieceType: null })),
+  },
+}));
+
 import CategorySuggestionService from "../app/marketplaces/services/category-suggestion.service";
 
 function clearCaches() {

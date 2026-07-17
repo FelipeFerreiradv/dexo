@@ -1,6 +1,12 @@
 import { parseTitleToFields } from "@/app/lib/product-parser";
 import CategoryRepository from "../repositories/category.repository";
 import CategoryAliasRepository from "../repositories/category-alias.repository";
+import {
+  CategoryInferenceEngine,
+  type CategoryInferenceResult,
+} from "../lib/category-inference/engine";
+import { fuseVotes, shouldAutoApply } from "../lib/category-inference/fuse";
+import type { CategoryVote } from "../lib/category-inference/types";
 
 type AttributeSuggestion = {
   brand?: string;
@@ -20,7 +26,12 @@ export type CategorySuggestion = {
   categoryId: string;
   fullPath: string;
   score: number;
-  source: "alias" | "keyword";
+  /**
+   * "curated"  = mapa tipo-de-peça → categoria (inferência, Sinal A);
+   * "internal" = moda da base interna/CatalogStat (inferência, Sinal B).
+   * O front tipa como string — ampliar o union é aditivo.
+   */
+  source: "alias" | "keyword" | "curated" | "internal";
   attributes?: AttributeSuggestion;
   measurements?: MeasurementSuggestion;
   title?: string;
@@ -880,11 +891,6 @@ export class CategorySuggestionService {
     const normalizedTitle = this.normalize(title);
     const tokens = this.tokenize(title);
 
-    // ── Guard: titles too short for keyword-only matching (SHP has no aliases) ──
-    if (tokens.length < 2 && siteId !== "MLB") {
-      return { normalizedTitle, tokens, suggestions: [] };
-    }
-
     // ── Result cache (siteId + normalizedTitle) ──
     // suggestFromTitle is pure relative to its caches (aliases/categories are
     // invalidated via loadCategories/loadAliases when data changes), so the
@@ -898,6 +904,31 @@ export class CategorySuggestionService {
       Date.now() - cached.cachedAt < this.SUGGEST_CACHE_TTL_MS
     ) {
       return cached.result;
+    }
+
+    // ── Inferência por tipo de peça (Sinal A: mapa curado; B: base interna) ──
+    // Fail-open por construção: qualquer erro → sem votos → comportamento
+    // atual intacto. Kill-switch de emergência: CATEGORY_INFERENCE_DISABLED=1
+    // (o cache de resultado de 1h atrasa o flip; emergência pede restart).
+    let inference: CategoryInferenceResult = { votes: [], pieceType: null };
+    if (process.env.CATEGORY_INFERENCE_DISABLED !== "1") {
+      try {
+        inference = await CategoryInferenceEngine.collectVotes(siteId, title);
+      } catch {
+        // O engine já é fail-open por dentro; este catch é cinto-e-suspensório
+        // para o endpoint nunca cair por causa da inferência.
+      }
+    }
+
+    // ── Guard: titles too short for keyword-only matching (SHP has no aliases) ──
+    // Com voto de inferência ("Farol" tem 1 token mas tipo conhecido) o fluxo
+    // segue; sem voto, retorna vazio exatamente como antes.
+    if (
+      tokens.length < 2 &&
+      siteId !== "MLB" &&
+      inference.votes.length === 0
+    ) {
+      return { normalizedTitle, tokens, suggestions: [] };
     }
 
     const aliasEntries = await this.loadAliases(siteId);
@@ -1182,6 +1213,85 @@ export class CategorySuggestionService {
           reasons: ["fallback: árvore automotiva"],
         });
         picked++;
+      }
+    }
+
+    // ── Fusão dos sinais de inferência com as sugestões atuais ──
+    // Aditivo por construção: sugestão existente só pode GANHAR confiança
+    // (max) ou autoApply (OR) — nunca é removida nem rebaixada. Candidato novo
+    // passa pelos MESMOS filtros de folha e domínio do fluxo atual.
+    if (inference.votes.length > 0) {
+      try {
+        const allVotes: CategoryVote[] = [...inference.votes];
+        for (const s of suggestions.values()) {
+          const strength = Math.max(0, Math.min(1, s.confidence ?? 0));
+          if (strength <= 0) continue;
+          allVotes.push({
+            externalId: s.categoryId,
+            strength,
+            signal: s.source === "alias" ? "alias" : "keyword",
+            reason: "",
+          });
+        }
+
+        for (const cand of fuseVotes(allVotes)) {
+          // Sem sinal NOVO votando nesta categoria não há nada a acrescentar
+          // (só alias/keyword refundidos = o que a lista já diz).
+          const hasNewSignal = cand.signals.some(
+            (sig) => sig === "part-type-map" || sig === "catalog-stat",
+          );
+          if (!hasNewSignal) continue;
+
+          const leaf = this.ensureLeafLocal(
+            cand.externalId,
+            categories,
+            parentMaps,
+          );
+          if (!leaf?.externalId) continue;
+          if (detectedDomain === "automotive") {
+            const leafNorm = this.normalize(leaf.fullPath || leaf.name);
+            if (this.isDomainIncompatible(detectedDomain, leafNorm, true))
+              continue;
+          }
+
+          const fusedScore = Math.round(cand.confidence * 12 * 100) / 100;
+          const existing = suggestions.get(leaf.externalId);
+          if (existing) {
+            existing.confidence = Math.max(
+              existing.confidence ?? 0,
+              cand.confidence,
+            );
+            existing.autoApply = existing.autoApply || shouldAutoApply(cand);
+            existing.score = Math.max(existing.score, fusedScore);
+            const reasons = existing.reasons ?? [];
+            for (const r of cand.reasons) {
+              if (!reasons.includes(r)) reasons.push(r);
+            }
+            existing.reasons = reasons;
+            if (!existing.pieceType && inference.pieceType) {
+              existing.pieceType = inference.pieceType;
+            }
+          } else {
+            suggestions.set(leaf.externalId, {
+              categoryId: leaf.externalId,
+              fullPath: leaf.fullPath || leaf.name,
+              score: fusedScore,
+              source: cand.signals.includes("part-type-map")
+                ? "curated"
+                : "internal",
+              attributes: baseAttr,
+              confidence: cand.confidence,
+              autoApply: shouldAutoApply(cand),
+              reasons: cand.reasons,
+              pieceType: inference.pieceType ?? undefined,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "[CategorySuggestionService] fusão de inferência falhou (fail-open):",
+          err,
+        );
       }
     }
 
