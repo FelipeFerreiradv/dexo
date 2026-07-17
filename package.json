@@ -36,6 +36,7 @@
     "shopee:recategorize": "tsx scripts/recategorize-shopee-products.ts",
     "import:scraps": "tsx scripts/import-scraps-from-xlsx.ts",
     "stats:catalog": "tsx scripts/build-catalog-stats.ts",
+    "map:part-type-categories": "tsx scripts/build-part-type-category-map.ts",
     "migracao:vaapt": "tsx scripts/migracao-vaapt.ts",
     "migracao:ibr": "tsx scripts/migracao-ibr.ts"
   },
