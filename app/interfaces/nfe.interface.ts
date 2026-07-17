@@ -223,6 +223,8 @@ export interface NfeListItem {
   id: string;
   orderId: string | null;
   ambiente: string;
+  // "55" (NF-e) | "65" (NFC-e). Opcional para não quebrar fixtures antigas.
+  modelo?: string;
   serie: number;
   numero: number;
   chaveAcesso: string | null;

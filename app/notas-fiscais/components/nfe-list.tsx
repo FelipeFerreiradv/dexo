@@ -67,6 +67,8 @@ interface NfeListItem {
   id: string;
   orderId: string | null;
   ambiente: string;
+  // "55" (NF-e) | "65" (NFC-e); ausente em respostas antigas ⇒ NF-e.
+  modelo?: string;
   serie: number;
   numero: number;
   chaveAcesso: string | null;
@@ -578,7 +580,17 @@ export function NfeList() {
                     {notas.map((nota) => (
                       <TableRow key={nota.id}>
                         <TableCell className="font-mono text-sm font-medium">
-                          {nota.numero || "—"}
+                          <span className="inline-flex items-center gap-1.5">
+                            {nota.numero || "—"}
+                            {nota.modelo === "65" && (
+                              <Badge
+                                variant="outline"
+                                className="px-1.5 py-0 font-sans text-[10px] font-medium text-muted-foreground"
+                              >
+                                NFC-e
+                              </Badge>
+                            )}
+                          </span>
                         </TableCell>
                         <TableCell className="text-sm">{nota.serie}</TableCell>
                         <TableCell className="max-w-[180px]">
