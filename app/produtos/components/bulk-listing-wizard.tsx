@@ -509,10 +509,19 @@ export function BulkListingWizard({
     return hasMeaningful ? t : null;
   };
 
-  const runPreflight = async () => {
+  /**
+   * Valida as categorias Shopee no servidor. `categoryOverrides` (Revisão
+   * individual) envia a categoria EFETIVA por produto — a que o dispatch vai
+   * usar — para o preflight não reprovar pela persistida desatualizada.
+   * RETORNA os issues para o caller decidir sobre o resultado FRESCO (o state
+   * é assíncrono e serve só para a UI).
+   */
+  const runPreflight = async (
+    categoryOverrides?: Record<string, string>,
+  ): Promise<Array<{ productId: string; code: string; message: string }>> => {
     if (selectedShopeeIds.size === 0) {
       setPreflightIssues([]);
-      return;
+      return [];
     }
     setPreflightLoading(true);
     try {
@@ -525,13 +534,18 @@ export function BulkListingWizard({
         body: JSON.stringify({
           shopeeAccountId: firstShopee,
           productIds: selectedProducts.map((p) => p.id),
+          ...(categoryOverrides && Object.keys(categoryOverrides).length > 0
+            ? { categoryOverrides }
+            : {}),
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data?.message || data?.error || "Falha no preflight");
       }
-      setPreflightIssues(Array.isArray(data?.issues) ? data.issues : []);
+      const issues = Array.isArray(data?.issues) ? data.issues : [];
+      setPreflightIssues(issues);
+      return issues;
     } catch (e) {
       setPreflightIssues([]);
       setSubmitError(
@@ -539,6 +553,7 @@ export function BulkListingWizard({
           ? `Preflight falhou: ${e.message}`
           : "Preflight falhou.",
       );
+      return [];
     } finally {
       setPreflightLoading(false);
     }
@@ -626,14 +641,37 @@ export function BulkListingWizard({
       // Avança produto a produto; só confirma no último.
       const advanced = ppGoNext();
       if (advanced) return;
+      // Re-roda o preflight com as categorias EFETIVAS da revisão (as mesmas
+      // que o dispatch envia via perProductOverrides). O preflight da entrada
+      // da etapa validou a categoria PERSISTIDA no produto — para produto
+      // nunca salvo com categoria Shopee, ele reprova mesmo com categoria
+      // válida escolhida na tela. Decide sobre o resultado FRESCO retornado.
+      const map = ppFinalizeFlush();
+      const categoryOverrides: Record<string, string> = {};
+      const excludedFromShopee = new Set<string>();
+      for (const [productId, cfg] of Object.entries(map)) {
+        if (cfg.includeShopee === false) {
+          excludedFromShopee.add(productId);
+          continue;
+        }
+        const cat = (cfg.shopeeCategory || "").trim();
+        if (cat) categoryOverrides[productId] = cat;
+      }
+      const freshIssues = await runPreflight(categoryOverrides);
+      // Produto excluído da Shopee nesta revisão não vai para a Shopee — o
+      // issue dele (pela persistida) não pode bloquear o lote.
+      const blockingIssues = freshIssues.filter(
+        (i) => !excludedFromShopee.has(i.productId),
+      );
       // Só bloqueia quando NÃO há nenhum alvo válido de fallback: preflight é
       // exclusivo da Shopee; ML e Magalu publicam independentemente (Magalu
       // resolve a categoria no backend). Com a flag off, selectedMagaluIds está
       // sempre vazio ⇒ condição idêntica à de antes.
       const allShopeeBlocked =
         selectedShopeeIds.size > 0 &&
-        preflightIssues.length > 0 &&
-        preflightIssues.length === selectedProducts.length &&
+        blockingIssues.length > 0 &&
+        blockingIssues.length ===
+          selectedProducts.length - excludedFromShopee.size &&
         selectedMlIds.size === 0 &&
         selectedMagaluIds.size === 0;
       if (allShopeeBlocked) {

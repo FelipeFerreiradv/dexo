@@ -197,6 +197,11 @@ function AutoCategoryRow({
   preflightIssue?: { code: string; message: string };
 }) {
   const autoCategory = useWatch({ control, name: "autoCategory" });
+  // O preflight da entrada da etapa avaliou a categoria PERSISTIDA no produto.
+  // Com uma categoria escolhida/sugerida no form, o aviso fica obsoleto — o
+  // gate do Finalizar re-valida no servidor com o valor efetivo.
+  const shopeeCategory = useWatch({ control, name: "shopeeCategory" });
+  const staleIssue = Boolean((shopeeCategory ?? "").trim());
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/30 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -219,7 +224,7 @@ function AutoCategoryRow({
           </span>
         )}
       </div>
-      {preflightIssue && (
+      {preflightIssue && !staleIssue && (
         <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
           <AlertTriangle className="size-3.5" />
           {preflightIssue.message || "Categoria Shopee pendente"}

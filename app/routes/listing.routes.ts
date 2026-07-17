@@ -889,7 +889,15 @@ export async function listingRoutes(app: FastifyInstance) {
    * folha (Shopee rejeita add_item nesse caso). Reusa o cache de 1h em
    * `ShopeeApiService.assertLeafCategory` então é barato mesmo com N produtos.
    *
-   * Body: { shopeeAccountId?: string; productIds: string[] }
+   * `categoryOverrides` (opcional) traz a categoria EFETIVA por produto — a
+   * escolhida/sugerida na Revisão Individual, que é a mesma que o dispatch
+   * envia via perProductOverrides. Sem ela, valida o shopeeCategoryId
+   * persistido (fluxo rápido, comportamento original). Antes deste campo, a
+   * revisão validava a fonte errada: produto sem categoria persistida ficava
+   * bloqueado mesmo com categoria válida preenchida na tela.
+   *
+   * Body: { shopeeAccountId?: string; productIds: string[];
+   *         categoryOverrides?: Record<productId, categoryId> }
    * Response: { issues: Array<{ productId, code, message }> }
    *   code = "shopee_category_missing" | "shopee_category_not_leaf"
    */
@@ -902,6 +910,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const body = request.body as {
           shopeeAccountId?: string;
           productIds?: string[];
+          categoryOverrides?: Record<string, string>;
         };
         if (
           !Array.isArray(body.productIds) ||
@@ -938,11 +947,29 @@ export async function listingRoutes(app: FastifyInstance) {
             body.productIds.map((id) => productRepo.findById(id, userId)),
           );
 
+          const overrides =
+            body.categoryOverrides &&
+            typeof body.categoryOverrides === "object" &&
+            !Array.isArray(body.categoryOverrides)
+              ? body.categoryOverrides
+              : {};
+
           for (let i = 0; i < products.length; i++) {
             const p = products[i];
             const id = body.productIds![i];
             if (!p) continue; // produto sumiu — quem chamar `dispatchBatch` reporta
-            const shopeeId = (p as any).shopeeCategoryId;
+            // Categoria EFETIVA: override da revisão vence a persistida — é o
+            // mesmo precedente do dispatch (ov?.shopee?.categoryId ?? req).
+            // Aceita o externalId da árvore ("SHP_102294") ou o id puro; o
+            // strip espelha o do createShopeeListing.
+            const rawOverride =
+              typeof overrides[id] === "string" ? overrides[id].trim() : "";
+            const effective = rawOverride
+              ? rawOverride.startsWith("SHP_")
+                ? rawOverride.slice(4)
+                : rawOverride
+              : (p as any).shopeeCategoryId;
+            const shopeeId = effective;
             if (!shopeeId) {
               issues.push({
                 productId: id,
