@@ -1337,14 +1337,14 @@ async function phaseNfes(flags: Flags): Promise<void> {
     }
     if (flags.skipSeqAdvance) continue;
     const existingSeq = await prisma.nfeSequence.findUnique({
-      where: { userId_ambiente_serie: { userId: flags.userId, ambiente, serie } },
+      where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente, serie, modelo: "55" } },
       select: { proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
     const novo = Math.max(current, target);
     if (!existingSeq || novo !== current) {
       await prisma.nfeSequence.upsert({
-        where: { userId_ambiente_serie: { userId: flags.userId, ambiente, serie } },
+        where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente, serie, modelo: "55" } },
         create: { userId: flags.userId, ambiente, serie, proximoNumero: novo },
         update: { proximoNumero: novo },
       });

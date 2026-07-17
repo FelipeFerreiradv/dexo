@@ -96,7 +96,11 @@ export class NfeCancelamentoUseCase {
           certificadoPath: config.certificadoPath,
           certificadoSenhaEnc: config.certificadoSenhaEnc,
         })
-      : createNfeProvider(config.providerName, config.ambiente as FiscalAmbiente);
+      : createNfeProvider(config.providerName, config.ambiente as FiscalAmbiente, {
+          // NFC-e via Focus cancela no path /v2/nfce (modelo da propria nota).
+          // Ausente/55 ⇒ /v2/nfe (comportamento atual intacto).
+          modelo: nfe.modelo === "65" ? "65" : "55",
+        });
 
     const result = await provider.cancelar({
       ref: nfeId,

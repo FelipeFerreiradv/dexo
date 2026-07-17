@@ -54,6 +54,9 @@ interface Props {
   onToast: (msg: string, type: "success" | "error" | "warning") => void;
   onChanged?: () => void;
   receiveNow: boolean;
+  // Fase 2 (NFC-e): cadeia de emissão pós-recebimento (presente só quando o
+  // switch "Emitir NFC-e" está ligado). Ausente ⇒ comportamento da Fase 1.
+  onNfce?: (receivableId: string, totalAmount?: number) => Promise<void>;
 }
 
 const LIMIT = 10;
@@ -65,6 +68,7 @@ export function PdvBudgetsPanel({
   onToast,
   onChanged,
   receiveNow,
+  onNfce,
 }: Props) {
   const { data: session } = useSession();
   const [rows, setRows] = useState<BudgetRow[]>([]);
@@ -151,6 +155,10 @@ export function PdvBudgetsPanel({
             "Orçamento convertido e recebido — estoque baixado e anúncios sincronizados.",
             "success",
           );
+          // Fase 2: NFC-e automática após o recebimento OK (switch ligado).
+          if (onNfce) {
+            await onNfce(receivableId, Number(confirmRow.totalAmount));
+          }
         } catch {
           onToast(
             "O orçamento foi convertido, mas o recebimento falhou. A venda está PENDENTE — use “Receber” no livro do dia ou no Financeiro.",

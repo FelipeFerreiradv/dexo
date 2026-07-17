@@ -195,7 +195,8 @@ export class NfeRepository {
         orderId: input.orderId ?? null,
         customerId: input.customerId ?? null,
         ambiente: input.ambiente ?? "HOMOLOGACAO",
-        modelo: "55",
+        // NFC-e (Fase 2): ausente ⇒ "55" (fluxo atual intacto).
+        modelo: input.modelo ?? "55",
         serie: input.serie ?? 1,
         numero: -(draftCount + 1), // placeholder negativo, será atribuído na emissão
         tipoOperacao: "SAIDA",
@@ -210,6 +211,45 @@ export class NfeRepository {
       include: { itens: true },
     });
     return toDraftResponse(row);
+  }
+
+  /**
+   * NFC-e (Fase 2) — idempotência do 1 clique do PDV: localiza a nota mais
+   * recente de um modelo vinculada a um numeroPedido (link textual
+   * "receivable:<id>"), ignorando CANCELLED. Seleção enxuta (egress).
+   */
+  async findByNumeroPedidoAndModelo(
+    userId: string,
+    numeroPedido: string,
+    modelo: "55" | "65",
+  ): Promise<{
+    id: string;
+    status: string;
+    numero: number;
+    serie: number;
+    chaveAcesso: string | null;
+    danfePdfPath: string | null;
+    motivoRejeicao: string | null;
+  } | null> {
+    const row = await (prisma as any).nfeEmitida.findFirst({
+      where: {
+        userId,
+        numeroPedido,
+        modelo,
+        status: { not: "CANCELLED" },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        numero: true,
+        serie: true,
+        chaveAcesso: true,
+        danfePdfPath: true,
+        motivoRejeicao: true,
+      },
+    });
+    return row ?? null;
   }
 
   async findDraftById(
@@ -572,6 +612,7 @@ export class NfeRepository {
           id: true,
           orderId: true,
           ambiente: true,
+          modelo: true,
           serie: true,
           numero: true,
           chaveAcesso: true,
@@ -603,6 +644,7 @@ export class NfeRepository {
         id: r.id,
         orderId: r.orderId,
         ambiente: r.ambiente,
+        modelo: r.modelo,
         serie: r.serie,
         numero: r.numero,
         chaveAcesso: r.chaveAcesso,

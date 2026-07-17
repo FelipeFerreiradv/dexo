@@ -62,7 +62,16 @@ const STEPS: (StepperStep & { fields: (keyof FiscalConfigFormData)[] })[] = [
     title: "Ambiente & Provedor",
     description: "Ambiente, provedor e certificado",
     icon: Settings2,
-    fields: ["ambiente", "providerName", "providerToken"],
+    fields: [
+      "ambiente",
+      "providerName",
+      "providerToken",
+      // NFC-e (Fase 2) — validados no mesmo step.
+      "serieNfce",
+      "cscId",
+      "cscToken",
+      "ncmPadrao",
+    ],
   },
 ];
 
@@ -85,6 +94,8 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
   const [certStatus, setCertStatus] = useState<CertificateStatus | null>(null);
   const [configExists, setConfigExists] = useState(false);
   const [providerTokenConfigured, setProviderTokenConfigured] = useState(false);
+  // NFC-e (Fase 2): CSC salvo? (segredo nunca volta — só o booleano)
+  const [cscConfigured, setCscConfigured] = useState(false);
 
   const form = useForm<FiscalConfigFormData>({
     resolver: zodResolver(fiscalConfigSchema) as any,
@@ -120,6 +131,7 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
           setProviderTokenConfigured(
             Boolean(data.config.providerTokenConfigurado),
           );
+          setCscConfigured(Boolean(data.config.cscConfigurado));
           setCertStatus({
             configured: Boolean(data.config.certificadoConfigurado),
             validoAte: data.config.certificadoValidoAte ?? null,
@@ -135,6 +147,12 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
             nomeFantasia: data.config.nomeFantasia ?? "",
             inscricaoMunicipal: data.config.inscricaoMunicipal ?? "",
             cnae: data.config.cnae ?? "",
+            // NFC-e (Fase 2): cscToken NUNCA volta do backend — campo começa
+            // vazio (vazio = preserva o salvo, padrão providerToken).
+            serieNfce: data.config.serieNfce ?? 1,
+            cscId: data.config.cscId ?? "",
+            cscToken: "",
+            ncmPadrao: data.config.ncmPadrao ?? "",
             cep: data.config.cep ?? "",
             logradouro: data.config.logradouro ?? "",
             numero: data.config.numero ?? "",
@@ -253,6 +271,7 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
             certStatus={certStatus}
             onCertUploaded={setCertStatus}
             providerTokenConfigured={providerTokenConfigured}
+            cscConfigured={cscConfigured}
           />
         )}
       </div>

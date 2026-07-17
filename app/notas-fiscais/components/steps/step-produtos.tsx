@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Control,
   Controller,
@@ -26,6 +26,7 @@ import { EMPTY_NFE_ITEM, ORIGEM_LABELS } from "../../lib/nfe-defaults";
 import type { ProductLookup } from "@/app/interfaces/nfe.interface";
 import { CfopCombobox } from "../cfop-combobox";
 import { cfopTipoFromOperacao } from "@/app/fiscal/domain/cfop-catalog";
+import { applyNcmPadrao } from "../../lib/ncm-padrao";
 import { ValorInput } from "../valor-input";
 import { CurrencyInput, formatToBRL } from "@/components/ui/currency-input";
 
@@ -67,6 +68,30 @@ export function StepProdutos({
   const [showResults, setShowResults] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // NCM padrão (Fase 2): carregado UMA vez da config fiscal para autopreencher
+  // o NCM de produtos adicionados SEM NCM. Nunca sobrescreve NCM digitado;
+  // falha silenciosa ⇒ comportamento atual (campo vazio).
+  const [ncmPadrao, setNcmPadrao] = useState<string | null>(null);
+  useEffect(() => {
+    if (!email) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/fiscal/config`, {
+          headers: { email },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setNcmPadrao(data?.config?.ncmPadrao ?? null);
+      } catch {
+        /* silencioso */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [email]);
+
   const searchProducts = useCallback(
     async (q: string) => {
       if (q.trim().length < 2) {
@@ -106,7 +131,9 @@ export function StepProdutos({
       numero: nextNum,
       codigo: p.sku,
       descricao: p.name,
-      ncm: "",
+      // NCM padrão da config quando o produto não traz NCM (Fase 2). Sem
+      // padrão configurado ⇒ "" (comportamento atual: usuário preenche).
+      ncm: applyNcmPadrao("", ncmPadrao),
       cfop: "5102",
       cest: null,
       origem: 0,

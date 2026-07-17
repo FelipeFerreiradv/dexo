@@ -16,6 +16,9 @@ import { FinanceRepository } from "../repositories/finance.repository";
 import { UnidadeRepository } from "../repositories/unidade.repository";
 import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
+import { NfeEmissionUseCase } from "./nfe-emission.usecase";
+import { NfeRepository } from "../repositories/nfe.repository";
+import { NFCE_LIMITE_VALOR } from "../fiscal/domain/nfce";
 import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
 import { ScrapStatusReconcileService } from "../marketplaces/services/scrap-status-reconcile.service";
@@ -46,6 +49,10 @@ export class FinanceUseCase {
   private unidadeRepo: UnidadeRepository;
   private customerUseCase: CustomerUseCase;
   private nfeDraftUseCase: NfeDraftUseCase;
+  // NFC-e (Fase 2) — lazy: instanciados só no 1º uso do fluxo NFC-e, para
+  // não pagar o custo de construção nos fluxos financeiros que não emitem.
+  private nfeRepoLazy: NfeRepository | null = null;
+  private nfeEmissionLazy: NfeEmissionUseCase | null = null;
 
   constructor() {
     this.repo = new FinanceRepository();
@@ -53,6 +60,16 @@ export class FinanceUseCase {
     this.unidadeRepo = new UnidadeRepository();
     this.customerUseCase = new CustomerUseCase();
     this.nfeDraftUseCase = new NfeDraftUseCase();
+  }
+
+  private get nfeRepo(): NfeRepository {
+    if (!this.nfeRepoLazy) this.nfeRepoLazy = new NfeRepository();
+    return this.nfeRepoLazy;
+  }
+
+  private get nfeEmission(): NfeEmissionUseCase {
+    if (!this.nfeEmissionLazy) this.nfeEmissionLazy = new NfeEmissionUseCase();
+    return this.nfeEmissionLazy;
   }
 
   private async assertCustomer(customerId: string, userId: string) {
@@ -529,11 +546,24 @@ export class FinanceUseCase {
   async createFiscalDraftFromReceivable(
     receivableId: string,
     userId: string,
+    // NFC-e (Fase 2): opcional e ADITIVO — ausente ⇒ rascunho 55 (endpoint
+    // /fiscal-draft atual byte-idêntico).
+    opts?: { modelo?: "55" | "65" },
   ) {
     const entry = await this.repo.findById("receivable", receivableId, userId);
     if (!entry) {
       throw new Error("Conta a receber não encontrada");
     }
+    return this.createFiscalDraftFromEntry(entry, userId, opts);
+  }
+
+  // Corpo do rascunho a partir de um entry JÁ carregado — o fluxo NFC-e do
+  // PDV precisa do entry para os guards e reusa a mesma carga aqui (egress).
+  private async createFiscalDraftFromEntry(
+    entry: FinanceEntry,
+    userId: string,
+    opts?: { modelo?: "55" | "65" },
+  ) {
     if (!entry.items || entry.items.length === 0) {
       throw new Error(
         "Conta sem itens é inválida para cupom fiscal — adicione produtos antes de emitir.",
@@ -586,7 +616,104 @@ export class FinanceUseCase {
       destinatario,
       itens,
       pagamentos,
+      ...(opts?.modelo ? { modelo: opts.modelo } : {}),
     });
+  }
+
+  /**
+   * NFC-e em 1 clique (Fase 2 do PDV): cria o rascunho modelo 65 a partir da
+   * Conta a Receber e EMITE em seguida, com idempotência pelo link textual
+   * numeroPedido="receivable:<id>".
+   *
+   * IMPORTANTE: chamada HTTP separada, DEPOIS do pagamento — nunca dentro da
+   * $transaction do markPaid. Falha aqui jamais desfaz a venda.
+   *
+   * Erros mapeados na rota: "não encontrad*" → 404; "inválida" → 400;
+   * "R$ 10.000" → 422.
+   */
+  async emitNfceFromReceivable(receivableId: string, userId: string) {
+    const entry = await this.repo.findById("receivable", receivableId, userId);
+    if (!entry) {
+      throw new Error("Conta a receber não encontrada");
+    }
+    if (!entry.items || entry.items.length === 0) {
+      throw new Error(
+        "Conta sem itens é inválida para NFC-e — adicione produtos antes de emitir.",
+      );
+    }
+    if (Number(entry.totalAmount) > NFCE_LIMITE_VALOR) {
+      throw new Error(
+        "NFC-e limitada a R$ 10.000,00 — use Emitir NF-e (modelo 55) para esta venda.",
+      );
+    }
+
+    // ── Idempotência: nota 65 mais recente vinculada a esta venda ──
+    const existing = await this.nfeRepo.findByNumeroPedidoAndModelo(
+      userId,
+      `receivable:${receivableId}`,
+      "65",
+    );
+
+    if (existing?.status === "AUTHORIZED") {
+      return {
+        state: "authorized" as const,
+        alreadyEmitted: true,
+        nfeId: existing.id,
+        numero: existing.numero,
+        serie: existing.serie,
+        chaveAcesso: existing.chaveAcesso,
+        danfeDisponivel: Boolean(existing.danfePdfPath),
+        mensagem: "NFC-e já emitida para esta venda",
+      };
+    }
+    if (
+      existing &&
+      ["VALIDATING", "SIGNING", "SENDING"].includes(existing.status)
+    ) {
+      return {
+        state: "processing" as const,
+        nfeId: existing.id,
+        numero: existing.numero,
+        serie: existing.serie,
+        chaveAcesso: existing.chaveAcesso,
+        danfeDisponivel: false,
+        mensagem:
+          "NFC-e desta venda ainda está em processamento — consulte em instantes",
+      };
+    }
+
+    // DRAFT/REJECTED existente → reemite a MESMA linha (sem draft duplicado);
+    // nada → cria o rascunho 65 (série própria + NCM padrão) e emite. Reusa o
+    // `entry` já carregado pelos guards acima (evita o 2º fetch do receivable).
+    let nfeId: string;
+    if (existing) {
+      nfeId = existing.id;
+    } else {
+      const draft = await this.createFiscalDraftFromEntry(entry, userId, {
+        modelo: "65",
+      });
+      nfeId = draft.id;
+    }
+
+    const emission = await this.nfeEmission.emit(userId, nfeId);
+    const state =
+      emission.status === "AUTHORIZED"
+        ? ("authorized" as const)
+        : emission.status === "REJECTED"
+          ? ("rejected" as const)
+          : emission.success
+            ? ("processing" as const)
+            : ("error" as const);
+
+    return {
+      state,
+      nfeId: emission.nfeId,
+      numero: emission.numero ?? null,
+      serie: emission.serie ?? null,
+      chaveAcesso: emission.chaveAcesso ?? null,
+      danfeDisponivel: emission.status === "AUTHORIZED",
+      mensagem: emission.mensagem,
+    };
   }
 
   private applyOverdueFlag(entry: FinanceEntry): FinanceEntry {

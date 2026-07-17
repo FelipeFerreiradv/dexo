@@ -45,6 +45,13 @@ export interface NfeDraftFromReceivableInput {
   destinatario: NfeDestinatario;
   itens: NfeDraftItem[];
   pagamentos: Array<{ meio: string; valor: number }>;
+  /**
+   * Modelo do documento (Fase 2 — NFC-e do PDV). Ausente ⇒ "55"
+   * (fluxo do cupom fiscal atual byte-idêntico). Com "65": usa a série
+   * própria da NFC-e (config.serieNfce) e autopreenche NCM vazio com o
+   * NCM padrão da configuração fiscal.
+   */
+  modelo?: "55" | "65";
 }
 
 export class NfeDraftUseCase {
@@ -474,6 +481,19 @@ export class NfeDraftUseCase {
     const ambiente =
       (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO";
 
+    // NFC-e (Fase 2): modelo opcional; ausente ⇒ "55" (caminho atual intacto).
+    const modelo: "55" | "65" = input.modelo === "65" ? "65" : "55";
+
+    // NCM padrão da config autopreenche APENAS itens sem NCM no fluxo 65
+    // (1 clique do PDV). NCM segue obrigatório na emissão.
+    const itens =
+      modelo === "65" && config.ncmPadrao
+        ? input.itens.map((it) => ({
+            ...it,
+            ncm: it.ncm || (config.ncmPadrao as string),
+          }))
+        : input.itens;
+
     // 1. Cria draft fresco — bypassa o reuso de "mais recente" (esse vive em
     //    `this.create`; aqui chamamos o repo direto para sempre ter um draft
     //    novo, evitando colisão com drafts não relacionados de outras
@@ -481,7 +501,9 @@ export class NfeDraftUseCase {
     const draft = await this.nfeRepo.createDraft(userId, {
       customerId: input.customerId,
       ambiente,
-      serie: config.serieNfe ?? 1,
+      serie:
+        modelo === "65" ? (config.serieNfce ?? 1) : (config.serieNfe ?? 1),
+      modelo,
     });
 
     // 2. Popula tudo via updateDraft (replace strategy para itens, igual ao
@@ -496,7 +518,7 @@ export class NfeDraftUseCase {
       indPresenca: "PRESENCIAL",
       customerId: input.customerId,
       destinatarioJson: input.destinatario,
-      itens: input.itens,
+      itens,
       pagamentosJson: input.pagamentos,
       numeroPedido: `receivable:${input.receivableId}`,
     });

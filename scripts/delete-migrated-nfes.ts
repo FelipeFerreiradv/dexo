@@ -113,7 +113,7 @@ async function main(): Promise<void> {
 
   // Reset da NfeSequence avançada pela migração (restaura o estado anterior).
   const seqAtual = await prisma.nfeSequence.findUnique({
-    where: { userId_ambiente_serie: { userId, ambiente, serie } },
+    where: { userId_ambiente_serie_modelo: { userId, ambiente, serie, modelo: "55" } },
     select: { proximoNumero: true },
   });
   sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual?.proximoNumero ?? null, acao: "nenhuma" };
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
       sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual.proximoNumero, acao: "APAGARIA a linha" };
     } else {
       await prisma.nfeSequence.delete({
-        where: { userId_ambiente_serie: { userId, ambiente, serie } },
+        where: { userId_ambiente_serie_modelo: { userId, ambiente, serie, modelo: "55" } },
       });
       sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual.proximoNumero, acao: "linha APAGADA (volta a 1)" };
     }

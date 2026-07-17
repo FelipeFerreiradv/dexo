@@ -1091,6 +1091,19 @@ model CompanyFiscalConfig {
   // comportamento anterior (série hardcoded 1).
   serieNfe Int @default(1)
 
+  // ── NFC-e (modelo 65) — Fase 2 do PDV. Campos ADITIVOS; nulos/default
+  // preservam 100% o comportamento da NF-e 55. ──
+  // Série própria da NFC-e (numeração independente por modelo via NfeSequence).
+  serieNfce Int @default(1)
+  // CSC (Código de Segurança do Contribuinte) — usado no hash do QR Code.
+  // cscId = idCSC/cIdToken; cscToken = o código em si (segredo: NUNCA volta ao
+  // cliente — ver sanitizeFiscalConfig; preserve-when-blank igual providerToken).
+  cscId    String?
+  cscToken String?
+  // NCM padrão (8 dígitos) — autopreenche itens sem NCM na emissão NFC-e do PDV
+  // e no wizard da NF-e 55. NCM continua obrigatório na emissão.
+  ncmPadrao String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1102,10 +1115,13 @@ model NfeSequence {
   userId        String
   ambiente      String // HOMOLOGACAO | PRODUCAO
   serie         Int
+  // Modelo do documento (55 = NF-e, 65 = NFC-e). Default '55' preserva as
+  // linhas/numeração existentes; NFC-e ganha contador próprio por série.
+  modelo        String   @default("55")
   proximoNumero Int      @default(1)
   updatedAt     DateTime @updatedAt
 
-  @@unique([userId, ambiente, serie])
+  @@unique([userId, ambiente, serie, modelo])
   @@index([userId])
 }
 
@@ -1176,7 +1192,9 @@ model NfeEmitida {
   itens    NfeItem[]
   eventos  NfeAuditLog[]
 
-  @@unique([userId, ambiente, serie, numero])
+  // `modelo` no unique: numeração da NFC-e (65) é independente da NF-e (55) —
+  // série 1/número N podem existir nos dois modelos sem colisão.
+  @@unique([userId, ambiente, serie, numero, modelo])
   @@index([userId, status])
   @@index([userId, dataEmissao])
   @@index([orderId])

@@ -12,6 +12,12 @@ import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
 import { FinanceDialog } from "@/app/financeiro/components/finance-dialog";
 import { decideAutoReceive } from "../lib/pdv-finalize";
+import {
+  emitNfceForReceivable,
+  excedeLimiteNfce,
+  isNfceUiEnabled,
+  nfceToastFor,
+} from "../lib/pdv-nfce";
 import { PdvOverview } from "./pdv-overview";
 import { PdvSalesList, type PdvSaleRow } from "./pdv-sales-list";
 import { PdvBudgetsPanel } from "./pdv-budgets-panel";
@@ -50,6 +56,10 @@ export function PdvView() {
   // Switch "Receber agora" (default ON): finaliza a venda já recebida (o
   // estoque baixa na hora). FIADO sempre fica pendente (ver pdv-finalize).
   const [receiveNow, setReceiveNow] = useState(true);
+  // Fase 2 — switch "Emitir NFC-e" (default OFF; UI atrás das flags). Emite
+  // automaticamente APÓS o recebimento OK; falha nunca desfaz a venda.
+  const nfceUi = isNfceUiEnabled();
+  const [emitNfce, setEmitNfce] = useState(false);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "warning") => {
@@ -99,12 +109,52 @@ export function PdvView() {
     fetchSales();
   }, [fetchSales, refreshKey]);
 
+  // Fase 2 — cadeia da NFC-e (após recebimento OK): acima do limite legal cai
+  // no rascunho de NF-e 55 existente; senão emite a NFC-e em 1 clique. NUNCA
+  // lança — falha vira toast; a venda jamais é desfeita pela nota.
+  const runNfceChain = useCallback(
+    async (receivableId: string, totalAmount?: number) => {
+      const email = session?.user?.email;
+      if (!email) return;
+      if (excedeLimiteNfce(Number(totalAmount ?? 0))) {
+        try {
+          const res = await fetch(
+            `${getApiBaseUrl()}/finance/receivables/${receivableId}/fiscal-draft`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", email },
+            },
+          );
+          if (!res.ok) throw new Error();
+          showToast(
+            "Venda acima de R$ 10.000 — NFC-e não permitida. Rascunho de NF-e (modelo 55) criado; finalize em Notas Fiscais.",
+            "warning",
+          );
+        } catch {
+          showToast(
+            "Venda acima de R$ 10.000 — NFC-e não permitida. Emita a NF-e (modelo 55) pelo Financeiro.",
+            "warning",
+          );
+        }
+        return;
+      }
+      const outcome = await emitNfceForReceivable(receivableId, email);
+      const t = nfceToastFor(outcome);
+      showToast(t.message, t.type);
+    },
+    [session?.user?.email, showToast],
+  );
+
   // Encadeia o recebimento após o FinanceDialog salvar a venda. Fire-and-
   // forget (mesmo padrão do cupom no próprio dialog): o dialog já fechou e a
   // conta JÁ EXISTE — falha aqui nunca desfaz a venda, só a deixa PENDENTE
   // (recuperável pelo botão "Receber" da lista ou pelo Financeiro).
   const handleSavedEntry = useCallback(
-    (entry: { id: string; paymentMethod?: string | null }) => {
+    (entry: {
+      id: string;
+      paymentMethod?: string | null;
+      totalAmount?: number;
+    }) => {
       const decision = decideAutoReceive({
         receiveNow,
         paymentMethod: entry.paymentMethod ?? null,
@@ -132,6 +182,10 @@ export function PdvView() {
             "Venda recebida — estoque baixado e anúncios sincronizados.",
             "success",
           );
+          // Fase 2: NFC-e automática APÓS o recebimento OK (switch ligado).
+          if (nfceUi && emitNfce) {
+            await runNfceChain(entry.id, entry.totalAmount);
+          }
         } catch {
           showToast(
             "A venda foi criada, mas o recebimento falhou. Ela está PENDENTE — use “Receber” no livro do dia ou no Financeiro para concluir.",
@@ -143,7 +197,15 @@ export function PdvView() {
         }
       })();
     },
-    [receiveNow, session?.user?.email, showToast, bumpRefresh],
+    [
+      receiveNow,
+      session?.user?.email,
+      showToast,
+      bumpRefresh,
+      nfceUi,
+      emitNfce,
+      runNfceChain,
+    ],
   );
 
   // onSaved do dialog: refresca, EXCETO quando a cadeia de recebimento já vai
@@ -176,19 +238,37 @@ export function PdvView() {
 
       {/* Barra de operação do caixa. */}
       <div className="flex flex-col gap-4 rounded-xl border border-border/60 bg-card/80 px-4 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <Switch
-            id="pdv-receive-now"
-            checked={receiveNow}
-            onCheckedChange={setReceiveNow}
-          />
-          <div className="flex flex-col">
-            <Label htmlFor="pdv-receive-now">Receber agora</Label>
-            <span className="font-mono text-[11px] text-muted-foreground">
-              Baixa o estoque e sincroniza os anúncios ao finalizar.
-              {" “Fiado” "}sempre fica pendente.
-            </span>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-6">
+          <div className="flex items-center gap-3">
+            <Switch
+              id="pdv-receive-now"
+              checked={receiveNow}
+              onCheckedChange={setReceiveNow}
+            />
+            <div className="flex flex-col">
+              <Label htmlFor="pdv-receive-now">Receber agora</Label>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                Baixa o estoque e sincroniza os anúncios ao finalizar.
+                {" “Fiado” "}sempre fica pendente.
+              </span>
+            </div>
           </div>
+          {nfceUi && (
+            <div className="flex items-center gap-3">
+              <Switch
+                id="pdv-emit-nfce"
+                checked={emitNfce}
+                onCheckedChange={setEmitNfce}
+              />
+              <div className="flex flex-col">
+                <Label htmlFor="pdv-emit-nfce">Emitir NFC-e</Label>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  Emite após o recebimento (até R$ 10.000; acima vira rascunho
+                  de NF-e).
+                </span>
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" asChild>
@@ -214,6 +294,7 @@ export function PdvView() {
             loading={salesLoading}
             onToast={showToast}
             onChanged={bumpRefresh}
+            onNfce={nfceUi ? runNfceChain : undefined}
           />
         </div>
         <div className="min-w-0">
@@ -222,6 +303,7 @@ export function PdvView() {
             onToast={showToast}
             onChanged={bumpRefresh}
             receiveNow={receiveNow}
+            onNfce={nfceUi && emitNfce ? runNfceChain : undefined}
           />
         </div>
       </div>

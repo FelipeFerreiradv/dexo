@@ -55,6 +55,24 @@ export const fiscalConfigSchema = z.object({
     .int("Série deve ser um número inteiro")
     .min(1, "Série deve ser entre 1 e 999")
     .max(999, "Série deve ser entre 1 e 999"),
+
+  // ── NFC-e (Fase 2) — todos opcionais; vazios = comportamento atual. ──
+  serieNfce: z.coerce
+    .number()
+    .int("Série da NFC-e deve ser um número inteiro")
+    .min(1, "Série da NFC-e deve ser entre 1 e 999")
+    .max(999, "Série da NFC-e deve ser entre 1 e 999"),
+  cscId: optionalStr,
+  // Segredo: vazio preserva o CSC salvo (padrão providerToken).
+  cscToken: optionalStr,
+  ncmPadrao: z
+    .string()
+    .optional()
+    .nullable()
+    .refine(
+      (v) => !v || onlyDigits(v).length === 0 || onlyDigits(v).length === 8,
+      "NCM padrão deve ter 8 dígitos",
+    ),
 });
 
 export type FiscalConfigFormData = z.infer<typeof fiscalConfigSchema>;
@@ -79,4 +97,8 @@ export const DEFAULT_FISCAL_CONFIG: FiscalConfigFormData = {
   providerName: "FOCUS_NFE",
   providerToken: "",
   serieNfe: 1,
+  serieNfce: 1,
+  cscId: "",
+  cscToken: "",
+  ncmPadrao: "",
 };
