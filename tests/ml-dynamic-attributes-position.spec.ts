@@ -88,6 +88,10 @@ describe("ficha técnica — POSITION visível e capturável", () => {
         POSITION: { value_id: "DE", value_name: "Dianteira esquerda" },
       }),
     ).toBe(false);
+    // Whitespace conta como vazio (mesmo trim do gate do backend).
+    expect(
+      positionNeedsInput([posList], { POSITION: { value_name: "   " } }),
+    ).toBe(true);
     // POSITION não exposto pela categoria → não pede input.
     expect(positionNeedsInput([attr({ id: "COLOR" })], {})).toBe(false);
   });

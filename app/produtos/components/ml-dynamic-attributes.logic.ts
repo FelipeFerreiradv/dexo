@@ -76,6 +76,8 @@ export function isListAttribute(attr: MLDynamicAttribute): boolean {
 /**
  * True quando a categoria expõe POSITION (lado/posição) e o operador ainda
  * não informou — usado para destacar/auto-abrir a ficha técnica recolhida.
+ * Whitespace conta como vazio (mesmo trim do gate de buildMLAttributes no
+ * backend, que trata POSITION em branco como ausente).
  */
 export function positionNeedsInput(
   visibleAttrs: MLDynamicAttribute[],
@@ -84,5 +86,6 @@ export function positionNeedsInput(
   const posAttr = visibleAttrs.find((a) => a.id === "POSITION");
   if (!posAttr) return false;
   const cur = value["POSITION"];
-  return !cur || (!cur.value_id && !cur.value_name);
+  const has = (s?: string) => typeof s === "string" && s.trim().length > 0;
+  return !cur || (!has(cur.value_id) && !has(cur.value_name));
 }
