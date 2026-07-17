@@ -351,6 +351,25 @@ describe("POST /finance/receivables/:id/nfce", () => {
     expect(res.json().error).toMatch(/CSC/);
   });
 
+  it("DOCUMENTA: Content-Type json com body vazio morre no parse do Fastify (por isso o front não envia o header)", async () => {
+    (prisma as any).receivable.findFirst.mockResolvedValue(makeReceivableRaw());
+    (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/finance/receivables/r-1/nfce",
+      headers: { email: OWNER, "content-type": "application/json" },
+    });
+
+    // Rejeição ANTES do handler (em prod o handler global transforma isso em
+    // { error: "Erro interno do servidor" } com 400 — o incidente do PDV).
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("FST_ERR_CTP_EMPTY_JSON_BODY");
+    expect(emitMock).not.toHaveBeenCalled();
+    expect(createPopulatedMock).not.toHaveBeenCalled();
+  });
+
   it("REGRESSAO: /fiscal-draft (55) segue sem modelo no input", async () => {
     (prisma as any).receivable.findFirst.mockResolvedValue(makeReceivableRaw());
     (prisma as any).customer.findFirst.mockResolvedValue(makeCustomer());

@@ -118,12 +118,11 @@ export function PdvView() {
       if (!email) return;
       if (excedeLimiteNfce(Number(totalAmount ?? 0))) {
         try {
+          // Sem Content-Type: POST sem body — declarar JSON vazio derruba a
+          // requisição no parse do Fastify (FST_ERR_CTP_EMPTY_JSON_BODY).
           const res = await fetch(
             `${getApiBaseUrl()}/finance/receivables/${receivableId}/fiscal-draft`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", email },
-            },
+            { method: "POST", headers: { email } },
           );
           if (!res.ok) throw new Error();
           showToast(
