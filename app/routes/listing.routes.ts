@@ -942,9 +942,16 @@ export async function listingRoutes(app: FastifyInstance) {
             });
           }
 
+          // EGRESS-LEAN: o preflight só precisa de (id, shopeeCategoryId) —
+          // uma única query de 2 colunas para o lote, em vez de N findById
+          // com a linha completa (JSONBs) + compatibilidades.
           const productRepo = new ProductRepositoryPrisma();
-          const products = await Promise.all(
-            body.productIds.map((id) => productRepo.findById(id, userId)),
+          const rows = await productRepo.findShopeeCategoryIds(
+            body.productIds,
+            userId,
+          );
+          const persistedById = new Map(
+            rows.map((r) => [r.id, r.shopeeCategoryId]),
           );
 
           const overrides =
@@ -954,22 +961,20 @@ export async function listingRoutes(app: FastifyInstance) {
               ? body.categoryOverrides
               : {};
 
-          for (let i = 0; i < products.length; i++) {
-            const p = products[i];
-            const id = body.productIds![i];
-            if (!p) continue; // produto sumiu — quem chamar `dispatchBatch` reporta
+          for (const id of body.productIds) {
+            // produto sumiu — quem chamar `dispatchBatch` reporta
+            if (!persistedById.has(id)) continue;
             // Categoria EFETIVA: override da revisão vence a persistida — é o
             // mesmo precedente do dispatch (ov?.shopee?.categoryId ?? req).
             // Aceita o externalId da árvore ("SHP_102294") ou o id puro; o
             // strip espelha o do createShopeeListing.
             const rawOverride =
               typeof overrides[id] === "string" ? overrides[id].trim() : "";
-            const effective = rawOverride
+            const shopeeId = rawOverride
               ? rawOverride.startsWith("SHP_")
                 ? rawOverride.slice(4)
                 : rawOverride
-              : (p as any).shopeeCategoryId;
-            const shopeeId = effective;
+              : persistedById.get(id);
             if (!shopeeId) {
               issues.push({
                 productId: id,

@@ -70,13 +70,15 @@ const SHOPEE_ACCOUNT = {
 } as any;
 
 /** Produtos do cenário: p1 SEM categoria persistida, p2 COM. */
-const PRODUCTS: Record<string, any> = {
-  p1: { id: "p1", name: "Par De Friso Lateral Hb20s", shopeeCategoryId: null },
-  p2: { id: "p2", name: "Farol Gol G5", shopeeCategoryId: "102297" },
-};
+const PRODUCTS: Record<string, { id: string; shopeeCategoryId: string | null }> =
+  {
+    p1: { id: "p1", shopeeCategoryId: null },
+    p2: { id: "p2", shopeeCategoryId: "102297" },
+  };
 
 describe("POST /listings/bulk/preflight — categoryOverrides", () => {
   let app: ReturnType<typeof fastify>;
+  let leanFetchSpy: any;
 
   beforeEach(async () => {
     app = fastify();
@@ -91,9 +93,13 @@ describe("POST /listings/bulk/preflight — categoryOverrides", () => {
     (MarketplaceRepository.findByIdAndUser as any).mockResolvedValue(
       SHOPEE_ACCOUNT,
     );
-    vi.spyOn(ProductRepositoryPrisma.prototype, "findById").mockImplementation(
-      async (id: string) => PRODUCTS[id] ?? null,
-    );
+    // Projeção egress-lean: o preflight busca só (id, shopeeCategoryId) do
+    // lote numa única query — produto inexistente simplesmente não vem.
+    leanFetchSpy = vi
+      .spyOn(ProductRepositoryPrisma.prototype, "findShopeeCategoryIds")
+      .mockImplementation(async (ids: string[]) =>
+        ids.filter((id) => PRODUCTS[id]).map((id) => PRODUCTS[id]),
+      );
     (ShopeeApiService.assertLeafCategory as any).mockResolvedValue(undefined);
   });
 
@@ -121,6 +127,22 @@ describe("POST /listings/bulk/preflight — categoryOverrides", () => {
         productId: "p1",
         code: "shopee_category_missing",
       }),
+    ]);
+    // EGRESS: uma ÚNICA query para o lote (não N findById com linha completa).
+    expect(leanFetchSpy).toHaveBeenCalledTimes(1);
+    expect(leanFetchSpy).toHaveBeenCalledWith(["p1", "p2"], "user-1");
+  });
+
+  it("produto inexistente/de outro dono é pulado sem gerar issue", async () => {
+    const res = await preflight({
+      productIds: ["p1", "fantasma"],
+      categoryOverrides: { fantasma: "102294" },
+    });
+
+    expect(res.statusCode, res.payload).toBe(200);
+    // p1 → missing; "fantasma" não vem do banco → skip (dispatchBatch reporta).
+    expect(res.json().issues).toEqual([
+      expect.objectContaining({ productId: "p1" }),
     ]);
   });
 

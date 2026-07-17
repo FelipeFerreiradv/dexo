@@ -1495,6 +1495,23 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
+  /**
+   * Projeção EGRESS-LEAN para o preflight do bulk: só (id, shopeeCategoryId)
+   * do lote inteiro numa ÚNICA query — o preflight só precisa dessa coluna, e
+   * o findById traria a linha completa (JSONBs pesados) + compatibilidades em
+   * N queries. Padrão perf(egress) do projeto.
+   */
+  async findShopeeCategoryIds(
+    ids: string[],
+    userId: string,
+  ): Promise<Array<{ id: string; shopeeCategoryId: string | null }>> {
+    if (ids.length === 0) return [];
+    return prisma.product.findMany({
+      where: { id: { in: ids }, userId },
+      select: { id: true, shopeeCategoryId: true },
+    });
+  }
+
   async findByIdDetailed(id: string, userId: string) {
     // Run product + stock-log queries in parallel (independent reads)
     const [item, recentStockChanges] = await Promise.all([
