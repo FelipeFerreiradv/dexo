@@ -45,9 +45,13 @@ export async function emitNfceForReceivable(
   email: string,
 ): Promise<NfceEmitOutcome> {
   try {
+    // SEM "Content-Type: application/json": o POST não tem body, e declarar
+    // JSON com body vazio faz o Fastify rejeitar na fase de parse
+    // (FST_ERR_CTP_EMPTY_JSON_BODY, 400) ANTES do handler — mesmo padrão do
+    // POST /pay, que também não envia body.
     const res = await fetch(
       `${getApiBaseUrl()}/finance/receivables/${receivableId}/nfce`,
-      { method: "POST", headers: { "Content-Type": "application/json", email } },
+      { method: "POST", headers: { email } },
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
