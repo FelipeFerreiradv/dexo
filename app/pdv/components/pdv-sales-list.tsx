@@ -64,13 +64,21 @@ const STATUS_STYLES: Record<SaleStatus, string> = {
   CANCELADA: "bg-muted text-muted-foreground",
 };
 
+// timeZone fixo (fuso do negócio): a hora da venda não pode variar com o
+// relógio da máquina que abre a página, e um render determinístico nunca
+// diverge entre SSR e browser (hydration).
 function formatWhen(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return `${d.toLocaleDateString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
-  })} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+    timeZone: "America/Sao_Paulo",
+  })} ${d.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Sao_Paulo",
+  })}`;
 }
 
 export function PdvSalesList({

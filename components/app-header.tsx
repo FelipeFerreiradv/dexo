@@ -70,6 +70,11 @@ export function AppHeader({ session }: AppHeaderProps) {
     await signOut({ redirect: true, callbackUrl: "/login" });
   };
 
+  // timeZone fixo: este label renderiza no SSR (VPS em UTC) e re-renderiza no
+  // browser (America/Sao_Paulo). Sem o fuso pinado, das 21h às 23h59 BRT o
+  // servidor já está no dia seguinte → hydration mismatch (React #418) em
+  // TODAS as páginas. Com o fuso explícito, os dois lados produzem o mesmo
+  // texto sempre.
   const todayLabel = useMemo(
     () =>
       new Intl.DateTimeFormat("en-GB", {
@@ -77,6 +82,7 @@ export function AppHeader({ session }: AppHeaderProps) {
         day: "2-digit",
         month: "short",
         year: "numeric",
+        timeZone: "America/Sao_Paulo",
       }).format(new Date()),
     [],
   );
