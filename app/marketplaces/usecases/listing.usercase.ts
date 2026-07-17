@@ -3708,6 +3708,65 @@ export class ListingUseCase {
         }
       }
 
+      // Recusa DETERMINÍSTICA de duplicata (mesmo guard do createMLListing):
+      // se já existe anúncio VIVO deste produto nesta conta, criar de novo só
+      // pode dar errado — a Shopee rejeita com "This product duplicates
+      // another in your shop" E o upsert do fracasso sobrescreveria o status
+      // da linha SAUDÁVEL (aconteceu em produção com o duplo-submit do bulk:
+      // job 1 criou os 2 anúncios, job 2 marcou as linhas como error). `closed`
+      // não bloqueia: recriar anúncio encerrado é republicação legítima; o
+      // placeholder PENDING_ do retry também não (não é "vivo").
+      const liveShopeeListing =
+        await ListingRepository.findLiveByProductAndAccount(
+          productId,
+          account.id,
+        );
+      if (liveShopeeListing) {
+        const liveDesc =
+          liveShopeeListing.status === "paused" ? "pausado" : "ativo";
+        // Placeholder de retry deste par NUNCA vai conseguir criar — marca
+        // terminal para o cron não gastar tentativas (mesmo padrão do ML).
+        try {
+          const placeholder = await ListingRepository.findByProductAndAccount(
+            productId,
+            account.id,
+          );
+          if (
+            placeholder &&
+            placeholder.externalListingId?.startsWith("PENDING_") &&
+            placeholder.retryEnabled
+          ) {
+            await ListingRepository.updateListing(placeholder.id, {
+              status: "error",
+              lastError: `[TERMINAL] Produto já tem anúncio ${liveDesc} nesta conta na Shopee (${liveShopeeListing.externalListingId}) — exclua este pendente ou encerre o anúncio existente antes de recriar`,
+              retryEnabled: false,
+              nextRetryAt: null,
+            });
+          }
+        } catch (markErr) {
+          console.warn(
+            "[ListingUseCase] falha ao marcar placeholder Shopee duplicado como terminal:",
+            markErr instanceof Error ? markErr.message : markErr,
+          );
+        }
+        console.warn(
+          JSON.stringify({
+            event: "shopee.create_item.duplicate_refused",
+            productId,
+            accountId: account.id,
+            liveExternalListingId: liveShopeeListing.externalListingId,
+            liveStatus: liveShopeeListing.status,
+          }),
+        );
+        return {
+          success: false,
+          skipped: true,
+          listingId: liveShopeeListing.id,
+          externalListingId: liveShopeeListing.externalListingId,
+          error: `Produto já tem anúncio ${liveDesc} nesta conta na Shopee (${liveShopeeListing.externalListingId}). Encerre o anúncio existente antes de criar outro.`,
+        };
+      }
+
       // 2. Buscar dados do produto
       const product =
         await ListingUseCase.productRepository.findById(productId);

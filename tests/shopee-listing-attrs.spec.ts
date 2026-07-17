@@ -43,6 +43,8 @@ vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findByProductAndAccount: vi.fn(),
+    // Guard anti-duplicata (espelho do ML): sem anúncio vivo por default.
+    findLiveByProductAndAccount: vi.fn(async () => null),
     createListing: vi.fn(),
     updateListing: vi.fn(),
   },
