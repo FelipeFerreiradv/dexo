@@ -52,6 +52,11 @@ export function MLDynamicAttributesSection({
   email,
 }: MLDynamicAttributesSectionProps) {
   const [attrs, setAttrs] = useState<MLDynamicAttribute[]>([]);
+  // Categoria DONA dos attrs carregados: durante a troca de categoria, `attrs`
+  // ainda são da anterior até o fetch resolver — o auto-expand só pode decidir
+  // com attrs da categoria ATUAL (senão abre a ficha espuriamente e consome a
+  // marca "uma vez por categoria" da nova antes dos dados dela chegarem).
+  const [attrsCategory, setAttrsCategory] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A ficha técnica começa RECOLHIDA: só abre quando o usuário clica no cabeçalho.
@@ -62,6 +67,7 @@ export function MLDynamicAttributesSection({
     const id = (categoryId || "").trim();
     if (!id) {
       setAttrs([]);
+      setAttrsCategory("");
       setError(null);
       return;
     }
@@ -76,11 +82,15 @@ export function MLDynamicAttributesSection({
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         const list = Array.isArray(data?.attributes) ? data.attributes : [];
-        if (!cancelled) setAttrs(list as MLDynamicAttribute[]);
+        if (!cancelled) {
+          setAttrs(list as MLDynamicAttribute[]);
+          setAttrsCategory(id);
+        }
       })
       .catch((err) => {
         if (!cancelled) {
           setAttrs([]);
+          setAttrsCategory("");
           setError(err instanceof Error ? err.message : String(err));
         }
       })
@@ -104,12 +114,14 @@ export function MLDynamicAttributesSection({
   const autoExpandedFor = useRef<string | null>(null);
   useEffect(() => {
     const id = (categoryId || "").trim();
-    if (!id || autoExpandedFor.current === id) return;
+    // attrsCategory !== id ⇒ os attrs em memória são de OUTRA categoria
+    // (fetch em voo) — não decidir com dado stale.
+    if (!id || attrsCategory !== id || autoExpandedFor.current === id) return;
     if (needsPosition) {
       setFichaOpen(true);
       autoExpandedFor.current = id;
     }
-  }, [categoryId, needsPosition]);
+  }, [categoryId, attrsCategory, needsPosition]);
 
   if (!categoryId) return null;
   if (loading) {
