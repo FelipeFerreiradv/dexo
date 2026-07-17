@@ -1,7 +1,17 @@
 import { MagaluApiService } from "./magalu-api.service";
 import { MAGALU_CONSTANTS } from "../magalu/magalu-constants";
 import { MAGALU_CATEGORY_MAP } from "../magalu/magalu-category-map";
-import type { MagaluAttribute } from "../types/magalu-category.types";
+import { extractPartType, extractPosition } from "../lib/title-parse";
+import { AMBIGUOUS_LABELS } from "../lib/category-inference/map-generation";
+import {
+  basePartTypeKey,
+  lookupPartTypeCategory,
+} from "../lib/category-inference/part-type-category-map";
+import { isCompoundTitle } from "../lib/category-inference/title-guards";
+import type {
+  MagaluAttribute,
+  MagaluCategory,
+} from "../types/magalu-category.types";
 
 /**
  * Resolve a categoria Magalu de um produto e preenche os atributos OBRIGATÓRIOS
@@ -24,16 +34,31 @@ export interface MagaluCategoryFields {
   missing: string[];
 }
 
+/**
+ * Cache por TERMO da busca ao vivo de categorias (a taxonomia da Magalu é
+ * global do marketplace, não por seller — se um 2º seller com árvore própria
+ * aparecer, chavear a cache por conta). TTL curto: taxonomia muda raramente,
+ * mas não vale arriscar categoria extinta em cache longo.
+ */
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_CACHE_MAX = 500;
+const searchCache = new Map<string, { data: MagaluCategory[]; exp: number }>();
+
 export class MagaluCategoryResolutionService {
   /**
    * Resolve o id da categoria, em ordem de confiança:
-   *  1. product.magaluCategoryId explícito — vence sempre.
-   *  2. DE-PARA curado por tipo de peça (prefixo mais longo do nome) — preciso.
-   *  3. busca por nome com TERMO PROGRESSIVO (nome cru → 3 → 2 → 1ª palavra),
-   *     porque a busca por similaridade falha com nome específico demais.
-   *  4. VIÉS DE DOMÍNIO: entre os resultados, prefere os cujo `path` começa por
-   *     CATEGORY_ROOT_HINT (ex.: "Veículos e Peças"). Sem match no domínio →
-   *     retorna null (SKU fica em DRAFT; não categoriza errado).
+   *  1.   product.magaluCategoryId explícito — vence sempre.
+   *  2.   DE-PARA curado por tipo de peça (prefixo mais longo do nome) — preciso.
+   *  2.5. Mapa do motor de inferência por TIPO DE PEÇA extraído do título
+   *       (não exige prefixo — pega "Par de Faróis Palio"). Resolve sem
+   *       nenhuma chamada de API quando a entrada tem magaluId curado.
+   *  3.   busca por nome com TERMO PROGRESSIVO, agora liderada pelos termos
+   *       CANÔNICOS do tipo de peça ("cubo de roda" antes do nome cru — a
+   *       busca por similaridade da Magalu acerta muito mais com o termo
+   *       canônico do que com título específico demais).
+   *  4.   VIÉS DE DOMÍNIO: entre os resultados, prefere os cujo `path` começa
+   *       por CATEGORY_ROOT_HINT (ex.: "Veículos e Peças"). Sem match no
+   *       domínio → retorna null (SKU fica em DRAFT; não categoriza errado).
    * Com o hint vazio ("") cai no comportamento simples (1º resultado).
    */
   static async resolveCategoryId(
@@ -46,6 +71,10 @@ export class MagaluCategoryResolutionService {
     const mapped = this.lookupCategoryMap(product);
     if (mapped) return mapped;
 
+    const inference = this.partTypeInference(product);
+    if (inference?.hit?.entry.magaluId)
+      return String(inference.hit.entry.magaluId);
+
     // normalize() (sem acento) nos DOIS lados — a árvore real pode vir com
     // acentuação/casing divergente; comparar acento-insensível evita perder o
     // domínio e deixar tudo em DRAFT.
@@ -53,10 +82,8 @@ export class MagaluCategoryResolutionService {
       product?.magaluCategoryRootHint ?? MAGALU_CONSTANTS.CATEGORY_ROOT_HINT,
     );
 
-    for (const term of this.searchTerms(product)) {
-      const cats = await MagaluApiService.searchCategories(accessToken, {
-        name: term,
-      });
+    for (const term of this.searchTerms(product, inference)) {
+      const cats = await this.searchCategoriesCached(accessToken, term);
       if (!cats.length) continue;
       if (!hint) return cats[0].id;
       const inDomain = cats.find((c) =>
@@ -68,18 +95,79 @@ export class MagaluCategoryResolutionService {
     return null;
   }
 
-  /** Termos de busca, do mais específico ao mais genérico (dedup). */
-  private static searchTerms(product: any): string[] {
+  /**
+   * Tipo de peça extraído do título + entrada do mapa de inferência. null
+   * quando o tipo é desconhecido, ambíguo ("tampa", "suporte") ou o título é
+   * COMPOSTO (componente de outra peça — "REATOR farol" não pode virar busca
+   * por "farol": o viés de domínio não salvaria, Faróis está no domínio).
+   */
+  private static partTypeInference(product: any) {
+    const name = String(product?.name ?? "");
+    const folded = extractPartType(name);
+    if (!folded) return null;
+    const position = extractPosition(name);
+    const baseLabel = basePartTypeKey(folded, position);
+    if (AMBIGUOUS_LABELS.has(baseLabel)) return null;
+    if (isCompoundTitle(name, folded)) return null;
+    return {
+      baseLabel,
+      hit: lookupPartTypeCategory(folded, position),
+    };
+  }
+
+  /**
+   * Termos de busca, do mais específico ao mais genérico (dedup). Termos
+   * canônicos do tipo de peça vêm PRIMEIRO (magaluTerm curado, depois o
+   * label-base de-kebabado: "cubo-de-roda" → "cubo de roda"); a cauda atual
+   * (nome cru → 3 → 2 → 1ª palavra) permanece como fallback integral.
+   */
+  private static searchTerms(
+    product: any,
+    inference: ReturnType<
+      typeof MagaluCategoryResolutionService.partTypeInference
+    > = null,
+  ): string[] {
     const name = String(product?.name ?? "").trim();
     if (!name) return [];
     const words = name.split(/\s+/).filter(Boolean);
+    const canonical: string[] = [];
+    if (inference) {
+      if (inference.hit?.entry.magaluTerm)
+        canonical.push(inference.hit.entry.magaluTerm);
+      canonical.push(inference.baseLabel.replace(/-/g, " "));
+    }
     const candidates = [
+      ...canonical,
       name,
       words.slice(0, 3).join(" "),
       words.slice(0, 2).join(" "),
       words[0],
     ].filter((t): t is string => Boolean(t));
     return Array.from(new Set(candidates));
+  }
+
+  /** Busca ao vivo com cache Map+TTL por termo normalizado. */
+  private static async searchCategoriesCached(
+    accessToken: string,
+    term: string,
+  ): Promise<MagaluCategory[]> {
+    const key = this.normalize(term);
+    const cached = searchCache.get(key);
+    if (cached && cached.exp > Date.now()) return cached.data;
+    const cats = await MagaluApiService.searchCategories(accessToken, {
+      name: term,
+    });
+    if (searchCache.size >= SEARCH_CACHE_MAX) {
+      const first = searchCache.keys().next().value;
+      if (first !== undefined) searchCache.delete(first);
+    }
+    searchCache.set(key, { data: cats, exp: Date.now() + SEARCH_CACHE_TTL_MS });
+    return cats;
+  }
+
+  /** Apenas para testes — limpa o cache de busca por termo. */
+  static __clearSearchCache() {
+    searchCache.clear();
   }
 
   /**
