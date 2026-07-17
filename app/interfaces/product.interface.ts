@@ -86,6 +86,10 @@ export interface Product {
   shopeeCategorySource?: "auto" | "manual" | "imported";
   shopeeCategoryChosenAt?: Date;
 
+  magaluCategoryId?: string;
+  magaluCategorySource?: "auto" | "manual" | "imported";
+  magaluCategoryChosenAt?: Date;
+
   heightCm?: number;
   widthCm?: number;
   lengthCm?: number;
@@ -156,6 +160,10 @@ export interface ProductCreate {
   shopeeCategoryId?: string;
   shopeeCategorySource?: "auto" | "manual" | "imported";
   shopeeCategoryChosenAt?: Date;
+
+  magaluCategoryId?: string;
+  magaluCategorySource?: "auto" | "manual" | "imported";
+  magaluCategoryChosenAt?: Date;
 
   heightCm?: number;
   widthCm?: number;
@@ -246,6 +254,10 @@ export interface ProductUpdate {
   shopeeCategoryId?: string;
   shopeeCategorySource?: "auto" | "manual" | "imported";
   shopeeCategoryChosenAt?: Date;
+
+  magaluCategoryId?: string;
+  magaluCategorySource?: "auto" | "manual" | "imported";
+  magaluCategoryChosenAt?: Date;
 
   heightCm?: number;
   widthCm?: number;

@@ -121,6 +121,10 @@ model Product {
   shopeeCategoryId       String?
   shopeeCategorySource   String?
   shopeeCategoryChosenAt DateTime?
+  // Categoria Magalu (uuid da taxonomia da API — não há árvore local).
+  magaluCategoryId       String?
+  magaluCategorySource   String?
+  magaluCategoryChosenAt DateTime?
   locationId             String?
   scrapId                String?
   attributes             Json?

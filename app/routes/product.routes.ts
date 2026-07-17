@@ -296,6 +296,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         mlCategorySource,
         shopeeCategory,
         shopeeCategorySource,
+        magaluCategory,
+        magaluCategorySource,
 
         // Medidas / peso
         heightCm,
@@ -382,6 +384,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         mlCategorySource: mlCategorySource ?? undefined,
         shopeeCategory: shopeeCategory ?? undefined,
         shopeeCategorySource: shopeeCategorySource ?? undefined,
+        magaluCategory:
+          typeof magaluCategory === "string" && magaluCategory.trim()
+            ? magaluCategory.trim()
+            : undefined,
+        magaluCategorySource: magaluCategorySource ?? undefined,
         createListing: Boolean(createListing),
         autoSku: Boolean(autoSku),
         createListingCategoryId: createListingCategoryId ?? undefined,
@@ -545,6 +552,33 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           (sanitized.shopeeCategorySource as any) ||
           (shopeeCategory ? "manual" : "auto");
         resolvedShopeeCategoryChosenAt = new Date();
+      }
+
+      // Magalu: uuid da taxonomia da API (não há árvore local para validar).
+      // Persistir faz o caminho "explícito" do resolveCategoryId funcionar —
+      // a publicação para de re-resolver ao vivo a cada envio.
+      let resolvedMagaluCategoryId: string | undefined;
+      let resolvedMagaluCategorySource:
+        | "auto"
+        | "manual"
+        | "imported"
+        | undefined;
+      let resolvedMagaluCategoryChosenAt: Date | undefined;
+      let magaluCategoryToPersist = sanitized.magaluCategory;
+      if (!magaluCategoryToPersist && sanitized.listings?.length) {
+        const firstMagaluListing = sanitized.listings.find(
+          (l: any) => l.platform === "MAGALU" && !!l.categoryId,
+        );
+        if (firstMagaluListing?.categoryId) {
+          magaluCategoryToPersist = String(firstMagaluListing.categoryId);
+        }
+      }
+      if (magaluCategoryToPersist) {
+        resolvedMagaluCategoryId = magaluCategoryToPersist;
+        resolvedMagaluCategorySource =
+          (sanitized.magaluCategorySource as any) ||
+          (magaluCategory ? "manual" : "auto");
+        resolvedMagaluCategoryChosenAt = new Date();
       }
 
       const requiresShopeeCategory = Boolean(
@@ -743,6 +777,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           shopeeCategoryId: resolvedShopeeCategoryId,
           shopeeCategorySource: resolvedShopeeCategorySource,
           shopeeCategoryChosenAt: resolvedShopeeCategoryChosenAt,
+          magaluCategoryId: resolvedMagaluCategoryId,
+          magaluCategorySource: resolvedMagaluCategorySource,
+          magaluCategoryChosenAt: resolvedMagaluCategoryChosenAt,
 
           // Medidas / peso
           heightCm: sanitized.heightCm,
@@ -1385,6 +1422,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           mlCategorySource,
           shopeeCategory,
           shopeeCategorySource,
+          magaluCategory,
+          magaluCategorySource,
 
           // Medidas / peso
           heightCm,
@@ -1495,6 +1534,21 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           }
         }
 
+        // Magalu: uuid da taxonomia da API (sem árvore local para validar).
+        let resolvedMagaluCategoryId: string | undefined;
+        let resolvedMagaluCategorySource:
+          | "auto"
+          | "manual"
+          | "imported"
+          | undefined;
+        let resolvedMagaluCategoryChosenAt: Date | undefined;
+        if (typeof magaluCategory === "string" && magaluCategory.trim()) {
+          resolvedMagaluCategoryId = magaluCategory.trim();
+          resolvedMagaluCategorySource =
+            (magaluCategorySource as any) || "manual";
+          resolvedMagaluCategoryChosenAt = new Date();
+        }
+
         const result = await productUseCase.update(
           id,
           {
@@ -1523,6 +1577,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             shopeeCategoryId: resolvedShopeeCategoryId,
             shopeeCategorySource: resolvedShopeeCategorySource,
             shopeeCategoryChosenAt: resolvedShopeeCategoryChosenAt,
+            magaluCategoryId: resolvedMagaluCategoryId,
+            magaluCategorySource: resolvedMagaluCategorySource,
+            magaluCategoryChosenAt: resolvedMagaluCategoryChosenAt,
 
             // Medidas / peso
             heightCm,
