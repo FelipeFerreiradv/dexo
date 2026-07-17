@@ -79,8 +79,13 @@ export interface CatalogStatDeps {
   mlCuidToExternalId(cuid: string): Promise<string | null>;
 }
 
-/** Gate: na família partType-only a moda precisa cobrir ≥ 30% da amostra. */
-const PART_TYPE_ONLY_MIN_MODE_SHARE = 0.3;
+/**
+ * Gate: a moda precisa cobrir ≥ 50% da amostra para votar. Validação com 800
+ * produtos reais mostrou que moda difusa (ex.: 6% numa família heterogênea de
+ * "tampa"/"vidro") vira voto forte errado sem este piso — mesma filosofia do
+ * gate modeShare do gerador do mapa.
+ */
+const MIN_MODE_SHARE = 0.5;
 /** Desconto da família partType-only sobre a fórmula da família exata. */
 const PART_TYPE_ONLY_FACTOR = 0.75;
 /** Teto da força na família partType-only. */
@@ -120,7 +125,7 @@ export async function catalogStatVote(
       const vote = await voteFromModes(siteId, family, deps, {
         factor: 1,
         cap: 0.85,
-        minModeShare: 0,
+        minModeShare: MIN_MODE_SHARE,
         reason: (n) =>
           `base interna: moda de ${n} produtos da família ${parts.partType}|${parts.brand}|${parts.model}`,
       });
@@ -131,7 +136,7 @@ export async function catalogStatVote(
     return await voteFromModes(siteId, partTypeOnly, deps, {
       factor: PART_TYPE_ONLY_FACTOR,
       cap: PART_TYPE_ONLY_CAP,
-      minModeShare: PART_TYPE_ONLY_MIN_MODE_SHARE,
+      minModeShare: MIN_MODE_SHARE,
       reason: (n) =>
         `base interna: moda de ${n} produtos do tipo ${parts.partType}`,
     });
