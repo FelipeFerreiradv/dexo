@@ -29,12 +29,16 @@ import type {
   ReviewProduct,
 } from "./per-product-types";
 
+// Formatter reaproveitado (a Prévia re-renderiza a cada tecla no modo Revisão;
+// reconstruir o Intl.NumberFormat por chamada era desperdício). Saída idêntica.
+const BRL_FORMATTER = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
 const formatCurrency = (value: number | null | undefined) => {
   if (value === null || value === undefined) return "—";
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(value);
+  return BRL_FORMATTER.format(value);
 };
 
 /** Garante que a categoria selecionada apareça com NOME na Prévia mesmo que a
