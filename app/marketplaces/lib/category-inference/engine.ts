@@ -13,13 +13,10 @@
  */
 
 import prisma from "../../../lib/prisma";
-import {
-  buildLookupColumns,
-  normalizeText,
-  parseTitleToParts,
-} from "../title-parse";
+import { buildLookupColumns, parseTitleToParts } from "../title-parse";
 import { AMBIGUOUS_LABELS } from "./map-generation";
 import { basePartTypeKey } from "./part-type-category-map";
+import { isCompoundTitle } from "./title-guards";
 import {
   catalogStatVote,
   partTypeMapVote,
@@ -35,49 +32,6 @@ export interface CategoryInferenceResult {
 }
 
 const EMPTY_RESULT: CategoryInferenceResult = { votes: [], pieceType: null };
-
-/**
- * Palavras de COMPONENTE que o PART_TYPES não conhece: quando presentes, o
- * tipo extraído é o da peça-MÃE, não do que está à venda ("REATOR farol",
- * "DOBRADIÇA capô", "PARAFUSOS do cabeçote", "CINTA airbag" — casos reais da
- * validação com 800 produtos). Título composto → conservador: sem voto.
- */
-const COMPONENT_BLOCKERS = [
-  "dobradica",
-  "parafuso",
-  "reator",
-  "cinta",
-  "moldura",
-  "engrenagem",
-  "interruptor",
-  "reparo",
-  "carcaca",
-];
-
-/**
- * true quando o título é COMPOSTO demais para a inferência votar com
- * segurança: contém palavra de componente desconhecida do vocabulário, ou um
- * label ambíguo ("tampa", "caixa") fora do próprio tipo extraído ("Lanterna
- * TAMPA Voyage" = lanterna DA tampa, folha diferente de Faróis Traseiros).
- */
-function isCompoundTitle(title: string, partTypeFolded: string): boolean {
-  const tokens = normalizeText(title).split(/[^a-z0-9]+/);
-  for (const token of tokens) {
-    if (token.length < 4) continue;
-    for (const blocker of COMPONENT_BLOCKERS) {
-      if (token.startsWith(blocker)) return true;
-    }
-    for (const ambiguous of AMBIGUOUS_LABELS) {
-      if (
-        token.startsWith(ambiguous) &&
-        token.length - ambiguous.length <= 2 &&
-        !partTypeFolded.includes(ambiguous)
-      )
-        return true;
-    }
-  }
-  return false;
-}
 
 const MODES_SELECT = {
   mlCategoryIdMode: true,
