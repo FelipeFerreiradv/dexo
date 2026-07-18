@@ -3,6 +3,7 @@ import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
 import {
   ListingDispatcher,
   ListingDispatchRequest,
+  crossMarketplaceStaggerDisabled,
 } from "../marketplaces/services/listing-dispatcher.service";
 import {
   BulkListingJobRepository,
@@ -19,18 +20,23 @@ import { Platform } from "@prisma/client";
 import prisma from "../lib/prisma";
 
 /**
- * Enriquece a config de aumento percentual escalonado entre contas ML antes de
+ * Enriquece a config de aumento percentual escalonado entre contas antes de
  * persistir/disparar o job. O front envia apenas { enabled, percent }; aqui
  * resolvemos o percentual final (clamp 0..100, com fallback à preferência do
- * usuário) e congelamos `indexByAccountId` pela ordem de seleção das contas ML
- * (= ordem das entradas ML em `requests`; 1ª selecionada = índice 0 = preço
- * base). Persistir essa config no overrideTemplate faz o retry-failed reproduzir
- * preços idênticos, pois lê a config congelada em vez de recalcular.
+ * usuário) e congelamos os mapas de índice pela ordem de seleção das contas
+ * (= ordem das entradas em `requests`; 1ª selecionada = índice 0 = preço
+ * base). Cada plataforma tem escada 0-based própria: `indexByAccountId` (ML,
+ * nome legado — congela mesmo com 1 conta, leniência histórica; idx 0 = sem
+ * efeito) e `shopee/magaluIndexByAccountId` (novos; só com 2+ contas da
+ * plataforma e kill-switch desligado). Persistir essa config no
+ * overrideTemplate faz o retry-failed reproduzir preços idênticos, pois lê a
+ * config congelada em vez de recalcular.
  *
  * Devolve o template inalterado quando o recurso está desligado e remove a flag
  * (no-op, comportamento atual) quando o percentual resolvido é <= 0.
+ * Exportada apenas para testes.
  */
-async function enrichCrossAccountIncrease(
+export async function enrichCrossAccountIncrease(
   userId: string,
   requests: Array<{ platform: BulkListingPlatform; accountId: string }>,
   template: BulkOverrideTemplate | null,
@@ -71,9 +77,36 @@ async function enrichCrossAccountIncrease(
     }
   }
 
+  // Mapas Shopee/Magalu: escada 0-based própria por plataforma, só com 2+
+  // contas (com 1 conta não há o que escalonar) e kill-switch desligado.
+  const mapFor = (
+    platform: BulkListingPlatform,
+  ): Record<string, number> | null => {
+    const map: Record<string, number> = {};
+    let i = 0;
+    for (const r of requests) {
+      if (
+        r.platform === platform &&
+        !Object.prototype.hasOwnProperty.call(map, r.accountId)
+      ) {
+        map[r.accountId] = i++;
+      }
+    }
+    return i >= 2 ? map : null;
+  };
+  const staggerOthers = !crossMarketplaceStaggerDisabled();
+  const shopeeMap = staggerOthers ? mapFor("SHOPEE") : null;
+  const magaluMap = staggerOthers ? mapFor("MAGALU") : null;
+
   return {
     ...template,
-    crossAccountIncrease: { enabled: true, percent, indexByAccountId },
+    crossAccountIncrease: {
+      enabled: true,
+      percent,
+      indexByAccountId,
+      ...(shopeeMap ? { shopeeIndexByAccountId: shopeeMap } : {}),
+      ...(magaluMap ? { magaluIndexByAccountId: magaluMap } : {}),
+    },
   };
 }
 

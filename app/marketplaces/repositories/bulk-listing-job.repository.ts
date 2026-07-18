@@ -70,14 +70,22 @@ export interface BulkOverrideTemplate {
   titleSuffix?: string;
   mlCategoryStrategy?: "auto" | "from_product";
 
-  // Aumento percentual escalonado entre contas ML. Enriquecido e persistido
+  // Aumento percentual escalonado entre contas. Enriquecido e persistido
   // pelo endpoint POST /listings/bulk (o front envia apenas { enabled, percent }).
-  // `indexByAccountId` congela a ordem de seleção das contas ML para que o
-  // retry reproduza preços idênticos. Ver cross-account-price.service.
+  // Os mapas congelam a ordem de seleção das contas para que o retry reproduza
+  // preços idênticos. Cada plataforma tem escada 0-based PRÓPRIA e lê SOMENTE o
+  // seu mapa (sem fallback cruzado). `indexByAccountId` é o mapa ML — nome
+  // legado, mantido por compat com jobs já persistidos em JSON; os mapas
+  // Shopee/Magalu são opcionais e ausentes em jobs antigos (⇒ comportamento
+  // ML-only, idêntico ao anterior). O percentual é GLOBAL (único para as 3
+  // plataformas). Ver cross-account-price.service e o kill-switch
+  // CROSS_ACCOUNT_STAGGER_MARKETPLACES_DISABLED.
   crossAccountIncrease?: {
     enabled: boolean;
     percent: number;
     indexByAccountId?: Record<string, number>;
+    shopeeIndexByAccountId?: Record<string, number>;
+    magaluIndexByAccountId?: Record<string, number>;
   };
 
   // Config por produto (modo Revisão individual). Opcional/aditivo: ausente ⇒

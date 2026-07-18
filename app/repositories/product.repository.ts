@@ -1481,8 +1481,24 @@ class ProductRepositoryPrisma implements ProductRepository {
     }
   }
 
-  async findById(id: string, userId?: string): Promise<Product | null> {
+  async findById(
+    id: string,
+    userId?: string,
+    // Egress (padrão perf do projeto): `rulesLite` projeta só
+    // (id, name, price, costPrice) — o que as regras de bulk/escalonamento
+    // consomem — em vez da row inteira (JSONBs pesados) + compatibilidades.
+    // O retorno é um cast parcial: NÃO leia outros campos nesse modo.
+    // Default (ausente) = comportamento histórico, byte-idêntico.
+    opts?: { rulesLite?: boolean },
+  ): Promise<Product | null> {
     try {
+      if (opts?.rulesLite) {
+        const lite = await prisma.product.findFirst({
+          where: { id, ...(userId ? { userId } : {}) },
+          select: { id: true, name: true, price: true, costPrice: true },
+        });
+        return lite ? (lite as unknown as Product) : null;
+      }
       const item = await prisma.product.findFirst({
         where: { id, ...(userId ? { userId } : {}) },
         include: { compatibilities: true },

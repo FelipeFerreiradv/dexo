@@ -674,15 +674,53 @@ export class ListingRepository {
   }
 
   /**
-   * Busca listing por ID interno
+   * Busca listing por ID interno.
+   *
+   * Egress (padrão perf do projeto): `leanProduct` projeta o Product incluído
+   * a { userId, sku } — os ÚNICOS campos que o caminho de edição de fields lê
+   * (ownership + chave de API Magalu). Sem a flag (default), comportamento
+   * idêntico ao histórico: row completa do produto (JSONBs pesados inclusos),
+   * para os callers que precisam dela. O cast mantém o TIPO de retorno
+   * estável (payload cheio) para não propagar união de tipos aos consumidores;
+   * NÃO leia outros campos de `listing.product` num caminho que passe
+   * leanProduct — eles virão undefined em runtime.
    */
-  static async findById(listingId: string) {
+  static async findById(
+    listingId: string,
+    opts?: { leanProduct?: boolean },
+  ) {
+    const include = (
+      opts?.leanProduct
+        ? {
+            product: { select: { userId: true, sku: true } },
+            marketplaceAccount: true,
+          }
+        : { product: true, marketplaceAccount: true }
+    ) as { product: true; marketplaceAccount: true };
     return prisma.productListing.findUnique({
       where: { id: listingId },
-      include: {
-        product: true,
-        marketplaceAccount: true,
+      include,
+    });
+  }
+
+  /**
+   * Write cirúrgico de priceOverride com retorno mínimo (select id) — padrão
+   * perf(egress): o `updateListing` genérico devolve a row inteira, que os
+   * caminhos de preço escalonado descartam. Mantém a MESMA normalização do
+   * updateListing: valor <= 0 vira null ("herdar o preço do produto"), nunca
+   * chega R$ 0 ao banco; null explícito limpa o override.
+   */
+  static async updatePriceOverride(
+    listingId: string,
+    priceOverride: number | null,
+  ): Promise<void> {
+    await prisma.productListing.update({
+      where: { id: listingId },
+      data: {
+        priceOverride:
+          priceOverride !== null && priceOverride > 0 ? priceOverride : null,
       },
+      select: { id: true },
     });
   }
 }

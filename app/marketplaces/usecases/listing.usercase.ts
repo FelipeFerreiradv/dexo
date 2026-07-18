@@ -5033,7 +5033,12 @@ export class ListingUseCase {
     fields: ListingFullEditInput,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      const listing = await ListingRepository.findById(listingId);
+      // Egress: este caminho só lê product.userId (ownership) e product.sku
+      // (chave Magalu) — projeta o produto em vez de trafegar a row inteira
+      // (JSONBs pesados) a cada edição/override de anúncio.
+      const listing = await ListingRepository.findById(listingId, {
+        leanProduct: true,
+      });
       if (!listing) {
         return { success: false, error: "Anúncio não encontrado" };
       }
@@ -5250,6 +5255,67 @@ export class ListingUseCase {
     }
   }
 
+  // Cache TTL do canal de venda Magalu, por accessToken. O canal do seller é
+  // estável; sem MAGALU_DEFAULT_CHANNEL_ID, cada escrita de preço faria 1 GET
+  // /channels — num lote escalonado (pool de 4) isso vira rajada de chamadas
+  // idênticas. Chave por token: token novo (refresh) ⇒ no máximo 1 refetch.
+  // Só resultados COM canal entram no cache (ausência não é cacheada).
+  private static readonly MAGALU_CHANNEL_CACHE_TTL_MS = 10 * 60 * 1000;
+  private static magaluChannelCache = new Map<
+    string,
+    { id: string; at: number }
+  >();
+
+  /** Reset do cache de canal — SÓ para specs (cache é estado de módulo). */
+  static __resetMagaluChannelCacheForTests(): void {
+    ListingUseCase.magaluChannelCache.clear();
+  }
+
+  /**
+   * Resolve o canal de venda Magalu para operações de preço fora do create,
+   * com a MESMA precedência do createMagaluListing: env MAGALU_DEFAULT_CHANNEL_ID,
+   * senão o 1º canal do seller (/channels, com cache TTL por token). Lança
+   * erro claro quando não há canal — sem canal não existe como escrever preço
+   * na Magalu.
+   */
+  private static async resolveMagaluChannelIdForUpdate(
+    accessToken: string,
+  ): Promise<string> {
+    let channelId: string | undefined =
+      process.env.MAGALU_DEFAULT_CHANNEL_ID || undefined;
+    if (!channelId) {
+      const cached = ListingUseCase.magaluChannelCache.get(accessToken);
+      if (
+        cached &&
+        Date.now() - cached.at < ListingUseCase.MAGALU_CHANNEL_CACHE_TTL_MS
+      ) {
+        return cached.id;
+      }
+      try {
+        const channels = await MagaluApiService.getChannels(accessToken);
+        channelId = channels[0]?.id;
+        if (channelId) {
+          ListingUseCase.magaluChannelCache.set(accessToken, {
+            id: channelId,
+            at: Date.now(),
+          });
+          // Bound simples: tokens rotacionam; evita crescimento indefinido.
+          if (ListingUseCase.magaluChannelCache.size > 100) {
+            ListingUseCase.magaluChannelCache.clear();
+          }
+        }
+      } catch {
+        /* tratado como ausência de canal abaixo */
+      }
+    }
+    if (!channelId) {
+      throw new Error(
+        "Não foi possível resolver o canal de venda Magalu para atualizar o preço. Configure MAGALU_DEFAULT_CHANNEL_ID ou habilite um canal no seller.",
+      );
+    }
+    return channelId;
+  }
+
   /**
    * Remove (encerra) um anúncio Magalu. A doc não expõe DELETE de SKU; o
    * equivalente a "parar de vender" é PATCH `active:false` (UNPUBLISHED). Depois
@@ -5318,9 +5384,13 @@ export class ListingUseCase {
   }
 
   /**
-   * Edição de campos de um anúncio Magalu (PATCH parcial no SKU). Escopo mínimo:
-   * title/description (os únicos campos de texto editáveis aqui). Preço/estoque
-   * têm endpoints dedicados (setPrice/setStock) e fluem pelo "Editar produto".
+   * Edição de campos de um anúncio Magalu. Title/description via PATCH parcial
+   * no SKU; preço via endpoint dedicado (setPrice — o mesmo do create e do
+   * sync), pois o PATCH de SKU não carrega preço. O priceOverride é persistido
+   * ANTES do push: a publicação Magalu é assíncrona (POST 202) e o registro de
+   * preço pode ainda não existir/estar em análise; com o override no banco, o
+   * próximo sync reaplica sozinho via effectiveProduct (self-healing). Estoque
+   * segue sem override por design (evita oversell).
    * Sem campos mapeáveis ⇒ no-op com sucesso (mesmo contrato do ML/Shopee).
    */
   private static async updateMagaluListingFields(
@@ -5334,6 +5404,27 @@ export class ListingUseCase {
     }
     if (!sku) {
       return { success: false, error: "Anúncio Magalu sem SKU para editar" };
+    }
+    // Valida o preço ANTES de qualquer efeito colateral (patch/persist/push),
+    // espelhando a validação do Shopee. Tristate do PUT /listings/:id:
+    // undefined = não tocar; null = LIMPAR o override (volta a herdar o preço
+    // do produto); valor = aplicar.
+    let priceToApply: number | null = null;
+    let clearPriceOverride = false;
+    if (fields.priceOverride !== undefined) {
+      if (fields.priceOverride === null) {
+        clearPriceOverride = true;
+      } else {
+        const priceNum = Number(fields.priceOverride);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) {
+          return {
+            success: false,
+            error:
+              "Preço inválido para anúncio Magalu (deve ser número positivo)",
+          };
+        }
+        priceToApply = priceNum;
+      }
     }
     const token = await ListingUseCase.ensureFreshMagaluToken(account);
     if (!token) {
@@ -5358,6 +5449,21 @@ export class ListingUseCase {
     }
     if (Object.keys(patch).length > 0) {
       await MagaluApiService.patchSku(token, sku, patch);
+    }
+    if (clearPriceOverride) {
+      // Limpa o override persistido — sem push imediato: ML/Shopee também só
+      // persistem o null e deixam o próximo sync reconciliar o preço no
+      // marketplace via effectiveProduct (que passa a herdar do produto).
+      await ListingRepository.updatePriceOverride(listing.id, null);
+    }
+    if (priceToApply !== null) {
+      // Persistência cirúrgica: SÓ priceOverride, com retorno mínimo (não usa
+      // buildListingPersistData/updateListing para não introduzir persistência
+      // de outros overrides nem trafegar a row inteira de volta).
+      await ListingRepository.updatePriceOverride(listing.id, priceToApply);
+      const channelId =
+        await ListingUseCase.resolveMagaluChannelIdForUpdate(token);
+      await MagaluApiService.setPrice(token, sku, priceToApply, channelId);
     }
     return { success: true };
   }

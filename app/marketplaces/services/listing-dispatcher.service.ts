@@ -98,6 +98,17 @@ export interface ListingDispatchSnapshot {
 }
 
 /**
+ * Kill-switch do escalonamento de preço entre contas para Shopee/Magalu.
+ * Com CROSS_ACCOUNT_STAGGER_MARKETPLACES_DISABLED=1, os builders deixam de
+ * popular os mapas de índice Shopee/Magalu E o apply deixa de LÊ-los (cobre
+ * jobs já persistidos com mapas novos, ex.: retry-failed) — revertendo ao
+ * comportamento ML-only anterior. O caminho ML nunca é afetado pelo switch.
+ */
+export function crossMarketplaceStaggerDisabled(): boolean {
+  return process.env.CROSS_ACCOUNT_STAGGER_MARKETPLACES_DISABLED === "1";
+}
+
+/**
  * Ponto único de orquestração para criação de anúncios em múltiplos
  * marketplaces. Substitui os blocos fire-and-forget duplicados em
  * `POST /products` (criação) e, futuramente, no fluxo de edição.
@@ -134,7 +145,16 @@ export class ListingDispatcher {
       void (async () => {
         let productRules: BulkRulesProductInput | undefined;
         try {
-          const p = await new ProductRepositoryPrisma().findById(productId);
+          // Egress: espelho do productRulesCache do dispatchBatch — applyRules
+          // só precisa de (id, name, price, costPrice); `rulesLite` evita a
+          // row inteira (JSONBs pesados) + compatibilidades, e escopa por
+          // userId (isolamento multi-tenant, padrão do hardening). Se a query
+          // falhar, o fallback do applyOverridesAfterCreate cobre.
+          const p = await new ProductRepositoryPrisma().findById(
+            productId,
+            userId,
+            { rulesLite: true },
+          );
           if (p) {
             productRules = {
               id: p.id,
@@ -262,6 +282,19 @@ export class ListingDispatcher {
             productId,
             "SHOPEE",
           );
+          // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
+          // contas Shopee) se houver template. Sem template, nada muda; template
+          // sem mapa Shopee (ex.: só ML) ⇒ no-op, comportamento atual.
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -292,6 +325,19 @@ export class ListingDispatcher {
             productId,
             "MAGALU",
           );
+          // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
+          // contas Magalu) se houver template. Sem template, nada muda; template
+          // sem mapa Magalu (ex.: só ML) ⇒ no-op, comportamento atual.
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -621,10 +667,10 @@ export class ListingDispatcher {
 
   /**
    * Aplica overrides (regras de bulk + aumento percentual escalonado entre
-   * contas ML) a um anúncio recém-criado, via updateListingFields. Compartilhado
-   * entre o dispatch single (runOne) e o batch (runOneWithResult). Resolve o
-   * productRules a partir do que for fornecido (pré-fetch / cache) ou busca no
-   * repositório. Nunca lança — falhas viram warning.
+   * contas, por plataforma) a um anúncio recém-criado, via updateListingFields.
+   * Compartilhado entre o dispatch single (runOne) e o batch (runOneWithResult).
+   * Resolve o productRules a partir do que for fornecido (pré-fetch / cache) ou
+   * busca no repositório. Nunca lança — falhas viram warning.
    */
   private static async applyOverridesAfterCreate(args: {
     userId: string;
@@ -641,6 +687,8 @@ export class ListingDispatcher {
       let productRules: BulkRulesProductInput | undefined =
         args.productRules ?? args.productRulesCache?.get(productId);
       if (!productRules) {
+        // Fallback FRIO (só quando prefetch/cache falharam): mantém o findById
+        // clássico do repositório deliberadamente — caminho raro em produção.
         const product = await new ProductRepositoryPrisma().findById(productId);
         if (product) {
           productRules = {
@@ -659,18 +707,27 @@ export class ListingDispatcher {
 
       let fields = applyRules(productRules, overrideTemplate);
 
-      // Aumento percentual escalonado entre contas ML: compõe o priceOverride
+      // Aumento percentual escalonado entre contas: compõe o priceOverride
       // por conta sobre o preço base (regra de preço já aplicada, se houver).
-      // idx 0 = preço base (sem alteração) ⇒ comportamento idêntico ao de hoje.
-      // Só ML; Shopee nunca escalona.
+      // idx 0 = preço base (sem alteração). Cada plataforma lê SOMENTE o seu
+      // mapa (escadas independentes, sem fallback cruzado): ML usa o
+      // indexByAccountId legado; Shopee/Magalu usam os mapas próprios e ainda
+      // exigem o kill-switch desligado — o gate na LEITURA cobre jobs já
+      // persistidos com mapas novos (ex.: retry-failed). Template sem o mapa
+      // da plataforma ⇒ idx 0 ⇒ sem escalonamento (jobs antigos = ML-only).
       const ca = overrideTemplate.crossAccountIncrease;
-      if (
-        ca?.enabled &&
-        ca.percent > 0 &&
-        req.platform === "MERCADO_LIVRE" &&
-        req.accountId
-      ) {
-        const idx = ca.indexByAccountId?.[req.accountId] ?? 0;
+      if (ca?.enabled && ca.percent > 0 && req.accountId) {
+        const staggerMap =
+          req.platform === "MERCADO_LIVRE"
+            ? ca.indexByAccountId
+            : crossMarketplaceStaggerDisabled()
+              ? undefined
+              : req.platform === "SHOPEE"
+                ? ca.shopeeIndexByAccountId
+                : req.platform === "MAGALU"
+                  ? ca.magaluIndexByAccountId
+                  : undefined;
+        const idx = staggerMap?.[req.accountId] ?? 0;
         if (idx > 0) {
           const base =
             computeBulkPrice(productRules, overrideTemplate.priceRule) ??
@@ -746,28 +803,48 @@ export class ListingDispatcher {
 
   /**
    * Monta o overrideTemplate de aumento escalonado a partir da ordem das contas
-   * ML em `requests` (1ª selecionada = índice 0 = preço base). Retorna null se
-   * o percentual for <= 0 ou houver menos de 2 contas ML (sem efeito).
+   * em `requests` (1ª selecionada = índice 0 = preço base). Cada plataforma tem
+   * escada 0-based PRÓPRIA, independente das demais (a penalização por anúncios
+   * idênticos é intra-marketplace). Um mapa só é incluído quando a plataforma
+   * tem 2+ contas (com 1 conta não há o que escalonar); os mapas Shopee/Magalu
+   * exigem também o kill-switch desligado. Retorna null se o percentual for
+   * <= 0 ou nenhuma plataforma tiver 2+ contas (sem efeito) — para requests
+   * só-ML, comportamento idêntico ao anterior.
    */
   static buildCrossAccountOverride(
     requests: Array<{ platform: BulkListingPlatform; accountId?: string }>,
     percent: number,
   ): BulkOverrideTemplate | null {
     if (!(percent > 0)) return null;
-    const indexByAccountId: Record<string, number> = {};
-    let idx = 0;
-    for (const r of requests) {
-      if (
-        r.platform === "MERCADO_LIVRE" &&
-        r.accountId &&
-        !Object.prototype.hasOwnProperty.call(indexByAccountId, r.accountId)
-      ) {
-        indexByAccountId[r.accountId] = idx++;
+    const mapFor = (
+      platform: BulkListingPlatform,
+    ): Record<string, number> | null => {
+      const map: Record<string, number> = {};
+      let idx = 0;
+      for (const r of requests) {
+        if (
+          r.platform === platform &&
+          r.accountId &&
+          !Object.prototype.hasOwnProperty.call(map, r.accountId)
+        ) {
+          map[r.accountId] = idx++;
+        }
       }
-    }
-    if (idx < 2) return null;
+      return idx >= 2 ? map : null;
+    };
+    const ml = mapFor("MERCADO_LIVRE");
+    const staggerOthers = !crossMarketplaceStaggerDisabled();
+    const shopee = staggerOthers ? mapFor("SHOPEE") : null;
+    const magalu = staggerOthers ? mapFor("MAGALU") : null;
+    if (!ml && !shopee && !magalu) return null;
     return {
-      crossAccountIncrease: { enabled: true, percent, indexByAccountId },
+      crossAccountIncrease: {
+        enabled: true,
+        percent,
+        ...(ml ? { indexByAccountId: ml } : {}),
+        ...(shopee ? { shopeeIndexByAccountId: shopee } : {}),
+        ...(magalu ? { magaluIndexByAccountId: magalu } : {}),
+      },
     };
   }
 }

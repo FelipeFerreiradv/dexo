@@ -820,12 +820,12 @@ function PreferencesSection(props: {
       </SettingGroup>
 
       <SettingGroup
-        title="Preços entre contas (Mercado Livre)"
-        description="Diferencia o preço entre contas ML ao anunciar em massa, evitando a penalização do ML por anúncios idênticos."
+        title="Preços entre contas (marketplaces)"
+        description="Diferencia o preço entre contas do mesmo marketplace (Mercado Livre, Shopee e Magalu) ao anunciar em massa, evitando penalização por anúncios idênticos."
       >
         <SettingRow
           title="Aumento percentual escalonado"
-          description="Aplicado em cascata ao anunciar o mesmo produto em várias contas: cada conta seguinte recebe este % sobre o preço da anterior; a 1ª conta mantém o preço base. 0 = desativado. Este valor é o padrão — também pode ser editado na hora de anunciar."
+          description="Aplicado em cascata ao anunciar o mesmo produto em várias contas do mesmo marketplace: cada conta seguinte recebe este % sobre o preço da anterior; a 1ª conta mantém o preço base. O percentual é único e vale para os três marketplaces, com escada independente em cada um. 0 = desativado. Este valor é o padrão — também pode ser editado na hora de anunciar."
         >
           <div className="space-y-1">
             <Label htmlFor="cfgCrossAccountPercent" className="sr-only">
