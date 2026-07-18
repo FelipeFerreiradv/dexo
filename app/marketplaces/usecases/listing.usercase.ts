@@ -5251,6 +5251,33 @@ export class ListingUseCase {
   }
 
   /**
+   * Resolve o canal de venda Magalu para operações de preço fora do create,
+   * com a MESMA precedência do createMagaluListing: env MAGALU_DEFAULT_CHANNEL_ID,
+   * senão o 1º canal do seller (/channels). Lança erro claro quando não há
+   * canal — sem canal não existe como escrever preço na Magalu.
+   */
+  private static async resolveMagaluChannelIdForUpdate(
+    accessToken: string,
+  ): Promise<string> {
+    let channelId: string | undefined =
+      process.env.MAGALU_DEFAULT_CHANNEL_ID || undefined;
+    if (!channelId) {
+      try {
+        const channels = await MagaluApiService.getChannels(accessToken);
+        channelId = channels[0]?.id;
+      } catch {
+        /* tratado como ausência de canal abaixo */
+      }
+    }
+    if (!channelId) {
+      throw new Error(
+        "Não foi possível resolver o canal de venda Magalu para atualizar o preço. Configure MAGALU_DEFAULT_CHANNEL_ID ou habilite um canal no seller.",
+      );
+    }
+    return channelId;
+  }
+
+  /**
    * Remove (encerra) um anúncio Magalu. A doc não expõe DELETE de SKU; o
    * equivalente a "parar de vender" é PATCH `active:false` (UNPUBLISHED). Depois
    * apaga o vínculo local. 404 (SKU já inexistente) é idempotente → sucesso.
@@ -5318,9 +5345,13 @@ export class ListingUseCase {
   }
 
   /**
-   * Edição de campos de um anúncio Magalu (PATCH parcial no SKU). Escopo mínimo:
-   * title/description (os únicos campos de texto editáveis aqui). Preço/estoque
-   * têm endpoints dedicados (setPrice/setStock) e fluem pelo "Editar produto".
+   * Edição de campos de um anúncio Magalu. Title/description via PATCH parcial
+   * no SKU; preço via endpoint dedicado (setPrice — o mesmo do create e do
+   * sync), pois o PATCH de SKU não carrega preço. O priceOverride é persistido
+   * ANTES do push: a publicação Magalu é assíncrona (POST 202) e o registro de
+   * preço pode ainda não existir/estar em análise; com o override no banco, o
+   * próximo sync reaplica sozinho via effectiveProduct (self-healing). Estoque
+   * segue sem override por design (evita oversell).
    * Sem campos mapeáveis ⇒ no-op com sucesso (mesmo contrato do ML/Shopee).
    */
   private static async updateMagaluListingFields(
@@ -5334,6 +5365,19 @@ export class ListingUseCase {
     }
     if (!sku) {
       return { success: false, error: "Anúncio Magalu sem SKU para editar" };
+    }
+    // Valida o preço ANTES de qualquer efeito colateral (patch/persist/push),
+    // espelhando a validação do Shopee.
+    let priceToApply: number | null = null;
+    if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
+      const priceNum = Number(fields.priceOverride);
+      if (!Number.isFinite(priceNum) || priceNum <= 0) {
+        return {
+          success: false,
+          error: "Preço inválido para anúncio Magalu (deve ser número positivo)",
+        };
+      }
+      priceToApply = priceNum;
     }
     const token = await ListingUseCase.ensureFreshMagaluToken(account);
     if (!token) {
@@ -5358,6 +5402,16 @@ export class ListingUseCase {
     }
     if (Object.keys(patch).length > 0) {
       await MagaluApiService.patchSku(token, sku, patch);
+    }
+    if (priceToApply !== null) {
+      // Persistência cirúrgica: SÓ priceOverride (não usa buildListingPersistData
+      // para não introduzir persistência de outros overrides como delta colateral).
+      await ListingRepository.updateListing(listing.id, {
+        priceOverride: priceToApply,
+      });
+      const channelId =
+        await ListingUseCase.resolveMagaluChannelIdForUpdate(token);
+      await MagaluApiService.setPrice(token, sku, priceToApply, channelId);
     }
     return { success: true };
   }
