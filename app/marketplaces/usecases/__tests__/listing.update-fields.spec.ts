@@ -347,6 +347,40 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
     expect(setPrice).not.toHaveBeenCalled();
   });
 
+  it("priceOverride null (tristate: limpar) ⇒ persiste null e NÃO empurra preço (sync reconcilia)", async () => {
+    const listing = baseMagaluListing();
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    const persist = vi
+      .spyOn(ListingRepository, "updateListing")
+      .mockResolvedValue(undefined as any);
+    const setPrice = vi
+      .spyOn(MagaluApiService, "setPrice")
+      .mockResolvedValue(undefined as any);
+    const getChannels = vi
+      .spyOn(MagaluApiService, "getChannels")
+      .mockResolvedValue([] as any);
+    const patchSku = vi
+      .spyOn(MagaluApiService, "patchSku")
+      .mockResolvedValue(undefined as any);
+
+    const result = await ListingUseCase.updateListingFields(
+      MAGALU_LISTING_ID,
+      ML_USER_ID,
+      { priceOverride: null },
+    );
+
+    expect(result.success).toBe(true);
+    // Limpa o override no banco (anúncio volta a herdar o preço do produto)…
+    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, {
+      priceOverride: null,
+    });
+    // …sem push imediato nem resolução de canal — paridade com ML/Shopee, que
+    // também só persistem o null e deixam o sync reconciliar.
+    expect(setPrice).not.toHaveBeenCalled();
+    expect(getChannels).not.toHaveBeenCalled();
+    expect(patchSku).not.toHaveBeenCalled();
+  });
+
   it("sem priceOverride ⇒ comportamento atual intacto (só patchSku de título)", async () => {
     const listing = baseMagaluListing();
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);

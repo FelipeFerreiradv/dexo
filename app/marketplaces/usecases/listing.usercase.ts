@@ -5367,17 +5367,25 @@ export class ListingUseCase {
       return { success: false, error: "Anúncio Magalu sem SKU para editar" };
     }
     // Valida o preço ANTES de qualquer efeito colateral (patch/persist/push),
-    // espelhando a validação do Shopee.
+    // espelhando a validação do Shopee. Tristate do PUT /listings/:id:
+    // undefined = não tocar; null = LIMPAR o override (volta a herdar o preço
+    // do produto); valor = aplicar.
     let priceToApply: number | null = null;
-    if (fields.priceOverride !== undefined && fields.priceOverride !== null) {
-      const priceNum = Number(fields.priceOverride);
-      if (!Number.isFinite(priceNum) || priceNum <= 0) {
-        return {
-          success: false,
-          error: "Preço inválido para anúncio Magalu (deve ser número positivo)",
-        };
+    let clearPriceOverride = false;
+    if (fields.priceOverride !== undefined) {
+      if (fields.priceOverride === null) {
+        clearPriceOverride = true;
+      } else {
+        const priceNum = Number(fields.priceOverride);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) {
+          return {
+            success: false,
+            error:
+              "Preço inválido para anúncio Magalu (deve ser número positivo)",
+          };
+        }
+        priceToApply = priceNum;
       }
-      priceToApply = priceNum;
     }
     const token = await ListingUseCase.ensureFreshMagaluToken(account);
     if (!token) {
@@ -5402,6 +5410,14 @@ export class ListingUseCase {
     }
     if (Object.keys(patch).length > 0) {
       await MagaluApiService.patchSku(token, sku, patch);
+    }
+    if (clearPriceOverride) {
+      // Limpa o override persistido — sem push imediato: ML/Shopee também só
+      // persistem o null e deixam o próximo sync reconciliar o preço no
+      // marketplace via effectiveProduct (que passa a herdar do produto).
+      await ListingRepository.updateListing(listing.id, {
+        priceOverride: null,
+      });
     }
     if (priceToApply !== null) {
       // Persistência cirúrgica: SÓ priceOverride (não usa buildListingPersistData
