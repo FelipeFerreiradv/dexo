@@ -2532,6 +2532,17 @@ export function CreateProductDialog({
         crossAccountIncrease?: { enabled: boolean; percent?: number };
       }> = [];
 
+      // Cascata de preço entre contas: percentual GLOBAL (mesmo estado nas
+      // seções ML/Shopee/Magalu), escada independente por marketplace. Viaja em
+      // TODAS as entradas para que o backend acione a escada mesmo sem anúncio
+      // ML (a rota lê a config da 1ª entrada habilitada).
+      const crossAccountCfg = data.mlCrossAccountIncrease
+        ? {
+            enabled: true,
+            percent: data.mlCrossAccountPercent ?? undefined,
+          }
+        : undefined;
+
       if (data.createMLListing && selectedMlAccounts.length > 0) {
         listingsPayload.push({
           platform: "MERCADO_LIVRE",
@@ -2549,12 +2560,7 @@ export function CreateProductDialog({
           localPickup: data.mlLocalPickup || false,
           manufacturingTime: data.mlManufacturingTime ?? undefined,
           listingPrice: data.mlListingPrice ?? undefined,
-          crossAccountIncrease: data.mlCrossAccountIncrease
-            ? {
-                enabled: true,
-                percent: data.mlCrossAccountPercent ?? undefined,
-              }
-            : undefined,
+          crossAccountIncrease: crossAccountCfg,
         });
       }
 
@@ -2563,6 +2569,7 @@ export function CreateProductDialog({
           platform: "SHOPEE",
           accountIds: selectedShopeeAccounts,
           categoryId: data.shopeeCategory || undefined,
+          crossAccountIncrease: crossAccountCfg,
         });
       }
 
@@ -2572,6 +2579,7 @@ export function CreateProductDialog({
           accountIds: selectedMagaluAccounts,
           // categoria escolhida no modal; se vazia, o backend resolve no envio.
           categoryId: data.magaluCategory || undefined,
+          crossAccountIncrease: crossAccountCfg,
         });
       }
 
@@ -3815,7 +3823,9 @@ export function CreateProductDialog({
                   </div>
                 )}
 
-                {/* Aumento percentual escalonado entre contas ML */}
+                {/* Aumento percentual escalonado entre contas (por marketplace).
+                    Estado COMPARTILHADO com os blocos das seções Shopee/Magalu:
+                    o percentual é global e cada marketplace tem escada própria. */}
                 {watch("createMLListing") && mlAccounts.length > 1 && (
                   <div className="space-y-2 rounded-md border p-3">
                     <label className="flex items-center gap-2 text-sm font-medium">
@@ -3828,7 +3838,7 @@ export function CreateProductDialog({
                           })
                         }
                       />
-                      Aumentar percentual nas demais contas (Mercado Livre)
+                      Aumentar percentual nas demais contas (por marketplace)
                     </label>
                     {watch("mlCrossAccountIncrease") && (
                       <div className="space-y-1 pl-6">
@@ -3863,9 +3873,10 @@ export function CreateProductDialog({
                           </span>
                         </div>
                         <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          Aplicado em cascata: a 1ª conta selecionada mantém o
-                          preço base; cada conta seguinte recebe este % sobre o
-                          preço da anterior.
+                          Aplicado em cascata e por marketplace: em cada um, a
+                          1ª conta selecionada mantém o preço base e cada conta
+                          seguinte recebe este % sobre o preço da anterior. O
+                          percentual é único para todos os marketplaces.
                         </p>
                       </div>
                     )}
@@ -4213,6 +4224,66 @@ export function CreateProductDialog({
                   </div>
                 )}
 
+                {/* Aumento escalonado — mesmo estado do bloco ML (percentual
+                    global; escada independente por marketplace). */}
+                {watchCreateShopeeListing && shopeeAccounts.length > 1 && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={!!watch("mlCrossAccountIncrease")}
+                        onChange={(e) =>
+                          setValue("mlCrossAccountIncrease", e.target.checked, {
+                            shouldDirty: true,
+                          })
+                        }
+                      />
+                      Aumentar percentual nas demais contas (por marketplace)
+                    </label>
+                    {watch("mlCrossAccountIncrease") && (
+                      <div className="space-y-1 pl-6">
+                        <Label
+                          htmlFor="shopeeCrossAccountPercent"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Percentual de aumento composto entre contas
+                        </Label>
+                        <div className="relative w-40">
+                          <Input
+                            id="shopeeCrossAccountPercent"
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={watch("mlCrossAccountPercent") ?? ""}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setValue(
+                                "mlCrossAccountPercent",
+                                v === "" ? null : Number(v),
+                                { shouldDirty: true },
+                              );
+                            }}
+                            placeholder="Ex.: 10"
+                            className="pr-7"
+                          />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Aplicado em cascata entre as contas Shopee: a 1ª conta
+                          selecionada mantém o preço base; cada conta seguinte
+                          recebe este % sobre o preço da anterior. O percentual
+                          é único e compartilhado com os demais marketplaces
+                          (escadas independentes).
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {watchCreateShopeeListing && (
                   <div className="space-y-2">
                     <Label htmlFor="shopeeCategory">Categoria no Shopee</Label>
@@ -4397,6 +4468,66 @@ export function CreateProductDialog({
                       <p className="text-xs text-muted-foreground">
                         Nenhuma conta Magalu conectada. Conecte em Integrações.
                       </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Aumento escalonado — mesmo estado do bloco ML (percentual
+                    global; escada independente por marketplace). */}
+                {watchCreateMagaluListing && magaluAccounts.length > 1 && (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={!!watch("mlCrossAccountIncrease")}
+                        onChange={(e) =>
+                          setValue("mlCrossAccountIncrease", e.target.checked, {
+                            shouldDirty: true,
+                          })
+                        }
+                      />
+                      Aumentar percentual nas demais contas (por marketplace)
+                    </label>
+                    {watch("mlCrossAccountIncrease") && (
+                      <div className="space-y-1 pl-6">
+                        <Label
+                          htmlFor="magaluCrossAccountPercent"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Percentual de aumento composto entre contas
+                        </Label>
+                        <div className="relative w-40">
+                          <Input
+                            id="magaluCrossAccountPercent"
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={100}
+                            step="0.01"
+                            value={watch("mlCrossAccountPercent") ?? ""}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setValue(
+                                "mlCrossAccountPercent",
+                                v === "" ? null : Number(v),
+                                { shouldDirty: true },
+                              );
+                            }}
+                            placeholder="Ex.: 10"
+                            className="pr-7"
+                          />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Aplicado em cascata entre as contas Magalu: a 1ª conta
+                          selecionada mantém o preço base; cada conta seguinte
+                          recebe este % sobre o preço da anterior. O percentual
+                          é único e compartilhado com os demais marketplaces
+                          (escadas independentes).
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}

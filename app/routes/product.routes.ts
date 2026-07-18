@@ -877,9 +877,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
             });
           }
 
-          // Aumento percentual escalonado entre contas ML (se habilitado no
-          // modal). Monta o overrideTemplate a partir da ordem das contas ML
-          // em dispatchRequests (1ª = preço base). Sem isso, o dispatch segue
+          // Aumento percentual escalonado entre contas (se habilitado no
+          // modal). Monta o overrideTemplate a partir da ordem das contas em
+          // dispatchRequests (1ª de cada marketplace = preço base; escadas
+          // independentes por plataforma). Sem isso, o dispatch segue
           // idêntico ao de hoje (overrideTemplate undefined).
           const mlListingCfg = (
             bgListings as Array<{
@@ -888,7 +889,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
               crossAccountIncrease?: { enabled?: boolean; percent?: number };
             }>
           ).find((l) => l.platform === "MERCADO_LIVRE");
-          const caCfg = mlListingCfg?.crossAccountIncrease;
+          // A config pode vir em QUALQUER entrada (o modal replica o controle
+          // nas seções Shopee/Magalu com estado compartilhado). Lê a 1ª
+          // habilitada — clientes antigos (config só na entrada ML) seguem
+          // idênticos; sem anúncio ML, a escada Shopee/Magalu passa a valer.
+          const caCfg = (
+            bgListings as Array<{
+              crossAccountIncrease?: { enabled?: boolean; percent?: number };
+            }>
+          ).find((l) => l.crossAccountIncrease?.enabled)?.crossAccountIncrease;
           let overrideTemplate = caCfg?.enabled
             ? ListingDispatcher.buildCrossAccountOverride(
                 dispatchRequests,

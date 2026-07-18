@@ -2933,12 +2933,18 @@ export function EditProductDialog({
                     )}
                   </div>
 
-                  {/* Aumento percentual escalonado entre contas ML */}
-                  {mlAccounts.length > 1 && (
+                  {/* Aumento percentual escalonado entre contas (por marketplace).
+                      O flag viaja top-level no dispatch, então vale para ML,
+                      Shopee e Magalu — escada independente em cada um. Mostra o
+                      controle quando QUALQUER marketplace tem 2+ contas. */}
+                  {(mlAccounts.length > 1 ||
+                    shopeeAccounts.length > 1 ||
+                    magaluAccounts.length > 1) && (
                     <div className="mt-2 space-y-2 rounded-md border p-3">
                       <label className="flex items-center justify-between gap-2 text-sm font-medium">
                         <span>
-                          Aumentar percentual nas demais contas (Mercado Livre)
+                          Aumentar percentual nas demais contas (por
+                          marketplace)
                         </span>
                         <Switch
                           checked={crossAccountIncrease}
@@ -2973,9 +2979,10 @@ export function EditProductDialog({
                             </span>
                           </div>
                           <p className="text-[11px] leading-relaxed text-muted-foreground">
-                            Aplicado em cascata: a 1ª conta selecionada mantém o
-                            preço base; cada conta seguinte recebe este % sobre
-                            o preço da anterior.
+                            Aplicado em cascata e por marketplace: em cada um
+                            (Mercado Livre, Shopee, Magalu), a 1ª conta
+                            selecionada mantém o preço base e cada conta
+                            seguinte recebe este % sobre o preço da anterior.
                           </p>
                         </div>
                       )}
