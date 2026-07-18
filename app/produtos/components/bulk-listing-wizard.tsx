@@ -1001,6 +1001,8 @@ export function BulkListingWizard({
                 rules={rules}
                 setRules={setRules}
                 mlSelectedCount={selectedMlIds.size}
+                shopeeSelectedCount={selectedShopeeIds.size}
+                magaluSelectedCount={selectedMagaluIds.size}
               />
             )}
 
@@ -1014,7 +1016,9 @@ export function BulkListingWizard({
                 hasShopee={selectedShopeeIds.size > 0}
                 preflightLoading={preflightLoading}
                 preflightIssues={preflightIssues}
-                crossAccountAccounts={selectedMlAccountsOrdered}
+                crossAccountMlAccounts={selectedMlAccountsOrdered}
+                crossAccountShopeeAccounts={selectedShopeeAccountsSel}
+                crossAccountMagaluAccounts={selectedMagaluAccountsSel}
               />
             )}
 
@@ -1290,10 +1294,14 @@ function StepRules({
   rules,
   setRules,
   mlSelectedCount,
+  shopeeSelectedCount,
+  magaluSelectedCount,
 }: {
   rules: RulesForm;
   setRules: React.Dispatch<React.SetStateAction<RulesForm>>;
   mlSelectedCount: number;
+  shopeeSelectedCount: number;
+  magaluSelectedCount: number;
 }) {
   return (
     <div className="grid gap-5 sm:grid-cols-2">
@@ -1440,7 +1448,7 @@ function StepRules({
         </Label>
       </div>
 
-      {/* Aumento percentual escalonado entre contas ML */}
+      {/* Aumento percentual escalonado entre contas (por marketplace) */}
       <div className="space-y-2 pt-2 sm:col-span-2">
         <div className="flex items-center gap-2">
           <Checkbox
@@ -1451,7 +1459,7 @@ function StepRules({
             }
           />
           <Label htmlFor="crossaccount" className="cursor-pointer">
-            Aumentar percentual nas demais contas (Mercado Livre)
+            Aumentar percentual nas demais contas (por marketplace)
           </Label>
         </div>
         {rules.crossAccountIncrease && (
@@ -1487,15 +1495,18 @@ function StepRules({
               </div>
             </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Aplicado em cascata: a 1ª conta selecionada mantém o preço base;
-              cada conta seguinte recebe este % sobre o preço da anterior.
+              Aplicado em cascata e por marketplace: em cada marketplace
+              (Mercado Livre, Shopee, Magalu), a 1ª conta selecionada mantém o
+              preço base e cada conta seguinte recebe este % sobre o preço da
+              anterior — as escadas são independentes entre marketplaces.
               Confira o preview por conta na etapa de revisão.
             </p>
-            {mlSelectedCount < 2 && (
+            {Math.max(mlSelectedCount, shopeeSelectedCount, magaluSelectedCount) <
+              2 && (
               <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="inline size-3 mr-1" />
-                Selecione 2 ou mais contas do Mercado Livre para o escalonamento
-                ter efeito.
+                Selecione 2 ou mais contas de um mesmo marketplace para o
+                escalonamento ter efeito.
               </p>
             )}
           </div>
@@ -1515,7 +1526,9 @@ function StepReview({
   hasShopee,
   preflightLoading,
   preflightIssues,
-  crossAccountAccounts,
+  crossAccountMlAccounts,
+  crossAccountShopeeAccounts,
+  crossAccountMagaluAccounts,
 }: {
   products: BulkListingProduct[];
   rules: RulesForm;
@@ -1529,7 +1542,9 @@ function StepReview({
     code: "shopee_category_missing" | "shopee_category_not_leaf";
     message: string;
   }>;
-  crossAccountAccounts: MarketplaceAccountLite[];
+  crossAccountMlAccounts: MarketplaceAccountLite[];
+  crossAccountShopeeAccounts: MarketplaceAccountLite[];
+  crossAccountMagaluAccounts: MarketplaceAccountLite[];
 }) {
   const issueByProduct = new Map(preflightIssues.map((i) => [i.productId, i]));
   const template = {
@@ -1547,18 +1562,22 @@ function StepReview({
   const allBlocked =
     hasShopee && issueCount > 0 && issueCount === products.length;
 
-  // Aumento escalonado: só tem efeito quando ligado, com % > 0 e ≥ 2 contas ML.
-  const cascadeOn =
-    rules.crossAccountIncrease &&
-    rules.crossAccountPercent > 0 &&
-    crossAccountAccounts.length >= 2;
+  // Aumento escalonado: escadas INDEPENDENTES por marketplace — só entram no
+  // preview as plataformas com ≥ 2 contas (com 1 conta não há o que escalonar).
+  // A ordem de cada lista = ordem de seleção = ordem da escada no backend.
+  const cascadePct = rules.crossAccountPercent;
+  const ladders =
+    rules.crossAccountIncrease && cascadePct > 0
+      ? (
+          [
+            { key: "ML", label: "Mercado Livre", accounts: crossAccountMlAccounts },
+            { key: "SH", label: "Shopee", accounts: crossAccountShopeeAccounts },
+            { key: "MG", label: "Magalu", accounts: crossAccountMagaluAccounts },
+          ] as const
+        ).filter((l) => l.accounts.length >= 2)
+      : [];
+  const cascadeOn = ladders.length > 0;
   const MAX_PREVIEW_ACCOUNTS = 8;
-  const previewAccounts = cascadeOn
-    ? crossAccountAccounts.slice(0, MAX_PREVIEW_ACCOUNTS)
-    : [];
-  const hiddenAccounts = cascadeOn
-    ? crossAccountAccounts.length - previewAccounts.length
-    : 0;
 
   return (
     <div className="space-y-3">
@@ -1570,26 +1589,38 @@ function StepReview({
       {cascadeOn && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-700 dark:bg-amber-950">
           <p className="mb-1.5 font-medium text-amber-800 dark:text-amber-200">
-            Aumento escalonado ativo —{" "}
-            {formatPercent(rules.crossAccountPercent)} em cascata entre{" "}
-            {crossAccountAccounts.length} contas ML
+            Aumento escalonado ativo — {formatPercent(cascadePct)} em cascata,
+            com escada independente por marketplace
           </p>
-          <ol className="space-y-0.5 text-amber-800/90 dark:text-amber-200/90">
-            {previewAccounts.map((acc, i) => {
-              const factor = Math.pow(1 + rules.crossAccountPercent / 100, i);
+          <div className="space-y-2">
+            {ladders.map((ladder) => {
+              const preview = ladder.accounts.slice(0, MAX_PREVIEW_ACCOUNTS);
+              const hidden = ladder.accounts.length - preview.length;
               return (
-                <li key={acc.id}>
-                  {i + 1}. {acc.accountName} —{" "}
-                  {i === 0
-                    ? "preço base"
-                    : `+${formatPercent((factor - 1) * 100)} (×${factor.toFixed(4)})`}
-                </li>
+                <div key={ladder.key}>
+                  <p className="font-medium text-amber-800 dark:text-amber-200">
+                    {ladder.label} — {ladder.accounts.length} contas
+                  </p>
+                  <ol className="space-y-0.5 text-amber-800/90 dark:text-amber-200/90">
+                    {preview.map((acc, i) => {
+                      const factor = Math.pow(1 + cascadePct / 100, i);
+                      return (
+                        <li key={acc.id}>
+                          {i + 1}. {acc.accountName} —{" "}
+                          {i === 0
+                            ? "preço base"
+                            : `+${formatPercent((factor - 1) * 100)} (×${factor.toFixed(4)})`}
+                        </li>
+                      );
+                    })}
+                    {hidden > 0 && (
+                      <li className="italic">… +{hidden} conta(s)</li>
+                    )}
+                  </ol>
+                </div>
               );
             })}
-            {hiddenAccounts > 0 && (
-              <li className="italic">… +{hiddenAccounts} conta(s)</li>
-            )}
-          </ol>
+          </div>
         </div>
       )}
 
@@ -1671,31 +1702,42 @@ function StepReview({
                   </td>
                   <td className="px-3 py-2 text-right font-medium">
                     {cascadeOn ? (
-                      <div className="space-y-0.5">
-                        {computeStaggeredPrices(
-                          newPrice ?? p.price,
-                          crossAccountAccounts.length,
-                          rules.crossAccountPercent,
-                        )
-                          .slice(0, MAX_PREVIEW_ACCOUNTS)
-                          .map((pr, i) => (
-                            <div
-                              key={i}
-                              className="flex items-center justify-end gap-2 text-xs"
-                            >
-                              <span className="text-muted-foreground">
-                                C{i + 1}
-                              </span>
-                              <span className="tabular-nums">
-                                {formatCurrency(pr)}
-                              </span>
+                      <div className="space-y-1">
+                        {ladders.map((ladder) => {
+                          const prices = computeStaggeredPrices(
+                            newPrice ?? p.price,
+                            ladder.accounts.length,
+                            cascadePct,
+                          ).slice(0, MAX_PREVIEW_ACCOUNTS);
+                          const hidden = ladder.accounts.length - prices.length;
+                          // Com uma única escada, mantém o rótulo "C1..Cn" de
+                          // sempre; com 2+, prefixa por marketplace (ML1, SH1…).
+                          const prefix =
+                            ladders.length > 1 ? ladder.key : "C";
+                          return (
+                            <div key={ladder.key} className="space-y-0.5">
+                              {prices.map((pr, i) => (
+                                <div
+                                  key={i}
+                                  className="flex items-center justify-end gap-2 text-xs"
+                                >
+                                  <span className="text-muted-foreground">
+                                    {prefix}
+                                    {i + 1}
+                                  </span>
+                                  <span className="tabular-nums">
+                                    {formatCurrency(pr)}
+                                  </span>
+                                </div>
+                              ))}
+                              {hidden > 0 && (
+                                <div className="text-[10px] italic text-muted-foreground">
+                                  … +{hidden}
+                                </div>
+                              )}
                             </div>
-                          ))}
-                        {hiddenAccounts > 0 && (
-                          <div className="text-[10px] italic text-muted-foreground">
-                            … +{hiddenAccounts}
-                          </div>
-                        )}
+                          );
+                        })}
                       </div>
                     ) : newPrice !== null ? (
                       formatCurrency(newPrice)
