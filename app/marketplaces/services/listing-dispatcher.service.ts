@@ -273,6 +273,19 @@ export class ListingDispatcher {
             productId,
             "SHOPEE",
           );
+          // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
+          // contas Shopee) se houver template. Sem template, nada muda; template
+          // sem mapa Shopee (ex.: só ML) ⇒ no-op, comportamento atual.
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -303,6 +316,19 @@ export class ListingDispatcher {
             productId,
             "MAGALU",
           );
+          // Sucesso na criação — aplica overrides (ex.: aumento escalonado entre
+          // contas Magalu) se houver template. Sem template, nada muda; template
+          // sem mapa Magalu (ex.: só ML) ⇒ no-op, comportamento atual.
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -632,10 +658,10 @@ export class ListingDispatcher {
 
   /**
    * Aplica overrides (regras de bulk + aumento percentual escalonado entre
-   * contas ML) a um anúncio recém-criado, via updateListingFields. Compartilhado
-   * entre o dispatch single (runOne) e o batch (runOneWithResult). Resolve o
-   * productRules a partir do que for fornecido (pré-fetch / cache) ou busca no
-   * repositório. Nunca lança — falhas viram warning.
+   * contas, por plataforma) a um anúncio recém-criado, via updateListingFields.
+   * Compartilhado entre o dispatch single (runOne) e o batch (runOneWithResult).
+   * Resolve o productRules a partir do que for fornecido (pré-fetch / cache) ou
+   * busca no repositório. Nunca lança — falhas viram warning.
    */
   private static async applyOverridesAfterCreate(args: {
     userId: string;
@@ -670,18 +696,27 @@ export class ListingDispatcher {
 
       let fields = applyRules(productRules, overrideTemplate);
 
-      // Aumento percentual escalonado entre contas ML: compõe o priceOverride
+      // Aumento percentual escalonado entre contas: compõe o priceOverride
       // por conta sobre o preço base (regra de preço já aplicada, se houver).
-      // idx 0 = preço base (sem alteração) ⇒ comportamento idêntico ao de hoje.
-      // Só ML; Shopee nunca escalona.
+      // idx 0 = preço base (sem alteração). Cada plataforma lê SOMENTE o seu
+      // mapa (escadas independentes, sem fallback cruzado): ML usa o
+      // indexByAccountId legado; Shopee/Magalu usam os mapas próprios e ainda
+      // exigem o kill-switch desligado — o gate na LEITURA cobre jobs já
+      // persistidos com mapas novos (ex.: retry-failed). Template sem o mapa
+      // da plataforma ⇒ idx 0 ⇒ sem escalonamento (jobs antigos = ML-only).
       const ca = overrideTemplate.crossAccountIncrease;
-      if (
-        ca?.enabled &&
-        ca.percent > 0 &&
-        req.platform === "MERCADO_LIVRE" &&
-        req.accountId
-      ) {
-        const idx = ca.indexByAccountId?.[req.accountId] ?? 0;
+      if (ca?.enabled && ca.percent > 0 && req.accountId) {
+        const staggerMap =
+          req.platform === "MERCADO_LIVRE"
+            ? ca.indexByAccountId
+            : crossMarketplaceStaggerDisabled()
+              ? undefined
+              : req.platform === "SHOPEE"
+                ? ca.shopeeIndexByAccountId
+                : req.platform === "MAGALU"
+                  ? ca.magaluIndexByAccountId
+                  : undefined;
+        const idx = staggerMap?.[req.accountId] ?? 0;
         if (idx > 0) {
           const base =
             computeBulkPrice(productRules, overrideTemplate.priceRule) ??
