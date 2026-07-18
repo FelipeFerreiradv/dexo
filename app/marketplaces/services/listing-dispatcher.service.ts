@@ -145,7 +145,16 @@ export class ListingDispatcher {
       void (async () => {
         let productRules: BulkRulesProductInput | undefined;
         try {
-          const p = await new ProductRepositoryPrisma().findById(productId);
+          // Egress: espelho do productRulesCache do dispatchBatch — applyRules
+          // só precisa de (id, name, price, costPrice); `rulesLite` evita a
+          // row inteira (JSONBs pesados) + compatibilidades, e escopa por
+          // userId (isolamento multi-tenant, padrão do hardening). Se a query
+          // falhar, o fallback do applyOverridesAfterCreate cobre.
+          const p = await new ProductRepositoryPrisma().findById(
+            productId,
+            userId,
+            { rulesLite: true },
+          );
           if (p) {
             productRules = {
               id: p.id,
@@ -678,6 +687,8 @@ export class ListingDispatcher {
       let productRules: BulkRulesProductInput | undefined =
         args.productRules ?? args.productRulesCache?.get(productId);
       if (!productRules) {
+        // Fallback FRIO (só quando prefetch/cache falharam): mantém o findById
+        // clássico do repositório deliberadamente — caminho raro em produção.
         const product = await new ProductRepositoryPrisma().findById(productId);
         if (product) {
           productRules = {

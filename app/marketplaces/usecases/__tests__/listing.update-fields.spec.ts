@@ -260,14 +260,16 @@ describe("ListingUseCase.updateListingFields — Shopee", () => {
 describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    // Cache de canal é estado de módulo — reset explícito entre testes.
+    ListingUseCase.__resetMagaluChannelCacheForTests();
   });
 
-  it("persiste priceOverride e empurra via setPrice (canal do env)", async () => {
+  it("persiste priceOverride (write cirúrgico) e empurra via setPrice (canal do env)", async () => {
     vi.stubEnv("MAGALU_DEFAULT_CHANNEL_ID", "chan-1");
     const listing = baseMagaluListing();
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
     const persist = vi
-      .spyOn(ListingRepository, "updateListing")
+      .spyOn(ListingRepository, "updatePriceOverride")
       .mockResolvedValue(undefined as any);
     const patchSku = vi
       .spyOn(MagaluApiService, "patchSku")
@@ -284,9 +286,7 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
 
     expect(result.success).toBe(true);
     // Persistência cirúrgica ANTES do push (self-healing via sync se o push falhar).
-    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, {
-      priceOverride: 110,
-    });
+    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, 110);
     expect(setPrice).toHaveBeenCalledTimes(1);
     expect(setPrice).toHaveBeenCalledWith("tok-mg", "SKU-MG-1", 110, "chan-1");
     // Sem title/description, o PATCH de SKU não é chamado.
@@ -297,7 +297,7 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
     const listing = baseMagaluListing();
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
     const persist = vi
-      .spyOn(ListingRepository, "updateListing")
+      .spyOn(ListingRepository, "updatePriceOverride")
       .mockResolvedValue(undefined as any);
     const setPrice = vi
       .spyOn(MagaluApiService, "setPrice")
@@ -325,7 +325,7 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
     const listing = baseMagaluListing();
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
     const persist = vi
-      .spyOn(ListingRepository, "updateListing")
+      .spyOn(ListingRepository, "updatePriceOverride")
       .mockResolvedValue(undefined as any);
     vi.spyOn(MagaluApiService, "getChannels").mockResolvedValue([]);
     const setPrice = vi
@@ -341,17 +341,59 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/canal|MAGALU_DEFAULT_CHANNEL_ID/i);
-    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, {
-      priceOverride: 110,
-    });
+    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, 110);
     expect(setPrice).not.toHaveBeenCalled();
+  });
+
+  it("EGRESS: canal via API é cacheado por token — 2 updates ⇒ 1 getChannels", async () => {
+    vi.stubEnv("MAGALU_DEFAULT_CHANNEL_ID", "");
+    const listing = baseMagaluListing();
+    vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+    vi.spyOn(ListingRepository, "updatePriceOverride").mockResolvedValue(
+      undefined as any,
+    );
+    const getChannels = vi
+      .spyOn(MagaluApiService, "getChannels")
+      .mockResolvedValue([{ id: "chan-api" }] as any);
+    const setPrice = vi
+      .spyOn(MagaluApiService, "setPrice")
+      .mockResolvedValue(undefined as any);
+
+    const r1 = await ListingUseCase.updateListingFields(
+      MAGALU_LISTING_ID,
+      ML_USER_ID,
+      { priceOverride: 110 },
+    );
+    const r2 = await ListingUseCase.updateListingFields(
+      MAGALU_LISTING_ID,
+      ML_USER_ID,
+      { priceOverride: 121 },
+    );
+
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+    expect(getChannels).toHaveBeenCalledTimes(1);
+    expect(setPrice).toHaveBeenNthCalledWith(
+      1,
+      "tok-mg",
+      "SKU-MG-1",
+      110,
+      "chan-api",
+    );
+    expect(setPrice).toHaveBeenNthCalledWith(
+      2,
+      "tok-mg",
+      "SKU-MG-1",
+      121,
+      "chan-api",
+    );
   });
 
   it("priceOverride null (tristate: limpar) ⇒ persiste null e NÃO empurra preço (sync reconcilia)", async () => {
     const listing = baseMagaluListing();
     vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
     const persist = vi
-      .spyOn(ListingRepository, "updateListing")
+      .spyOn(ListingRepository, "updatePriceOverride")
       .mockResolvedValue(undefined as any);
     const setPrice = vi
       .spyOn(MagaluApiService, "setPrice")
@@ -371,9 +413,7 @@ describe("ListingUseCase.updateListingFields — Magalu (priceOverride)", () => 
 
     expect(result.success).toBe(true);
     // Limpa o override no banco (anúncio volta a herdar o preço do produto)…
-    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, {
-      priceOverride: null,
-    });
+    expect(persist).toHaveBeenCalledWith(MAGALU_LISTING_ID, null);
     // …sem push imediato nem resolução de canal — paridade com ML/Shopee, que
     // também só persistem o null e deixam o sync reconciliar.
     expect(setPrice).not.toHaveBeenCalled();

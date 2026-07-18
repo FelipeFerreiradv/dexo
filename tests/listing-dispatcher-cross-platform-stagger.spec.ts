@@ -1,5 +1,17 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
+// Prisma mockado: o prefetch enxuto do dispatch (SELECT id,name,price,costPrice)
+// usa prisma direto (padrão perf/egress do dispatchBatch). findFirst sem
+// implementação ⇒ undefined ⇒ os testes que mockam só o findById caem no
+// fallback do applyOverridesAfterCreate (mesmo dado, caminho frio).
+vi.mock("../app/lib/prisma", () => ({
+  default: {
+    product: { findFirst: vi.fn() },
+    user: { findUnique: vi.fn() },
+  },
+}));
+
+import prisma from "../app/lib/prisma";
 import { ListingDispatcher } from "../app/marketplaces/services/listing-dispatcher.service";
 import { ListingUseCase } from "../app/marketplaces/usecases/listing.usercase";
 import { ProductRepositoryPrisma } from "../app/repositories/product.repository";
@@ -17,6 +29,7 @@ import { ProductRepositoryPrisma } from "../app/repositories/product.repository"
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  vi.mocked(prisma.product.findFirst).mockReset();
 });
 
 describe("ListingDispatcher.buildCrossAccountOverride — mapas por plataforma", () => {
@@ -342,6 +355,50 @@ describe("ListingDispatcher.dispatch — escalonado Shopee/Magalu (fluxo single)
     for (const call of updateSpy.mock.calls) {
       expect((call[2] as any).priceOverride).toBe(110);
     }
+  });
+
+  it("EGRESS: prefetch do single usa SELECT enxuto escopado por userId — sem row inteira", async () => {
+    // Sem spy no findById: o método REAL roda em modo rulesLite contra o
+    // prisma mockado — a prova do egress está nos argumentos da query.
+    vi.mocked(prisma.product.findFirst).mockResolvedValue({
+      id: "prod-1",
+      name: "P",
+      price: 100,
+      costPrice: 50,
+    } as never);
+    vi.spyOn(ListingUseCase, "createShopeeListing").mockResolvedValue({
+      success: true,
+      listingId: "L-s",
+    } as any);
+    const updateSpy = vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+
+    ListingDispatcher.dispatch({
+      userId: "user-1",
+      productId: "prod-1",
+      requests: [
+        { platform: "SHOPEE", accountId: "s0" },
+        { platform: "SHOPEE", accountId: "s1" },
+      ],
+      overrideTemplate: {
+        crossAccountIncrease: {
+          enabled: true,
+          percent: 10,
+          shopeeIndexByAccountId: { s0: 0, s1: 1 },
+        },
+      } as any,
+    });
+    await flush();
+
+    // Uma única query, com select de 4 colunas (sem include) e escopo de tenant.
+    expect(prisma.product.findFirst).toHaveBeenCalledTimes(1);
+    expect(prisma.product.findFirst).toHaveBeenCalledWith({
+      where: { id: "prod-1", userId: "user-1" },
+      select: { id: true, name: true, price: true, costPrice: true },
+    });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(110);
   });
 
   it("REGRESSÃO: dispatch SHOPEE sem template ⇒ sem fetch de produto e sem update", async () => {
