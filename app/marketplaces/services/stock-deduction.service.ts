@@ -67,9 +67,17 @@ export interface FirePostEffectsInput {
    * Opt-in (Fase 9 — estorno): ao detectar `previousStock === 0 && newStock > 0`
    * (estoque saiu de zero), reabre os anúncios via `pauseListings(_, _, "active")`.
    * Espelho de `pauseOnZero` para o caminho de restore. Idempotente,
-   * best-effort. Só usado pelo `FinanceUseCase.reverse`.
+   * best-effort. Usado pelo `FinanceUseCase.reverse` e (com `force`) pelo
+   * cancelamento de pedido marketplace.
+   *
+   * `force` (opcional, default = comportamento atual): força a chamada à API
+   * mesmo quando o status LOCAL do anúncio já é "active". Necessário no
+   * cancelamento de pedido: quando o estoque zera por venda de marketplace,
+   * o sync pausa o item ML só REMOTAMENTE (status local segue "active") e o
+   * fast-path alreadyInState faria no-op, deixando o anúncio pausado para
+   * sempre apesar do estoque restaurado.
    */
-  reopenOnRefill?: { userId: string };
+  reopenOnRefill?: { userId: string; force?: boolean };
 }
 
 export class StockDeductionService {
@@ -352,14 +360,22 @@ export class StockDeductionService {
         (d) => d.previousStock === 0 && d.newStock > 0,
       );
       if (refilled.length > 0) {
-        const { userId } = input.reopenOnRefill;
+        const { userId, force } = input.reopenOnRefill;
         setImmediate(() => {
           void import("@/app/usecases/product.usercase")
             .then(async ({ ProductUseCase }) => {
               const uc = new ProductUseCase();
               for (const d of refilled) {
                 try {
-                  await uc.pauseListings(d.productId, userId, "active");
+                  // Aridade condicional: sem force, chamada byte-idêntica à
+                  // atual (3 args) — preserva o caminho do reverse.
+                  if (force) {
+                    await uc.pauseListings(d.productId, userId, "active", {
+                      forceRemote: true,
+                    });
+                  } else {
+                    await uc.pauseListings(d.productId, userId, "active");
+                  }
                 } catch (err) {
                   console.error(
                     `${logPrefix} Falha ao reabrir anuncios do produto ${d.productId} (best-effort):`,

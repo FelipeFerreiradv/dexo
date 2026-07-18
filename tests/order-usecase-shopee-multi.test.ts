@@ -742,7 +742,7 @@ describe("OrderUseCase.deductStockForOrder — edge cases", () => {
     ]);
   });
 
-  it("usa SELECT ... FOR UPDATE para lockar a linha do produto", async () => {
+  it("usa SELECT ... FOR UPDATE para lockar a linha do produto (e o guard de cancelamento locka o Order antes)", async () => {
     const order = {
       id: "order-lock",
       items: [{ productId: "prod-1", quantity: 1 }],
@@ -757,12 +757,20 @@ describe("OrderUseCase.deductStockForOrder — edge cases", () => {
 
     await (OrderUseCase as any).deductStockForOrder(order, "Importação");
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-    const rawCallArgs = mockTx.$queryRaw.mock.calls[0];
-    const sqlParts = rawCallArgs[0] as unknown as TemplateStringsArray;
-    const sqlText = Array.isArray(sqlParts) ? sqlParts.join("?") : String(sqlParts);
-    expect(sqlText).toMatch(/FOR UPDATE/i);
-    expect(sqlText).toMatch(/"Product"/);
+    // 2 queries raw, na ordem de lock Order → Product (mesma ordem do
+    // processOrderCancellation — evita deadlock entre baixa e estorno):
+    // 1ª = guard de pedido cancelado (linha do Order), 2ª = lock do produto.
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(2);
+    const sqlOf = (call: number) => {
+      const parts = mockTx.$queryRaw.mock.calls[
+        call
+      ][0] as unknown as TemplateStringsArray;
+      return Array.isArray(parts) ? parts.join("?") : String(parts);
+    };
+    expect(sqlOf(0)).toMatch(/FOR UPDATE/i);
+    expect(sqlOf(0)).toMatch(/"Order"/);
+    expect(sqlOf(1)).toMatch(/FOR UPDATE/i);
+    expect(sqlOf(1)).toMatch(/"Product"/);
   });
 
   it("não propaga erro quando SystemLogService.logWarning falha no oversell", async () => {

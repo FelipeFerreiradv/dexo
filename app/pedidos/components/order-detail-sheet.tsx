@@ -111,6 +111,7 @@ export function OrderDetailSheet({
   const [labelSize, setLabelSize] = useState<"A4" | "THERMAL">("A4");
   const [labelMsg, setLabelMsg] = useState<string | null>(null);
   const [labelError, setLabelError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const { data: session } = useSession();
   const router = useRouter();
 
@@ -247,6 +248,7 @@ export function OrderDetailSheet({
 
     try {
       setIsUpdating(true);
+      setStatusError(null);
       const response = await fetch(
         `${getApiBaseUrl()}/orders/${order.id}/status`,
         {
@@ -259,12 +261,25 @@ export function OrderDetailSheet({
         },
       );
 
-      if (!response.ok) throw new Error("Erro ao atualizar status");
+      if (!response.ok) {
+        // A API agora bloqueia transições inválidas (ex.: CANCELLED→PENDING)
+        // e falhas de estorno/re-dedução — mostrar a mensagem em vez de
+        // falhar em silêncio.
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          body?.message ?? "Erro ao atualizar status do pedido",
+        );
+      }
 
       onOrderUpdate();
       onOpenChange(false);
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
+      setStatusError(
+        error instanceof Error
+          ? error.message
+          : "Erro ao atualizar status do pedido",
+      );
     } finally {
       setIsUpdating(false);
     }
@@ -365,6 +380,11 @@ export function OrderDetailSheet({
                     </Button>
                   )}
                 </div>
+                {statusError && (
+                  <p className="max-w-65 text-xs text-destructive">
+                    {statusError}
+                  </p>
+                )}
                 {nfeError && (
                   <p className="max-w-65 text-xs text-destructive">
                     {nfeError}

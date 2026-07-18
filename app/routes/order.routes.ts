@@ -4,6 +4,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import prisma from "../lib/prisma";
 import { OrderUseCase } from "../marketplaces/usecases/order.usercase";
 import type { ImportOrdersResult } from "../marketplaces/usecases/order.usercase";
 import { orderRepository } from "../repositories/order.repository";
@@ -388,11 +389,108 @@ export async function orderRoutes(app: FastifyInstance) {
           });
         }
 
+        // ADITIVO (cancelamento/reativação): transições envolvendo CANCELLED
+        // movem estoque e são feitas ATOMICAMENTE pelos handlers (claim de
+        // status na MESMA tx do estorno/re-dedução) — aqui os handlers são os
+        // ÚNICOS escritores de status; o update final roda SEM status (só
+        // relê o pedido para a resposta, com a mesma checagem de posse e o
+        // mesmo shape de hoje), para nunca atropelar uma transição
+        // concorrente (webhook de cancelamento, outro PATCH). A transição
+        // simples (sem CANCELLED de nenhum lado) vira write CONDICIONAL no
+        // status sondado — corrida com cancelamento concorrente responde 409
+        // em vez de sobrescrever o estorno. Handler com falha ⇒ 5xx SEM
+        // escrever o status (rollback manteve estado consistente).
+        // Kill-switch ORDER_CANCEL_RESTORE_DISABLED=1 restaura o caminho
+        // atual byte-idêntico.
+        let statusHandled = false;
+        if (process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1") {
+          const owned = await prisma.order.findFirst({
+            where: { id, marketplaceAccount: { userId } },
+            select: {
+              status: true,
+              externalOrderId: true,
+              marketplaceAccountId: true,
+              marketplaceAccount: { select: { platform: true } },
+            },
+          });
+          if (owned) {
+            const platformLabel =
+              owned.marketplaceAccount.platform === "SHOPEE"
+                ? ("Shopee" as const)
+                : owned.marketplaceAccount.platform === "MAGALU"
+                  ? ("Magalu" as const)
+                  : ("ML" as const);
+
+            if (status === "CANCELLED") {
+              const cancel = await OrderUseCase.processOrderCancellation({
+                marketplaceAccountId: owned.marketplaceAccountId,
+                externalOrderId: owned.externalOrderId,
+                platformLabel,
+                logPrefix: "[Orders]",
+              });
+              if (!cancel.success) {
+                // CANCELLED sem estorno seria estado terminal inconsistente.
+                return reply.status(500).send({
+                  error: "Erro ao atualizar status",
+                  message:
+                    cancel.message ??
+                    "Falha ao estornar o estoque do pedido cancelado",
+                });
+              }
+              statusHandled = true;
+            } else if (owned.status === "CANCELLED") {
+              // Un-cancel: re-deduz o que o cancelamento estornou.
+              // CANCELLED→PENDING é bloqueado (PENDING por invariante não
+              // tem baixa; write puro deixaria estoque inflado se depois
+              // virasse PAID).
+              if (status === "PENDING") {
+                return reply.status(400).send({
+                  error: "Transição inválida",
+                  message:
+                    "Pedido cancelado não pode voltar para PENDING. Reative-o para PAID para re-deduzir o estoque.",
+                });
+              }
+              const uncancel = await OrderUseCase.processOrderUncancellation({
+                marketplaceAccountId: owned.marketplaceAccountId,
+                externalOrderId: owned.externalOrderId,
+                platformLabel,
+                targetStatus: status as "PAID" | "SHIPPED" | "DELIVERED",
+                logPrefix: "[Orders]",
+              });
+              if (!uncancel.success) {
+                return reply.status(500).send({
+                  error: "Erro ao atualizar status",
+                  message:
+                    uncancel.message ??
+                    "Falha ao re-deduzir o estoque do pedido reativado",
+                });
+              }
+              statusHandled = true;
+            } else {
+              // Transição simples: write condicionado ao status sondado.
+              const claimed = await prisma.order.updateMany({
+                where: {
+                  id,
+                  status: owned.status,
+                  marketplaceAccount: { userId },
+                },
+                data: { status: status as any },
+              });
+              if (claimed.count === 0) {
+                return reply.status(409).send({
+                  error: "Conflito de status",
+                  message:
+                    "O pedido mudou de status durante a atualização. Recarregue e tente novamente.",
+                });
+              }
+              statusHandled = true;
+            }
+          }
+        }
+
         const order = await orderRepository.update(
           id,
-          {
-            status: status as any,
-          },
+          statusHandled ? {} : { status: status as any },
           userId,
         );
 
