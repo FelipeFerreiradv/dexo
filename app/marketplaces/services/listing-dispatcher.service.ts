@@ -98,6 +98,17 @@ export interface ListingDispatchSnapshot {
 }
 
 /**
+ * Kill-switch do escalonamento de preço entre contas para Shopee/Magalu.
+ * Com CROSS_ACCOUNT_STAGGER_MARKETPLACES_DISABLED=1, os builders deixam de
+ * popular os mapas de índice Shopee/Magalu E o apply deixa de LÊ-los (cobre
+ * jobs já persistidos com mapas novos, ex.: retry-failed) — revertendo ao
+ * comportamento ML-only anterior. O caminho ML nunca é afetado pelo switch.
+ */
+export function crossMarketplaceStaggerDisabled(): boolean {
+  return process.env.CROSS_ACCOUNT_STAGGER_MARKETPLACES_DISABLED === "1";
+}
+
+/**
  * Ponto único de orquestração para criação de anúncios em múltiplos
  * marketplaces. Substitui os blocos fire-and-forget duplicados em
  * `POST /products` (criação) e, futuramente, no fluxo de edição.
@@ -746,28 +757,48 @@ export class ListingDispatcher {
 
   /**
    * Monta o overrideTemplate de aumento escalonado a partir da ordem das contas
-   * ML em `requests` (1ª selecionada = índice 0 = preço base). Retorna null se
-   * o percentual for <= 0 ou houver menos de 2 contas ML (sem efeito).
+   * em `requests` (1ª selecionada = índice 0 = preço base). Cada plataforma tem
+   * escada 0-based PRÓPRIA, independente das demais (a penalização por anúncios
+   * idênticos é intra-marketplace). Um mapa só é incluído quando a plataforma
+   * tem 2+ contas (com 1 conta não há o que escalonar); os mapas Shopee/Magalu
+   * exigem também o kill-switch desligado. Retorna null se o percentual for
+   * <= 0 ou nenhuma plataforma tiver 2+ contas (sem efeito) — para requests
+   * só-ML, comportamento idêntico ao anterior.
    */
   static buildCrossAccountOverride(
     requests: Array<{ platform: BulkListingPlatform; accountId?: string }>,
     percent: number,
   ): BulkOverrideTemplate | null {
     if (!(percent > 0)) return null;
-    const indexByAccountId: Record<string, number> = {};
-    let idx = 0;
-    for (const r of requests) {
-      if (
-        r.platform === "MERCADO_LIVRE" &&
-        r.accountId &&
-        !Object.prototype.hasOwnProperty.call(indexByAccountId, r.accountId)
-      ) {
-        indexByAccountId[r.accountId] = idx++;
+    const mapFor = (
+      platform: BulkListingPlatform,
+    ): Record<string, number> | null => {
+      const map: Record<string, number> = {};
+      let idx = 0;
+      for (const r of requests) {
+        if (
+          r.platform === platform &&
+          r.accountId &&
+          !Object.prototype.hasOwnProperty.call(map, r.accountId)
+        ) {
+          map[r.accountId] = idx++;
+        }
       }
-    }
-    if (idx < 2) return null;
+      return idx >= 2 ? map : null;
+    };
+    const ml = mapFor("MERCADO_LIVRE");
+    const staggerOthers = !crossMarketplaceStaggerDisabled();
+    const shopee = staggerOthers ? mapFor("SHOPEE") : null;
+    const magalu = staggerOthers ? mapFor("MAGALU") : null;
+    if (!ml && !shopee && !magalu) return null;
     return {
-      crossAccountIncrease: { enabled: true, percent, indexByAccountId },
+      crossAccountIncrease: {
+        enabled: true,
+        percent,
+        ...(ml ? { indexByAccountId: ml } : {}),
+        ...(shopee ? { shopeeIndexByAccountId: shopee } : {}),
+        ...(magalu ? { magaluIndexByAccountId: magalu } : {}),
+      },
     };
   }
 }
