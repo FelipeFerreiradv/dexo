@@ -560,6 +560,10 @@ export class ProductUseCase {
     productId: string,
     userId: string,
     status: "active" | "paused",
+    // Opcional (default = comportamento atual): forceRemote força a chamada
+    // à API mesmo quando o status local já é o desejado — usado pelo
+    // cancelamento de pedido marketplace (status local pode estar stale).
+    opts?: { forceRemote?: boolean },
   ): Promise<{
     success: boolean;
     message: string;
@@ -597,11 +601,20 @@ export class ProductUseCase {
 
       const listingResults = await Promise.all(
         publishable.map(async (listing) => {
-          const result = await ListingUseCase.updateListingStatus(
-            listing.id,
-            userId,
-            status,
-          );
+          // Aridade condicional: sem forceRemote, chamada byte-idêntica à
+          // atual (3 args).
+          const result = opts?.forceRemote
+            ? await ListingUseCase.updateListingStatus(
+                listing.id,
+                userId,
+                status,
+                { forceRemote: true },
+              )
+            : await ListingUseCase.updateListingStatus(
+                listing.id,
+                userId,
+                status,
+              );
           return {
             externalListingId: listing.externalListingId,
             platform: listing.marketplaceAccount?.platform ?? null,

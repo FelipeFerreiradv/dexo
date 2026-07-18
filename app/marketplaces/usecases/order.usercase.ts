@@ -18,6 +18,7 @@ import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import {
   StockDeductionService,
+  type StockDeductionResult,
   type StockOversellAlert,
 } from "../services/stock-deduction.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -73,6 +74,36 @@ export interface OrderStockDeduction {
   previousStock: number;
   newStock: number;
   quantity: number;
+}
+
+export interface OrderCancellationResult {
+  success: boolean;
+  orderId: string | null;
+  externalOrderId: string;
+  action:
+    | "disabled"
+    | "not_found"
+    | "already_cancelled"
+    | "cancelled_restored"
+    | "cancelled_no_restore"
+    | "error";
+  restoredItems: number;
+  message?: string;
+}
+
+export interface OrderUncancellationResult {
+  success: boolean;
+  orderId: string | null;
+  externalOrderId: string;
+  action:
+    | "disabled"
+    | "not_found"
+    | "not_cancelled"
+    | "reactivated_rededucted"
+    | "reactivated_no_deduct"
+    | "error";
+  deductedItems: number;
+  message?: string;
 }
 
 interface SyncLogContext {
@@ -954,9 +985,15 @@ export class OrderUseCase {
         marketplaceAccountId: account.id,
         externalOrderId: { in: externalIds },
       },
-      select: { externalOrderId: true },
+      // EGRESS: status junto no select já existente (bytes desprezíveis) —
+      // permite o gate de cancelamento abaixo pular o handler para pedidos
+      // já CANCELLED localmente, zerando o custo recorrente por ciclo.
+      select: { externalOrderId: true, status: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
+    const existingStatusByExtId = new Map(
+      existingOrders.map((o) => [o.externalOrderId, o.status]),
+    );
 
     // EGRESS: idem ML/Shopee — só relê os anúncios da conta se houver pedido novo.
     const hasNewOrders = magaluOrders.some(
@@ -1000,6 +1037,54 @@ export class OrderUseCase {
             itemsTotal: itemList.length,
           });
           result.alreadyExists++;
+          // ADITIVO (cancelamento): pedido já importado que aparece cancelado
+          // no poll da API Magalu → estorno via handler idempotente (fast-path
+          // barato quando já está CANCELLED). Best-effort: o handler nunca
+          // lança e nada aqui toca contadores/results do import.
+          // Gate pelo status RAW, não pelo mapeado: "unavailable" também
+          // mapeia para CANCELLED, mas é cancelamento por INDISPONIBILIDADE
+          // (o vendedor declarou que a peça não existe) — estornar criaria
+          // estoque fantasma e oversell cross-channel. Não tocar.
+          const rawMagaluStatus = String(
+            magaluOrder.status ?? "",
+          ).toLowerCase();
+          if (
+            process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1" &&
+            (rawMagaluStatus === "cancelled" ||
+              rawMagaluStatus === "canceled") &&
+            // EGRESS: já CANCELLED local (snapshot deste ciclo) ⇒ o handler
+            // seria fast-path no-op — pular poupa 1 query por cancelado por
+            // ciclo, para sempre. Snapshot stale ⇒ no pior caso o handler
+            // idempotente roda uma vez a mais (inofensivo).
+            existingStatusByExtId.get(externalOrderId) !== "CANCELLED"
+          ) {
+            const cancelResult = await this.processOrderCancellation({
+              marketplaceAccountId,
+              externalOrderId,
+              platformLabel: "Magalu",
+            });
+            // Loga só na transição real (evita re-logar o mesmo cancelado a
+            // cada ciclo de poll enquanto ele estiver na janela).
+            if (
+              cancelResult.action === "cancelled_restored" ||
+              cancelResult.action === "cancelled_no_restore"
+            ) {
+              void SystemLogService.logInfo(
+                "MAGALU_CANCEL_DETECTED",
+                `Pedido Magalu #${externalOrderId} consta cancelado no marketplace (${cancelResult.action})`,
+                {
+                  resource: "Order",
+                  details: {
+                    externalOrderId,
+                    marketplaceAccountId,
+                    rawStatus: magaluOrder.status ?? null,
+                    action: cancelResult.action,
+                    restoredItems: cancelResult.restoredItems,
+                  },
+                },
+              ).catch(() => {});
+            }
+          }
           continue;
         }
 
@@ -1487,6 +1572,27 @@ export class OrderUseCase {
     try {
       await prisma.$transaction(
         async (tx) => {
+          // ADITIVO (cancelamento): nunca baixar estoque de pedido já
+          // CANCELLED. O SELECT FOR UPDATE na linha do Order serializa com o
+          // claim do processOrderCancellation (updateMany na mesma linha):
+          // se o cancelamento está em voo, esperamos o commit dele e lemos
+          // CANCELLED ⇒ pulamos a baixa; se a baixa vence, o cancelamento
+          // espera e o net do StockLog enxerga a baixa commitada ⇒ estorna.
+          // Ordem de locks (Order → Products) idêntica nos dois lados ⇒ sem
+          // deadlock. Fora do fluxo de cancelamento o status nunca é
+          // CANCELLED neste ponto (pedido recém-criado) ⇒ comportamento
+          // idêntico ao atual. Kill-switch restaura o caminho byte-idêntico.
+          if (process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1") {
+            const fresh = await tx.$queryRaw<
+              { status: string }[]
+            >`SELECT status FROM "Order" WHERE id = ${order.id} FOR UPDATE`;
+            if (fresh[0]?.status === "CANCELLED") {
+              console.log(
+                `[OrderUseCase] Pedido ${order.id} já cancelado — baixa de estoque pulada (${reason}).`,
+              );
+              return;
+            }
+          }
           const result = await StockDeductionService.deductWithinTx(tx, {
             items: orderItems.map((i) => ({
               productId: i.productId,
@@ -1541,6 +1647,480 @@ export class OrderUseCase {
     }
 
     return deductions;
+  }
+
+  /**
+   * Cancela um pedido JÁ IMPORTADO devolvendo ao estoque exatamente o que
+   * foi baixado na importação e reabrindo anúncios cujos produtos saíram de
+   * zero (`firePostEffects.reopenOnRefill` — paused→active nas 3 plataformas).
+   *
+   * Idempotência (webhooks repetem; chamadas concorrem):
+   *  1. Claim atômico por transição de status na MESMA tx do estorno —
+   *     qualquer status ≠ CANCELLED → CANCELLED via updateMany; quem não
+   *     vence o claim não estorna. Já CANCELLED → no-op sem abrir tx.
+   *     PENDING também entra no claim: existem pedidos PENDING COM baixa
+   *     (ex.: Shopee TO_CONFIRM_RECEIVE mapeia para PENDING e o importador
+   *     Shopee deduz incondicionalmente) — o net do StockLog decide se há
+   *     algo a estornar (pedido sem baixa ⇒ net 0 ⇒ só status).
+   *  2. Quantidades pelo "net" do StockLog (baixa − estornos anteriores, com
+   *     teto na quantidade do pedido) — estorna só o que foi de fato baixado
+   *     (cobre baixa clampada por oversell, pedido sem baixa e flip-flop de
+   *     status via PATCH manual).
+   *
+   * NUNCA lança: os callers são setImmediate fire-and-forget (webhooks) e o
+   * loop de poll — erro vira `{ action: "error" }` + SystemLog, e o rollback
+   * da tx deixa o estado consistente para a próxima entrega/poll.
+   * Kill-switch: ORDER_CANCEL_RESTORE_DISABLED=1 desliga tudo.
+   */
+  static async processOrderCancellation(params: {
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    platformLabel: "ML" | "Shopee" | "Magalu";
+    logPrefix?: string;
+  }): Promise<OrderCancellationResult> {
+    const { marketplaceAccountId, externalOrderId, platformLabel } = params;
+    const logPrefix = params.logPrefix ?? "[OrderUseCase]";
+    try {
+      if (process.env.ORDER_CANCEL_RESTORE_DISABLED === "1") {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          action: "disabled",
+          restoredItems: 0,
+        };
+      }
+
+      const order = await prisma.order.findFirst({
+        where: { marketplaceAccountId, externalOrderId },
+        select: {
+          id: true,
+          status: true,
+          items: { select: { productId: true, quantity: true } },
+          marketplaceAccount: { select: { userId: true } },
+        },
+      });
+      if (!order) {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          action: "not_found",
+          restoredItems: 0,
+        };
+      }
+      if (order.status === "CANCELLED") {
+        return {
+          success: true,
+          orderId: order.id,
+          externalOrderId,
+          action: "already_cancelled",
+          restoredItems: 0,
+        };
+      }
+
+      // Reasons determinísticas: a da baixa é a string EXATA escrita na
+      // importação; estorno e reativação (un-cancel) entram no mesmo net
+      // (repetição ⇒ net 0; alternância cancel/un-cancel converge).
+      const deductionReason = `Venda ${platformLabel} #${externalOrderId}`;
+      const restoreReason = `Estorno venda ${platformLabel} #${externalOrderId}`;
+      const reactivateReason = `Reativação venda ${platformLabel} #${externalOrderId}`;
+
+      // Teto do estorno por produto (agrega itens repetidos do mesmo produto).
+      const orderedQty = new Map<string, number>();
+      for (const item of order.items) {
+        orderedQty.set(
+          item.productId,
+          (orderedQty.get(item.productId) ?? 0) + item.quantity,
+        );
+      }
+      const productIds = [...orderedQty.keys()];
+
+      let restorations: StockDeductionResult[] = [];
+      let action: OrderCancellationResult["action"] = "already_cancelled";
+
+      await prisma.$transaction(
+        async (tx) => {
+          // 1. Claim atômico: só quem transiciona o status estorna
+          //    (concorrente bloqueia no row-lock e reavalia ⇒ count 0).
+          //    PENDING incluso — o net do StockLog decide o estorno.
+          const claimed = await tx.order.updateMany({
+            where: {
+              id: order.id,
+              status: { in: ["PENDING", "PAID", "SHIPPED", "DELIVERED"] },
+            },
+            data: { status: "CANCELLED" },
+          });
+          if (claimed.count === 0) {
+            action = "already_cancelled";
+            return;
+          }
+
+          if (productIds.length === 0) {
+            action = "cancelled_no_restore";
+            return;
+          }
+
+          // 2. Lock dos produtos (mesma ordem de lock do motor de estoque)
+          //    ANTES do net — serializa com uma baixa em voo do importador.
+          for (const productId of productIds) {
+            await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+          }
+
+          // 3. Net do StockLog: baixa + re-deduções de reativação (change<0)
+          //    e estornos anteriores (change>0) ⇒ a estornar = max(0, -Σ),
+          //    com teto no pedido.
+          const grouped = await tx.stockLog.groupBy({
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              reason: {
+                in: [deductionReason, restoreReason, reactivateReason],
+              },
+            },
+            _sum: { change: true },
+          });
+          const netByProduct = new Map(
+            grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+          );
+          const items = productIds
+            .map((productId) => ({
+              productId,
+              quantity: Math.min(
+                Math.max(0, -(netByProduct.get(productId) ?? 0)),
+                orderedQty.get(productId)!,
+              ),
+            }))
+            .filter((i) => i.quantity > 0);
+
+          if (items.length === 0) {
+            action = "cancelled_no_restore";
+            return;
+          }
+
+          const result = await StockDeductionService.restoreWithinTx(tx, {
+            items,
+            reason: restoreReason,
+            orderId: order.id,
+            logPrefix,
+          });
+          restorations = result.deductions;
+          action = "cancelled_restored";
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+
+      // Pós-commit: sync de estoque + reabertura de anúncios que saíram de
+      // zero. Best-effort, fora da tx (espelha FinanceUseCase.reverse).
+      // SEM pauseOnZero — pedido não pausa anúncios. force: quando o estoque
+      // zera por venda de marketplace, o sync pausa o item ML só REMOTAMENTE
+      // (status local segue "active") — sem force, o fast-path alreadyInState
+      // do updateListingStatus faria no-op e o anúncio ficaria pausado para
+      // sempre apesar do estoque restaurado.
+      if (restorations.length > 0) {
+        StockDeductionService.firePostEffects({
+          deductions: restorations,
+          logPrefix,
+          reopenOnRefill: {
+            userId: order.marketplaceAccount.userId,
+            force: true,
+          },
+        });
+      }
+
+      void SystemLogService.logInfo(
+        "ORDER_CANCEL_RESTORE",
+        `Pedido ${platformLabel} #${externalOrderId} cancelado (${action})`,
+        {
+          resource: "Order",
+          resourceId: order.id,
+          details: {
+            action,
+            marketplaceAccountId,
+            externalOrderId,
+            restored: restorations.map((r) => ({
+              productId: r.productId,
+              quantity: r.quantity,
+              previousStock: r.previousStock,
+              newStock: r.newStock,
+            })),
+          },
+        },
+      ).catch(() => {});
+
+      return {
+        success: true,
+        orderId: order.id,
+        externalOrderId,
+        action,
+        restoredItems: restorations.length,
+      };
+    } catch (error) {
+      console.error(
+        `${logPrefix} Falha no cancelamento ${platformLabel} #${externalOrderId}:`,
+        error,
+      );
+      void SystemLogService.logError(
+        "ORDER_CANCEL_RESTORE_FAILED",
+        `Falha ao processar cancelamento do pedido ${platformLabel} #${externalOrderId}`,
+        {
+          resource: "Order",
+          details: {
+            marketplaceAccountId,
+            externalOrderId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      ).catch(() => {});
+      return {
+        success: false,
+        orderId: null,
+        externalOrderId,
+        action: "error",
+        restoredItems: 0,
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      };
+    }
+  }
+
+  /**
+   * Reativa um pedido CANCELLED (un-cancel via PATCH manual) re-deduzindo o
+   * estoque que o cancelamento estornou — simétrico ao
+   * `processOrderCancellation`, mesmo claim atômico e mesma ordem de locks
+   * (Order → Products).
+   *
+   * Net separável por reason: a re-dedução escreve com reason PRÓPRIA
+   * ("Reativação venda <Label> #<extId>") — a deduzir =
+   * max(0, Σ[estorno, reativação]) com teto na quantidade do pedido.
+   * Repetição ⇒ 0; pedido cujo cancelamento nada estornou ⇒ 0 (nunca deduz
+   * estoque "novo"); alternância cancel/un-cancel converge porque o net do
+   * cancelamento também soma a reason de reativação.
+   *
+   * Se a peça foi vendida em outro canal nesse meio-tempo, o clamp do
+   * `deductWithinTx` deduz o disponível e o oversell é alertado (mesmo
+   * mecanismo da importação).
+   *
+   * NUNCA lança — o caller (rota PATCH) decide o HTTP pelo retorno.
+   * Kill-switch: ORDER_CANCEL_RESTORE_DISABLED=1 desliga tudo.
+   */
+  static async processOrderUncancellation(params: {
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    platformLabel: "ML" | "Shopee" | "Magalu";
+    targetStatus: "PAID" | "SHIPPED" | "DELIVERED";
+    logPrefix?: string;
+  }): Promise<OrderUncancellationResult> {
+    const { marketplaceAccountId, externalOrderId, platformLabel } = params;
+    const logPrefix = params.logPrefix ?? "[OrderUseCase]";
+    try {
+      if (process.env.ORDER_CANCEL_RESTORE_DISABLED === "1") {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          action: "disabled",
+          deductedItems: 0,
+        };
+      }
+
+      const order = await prisma.order.findFirst({
+        where: { marketplaceAccountId, externalOrderId },
+        select: {
+          id: true,
+          status: true,
+          items: { select: { productId: true, quantity: true } },
+          marketplaceAccount: { select: { platform: true } },
+        },
+      });
+      if (!order) {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          action: "not_found",
+          deductedItems: 0,
+        };
+      }
+      if (order.status !== "CANCELLED") {
+        return {
+          success: true,
+          orderId: order.id,
+          externalOrderId,
+          action: "not_cancelled",
+          deductedItems: 0,
+        };
+      }
+
+      const restoreReason = `Estorno venda ${platformLabel} #${externalOrderId}`;
+      const reactivateReason = `Reativação venda ${platformLabel} #${externalOrderId}`;
+
+      const orderedQty = new Map<string, number>();
+      for (const item of order.items) {
+        orderedQty.set(
+          item.productId,
+          (orderedQty.get(item.productId) ?? 0) + item.quantity,
+        );
+      }
+      const productIds = [...orderedQty.keys()];
+
+      let deductions: StockDeductionResult[] = [];
+      let oversellAlerts: StockOversellAlert[] = [];
+      let action: OrderUncancellationResult["action"] = "not_cancelled";
+
+      await prisma.$transaction(
+        async (tx) => {
+          // 1. Claim atômico CANCELLED → targetStatus (concorrente ⇒ count 0).
+          const claimed = await tx.order.updateMany({
+            where: { id: order.id, status: "CANCELLED" },
+            data: { status: params.targetStatus },
+          });
+          if (claimed.count === 0) {
+            action = "not_cancelled";
+            return;
+          }
+
+          if (productIds.length === 0) {
+            action = "reactivated_no_deduct";
+            return;
+          }
+
+          // 2. Lock dos produtos (mesma ordem do motor) antes do net.
+          for (const productId of productIds) {
+            await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+          }
+
+          // 3. Net dos estornos: estornos (+) − reativações anteriores (−)
+          //    ⇒ a re-deduzir = max(0, Σ), com teto no pedido. Só desfaz o
+          //    que o cancelamento fez — nunca cria dedução "nova".
+          const grouped = await tx.stockLog.groupBy({
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              reason: { in: [restoreReason, reactivateReason] },
+            },
+            _sum: { change: true },
+          });
+          const netByProduct = new Map(
+            grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+          );
+          const items = productIds
+            .map((productId) => ({
+              productId,
+              quantity: Math.min(
+                Math.max(0, netByProduct.get(productId) ?? 0),
+                orderedQty.get(productId)!,
+              ),
+            }))
+            .filter((i) => i.quantity > 0);
+
+          if (items.length === 0) {
+            action = "reactivated_no_deduct";
+            return;
+          }
+
+          const result = await StockDeductionService.deductWithinTx(tx, {
+            items,
+            reason: reactivateReason,
+            orderId: order.id,
+            logPrefix,
+          });
+          deductions = result.deductions;
+          oversellAlerts = result.oversellAlerts;
+          action = "reactivated_rededucted";
+        },
+        { timeout: 60_000, maxWait: 20_000 },
+      );
+
+      // Pós-commit: propaga o estoque re-deduzido aos marketplaces.
+      // SEM pauseOnZero (pedido não pausa anúncios — o sync remoto pausa o
+      // ML quando a quantidade chega a 0, como na importação).
+      if (deductions.length > 0) {
+        StockDeductionService.firePostEffects({
+          deductions,
+          logPrefix,
+        });
+      }
+
+      // Peça vendida em outro canal enquanto o pedido esteve cancelado —
+      // mesmo alerta de oversell da importação.
+      if (oversellAlerts.length > 0) {
+        try {
+          await SystemLogService.logWarning(
+            "OVERSELL_DETECTED",
+            `Oversell detectado ao reativar o pedido ${order.id}: ${oversellAlerts.length} item(ns) com quantidade maior que estoque disponível`,
+            {
+              resource: "Order",
+              resourceId: order.id,
+              details: {
+                orderId: order.id,
+                platform: order.marketplaceAccount?.platform ?? null,
+                items: oversellAlerts,
+                reason: reactivateReason,
+              },
+            },
+          );
+        } catch (logError) {
+          console.error(
+            `${logPrefix} Falha ao registrar OVERSELL_DETECTED (reativação):`,
+            logError,
+          );
+        }
+      }
+
+      void SystemLogService.logInfo(
+        "ORDER_UNCANCEL_REDEDUCT",
+        `Pedido ${platformLabel} #${externalOrderId} reativado para ${params.targetStatus} (${action})`,
+        {
+          resource: "Order",
+          resourceId: order.id,
+          details: {
+            action,
+            marketplaceAccountId,
+            externalOrderId,
+            targetStatus: params.targetStatus,
+            deducted: deductions.map((d) => ({
+              productId: d.productId,
+              quantity: d.quantity,
+              previousStock: d.previousStock,
+              newStock: d.newStock,
+            })),
+          },
+        },
+      ).catch(() => {});
+
+      return {
+        success: true,
+        orderId: order.id,
+        externalOrderId,
+        action,
+        deductedItems: deductions.length,
+      };
+    } catch (error) {
+      console.error(
+        `${logPrefix} Falha na reativação ${platformLabel} #${externalOrderId}:`,
+        error,
+      );
+      void SystemLogService.logError(
+        "ORDER_UNCANCEL_REDEDUCT",
+        `Falha ao reativar o pedido ${platformLabel} #${externalOrderId}`,
+        {
+          resource: "Order",
+          details: {
+            marketplaceAccountId,
+            externalOrderId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+      ).catch(() => {});
+      return {
+        success: false,
+        orderId: null,
+        externalOrderId,
+        action: "error",
+        deductedItems: 0,
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      };
+    }
   }
 
   private static async syncMarketplaceStockForProducts(

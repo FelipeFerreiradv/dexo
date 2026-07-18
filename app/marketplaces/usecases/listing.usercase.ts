@@ -5083,6 +5083,11 @@ export class ListingUseCase {
     listingId: string,
     userId: string,
     status: "active" | "paused",
+    // Opcional (default = comportamento atual): forceRemote pula o fast-path
+    // de idempotência e chama a API mesmo com status local já no desejado.
+    // Usado pelo cancelamento de pedido marketplace: o sync de estoque pausa
+    // o item ML só remotamente (status local fica stale em "active").
+    opts?: { forceRemote?: boolean },
   ): Promise<{ success: boolean; error?: string; alreadyInState?: boolean }> {
     try {
       const listing = await ListingRepository.findById(listingId);
@@ -5095,7 +5100,7 @@ export class ListingUseCase {
 
       // Idempotência: se já está no status desejado, não chama API externa.
       // Normaliza lowercase porque o DB historicamente recebe ambos os casings.
-      if (listing.status?.toLowerCase() === status) {
+      if (!opts?.forceRemote && listing.status?.toLowerCase() === status) {
         return { success: true, alreadyInState: true };
       }
 

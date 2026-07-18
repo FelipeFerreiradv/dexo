@@ -12,6 +12,8 @@ import { MessagesUseCase } from "./messages.usecase";
 import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
+import { ShopeeApiService } from "../services/shopee-api.service";
+import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { SystemLogService } from "@/app/services/system-log.service";
 
 const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
@@ -43,6 +45,49 @@ async function ensureFreshMLToken(account: {
     expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
   });
   return refreshed.accessToken;
+}
+
+/**
+ * Token Shopee fresco. Não expirado ⇒ token atual; expirado com refresh ⇒
+ * renova+persiste (precisa do shopId); falha ⇒ null. Mantida local (sem
+ * import cruzado) espelhando messages.usecase.ts.
+ */
+async function ensureFreshShopeeToken(account: {
+  id: string;
+  shopId: number | null;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | null;
+}): Promise<string | null> {
+  if (!account.accessToken || !account.shopId) return null;
+  const expiresMs = account.expiresAt
+    ? new Date(account.expiresAt).getTime()
+    : 0;
+  if (
+    Number.isFinite(expiresMs) &&
+    expiresMs - Date.now() > TOKEN_REFRESH_SAFETY_MS
+  ) {
+    return account.accessToken;
+  }
+  if (!account.refreshToken) return account.accessToken;
+  try {
+    const refreshed = await ShopeeOAuthService.refreshAccessToken(
+      account.refreshToken,
+      account.shopId,
+    );
+    await MarketplaceRepository.updateTokens(account.id, {
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token,
+      expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+    });
+    return refreshed.access_token;
+  } catch (err) {
+    console.warn(
+      `[WebhookUseCase] Falha ao refrescar token Shopee da conta ${account.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 /**
@@ -156,6 +201,67 @@ export class WebhookUseCase {
         true,
       );
 
+      // ADITIVO (cancelamento): o payload ML não traz status (só o resource);
+      // a verdade é o fetch da API. Best-effort em try/catch próprio — falha
+      // aqui não altera o retorno do webhook. Gates de custo: pedido recém-
+      // importado NESTE re-poll acabou de vir da API como paid ⇒ não está
+      // cancelado, pula o fetch; pedido inexistente ou já CANCELLED idem.
+      // O poll ML filtra status=paid, então cancelamento nunca chega pelo
+      // re-poll acima — este fetch pontual é o único detector ML.
+      if (process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1") {
+        try {
+          const justImported = importResult.results.some(
+            (r) => r.externalOrderId === mlOrderId && r.status === "imported",
+          );
+          const localOrder = justImported
+            ? null
+            : await prisma.order.findFirst({
+                where: {
+                  marketplaceAccountId: account.id,
+                  externalOrderId: mlOrderId,
+                },
+                select: { id: true, status: true },
+              });
+          if (localOrder && localOrder.status !== "CANCELLED") {
+            // Reler a conta: o re-poll acima pode ter refrescado e ROTACIONADO
+            // os tokens (refresh token ML é single-use). Usar o snapshot stale
+            // dispararia um segundo refresh com token já consumido →
+            // invalid_grant → circuit breaker marcaria a conta como ERROR e a
+            // importação de pedidos PARARIA até reconexão manual.
+            // EGRESS: select mínimo — só os campos que o refresh precisa.
+            const freshAccount = await prisma.marketplaceAccount.findUnique({
+              where: { id: account.id },
+              select: {
+                id: true,
+                accessToken: true,
+                refreshToken: true,
+                expiresAt: true,
+              },
+            });
+            const accessToken = await ensureFreshMLToken(
+              freshAccount ?? account,
+            );
+            const mlOrder = await MLApiService.getOrderDetails(
+              accessToken,
+              mlOrderId,
+            );
+            if (mlOrder.status === "cancelled") {
+              await OrderUseCase.processOrderCancellation({
+                marketplaceAccountId: account.id,
+                externalOrderId: mlOrderId,
+                platformLabel: "ML",
+                logPrefix: "[WebhookUseCase]",
+              });
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[WebhookUseCase] Falha na checagem de cancelamento ML (best-effort):",
+            err,
+          );
+        }
+      }
+
       if (importResult.errors > 0) {
         return {
           success: false,
@@ -261,6 +367,67 @@ export class WebhookUseCase {
           1,
           true,
         );
+
+      // ADITIVO (cancelamento): o push traz data.status como HINT — a verdade
+      // é o fetch da API. Estorna SOMENTE se order_status raw === "CANCELLED"
+      // (IN_CANCEL é cancelamento em andamento, o vendedor pode rejeitar —
+      // não tocar o pedido). O fetch Shopee do re-poll filtra pós-venda,
+      // então cancelamento nunca chega pelo importador. Best-effort.
+      const pushStatus = payload.data?.status ?? "";
+      if (
+        process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1" &&
+        ordersn &&
+        (pushStatus === "CANCELLED" || pushStatus === "IN_CANCEL")
+      ) {
+        try {
+          const localOrder = await prisma.order.findFirst({
+            where: {
+              marketplaceAccountId: account.id,
+              externalOrderId: ordersn,
+            },
+            select: { id: true, status: true },
+          });
+          if (localOrder && localOrder.status !== "CANCELLED") {
+            // Reler a conta: o re-poll acima pode ter refrescado e rotacionado
+            // os tokens Shopee — o snapshot stale faria um refresh fadado a
+            // falhar (refresh token consumido) e a checagem seria pulada.
+            // EGRESS: select mínimo — só os campos que o refresh precisa.
+            const freshAccount = await prisma.marketplaceAccount.findUnique({
+              where: { id: account.id },
+              select: {
+                id: true,
+                shopId: true,
+                accessToken: true,
+                refreshToken: true,
+                expiresAt: true,
+              },
+            });
+            const accessToken = await ensureFreshShopeeToken(
+              freshAccount ?? account,
+            );
+            if (accessToken && account.shopId) {
+              const [detail] = await ShopeeApiService.getOrderDetails(
+                accessToken,
+                account.shopId,
+                [ordersn],
+              );
+              if (detail?.order_status === "CANCELLED") {
+                await OrderUseCase.processOrderCancellation({
+                  marketplaceAccountId: account.id,
+                  externalOrderId: ordersn,
+                  platformLabel: "Shopee",
+                  logPrefix: "[WebhookUseCase]",
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[WebhookUseCase] Falha na checagem de cancelamento Shopee (best-effort):",
+            err,
+          );
+        }
+      }
 
       if (importResult.errors > 0) {
         return {

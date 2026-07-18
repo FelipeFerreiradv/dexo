@@ -46,6 +46,12 @@ export type LogAction =
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
   | "ML_REACTIVATION_RISK"
+  // Cancelamento de pedido marketplace: estorno de estoque + reabertura de
+  // anúncios (ver OrderUseCase.processOrderCancellation).
+  | "ORDER_CANCEL_RESTORE"
+  | "ORDER_CANCEL_RESTORE_FAILED"
+  | "ORDER_UNCANCEL_REDEDUCT"
+  | "MAGALU_CANCEL_DETECTED"
   // Job de importação de dados legados (Superadmin). O registro carrega o
   // estado/relatório do job em `details` (ver app/usecases/import/).
   | "IMPORT_JOB";
