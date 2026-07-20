@@ -19,7 +19,7 @@ import type {
 } from "../repositories/bulk-listing-job.repository";
 import { SystemLogService } from "../../services/system-log.service";
 
-export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX";
 
 export interface ListingDispatchRequest {
   platform: ListingPlatform;
@@ -72,7 +72,9 @@ function mergePerProductMlSettings(
   const merged: NonNullable<ListingDispatchRequest["mlSettings"]> = {
     ...(base ?? {}),
   };
-  const pick = <K extends keyof NonNullable<ListingDispatchRequest["mlSettings"]>>(
+  const pick = <
+    K extends keyof NonNullable<ListingDispatchRequest["mlSettings"]>,
+  >(
     key: K,
     value: NonNullable<ListingDispatchRequest["mlSettings"]>[K] | undefined,
   ) => {
@@ -141,10 +143,7 @@ export class ListingDispatcher {
               name: p.name,
               price: p.price as unknown as number | { toNumber(): number },
               costPrice: p.costPrice as unknown as
-                | number
-                | { toNumber(): number }
-                | null
-                | undefined,
+                number | { toNumber(): number } | null | undefined,
             };
           }
         } catch (e) {
@@ -295,6 +294,36 @@ export class ListingDispatcher {
         }
         return;
       }
+      if (req.platform === "OLX") {
+        const result = await ListingUseCase.createOlxListing(
+          userId,
+          productId,
+          req.categoryId,
+          req.accountId,
+        );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] OLX listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "OLX",
+          );
+        }
+        return;
+      }
     } catch (err) {
       console.error(
         `[ListingDispatcher] ${req.platform} error (product=${productId}, account=${req.accountId}):`,
@@ -371,7 +400,7 @@ export class ListingDispatcher {
     actorId: string | undefined,
     listingId: string | undefined,
     productId: string,
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX",
   ): void {
     if (!actorId || !listingId) return;
     const marketplace =
@@ -379,7 +408,9 @@ export class ListingDispatcher {
         ? "Shopee"
         : platform === "MAGALU"
           ? "Magalu"
-          : "MercadoLivre";
+          : platform === "OLX"
+            ? "OLX"
+            : "MercadoLivre";
     void SystemLogService.logListingCreate(
       actorId,
       listingId,
@@ -463,10 +494,7 @@ export class ListingDispatcher {
           name: p.name,
           price: p.price as unknown as number | { toNumber(): number },
           costPrice: p.costPrice as unknown as
-            | number
-            | { toNumber(): number }
-            | null
-            | undefined,
+            number | { toNumber(): number } | null | undefined,
         });
       }
     }
@@ -549,6 +577,14 @@ export class ListingDispatcher {
         // escolhida vence o request global; ausente ⇒ backend resolve no envio.
         const categoryId = ov?.magalu?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createMagaluListing(
+          userId,
+          productId,
+          categoryId,
+          req.accountId,
+        );
+      } else if (req.platform === "OLX") {
+        const categoryId = ov?.olx?.categoryId ?? req.categoryId;
+        createResult = await ListingUseCase.createOlxListing(
           userId,
           productId,
           categoryId,
@@ -648,10 +684,7 @@ export class ListingDispatcher {
             name: product.name,
             price: product.price as unknown as number | { toNumber(): number },
             costPrice: product.costPrice as unknown as
-              | number
-              | { toNumber(): number }
-              | null
-              | undefined,
+              number | { toNumber(): number } | null | undefined,
           };
         }
       }

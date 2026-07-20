@@ -70,6 +70,25 @@ const envSchema = z.object({
   MAGALU_WEBHOOK_SECRET: z.string().optional(),
   MAGALU_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
 
+  // OLX (autoupload / anúncios). TODAS opcionais de propósito, mesmo padrão do
+  // bloco Magalu: a integração fica atrás da flag NEXT_PUBLIC_OLX_INTEGRATION_ENABLED
+  // e env.ts é exit-on-error — vars obrigatórias ausentes derrubariam o boot.
+  // Os serviços olx-* validam a presença em runtime (validateOlxConfig).
+  // Credenciais vêm por email (suporteintegrador@olxbr.com), não self-service.
+  OLX_CLIENT_ID: z.string().optional(),
+  OLX_CLIENT_SECRET: z.string().optional(),
+  OLX_AUTH_URL: optionalUrlIsh,
+  OLX_API_URL: optionalUrlIsh,
+  OLX_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por espaço. Sem valor → usa o default das constantes.
+  OLX_SCOPES: z.string().optional(),
+  OLX_CATEGORY_ROOT_HINT: z.string().optional(),
+  // Contato do vendedor exigido em cada anúncio OLX (telefone DDD+número, CEP).
+  OLX_SELLER_PHONE: z.string().optional(),
+  OLX_SELLER_ZIPCODE: z.string().optional(),
+  OLX_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
+  // Sem OLX_WEBHOOK_SECRET: OLX não tem webhook de venda na fase 1.
+
   // WhatsApp (Cloud API oficial da Meta). TODAS opcionais de propósito, mesmo
   // padrão do bloco Magalu acima: o módulo fica atrás da flag
   // NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED + gate por usuário, e env.ts é

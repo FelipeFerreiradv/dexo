@@ -85,6 +85,8 @@ export class ListingRepository {
     retryEnabled?: boolean;
     nextRetryAt?: Date | null;
     retryAttempts?: number;
+    // OLX: id REAL do anúncio (list_id), separado do externalListingId=SKU.
+    olxListId?: string | null;
   }) {
     return prisma.productListing.upsert({
       where: {
@@ -104,6 +106,7 @@ export class ListingRepository {
         retryEnabled: data.retryEnabled ?? false,
         nextRetryAt: data.nextRetryAt ?? null,
         retryAttempts: data.retryAttempts ?? 0,
+        olxListId: data.olxListId ?? null,
       },
       update: {
         status: data.status,
@@ -115,6 +118,7 @@ export class ListingRepository {
         nextRetryAt:
           data.nextRetryAt === undefined ? undefined : data.nextRetryAt,
         retryAttempts: data.retryAttempts ?? undefined,
+        olxListId: data.olxListId === undefined ? undefined : data.olxListId,
       },
     });
   }
@@ -393,10 +397,7 @@ export class ListingRepository {
    * houver outro listing local para o mesmo externalId nessa conta-destino,
    * o que indicaria duplicação prévia (raro; deixar o erro propagar).
    */
-  static async reassignAccount(
-    listingId: string,
-    newAccountId: string,
-  ) {
+  static async reassignAccount(listingId: string, newAccountId: string) {
     return prisma.productListing.update({
       where: { id: listingId },
       data: { marketplaceAccountId: newAccountId },

@@ -24,6 +24,7 @@ export type PageId =
   | "mercado-livre"
   | "shopee"
   | "magalu"
+  | "olx"
   | "logs"
   | "fiscal";
 
@@ -41,6 +42,7 @@ export const PAGE_DEFS: { id: PageId; label: string }[] = [
   { id: "mercado-livre", label: "Mercado Livre" },
   { id: "shopee", label: "Shopee" },
   { id: "magalu", label: "Magalu" },
+  { id: "olx", label: "OLX" },
   { id: "logs", label: "Logs" },
   { id: "fiscal", label: "Notas fiscais" },
 ];

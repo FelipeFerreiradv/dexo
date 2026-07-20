@@ -70,6 +70,10 @@ type NavSection = {
 const MAGALU_INTEGRATION_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
 
+// Integração OLX 100% aditiva atrás da flag (mesmo padrão do Magalu).
+const OLX_INTEGRATION_ENABLED =
+  process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+
 // Módulo WhatsApp: flag global (kill-switch) + gate POR USUÁRIO (plano pago).
 // A flag esconde o item p/ todos; com flag ligada, o item só aparece após o
 // GET /whatsapp/status confirmar o entitlement do tenant (estado em runtime,
@@ -151,6 +155,16 @@ const NAV_SECTIONS: NavSection[] = [
               label: "Magazine Luiza",
               href: "/integracoes/magalu",
               icon: ShoppingBag,
+            },
+          ]
+        : []),
+      ...(OLX_INTEGRATION_ENABLED
+        ? [
+            {
+              id: "olx",
+              label: "OLX",
+              href: "/integracoes/olx",
+              icon: Store,
             },
           ]
         : []),
