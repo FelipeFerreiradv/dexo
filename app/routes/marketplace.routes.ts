@@ -137,7 +137,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 <style>body{font-family:monospace;padding:24px;max-width:900px;margin:0 auto}
 h2{color:#333}pre{background:#f4f4f4;padding:12px;border-radius:6px;word-break:break-all;white-space:pre-wrap}
 .ok{color:#080}.err{color:#c00}</style></head><body>
-<h2>${error ? "<span class=\"err\">Erro retornado pelo ML</span>" : "<span class=\"ok\">Autorização recebida</span>"}</h2>
+<h2>${error ? '<span class="err">Erro retornado pelo ML</span>' : '<span class="ok">Autorização recebida</span>'}</h2>
 ${error ? `<p><b>error:</b> ${error}</p>` : ""}
 <p>Cole esta URL completa no terminal do helper CLI:</p>
 <pre>${request.protocol}://${request.hostname}${request.url}</pre>
@@ -311,16 +311,13 @@ small{color:#666}</style></head><body>
               body.topic === "questions" &&
               WebhookUseCase.validateQuestionWebhookPayload(body)
             ) {
-              const result =
-                await WebhookUseCase.processQuestionWebhook(body);
+              const result = await WebhookUseCase.processQuestionWebhook(body);
               if (result.success) {
                 console.log(
                   `[ML Webhook] Pergunta processada: ${result.action} (question: ${result.questionId ?? "?"})`,
                 );
               } else {
-                console.warn(
-                  `[ML Webhook] Falha em pergunta: ${result.error}`,
-                );
+                console.warn(`[ML Webhook] Falha em pergunta: ${result.error}`);
               }
             } else if (
               body.topic === "items" &&
@@ -335,8 +332,7 @@ small{color:#666}</style></head><body>
                 console.warn(`[ML Webhook] Falha em item: ${result.error}`);
               }
             } else if (WebhookUseCase.validateWebhookPayload(body)) {
-              const result =
-                await WebhookUseCase.processOrderWebhook(body);
+              const result = await WebhookUseCase.processOrderWebhook(body);
               if (result.success) {
                 console.log(
                   `[ML Webhook] Processado com sucesso: ${result.action} (order: ${result.orderId})`,
@@ -577,8 +573,7 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       const q = (request.query as any)?.q as string | undefined;
       const categoryId = (request.query as any)?.category_id as
-        | string
-        | undefined;
+        string | undefined;
       const limitRaw = (request.query as any)?.limit as string | undefined;
       const limit = limitRaw ? Number(limitRaw) : undefined;
 
@@ -1224,9 +1219,13 @@ small{color:#666}</style></head><body>
           "SHP",
         );
         if (suggestions.suggestions.length > 0) {
-          console.log(`[SHP suggest] "${title}" → ${suggestions.suggestions.length} results, top: ${suggestions.suggestions[0].categoryId} conf=${suggestions.suggestions[0].confidence?.toFixed(3)} path="${suggestions.suggestions[0].fullPath?.substring(0, 80)}"`);
+          console.log(
+            `[SHP suggest] "${title}" → ${suggestions.suggestions.length} results, top: ${suggestions.suggestions[0].categoryId} conf=${suggestions.suggestions[0].confidence?.toFixed(3)} path="${suggestions.suggestions[0].fullPath?.substring(0, 80)}"`,
+          );
         } else {
-          console.log(`[SHP suggest] "${title}" → 0 results (tokens: ${suggestions.tokens.join(",")})`);
+          console.log(
+            `[SHP suggest] "${title}" → 0 results (tokens: ${suggestions.tokens.join(",")})`,
+          );
         }
         return reply.send(suggestions);
       } catch (error) {
@@ -1356,7 +1355,9 @@ small{color:#666}</style></head><body>
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro desconhecido";
-        const statusCode = /não encontrada|not found/i.test(message) ? 404 : 500;
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
         return reply.status(statusCode).send({
           error: "Erro ao consultar importação Shopee",
           message,
@@ -1653,8 +1654,9 @@ small{color:#666}</style></head><body>
             `[Shopee Webhook] Recebido code=${code}, shop_id=${shopId}, order=${body.data?.ordersn || "N/A"}`,
           );
 
-          const result =
-            await WebhookUseCase.processShopeeOrderWebhook(body as any);
+          const result = await WebhookUseCase.processShopeeOrderWebhook(
+            body as any,
+          );
 
           if (result.success) {
             console.log(
@@ -1729,7 +1731,9 @@ small{color:#666}</style></head><body>
     "/shopee/callback",
     async (request: FastifyRequest, reply: FastifyReply) => {
       // Detectar se é um redirect do browser (vindo do Shopee) ou chamada da API (fetch)
-      const acceptHeader = ((request.headers.accept as string) || "").toString();
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
       const isBrowserRedirect = acceptHeader.includes("text/html");
       const frontendUrl =
         process.env.NEXTAUTH_URL ||
@@ -1909,8 +1913,7 @@ small{color:#666}</style></head><body>
       try {
         const userId = request.user!.dataOwnerId;
         const accountId = (request.query as any)?.accountId as
-          | string
-          | undefined;
+          string | undefined;
         const resolved = await resolveMlAccountForCompat(userId, accountId);
         if (!resolved) {
           return reply.status(412).send({
@@ -2112,67 +2115,72 @@ small{color:#666}</style></head><body>
    */
   app.get<{
     Querystring: { code?: string; state?: string };
-  }>("/magalu/callback", async (request: FastifyRequest, reply: FastifyReply) => {
-    const acceptHeader = ((request.headers.accept as string) || "").toString();
-    const isBrowserRedirect = acceptHeader.includes("text/html");
-    const frontendUrl =
-      process.env.NEXTAUTH_URL ||
-      process.env.CORS_ORIGIN ||
-      "http://localhost:3000";
+  }>(
+    "/magalu/callback",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
+      const isBrowserRedirect = acceptHeader.includes("text/html");
+      const frontendUrl =
+        process.env.NEXTAUTH_URL ||
+        process.env.CORS_ORIGIN ||
+        "http://localhost:3000";
 
-    try {
-      const code = (request.query as any).code as string | undefined;
-      const state = (request.query as any).state as string | undefined;
+      try {
+        const code = (request.query as any).code as string | undefined;
+        const state = (request.query as any).state as string | undefined;
 
-      if (!code || !state) {
+        if (!code || !state) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            );
+          }
+          return reply.status(400).send({
+            error: "Parâmetros inválidos",
+            message: "code e state são obrigatórios",
+          });
+        }
+
+        const userId = request.user?.dataOwnerId;
+        const account = await MarketplaceUseCase.handleMagaluOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+
         if (isBrowserRedirect) {
           return reply.redirect(
-            `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            `${frontendUrl}/integracoes/magalu/callback?result=success`,
           );
         }
-        return reply.status(400).send({
-          error: "Parâmetros inválidos",
-          message: "code e state são obrigatórios",
+
+        return reply.send({
+          success: true,
+          message: "Conta conectada com sucesso",
+          account: {
+            id: account.id,
+            platform: account.platform,
+            status: account.status,
+            createdAt: account.createdAt,
+          },
+        });
+      } catch (error) {
+        if (isBrowserRedirect) {
+          const errorMsg =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return reply.redirect(
+            `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+          );
+        }
+        return reply.status(500).send({
+          error: "Erro ao processar callback",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
-
-      const userId = request.user?.dataOwnerId;
-      const account = await MarketplaceUseCase.handleMagaluOAuthCallback({
-        code,
-        state,
-        userId,
-      });
-
-      if (isBrowserRedirect) {
-        return reply.redirect(
-          `${frontendUrl}/integracoes/magalu/callback?result=success`,
-        );
-      }
-
-      return reply.send({
-        success: true,
-        message: "Conta conectada com sucesso",
-        account: {
-          id: account.id,
-          platform: account.platform,
-          status: account.status,
-          createdAt: account.createdAt,
-        },
-      });
-    } catch (error) {
-      if (isBrowserRedirect) {
-        const errorMsg =
-          error instanceof Error ? error.message : "Erro desconhecido";
-        return reply.redirect(
-          `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
-        );
-      }
-      return reply.status(500).send({
-        error: "Erro ao processar callback",
-        message: error instanceof Error ? error.message : "Erro desconhecido",
-      });
-    }
-  });
+    },
+  );
 
   /**
    * POST /marketplace/magalu/webhook — recebe eventos nativos v1 da Magalu
@@ -2192,8 +2200,7 @@ small{color:#666}</style></head><body>
       const secret = MAGALU_CONSTANTS.WEBHOOK_SECRET;
       if (secret) {
         const sigHeader = request.headers["x-signature-256"] as
-          | string
-          | undefined;
+          string | undefined;
         const ts = request.headers["x-timestamp"] as string | undefined;
         const rawApprox = JSON.stringify(body ?? {});
         const ok = MagaluWebhookSignatureService.verify(
@@ -2239,7 +2246,8 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const statusData = await MarketplaceUseCase.getMagaluAccountStatus(userId);
+        const statusData =
+          await MarketplaceUseCase.getMagaluAccountStatus(userId);
         return reply.send({
           connected: statusData.connected,
           platform: Platform.MAGALU,
@@ -2600,6 +2608,300 @@ small{color:#666}</style></head><body>
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sincronizar estoque do produto na Magalu",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  // ====================================================================
+  // ROTAS OLX (espelham o padrão /magalu/*). Aditivas, atrás da flag
+  // NEXT_PUBLIC_OLX_INTEGRATION_ENABLED. SEM webhook e SEM import de pedidos
+  // (a OLX não fornece) — a baixa de estoque é unidirecional ERP→OLX.
+  // ====================================================================
+
+  /** POST /marketplace/olx/auth — inicia o OAuth da OLX. */
+  app.post<{ Reply: { authUrl: string; state: string } }>(
+    "/olx/auth",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { authUrl, state } = MarketplaceUseCase.initiateOlxOAuth(userId);
+        return reply.send({ authUrl, state });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar autenticação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/olx/callback?code=...&state=...
+   * Callback OAuth da OLX. Não requer auth prévia — userId vem do state.
+   */
+  app.get<{
+    Querystring: { code?: string; state?: string };
+  }>("/olx/callback", async (request: FastifyRequest, reply: FastifyReply) => {
+    const acceptHeader = ((request.headers.accept as string) || "").toString();
+    const isBrowserRedirect = acceptHeader.includes("text/html");
+    const frontendUrl =
+      process.env.NEXTAUTH_URL ||
+      process.env.CORS_ORIGIN ||
+      "http://localhost:3000";
+
+    try {
+      const code = (request.query as any).code as string | undefined;
+      const state = (request.query as any).state as string | undefined;
+
+      if (!code || !state) {
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/olx/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+          );
+        }
+        return reply.status(400).send({
+          error: "Parâmetros inválidos",
+          message: "code e state são obrigatórios",
+        });
+      }
+
+      const userId = request.user?.dataOwnerId;
+      const account = await MarketplaceUseCase.handleOlxOAuthCallback({
+        code,
+        state,
+        userId,
+      });
+
+      if (isBrowserRedirect) {
+        return reply.redirect(
+          `${frontendUrl}/integracoes/olx/callback?result=success`,
+        );
+      }
+
+      return reply.send({
+        success: true,
+        message: "Conta conectada com sucesso",
+        account: {
+          id: account.id,
+          platform: account.platform,
+          status: account.status,
+          createdAt: account.createdAt,
+        },
+      });
+    } catch (error) {
+      if (isBrowserRedirect) {
+        const errorMsg =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        return reply.redirect(
+          `${frontendUrl}/integracoes/olx/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+        );
+      }
+      return reply.status(500).send({
+        error: "Erro ao processar callback",
+        message: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
+  /** GET /marketplace/olx/status */
+  app.get(
+    "/olx/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const statusData = await MarketplaceUseCase.getOlxAccountStatus(userId);
+        return reply.send({
+          connected: statusData.connected,
+          platform: Platform.OLX,
+          status: statusData.account?.status,
+          message: statusData.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/olx/accounts — lista contas OLX do usuário. */
+  app.get(
+    "/olx/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.OLX,
+        );
+        return reply.send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** DELETE /marketplace/olx — desconecta conta (aceita accountId). */
+  app.delete<{ Reply: { success: boolean; message: string } }>(
+    "/olx",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        await MarketplaceUseCase.disconnectAccount(
+          userId,
+          Platform.OLX,
+          accountId,
+        );
+
+        return reply.send({
+          success: true,
+          message: "Conta OLX desconectada com sucesso",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao desconectar conta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/olx/listings — vínculos produto↔anúncio da OLX. */
+  app.get(
+    "/olx/listings",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.OLX,
+                },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.OLX,
+              );
+
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta não encontrada",
+            message: "Conecte sua conta da OLX primeiro",
+          });
+        }
+
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                olxListId: true,
+                permalink: true,
+                status: true,
+                lastError: true,
+                createdAt: true,
+                product: { select: { name: true, sku: true, stock: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+        return reply.send({ success: true, count: listings.length, listings });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/olx/sync — sincroniza estoque de todos os anúncios OLX. */
+  app.post(
+    "/olx/sync",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        void (async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(userId, Platform.OLX);
+            console.log(
+              `[olx/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (e) {
+            console.error("[olx/sync] Background sync error:", e);
+          }
+        })();
+        return reply.status(202).send({
+          success: true,
+          message: "Sincronização de estoque OLX iniciada",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque na OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/olx/sync/:productId — sincroniza um produto específico. */
+  app.post<{ Params: { productId: string } }>(
+    "/olx/sync/:productId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { productId } = request.params as { productId: string };
+
+        const result = await SyncUseCase.syncProductStock(productId);
+        const failed = result.filter((r) => !r.success);
+
+        await SystemLogService.logSyncComplete(userId, "PRODUCT_SYNC", "OLX", {
+          productId,
+          successful: result.length - failed.length,
+          failed: failed.length,
+        });
+
+        return reply.send({ success: failed.length === 0, results: result });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque do produto na OLX",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

@@ -16,6 +16,10 @@ import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
+import { OlxApiService } from "../services/olx-api.service";
+import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
+import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
+import { OLX_CONSTANTS } from "../olx/olx-constants";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -69,7 +73,8 @@ type ShopeeImportJobState = "queued" | "running" | "completed" | "failed";
 interface ShopeeImportJobPayload {
   kind: "SHOPEE_IMPORT";
   state: ShopeeImportJobState;
-  phase: "queued" | "listing" | "details" | "processing" | "completed" | "failed";
+  phase:
+    "queued" | "listing" | "details" | "processing" | "completed" | "failed";
   importId: string;
   accountId: string;
   totalItemIds: number;
@@ -229,7 +234,12 @@ export class SyncUseCase {
         typeof compat.version === "string" && compat.version.trim().length > 0
           ? compat.version.trim()
           : "";
-      const line = [brand.toUpperCase(), model.toUpperCase(), yearPart, versionPart]
+      const line = [
+        brand.toUpperCase(),
+        model.toUpperCase(),
+        yearPart,
+        versionPart,
+      ]
         .filter(Boolean)
         .join(" ");
       if (line && !seen.has(line)) {
@@ -393,9 +403,7 @@ export class SyncUseCase {
       products
         .map((product) => [product.skuNormalized, product] as const)
         .filter(
-          (
-            entry,
-          ): entry is readonly [string, (typeof products)[number]] =>
+          (entry): entry is readonly [string, (typeof products)[number]] =>
             Boolean(entry[0]),
         ),
     );
@@ -700,9 +708,8 @@ export class SyncUseCase {
     const productsMap = new Map(
       products
         .map((p) => [p.skuNormalized, p] as const)
-        .filter(
-          (e): e is readonly [string, (typeof products)[number]] =>
-            Boolean(e[0]),
+        .filter((e): e is readonly [string, (typeof products)[number]] =>
+          Boolean(e[0]),
         ),
     );
 
@@ -923,7 +930,12 @@ export class SyncUseCase {
     const pageSize = 100;
     let page = 1;
     // Use para fallback se detalhe falhar
-    const listingSnapshot: { item_id: number; item_sku?: string; item_name?: string; status?: string }[] = [];
+    const listingSnapshot: {
+      item_id: number;
+      item_sku?: string;
+      item_name?: string;
+      status?: string;
+    }[] = [];
     await emitProgress({
       phase: "listing",
       pagesFetched: 0,
@@ -982,7 +994,10 @@ export class SyncUseCase {
     }
 
     // Mapa rápido do snapshot para reaproveitar SKU do get_item_list
-    const snapshotMap = new Map<number, { item_sku?: string; item_name?: string; status?: string }>();
+    const snapshotMap = new Map<
+      number,
+      { item_sku?: string; item_name?: string; status?: string }
+    >();
     for (const snap of listingSnapshot) {
       snapshotMap.set(snap.item_id, snap);
     }
@@ -991,7 +1006,10 @@ export class SyncUseCase {
       .map((s) => s.item_sku)
       .filter(Boolean)
       .slice(0, 20);
-    console.log(`[IMPORT][Shopee] Sample item_sku from list call:`, sampleSnapshotSkus);
+    console.log(
+      `[IMPORT][Shopee] Sample item_sku from list call:`,
+      sampleSnapshotSkus,
+    );
 
     // 3. Buscar detalhes dos itens em lote (base info) com retry em auth
     result.totalItems = allItemIds.length;
@@ -1054,7 +1072,10 @@ export class SyncUseCase {
                 );
                 continue;
               }
-              console.error(`[IMPORT] Erro em batch ${batchLabel} após refresh:`, err);
+              console.error(
+                `[IMPORT] Erro em batch ${batchLabel} após refresh:`,
+                err,
+              );
               recordError(
                 `Batch ${batchLabel}: ${err instanceof Error ? err.message : err}`,
                 slice.length,
@@ -1151,25 +1172,25 @@ export class SyncUseCase {
       if (item.has_model && Array.isArray((item as any).model_list)) {
         for (const model of (item as any).model_list as any[]) {
           const sku =
-            this.extractShopeeSku(item, model) ||
-            snapshot?.item_sku ||
-            null;
+            this.extractShopeeSku(item, model) || snapshot?.item_sku || null;
           const externalId = `${item.item_id}:${model.model_id}`;
           flatItems.push({
             externalId,
             sku,
             title: `${item.item_name} - ${model.model_name || "variação"}`,
-            status:
-              model.status
-                ? normalizeShopeeStatus(model.status)
-                : baseStatus,
+            status: model.status
+              ? normalizeShopeeStatus(model.status)
+              : baseStatus,
             itemId: item.item_id,
           });
         }
       } else {
         flatItems.push({
           externalId: item.item_id.toString(),
-          sku: this.extractShopeeSku(item) /* item-level SKU */ || snapshot?.item_sku || null,
+          sku:
+            this.extractShopeeSku(item) /* item-level SKU */ ||
+            snapshot?.item_sku ||
+            null,
           title: item.item_name,
           status: baseStatus,
           itemId: item.item_id,
@@ -1278,12 +1299,10 @@ export class SyncUseCase {
     );
 
     const itemsWithSku = flatItems.filter((i) => normalizeSku(i.sku)).length;
-    const matchedSkus = flatItems.filter(
-      (i) => {
-        const normalizedSku = normalizeSku(i.sku);
-        return normalizedSku ? productsMap.has(normalizedSku) : false;
-      },
-    ).length;
+    const matchedSkus = flatItems.filter((i) => {
+      const normalizedSku = normalizeSku(i.sku);
+      return normalizedSku ? productsMap.has(normalizedSku) : false;
+    }).length;
     const sampleSkus = Array.from(
       new Set(
         flatItems
@@ -1462,7 +1481,11 @@ export class SyncUseCase {
   static async startShopeeImportJob(
     userId: string,
     accountId?: string,
-  ): Promise<{ importId: string; status: ShopeeImportJobState; message: string }> {
+  ): Promise<{
+    importId: string;
+    status: ShopeeImportJobState;
+    message: string;
+  }> {
     const account = await this.resolveShopeeAccount(userId, accountId);
     const queuedMessage = "Importação Shopee enfileirada";
     const created = await prisma.syncLog.create({
@@ -1481,7 +1504,10 @@ export class SyncUseCase {
     await prisma.syncLog.update({
       where: { id: created.id },
       data: {
-        status: this.getShopeeImportSyncStatus(payload.state, payload.errorCount),
+        status: this.getShopeeImportSyncStatus(
+          payload.state,
+          payload.errorCount,
+        ),
         message: payload.message,
         payload: payload as object,
       },
@@ -1708,12 +1734,11 @@ export class SyncUseCase {
     }
 
     let payload = this.parseShopeeImportPayload(syncLog.payload, syncLog.id);
-    const lastUpdatedMs =
-      payload.finishedAt
-        ? Date.parse(payload.finishedAt)
-        : payload.startedAt
-          ? Date.parse(payload.startedAt)
-          : syncLog.createdAt.getTime();
+    const lastUpdatedMs = payload.finishedAt
+      ? Date.parse(payload.finishedAt)
+      : payload.startedAt
+        ? Date.parse(payload.startedAt)
+        : syncLog.createdAt.getTime();
 
     if (
       (payload.state === "queued" || payload.state === "running") &&
@@ -1800,7 +1825,10 @@ export class SyncUseCase {
           );
           return a ? [a] : [];
         })()
-      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          platform,
+        );
 
     const aggregate: ImportResult = {
       totalItems: 0,
@@ -1862,7 +1890,8 @@ export class SyncUseCase {
           }
         }
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        const msg =
+          error instanceof Error ? error.message : "Erro desconhecido";
         aggregate.errorCount = (aggregate.errorCount ?? 0) + 1;
         if (aggregate.errors.length < this.IMPORT_ERRORS_PREVIEW_LIMIT) {
           aggregate.errors.push(`Conta ${acc.id}: ${msg}`);
@@ -1893,7 +1922,11 @@ export class SyncUseCase {
     userId: string,
     platform: Platform,
     accountId?: string,
-  ): Promise<{ importId: string; status: GenericImportJobState; message: string }> {
+  ): Promise<{
+    importId: string;
+    status: GenericImportJobState;
+    message: string;
+  }> {
     const accounts = accountId
       ? await (async () => {
           const a = await MarketplaceRepository.findByIdAndUser(
@@ -1902,7 +1935,10 @@ export class SyncUseCase {
           );
           return a ? [a] : [];
         })()
-      : await MarketplaceRepository.findAllByUserIdAndPlatform(userId, platform);
+      : await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          platform,
+        );
     if (accounts.length === 0) {
       throw new Error(
         platform === Platform.MERCADO_LIVRE
@@ -1932,7 +1968,8 @@ export class SyncUseCase {
       },
     });
 
-    const label = platform === Platform.MERCADO_LIVRE ? "MercadoLivre" : "Magalu";
+    const label =
+      platform === Platform.MERCADO_LIVRE ? "MercadoLivre" : "Magalu";
 
     setImmediate(async () => {
       const writePayload = async (
@@ -1941,7 +1978,11 @@ export class SyncUseCase {
       ) => {
         await prisma.syncLog.update({
           where: { id: created.id },
-          data: { status, message: payload.message ?? "", payload: payload as object },
+          data: {
+            status,
+            message: payload.message ?? "",
+            payload: payload as object,
+          },
         });
       };
       try {
@@ -1971,7 +2012,9 @@ export class SyncUseCase {
             message: `Importação concluída: ${result.createdProducts ?? 0} criado(s), ${result.linkedItems} vinculado(s)`,
             result,
           },
-          (result.errorCount ?? 0) > 0 ? SyncStatus.WARNING : SyncStatus.SUCCESS,
+          (result.errorCount ?? 0) > 0
+            ? SyncStatus.WARNING
+            : SyncStatus.SUCCESS,
         );
         await SystemLogService.logSyncComplete(userId, "IMPORT", label, {
           totalItems: result.totalItems,
@@ -1981,7 +2024,8 @@ export class SyncUseCase {
           importId: created.id,
         });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Erro desconhecido";
+        const msg =
+          error instanceof Error ? error.message : "Erro desconhecido";
         await writePayload(
           {
             ...base,
@@ -2004,11 +2048,19 @@ export class SyncUseCase {
       }
     });
 
-    return { importId: created.id, status: "running", message: base.message ?? "" };
+    return {
+      importId: created.id,
+      status: "running",
+      message: base.message ?? "",
+    };
   }
 
   static startMLImportJob(userId: string, accountId?: string) {
-    return this.startGenericImportJob(userId, Platform.MERCADO_LIVRE, accountId);
+    return this.startGenericImportJob(
+      userId,
+      Platform.MERCADO_LIVRE,
+      accountId,
+    );
   }
 
   static startMagaluImportJob(userId: string, accountId?: string) {
@@ -2103,11 +2155,10 @@ export class SyncUseCase {
         // tenta refresh do token do seller antes do fallback local
         if (isAuthErr && account?.refreshToken) {
           try {
-            const refreshed =
-              await MLOAuthService.refreshAccessTokenForAccount(
-                account.id,
-                account.refreshToken,
-              );
+            const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
+              account.id,
+              account.refreshToken,
+            );
             await MarketplaceRepository.updateTokens(account.id, {
               accessToken: refreshed.accessToken,
               refreshToken: refreshed.refreshToken,
@@ -2272,7 +2323,10 @@ export class SyncUseCase {
   /**
    * Extrai o SKU de um item do ML (pode estar em diferentes lugares)
    */
-  private static async resolveShopeeAccount(userId: string, accountId?: string) {
+  private static async resolveShopeeAccount(
+    userId: string,
+    accountId?: string,
+  ) {
     const account = accountId
       ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
       : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
@@ -2391,7 +2445,9 @@ export class SyncUseCase {
         (attr) =>
           attr.id === "SELLER_SKU" ||
           attr.id === "SKU" ||
-          (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
+          (attr.id &&
+            typeof attr.id === "string" &&
+            attr.id.toLowerCase().includes("sku")),
       );
       if (skuAttr?.value_name) {
         return skuAttr.value_name;
@@ -2399,7 +2455,10 @@ export class SyncUseCase {
     }
 
     // Por fim, tentar extrair SKU das variações (seller_custom_field ou atributos)
-    if (Array.isArray((item as any).variations) && (item as any).variations.length > 0) {
+    if (
+      Array.isArray((item as any).variations) &&
+      (item as any).variations.length > 0
+    ) {
       const variationSkus = new Set<string>();
       for (const v of (item as any).variations) {
         if (v?.seller_custom_field) {
@@ -2411,7 +2470,9 @@ export class SyncUseCase {
             (attr: any) =>
               attr.id === "SELLER_SKU" ||
               attr.id === "SKU" ||
-              (attr.id && typeof attr.id === "string" && attr.id.toLowerCase().includes("sku")),
+              (attr.id &&
+                typeof attr.id === "string" &&
+                attr.id.toLowerCase().includes("sku")),
           );
           if (attrSku?.value_name) {
             variationSkus.add(String(attrSku.value_name));
@@ -2440,8 +2501,11 @@ export class SyncUseCase {
     return raw && raw.length > 0 ? raw : null;
   }
 
-  private static getShopeeAvailableStock(item: Partial<ShopeeItem> & any): number {
-    const summaryStock = item?.stock_info_v2?.summary_info?.total_available_stock;
+  private static getShopeeAvailableStock(
+    item: Partial<ShopeeItem> & any,
+  ): number {
+    const summaryStock =
+      item?.stock_info_v2?.summary_info?.total_available_stock;
     if (typeof summaryStock === "number") {
       return summaryStock;
     }
@@ -2892,6 +2956,9 @@ export class SyncUseCase {
           case Platform.MAGALU:
             result = await this.syncMagaluProductStock(listing, product);
             break;
+          case Platform.OLX:
+            result = await this.syncOlxProductStock(listing, product);
+            break;
           default:
             result = {
               success: false,
@@ -3093,9 +3160,13 @@ export class SyncUseCase {
         }
 
         if (currentStatus === "active") {
-          await MLApiService.updateItem(account.accessToken, listing.externalListingId, {
-            status: "paused",
-          });
+          await MLApiService.updateItem(
+            account.accessToken,
+            listing.externalListingId,
+            {
+              status: "paused",
+            },
+          );
 
           await this.logSync(
             account.id,
@@ -3308,8 +3379,200 @@ export class SyncUseCase {
   }
 
   /**
+   * Sincroniza estoque para a OLX — path DURÁVEL (stockSyncJob → syncProductStock).
+   *
+   * A OLX não tem API de estoque per-SKU: a baixa é UNIDIRECIONAL ERP→OLX e
+   * mapeia para publicar/despublicar o anúncio:
+   *   - targetStock === 0 → deleteAd (despublica).
+   *   - targetStock  >  0 → upsertAd insert (re-publica; re-entra na fila da OLX).
+   * Idempotente: delete repetido = no-op; insert com o mesmo id = edição.
+   *
+   * ⚠️ Este `case OLX` é OBRIGATÓRIO: sem ele o switch cai no `default` e todo
+   * stockSyncJob de listing OLX falha em loop (o job é enfileirado p/ TODA
+   * listing, sem filtro de plataforma). Sem refresh de token (OLX não tem).
+   */
+  private static async syncOlxProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta OLX sem token de acesso",
+      };
+    }
+
+    const olxId = listing.externalListingId;
+    if (!olxId || String(olxId).startsWith("PENDING_")) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Anúncio local (placeholder) — não existe na OLX. Sincronização ignorada.",
+      };
+    }
+
+    const targetStock = Number(product.stock) || 0;
+
+    try {
+      if (targetStock <= 0) {
+        // Zerou → despublica.
+        const resp = await OlxApiService.deleteAd(account.accessToken, olxId);
+        if (resp.statusCode !== 0) {
+          throw this.olxRespError(resp);
+        }
+        await ListingRepository.updateStatus(listing.id, "paused");
+      } else {
+        // Estoque > 0 → (re)publica com o MESMO id (edição/insert).
+        const category =
+          OlxCategoryResolutionService.resolveCategoryId(product);
+        const phone = OLX_CONSTANTS.SELLER_PHONE;
+        const zipcode = OLX_CONSTANTS.SELLER_ZIPCODE;
+        if (category == null || !phone || !zipcode) {
+          throw new Error(
+            "Publicação OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",
+          );
+        }
+        const ad = OlxPayloadBuilderService.build(product, {
+          categoryId: category,
+          phone,
+          zipcode,
+          params: OlxCategoryResolutionService.buildAdParams(product, category),
+        });
+        ad.id = olxId; // preserva o id do anúncio (idempotência da edição)
+        const resp = await OlxApiService.submitImport(account.accessToken, [
+          ad,
+        ]);
+        if (resp.statusCode !== 0) {
+          throw this.olxRespError(resp);
+        }
+        await ListingRepository.updateStatus(listing.id, "active");
+      }
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} sincronizado na OLX (${targetStock <= 0 ? "despublicado" : "publicado"})`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        newStock: targetStock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar estoque na OLX: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /** Transforma uma resposta de import OLX com statusCode≠0 num Error tipado. */
+  private static olxRespError(resp: {
+    statusCode: number;
+    statusMessage?: string;
+    errors?: string[];
+  }): Error {
+    const detail =
+      resp.statusMessage ||
+      (resp.errors && resp.errors.join("; ")) ||
+      `statusCode ${resp.statusCode}`;
+    const err = new Error(`OLX recusou o import: ${detail}`);
+    (err as any).olxStatusCode = resp.statusCode;
+    return err;
+  }
+
+  /**
    * Sincroniza dados completos (estoque + preço) para a Magalu.
    */
+  /**
+   * Sincroniza dados completos (título/descrição/preço/estoque) para a OLX.
+   * Na OLX editar = re-insert com o MESMO id (edição). Estoque 0 → delete.
+   * Reflete mudanças do produto reenviando o anúncio inteiro.
+   */
+  private static async syncOlxProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    if (!externalListingId || externalListingId.startsWith("PENDING_")) {
+      result.error = "Anúncio OLX ainda não publicado (placeholder).";
+      return result;
+    }
+
+    try {
+      const targetStock = Number(product.stock) || 0;
+      if (targetStock <= 0) {
+        const resp = await OlxApiService.deleteAd(
+          account.accessToken,
+          externalListingId,
+        );
+        if (resp.statusCode !== 0) throw this.olxRespError(resp);
+      } else {
+        const category =
+          OlxCategoryResolutionService.resolveCategoryId(product);
+        const phone = OLX_CONSTANTS.SELLER_PHONE;
+        const zipcode = OLX_CONSTANTS.SELLER_ZIPCODE;
+        if (category == null || !phone || !zipcode) {
+          throw new Error(
+            "Sincronização OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",
+          );
+        }
+        const ad = OlxPayloadBuilderService.build(product, {
+          categoryId: category,
+          phone,
+          zipcode,
+          params: OlxCategoryResolutionService.buildAdParams(product, category),
+        });
+        ad.id = externalListingId;
+        const resp = await OlxApiService.submitImport(account.accessToken, [
+          ad,
+        ]);
+        if (resp.statusCode !== 0) throw this.olxRespError(resp);
+      }
+      result.success = true;
+      result.newStock = targetStock;
+      return result;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      return result;
+    }
+  }
+
   private static async syncMagaluProductData(
     product: any,
     externalListingId: string,
@@ -3667,6 +3930,8 @@ export class SyncUseCase {
                   return this.syncShopeeProductStock(listing, listing.product);
                 case Platform.MAGALU:
                   return this.syncMagaluProductStock(listing, listing.product);
+                case Platform.OLX:
+                  return this.syncOlxProductStock(listing, listing.product);
                 default:
                   return {
                     success: false,
@@ -3790,9 +4055,8 @@ export class SyncUseCase {
           })
           .catch(() => [] as unknown[]),
       ]);
-      const { applyOverridesToProduct } = await import(
-        "../services/listing-overrides.service"
-      );
+      const { applyOverridesToProduct } =
+        await import("../services/listing-overrides.service");
       const effectiveProduct = applyOverridesToProduct(
         product,
         listingForOverrides,
@@ -3831,6 +4095,12 @@ export class SyncUseCase {
           );
         case Platform.MAGALU:
           return await this.syncMagaluProductData(
+            effectiveProduct,
+            externalListingId,
+            account,
+          );
+        case Platform.OLX:
+          return await this.syncOlxProductData(
             effectiveProduct,
             externalListingId,
             account,
@@ -3908,12 +4178,13 @@ export class SyncUseCase {
       // Para esses, o título é atualizado via PUT /items/{id} com `family_name`
       // (NÃO `title`) — mesmo caminho usado em ListingUseCase pós-criação. A
       // descrição vai via POST /items/{id}/description.
-      const userProductIdFromMl =
-        ((currentItem as { user_product_id?: string | null })
-          .user_product_id || "").trim();
-      const familyNameFromMl =
-        ((currentItem as { family_name?: string | null }).family_name || "")
-          .trim();
+      const userProductIdFromMl = (
+        (currentItem as { user_product_id?: string | null }).user_product_id ||
+        ""
+      ).trim();
+      const familyNameFromMl = (
+        (currentItem as { family_name?: string | null }).family_name || ""
+      ).trim();
       const isUserProductItem = !!(userProductIdFromMl || familyNameFromMl);
 
       // Atualizações UP-específicas pendentes (executadas após o PUT /items).
@@ -4087,11 +4358,7 @@ export class SyncUseCase {
             const cause = err?.response?.data;
             const causeStr =
               typeof cause === "string" ? cause : JSON.stringify(cause || "");
-            const lower = (
-              causeStr +
-              " " +
-              (err?.message || "")
-            ).toLowerCase();
+            const lower = (causeStr + " " + (err?.message || "")).toLowerCase();
 
             const blockedThisRound: string[] = [];
             if (
@@ -4219,8 +4486,7 @@ export class SyncUseCase {
               `[SYNC] UP description atualizada via endpoint dedicado /items/${externalListingId}/description`,
             );
           } catch (err) {
-            const rawMessage =
-              err instanceof Error ? err.message : String(err);
+            const rawMessage = err instanceof Error ? err.message : String(err);
             console.error(
               JSON.stringify({
                 event: "ml.description.update_failed",

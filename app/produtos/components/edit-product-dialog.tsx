@@ -226,7 +226,7 @@ interface Product {
 export interface EditProductDialogListingContext {
   listingId: string;
   accountName: string;
-  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX";
   externalListingId: string | null;
   status: string;
 }
@@ -817,7 +817,13 @@ export function EditProductDialog({
         console.error("Erro ao sugerir categoria Magalu:", err);
       }
     })();
-  }, [createMagaluListing, watchName, setValue, session?.user?.email, product.name]);
+  }, [
+    createMagaluListing,
+    watchName,
+    setValue,
+    session?.user?.email,
+    product.name,
+  ]);
 
   // Busca server-side (debounced 400ms, só com >=2 chars e dropdown aberto) —
   // não dispara por tecla nem sem intenção. Espelha o modal de criação.
@@ -1269,10 +1275,7 @@ export function EditProductDialog({
           setValue(
             "quality",
             l.qualityOverride as
-              | "SUCATA"
-              | "SEMINOVO"
-              | "NOVO"
-              | "RECONDICIONADO",
+              "SUCATA" | "SEMINOVO" | "NOVO" | "RECONDICIONADO",
           );
         if (l.heightCmOverride !== null)
           setValue("heightCm", l.heightCmOverride);
@@ -1569,8 +1572,7 @@ export function EditProductDialog({
       // Measurements: try to auto-fill from category when available
       // Single call — reused below to update autoDetectedRef
       let measurements:
-        | ReturnType<typeof getMeasurementsForCategory>
-        | undefined;
+        ReturnType<typeof getMeasurementsForCategory> | undefined;
       try {
         measurements = getMeasurementsForCategory(
           mapping.topLevel || detected.category,
@@ -2290,8 +2292,7 @@ export function EditProductDialog({
         <form
           onSubmit={handleSubmit(onSubmit, (formErrors) => {
             const first = Object.values(formErrors)[0] as
-              | { message?: string }
-              | undefined;
+              { message?: string } | undefined;
             const firstKey = Object.keys(formErrors)[0];
             onToast(
               first?.message
@@ -3597,7 +3598,9 @@ export function EditProductDialog({
                       )}
                     </div>
                     <div className="mt-2 space-y-1">
-                      <Label htmlFor="magaluCategory">Categoria no Magalu</Label>
+                      <Label htmlFor="magaluCategory">
+                        Categoria no Magalu
+                      </Label>
                       <Controller
                         name="magaluCategory"
                         control={control}
@@ -3634,7 +3637,8 @@ export function EditProductDialog({
                                   </span>
                                 </div>
                               )}
-                              {(magaluCategoryDropdownOpen || !selectedLabel) && (
+                              {(magaluCategoryDropdownOpen ||
+                                !selectedLabel) && (
                                 <>
                                   <Input
                                     placeholder="Buscar categoria do Magalu..."
@@ -3667,7 +3671,9 @@ export function EditProductDialog({
                                             field.onChange(o.id);
                                             setMagaluSelectedLabel(o.value);
                                             setMagaluCategorySearch("");
-                                            setMagaluCategoryDropdownOpen(false);
+                                            setMagaluCategoryDropdownOpen(
+                                              false,
+                                            );
                                           }}
                                         >
                                           {fmt(o.value)}
