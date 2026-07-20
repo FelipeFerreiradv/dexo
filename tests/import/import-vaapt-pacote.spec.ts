@@ -191,7 +191,9 @@ const ctx = (dryRun: boolean, files: DetectedFile[]): ImportContext => ({
 
 describe("import/vaapt-pacote — detector", () => {
   it("aceita as 4 planilhas juntas numa só importação", () => {
-    const files = detectAndValidate("VAAPT", "PACOTE", [
+    // detectAndValidate retorna { files, ignored } (contrato desde d578333,
+    // "tolerar arquivos extras") — mesma desestruturação do import-detector.spec.
+    const { files } = detectAndValidate("VAAPT", "PACOTE", [
       pecasFile(),
       clientesFile(),
       veiculosFile(),
@@ -206,7 +208,7 @@ describe("import/vaapt-pacote — detector", () => {
   });
 
   it("aceita subconjunto parcial (só clientes)", () => {
-    const files = detectAndValidate("VAAPT", "PACOTE", [clientesFile()]);
+    const { files } = detectAndValidate("VAAPT", "PACOTE", [clientesFile()]);
     expect(files.map((f) => f.kind)).toEqual(["VAAPT_CLIENTES"]);
   });
 
@@ -216,7 +218,10 @@ describe("import/vaapt-pacote — detector", () => {
     ).toThrow(/apenas um de cada/i);
   });
 
-  it("arquivo de OUTRO sistema no pacote Vaapt → erro claro", () => {
+  it("pacote SÓ com arquivo de OUTRO sistema → erro claro", () => {
+    // Com a tolerância a extras, um arquivo estranho AO LADO de um válido é
+    // apenas ignorado (ver import-detector.spec). O erro claro acontece quando
+    // NENHUM arquivo Vaapt está presente — o slot obrigatório fica sem dono.
     const wdLocations = detectFile({
       fieldname: "file",
       filename: "locations.csv",
@@ -226,7 +231,7 @@ describe("import/vaapt-pacote — detector", () => {
       ),
     });
     expect(() =>
-      detectAndValidate("VAAPT", "PACOTE", [pecasFile(), wdLocations]),
+      detectAndValidate("VAAPT", "PACOTE", [wdLocations]),
     ).toThrow(ImportValidationError);
   });
 });
