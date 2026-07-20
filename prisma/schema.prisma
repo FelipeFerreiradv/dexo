@@ -406,6 +406,12 @@ model ProductListing {
   compatSyncedAt       DateTime?
   compatDiagnostics    Json?
 
+  // OLX autoupload: `list_id` é o id REAL do anúncio na OLX (≠ externalListingId,
+  // que guardamos como o SKU/`id` estável enviado no ad_list). Devolvido só na
+  // consulta de status quando status="accepted". A `url`/permalink vai em
+  // `permalink`. Só populado para listings da plataforma OLX.
+  olxListId            String?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
@@ -815,6 +821,7 @@ enum Platform {
   MERCADO_LIVRE
   SHOPEE
   MAGALU
+  OLX
 }
 
 enum AccountStatus {

@@ -52,6 +52,10 @@ const MARKETPLACE_ICONS: Record<
     label: "Magalu",
     src: "/marketplaces/magalu.svg",
   },
+  OLX: {
+    label: "OLX",
+    src: "/marketplaces/olx.svg",
+  },
 };
 
 // Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
@@ -143,7 +147,8 @@ export function PauseListingsButton({
   const targetStatus: "active" | "paused" =
     state === "all-active" ? "paused" : "active";
   const Icon = state === "all-active" ? Pause : Play;
-  const title = state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
+  const title =
+    state === "all-active" ? "Pausar anúncios" : "Despausar anúncios";
   const confirmLabel = state === "all-active" ? "Pausar" : "Despausar";
   const description =
     state === "all-active"
@@ -153,7 +158,12 @@ export function PauseListingsButton({
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="icon-sm" title={title} disabled={isPausing}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title={title}
+          disabled={isPausing}
+        >
           {isPausing ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
@@ -168,7 +178,9 @@ export function PauseListingsButton({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancelar</AlertDialogCancel>
-          <AlertDialogAction onClick={() => onTogglePause(product, targetStatus)}>
+          <AlertDialogAction
+            onClick={() => onTogglePause(product, targetStatus)}
+          >
             {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -251,8 +263,7 @@ export function MarketplaceBadges({
         // (anyOpenable). Magalu: publicação é assíncrona e a URL pública não é
         // derivável do SKU, então o sinal é o STATUS active/normal. ML/Shopee
         // ficam idênticos (não entram no ramo MAGALU).
-        const isPublished =
-          anyOpenable || (platform === "MAGALU" && anyActive);
+        const isPublished = anyOpenable || (platform === "MAGALU" && anyActive);
 
         return (
           <button
