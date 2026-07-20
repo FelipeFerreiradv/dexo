@@ -147,6 +147,10 @@ export function NfeList() {
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  // Filtro de modelo: "ALL" (padrão, comportamento atual) | "55" | "65".
+  // Necessário porque a NFC-e tem numeração PRÓPRIA (começa do 1) e a lista
+  // ordena por número — sem isolar o modelo, uma NFC-e nova cai no fim.
+  const [modeloFilter, setModeloFilter] = useState<"ALL" | "55" | "65">("ALL");
   const [isLoading, setIsLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [selectedNfeId, setSelectedNfeId] = useState<string | null>(null);
@@ -183,7 +187,7 @@ export function NfeList() {
   // Reset page on filter change
   useEffect(() => {
     setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
-  }, [debouncedSearch, statusFilter]);
+  }, [debouncedSearch, statusFilter, modeloFilter]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -209,6 +213,9 @@ export function NfeList() {
       }
       if (statusFilter && statusFilter !== "ALL") {
         params.set("status", statusFilter);
+      }
+      if (modeloFilter !== "ALL") {
+        params.set("modelo", modeloFilter);
       }
 
       const apiBase = getApiBaseUrl();
@@ -239,6 +246,7 @@ export function NfeList() {
     pagination.limit,
     pagination.page,
     statusFilter,
+    modeloFilter,
     session?.user?.email,
     showToast,
   ]);
@@ -485,6 +493,19 @@ export function NfeList() {
               <SelectItem value="CANCELLED">Canceladas</SelectItem>
               <SelectItem value="SENDING">Enviando</SelectItem>
               <SelectItem value="VALIDATING">Validando</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={modeloFilter}
+            onValueChange={(v) => setModeloFilter(v as "ALL" | "55" | "65")}
+          >
+            <SelectTrigger className="h-10 w-full sm:w-[180px]">
+              <SelectValue placeholder="Modelo" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Todos os modelos</SelectItem>
+              <SelectItem value="55">NF-e (55)</SelectItem>
+              <SelectItem value="65">NFC-e (65)</SelectItem>
             </SelectContent>
           </Select>
         </div>
