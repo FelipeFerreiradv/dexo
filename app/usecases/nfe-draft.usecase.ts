@@ -96,8 +96,11 @@ export class NfeDraftUseCase {
       );
     }
 
-    // Sem orderId: reusa o rascunho mais recente (comportamento atual).
-    const existing = await this.nfeRepo.findExistingDraft(userId);
+    // Sem orderId: reusa o rascunho 55 mais recente (comportamento atual).
+    // O modelo é explícito de propósito: este é o wizard da NF-e 55, e um
+    // rascunho 65 (NFC-e, criado pelo PDV) NUNCA pode ser reaproveitado aqui —
+    // seria emitido como NFC-e sem o usuário perceber.
+    const existing = await this.nfeRepo.findExistingDraft(userId, "55");
     if (existing) return existing;
 
     const draft = await this.nfeRepo.createDraft(userId, {

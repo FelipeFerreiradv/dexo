@@ -125,10 +125,14 @@ export function NfeDetailSheet({
       const blobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = blobUrl;
+      // Prefixo por modelo: NF-e 55 e NFC-e 65 têm numerações INDEPENDENTES,
+      // então a mesma série+número existe nos dois (ex.: série 4 nº 2) e os
+      // arquivos se sobrescreviam na pasta de downloads.
+      const prefixo = nfe?.modelo === "65" ? "nfce" : "nfe";
       a.download =
         type === "xml"
-          ? `nfe-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.xml`
-          : `danfe-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.pdf`;
+          ? `${prefixo}-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.xml`
+          : `${prefixo === "nfce" ? "cupom" : "danfe"}-${nfe?.serie ?? ""}-${nfe?.numero ?? ""}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -188,10 +192,14 @@ export function NfeDetailSheet({
                     </span>
                     <div>
                       <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                        NF-e · Serie {nfe.serie}
+                        {nfe.modelo === "65" ? "NFC-e" : "NF-e"} · Serie{" "}
+                        {nfe.serie}
                       </p>
                       <p className="text-xl font-semibold leading-tight text-foreground">
-                        Nota Fiscal #{nfe.numero}
+                        {nfe.modelo === "65"
+                          ? "Cupom Fiscal"
+                          : "Nota Fiscal"}{" "}
+                        #{nfe.numero}
                       </p>
                     </div>
                   </div>

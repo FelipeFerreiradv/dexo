@@ -171,9 +171,20 @@ export class NfeRepository {
     return { id: row.id };
   }
 
-  async findExistingDraft(userId: string): Promise<NfeDraftResponse | null> {
+  /**
+   * Rascunho reaproveitável pelo wizard. O `modelo` é OBRIGATÓRIO no filtro:
+   * desde a Fase 2 do PDV existem rascunhos modelo 65 (NFC-e) no banco, e sem
+   * essa cláusula o wizard da NF-e 55 reaproveitava um rascunho 65 do PDV —
+   * o usuário preenchia uma NF-e e o motor emitia NFC-e (rejeição 706 quando
+   * a operação era de entrada; pior: documento fiscal errado quando não era).
+   * Default "55" preserva exatamente o comportamento do wizard.
+   */
+  async findExistingDraft(
+    userId: string,
+    modelo: "55" | "65" = "55",
+  ): Promise<NfeDraftResponse | null> {
     const row = await (prisma as any).nfeEmitida.findFirst({
-      where: { userId, status: "DRAFT" },
+      where: { userId, status: "DRAFT", modelo },
       orderBy: { updatedAt: "desc" },
       include: { itens: { orderBy: { numero: "asc" } } },
     });
@@ -580,6 +591,11 @@ export class NfeRepository {
     if (query.ambiente) {
       where.ambiente = query.ambiente;
     }
+    // Filtro por modelo (NF-e 55 × NFC-e 65). Ausente ⇒ where sem a cláusula:
+    // a listagem continua trazendo os dois, como sempre trouxe.
+    if (query.modelo === "55" || query.modelo === "65") {
+      where.modelo = query.modelo;
+    }
     if (query.dataInicio || query.dataFim) {
       where.createdAt = {};
       if (query.dataInicio) where.createdAt.gte = new Date(query.dataInicio);
@@ -588,12 +604,23 @@ export class NfeRepository {
     }
     if (query.search && query.search.trim().length >= 2) {
       const term = query.search.trim();
+      // `numero` é Int (INT4). Só entra no OR quando o termo cabe num Int32 —
+      // colar a CHAVE DE ACESSO (44 dígitos) fazia Number(term) virar
+      // 3.12e+43 e o query engine derrubava a consulta inteira (500 na rota,
+      // "Erro ao carregar notas fiscais" na tela). Ironia: o ramo chaveAcesso
+      // logo acima acharia a nota — o ramo numero envenenava o OR todo.
+      const asNumero =
+        /^\d{1,10}$/.test(term) && Number(term) <= 2147483647
+          ? Number(term)
+          : null;
       where.OR = [
         { chaveAcesso: { contains: term } },
         { naturezaOperacao: { contains: term, mode: "insensitive" } },
         { protocoloAutorizacao: { contains: term } },
-        { numero: isNaN(Number(term)) ? undefined : Number(term) },
-      ].filter(Boolean);
+        // `{ numero: undefined }` é truthy e sobrevivia ao filter(Boolean) —
+        // por isso o ramo é adicionado condicionalmente, não anulado.
+        ...(asNumero !== null ? [{ numero: asNumero }] : []),
+      ];
       // Also search destinatario name inside JSON — fallback via raw text match
       // Prisma doesn't support JSON field search well, so we add a path-based filter
     }

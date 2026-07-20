@@ -524,6 +524,9 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           ambiente: q.ambiente,
           dataInicio: q.dataInicio,
           dataFim: q.dataFim,
+          // Filtro por modelo (aditivo): só aceita "55"/"65"; qualquer outro
+          // valor é ignorado e a listagem segue trazendo os dois.
+          modelo: q.modelo === "55" || q.modelo === "65" ? q.modelo : undefined,
         });
         return reply.status(200).send(result);
       } catch (error) {

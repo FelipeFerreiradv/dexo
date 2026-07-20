@@ -212,6 +212,8 @@ export interface NfeListFilters {
   ambiente?: FiscalAmbiente;
   dataInicio?: string;
   dataFim?: string;
+  // "55" (NF-e) | "65" (NFC-e). Ausente ⇒ lista os dois (comportamento atual).
+  modelo?: "55" | "65";
 }
 
 export interface NfeListQuery extends NfeListFilters {
