@@ -23,6 +23,7 @@ import {
 } from "../services/stock-deduction.service";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
+import { OrderCustomerService } from "../services/order-customer.service";
 import { SyncUseCase } from "./sync.usercase";
 import { orderRepository } from "@/app/repositories/order.repository";
 import { normalizeSku } from "@/app/lib/sku";
@@ -299,6 +300,23 @@ export class OrderUseCase {
           if (importResult.stockDeducted) {
             result.stockDeductions++;
           }
+          // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
+          // Kill-switch ORDER_AUTO_CUSTOMER_DISABLED=1 restaura o caminho
+          // atual byte-idêntico. Sequencial (await) para o 2º pedido do mesmo
+          // comprador no batch deduplicar contra o 1º.
+          if (importResult.orderId) {
+            try {
+              await OrderCustomerService.ensureCustomerForOrder({
+                platform: "MERCADO_LIVRE",
+                marketplaceAccountId: account.id,
+                orderId: importResult.orderId,
+                externalOrderId: importResult.externalOrderId,
+                fallbackName: this.extractCustomerName(mlOrder) ?? null,
+              });
+            } catch {
+              /* nunca propaga — um throw aqui abortaria o batch inteiro */
+            }
+          }
           break;
         case "already_exists":
           result.alreadyExists++;
@@ -556,6 +574,22 @@ export class OrderUseCase {
           itemsLinked: linkedCount,
           itemsTotal: shopeeOrder.item_list.length,
         });
+
+        // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
+        // Kill-switch ORDER_AUTO_CUSTOMER_DISABLED=1 restaura o caminho atual
+        // byte-idêntico. Try/catch próprio: um throw vazado cairia no catch
+        // externo e empurraria um segundo result para o mesmo pedido.
+        try {
+          await OrderCustomerService.ensureCustomerForOrder({
+            platform: "SHOPEE",
+            marketplaceAccountId,
+            orderId: created.id,
+            externalOrderId,
+            fallbackName: shopeeOrder.buyer_username ?? null,
+          });
+        } catch {
+          /* nunca propaga */
+        }
       } catch (error) {
         // Handle concurrent duplicate (P2002) gracefully as "already_exists"
         const isPrismaUniqueError =
@@ -1174,6 +1208,23 @@ export class OrderUseCase {
           itemsLinked: linkedCount,
           itemsTotal: itemList.length,
         });
+
+        // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
+        // Kill-switch ORDER_AUTO_CUSTOMER_DISABLED=1 restaura o caminho atual
+        // byte-idêntico. Try/catch próprio: um throw vazado cairia no catch
+        // externo e empurraria um segundo result para o mesmo pedido.
+        try {
+          await OrderCustomerService.ensureCustomerForOrder({
+            platform: "MAGALU",
+            marketplaceAccountId,
+            orderId: created.id,
+            externalOrderId,
+            fallbackName:
+              magaluOrder.customer_name ?? magaluOrder.buyer?.name ?? null,
+          });
+        } catch {
+          /* nunca propaga */
+        }
       } catch (error) {
         const isPrismaUniqueError =
           error &&

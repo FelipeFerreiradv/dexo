@@ -143,6 +143,7 @@ function mapPrismaToOrder(order: PrismaOrderWithRelations): Order {
     totalAmount: order.totalAmount.toNumber(),
     customerName: order.customerName,
     customerEmail: order.customerEmail,
+    customerId: order.customerId ?? null,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
     items: order.items?.map(mapPrismaToOrderItem),
@@ -900,6 +901,18 @@ class OrderRepositoryPrisma implements OrderRepository {
       select: { id: true },
     });
     return found !== null;
+  }
+
+  /**
+   * Vincula um Customer do CRM a um pedido já criado (auto-cadastro no
+   * import). Aditivo: o create() continua sem customerId.
+   */
+  async setCustomer(orderId: string, customerId: string): Promise<void> {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { customerId },
+      select: { id: true },
+    });
   }
 }
 
