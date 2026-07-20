@@ -25,6 +25,7 @@ import {
   runVaaptLinks,
   runWdLinks,
 } from "./executors/product-links.executor";
+import { runVaaptPacote } from "./executors/vaapt-pacote.executor";
 import { runWdPacote } from "./executors/wd-pacote.executor";
 import { runContas } from "./executors/finance.executor";
 import { runVaaptNfes, runIbrNfes } from "./nfe-import.usecase";
@@ -41,6 +42,7 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "VAAPT/SUCATAS": runVaaptScraps,
     "VAAPT/VINCULOS": runVaaptLinks,
     "VAAPT/NFE": runVaaptNfes,
+    "VAAPT/PACOTE": runVaaptPacote,
     "WEBDESMONTE/LOCALIZACOES": runWdLocations,
     "WEBDESMONTE/CLIENTES": runWdCustomers,
     "WEBDESMONTE/SUCATAS": runWdScraps,
