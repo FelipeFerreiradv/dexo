@@ -159,6 +159,23 @@ export class MarketplaceRepository {
   }
 
   /**
+   * ADITIVO (auto-cliente) — variante EGRESS-light do findById: só os campos
+   * que o enriquecimento do comprador usa (dono + shopId + access token).
+   * Não trafega a row inteira da conta (refreshToken/config) por pedido novo,
+   * e por design nem expõe o refreshToken ao caller (que nunca deve refrescar).
+   */
+  static async findByIdLite(id: string) {
+    try {
+      return await prisma.marketplaceAccount.findUnique({
+        where: { id },
+        select: { id: true, userId: true, shopId: true, accessToken: true },
+      });
+    } catch (error) {
+      throw new Error(`Erro ao buscar conta: ${error}`);
+    }
+  }
+
+  /**
    * Busca conta por ID garantindo que pertence ao usuÃ¡rio informado
    */
   static async findByIdAndUser(id: string, userId: string) {

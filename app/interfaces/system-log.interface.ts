@@ -52,6 +52,9 @@ export type LogAction =
   | "ORDER_CANCEL_RESTORE_FAILED"
   | "ORDER_UNCANCEL_REDEDUCT"
   | "MAGALU_CANCEL_DETECTED"
+  // Auto-cadastro de Customer a partir de venda de marketplace
+  // (ver OrderCustomerService.ensureCustomerForOrder).
+  | "ORDER_AUTO_CUSTOMER"
   // Job de importação de dados legados (Superadmin). O registro carrega o
   // estado/relatório do job em `details` (ver app/usecases/import/).
   | "IMPORT_JOB";

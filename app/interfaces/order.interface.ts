@@ -62,6 +62,9 @@ export interface Order {
   totalAmount: number;
   customerName?: string | null;
   customerEmail?: string | null;
+  // Cliente do CRM vinculado (auto-cadastro best-effort no import; nulo nos
+  // pedidos anteriores à feature).
+  customerId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   // Relações
@@ -168,4 +171,8 @@ export interface OrderRepository {
     marketplaceAccountId: string,
     externalOrderId: string,
   ): Promise<boolean>;
+
+  // Vincular um Customer do CRM a um pedido já criado (auto-cadastro no
+  // import). Aditivo: o create() continua sem customerId.
+  setCustomer(orderId: string, customerId: string): Promise<void>;
 }

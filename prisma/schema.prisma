@@ -387,9 +387,13 @@ model Order {
   totalAmount          Decimal            @db.Decimal(10, 2)
   customerName         String?
   customerEmail        String?
+  // Cliente do CRM vinculado à venda (auto-cadastro best-effort no import).
+  // SetNull preserva o delete de Customer para clientes com pedido vinculado.
+  customerId           String?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
+  customer             Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items                OrderItem[]
   nfesEmitidas         NfeEmitida[]
   shipmentLabel        ShipmentLabel?
@@ -397,6 +401,7 @@ model Order {
   @@unique([marketplaceAccountId, externalOrderId])
   @@index([marketplaceAccountId, createdAt])
   @@index([status, updatedAt])
+  @@index([customerId])
 }
 
 // Etiqueta de envio (AWB/Mercado Envios) de um pedido. ADITIVO e 1:1 com Order
@@ -730,6 +735,7 @@ model Customer {
   receivables  Receivable[]
   budgets      Budget[]
   nfesEmitidas NfeEmitida[]
+  orders       Order[]
 
   @@unique([userId, cpf])
   @@index([userId, createdAt])
