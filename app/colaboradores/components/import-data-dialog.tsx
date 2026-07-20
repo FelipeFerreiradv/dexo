@@ -110,6 +110,8 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
   "VAAPT/VINCULOS":
     "Envie a planilha de peças (“# Cod Peca” + “Localizacao” + “Cod Veiculo”).",
   "VAAPT/NFE": "Envie o resumo de notas emitidas (aba “Java Books”).",
+  "VAAPT/PACOTE":
+    "Envie as planilhas do export juntas: peças, clientes, veículos e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → NF-e.",
   "WEBDESMONTE/VINCULOS":
     "Envie products.csv E locations.csv juntos (o locations.csv resolve os vínculos).",
   "WEBDESMONTE/PACOTE":

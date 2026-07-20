@@ -105,6 +105,18 @@ export function expectedKinds(
       // (idempotente) e aceita o arquivo de veículos junto p/ criar sucatas.
       VINCULOS: { required: [["VAAPT_PECAS"]], optional: ["VAAPT_VEICULOS"] },
       NFE: { required: [["VAAPT_NFE"]], optional: [] },
+      PACOTE: {
+        // No pacote, qualquer combinação ≥1 das planilhas do export.
+        required: [
+          ["VAAPT_PECAS", "VAAPT_CLIENTES", "VAAPT_VEICULOS", "VAAPT_NFE"],
+        ],
+        optional: [
+          "VAAPT_PECAS",
+          "VAAPT_CLIENTES",
+          "VAAPT_VEICULOS",
+          "VAAPT_NFE",
+        ],
+      },
     },
     WEBDESMONTE: {
       LOCALIZACOES: { required: [["WD_LOCATIONS"]], optional: [] },
