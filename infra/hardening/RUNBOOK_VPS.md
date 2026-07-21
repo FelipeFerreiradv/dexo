@@ -108,22 +108,50 @@ Firewall do painel, **backup diário**, **auto-renew (expira 2026-07-10)**, **ma
 > existe mas **não** está enabled). Logs em `/var/log/nginx/`, não em
 > `/home/<site-user>/logs/`. Confirme antes de editar qualquer coisa.
 
+#### ✅ Valores CONFIRMADOS em produção (medidos 2026-07-21)
+
+Rodamos o 8.1 na VPS durante o incidente. Não é mais hipótese — quem for ler isto
+depois não precisa redescobrir:
+
+| Item | Valor real | Como se sabe |
+|---|---|---|
+| `proxy_read_timeout` do vhost da API | **NÃO EXISTE** → default de fábrica do nginx = **60s** | O único `proxy_read_timeout` de toda a config está no bloco do `felipeferreiradev.com`, não no da API |
+| `REMBG_TIMEOUT_MS` no `.env` de prod | **60000** | O log do app dizia `timeout of 60000ms exceeded` |
+| `client_max_body_size` | **64M**, global em `/etc/nginx/nginx.conf` | Sem override por vhost |
+| Assinatura do erro | `upstream timed out ... while reading response header` | `error.log`, em todos os casos |
+
+**A causa-raiz, em uma linha:** o nginx cortava em 60s e o axios só desistia aos
+60s — **empate perfeito**, então a degradação graceful disparava sempre depois de
+o proxy já ter desistido, e nunca chegava ao usuário. Com o orçamento por
+requisição em vigor, o backend responde em ~43s e sobram ~17s de margem.
+
 #### 8.1 — Diagnóstico PRIMEIRO (não pule: é o que fecha a causa-raiz)
 
 ```bash
-# Onde o vhost realmente está e quais timeouts valem hoje:
+# Onde o vhost realmente está e quais timeouts valem hoje.
+# ATENÇÃO ao ler: os números de linha do `nginx -T` são do dump CONCATENADO.
+# Compare a linha do proxy_read_timeout com a do server_name ANTERIOR a ela para
+# saber a que vhost ele pertence — foi assim que descobrimos que o da API não tem.
 nginx -T 2>/dev/null | grep -nE 'server_name|proxy_read_timeout|proxy_send_timeout|client_max_body_size'
 ls -la /etc/nginx/conf.d/ /etc/nginx/sites-enabled/
 
-# O 504 no access.log — o $request_time dele É o proxy_read_timeout efetivo:
-grep ' /upload/image ' /var/log/nginx/*access.log | grep ' 504 ' | tail -20
+# O bloco da API inteiro (é aqui que entram os timeouts do 8.2):
+sed -n '/server_name api.usedexo.com.br/,/^}/p' /etc/nginx/conf.d/usedexo.com.br.conf
 
-# O motivo exato, no error.log:
+# O motivo exato, no error.log — ESTE é o detector confiável:
 grep -F 'upstream timed out' /var/log/nginx/*error.log | grep -i upload | tail -20
 
 # Cruzar com o app no MESMO horário:
 pm2 logs dexo-api --lines 500 --nostream | grep -E 'sidecar rembg falhou|orçamento/fila'
 ```
+
+> ⚠️ **NÃO use o `access.log` como detector.** O formato em uso não casa com
+> `grep ' /upload/image '` — o comando volta **vazio mesmo durante o incidente**,
+> e vazio aqui parece "está tudo bem". Use sempre o `error.log`.
+
+> ⚠️ **`pm2 logs --nostream` lê o buffer ACUMULADO**, inclusive de antes do
+> restart. Depois de um deploy, rode `pm2 flush dexo-api` **antes** de conferir,
+> senão você vai reler os erros antigos e achar que o fix não pegou.
 
 **Como ler:**
 
@@ -131,23 +159,42 @@ pm2 logs dexo-api --lines 500 --nostream | grep -E 'sidecar rembg falhou|orçame
 |---|---|
 | `upstream timed out ... while reading response header` | É o `proxy_read_timeout`. Causa confirmada. |
 | `... while connecting to upstream` | O Fastify não estava aceitando conexão (outro problema). |
+| `socket hang up` / `read ECONNRESET` no log do app | O **sidecar fechou a conexão** — não é fila, é container morrendo. Ver 8.5. |
 | `$status 413` com `$request_time < 1s` | Corpo grande — ver 8.3. |
 | Nenhuma entrada no nginx | O 504 veio de algo **na frente** do nginx (CDN/WAF). |
 | `sidecar rembg falhou` ANTES do corte | A degradação funcionou; investigar outra causa. |
+| `timeout of 60000ms exceeded` **depois** do deploy do orçamento | O código novo NÃO está rodando (o teto passou a ser ~42000). |
 
 #### 8.2 — Alinhar os timeouts
 
-No `server { ... }` de `api.usedexo.com.br` (dentro do `location` que faz
-`proxy_pass` para `127.0.0.1:3333`):
+O bloco da API hoje está **exatamente assim** (sem nenhum timeout, por isso o
+default de 60s), em `/etc/nginx/conf.d/usedexo.com.br.conf`:
+
+```nginx
+server_name api.usedexo.com.br;
+...
+location / {
+  proxy_pass http://backend;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Acrescente as duas linhas **dentro desse `location /`**:
 
 ```nginx
 proxy_read_timeout 120s;
 proxy_send_timeout 120s;
 ```
 
-O app degrada sozinho em ~45s, então o nginx só cortaria numa anomalia real.
+O app degrada sozinho em ~43s, então o nginx só cortaria numa anomalia real.
 Para ajustar o orçamento do app sem redeploy, use `UPLOAD_HANDLER_BUDGET_MS` no
 `.env` (default 45000) — mantenha-o **bem abaixo** do valor acima.
+
+> Note que o upstream é o `upstream backend` (não um `proxy_pass` literal para
+> `127.0.0.1:3333`) — não confunda ao procurar o bloco.
 
 **Verificar:** `nginx -t && systemctl reload nginx`, depois repetir o upload com
 "Remover fundo" + "Adicionar sombra" ligados.
@@ -198,6 +245,39 @@ https://api.usedexo.com.br/upload/image -X POST` deve trazer **exatamente um**
 `Access-Control-Allow-Origin`. Religue com `pm2 start dexo-api`.
 **Rollback:** remover o `error_page`/`location @api_error` + `nginx -t && systemctl reload nginx`.
 
+#### 8.5 — Saúde do sidecar rembg (memória e reinícios)
+
+Se o log do app mostrar `socket hang up` ou `read ECONNRESET` vindos do sidecar,
+**não é fila** — fila produz *timeout*. Esses dois significam que o container
+fechou a conexão no meio, ou seja: morreu e reiniciou.
+
+```bash
+docker ps --filter name=dexo-rembg --format '{{.Status}}'
+docker inspect dexo-rembg --format 'restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}'
+docker stats --no-stream dexo-rembg
+dmesg -T | grep -iE 'oom|killed process' | tail -20
+```
+
+**Medido em 2026-07-21:** `RestartCount = 159` e **10,99 GiB / 12 GiB (91,5%)** de
+memória. O `mem_limit: 12g` do `docker-compose.yml` foi dimensionado para o pico
+documentado de ~8,5 GB do BiRefNet — o consumo real cresceu bem acima disso.
+
+**Como ler:**
+
+| Evidência | Conclusão |
+|---|---|
+| `oom=true` ou `Killed process` no `dmesg` | Estourou o `mem_limit`. Subir o limite ou reciclar o container. |
+| `RestartCount` subindo com `oom=false` | Crash do processo — ver `docker logs dexo-rembg`. |
+| Memória perto do limite e subindo ao longo dos dias | Vazamento/fragmentação da arena do onnxruntime → reciclagem periódica resolve na prática. |
+
+> O host é KVM8/32 GB e o app Node também mora nele. **Não** suba o `mem_limit`
+> sem conferir a folga real (`free -g`) — e lembre que `REMBG_WORKERS=2` já foi
+> testado e **descartado** (2 inferências ≈ 20 GB, worker OOM-killed).
+
+Enquanto isso não é resolvido, o impacto no usuário é **degradação graceful**
+(imagem otimizada + aviso), não perda de imagem — o orçamento por requisição já
+cobre esse caso.
+
 ## Verificações finais (checklist)
 
 - [ ] `ss -tlnp` — só 22/80/443 públicos; 3333/8000 em 127.0.0.1.
@@ -209,4 +289,6 @@ https://api.usedexo.com.br/upload/image -X POST` deve trazer **exatamente um**
 - [ ] Upload no modal com "Remover fundo" + "Adicionar sombra": ou sai o PNG
       recortado, ou sai a imagem otimizada **com aviso** — nunca "falhou".
 - [ ] `curl -i` num erro do nginx traz **um único** `Access-Control-Allow-Origin`.
+- [ ] `pm2 flush dexo-api` + upload de teste ⇒ **nenhum** `sidecar rembg falhou`.
+- [ ] `docker inspect dexo-rembg` — `RestartCount` estável e memória com folga.
 - [ ] Snapshot/backup recente existe.
