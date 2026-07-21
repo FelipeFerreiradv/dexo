@@ -35,6 +35,13 @@ interface Props {
   onChange: (id: string | null, fullPath: string) => void;
   disabled?: boolean;
   id?: string;
+  /**
+   * Permite escolher uma localização lotada. A capacidade conta PRODUTOS, não
+   * filhas — uma prateleira cheia de peças ainda pode receber sub-localizações,
+   * então quem escolhe uma localização-mãe passa `allowFull`. Omitido =
+   * comportamento atual (lotada bloqueada), inalterado.
+   */
+  allowFull?: boolean;
 }
 
 /**
@@ -50,6 +57,7 @@ export function LocationCombobox({
   onChange,
   disabled,
   id,
+  allowFull,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -127,7 +135,8 @@ export function LocationCombobox({
             </CommandItem>
             {filtered.map((loc) => {
               // Lotada e NÃO é a já selecionada → bloqueada (isenção do editar).
-              const blocked = loc.isFull && loc.id !== value;
+              // `allowFull` libera o bloqueio para quem escolhe uma mãe.
+              const blocked = !allowFull && loc.isFull && loc.id !== value;
               return (
                 <CommandItem
                   key={loc.id}

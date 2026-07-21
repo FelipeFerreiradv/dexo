@@ -105,6 +105,133 @@ export class LocationUseCase {
     });
   }
 
+  /**
+   * Criação EM LOTE a partir de faixas já expandidas e normalizadas
+   * (`app/localizacoes/lib/bulk-locations.ts`). Aditivo: `create`, `createLean`
+   * e o executor de importação seguem intocados.
+   *
+   * São 3 queries independentemente de N (um loop de `createLean` faria até 3
+   * por item): pais em uma consulta, códigos existentes em outra e um único
+   * `createManyAndReturn`. O `skipDuplicates` traduz para `ON CONFLICT DO
+   * NOTHING`, então o `@@unique([userId, code])` resolve sozinho a corrida que
+   * o pré-check não cobre — sem isso, um P2002 viraria 500 (o domínio de
+   * Location não trata esse código em lugar nenhum).
+   *
+   * Sem `$transaction`: a regra do módulo é não colocar trabalho pesado em
+   * transação, e o INSERT com ON CONFLICT já é atômico. Em contrapartida ele é
+   * tudo-ou-nada: se o INSERT falhar (ex.: pai removido entre a validação e a
+   * escrita), nada é criado e o erro sobe — preferível a um lote pela metade.
+   */
+  async createBulk(input: {
+    userId: string;
+    items: Array<{
+      code: string;
+      parentId?: string | null;
+      maxCapacity?: number;
+      description?: string | null;
+    }>;
+  }): Promise<{
+    created: Array<{ id: string; code: string }>;
+    skipped: Array<{ code: string; reason: "ja_existe" | "duplicada_no_lote" }>;
+    failed: Array<{ code: string; error: string }>;
+  }> {
+    if (!input.userId) throw new Error("Usuário não encontrado");
+
+    const created: Array<{ id: string; code: string }> = [];
+    const skipped: Array<{
+      code: string;
+      reason: "ja_existe" | "duplicada_no_lote";
+    }> = [];
+    const failed: Array<{ code: string; error: string }> = [];
+
+    // 1) Deduplica dentro do próprio lote (mantém a primeira ocorrência).
+    const seen = new Set<string>();
+    const unique: typeof input.items = [];
+    for (const item of input.items) {
+      if (seen.has(item.code)) {
+        skipped.push({ code: item.code, reason: "duplicada_no_lote" });
+        continue;
+      }
+      seen.add(item.code);
+      unique.push(item);
+    }
+    if (unique.length === 0) return { created, skipped, failed };
+
+    // 2) Valida os pais do tenant numa consulta só (mesma semântica de erro do
+    //    `createLean`; pai de outro tenant simplesmente não aparece aqui).
+    const parentIds = Array.from(
+      new Set(
+        unique
+          .map((i) => i.parentId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    );
+    let validParents = new Set<string>();
+    if (parentIds.length > 0) {
+      const parents = await prisma.location.findMany({
+        where: { userId: input.userId, id: { in: parentIds } },
+        select: { id: true },
+      });
+      validParents = new Set(parents.map((p) => p.id));
+    }
+
+    // `|| null` normaliza string vazia para raiz (o `??` a preservaria e o
+    // banco receberia uma FK vazia, derrubando o lote inteiro).
+    const withParentOk = unique.map((item) => ({
+      ...item,
+      parentId: item.parentId || null,
+    })).filter((item) => {
+      if (item.parentId && !validParents.has(item.parentId)) {
+        failed.push({ code: item.code, error: "Localização pai não encontrada" });
+        return false;
+      }
+      return true;
+    });
+    if (withParentOk.length === 0) return { created, skipped, failed };
+
+    // 3) Pré-checa os códigos já usados pelo tenant.
+    const existing = await prisma.location.findMany({
+      where: {
+        userId: input.userId,
+        code: { in: withParentOk.map((i) => i.code) },
+      },
+      select: { code: true },
+    });
+    const existingCodes = new Set(existing.map((e) => e.code));
+    const toCreate = withParentOk.filter((item) => {
+      if (existingCodes.has(item.code)) {
+        skipped.push({ code: item.code, reason: "ja_existe" });
+        return false;
+      }
+      return true;
+    });
+    if (toCreate.length === 0) return { created, skipped, failed };
+
+    // 4) Um único INSERT. O RETURNING diz exatamente o que entrou; o que foi
+    //    pedido e não voltou perdeu a corrida para outra sessão.
+    const inserted = await prisma.location.createManyAndReturn({
+      data: toCreate.map((item) => ({
+        userId: input.userId,
+        code: item.code,
+        description: item.description ?? null,
+        maxCapacity: item.maxCapacity ?? 0,
+        parentId: item.parentId || null,
+      })),
+      skipDuplicates: true,
+      select: { id: true, code: true },
+    });
+    created.push(...inserted);
+
+    const insertedCodes = new Set(inserted.map((i) => i.code));
+    for (const item of toCreate) {
+      if (!insertedCodes.has(item.code)) {
+        skipped.push({ code: item.code, reason: "ja_existe" });
+      }
+    }
+
+    return { created, skipped, failed };
+  }
+
   async findById(
     id: string,
     userId?: string,

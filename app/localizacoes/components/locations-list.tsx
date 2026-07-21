@@ -25,6 +25,7 @@ import { useSession } from "next-auth/react";
 import { generateLocationLabelsPdf } from "../lib/location-labels-pdf";
 import { HighlightText } from "./highlight-text";
 import { useLocationSearch } from "../hooks/use-location-search";
+import { BulkLocationsDialog } from "./bulk-locations-dialog";
 
 import { Button } from "@/components/ui/button";
 import { SectionHeading } from "@/components/section-heading";
@@ -1121,6 +1122,10 @@ export function LocationsList() {
                   Receber por scan
                 </Link>
               </Button>
+              <BulkLocationsDialog
+                onToast={showToast}
+                onCreated={fetchLocations}
+              />
               <Button onClick={handleOpenCreate}>
                 <Plus className="mr-2 size-4" />
                 Nova Localização

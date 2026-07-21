@@ -5,6 +5,12 @@ import {
 } from "../usecases/location.usercase";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
+import {
+  describeBatchError,
+  expandBulkLocationRows,
+  validateBulkLocationRows,
+  type BulkLocationRow,
+} from "../localizacoes/lib/bulk-locations";
 
 export const locationRoutes = async (fastify: FastifyInstance) => {
   const locationUseCase = new LocationUseCase();
@@ -342,6 +348,82 @@ export const locationRoutes = async (fastify: FastifyInstance) => {
           error instanceof Error ? error.message : "Erro ao criar localização";
         const status = message.includes("Já existe") ? 409 : 500;
         return reply.status(status).send({ error: message });
+      }
+    },
+  );
+
+  /**
+   * POST /locations/bulk
+   * Cria localizações em massa a partir de FAIXAS (prefixo + intervalo).
+   *
+   * Recebe as faixas, não os códigos expandidos: a expansão roda aqui com a
+   * mesma função pura do front (preview idêntico ao gravado, tetos
+   * inburláveis) e o corpo registrado no SystemLog fica pequeno.
+   *
+   * Siglas duplicadas são reportadas em `skipped` sem derrubar o lote.
+   */
+  fastify.post(
+    "/bulk",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { rows } = (request.body ?? {}) as { rows?: BulkLocationRow[] };
+
+        if (!Array.isArray(rows) || rows.length === 0) {
+          return reply
+            .status(400)
+            .send({ error: "Lista de faixas é obrigatória" });
+        }
+
+        const validation = validateBulkLocationRows(rows);
+        if (!validation.canGenerate) {
+          return reply.status(400).send({
+            error: describeBatchError(validation) ?? "Faixas inválidas",
+          });
+        }
+
+        const items = expandBulkLocationRows(rows);
+        const result = await locationUseCase.createBulk({ userId, items });
+
+        // Log agregado (só contadores — o corpo já é enxuto por ser faixas).
+        // Fire-and-forget: as localizações já foram criadas, então uma falha
+        // ao registrar o log não pode transformar o lote num 500.
+        void Promise.resolve(
+          SystemLogService.logInfo(
+            "CREATE_LOCATION",
+            `${result.created.length} localização(ões) criada(s) em lote`,
+            {
+              userId,
+              resource: "Location",
+              details: {
+                faixas: rows.length,
+                requested: items.length,
+                created: result.created.length,
+                skipped: result.skipped.length,
+                failed: result.failed.length,
+              },
+            },
+          ),
+        ).catch(() => {});
+
+        return reply.status(result.created.length > 0 ? 201 : 200).send({
+          summary: {
+            requested: items.length,
+            created: result.created.length,
+            skipped: result.skipped.length,
+            failed: result.failed.length,
+          },
+          created: result.created,
+          skipped: result.skipped,
+          failed: result.failed,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao criar localizações em lote";
+        return reply.status(500).send({ error: message });
       }
     },
   );
