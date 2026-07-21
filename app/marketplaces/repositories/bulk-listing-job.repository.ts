@@ -1,7 +1,8 @@
 import { BulkJobStatus, Prisma } from "@prisma/client";
 import prisma from "../../lib/prisma";
 
-export type BulkListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX";
+export type BulkListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface BulkListingRequestSpec {
   platform: BulkListingPlatform;

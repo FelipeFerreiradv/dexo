@@ -75,6 +75,10 @@ const MAGALU_INTEGRATION_ENABLED =
 const OLX_INTEGRATION_ENABLED =
   process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
 
+// Integração Facebook/Meta 100% aditiva atrás da flag (mesmo padrão do OLX).
+const FACEBOOK_INTEGRATION_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
+
 // Módulo WhatsApp: flag global (kill-switch) + gate POR USUÁRIO (plano pago).
 // A flag esconde o item p/ todos; com flag ligada, o item só aparece após o
 // GET /whatsapp/status confirmar o entitlement do tenant (estado em runtime,
@@ -179,6 +183,16 @@ const NAV_SECTIONS: NavSection[] = [
               id: "olx",
               label: "OLX",
               href: "/integracoes/olx",
+              icon: Store,
+            },
+          ]
+        : []),
+      ...(FACEBOOK_INTEGRATION_ENABLED
+        ? [
+            {
+              id: "facebook",
+              label: "Facebook",
+              href: "/integracoes/facebook",
               icon: Store,
             },
           ]

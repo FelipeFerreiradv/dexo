@@ -21,6 +21,9 @@ import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OLX_CONSTANTS } from "../olx/olx-constants";
+import { FacebookApiService } from "../services/facebook-api.service";
+import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
+import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
 import CategoryRepository from "../repositories/category.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
@@ -2969,6 +2972,9 @@ export class SyncUseCase {
           case Platform.OLX:
             result = await this.syncOlxProductStock(listing, product);
             break;
+          case Platform.FACEBOOK:
+            result = await this.syncFacebookProductStock(listing, product);
+            break;
           default:
             result = {
               success: false,
@@ -3583,6 +3589,154 @@ export class SyncUseCase {
     }
   }
 
+  /**
+   * Sincroniza estoque para o Facebook/Meta — path DURÁVEL (stockSyncJob →
+   * syncProductStock).
+   *
+   * ⚠️ Diferente da OLX (delete/insert): a baixa mapeia para UPDATE de
+   * disponibilidade (o item PERMANECE no catálogo):
+   *   - targetStock === 0 → setAvailability 'out of stock' (+ status paused).
+   *   - targetStock  >  0 → setAvailability 'in stock' (+ quantity, status active).
+   * Usa só o retailer_id (externalListingId) — NÃO depende de FB_PRODUCT_URL_BASE
+   * (só a publicação inicial precisa do `link`), então o job de estoque roda
+   * mesmo antes da URL estar configurada.
+   *
+   * ⚠️ Este `case FACEBOOK` é OBRIGATÓRIO: sem ele o switch cai no `default` e
+   * todo stockSyncJob de listing FACEBOOK falha em loop (o job é enfileirado p/
+   * TODA listing, sem filtro de plataforma).
+   */
+  private static async syncFacebookProductStock(
+    listing: any,
+    product: any,
+  ): Promise<SyncResult> {
+    const account = listing.marketplaceAccount;
+
+    if (!account.accessToken) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: "Conta Facebook sem token de acesso",
+      };
+    }
+
+    const retailerId = listing.externalListingId;
+    if (!retailerId || String(retailerId).startsWith("PENDING_")) {
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error:
+          "Item local (placeholder) — não existe no catálogo Meta. Sincronização ignorada.",
+      };
+    }
+
+    const targetStock = Number(product.stock) || 0;
+
+    try {
+      if (targetStock <= 0) {
+        await FacebookApiService.setAvailability(
+          account.accessToken,
+          retailerId,
+          "out of stock",
+          { quantity: 0 },
+        );
+        await ListingRepository.updateStatus(listing.id, "paused");
+      } else {
+        await FacebookApiService.setAvailability(
+          account.accessToken,
+          retailerId,
+          "in stock",
+          { quantity: targetStock },
+        );
+        await ListingRepository.updateStatus(listing.id, "active");
+      }
+
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.SUCCESS,
+        `Estoque do produto ${product.name} sincronizado no Facebook (${targetStock <= 0 ? "indisponível" : "disponível"})`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+        },
+      );
+
+      return {
+        success: true,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        newStock: targetStock,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+      await this.logSync(
+        account.id,
+        SyncType.STOCK_UPDATE,
+        SyncStatus.FAILURE,
+        `Erro ao sincronizar estoque no Facebook: ${errorMessage}`,
+        {
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          error: errorMessage,
+        },
+      );
+      return {
+        success: false,
+        productId: product.id,
+        externalListingId: listing.externalListingId,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Sincroniza dados completos (título/descrição/preço/estoque) para o Facebook.
+   * Reenvia o item inteiro (upsert com o mesmo retailer_id), refletindo o
+   * estoque na disponibilidade. ⚠️ Requer FB_PRODUCT_URL_BASE (o build monta o
+   * `link` do item) — o build lança erro claro se ausente.
+   */
+  private static async syncFacebookProductData(
+    product: any,
+    externalListingId: string,
+    account: any,
+  ): Promise<SyncResult> {
+    const result: SyncResult = {
+      success: false,
+      productId: product.id,
+      externalListingId,
+    };
+
+    if (!externalListingId || externalListingId.startsWith("PENDING_")) {
+      result.error = "Item Facebook ainda não publicado (placeholder).";
+      return result;
+    }
+
+    try {
+      const targetStock = Number(product.stock) || 0;
+      const data = FacebookPayloadBuilderService.build(product, {
+        googleProductCategory:
+          FacebookCategoryResolutionService.resolveCategory(product),
+        availability: targetStock > 0 ? "in stock" : "out of stock",
+        quantity: targetStock,
+      });
+      await FacebookApiService.upsertItem(
+        account.accessToken,
+        externalListingId,
+        data,
+      );
+      result.success = true;
+      result.newStock = targetStock;
+      return result;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : String(error);
+      return result;
+    }
+  }
+
   private static async syncMagaluProductData(
     product: any,
     externalListingId: string,
@@ -3961,6 +4115,11 @@ export class SyncUseCase {
                   return this.syncMagaluProductStock(listing, listing.product);
                 case Platform.OLX:
                   return this.syncOlxProductStock(listing, listing.product);
+                case Platform.FACEBOOK:
+                  return this.syncFacebookProductStock(
+                    listing,
+                    listing.product,
+                  );
                 default:
                   return {
                     success: false,
@@ -4133,6 +4292,12 @@ export class SyncUseCase {
           );
         case Platform.OLX:
           return await this.syncOlxProductData(
+            effectiveProduct,
+            externalListingId,
+            account,
+          );
+        case Platform.FACEBOOK:
+          return await this.syncFacebookProductData(
             effectiveProduct,
             externalListingId,
             account,

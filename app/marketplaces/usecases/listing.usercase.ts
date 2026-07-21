@@ -11,6 +11,9 @@ import { OlxApiService } from "../services/olx-api.service";
 import { OlxPayloadBuilderService } from "../services/olx-payload-builder.service";
 import { OlxCategoryResolutionService } from "../services/olx-category-resolution.service";
 import { OLX_CONSTANTS } from "../olx/olx-constants";
+import { FacebookApiService } from "../services/facebook-api.service";
+import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
+import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -31,6 +34,7 @@ import {
   classifyMLRemoveError,
   classifyShopeeRemoveError,
   classifyOlxRemoveError,
+  classifyFacebookRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
 import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
@@ -485,6 +489,13 @@ export class ListingUseCase {
         );
       case Platform.OLX:
         return this.createOlxListing(userId, productId, categoryId, accountId);
+      case Platform.FACEBOOK:
+        return this.createFacebookListing(
+          userId,
+          productId,
+          categoryId,
+          accountId,
+        );
       default:
         return {
           success: false,
@@ -5640,6 +5651,9 @@ export class ListingUseCase {
     if (platform === Platform.OLX) {
       return ListingUseCase.removeOlxListing(listingId);
     }
+    if (platform === Platform.FACEBOOK) {
+      return ListingUseCase.removeFacebookListing(listingId);
+    }
 
     console.warn(
       `[ListingUseCase] Plataforma desconhecida ao remover listing ${listingId}: ${platform}`,
@@ -5696,6 +5710,13 @@ export class ListingUseCase {
 
       if (platform === Platform.OLX) {
         return await ListingUseCase.updateOlxListingFields(listing, fields);
+      }
+
+      if (platform === Platform.FACEBOOK) {
+        return await ListingUseCase.updateFacebookListingFields(
+          listing,
+          fields,
+        );
       }
 
       return {
@@ -5890,6 +5911,34 @@ export class ListingUseCase {
             error: `OLX recusou a reativação: ${detail}`,
           };
         }
+        await ListingRepository.updateStatus(listingId, status);
+        return { success: true };
+      }
+
+      if (platform === Platform.FACEBOOK) {
+        // Facebook/Meta: "pausar" = UPDATE availability='out of stock' (o item
+        // PERMANECE no catálogo); "reativar" = 'in stock'. NÃO deleta/reinsere
+        // como a OLX. O retailer_id do catálogo = externalListingId (SKU).
+        const account = listing.marketplaceAccount;
+        if (!account || !account.accessToken) {
+          return {
+            success: false,
+            error: "Conta Facebook sem credenciais válidas",
+          };
+        }
+        const availability = status === "paused" ? "out of stock" : "in stock";
+        const quantity =
+          status === "paused"
+            ? 0
+            : typeof listing.product?.stock === "number"
+              ? listing.product.stock
+              : undefined;
+        await FacebookApiService.setAvailability(
+          account.accessToken,
+          listing.externalListingId,
+          availability,
+          { quantity },
+        );
         await ListingRepository.updateStatus(listingId, status);
         return { success: true };
       }
@@ -6264,6 +6313,272 @@ export class ListingUseCase {
    * normal de re-sync/reativação, não aqui. Guarda os overrides no vínculo.
    */
   private static async updateOlxListingFields(
+    listing: NonNullable<
+      Awaited<ReturnType<typeof ListingRepository.findById>>
+    >,
+    fields: ListingFullEditInput,
+  ): Promise<{ success: boolean; error?: string }> {
+    const data: {
+      titleOverride?: string | null;
+      descriptionOverride?: string | null;
+    } = {};
+    if (fields.titleOverride !== undefined)
+      data.titleOverride = fields.titleOverride;
+    if (fields.descriptionOverride !== undefined)
+      data.descriptionOverride = fields.descriptionOverride;
+    if (Object.keys(data).length > 0) {
+      await ListingRepository.updateListing(listing.id, data);
+    }
+    return { success: true };
+  }
+
+  /**
+   * Cria (publica) um item no catálogo Meta (Commerce Catalog) via items_batch.
+   * Espelha createOlxListing, adaptado ao contrato do Graph:
+   *  - Categoria resolvida OFFLINE (google_product_category).
+   *  - upsertItem (CREATE/allow_upsert) — retailer_id = SKU.
+   *  - Persiste externalListingId = SKU (chave estável) e o `link` em permalink.
+   *  - ⚠️ Exige FB_PRODUCT_URL_BASE (link do item); sem ela o build lança erro.
+   */
+  static async createFacebookListing(
+    userId: string,
+    productId: string,
+    _categoryId?: string,
+    accountId?: string,
+  ): Promise<CreateListingResult> {
+    let account: any = null;
+    let product: any = null;
+    try {
+      account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
+
+      if (!account && !accountId) {
+        const all = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+        const active = (all || []).filter(
+          (acc) => acc.status === AccountStatus.ACTIVE,
+        );
+        if (active.length > 1) {
+          return {
+            success: false,
+            error:
+              "Selecione a conta Facebook para criar o anúncio (multi-contas ativas detectadas).",
+          };
+        }
+        account = active[0];
+      }
+
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          error: "Conta do Facebook não conectada ou sem credenciais válidas",
+        };
+      }
+
+      product = await ListingUseCase.productRepository.findById(productId);
+      if (!product) {
+        return { success: false, error: "Produto não encontrado" };
+      }
+      if (typeof product.stock !== "number" || product.stock <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter estoque maior que zero para criar anúncio no Facebook",
+        };
+      }
+      if (typeof product.price !== "number" || product.price <= 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter preço maior que zero para criar anúncio no Facebook",
+        };
+      }
+      if (ListingUseCase.collectProductImageUrls(product).length === 0) {
+        return {
+          success: false,
+          error:
+            "Produto precisa ter pelo menos uma imagem para criar anúncio no Facebook",
+        };
+      }
+
+      const googleProductCategory =
+        FacebookCategoryResolutionService.resolveCategory(product);
+      const retailerId = FacebookPayloadBuilderService.buildRetailerId(product);
+      // build() lança se FB_PRODUCT_URL_BASE estiver ausente (bloqueio conhecido).
+      const data = FacebookPayloadBuilderService.build(product, {
+        googleProductCategory,
+        availability: "in stock",
+        quantity: product.stock,
+      });
+
+      const resp = await FacebookApiService.upsertItem(
+        account.accessToken,
+        retailerId,
+        data,
+      );
+
+      // Poll best-effort do status: o items_batch devolve 200 + handles mesmo
+      // quando a Meta rejeita o item (async). Só falha o create em erro EXPLÍCITO
+      // (status "error"/errors); poll inconclusivo segue como publicado.
+      const handle = resp.handles?.[0];
+      if (handle) {
+        const entry = await FacebookApiService.pollBatchUntilDone(
+          account.accessToken,
+          handle,
+        );
+        if (
+          entry &&
+          (entry.status === "error" ||
+            (Array.isArray(entry.errors) && entry.errors.length > 0))
+        ) {
+          const detail = Array.isArray(entry.errors)
+            ? JSON.stringify(entry.errors)
+            : entry.status;
+          throw new Error(`Facebook rejeitou o item: ${detail}`);
+        }
+      }
+
+      const listing = await ListingRepository.upsertListing({
+        productId: product.id,
+        marketplaceAccountId: account.id,
+        externalListingId: retailerId,
+        externalSku: product.sku ?? null,
+        permalink: data.link ?? null,
+        status: "active",
+        lastError: null,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+
+      return {
+        success: true,
+        listingId: listing.id,
+        externalListingId: retailerId,
+        permalink: data.link ?? undefined,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Erro ao criar anúncio no Facebook";
+      if (product?.sku && account?.id) {
+        try {
+          await ListingRepository.upsertListing({
+            productId: product.id,
+            marketplaceAccountId: account.id,
+            externalListingId:
+              FacebookPayloadBuilderService.buildRetailerId(product),
+            externalSku: product.sku,
+            status: "error",
+            lastError: message.slice(0, 490),
+            retryEnabled: true,
+            nextRetryAt: new Date(Date.now() + 5 * 60 * 1000),
+          });
+        } catch (persistErr) {
+          console.warn(
+            `[ListingUseCase] Falha ao gravar o erro do create Facebook (sku=${product.sku}):`,
+            persistErr instanceof Error ? persistErr.message : persistErr,
+          );
+        }
+      }
+      return { success: false, error: message };
+    }
+  }
+
+  /**
+   * Remove um item do catálogo Meta (DELETE via items_batch). Espelha
+   * removeOlxListing (withRetry + classifyFacebookRemoveError). Idempotente:
+   * DELETE de item já removido/inexistente é sucesso, e aí deleta o vínculo.
+   */
+  static async removeFacebookListing(listingId: string): Promise<{
+    success: boolean;
+    closedOnMarketplace: boolean;
+    error?: string;
+    retryable?: boolean;
+  }> {
+    try {
+      const listing = await ListingRepository.findById(listingId);
+      if (!listing) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          error: "Vínculo não encontrado",
+        };
+      }
+
+      if (
+        !listing.externalListingId ||
+        listing.externalListingId.startsWith("PENDING_")
+      ) {
+        await ListingRepository.deleteListing(listingId);
+        return { success: true, closedOnMarketplace: false };
+      }
+
+      const account = await MarketplaceRepository.findById(
+        listing.marketplaceAccountId,
+      );
+      if (!account || !account.accessToken) {
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: true,
+          error:
+            "Conta do Facebook sem token de acesso. Reconecte a conta e tente novamente.",
+        };
+      }
+
+      try {
+        await withRetry(
+          async () =>
+            FacebookApiService.deleteItem(
+              account.accessToken!,
+              listing.externalListingId,
+            ),
+          { classify: classifyFacebookRemoveError },
+        );
+      } catch (closeError) {
+        const c = classifyFacebookRemoveError(closeError);
+        if (c.kind === "idempotent") {
+          console.log(
+            `[ListingUseCase] Facebook item ${listing.externalListingId} já removido (${c.message})`,
+          );
+          await ListingRepository.deleteListing(listingId);
+          return { success: true, closedOnMarketplace: true };
+        }
+        return {
+          success: false,
+          closedOnMarketplace: false,
+          retryable: c.kind === "retryable",
+          error: c.message,
+        };
+      }
+
+      await ListingRepository.deleteListing(listingId);
+      return { success: true, closedOnMarketplace: true };
+    } catch (error) {
+      return {
+        success: false,
+        closedOnMarketplace: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro ao remover item do Facebook",
+      };
+    }
+  }
+
+  /**
+   * Edição de campos de um item de catálogo Facebook (fase 1: persistência
+   * LOCAL só, como o OLX/Shopee). A edição real do catálogo acontece pelo fluxo
+   * normal de re-sync (upsert com o mesmo retailer_id). Guarda os overrides.
+   */
+  private static async updateFacebookListingFields(
     listing: NonNullable<
       Awaited<ReturnType<typeof ListingRepository.findById>>
     >,

@@ -56,6 +56,10 @@ const MARKETPLACE_ICONS: Record<
     label: "OLX",
     src: "/marketplaces/olx.svg",
   },
+  FACEBOOK: {
+    label: "Facebook",
+    src: "/marketplaces/facebook.svg",
+  },
 };
 
 // Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de

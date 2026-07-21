@@ -29,6 +29,7 @@ export const LISTING_PLATFORM_LABELS: Record<
   SHOPEE: "Shopee",
   MAGALU: "Magalu",
   OLX: "OLX",
+  FACEBOOK: "Facebook",
 };
 
 export function getListingStatusBadge(status?: string | null) {

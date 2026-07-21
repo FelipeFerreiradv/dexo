@@ -9,7 +9,8 @@
  * leitura para um valor canônico. Nunca lança; entradas desconhecidas ou vazias
  * caem em `"OUTRO"` (entram no total, num bucket "Outro/Não identificado").
  */
-export type CanonPlatform = "ML" | "SHOPEE" | "MAGALU" | "OLX" | "OUTRO";
+export type CanonPlatform =
+  "ML" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK" | "OUTRO";
 
 export function canonPlatform(raw?: string | null): CanonPlatform {
   if (!raw) return "OUTRO";
@@ -34,5 +35,6 @@ export function canonPlatform(raw?: string | null): CanonPlatform {
   // Magalu: log do dispatcher grava "Magalu"; tolera "magazineluiza" também.
   if (s.includes("magalu") || s.includes("magazineluiza")) return "MAGALU";
   if (s.includes("olx")) return "OLX";
+  if (s.includes("facebook") || s.includes("meta")) return "FACEBOOK";
   return "OUTRO";
 }

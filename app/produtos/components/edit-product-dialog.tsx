@@ -228,7 +228,7 @@ interface Product {
 export interface EditProductDialogListingContext {
   listingId: string;
   accountName: string;
-  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX";
+  platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
   externalListingId: string | null;
   status: string;
 }

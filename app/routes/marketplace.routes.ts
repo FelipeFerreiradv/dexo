@@ -3255,4 +3255,314 @@ small{color:#666}</style></head><body>
       }
     },
   );
+
+  // ====================================================================
+  // ROTAS FACEBOOK/META (espelham o padrão /olx/*). Aditivas, atrás da flag
+  // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED. SEM webhook e SEM import de
+  // pedidos (checkout fora da plataforma) — baixa de estoque unidirecional
+  // ERP→Meta (UPDATE availability).
+  // ====================================================================
+
+  /** POST /marketplace/facebook/auth — inicia o OAuth do Facebook. */
+  app.post<{ Reply: { authUrl: string; state: string } }>(
+    "/facebook/auth",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { authUrl, state } =
+          MarketplaceUseCase.initiateFacebookOAuth(userId);
+        return reply.send({ authUrl, state });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar autenticação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/callback?code=...&state=...
+   * Callback OAuth do Facebook. Não requer auth prévia — userId vem do state.
+   */
+  app.get<{
+    Querystring: { code?: string; state?: string };
+  }>(
+    "/facebook/callback",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
+      const isBrowserRedirect = acceptHeader.includes("text/html");
+      const frontendUrl =
+        process.env.NEXTAUTH_URL ||
+        process.env.CORS_ORIGIN ||
+        "http://localhost:3000";
+
+      try {
+        const code = (request.query as any).code as string | undefined;
+        const state = (request.query as any).state as string | undefined;
+
+        if (!code || !state) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/facebook/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            );
+          }
+          return reply.status(400).send({
+            error: "Parâmetros inválidos",
+            message: "code e state são obrigatórios",
+          });
+        }
+
+        const userId = request.user?.dataOwnerId;
+        const account = await MarketplaceUseCase.handleFacebookOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+
+        if (isBrowserRedirect) {
+          return reply.redirect(
+            `${frontendUrl}/integracoes/facebook/callback?result=success`,
+          );
+        }
+
+        return reply.send({
+          success: true,
+          message: "Conta conectada com sucesso",
+          account: {
+            id: account.id,
+            platform: account.platform,
+            status: account.status,
+            createdAt: account.createdAt,
+          },
+        });
+      } catch (error) {
+        if (isBrowserRedirect) {
+          const errorMsg =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return reply.redirect(
+            `${frontendUrl}/integracoes/facebook/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+          );
+        }
+        return reply.status(500).send({
+          error: "Erro ao processar callback",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/status */
+  app.get(
+    "/facebook/status",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const statusData =
+          await MarketplaceUseCase.getFacebookAccountStatus(userId);
+        return reply.send({
+          connected: statusData.connected,
+          platform: Platform.FACEBOOK,
+          status: statusData.account?.status,
+          message: statusData.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao obter status",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/accounts — lista contas Facebook do usuário. */
+  app.get(
+    "/facebook/accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accounts = await MarketplaceRepository.findAllByUserIdAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+        return reply.send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar contas",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** DELETE /marketplace/facebook — desconecta conta (aceita accountId). */
+  app.delete<{ Reply: { success: boolean; message: string } }>(
+    "/facebook",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        await MarketplaceUseCase.disconnectAccount(
+          userId,
+          Platform.FACEBOOK,
+          accountId,
+        );
+
+        return reply.send({
+          success: true,
+          message: "Conta Facebook desconectada com sucesso",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao desconectar conta",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** GET /marketplace/facebook/listings — vínculos produto↔item do catálogo. */
+  app.get(
+    "/facebook/listings",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+
+        const accounts =
+          accountIds && accountIds.length > 0
+            ? await prisma.marketplaceAccount.findMany({
+                where: {
+                  id: { in: accountIds },
+                  userId,
+                  platform: Platform.FACEBOOK,
+                },
+              })
+            : await MarketplaceRepository.findAllByUserIdAndPlatform(
+                userId,
+                Platform.FACEBOOK,
+              );
+
+        if (!accounts || accounts.length === 0) {
+          return reply.status(404).send({
+            error: "Conta não encontrada",
+            message: "Conecte sua conta do Facebook primeiro",
+          });
+        }
+
+        const listingsArrays = await Promise.all(
+          accounts.map((acc) =>
+            prisma.productListing.findMany({
+              where: { marketplaceAccountId: acc.id },
+              select: {
+                id: true,
+                productId: true,
+                externalListingId: true,
+                externalSku: true,
+                fbCatalogItemId: true,
+                permalink: true,
+                status: true,
+                lastError: true,
+                createdAt: true,
+                product: { select: { name: true, sku: true, stock: true } },
+              },
+              orderBy: { createdAt: "desc" },
+            }),
+          ),
+        );
+
+        const listings = listingsArrays.flat();
+        return reply.send({ success: true, count: listings.length, listings });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao buscar anúncios",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/facebook/sync — sincroniza estoque de todos os itens. */
+  app.post(
+    "/facebook/sync",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        void (async () => {
+          try {
+            const result = await SyncUseCase.syncAllStock(
+              userId,
+              Platform.FACEBOOK,
+            );
+            console.log(
+              `[facebook/sync] Background sync complete: ${result.successful}/${result.total} OK, ${result.failed} failed`,
+            );
+          } catch (e) {
+            console.error("[facebook/sync] Background sync error:", e);
+          }
+        })();
+        return reply.status(202).send({
+          success: true,
+          message: "Sincronização de estoque Facebook iniciada",
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque no Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /** POST /marketplace/facebook/sync/:productId — sincroniza um produto. */
+  app.post<{ Params: { productId: string } }>(
+    "/facebook/sync/:productId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { productId } = request.params as { productId: string };
+
+        const result = await SyncUseCase.syncProductStock(productId);
+        const failed = result.filter((r) => !r.success);
+
+        await SystemLogService.logSyncComplete(
+          userId,
+          "PRODUCT_SYNC",
+          "FACEBOOK",
+          {
+            productId,
+            successful: result.length - failed.length,
+            failed: failed.length,
+          },
+        );
+
+        return reply.send({ success: failed.length === 0, results: result });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sincronizar estoque do produto no Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
 }

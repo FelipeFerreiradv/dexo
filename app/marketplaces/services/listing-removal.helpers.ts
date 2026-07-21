@@ -234,6 +234,71 @@ export function classifyOlxRemoveError(
 }
 
 /**
+ * Classifica um erro de remoção (DELETE) de item de catálogo do Facebook/Meta.
+ *
+ * O DELETE do items_batch é endereçado por `retailer_id`. A Graph API devolve
+ * erros no formato `{ error: { message, code, error_subcode, type } }` — o
+ * service anexa `responseData` e `status`.
+ *
+ * Idempotente (objetivo da remoção atingido):
+ *  - 404 / "not found" / "does not exist" / "no item" — item já removido.
+ *
+ * Retryable (transitório):
+ *  - 429/5xx/timeout/network.
+ *  - códigos de rate limit da Graph (4, 17, 32, 613) e error "temporarily".
+ *
+ * Permanent (definitivo — NÃO deletar local):
+ *  - 400 validação, 401/403 (token/permissão — OAuthException code 190/10/200).
+ */
+export function classifyFacebookRemoveError(
+  error: unknown,
+): RemovalErrorClassification {
+  const message = pickMessage(error);
+  const e = error as AxiosLikeError;
+  const status = typeof e?.status === "number" ? e.status : undefined;
+  const graphCode =
+    typeof e?.responseData?.error?.code === "number"
+      ? e.responseData.error.code
+      : undefined;
+
+  const lower = message.toLowerCase();
+
+  const looksIdempotent =
+    lower.includes("not found") ||
+    lower.includes("not_found") ||
+    lower.includes("does not exist") ||
+    lower.includes("no item") ||
+    lower.includes("inexist");
+
+  if (status === 404 || looksIdempotent) {
+    return { kind: "idempotent", message, status };
+  }
+
+  const isRateLimit =
+    graphCode === 4 ||
+    graphCode === 17 ||
+    graphCode === 32 ||
+    graphCode === 613;
+
+  if (
+    isRateLimit ||
+    status === 429 ||
+    (typeof status === "number" && status >= 500 && status <= 599) ||
+    e?.code === "ECONNRESET" ||
+    e?.code === "ECONNABORTED" ||
+    e?.code === "ETIMEDOUT" ||
+    lower.includes("timeout") ||
+    lower.includes("temporarily") ||
+    lower.includes("network") ||
+    lower.includes("socket hang up")
+  ) {
+    return { kind: "retryable", message, status };
+  }
+
+  return { kind: "permanent", message, status };
+}
+
+/**
  * Executa `fn` com retry exponencial em erros classificados como retryable.
  *
  * Backoff padrão: 500ms, 2000ms, 8000ms (3 tentativas após a inicial).

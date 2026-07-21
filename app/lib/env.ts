@@ -89,6 +89,31 @@ const envSchema = z.object({
   OLX_SANDBOX: z.enum(["true", "false"]).optional().default("false"),
   // Sem OLX_WEBHOOK_SECRET: OLX não tem webhook de venda na fase 1.
 
+  // Facebook/Meta (Commerce Catalog via Graph API). TODAS opcionais de propósito,
+  // mesmo padrão dos blocos Magalu/OLX: a integração fica atrás da flag
+  // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED e env.ts é exit-on-error. Os
+  // serviços facebook-* validam a presença em runtime (validateFacebookConfig).
+  FACEBOOK_APP_ID: z.string().optional(),
+  FACEBOOK_APP_SECRET: z.string().optional(),
+  // ID do Catálogo (Commerce Manager) — alvo do items_batch.
+  FACEBOOK_CATALOG_ID: z.string().optional(),
+  FACEBOOK_GRAPH_BASE_URL: optionalUrlIsh,
+  FACEBOOK_DIALOG_BASE_URL: optionalUrlIsh,
+  FACEBOOK_API_VERSION: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v === "" || /^v\d+\.\d+$/.test(v), {
+      message: "FACEBOOK_API_VERSION deve ter o formato vNN.N (ex.: v25.0)",
+    }),
+  FACEBOOK_REDIRECT_URI: optionalUrlIsh,
+  // Escopos OAuth separados por vírgula. Vazio → default das constantes.
+  FACEBOOK_SCOPES: z.string().optional(),
+  FACEBOOK_CURRENCY: z.string().optional(),
+  // URL base da página de produto (item de catálogo EXIGE `link`). Pendente de
+  // decisão do cliente — sem ela o build de payload falha com erro claro.
+  FB_PRODUCT_URL_BASE: optionalUrlIsh,
+  // Sem FACEBOOK_WEBHOOK_SECRET: checkout fora da plataforma, sem webhook de venda.
+
   // WhatsApp (Cloud API oficial da Meta). TODAS opcionais de propósito, mesmo
   // padrão do bloco Magalu acima: o módulo fica atrás da flag
   // NEXT_PUBLIC_WHATSAPP_MODULE_ENABLED + gate por usuário, e env.ts é

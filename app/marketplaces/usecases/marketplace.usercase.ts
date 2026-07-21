@@ -3,6 +3,7 @@ import { MLApiService } from "../services/ml-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { OlxOAuthService } from "../services/olx-oauth.service";
+import { FacebookOAuthService } from "../services/facebook-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { MarketplaceAccountService } from "../services/marketplace-account.service";
@@ -1029,6 +1030,159 @@ export class MarketplaceUseCase {
         connected: account.status === AccountStatus.ACTIVE,
         account,
         message: "Conta conectada",
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        message: `Erro ao verificar status: ${error instanceof Error ? error.message : error}`,
+      };
+    }
+  }
+
+  // ====================================================================
+  // MÉTODOS PARA FACEBOOK/META (Commerce Catalog)
+  // ====================================================================
+  //
+  // ⚠️ Diferente da OLX: o token da Meta EXPIRA (~60d). Guardamos o long-lived
+  // token + `expiresAt` REAL. NÃO há refresh_token clássico — quando expira, o
+  // seller refaz o OAuth (re-consent). Como o schema exige `refreshToken`,
+  // gravamos "" (placeholder). O externalUserId vem do /me (id da conta Meta).
+
+  /** Inicia o fluxo OAuth do Facebook (Meta Graph, scope catalog_management). */
+  static initiateFacebookOAuth(userId?: string): {
+    authUrl: string;
+    state: string;
+  } {
+    const oauthData = FacebookOAuthService.generateAuthUrl(userId);
+    return { authUrl: oauthData.authUrl, state: oauthData.state };
+  }
+
+  /**
+   * Processa o callback OAuth do Facebook. Espelha handleOlxOAuthCallback, mas
+   * com `expiresAt` REAL (long-lived ~60d) e externalUserId do /me (id Meta).
+   */
+  static async handleFacebookOAuthCallback(data: {
+    code: string;
+    state: string;
+    userId?: string;
+  }) {
+    try {
+      const stateValidation = FacebookOAuthService.validateState(data.state);
+      if (!stateValidation.valid) {
+        throw new Error("State inválido ou expirado. Reinicie a autenticação.");
+      }
+
+      const userId = data.userId || stateValidation.userId;
+      if (!userId) {
+        throw new Error("userId não encontrado. Faça login e tente novamente.");
+      }
+
+      const { accessToken, expiresAt } =
+        await FacebookOAuthService.exchangeCodeForToken(data.code);
+
+      // Identifica a conta via /me (best-effort). O id da conta Meta é o
+      // externalUserId (chave estável). Sem ele, cai num fallback pelo userId.
+      let externalUserId = "";
+      let accountName = "Facebook";
+      try {
+        const info = await FacebookOAuthService.fetchMe(accessToken);
+        externalUserId = String(info.id ?? "").trim();
+        if (info.name) accountName = `Facebook ${info.name}`;
+      } catch (infoErr) {
+        console.warn(
+          "[handleFacebookOAuthCallback] /me falhou:",
+          infoErr instanceof Error ? infoErr.message : String(infoErr),
+        );
+      }
+      if (!externalUserId) {
+        externalUserId = `facebook-${userId}`;
+      }
+
+      // Bloqueia vinculação da mesma conta Meta a outro usuário do Dexo.
+      const conflictingAccounts =
+        await MarketplaceRepository.findAllByExternalUserId(
+          externalUserId,
+          Platform.FACEBOOK,
+        );
+      const conflictingAccount = conflictingAccounts.find(
+        (account) => account.userId !== userId,
+      );
+      if (conflictingAccount) {
+        throw new Error(
+          "Esta conta do Facebook já está vinculada a outro usuário. Desconecte a conta anterior antes de continuar.",
+        );
+      }
+
+      const existingAccount =
+        await MarketplaceRepository.findByUserAndExternalUserId(
+          userId,
+          externalUserId,
+          Platform.FACEBOOK,
+        );
+
+      let account;
+      if (existingAccount) {
+        account = await MarketplaceRepository.updateTokens(existingAccount.id, {
+          accessToken,
+          refreshToken: "", // Meta não tem refresh_token clássico
+          expiresAt,
+        });
+        if (account.status !== AccountStatus.ACTIVE) {
+          account = await MarketplaceRepository.updateStatus(
+            existingAccount.id,
+            AccountStatus.ACTIVE,
+          );
+        }
+      } else {
+        account = await MarketplaceRepository.createAccount({
+          userId,
+          platform: Platform.FACEBOOK,
+          accountName,
+          externalUserId,
+          accessToken,
+          refreshToken: "", // Meta não tem refresh_token clássico
+          expiresAt,
+          autoImportListingsSince: new Date(),
+        });
+      }
+
+      return account;
+    } catch (error) {
+      throw new Error(
+        `Erro ao processar callback OAuth Facebook: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
+
+  /**
+   * Status da conta Facebook. Reporta se há conta ACTIVE e se o token ainda é
+   * válido (expiresAt no futuro). Sem refresh: token expirado ⇒ reconectar.
+   */
+  static async getFacebookAccountStatus(
+    userId: string,
+    accountId?: string,
+  ): Promise<{ connected: boolean; account?: any; message: string }> {
+    try {
+      const account = accountId
+        ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+        : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+            userId,
+            Platform.FACEBOOK,
+          );
+
+      if (!account) {
+        return { connected: false, message: "Conta Facebook não conectada" };
+      }
+
+      const expired =
+        account.expiresAt != null && new Date(account.expiresAt) <= new Date();
+
+      return {
+        connected: account.status === AccountStatus.ACTIVE && !expired,
+        account,
+        message: expired
+          ? "Token do Facebook expirado — reconecte a conta"
+          : "Conta conectada",
       };
     } catch (error) {
       return {

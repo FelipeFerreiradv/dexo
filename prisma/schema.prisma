@@ -412,6 +412,12 @@ model ProductListing {
   // `permalink`. Só populado para listings da plataforma OLX.
   olxListId            String?
 
+  // Facebook/Meta Commerce Catalog: id numérico do item no catálogo (devolvido
+  // no items_batch). O `retailer_id` enviado ao catálogo = o SKU, guardado em
+  // `externalListingId`; o permalink (quando houver) vai em `permalink`. Só
+  // populado para listings da plataforma FACEBOOK.
+  fbCatalogItemId      String?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
@@ -822,6 +828,7 @@ enum Platform {
   SHOPEE
   MAGALU
   OLX
+  FACEBOOK
 }
 
 enum AccountStatus {

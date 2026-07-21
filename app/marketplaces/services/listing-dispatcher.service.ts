@@ -19,7 +19,8 @@ import type {
 } from "../repositories/bulk-listing-job.repository";
 import { SystemLogService } from "../../services/system-log.service";
 
-export type ListingPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX";
+export type ListingPlatform =
+  "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 export interface ListingDispatchRequest {
   platform: ListingPlatform;
@@ -379,6 +380,36 @@ export class ListingDispatcher {
         }
         return;
       }
+      if (req.platform === "FACEBOOK") {
+        const result = await ListingUseCase.createFacebookListing(
+          userId,
+          productId,
+          req.categoryId,
+          req.accountId,
+        );
+        this.logDispatchResult({
+          userId,
+          productId,
+          req,
+          success: !!result.success,
+          listingId: (result as any).listingId,
+          externalListingId: (result as any).externalListingId,
+          error: result.success ? null : result.error || null,
+        });
+        if (!result.success) {
+          console.error(
+            `[ListingDispatcher] Facebook listing failed (product=${productId}, account=${req.accountId}): ${result.error}`,
+          );
+        } else {
+          this.logCreatedListing(
+            actorId,
+            (result as any).listingId,
+            productId,
+            "FACEBOOK",
+          );
+        }
+        return;
+      }
     } catch (err) {
       console.error(
         `[ListingDispatcher] ${req.platform} error (product=${productId}, account=${req.accountId}):`,
@@ -455,7 +486,7 @@ export class ListingDispatcher {
     actorId: string | undefined,
     listingId: string | undefined,
     productId: string,
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK",
   ): void {
     if (!actorId || !listingId) return;
     const marketplace =
@@ -465,7 +496,9 @@ export class ListingDispatcher {
           ? "Magalu"
           : platform === "OLX"
             ? "OLX"
-            : "MercadoLivre";
+            : platform === "FACEBOOK"
+              ? "Facebook"
+              : "MercadoLivre";
     void SystemLogService.logListingCreate(
       actorId,
       listingId,
@@ -652,6 +685,13 @@ export class ListingDispatcher {
           userId,
           productId,
           categoryId,
+          req.accountId,
+        );
+      } else if (req.platform === "FACEBOOK") {
+        createResult = await ListingUseCase.createFacebookListing(
+          userId,
+          productId,
+          req.categoryId,
           req.accountId,
         );
       } else {
