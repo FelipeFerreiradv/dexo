@@ -252,31 +252,73 @@ Se o log do app mostrar `socket hang up` ou `read ECONNRESET` vindos do sidecar,
 fechou a conexão no meio, ou seja: morreu e reiniciou.
 
 ```bash
-docker ps --filter name=dexo-rembg --format '{{.Status}}'
-docker inspect dexo-rembg --format 'restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}'
+docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'
 docker stats --no-stream dexo-rembg
+free -g
+
+# ESTE é o que decide. Os demais só dão indício.
 dmesg -T | grep -iE 'oom|killed process' | tail -20
 ```
 
-**Medido em 2026-07-21:** `RestartCount = 159` e **10,99 GiB / 12 GiB (91,5%)** de
-memória. O `mem_limit: 12g` do `docker-compose.yml` foi dimensionado para o pico
-documentado de ~8,5 GB do BiRefNet — o consumo real cresceu bem acima disso.
+> ⚠️ **`{{.State.OOMKilled}}` e `{{.State.ExitCode}}` NÃO servem como histórico.**
+> Eles descrevem a execução **atual**. Como o `restart: unless-stopped` sobe o
+> container de novo em segundos, você lê `oom=false exit=0` mesmo tendo havido
+> quatro OOM kills na última hora. Idem `docker ps`: mostra `Up ... (healthy)`
+> entre os kills. **O `dmesg` é a única fonte confiável de histórico.**
 
-**Como ler:**
+**Como ler o `dmesg`:**
 
 | Evidência | Conclusão |
 |---|---|
-| `oom=true` ou `Killed process` no `dmesg` | Estourou o `mem_limit`. Subir o limite ou reciclar o container. |
-| `RestartCount` subindo com `oom=false` | Crash do processo — ver `docker logs dexo-rembg`. |
-| Memória perto do limite e subindo ao longo dos dias | Vazamento/fragmentação da arena do onnxruntime → reciclagem periódica resolve na prática. |
+| `constraint=CONSTRAINT_MEMCG` + `oom_memcg=/system.slice/docker-<id>` | Estourou o **`mem_limit` do container**. O host está bem. |
+| `constraint=CONSTRAINT_NONE` | Estourou a RAM do **HOST** — isso derruba o app inteiro, é muito mais grave. |
+| `anon-rss` da linha `Killed process` | O working set real no instante do kill. Compare com o `mem_limit`. |
+| `RestartCount` subindo sem nada no `dmesg` | Crash do processo, não OOM — ver `docker logs dexo-rembg`. |
 
-> O host é KVM8/32 GB e o app Node também mora nele. **Não** suba o `mem_limit`
-> sem conferir a folga real (`free -g`) — e lembre que `REMBG_WORKERS=2` já foi
-> testado e **descartado** (2 inferências ≈ 20 GB, worker OOM-killed).
+**Medido em 2026-07-21 — OOM do cgroup CONFIRMADO:**
 
-Enquanto isso não é resolvido, o impacto no usuário é **degradação graceful**
+- `RestartCount = 159`; **4 kills em 53 min** (11:46, 12:11, 12:13, 12:39).
+- `anon-rss` no kill: **~11,9 GiB** contra o `mem_limit` de 12 GiB.
+- `constraint=CONSTRAINT_MEMCG` → é o limite do container, **não** o do host.
+- Host folgado: 31 GiB totais, **16 GiB disponíveis**.
+- `total-vm ~23,3 GB` contra `anon-rss ~11,9 GiB` — reserva virtual grande,
+  assinatura típica de arena de alocador.
+
+Ou seja: o comentário do `docker-compose.yml` que diz *"pico ~8,5 GB; 12g cobre
+com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
+
+> ⚠️ **NÃO suba o `mem_limit` como primeira ação.** Se o crescimento for
+> ilimitado, subir o limite apenas **move o OOM do container para o HOST** — e aí
+> em vez de um container reiniciando (degradação graceful) você derruba API,
+> frontend e workers de uma vez. Trate a causa primeiro. Lembre também que
+> `REMBG_WORKERS=2` já foi testado e **descartado** (~20 GB, OOM).
+
+**Ordem de investigação da causa (da menor para a maior fricção):**
+
+1. **Fragmentação do malloc do glibc.** `OMP_NUM_THREADS=8` sem `MALLOC_ARENA_MAX`
+   faz o glibc criar muitas arenas por thread, cada uma fragmentando, e o RSS
+   nunca volta. Mitigação **só por env, sem rebuild**, no `docker-compose.yml`:
+   `MALLOC_ARENA_MAX: "2"` e `MALLOC_TRIM_THRESHOLD_: "134217728"`.
+2. **Arena do ONNX Runtime.** `enable_cpu_mem_arena` é `True` por default e a
+   estratégia de extensão dobra sem devolver memória. Exige rebuild: setar
+   `so.enable_cpu_mem_arena = False` no `_build_tuned_session` de
+   `infra/rembg/app.py`, atrás de flag. É troca de **alocador**, não de
+   matemática — a saída é bit-idêntica —, mas rode o gate SSIM assim mesmo.
+3. **Reciclagem controlada** do worker após N requisições: pior que corrigir a
+   causa, porém muito melhor que o OOM atual, porque termina a resposta antes de
+   sair em vez de matar a conexão no meio.
+
+Aplicar mudança de env do compose (sem rebuild):
+
+```bash
+cd /var/www/dexo
+docker compose --env-file /dev/null up -d rembg   # o .env do app quebra o parser do compose
+docker stats --no-stream dexo-rembg               # acompanhar por algumas horas
+```
+
+Enquanto a causa não é tratada, o impacto no usuário é **degradação graceful**
 (imagem otimizada + aviso), não perda de imagem — o orçamento por requisição já
-cobre esse caso.
+cobre esse caso. É melhoria de capacidade, não incêndio.
 
 ## Verificações finais (checklist)
 
@@ -290,5 +332,6 @@ cobre esse caso.
       recortado, ou sai a imagem otimizada **com aviso** — nunca "falhou".
 - [ ] `curl -i` num erro do nginx traz **um único** `Access-Control-Allow-Origin`.
 - [ ] `pm2 flush dexo-api` + upload de teste ⇒ **nenhum** `sidecar rembg falhou`.
-- [ ] `docker inspect dexo-rembg` — `RestartCount` estável e memória com folga.
+- [ ] `dmesg -T | grep -i oom` — sem kills recentes do `dexo-rembg` (o
+      `docker ps`/`OOMKilled` NÃO detectam isso; ver 8.5).
 - [ ] Snapshot/backup recente existe.
