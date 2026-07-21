@@ -339,4 +339,32 @@ describe("POST /v1/images/process", () => {
     expect(res.headers["x-image-width"]).toBeUndefined();
     expect(res.headers["x-image-height"]).toBeUndefined();
   });
+
+  it('usa a lane "public" (cota reservada, não starva o modal interno)', async () => {
+    const file = await makeImage(800, 600, "jpeg");
+    const processed = await makeImage(800, 600, "png");
+    processUploadedImageMock.mockResolvedValue({
+      processed,
+      format: "png",
+      removedBackground: true,
+    });
+
+    const { headers, body } = buildForm({
+      file,
+      filename: "p.jpg",
+      mimetype: "image/jpeg",
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/images/process",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(processUploadedImageMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ lane: "public" }),
+    );
+  });
 });

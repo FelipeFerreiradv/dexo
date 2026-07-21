@@ -5,6 +5,7 @@ import {
   ensureMLMinImageSize,
   processUploadedImage,
 } from "../app/marketplaces/services/image-resize.service";
+import { __resetRembgGate } from "../app/marketplaces/services/rembg-gate";
 
 // Helper: cria uma imagem PNG sintética de dimensões controladas, opcionalmente com alpha.
 async function makeImage(
@@ -69,6 +70,12 @@ describe("processUploadedImage", () => {
   beforeEach(() => {
     delete process.env.REMBG_SIDECAR_URL;
     delete process.env.REMBG_ENABLED;
+    delete process.env.REMBG_MAX_CONCURRENCY;
+    delete process.env.REMBG_PUBLIC_MAX_CONCURRENCY;
+    delete process.env.REMBG_GATE_DISABLED;
+    // O gate é um singleton de módulo: sem reset, a contagem de slots vaza
+    // entre casos e eles passam isolados mas quebram na ordem da suíte.
+    __resetRembgGate();
   });
 
   it("encoda WebP otimizado quando removeBackground=false", async () => {
@@ -236,5 +243,233 @@ describe("processUploadedImage", () => {
     expect(fetcher).not.toHaveBeenCalled();
     expect(result.removedBackground).toBe(false);
     expect(result.shadowApplied).toBeFalsy();
+  });
+});
+
+/**
+ * Regressão do incidente do 504-sem-CORS: o handler precisa SEMPRE responder
+ * dentro do orçamento, degradando para WebP+warning, em vez de pendurar até o
+ * nginx cortar (504 que o browser nem consegue ler, por falta de CORS).
+ */
+describe("processUploadedImage — orçamento (deadline)", () => {
+  beforeEach(() => {
+    delete process.env.REMBG_SIDECAR_URL;
+    delete process.env.REMBG_ENABLED;
+    delete process.env.REMBG_GATE_DISABLED;
+    __resetRembgGate();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("com o orçamento esgotado NÃO chama o sidecar e degrada na hora", async () => {
+    const buf = await makeImage(1200, 900);
+    const fetcher = vi.fn();
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      addShadow: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() - 1_000, // deadline já passou
+    });
+
+    // Crítico: disparar uma inferência de ~9s que ninguém vai esperar só
+    // rouba o único worker do sidecar de quem ainda pode ganhar.
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result.removedBackground).toBe(false);
+    expect(result.format).toBe("webp");
+    expect(result.warning).toBeTruthy();
+  });
+
+  it("repassa ao fetcher um timeout limitado pelo deadline", async () => {
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+    const fetcher = vi.fn().mockResolvedValue(cutout);
+
+    await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 15_000,
+    });
+
+    const passed = fetcher.mock.calls[0][1] as { timeoutMs: number };
+    expect(passed.timeoutMs).toBeGreaterThan(0);
+    // 15s de orçamento menos a reserva do fallback — bem abaixo dos 60s do env.
+    expect(passed.timeoutMs).toBeLessThanOrEqual(12_000);
+  });
+
+  it("degrada DENTRO do orçamento quando o sidecar estoura o tempo", async () => {
+    const buf = await makeImage(1200, 900);
+    // Simula o sidecar respeitando o timeout que recebeu (como o axios faz).
+    const fetcher = vi.fn(
+      (_b: Buffer, o?: { timeoutMs?: number }) =>
+        new Promise<Buffer>((_resolve, reject) => {
+          setTimeout(
+            () => reject(new Error("timeout of Xms exceeded")),
+            Math.min(o?.timeoutMs ?? 60_000, 50),
+          );
+        }),
+    );
+
+    const startedAt = Date.now();
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      addShadow: true,
+      rembgFetcher: fetcher,
+      // Acima de RESERVE + MIN_USEFUL, para o sidecar ser mesmo chamado.
+      deadlineAt: Date.now() + 11_000,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.format).toBe("webp");
+    expect(result.removedBackground).toBe(false);
+    expect(result.warning).toBeTruthy();
+    expect(elapsed).toBeLessThan(11_000);
+  });
+});
+
+describe("processUploadedImage — gate de concorrência do sidecar", () => {
+  beforeEach(() => {
+    delete process.env.REMBG_SIDECAR_URL;
+    delete process.env.REMBG_ENABLED;
+    delete process.env.REMBG_GATE_DISABLED;
+    __resetRembgGate();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  /** Fetcher que registra o pico de chamadas simultâneas. */
+  function makeTrackingFetcher(cutout: Buffer, holdMs = 40) {
+    let inFlight = 0;
+    let peak = 0;
+    const fetcher = vi.fn(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, holdMs));
+      inFlight -= 1;
+      return cutout;
+    });
+    return { fetcher, getPeak: () => peak };
+  }
+
+  it("nunca deixa mais que REMBG_MAX_CONCURRENCY inferências em voo", async () => {
+    process.env.REMBG_MAX_CONCURRENCY = "2";
+    __resetRembgGate();
+
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+    const { fetcher, getPeak } = makeTrackingFetcher(cutout);
+
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        processUploadedImage(buf, {
+          removeBackground: true,
+          rembgFetcher: fetcher,
+          deadlineAt: Date.now() + 30_000,
+        }),
+      ),
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(getPeak()).toBeLessThanOrEqual(2);
+  });
+
+  it("a lane pública fica limitada à cota reservada, deixando slot pro modal", async () => {
+    process.env.REMBG_MAX_CONCURRENCY = "2";
+    process.env.REMBG_PUBLIC_MAX_CONCURRENCY = "1";
+    __resetRembgGate();
+
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+
+    let publicInFlight = 0;
+    let publicPeak = 0;
+    const fetcher = vi.fn(async (_b: Buffer, o?: { addShadow?: boolean }) => {
+      // `addShadow` é usado só como marcador da lane pública neste teste.
+      const isPublic = o?.addShadow === true;
+      if (isPublic) {
+        publicInFlight += 1;
+        publicPeak = Math.max(publicPeak, publicInFlight);
+      }
+      await new Promise((r) => setTimeout(r, 40));
+      if (isPublic) publicInFlight -= 1;
+      return cutout;
+    });
+
+    await Promise.all([
+      ...Array.from({ length: 4 }, () =>
+        processUploadedImage(buf, {
+          removeBackground: true,
+          addShadow: true,
+          lane: "public",
+          rembgFetcher: fetcher,
+          deadlineAt: Date.now() + 30_000,
+        }),
+      ),
+      ...Array.from({ length: 2 }, () =>
+        processUploadedImage(buf, {
+          removeBackground: true,
+          lane: "internal",
+          rembgFetcher: fetcher,
+          deadlineAt: Date.now() + 30_000,
+        }),
+      ),
+    ]);
+
+    // O Desmont Hub não consegue ocupar os dois slots: sempre sobra um para
+    // o upload do modal.
+    expect(publicPeak).toBeLessThanOrEqual(1);
+  });
+
+  it("removeBackground=false NÃO passa pelo gate (blast radius zero)", async () => {
+    process.env.REMBG_MAX_CONCURRENCY = "1";
+    __resetRembgGate();
+
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+
+    // Segura o único slot com um recorte lento...
+    let releaseHold: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      releaseHold = r;
+    });
+    const slowFetcher = vi.fn(async () => {
+      await held;
+      return cutout;
+    });
+    const holding = processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: slowFetcher,
+      deadlineAt: Date.now() + 30_000,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // ...e confirma que o caminho sem recorte (sharp puro) passa direto.
+    const fast = await processUploadedImage(buf, { removeBackground: false });
+    expect(fast.format).toBe("webp");
+
+    releaseHold();
+    await holding;
+  });
+
+  it("REMBG_GATE_DISABLED desliga o gate (killswitch)", async () => {
+    process.env.REMBG_MAX_CONCURRENCY = "1";
+    process.env.REMBG_GATE_DISABLED = "1";
+    __resetRembgGate();
+
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+    const { fetcher, getPeak } = makeTrackingFetcher(cutout);
+
+    await Promise.all(
+      Array.from({ length: 3 }, () =>
+        processUploadedImage(buf, {
+          removeBackground: true,
+          rembgFetcher: fetcher,
+          deadlineAt: Date.now() + 30_000,
+        }),
+      ),
+    );
+
+    // Sem gate, as 3 correm juntas — comportamento anterior à mudança.
+    expect(getPeak()).toBe(3);
   });
 });

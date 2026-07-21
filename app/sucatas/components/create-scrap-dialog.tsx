@@ -881,6 +881,12 @@ export function CreateScrapDialog({
                 value={form.imageUrls}
                 onChange={(urls) => updateField("imageUrls", urls)}
                 onError={(msg) => setError(msg)}
+                // Sem isto, a degradação graceful (imagem sem recorte) chegava
+                // silenciosa: o usuário recebia a foto com fundo achando que o
+                // recorte tinha sido aplicado. Reusa a faixa de erro (única
+                // disponível aqui), mas prefixada — não é falha, o upload deu
+                // certo.
+                onWarning={(msg) => setError(`Aviso: ${msg}`)}
                 maxImages={20}
               />
             </div>
