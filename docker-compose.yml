@@ -33,7 +33,29 @@ services:
       # segue 8 (so afeta cv2/numpy do refino/sombra, intocados).
       REMBG_ORT_TUNE: "true"
       REMBG_INTRA_OP_THREADS: "6"
-    # Pico ~8.5GB (1 worker birefnet); 12g cobre c/ folga no KVM8/32GB.
+      # Limita as arenas do malloc do glibc (a imagem é python:3.11-slim =>
+      # Debian/glibc; em Alpine/musl isto seria inerte).
+      #
+      # POR QUÊ: o glibc cria até 8 x nº de núcleos arenas, uma por thread que
+      # aloca. Com OMP_NUM_THREADS=8 + intra_op=6, cada arena fragmenta por
+      # conta própria e o RSS nunca volta pro SO. Em 2026-07-21 o container
+      # apanhou 4 OOM kills em 53 min com anon-rss ~11,9GiB contra o limite de
+      # 12g (dmesg: constraint=CONSTRAINT_MEMCG) — o host estava folgado, era o
+      # cgroup do container. Cada kill mata a requisição em voo, o que aparecia
+      # no log do app como `socket hang up` / `read ECONNRESET`.
+      #
+      # 2 arenas é o valor consagrado para workload multi-thread com alocações
+      # GRANDES e POUCAS (tensores do ONNX, arrays do cv2/numpy do refino e da
+      # sombra) — não há disputa relevante de malloc nesse perfil.
+      #
+      # Aplicar SEM rebuild: docker compose --env-file /dev/null up -d rembg
+      # Reverter: apagar esta linha + o mesmo comando.
+      MALLOC_ARENA_MAX: "2"
+    # ⚠️ NÃO subir sem tratar a causa: se o crescimento for ilimitado, subir o
+    # limite move o OOM do container para o HOST — e aí em vez de um container
+    # reiniciando (degradação graceful) caem API, frontend e workers juntos.
+    # O pico real medido (~11,9GiB) é ~40% acima dos ~8.5GB para os quais este
+    # 12g foi dimensionado. Ver Passo 8.5 do infra/hardening/RUNBOOK_VPS.md.
     mem_limit: 12g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]

@@ -296,9 +296,24 @@ com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
 **Ordem de investigação da causa (da menor para a maior fricção):**
 
 1. **Fragmentação do malloc do glibc.** `OMP_NUM_THREADS=8` sem `MALLOC_ARENA_MAX`
-   faz o glibc criar muitas arenas por thread, cada uma fragmentando, e o RSS
-   nunca volta. Mitigação **só por env, sem rebuild**, no `docker-compose.yml`:
-   `MALLOC_ARENA_MAX: "2"` e `MALLOC_TRIM_THRESHOLD_: "134217728"`.
+   faz o glibc criar até `8 × núcleos` arenas, uma por thread que aloca; cada uma
+   fragmenta por conta própria e o RSS nunca volta pro SO. Mitigação **só por env,
+   sem rebuild**, já aplicada no `docker-compose.yml`: `MALLOC_ARENA_MAX: "2"`.
+   (Só vale porque a imagem é `python:3.11-slim` = Debian/**glibc**; em
+   Alpine/musl seria inerte.)
+
+   > **Correção de uma recomendação anterior deste runbook:** uma versão prévia
+   > sugeria também `MALLOC_TRIM_THRESHOLD_: "134217728"`. **Isso está na direção
+   > errada** — o `M_TRIM_THRESHOLD` é o mínimo de espaço livre no topo do heap
+   > *antes* de devolver ao SO, então um valor ALTO faz o glibc devolver MENOS
+   > memória, não mais. Não use.
+
+   1b. Se `MALLOC_ARENA_MAX` sozinho não bastar, o próximo lever é
+   `MALLOC_MMAP_THRESHOLD_` explícito (ex.: `"131072"`). Ele ataca outro
+   mecanismo: ao liberar um bloco mmap'ado, o glibc **sobe dinamicamente** o
+   limiar de mmap (até 32 MB) e passa a servir blocos grandes pelo heap via
+   `sbrk` — e esses **não** voltam pro SO no `free`. Fixar o valor desliga esse
+   ratchet. Também é só env.
 2. **Arena do ONNX Runtime.** `enable_cpu_mem_arena` é `True` por default e a
    estratégia de extensão dobra sem devolver memória. Exige rebuild: setar
    `so.enable_cpu_mem_arena = False` no `_build_tuned_session` de
@@ -308,13 +323,44 @@ com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
    causa, porém muito melhor que o OOM atual, porque termina a resposta antes de
    sair em vez de matar a conexão no meio.
 
-Aplicar mudança de env do compose (sem rebuild):
+#### 8.6 — Aplicar e MEDIR o `MALLOC_ARENA_MAX`
+
+**Antes** de aplicar, anote a linha de base (senão não dá para saber se melhorou):
 
 ```bash
-cd /var/www/dexo
-docker compose --env-file /dev/null up -d rembg   # o .env do app quebra o parser do compose
-docker stats --no-stream dexo-rembg               # acompanhar por algumas horas
+docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'
+dmesg -T | grep -c 'Killed process.*uvicorn'
+date
 ```
+
+Aplicar (o `git pull` já traz o compose novo; **não** precisa de rebuild):
+
+```bash
+cd /var/www/dexo && git pull
+# --env-file /dev/null: o .env do app quebra o parser do compose (gotcha conhecido).
+# O compose só tem o serviço rembg e não usa ${...}, então ignorar o .env é seguro.
+docker compose --env-file /dev/null up -d rembg
+docker exec dexo-rembg printenv MALLOC_ARENA_MAX     # tem que imprimir 2
+curl -s localhost:8000/health                        # sidecar de pé
+```
+
+**Medir** ao longo de algumas horas de uso real (o RSS cresce com a carga, não com
+o tempo ocioso — sem upload não há o que medir):
+
+```bash
+watch -n 300 "docker stats --no-stream --format '{{.MemUsage}} {{.MemPerc}}' dexo-rembg"
+dmesg -T | grep 'Killed process.*uvicorn' | tail -5
+docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'
+```
+
+| Resultado após algumas horas de uso | Leitura |
+|---|---|
+| RSS estabiliza bem abaixo de 12 GiB e `RestartCount` para de subir | ✅ era fragmentação de arena — resolvido |
+| RSS ainda escala até ~11,9 GiB e os kills continuam | ❌ o dominante é a arena do ONNX — ir para o item 2 (rebuild) |
+| RSS menor, mas ainda com kills esporádicos | Parcial — tentar o **1b** (`MALLOC_MMAP_THRESHOLD_`) antes do rebuild |
+
+**Rollback** (instantâneo, sem rebuild): remover a linha `MALLOC_ARENA_MAX` do
+`docker-compose.yml` e repetir o `docker compose --env-file /dev/null up -d rembg`.
 
 Enquanto a causa não é tratada, o impacto no usuário é **degradação graceful**
 (imagem otimizada + aviso), não perda de imagem — o orçamento por requisição já
