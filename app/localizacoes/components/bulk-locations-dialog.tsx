@@ -68,9 +68,14 @@ const createEmptyRow = (): BulkRow => ({
 const pluralizeLocations = (total: number): string =>
   `${total} localização${total === 1 ? "" : "ões"}`;
 
-/** Colunas da faixa: prefixo · de · até · dígitos · cap. · descrição · mãe · remover. */
-const GRID_COLS =
-  "lg:grid-cols-[minmax(0,1fr)_3.5rem_3.5rem_4rem_4rem_minmax(0,11rem)_minmax(0,11rem)_auto]";
+/**
+ * A faixa ocupa DUAS linhas de campos em vez de espremer sete colunas numa só:
+ * em cima o prefixo e os números (curtos), embaixo descrição e localização-mãe,
+ * que precisam de largura para o texto não truncar. Numa única linha o combobox
+ * de mãe encostava no botão de remover.
+ */
+const GRID_TOP =
+  "md:grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_4.5rem_5rem_auto]";
 
 /**
  * Criação de localizações em massa a partir de faixas (PRT-1 … PRT-40).
@@ -222,7 +227,7 @@ export function BulkLocationsDialog({
             Criar em massa
           </Button>
         </DialogTrigger>
-        <DialogContent className="sm:max-w-5xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Layers className="size-5" />
@@ -236,18 +241,6 @@ export function BulkLocationsDialog({
 
           <div className="max-h-[55vh] space-y-3 overflow-y-auto py-1">
             <div className="space-y-3">
-              {/* Cabeçalho de colunas (desktop) */}
-              <div className={cn("hidden gap-2 px-1 lg:grid", GRID_COLS)}>
-                <span className="text-xs font-medium text-muted-foreground">Prefixo</span>
-                <span className="text-xs font-medium text-muted-foreground">De</span>
-                <span className="text-xs font-medium text-muted-foreground">Até</span>
-                <span className="text-xs font-medium text-muted-foreground">Díg.</span>
-                <span className="text-xs font-medium text-muted-foreground">Cap.</span>
-                <span className="text-xs font-medium text-muted-foreground">Descrição</span>
-                <span className="text-xs font-medium text-muted-foreground">Dentro de</span>
-                <span className="w-9" aria-hidden />
-              </div>
-
               {rows.map((row, index) => {
                 const rv = validation.rows[index];
                 // Só sinaliza erro numa linha "suja", para não pintar de
@@ -261,13 +254,13 @@ export function BulkLocationsDialog({
                 return (
                   <div
                     key={row.rowId}
-                    className="space-y-2 rounded-lg border p-3 lg:space-y-1 lg:rounded-none lg:border-0 lg:p-0"
+                    className="space-y-2 rounded-lg border p-3 md:space-y-1.5"
                   >
-                    <div className={cn("grid grid-cols-1 gap-2 lg:items-center", GRID_COLS)}>
+                    <div className={cn("grid grid-cols-1 items-end gap-2", GRID_TOP)}>
                       <div className="grid min-w-0 gap-1">
                         <Label
                           htmlFor={`${row.rowId}-prefix`}
-                          className="text-xs text-muted-foreground lg:hidden"
+                          className="text-xs text-muted-foreground"
                         >
                           Prefixo
                         </Label>
@@ -285,12 +278,12 @@ export function BulkLocationsDialog({
                       </div>
 
                       {/* De · Até · Dígitos ficam lado a lado no mobile e viram
-                          colunas soltas no desktop (lg:contents). */}
-                      <div className="grid grid-cols-3 gap-2 lg:contents">
+                          colunas soltas no desktop (md:contents). */}
+                      <div className="grid grid-cols-3 gap-2 md:contents">
                         <div className="grid gap-1">
                           <Label
                             htmlFor={`${row.rowId}-start`}
-                            className="text-xs text-muted-foreground lg:hidden"
+                            className="text-xs text-muted-foreground"
                           >
                             De
                           </Label>
@@ -310,7 +303,7 @@ export function BulkLocationsDialog({
                         <div className="grid gap-1">
                           <Label
                             htmlFor={`${row.rowId}-end`}
-                            className="text-xs text-muted-foreground lg:hidden"
+                            className="text-xs text-muted-foreground"
                           >
                             Até
                           </Label>
@@ -332,7 +325,7 @@ export function BulkLocationsDialog({
                         <div className="grid gap-1">
                           <Label
                             htmlFor={`${row.rowId}-padding`}
-                            className="text-xs text-muted-foreground lg:hidden"
+                            className="text-xs text-muted-foreground"
                           >
                             Dígitos
                           </Label>
@@ -353,9 +346,9 @@ export function BulkLocationsDialog({
                       <div className="grid gap-1">
                         <Label
                           htmlFor={`${row.rowId}-capacity`}
-                          className="text-xs text-muted-foreground lg:hidden"
+                          className="text-xs text-muted-foreground"
                         >
-                          Capacidade (0 = sem limite)
+                          Cap.
                         </Label>
                         <Input
                           id={`${row.rowId}-capacity`}
@@ -370,10 +363,27 @@ export function BulkLocationsDialog({
                         />
                       </div>
 
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 justify-self-end text-muted-foreground hover:text-destructive"
+                        disabled={rows.length === 1}
+                        onClick={() => removeRow(row.rowId)}
+                      >
+                        <Trash2 className="size-4" />
+                        <span className="sr-only">Remover faixa</span>
+                      </Button>
+                    </div>
+
+                    {/* Segunda linha: os dois campos de texto largo. Ficam fora
+                        do grid de cima para o combobox de mãe ter espaço real
+                        e nunca encostar no botão de remover. */}
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <div className="grid min-w-0 gap-1">
                         <Label
                           htmlFor={`${row.rowId}-description`}
-                          className="text-xs text-muted-foreground lg:hidden"
+                          className="text-xs text-muted-foreground"
                         >
                           Descrição
                         </Label>
@@ -391,12 +401,16 @@ export function BulkLocationsDialog({
                       </div>
 
                       <div className="grid min-w-0 gap-1">
-                        <Label className="text-xs text-muted-foreground lg:hidden">
+                        <Label
+                          htmlFor={`${row.rowId}-parent`}
+                          className="text-xs text-muted-foreground"
+                        >
                           Dentro de
                         </Label>
                         {/* allowFull: capacidade conta produtos, não filhas —
                             uma localização lotada ainda pode ser mãe. */}
                         <LocationCombobox
+                          id={`${row.rowId}-parent`}
                           allowFull
                           options={parentOptions}
                           value={row.parentId ?? null}
@@ -405,23 +419,11 @@ export function BulkLocationsDialog({
                           }
                         />
                       </div>
-
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="justify-self-end text-muted-foreground hover:text-destructive"
-                        disabled={rows.length === 1}
-                        onClick={() => removeRow(row.rowId)}
-                      >
-                        <Trash2 className="size-4" />
-                        <span className="sr-only">Remover faixa</span>
-                      </Button>
                     </div>
 
                     <p
                       className={cn(
-                        "px-1 text-xs",
+                        "text-xs",
                         rowError ? "text-destructive" : "text-muted-foreground",
                       )}
                     >
