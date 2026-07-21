@@ -77,11 +77,20 @@ export class FiscalStorageService {
    * {FISCAL_STORAGE_PATH}/certs/<userId>.pfx — mesmo local usado pelo script
    * setup-sefaz-direct.ts e esperado por createNfeProviderFromConfig. Sobrescreve
    * o certificado anterior do usuário. Retorna o caminho absoluto gravado.
+   *
+   * Multi-CNPJ: com `configId`, o path vira certs/<userId>-<configId>.pfx —
+   * um certificado POR CNPJ, sem colisão com o path legado (que permanece
+   * válido: configs antigas seguem lendo o `certificadoPath` gravado na linha).
    */
-  async saveCertificate(userId: string, pfxBuffer: Buffer): Promise<string> {
+  async saveCertificate(
+    userId: string,
+    pfxBuffer: Buffer,
+    configId?: string,
+  ): Promise<string> {
     const dir = path.join(this.basePath, "certs");
     this.ensureDir(dir);
-    const filePath = path.join(dir, `${userId}.pfx`);
+    const fileName = configId ? `${userId}-${configId}.pfx` : `${userId}.pfx`;
+    const filePath = path.join(dir, fileName);
     // Escrita atômica: grava num .tmp e renomeia (rename é atômico no mesmo
     // filesystem). Garante que o .pfx canônico nunca fique parcial/corrompido
     // se o processo morrer no meio — o registro no banco aponta para o path

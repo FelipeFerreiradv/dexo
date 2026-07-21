@@ -22,6 +22,8 @@ function toDraftResponse(row: any): NfeDraftResponse {
     userId: row.userId,
     orderId: row.orderId,
     customerId: row.customerId,
+    // Multi-CNPJ: emitente do rascunho (null = era 1-CNPJ ⇒ padrão do tenant).
+    companyFiscalConfigId: row.companyFiscalConfigId ?? null,
     ambiente: row.ambiente,
     modelo: row.modelo,
     serie: row.serie,
@@ -84,6 +86,8 @@ function toDraftResponse(row: any): NfeDraftResponse {
  */
 export interface NfeHistoricCreate {
   userId: string;
+  /** Multi-CNPJ: emitente da nota histórica (default do tenant no import). */
+  companyFiscalConfigId?: string | null;
   ambiente: string; // "PRODUCAO" | "HOMOLOGACAO"
   serie: number;
   numero: number;
@@ -147,6 +151,7 @@ export class NfeRepository {
     const row = await (prisma as any).nfeEmitida.create({
       data: {
         userId: data.userId,
+        companyFiscalConfigId: data.companyFiscalConfigId ?? null,
         ambiente: data.ambiente,
         modelo: "55",
         serie: data.serie,
@@ -208,6 +213,8 @@ export class NfeRepository {
         ambiente: input.ambiente ?? "HOMOLOGACAO",
         // NFC-e (Fase 2): ausente ⇒ "55" (fluxo atual intacto).
         modelo: input.modelo ?? "55",
+        // Multi-CNPJ: emitente resolvido pelo usecase (null = padrão).
+        companyFiscalConfigId: input.companyFiscalConfigId ?? null,
         serie: input.serie ?? 1,
         numero: -(draftCount + 1), // placeholder negativo, será atribuído na emissão
         tipoOperacao: "SAIDA",
@@ -241,6 +248,8 @@ export class NfeRepository {
     chaveAcesso: string | null;
     danfePdfPath: string | null;
     motivoRejeicao: string | null;
+    /** Multi-CNPJ: emitente do draft/nota (null = era 1-CNPJ). */
+    companyFiscalConfigId?: string | null;
   } | null> {
     const row = await (prisma as any).nfeEmitida.findFirst({
       where: {
@@ -258,6 +267,7 @@ export class NfeRepository {
         chaveAcesso: true,
         danfePdfPath: true,
         motivoRejeicao: true,
+        companyFiscalConfigId: true,
       },
     });
     return row ?? null;
@@ -288,6 +298,9 @@ export class NfeRepository {
     const data: Record<string, any> = {};
 
     if (input.serie !== undefined) data.serie = input.serie;
+    // Multi-CNPJ: troca de emitente pelo wizard (posse validada no usecase).
+    if (input.companyFiscalConfigId !== undefined)
+      data.companyFiscalConfigId = input.companyFiscalConfigId;
     if (input.tipoOperacao !== undefined)
       data.tipoOperacao = input.tipoOperacao;
     if (input.finalidade !== undefined) data.finalidade = input.finalidade;
@@ -794,12 +807,26 @@ export class NfeRepository {
     userId: string,
     inicio: Date,
     fim: Date,
+    // Multi-CNPJ: filtro opcional por emitente. `includeLegacyNull` inclui as
+    // notas da era 1-CNPJ (configId NULL) — elas pertencem ao padrão do
+    // tenant. Ausente ⇒ todas as notas do tenant (comportamento anterior).
+    emitente?: { companyFiscalConfigId: string; includeLegacyNull: boolean },
   ): Promise<any[]> {
     return (prisma as any).nfeEmitida.findMany({
       where: {
         userId,
         status: "AUTHORIZED",
         dataEmissao: { gte: inicio, lt: fim },
+        ...(emitente
+          ? {
+              OR: [
+                { companyFiscalConfigId: emitente.companyFiscalConfigId },
+                ...(emitente.includeLegacyNull
+                  ? [{ companyFiscalConfigId: null }]
+                  : []),
+              ],
+            }
+          : {}),
       },
       orderBy: { numero: "asc" },
       select: {

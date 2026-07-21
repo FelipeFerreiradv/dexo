@@ -78,9 +78,13 @@ export class NfeCancelamentoUseCase {
     }
 
     // ── 4. Load config ──
-    const config = await this.configRepo.findByUserId(userId);
+    // Multi-CNPJ: o certificado/provedor tem que ser o do CNPJ EMISSOR da
+    // nota (nota antiga sem configId = era 1-CNPJ ⇒ padrão do tenant).
+    const config = nfe.companyFiscalConfigId
+      ? await this.configRepo.findByIdForUser(nfe.companyFiscalConfigId, userId)
+      : await this.configRepo.findByUserId(userId);
     if (!config) {
-      throw new Error("Configuracao fiscal nao encontrada");
+      throw new Error("Configuracao fiscal do emitente nao encontrada");
     }
     const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
     if (!isSefazDirect && !config.providerToken) {

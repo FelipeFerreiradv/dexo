@@ -81,8 +81,13 @@ export class NfeCartaCorrecaoUseCase {
     }
 
     // 4. Carregar config
-    const config = await this.configRepo.findByUserId(userId);
-    if (!config) throw new Error("Configuracao fiscal nao encontrada");
+    // Multi-CNPJ: certificado/UF do CNPJ EMISSOR da nota (nota antiga sem
+    // configId = era 1-CNPJ ⇒ padrão do tenant).
+    const config = nfe.companyFiscalConfigId
+      ? await this.configRepo.findByIdForUser(nfe.companyFiscalConfigId, userId)
+      : await this.configRepo.findByUserId(userId);
+    if (!config)
+      throw new Error("Configuracao fiscal do emitente nao encontrada");
     if (config.providerName !== "SEFAZ_DIRECT") {
       throw new Error(
         "Carta de Correcao via API e suportada apenas pelo provedor SEFAZ_DIRECT. " +

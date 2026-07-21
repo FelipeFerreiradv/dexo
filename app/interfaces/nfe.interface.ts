@@ -81,11 +81,19 @@ export interface NfeDraftCreateInput {
    * atual byte-idêntico). "65" = NFC-e emitida pelo PDV.
    */
   modelo?: "55" | "65";
+  /**
+   * Multi-CNPJ: emitente do rascunho. Ausente/null ⇒ resolução automática
+   * (conta de marketplace do pedido, se vinculada; senão o CNPJ padrão) —
+   * comportamento atual intacto para tenant de 1 CNPJ.
+   */
+  companyFiscalConfigId?: string | null;
 }
 
 export interface NfeDraftUpdateInput {
   // Step 1 — Informações gerais
   serie?: number;
+  /** Multi-CNPJ: troca de emitente pelo wizard (validado contra o dono). */
+  companyFiscalConfigId?: string | null;
   tipoOperacao?: TipoOperacao;
   finalidade?: FinalidadeNfe;
   destinoOperacao?: DestinoOperacao;
@@ -122,6 +130,8 @@ export interface NfeDraftResponse {
   userId: string;
   orderId: string | null;
   customerId: string | null;
+  /** Multi-CNPJ: emitente do rascunho. null = era 1-CNPJ (padrão do tenant). */
+  companyFiscalConfigId?: string | null;
   ambiente: FiscalAmbiente;
   modelo: string;
   serie: number;

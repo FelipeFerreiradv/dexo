@@ -18,6 +18,7 @@ import { CustomerUseCase } from "./customer.usecase";
 import { NfeDraftUseCase } from "./nfe-draft.usecase";
 import { NfeEmissionUseCase } from "./nfe-emission.usecase";
 import { NfeRepository } from "../repositories/nfe.repository";
+import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { NFCE_LIMITE_VALOR } from "../fiscal/domain/nfce";
 import { mapCustomerToDestinatario } from "./nfe-customer-mapping";
 import { StockDeductionService } from "../marketplaces/services/stock-deduction.service";
@@ -53,6 +54,8 @@ export class FinanceUseCase {
   // não pagar o custo de construção nos fluxos financeiros que não emitem.
   private nfeRepoLazy: NfeRepository | null = null;
   private nfeEmissionLazy: NfeEmissionUseCase | null = null;
+  // Multi-CNPJ — lazy pelo mesmo motivo dos acima.
+  private companyFiscalRepoLazy: CompanyFiscalRepository | null = null;
 
   constructor() {
     this.repo = new FinanceRepository();
@@ -70,6 +73,12 @@ export class FinanceUseCase {
   private get nfeEmission(): NfeEmissionUseCase {
     if (!this.nfeEmissionLazy) this.nfeEmissionLazy = new NfeEmissionUseCase();
     return this.nfeEmissionLazy;
+  }
+
+  private get companyFiscalRepo(): CompanyFiscalRepository {
+    if (!this.companyFiscalRepoLazy)
+      this.companyFiscalRepoLazy = new CompanyFiscalRepository();
+    return this.companyFiscalRepoLazy;
   }
 
   private async assertCustomer(customerId: string, userId: string) {
@@ -547,8 +556,9 @@ export class FinanceUseCase {
     receivableId: string,
     userId: string,
     // NFC-e (Fase 2): opcional e ADITIVO — ausente ⇒ rascunho 55 (endpoint
-    // /fiscal-draft atual byte-idêntico).
-    opts?: { modelo?: "55" | "65" },
+    // /fiscal-draft atual byte-idêntico). Multi-CNPJ: companyFiscalConfigId
+    // opcional seleciona o emitente (ausente = CNPJ padrão).
+    opts?: { modelo?: "55" | "65"; companyFiscalConfigId?: string | null },
   ) {
     const entry = await this.repo.findById("receivable", receivableId, userId);
     if (!entry) {
@@ -562,7 +572,7 @@ export class FinanceUseCase {
   private async createFiscalDraftFromEntry(
     entry: FinanceEntry,
     userId: string,
-    opts?: { modelo?: "55" | "65" },
+    opts?: { modelo?: "55" | "65"; companyFiscalConfigId?: string | null },
   ) {
     if (!entry.items || entry.items.length === 0) {
       throw new Error(
@@ -617,6 +627,10 @@ export class FinanceUseCase {
       itens,
       pagamentos,
       ...(opts?.modelo ? { modelo: opts.modelo } : {}),
+      // Multi-CNPJ: emitente do seletor do PDV (ausente = padrão).
+      ...(opts?.companyFiscalConfigId
+        ? { companyFiscalConfigId: opts.companyFiscalConfigId }
+        : {}),
     });
   }
 
@@ -631,7 +645,14 @@ export class FinanceUseCase {
    * Erros mapeados na rota: "não encontrad*" → 404; "inválida" → 400;
    * "R$ 10.000" → 422.
    */
-  async emitNfceFromReceivable(receivableId: string, userId: string) {
+  async emitNfceFromReceivable(
+    receivableId: string,
+    userId: string,
+    // Multi-CNPJ: emitente do seletor do PDV. Ausente = CNPJ padrão. Quando a
+    // venda JÁ tem draft/nota (idempotência), o emitente do draft existente
+    // prevalece — a seleção só vale para draft novo.
+    companyFiscalConfigId?: string | null,
+  ) {
     const entry = await this.repo.findById("receivable", receivableId, userId);
     if (!entry) {
       throw new Error("Conta a receber não encontrada");
@@ -687,10 +708,29 @@ export class FinanceUseCase {
     // `entry` já carregado pelos guards acima (evita o 2º fetch do receivable).
     let nfeId: string;
     if (existing) {
+      // Multi-CNPJ: seleção EXPLÍCITA vence — se o operador trocou o emitente
+      // no retry (draft anterior falhou, ex.: CSC ausente no CNPJ A), o draft
+      // reusado é atualizado para o config novo (com a série NFC-e DELE).
+      // Explícito inválido lança; sem seleção, o draft segue como está.
+      if (
+        companyFiscalConfigId &&
+        companyFiscalConfigId !== (existing.companyFiscalConfigId ?? null)
+      ) {
+        const cfg = await this.companyFiscalRepo.findByIdForUser(
+          companyFiscalConfigId,
+          userId,
+        );
+        if (!cfg) throw new Error("Emitente selecionado não encontrado");
+        await this.nfeDraftUseCase.update(userId, existing.id, {
+          companyFiscalConfigId: cfg.id,
+          serie: cfg.serieNfce ?? 1,
+        });
+      }
       nfeId = existing.id;
     } else {
       const draft = await this.createFiscalDraftFromEntry(entry, userId, {
         modelo: "65",
+        ...(companyFiscalConfigId ? { companyFiscalConfigId } : {}),
       });
       nfeId = draft.id;
     }

@@ -64,6 +64,70 @@ export function sanitizeFiscalConfig(
   return safe;
 }
 
+/**
+ * Lê o multipart de upload de certificado A1 (campo `certificate` + `senha`).
+ * Extraído para a rota legada (/config/certificate) e a multi-CNPJ
+ * (/companies/:id/certificate) compartilharem EXATAMENTE o mesmo parsing —
+ * corpo copiado verbatim da rota original. Quando o payload é inválido, já
+ * responde 400 e retorna null (o caller apenas retorna).
+ */
+async function readCertificateMultipart(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ buffer: Buffer; senha: string } | null> {
+  if (!request.isMultipart()) {
+    await reply.status(400).send({
+      error: "Envie o certificado como multipart/form-data.",
+    });
+    return null;
+  }
+
+  let buffer: Buffer | null = null;
+  let filename = "";
+  let senha = "";
+
+  for await (const part of request.parts()) {
+    if (part.type === "file") {
+      if (part.fieldname !== "certificate") {
+        // Drena outros arquivos para liberar o stream.
+        await part.toBuffer().catch(() => undefined);
+        continue;
+      }
+      filename = part.filename ?? "";
+      try {
+        buffer = await part.toBuffer();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
+          await reply.status(400).send({
+            error: "Arquivo muito grande. O limite é 20MB.",
+          });
+          return null;
+        }
+        throw e;
+      }
+    } else if (part.type === "field" && part.fieldname === "senha") {
+      senha = typeof part.value === "string" ? part.value : String(part.value);
+    }
+  }
+
+  if (!buffer) {
+    await reply.status(400).send({
+      error: "Nenhum arquivo enviado no campo `certificate`.",
+    });
+    return null;
+  }
+  const lower = filename.toLowerCase();
+  if (!lower.endsWith(".pfx") && !lower.endsWith(".p12")) {
+    await reply.status(400).send({
+      error: "Formato inválido. Envie um certificado A1 (.pfx ou .p12).",
+    });
+    return null;
+  }
+
+  return { buffer, senha };
+}
+
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
@@ -132,58 +196,14 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        if (!request.isMultipart()) {
-          return reply.status(400).send({
-            error: "Envie o certificado como multipart/form-data.",
-          });
-        }
         const userId = (request as any).user?.dataOwnerId as string;
-
-        let buffer: Buffer | null = null;
-        let filename = "";
-        let senha = "";
-
-        for await (const part of request.parts()) {
-          if (part.type === "file") {
-            if (part.fieldname !== "certificate") {
-              // Drena outros arquivos para liberar o stream.
-              await part.toBuffer().catch(() => undefined);
-              continue;
-            }
-            filename = part.filename ?? "";
-            try {
-              buffer = await part.toBuffer();
-            } catch (e: unknown) {
-              const msg = e instanceof Error ? e.message : String(e);
-              if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
-                return reply.status(400).send({
-                  error: "Arquivo muito grande. O limite é 20MB.",
-                });
-              }
-              throw e;
-            }
-          } else if (part.type === "field" && part.fieldname === "senha") {
-            senha =
-              typeof part.value === "string" ? part.value : String(part.value);
-          }
-        }
-
-        if (!buffer) {
-          return reply.status(400).send({
-            error: "Nenhum arquivo enviado no campo `certificate`.",
-          });
-        }
-        const lower = filename.toLowerCase();
-        if (!lower.endsWith(".pfx") && !lower.endsWith(".p12")) {
-          return reply.status(400).send({
-            error: "Formato inválido. Envie um certificado A1 (.pfx ou .p12).",
-          });
-        }
+        const parsed = await readCertificateMultipart(request, reply);
+        if (!parsed) return reply; // resposta 400 já enviada pelo helper
 
         const result = await companyFiscal.uploadCertificate(
           userId,
-          buffer,
-          senha,
+          parsed.buffer,
+          parsed.senha,
         );
         if (!result.ok) {
           return reply
@@ -216,6 +236,261 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     },
   );
 
+  // ── Multi-CNPJ: gestão de empresas (CNPJs) do tenant ──
+  //
+  // Rotas ADITIVAS: /config* continua operando sobre a empresa PADRÃO,
+  // byte-idêntico. POST /companies (2º CNPJ em diante) é gated por
+  // FISCAL_MULTI_CNPJ_ENABLED — só pode ligar após o SQL-2 do
+  // docs/multi-cnpj-sql.md (antes, o unique antigo de numeração colidiria).
+
+  const companyErrorStatus = (message: string): number => {
+    if (message.includes("não encontrad")) return 404;
+    if (
+      message.includes("não pode ser removida") ||
+      message.includes("em uso") ||
+      message.includes("Já existe")
+    )
+      return 409;
+    if (message.includes("não está habilitado")) return 403;
+    if (
+      message.includes("inválid") ||
+      message.includes("obrigat") ||
+      message.includes("bloqueado") ||
+      message.includes("dígitos") ||
+      message.includes("principal")
+    )
+      return 400;
+    return 500;
+  };
+
+  fastify.get(
+    "/companies",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const companies = await companyFiscal.listByUserId(userId);
+        return reply.status(200).send({
+          companies: companies.map((c) => sanitizeFiscalConfig(c)),
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro ao listar empresas",
+        });
+      }
+    },
+  );
+
+  fastify.post(
+    "/companies",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        if (process.env.FISCAL_MULTI_CNPJ_ENABLED !== "true") {
+          return reply.status(403).send({
+            error:
+              "Cadastro de múltiplos CNPJs não está habilitado. Contate o suporte.",
+          });
+        }
+        const userId = (request as any).user?.dataOwnerId as string;
+        const body = request.body as any;
+        const company = await companyFiscal.createSecondary(userId, body);
+        return reply
+          .status(201)
+          .send({ company: sanitizeFiscalConfig(company) });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao criar empresa";
+        return reply
+          .status(companyErrorStatus(message))
+          .send({ error: message });
+      }
+    },
+  );
+
+  fastify.put(
+    "/companies/:id",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const body = request.body as any;
+        const company = await companyFiscal.updateById(id, userId, body);
+        return reply
+          .status(200)
+          .send({ company: sanitizeFiscalConfig(company) });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao salvar empresa";
+        return reply
+          .status(companyErrorStatus(message))
+          .send({ error: message });
+      }
+    },
+  );
+
+  fastify.put(
+    "/companies/:id/default",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        await companyFiscal.setDefault(id, userId);
+        return reply.status(200).send({ success: true });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao definir empresa padrão";
+        return reply
+          .status(companyErrorStatus(message))
+          .send({ error: message });
+      }
+    },
+  );
+
+  fastify.delete(
+    "/companies/:id",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        await companyFiscal.deleteById(id, userId);
+        return reply.status(200).send({ success: true });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro ao remover empresa";
+        return reply
+          .status(companyErrorStatus(message))
+          .send({ error: message });
+      }
+    },
+  );
+
+  // Upload do certificado A1 de uma empresa específica — mesmo contrato
+  // multipart da rota legada (/config/certificate), certificando o CNPJ DELA.
+  fastify.post(
+    "/companies/:id/certificate",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { id } = request.params as { id: string };
+        const parsed = await readCertificateMultipart(request, reply);
+        if (!parsed) return reply; // resposta 400 já enviada pelo helper
+
+        const result = await companyFiscal.uploadCertificate(
+          userId,
+          parsed.buffer,
+          parsed.senha,
+          id,
+        );
+        if (!result.ok) {
+          return reply
+            .status(result.status ?? 400)
+            .send({ error: result.error });
+        }
+        return reply.status(200).send({
+          success: true,
+          subjectCN: result.subjectCN ?? null,
+          certCnpj: result.certCnpj ?? null,
+          validoAte: result.validoAte ?? null,
+          cnpjMatched: result.cnpjMatched ?? false,
+        });
+      } catch (error) {
+        request.log?.error?.(error);
+        const code = (error as { code?: string })?.code ?? "";
+        if (/FST_(PARTS|FIELDS|FILES)_LIMIT|FST_REQ_FILE_TOO_LARGE/.test(code)) {
+          return reply.status(413).send({
+            error:
+              "Requisição excede os limites de upload (tamanho/quantidade).",
+          });
+        }
+        return reply.status(500).send({
+          error: "Erro ao processar o certificado. Tente novamente.",
+        });
+      }
+    },
+  );
+
+  // ── Multi-CNPJ: vínculo conta de marketplace → CNPJ emissor ──
+  // O pedido dessa conta passa a emitir automaticamente pelo CNPJ vinculado
+  // (precedência: escolha explícita > vínculo da conta > padrão).
+
+  // Lista enxuta das contas do tenant p/ a tela de configuração fiscal.
+  fastify.get(
+    "/marketplace-accounts",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const accounts = await (prisma as any).marketplaceAccount.findMany({
+          where: { userId },
+          select: {
+            id: true,
+            platform: true,
+            accountName: true,
+            status: true,
+            companyFiscalConfigId: true,
+          },
+          orderBy: [{ platform: "asc" }, { accountName: "asc" }],
+        });
+        return reply.status(200).send({ accounts });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro ao listar contas",
+        });
+      }
+    },
+  );
+
+  fastify.put(
+    "/marketplace-accounts/:accountId/company",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = (request as any).user?.dataOwnerId as string;
+        const { accountId } = request.params as { accountId: string };
+        const body = (request.body as any) ?? {};
+        const companyId: string | null = body.companyFiscalConfigId ?? null;
+
+        const account = await (prisma as any).marketplaceAccount.findFirst({
+          where: { id: accountId, userId },
+          select: { id: true },
+        });
+        if (!account) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        if (companyId) {
+          const company = await companyFiscal.getByIdForUser(
+            companyId,
+            userId,
+          );
+          if (!company) {
+            return reply.status(404).send({ error: "Empresa não encontrada" });
+          }
+        }
+        await (prisma as any).marketplaceAccount.update({
+          where: { id: accountId },
+          data: { companyFiscalConfigId: companyId },
+        });
+        return reply
+          .status(200)
+          .send({ success: true, companyFiscalConfigId: companyId });
+      } catch (error) {
+        return reply.status(500).send({
+          error:
+            error instanceof Error ? error.message : "Erro ao vincular conta",
+        });
+      }
+    },
+  );
+
   // ── Rascunho NFe ──
 
   // Preview (read-only) do próximo número para a série/ambiente — apenas
@@ -226,22 +501,40 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
-        const raw = (request.query as { serie?: string } | undefined)?.serie;
+        const query = request.query as
+          | { serie?: string; companyId?: string }
+          | undefined;
+        const raw = query?.serie;
         const serie = Number(raw);
         if (!Number.isInteger(serie) || serie < 0 || serie > 999) {
           return reply.status(400).send({ error: "Série inválida (0–999)." });
         }
-        const config = await companyFiscal.getByUserId(userId);
+        // Multi-CNPJ: companyId opcional seleciona o emitente do preview.
+        // Sem o parâmetro, resposta byte-idêntica à atual (config padrão).
+        const companyId = query?.companyId?.trim() || null;
+        const config = companyId
+          ? await companyFiscal.getByIdForUser(companyId, userId)
+          : await companyFiscal.getByUserId(userId);
         if (!config) {
-          return reply
-            .status(409)
-            .send({ error: "Configuração fiscal não encontrada." });
+          return companyId
+            ? reply.status(404).send({ error: "Empresa não encontrada." })
+            : reply
+                .status(409)
+                .send({ error: "Configuração fiscal não encontrada." });
         }
         const ambiente = config.ambiente as FiscalAmbiente;
+        // Sempre com opts: sem companyId o config é o PADRÃO (por definição),
+        // e o filtro por emitente evita ler o contador de OUTRO CNPJ do
+        // tenant. Para tenant de 1 CNPJ o número retornado é o mesmo de antes.
         const proximoNumero = await nfeSequence.consultarProximoNumero(
           userId,
           ambiente,
           serie,
+          "55",
+          {
+            companyFiscalConfigId: config.id,
+            isDefaultConfig: companyId ? (config.isDefault ?? true) : true,
+          },
         );
         return reply.status(200).send({ serie, ambiente, proximoNumero });
       } catch (error) {
@@ -265,12 +558,18 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const draft = await nfeDraft.create(userId, {
           orderId: body.orderId ?? null,
           customerId: body.customerId ?? null,
+          // Multi-CNPJ: seleção explícita de emitente (opcional).
+          companyFiscalConfigId: body.companyFiscalConfigId ?? null,
         });
         return reply.status(201).send({ draft });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro ao criar rascunho";
-        const status = message.includes("Configuração fiscal") ? 400 : 500;
+        const status = message.includes("Configuração fiscal")
+          ? 400
+          : message.includes("Emitente selecionado")
+            ? 404
+            : 500;
         return reply.status(status).send({ error: message });
       }
     },
@@ -364,7 +663,11 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         }
 
         // Get regime from fiscal config
-        const config = await configRepo.findByUserId(userId);
+        // Multi-CNPJ: o regime é o do EMITENTE do draft (pode diferir entre
+        // CNPJs do tenant). Draft sem emitente = era 1-CNPJ ⇒ padrão.
+        const config = draft.companyFiscalConfigId
+          ? await configRepo.findByIdForUser(draft.companyFiscalConfigId, userId)
+          : await configRepo.findByUserId(userId);
         if (!config) {
           return reply
             .status(400)
@@ -627,7 +930,15 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             .send({ error: "Parametro 'mes' invalido (1-12)" });
         }
 
-        const { xml } = await nfeListing.relatorioMensalXml(userId, ano, mes);
+        // Multi-CNPJ: companyId opcional escolhe o emitente do relatório
+        // (ausente = padrão; notas de outro CNPJ do tenant nunca entram).
+        const companyId = (q.companyId as string | undefined)?.trim() || null;
+        const { xml } = await nfeListing.relatorioMensalXml(
+          userId,
+          ano,
+          mes,
+          companyId,
+        );
         const mes2 = String(mes).padStart(2, "0");
         return reply
           .header("Content-Type", "application/xml; charset=utf-8")
@@ -637,12 +948,13 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           )
           .send(xml);
       } catch (error) {
-        return reply.status(500).send({
-          error:
-            error instanceof Error
-              ? error.message
-              : "Erro ao gerar relatorio mensal",
-        });
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Erro ao gerar relatorio mensal";
+        return reply
+          .status(message.includes("Emitente selecionado") ? 404 : 500)
+          .send({ error: message });
       }
     },
   );
@@ -888,6 +1200,8 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           numeroInicial: Number(body.numeroInicial),
           numeroFinal: Number(body.numeroFinal),
           justificativa: body.justificativa ?? "",
+          // Multi-CNPJ: emitente da faixa (opcional; ausente = padrão).
+          companyFiscalConfigId: body.companyFiscalConfigId ?? null,
         });
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {
@@ -900,7 +1214,9 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
           message.includes("maior que zero") ||
           message.includes("menor ou igual")
             ? 400
-            : 500;
+            : message.includes("Emitente selecionado")
+              ? 404
+              : 500;
         return reply.status(status).send({ error: message });
       }
     },

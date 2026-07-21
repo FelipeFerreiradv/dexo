@@ -355,6 +355,8 @@ class OrderRepositoryPrisma implements OrderRepository {
       accessToken: string | null;
       refreshToken: string | null;
       expiresAt: Date | null;
+      // Multi-CNPJ: CNPJ emissor vinculado à conta (null = padrão do tenant).
+      companyFiscalConfigId: string | null;
     } | null;
     items: Array<{
       productId: string;
@@ -363,7 +365,9 @@ class OrderRepositoryPrisma implements OrderRepository {
       product: { sku: string; name: string } | null;
     }>;
   } | null> {
-    const result = await prisma.order.findFirst({
+    // (prisma as any): companyFiscalConfigId é coluna nova do multi-CNPJ —
+    // o cast segue o padrão do módulo fiscal e desacopla do client gerado.
+    const result = await (prisma as any).order.findFirst({
       where: { id, marketplaceAccount: { userId } },
       select: {
         id: true,
@@ -378,6 +382,7 @@ class OrderRepositoryPrisma implements OrderRepository {
             accessToken: true,
             refreshToken: true,
             expiresAt: true,
+            companyFiscalConfigId: true,
           },
         },
         items: {
@@ -404,9 +409,11 @@ class OrderRepositoryPrisma implements OrderRepository {
             accessToken: result.marketplaceAccount.accessToken,
             refreshToken: result.marketplaceAccount.refreshToken,
             expiresAt: result.marketplaceAccount.expiresAt,
+            companyFiscalConfigId:
+              result.marketplaceAccount.companyFiscalConfigId ?? null,
           }
         : null,
-      items: result.items.map((it) => ({
+      items: result.items.map((it: any) => ({
         productId: it.productId,
         quantity: it.quantity,
         unitPrice: Number(it.unitPrice),

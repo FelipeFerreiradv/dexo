@@ -8,6 +8,7 @@ import {
   type MarketplaceBillingSnapshot,
 } from "./nfe-customer-mapping";
 import type { Customer } from "../interfaces/customer.interface";
+import type { CompanyFiscalConfig } from "../interfaces/company-fiscal.interface";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
@@ -23,6 +24,8 @@ type BillingAccount = {
   accessToken: string | null;
   refreshToken: string | null;
   expiresAt: Date | null;
+  /** Multi-CNPJ: CNPJ emissor vinculado à conta (null = padrão do tenant). */
+  companyFiscalConfigId?: string | null;
 };
 import type {
   NfeDraftCreateInput,
@@ -52,6 +55,11 @@ export interface NfeDraftFromReceivableInput {
    * NCM padrão da configuração fiscal.
    */
   modelo?: "55" | "65";
+  /**
+   * Multi-CNPJ: emitente do cupom (seletor do PDV). Ausente/null ⇒ CNPJ
+   * padrão do tenant — comportamento atual byte-idêntico.
+   */
+  companyFiscalConfigId?: string | null;
 }
 
 export class NfeDraftUseCase {
@@ -69,11 +77,33 @@ export class NfeDraftUseCase {
     userId: string,
     input: NfeDraftCreateInput,
   ): Promise<NfeDraftResponse> {
-    // Verify fiscal config exists
-    const config = await this.configRepo.findByUserId(userId);
+    // Verify fiscal config exists. Multi-CNPJ: escolha explícita de emitente
+    // é validada contra o dono e NÃO cai no padrão silenciosamente; ausente
+    // ⇒ config padrão (comportamento atual).
+    const explicitId = input.companyFiscalConfigId ?? null;
+    const config = explicitId
+      ? await this.configRepo.findByIdForUser(explicitId, userId)
+      : await this.configRepo.findByUserId(userId);
     if (!config) {
       throw new Error(
-        "Configuração fiscal não encontrada. Configure o emissor antes de criar uma NF-e.",
+        explicitId
+          ? "Emitente selecionado não encontrado"
+          : "Configuração fiscal não encontrada. Configure o emissor antes de criar uma NF-e.",
+      );
+    }
+
+    // Com orderId: rascunho FRESCO já populado com os itens (produto +
+    // quantidade + valor) e os dados do cliente do pedido — autopreenchimento
+    // rico. NÃO toca o wizard/emissão: só enriquece os valores iniciais.
+    // Multi-CNPJ: a resolução do emitente (vínculo da conta do pedido)
+    // acontece lá dentro — daqui só segue a escolha explícita, se houver.
+    if (input.orderId) {
+      return this.createPopulatedFromOrder(
+        userId,
+        input.orderId,
+        explicitId ? config : null,
+        input.serie ?? null,
+        input.customerId ?? null,
       );
     }
 
@@ -83,28 +113,17 @@ export class NfeDraftUseCase {
     // wizard). Default 1 quando a config ainda não tem série definida.
     const serie = input.serie ?? config.serieNfe ?? 1;
 
-    // Com orderId: rascunho FRESCO já populado com os itens (produto +
-    // quantidade + valor) e os dados do cliente do pedido — autopreenchimento
-    // rico. NÃO toca o wizard/emissão: só enriquece os valores iniciais.
-    if (input.orderId) {
-      return this.createPopulatedFromOrder(
-        userId,
-        input.orderId,
-        ambiente,
-        serie,
-        input.customerId ?? null,
-      );
-    }
-
-    // Sem orderId: reusa o rascunho 55 mais recente (comportamento atual).
-    // O modelo é explícito de propósito: este é o wizard da NF-e 55, e um
-    // rascunho 65 (NFC-e, criado pelo PDV) NUNCA pode ser reaproveitado aqui —
-    // seria emitido como NFC-e sem o usuário perceber.
+    // Sem orderId: reusa o rascunho 55 mais recente (comportamento atual —
+    // pode estar em OUTRO emitente; o seletor do wizard mostra e permite
+    // trocar). O modelo é explícito de propósito: este é o wizard da NF-e 55,
+    // e um rascunho 65 (NFC-e, criado pelo PDV) NUNCA pode ser reaproveitado
+    // aqui — seria emitido como NFC-e sem o usuário perceber.
     const existing = await this.nfeRepo.findExistingDraft(userId, "55");
     if (existing) return existing;
 
     const draft = await this.nfeRepo.createDraft(userId, {
       ...input,
+      companyFiscalConfigId: config.id,
       ambiente,
       serie,
     });
@@ -132,14 +151,39 @@ export class NfeDraftUseCase {
   private async createPopulatedFromOrder(
     userId: string,
     orderId: string,
-    ambiente: "HOMOLOGACAO" | "PRODUCAO",
-    serie: number,
+    explicitConfig: CompanyFiscalConfig | null,
+    serieOverride: number | null,
     customerId?: string | null,
   ): Promise<NfeDraftResponse> {
     const order = await orderRepository.findForFiscalDraft(orderId, userId);
     if (!order) {
       throw new Error("Pedido não encontrado");
     }
+
+    // Multi-CNPJ — precedência do emitente: escolha explícita do caller >
+    // vínculo da conta de marketplace do pedido > CNPJ padrão. Vínculo órfão
+    // (config apagada) NUNCA bloqueia o rascunho — loga e cai no padrão.
+    let config = explicitConfig;
+    const linkedId = order.marketplaceAccount?.companyFiscalConfigId ?? null;
+    if (!config && linkedId) {
+      config = await this.configRepo.findByIdForUser(linkedId, userId);
+      if (!config) {
+        console.error(
+          "[nfe-draft] vínculo fiscal da conta do pedido inválido — usando o CNPJ padrão",
+        );
+      }
+    }
+    if (!config) {
+      config = await this.configRepo.findByUserId(userId);
+    }
+    if (!config) {
+      throw new Error(
+        "Configuração fiscal não encontrada. Configure o emissor antes de criar uma NF-e.",
+      );
+    }
+    const ambiente =
+      (config.ambiente as "HOMOLOGACAO" | "PRODUCAO") ?? "HOMOLOGACAO";
+    const serie = serieOverride ?? config.serieNfe ?? 1;
 
     // Casa o comprador a um Customer do dono para autopreencher o destinatário.
     // Best-effort: uma falha no lookup NUNCA bloqueia o rascunho — cai no
@@ -229,6 +273,7 @@ export class NfeDraftUseCase {
 
     const draft = await this.nfeRepo.createDraft(userId, {
       orderId,
+      companyFiscalConfigId: config.id,
       ambiente,
       serie,
     });
@@ -440,6 +485,16 @@ export class NfeDraftUseCase {
       throw new Error("Rascunho não encontrado");
     }
 
+    // Multi-CNPJ: troca de emitente pelo wizard valida a posse; null
+    // explícito volta ao padrão (resolvido na emissão).
+    if (input.companyFiscalConfigId) {
+      const owned = await this.configRepo.findByIdForUser(
+        input.companyFiscalConfigId,
+        userId,
+      );
+      if (!owned) throw new Error("Emitente selecionado não encontrado");
+    }
+
     const updated = await this.nfeRepo.updateDraft(userId, id, input);
 
     await this.nfeRepo.addAuditLog(id, userId, "EDITADA_DRAFT", {
@@ -474,10 +529,19 @@ export class NfeDraftUseCase {
     userId: string,
     input: NfeDraftFromReceivableInput,
   ): Promise<NfeDraftResponse> {
-    const config = await this.configRepo.findByUserId(userId);
+    // Multi-CNPJ: seletor do PDV manda o emitente; ausente ⇒ padrão do tenant
+    // (comportamento atual). Escolha explícita inválida não cai no padrão.
+    const config = input.companyFiscalConfigId
+      ? await this.configRepo.findByIdForUser(
+          input.companyFiscalConfigId,
+          userId,
+        )
+      : await this.configRepo.findByUserId(userId);
     if (!config) {
       throw new Error(
-        "Configuração fiscal não encontrada. Configure o emissor antes de emitir cupom fiscal.",
+        input.companyFiscalConfigId
+          ? "Emitente selecionado não encontrado"
+          : "Configuração fiscal não encontrada. Configure o emissor antes de emitir cupom fiscal.",
       );
     }
 
@@ -503,6 +567,7 @@ export class NfeDraftUseCase {
     //    operações fiscais do mesmo usuário).
     const draft = await this.nfeRepo.createDraft(userId, {
       customerId: input.customerId,
+      companyFiscalConfigId: config.id,
       ambiente,
       serie:
         modelo === "65" ? (config.serieNfce ?? 1) : (config.serieNfe ?? 1),

@@ -103,9 +103,19 @@ export class NfeEmissionUseCase {
     const modelo: "55" | "65" = draft.modelo === "65" ? "65" : "55";
 
     // ── 2. Load config ──
-    const config = await this.configRepo.findByUserId(userId);
+    // Multi-CNPJ: emitente resolvido na criação do draft. Draft antigo sem
+    // configId = era 1-CNPJ ⇒ padrão do tenant. Config apagada → erro claro,
+    // SEM fallback silencioso para outro CNPJ (e sem queimar número — a
+    // reserva só acontece adiante).
+    const config = draft.companyFiscalConfigId
+      ? await this.configRepo.findByIdForUser(draft.companyFiscalConfigId, userId)
+      : await this.configRepo.findByUserId(userId);
     if (!config) {
-      throw new Error("Configuracao fiscal nao encontrada");
+      throw new Error(
+        draft.companyFiscalConfigId
+          ? "Configuracao fiscal do emitente nao encontrada"
+          : "Configuracao fiscal nao encontrada",
+      );
     }
     const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
     // SEFAZ direto autentica por mTLS (certificado), nao por token. So Focus
@@ -212,6 +222,17 @@ export class NfeEmissionUseCase {
             ambiente,
             draft.serie,
             modelo,
+            // Multi-CNPJ: contador POR EMITENTE (adota a linha legada quando
+            // o emitente é o padrão — numeração continua de onde parou).
+            // Fallback (draft sem configId) = findByUserId = o padrão POR
+            // DEFINIÇÃO, mesmo se a coluna isDefault estiver false (config
+            // criada por código antigo na janela de deploy).
+            {
+              companyFiscalConfigId: config.id,
+              isDefaultConfig: draft.companyFiscalConfigId
+                ? (config.isDefault ?? true)
+                : true,
+            },
           );
 
       // Update numero on the NFe. The draft row was created with an initial
@@ -226,6 +247,10 @@ export class NfeEmissionUseCase {
           numero,
           ambiente,
           dataEmissao: new Date(),
+          // Multi-CNPJ: grava o emitente na linha emitida — garante a entrada
+          // no unique parcial por CNPJ mesmo se o draft nasceu por código
+          // antigo (configId NULL) e caiu no padrão acima.
+          companyFiscalConfigId: config.id,
           emitenteJson: this.buildEmitenteSnapshot(config),
           // Higiene: ao reaproveitar, zera a chaveAcesso da tentativa rejeitada
           // anterior (sera regravada com a chave nova apos o envio). Evita

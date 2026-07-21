@@ -308,7 +308,16 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const draft = await useCase.createFiscalDraftFromReceivable(id, userId);
+        // Multi-CNPJ: emitente opcional via QUERY (o POST segue sem body —
+        // contrato do PDV pinado em teste). Ausente = CNPJ padrão.
+        const companyId =
+          (request.query as { companyId?: string } | undefined)?.companyId ??
+          null;
+        const draft = await useCase.createFiscalDraftFromReceivable(
+          id,
+          userId,
+          companyId ? { companyFiscalConfigId: companyId } : undefined,
+        );
         return reply.status(201).send({ draft });
       } catch (error) {
         const message =
@@ -339,7 +348,12 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
-        const nfce = await useCase.emitNfceFromReceivable(id, userId);
+        // Multi-CNPJ: emitente opcional via QUERY (o POST segue sem body —
+        // contrato do PDV pinado em teste). Ausente = CNPJ padrão.
+        const companyId =
+          (request.query as { companyId?: string } | undefined)?.companyId ??
+          null;
+        const nfce = await useCase.emitNfceFromReceivable(id, userId, companyId);
         return reply.status(200).send({ nfce });
       } catch (error) {
         const message =

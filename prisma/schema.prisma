@@ -75,8 +75,8 @@ model User {
   receivables         Receivable[]
   budgets             Budget[]            @relation("BudgetOwner")
   budgetsAsVendedor   Budget[]            @relation("BudgetVendedor")
-  companyFiscalConfig CompanyFiscalConfig?
-  nfesEmitidas        NfeEmitida[]
+  companyFiscalConfigs CompanyFiscalConfig[]
+  nfesEmitidas         NfeEmitida[]
   bulkListingJobs     BulkListingJob[]
   unidades            Unidade[]
   whatsAppAccounts    WhatsAppAccount[]
@@ -271,6 +271,9 @@ model MarketplaceAccount {
   appClientSecret             String?
   autoImportListingsSince     DateTime?
   shopeeListingsSyncedThrough DateTime?
+  // Multi-CNPJ: CNPJ emissor vinculado a esta conta (CompanyFiscalConfig.id,
+  // scalar sem FK — padrão do módulo fiscal). NULL = usa o CNPJ padrão do tenant.
+  companyFiscalConfigId       String?
   user                        User                  @relation(fields: [userId], references: [id])
   orders                      Order[]
   listings                    ProductListing[]
@@ -280,6 +283,7 @@ model MarketplaceAccount {
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
   @@index([userId])
+  @@index([companyFiscalConfigId])
 }
 
 model ProductListing {
@@ -1058,7 +1062,15 @@ model ScrapStatusEvent {
 
 model CompanyFiscalConfig {
   id     String @id @default(cuid())
-  userId String @unique
+  // Multi-CNPJ: 1:N por tenant. O antigo @unique(userId) virou índice normal;
+  // "no máximo 1 default por user" é garantido por unique PARCIAL no banco
+  // ((userId) WHERE "isDefault" — DB-managed, Prisma não representa índice
+  // parcial; ver docs/multi-cnpj-sql.md).
+  userId String
+
+  // CNPJ padrão do tenant — usado por todo caminho que não seleciona emitente
+  // explicitamente (rotas legadas /fiscal/config*, PDV sem seletor, budget/finance).
+  isDefault Boolean @default(false)
 
   cnpj               String
   razaoSocial        String
@@ -1114,6 +1126,9 @@ model CompanyFiscalConfig {
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, cnpj])
+  @@index([userId])
 }
 
 model NfeSequence {
@@ -1127,7 +1142,16 @@ model NfeSequence {
   proximoNumero Int      @default(1)
   updatedAt     DateTime @updatedAt
 
-  @@unique([userId, ambiente, serie, modelo])
+  // Multi-CNPJ: numeração fiscal é POR CNPJ. A unicidade real vive em uniques
+  // PARCIAIS no banco (DB-managed, ver docs/multi-cnpj-sql.md):
+  //   (companyFiscalConfigId, ambiente, serie, modelo) WHERE configId IS NOT NULL
+  //   (userId, ambiente, serie, modelo)                WHERE configId IS NULL (legado)
+  // O @@unique antigo por userId virou índice normal — dois CNPJs do mesmo
+  // tenant podem compartilhar serie/modelo sem colidir.
+  companyFiscalConfigId String?
+
+  @@index([userId, ambiente, serie, modelo])
+  @@index([companyFiscalConfigId])
   @@index([userId])
 }
 
@@ -1136,6 +1160,14 @@ model NfeEmitida {
   userId     String
   orderId    String?
   customerId String?
+
+  // Multi-CNPJ: emitente (CompanyFiscalConfig.id) resolvido na criação do
+  // draft e gravado também na numeração. NULL = era 1-CNPJ (default do tenant)
+  // — a emissão faz fallback ao default e adota a linha. Unicidade real por
+  // CNPJ em unique PARCIAL no banco (ver docs/multi-cnpj-sql.md):
+  //   (companyFiscalConfigId, ambiente, serie, numero, modelo)
+  //   WHERE configId IS NOT NULL AND numero > 0   (drafts usam numero negativo)
+  companyFiscalConfigId String?
 
   // Identificação
   ambiente                  String // HOMOLOGACAO | PRODUCAO
@@ -1198,9 +1230,12 @@ model NfeEmitida {
   itens    NfeItem[]
   eventos  NfeAuditLog[]
 
-  // `modelo` no unique: numeração da NFC-e (65) é independente da NF-e (55) —
-  // série 1/número N podem existir nos dois modelos sem colisão.
-  @@unique([userId, ambiente, serie, numero, modelo])
+  // `modelo` no índice: numeração da NFC-e (65) é independente da NF-e (55) —
+  // série 1/número N podem existir nos dois modelos sem colisão. O antigo
+  // @@unique por userId virou índice normal (multi-CNPJ); a unicidade real é
+  // por companyFiscalConfigId em unique parcial DB-managed.
+  @@index([userId, ambiente, serie, numero, modelo])
+  @@index([companyFiscalConfigId])
   @@index([userId, status])
   @@index([userId, dataEmissao])
   @@index([orderId])
@@ -1250,6 +1285,8 @@ model NfeAuditLog {
 model NfeInutilizacao {
   id            String   @id @default(cuid())
   userId        String
+  // Multi-CNPJ: emitente da faixa inutilizada. NULL = era 1-CNPJ (default).
+  companyFiscalConfigId String?
   ambiente      String
   serie         Int
   numeroInicial Int

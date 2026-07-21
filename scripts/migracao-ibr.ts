@@ -1336,18 +1336,25 @@ async function phaseNfes(flags: Flags): Promise<void> {
       continue;
     }
     if (flags.skipSeqAdvance) continue;
-    const existingSeq = await prisma.nfeSequence.findUnique({
-      where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente, serie, modelo: "55" } },
-      select: { proximoNumero: true },
+    // Multi-CNPJ: o @@unique composto saiu do schema — findFirst + update por
+    // id (forma válida no client velho E novo). Migração é de tenant 1-CNPJ.
+    const existingSeq = await prisma.nfeSequence.findFirst({
+      where: { userId: flags.userId, ambiente, serie, modelo: "55" },
+      select: { id: true, proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
     const novo = Math.max(current, target);
     if (!existingSeq || novo !== current) {
-      await prisma.nfeSequence.upsert({
-        where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente, serie, modelo: "55" } },
-        create: { userId: flags.userId, ambiente, serie, proximoNumero: novo },
-        update: { proximoNumero: novo },
-      });
+      if (existingSeq) {
+        await prisma.nfeSequence.update({
+          where: { id: existingSeq.id },
+          data: { proximoNumero: novo },
+        });
+      } else {
+        await prisma.nfeSequence.create({
+          data: { userId: flags.userId, ambiente, serie, proximoNumero: novo },
+        });
+      }
       sum.sequence_advanced.push({ ambiente, serie, de: current, para: novo });
     }
   }

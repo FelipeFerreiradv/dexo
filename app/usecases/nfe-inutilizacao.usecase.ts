@@ -13,6 +13,8 @@ export interface InutilizacaoInput {
   numeroInicial: number;
   numeroFinal: number;
   justificativa: string;
+  /** Multi-CNPJ: emitente da faixa. Ausente/null = CNPJ padrão (comportamento atual). */
+  companyFiscalConfigId?: string | null;
 }
 
 export interface InutilizacaoResult {
@@ -73,9 +75,20 @@ export class NfeInutilizacaoUseCase {
     }
 
     // ── 2. Load config ──
-    const config = await this.configRepo.findByUserId(userId);
+    // Multi-CNPJ: seleção explícita de emitente ou o padrão do tenant.
+    // Escolha explícita inválida NÃO cai no padrão silenciosamente.
+    const config = input.companyFiscalConfigId
+      ? await this.configRepo.findByIdForUser(
+          input.companyFiscalConfigId,
+          userId,
+        )
+      : await this.configRepo.findByUserId(userId);
     if (!config) {
-      throw new Error("Configuracao fiscal nao encontrada");
+      throw new Error(
+        input.companyFiscalConfigId
+          ? "Emitente selecionado nao encontrado"
+          : "Configuracao fiscal nao encontrada",
+      );
     }
     const isSefazDirect = config.providerName === "SEFAZ_DIRECT";
     if (!isSefazDirect && !config.providerToken) {
@@ -93,6 +106,7 @@ export class NfeInutilizacaoUseCase {
     const record = await (prisma as any).nfeInutilizacao.create({
       data: {
         userId,
+        companyFiscalConfigId: config.id,
         ambiente: config.ambiente,
         serie: input.serie,
         numeroInicial: input.numeroInicial,
@@ -141,10 +155,20 @@ export class NfeInutilizacaoUseCase {
     // Sem isto, a próxima emissão reserva um número dentro da faixa já
     // inutilizada na SEFAZ e leva rejeição "NF-e ja esta inutilizada".
     if (result.success) {
+      // Multi-CNPJ: o contador avançado é o do EMITENTE da faixa. Sem escolha
+      // explícita, o config veio de findByUserId = padrão POR DEFINIÇÃO.
+      const seqOpts = {
+        companyFiscalConfigId: config.id,
+        isDefaultConfig: input.companyFiscalConfigId
+          ? (config.isDefault ?? true)
+          : true,
+      };
       const atual = await this.sequenceService.consultarProximoNumero(
         userId,
         config.ambiente as FiscalAmbiente,
         input.serie,
+        "55",
+        seqOpts,
       );
       if (atual <= input.numeroFinal) {
         await this.sequenceService.ajustarProximoNumero(
@@ -152,6 +176,8 @@ export class NfeInutilizacaoUseCase {
           config.ambiente as FiscalAmbiente,
           input.serie,
           input.numeroFinal + 1,
+          "55",
+          seqOpts,
         );
       }
     }

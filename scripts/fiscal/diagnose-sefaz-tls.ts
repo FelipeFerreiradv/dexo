@@ -176,8 +176,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const config = await (prisma as any).companyFiscalConfig.findUnique({
+  // Multi-CNPJ: userId deixou de ser unique — pega a config padrão do tenant.
+  const config = await (prisma as any).companyFiscalConfig.findFirst({
     where: { userId },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
   if (!config) {
     console.error(`Nenhum CompanyFiscalConfig para userId=${userId}.`);
