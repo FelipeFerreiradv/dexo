@@ -328,10 +328,20 @@ com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
 **Antes** de aplicar, anote a linha de base (senão não dá para saber se melhorou):
 
 ```bash
+dmesg -T | grep -c 'Killed process.*uvicorn'   # <- ESTE é o contador que vale
 docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'
-dmesg -T | grep -c 'Killed process.*uvicorn'
 date
 ```
+
+> ⚠️ **`RestartCount` ZERA ao recriar o container.** Mudar `environment:` faz o
+> `docker compose up -d` **recriar** (não apenas reiniciar), e o container novo
+> começa do zero. Então um `RestartCount` que era 159 vira `0` logo após aplicar
+> — isso **não** significa que o problema acabou.
+>
+> Use o contador do **`dmesg`** como linha de base entre-deploys: ele é do
+> kernel, sobrevive à recriação do container e só zera em reboot (ou quando o
+> ring buffer dá a volta). O `RestartCount` só é comparável **dentro** da vida do
+> container atual.
 
 Aplicar (o `git pull` já traz o compose novo; **não** precisa de rebuild):
 
@@ -344,20 +354,38 @@ docker exec dexo-rembg printenv MALLOC_ARENA_MAX     # tem que imprimir 2
 curl -s localhost:8000/health                        # sidecar de pé
 ```
 
+> ⚠️ **NÃO adicione `MALLOC_ARENA_MAX` ao `.env` do app.** Não serve para nada e
+> confunde quem for depurar depois, por três razões independentes:
+> 1. O `.env` é lido pelo **app Node** (`import "dotenv/config"`), não pelo
+>    container do rembg — o container recebe o env do `docker-compose.yml`.
+> 2. O glibc lê `MALLOC_ARENA_MAX` do ambiente **na inicialização do processo**.
+>    Injetar em `process.env` em runtime, via dotenv, é tarde demais: o alocador
+>    já está configurado.
+> 3. O `.env` já quebra o parser do compose (daí o `--env-file /dev/null`);
+>    linhas a mais só aumentam a chance de estrago.
+>
+> E cuidado com a sintaxe: `KEY:="valor"` **não é `.env` válido** — o dotenv
+> aceita `[\w.-]+=valor`, então uma linha com `:=` é silenciosamente **ignorada**
+> (verificado). O único lugar certo desta variável é o `docker-compose.yml`.
+
 **Medir** ao longo de algumas horas de uso real (o RSS cresce com a carga, não com
 o tempo ocioso — sem upload não há o que medir):
 
 ```bash
 watch -n 300 "docker stats --no-stream --format '{{.MemUsage}} {{.MemPerc}}' dexo-rembg"
-dmesg -T | grep 'Killed process.*uvicorn' | tail -5
-docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'
+
+# Compare com a linha de base ANTERIOR à aplicação:
+dmesg -T | grep -c 'Killed process.*uvicorn'
+dmesg -T | grep 'Killed process.*uvicorn' | tail -3   # os kills mais recentes têm data
+docker inspect dexo-rembg --format 'restarts={{.RestartCount}}'  # só vale p/ o container atual
 ```
 
 | Resultado após algumas horas de uso | Leitura |
 |---|---|
-| RSS estabiliza bem abaixo de 12 GiB e `RestartCount` para de subir | ✅ era fragmentação de arena — resolvido |
-| RSS ainda escala até ~11,9 GiB e os kills continuam | ❌ o dominante é a arena do ONNX — ir para o item 2 (rebuild) |
+| RSS estabiliza bem abaixo de 12 GiB e o contador do `dmesg` **não sobe** | ✅ era fragmentação de arena — resolvido |
+| RSS ainda escala até ~11,9 GiB e surgem kills novos no `dmesg` | ❌ o dominante é a arena do ONNX — ir para o item 2 (rebuild) |
 | RSS menor, mas ainda com kills esporádicos | Parcial — tentar o **1b** (`MALLOC_MMAP_THRESHOLD_`) antes do rebuild |
+| `RestartCount` = 0 e nenhum kill novo no `dmesg` | Bom sinal — mas só conclusivo depois de carga real (ver acima) |
 
 **Rollback** (instantâneo, sem rebuild): remover a linha `MALLOC_ARENA_MAX` do
 `docker-compose.yml` e repetir o `docker compose --env-file /dev/null up -d rembg`.
