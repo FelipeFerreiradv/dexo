@@ -53,6 +53,7 @@ import {
   LocationCombobox,
   type LocationSelectItem,
 } from "@/app/produtos/components/location-combobox";
+import { LocationScanButton } from "./location-scan-button";
 import { Switch } from "@/components/ui/switch";
 
 // NextAuth
@@ -2641,16 +2642,30 @@ export function EditProductDialog({
                     name="locationId"
                     control={control}
                     render={({ field }) => (
-                      <LocationCombobox
-                        id="edit-location"
-                        options={locationOptions}
-                        value={field.value ?? null}
-                        onChange={(locId, fullPath) => {
-                          field.onChange(locId);
-                          // Mantém o campo legado `location` (texto) em sincronia.
-                          setValue("location", fullPath);
-                        }}
-                      />
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <LocationCombobox
+                            id="edit-location"
+                            options={locationOptions}
+                            value={field.value ?? null}
+                            onChange={(locId, fullPath) => {
+                              field.onChange(locId);
+                              // Mantém o campo legado `location` (texto) em sincronia.
+                              setValue("location", fullPath);
+                            }}
+                          />
+                        </div>
+                        <LocationScanButton
+                          options={locationOptions}
+                          currentLocationId={field.value ?? null}
+                          onToast={onToast}
+                          onResolved={({ id, fullPath }) => {
+                            // Mesmo par de escrituras do onChange do combobox (FK + texto).
+                            field.onChange(id);
+                            setValue("location", fullPath);
+                          }}
+                        />
+                      </div>
                     )}
                   />
                 ) : (
