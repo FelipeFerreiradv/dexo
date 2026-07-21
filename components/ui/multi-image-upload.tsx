@@ -5,7 +5,11 @@ import { GripVertical, Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { getApiBaseUrl } from "@/lib/api";
+import {
+  classifyUploadError,
+  uploadProductImage,
+  validateImageFile,
+} from "@/lib/upload-image";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
 import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
@@ -20,12 +24,17 @@ interface MultiImageUploadProps {
   maxImages?: number;
 }
 
-// Concorrência do upload em lote: o sidecar tem 1 worker e o modelo é
-// CPU-bound, então disparar todas as imagens de uma vez enche a fila e as
-// últimas podem estourar o timeout (caindo no fallback sem remoção). Enviar
-// em pequenos blocos mantém a espera por requisição baixa — assim TODAS as
-// imagens têm fundo removido + sombra, não só as primeiras.
-const UPLOAD_CONCURRENCY = 3;
+// Concorrência do upload em lote. Casada com a capacidade do gate do sidecar
+// no backend (`REMBG_MAX_CONCURRENCY`, default 2).
+//
+// Por que 2 e não 3: o sidecar serializa (1 worker, inferência CPU-bound), então
+// o wall-clock do LOTE é `N·T` para qualquer concorrência >= 2 — baixar de 3
+// para 2 não custa tempo nenhum. O que muda é a PIOR espera de uma requisição
+// isolada: cai de ~3T para ~2T (de ~29s para ~20s a T=9s). Isso importa porque
+// quem estoura o orçamento perde o recorte e volta como WebP sem fundo removido.
+// Ou seja: 2 faz MAIS imagens saírem com recorte, não menos.
+// Não subir de volta para 3 sem subir o gate junto.
+const UPLOAD_CONCURRENCY = 2;
 
 async function runWithConcurrency<T, R>(
   items: T[],
@@ -68,39 +77,18 @@ export function MultiImageUpload({
     async (
       file: File,
     ): Promise<{ url: string | null; warning?: string }> => {
-      if (!file.type.startsWith("image/")) {
-        onError?.("Apenas arquivos de imagem são permitidos");
-        return { url: null };
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        onError?.("O arquivo deve ter no máximo 20MB");
+      // Arquivo inválido avisa e NÃO conta como falha de upload (igual a antes).
+      const invalid = validateImageFile(file);
+      if (invalid) {
+        onError?.(invalid);
         return { url: null };
       }
 
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("removeBackground", removeBackground ? "true" : "false");
-      // Sombra exige o recorte: só pede sombra se a remoção de fundo está ON.
-      formData.append(
-        "addShadow",
-        removeBackground && addShadow ? "true" : "false",
-      );
-
-      const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
-        method: "POST",
-        body: formData,
+      const result = await uploadProductImage(file, {
+        removeBackground,
+        addShadow,
       });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.message || "Erro ao fazer upload");
-      }
-
-      const result = (await response.json()) as {
-        imageUrl: string;
-        warning?: string;
-      };
-      return { url: result.imageUrl, warning: result.warning };
+      return { url: result.url, warning: result.warning };
     },
     [onError, removeBackground, addShadow],
   );
@@ -152,9 +140,23 @@ export function MultiImageUpload({
         );
         for (const w of warnings) onWarning?.(w);
 
-        const failed = settled.filter((r) => r.status === "rejected");
+        const failed = settled.filter(
+          (r): r is PromiseRejectedResult => r.status === "rejected",
+        );
         if (failed.length > 0) {
-          onError?.(`${failed.length} imagem(ns) falharam no upload`);
+          // Mostra o MOTIVO, não só a contagem. Antes, um 504 do nginx (que
+          // chega como TypeError opaco por falta de CORS) virava um genérico
+          // "falharam no upload" e o usuário não tinha o que fazer.
+          const reasons = Array.from(
+            new Set(failed.map((r) => classifyUploadError(r.reason).message)),
+          );
+          onError?.(
+            reasons.length === 1
+              ? failed.length === 1
+                ? reasons[0]
+                : `${failed.length} imagens falharam: ${reasons[0]}`
+              : `${failed.length} imagem(ns) falharam no upload`,
+          );
         }
       } catch (error) {
         console.error("Erro no upload:", error);
@@ -173,10 +175,19 @@ export function MultiImageUpload({
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
+      // O input de arquivo já é bloqueado durante o upload (`disabled`), mas o
+      // drop não era: arrastar um 2º lote no meio do 1º dobrava a concorrência
+      // real e enchia a fila do sidecar. Avisa em vez de engolir os arquivos.
+      if (isUploading) {
+        onError?.(
+          "Aguarde o upload atual terminar antes de adicionar mais imagens",
+        );
+        return;
+      }
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) handleFilesSelect(files);
     },
-    [handleFilesSelect],
+    [handleFilesSelect, isUploading, onError],
   );
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {

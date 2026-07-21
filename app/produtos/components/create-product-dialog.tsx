@@ -3062,7 +3062,10 @@ export function CreateProductDialog({
                       }}
                       onError={(error: string) => {
                         console.error("Erro no upload:", error);
-                        onToast("Erro ao fazer upload da imagem", "error");
+                        // Mostra a mensagem REAL (o componente já a classifica).
+                        // Antes era uma string fixa, então o usuário nunca sabia
+                        // se foi arquivo inválido, sobrecarga ou timeout.
+                        onToast(error, "error");
                       }}
                       onWarning={(warning) => onToast(warning, "warning")}
                       maxImages={10}

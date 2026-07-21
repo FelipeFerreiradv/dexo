@@ -388,4 +388,38 @@ describe("POST /upload/image", () => {
       expect.objectContaining({ addShadow: false }),
     );
   });
+
+  it('usa a lane "internal" e carimba um deadline (prioridade sobre o público)', async () => {
+    const file = await makeImage(800, 600, "jpeg");
+    const processed = await makeImage(800, 600, "png");
+    processUploadedImageMock.mockResolvedValue({
+      processed,
+      format: "png",
+      removedBackground: true,
+    });
+
+    const before = Date.now();
+    const { headers, body } = buildForm({
+      file,
+      filename: "p.jpg",
+      mimetype: "image/jpeg",
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(processUploadedImageMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ lane: "internal" }),
+    );
+    // O deadline precisa existir e estar no futuro — é ele que garante que a
+    // degradação graceful rode antes de o nginx cortar a conexão (504).
+    const { deadlineAt } = processUploadedImageMock.mock.calls.at(-1)![1];
+    expect(typeof deadlineAt).toBe("number");
+    expect(deadlineAt).toBeGreaterThan(before);
+  });
 });

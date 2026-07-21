@@ -5,7 +5,11 @@ import { Image as ImageIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { getApiBaseUrl } from "@/lib/api";
+import {
+  classifyUploadError,
+  uploadProductImage,
+  validateImageFile,
+} from "@/lib/upload-image";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
 import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
@@ -41,53 +45,27 @@ export function ImageUpload({
 
   const handleFileSelect = useCallback(
     async (file: File) => {
-      if (!file.type.startsWith("image/")) {
-        onError?.("Apenas arquivos de imagem são permitidos");
-        return;
-      }
-      if (file.size > 20 * 1024 * 1024) {
-        onError?.("O arquivo deve ter no máximo 20MB");
+      const invalid = validateImageFile(file);
+      if (invalid) {
+        onError?.(invalid);
         return;
       }
 
       setIsUploading(true);
 
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("removeBackground", removeBackground ? "true" : "false");
-        // Sombra exige o recorte: só pede sombra se a remoção de fundo está ON.
-        formData.append(
-          "addShadow",
-          removeBackground && addShadow ? "true" : "false",
-        );
-
-        const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
-          method: "POST",
-          body: formData,
+        const result = await uploadProductImage(file, {
+          removeBackground,
+          addShadow,
         });
-
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          throw new Error(error.message || "Erro ao fazer upload");
-        }
-
-        const result = (await response.json()) as {
-          imageUrl: string;
-          warning?: string;
-        };
         if (result.warning) {
           onWarning?.(result.warning);
         }
-        setPreview(result.imageUrl);
-        onChange(result.imageUrl);
+        setPreview(result.url);
+        onChange(result.url);
       } catch (error) {
         console.error("Erro no upload:", error);
-        onError?.(
-          error instanceof Error
-            ? error.message
-            : "Erro ao fazer upload da imagem",
-        );
+        onError?.(classifyUploadError(error).message);
       } finally {
         setIsUploading(false);
       }

@@ -17,6 +17,13 @@
 
 import FormData from "form-data";
 import axios from "axios";
+import {
+  SIDECAR_MIN_USEFUL_MS,
+  computeSidecarTimeoutMs,
+  isWorthCallingSidecar,
+  readRembgTimeoutMs,
+} from "./rembg-budget";
+import { acquireRembgSlot, type RembgLane } from "./rembg-gate";
 
 const ML_MIN_IMAGE_PX = 800;
 
@@ -95,10 +102,24 @@ export interface ProcessUploadedImageOptions {
   removeBackground: boolean;
   /** Sombra de contato. Exige recorte — ignorada se removeBackground=false. */
   addShadow?: boolean;
+  /**
+   * Instante (epoch ms) em que o handler precisa ter respondido — tipicamente
+   * `t0 + UPLOAD_HANDLER_BUDGET_MS`, carimbado pela rota. Aditivo e OPCIONAL:
+   * sem ele, o orçamento é o `REMBG_TIMEOUT_MS` de sempre e o comportamento é
+   * idêntico ao anterior. Com ele, o serviço garante que a degradação graceful
+   * roda ANTES de o nginx cortar a conexão (504 sem CORS). Ver `rembg-budget`.
+   */
+  deadlineAt?: number;
+  /**
+   * Faixa de prioridade no gate do sidecar. `"internal"` (default) é o modal de
+   * produto; `"public"` é o endpoint aberto a terceiros, que fica com cota
+   * reservada menor para nunca starvar o tráfego interno. Ver `rembg-gate`.
+   */
+  lane?: RembgLane;
   /** Override para testes — injeta um fetcher do sidecar. */
   rembgFetcher?: (
     buf: Buffer,
-    opts?: { addShadow?: boolean },
+    opts?: { addShadow?: boolean; timeoutMs?: number },
   ) => Promise<Buffer>;
 }
 
@@ -172,11 +193,46 @@ export async function processUploadedImage(
 
   // 3) Caminho com remoção de fundo: tenta o sidecar; em falha, degrada.
   if (opts.removeBackground) {
-    if (isRembgEnabled() || opts.rembgFetcher) {
+    // Orçamento e gate ficam AQUI, no ramo do sidecar — nunca no topo da função.
+    // O caminho `removeBackground=false` (sharp puro, ~1s) não pode ser
+    // estrangulado por fila de recorte: é o fluxo mais rápido do produto.
+    const budgetMs = computeSidecarTimeoutMs({ deadlineAt: opts.deadlineAt });
+    const lane: RembgLane = opts.lane ?? "internal";
+
+    // `slot === null` = não deu para entrar na fila dentro do orçamento. Nesse
+    // caso NÃO chamamos o sidecar: uma inferência de ~9s que ninguém vai
+    // esperar só rouba o worker de quem ainda pode ganhar.
+    const sidecarAvailable = isRembgEnabled() || Boolean(opts.rembgFetcher);
+    const slot =
+      sidecarAvailable && isWorthCallingSidecar(budgetMs)
+        ? await acquireRembgSlot(lane, budgetMs - SIDECAR_MIN_USEFUL_MS)
+        : null;
+
+    if (sidecarAvailable && slot === null) {
+      console.warn(
+        "[processUploadedImage] orçamento/fila do sidecar esgotados; degradando para imagem otimizada sem remoção:",
+        { lane, budgetMs },
+      );
+    }
+
+    if (slot !== null) {
       try {
         const fetcher = opts.rembgFetcher ?? defaultRembgFetcher;
         const addShadow = opts.addShadow === true;
-        const cutout = await fetcher(normalized, { addShadow });
+        // Recalculado APÓS a espera no gate: o que sobrou do orçamento é o que
+        // o round-trip ainda pode consumir. Sem `deadlineAt` devolve o
+        // REMBG_TIMEOUT_MS de sempre (caminho feliz inalterado).
+        const timeoutMs = computeSidecarTimeoutMs({
+          deadlineAt: opts.deadlineAt,
+        });
+        // A espera no gate é limitada, mas jitter pode comer a sobra: se o que
+        // restou não dá nem para uma inferência, desiste sem abrir a conexão.
+        if (!isWorthCallingSidecar(timeoutMs)) {
+          throw new Error(
+            `orçamento esgotado após espera na fila (restavam ${timeoutMs}ms)`,
+          );
+        }
+        const cutout = await fetcher(normalized, { addShadow, timeoutMs });
         const tFetch = profNow();
 
         // A2: passthrough. O sidecar já devolve PNG RGBA pronto; re-encodar no
@@ -251,10 +307,13 @@ export async function processUploadedImage(
           extra,
         );
         // cai para o fallback abaixo
+      } finally {
+        // Sempre devolve o slot — inclusive nos `return` do caminho feliz acima.
+        slot.release();
       }
     }
 
-    // Killswitch ou falha do sidecar → fallback graceful.
+    // Killswitch, orçamento esgotado ou falha do sidecar → fallback graceful.
     const webp = await sharp(normalized)
       .webp({ quality: UPLOAD_WEBP_QUALITY, effort: 4 })
       .toBuffer();
@@ -292,11 +351,17 @@ function isRembgEnabled(): boolean {
 
 async function defaultRembgFetcher(
   buf: Buffer,
-  opts?: { addShadow?: boolean },
+  opts?: { addShadow?: boolean; timeoutMs?: number },
 ): Promise<Buffer> {
   const url = process.env.REMBG_SIDECAR_URL;
   if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
-  const timeoutMs = Number(process.env.REMBG_TIMEOUT_MS ?? "60000");
+  // `timeoutMs` já vem clampado pelo orçamento da requisição (ver rembg-budget).
+  // O fallback para o env preserva o comportamento de quem chama o fetcher
+  // direto, sem deadline.
+  const timeoutMs =
+    typeof opts?.timeoutMs === "number" && opts.timeoutMs > 0
+      ? opts.timeoutMs
+      : readRembgTimeoutMs();
 
   // O sidecar valida que content_type comece com "image/" — manter
   // consistente com o filename `input.png` e evitar 400 do FastAPI.

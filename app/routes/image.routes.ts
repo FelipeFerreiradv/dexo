@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { processUploadedImage } from "../marketplaces/services/image-resize.service";
+import { readHandlerBudgetMs } from "../marketplaces/services/rembg-budget";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 // Mesmas validações do POST /upload/image, REPLICADAS aqui de propósito.
@@ -69,6 +70,7 @@ export async function imageRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const deadlineAt = Date.now() + readHandlerBudgetMs();
       try {
         let buffer: Buffer | null = null;
         let mimetype = "";
@@ -148,9 +150,17 @@ export async function imageRoutes(app: FastifyInstance) {
         // Reutiliza o pipeline existente SEM modificá-lo. Sombra exige recorte:
         // o serviço só a aplica no caminho de remoção; com removeBackground=false
         // o addShadow é naturalmente ignorado.
+        //
+        // `lane: "public"` limita quantas requisições DESTE endpoint ocupam o
+        // sidecar ao mesmo tempo, deixando sempre folga para o modal interno.
+        // Não muda o contrato: sob contenção o resultado continua sendo 200 +
+        // imagem otimizada + `X-Removed-Background:false` + `X-Warning` — o
+        // mesmo shape de degradação que a doc já manda o cliente tratar.
         const result = await processUploadedImage(buffer, {
           removeBackground,
           addShadow,
+          lane: "public",
+          deadlineAt,
         });
 
         // Content-Type DEVE ser setado ANTES do send(): é o que faz o
