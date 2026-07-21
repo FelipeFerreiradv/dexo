@@ -27,6 +27,8 @@ interface Props {
   providerTokenConfigured: boolean;
   // NFC-e (Fase 2): opcional — ausente ⇒ CSC tratado como não configurado.
   cscConfigured?: boolean;
+  /** Multi-CNPJ: empresa dona do certificado (ausente = rota legada/padrão). */
+  companyId?: string | null;
 }
 
 export function FiscalEnvironmentStep({
@@ -39,6 +41,7 @@ export function FiscalEnvironmentStep({
   onCertUploaded,
   providerTokenConfigured,
   cscConfigured = false,
+  companyId,
 }: Props) {
   const providerName = useWatch({ control, name: "providerName" });
   const uf = useWatch({ control, name: "uf" });
@@ -261,6 +264,7 @@ export function FiscalEnvironmentStep({
         <CertificateUploadCard
           userEmail={userEmail}
           configExists={configExists}
+          companyId={companyId}
           uf={uf}
           status={certStatus}
           onUploaded={onCertUploaded}

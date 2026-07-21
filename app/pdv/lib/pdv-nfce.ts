@@ -9,10 +9,17 @@ import { NFCE_LIMITE_VALOR } from "@/app/fiscal/domain/nfce";
 // Referências literais a process.env.NEXT_PUBLIC_* para o Next inlinar.
 const NFCE_ENABLED = process.env.NEXT_PUBLIC_NFCE_ENABLED === "true";
 const FISCAL_ENABLED = process.env.NEXT_PUBLIC_FISCAL_MODULE_ENABLED === "true";
+const MULTI_CNPJ_ENABLED =
+  process.env.NEXT_PUBLIC_MULTI_CNPJ_ENABLED === "true";
 
 /** UI de NFC-e visível? Exige o módulo fiscal E a flag da NFC-e. */
 export function isNfceUiEnabled(): boolean {
   return NFCE_ENABLED && FISCAL_ENABLED;
+}
+
+/** UI de multi-CNPJ (seletor de emitente/gestão de empresas) habilitada? */
+export function isMultiCnpjUiEnabled(): boolean {
+  return MULTI_CNPJ_ENABLED && FISCAL_ENABLED;
 }
 
 /** Venda acima do limite legal da NFC-e? (roteia para NF-e 55) */
@@ -43,14 +50,19 @@ export type NfceEmitOutcome =
 export async function emitNfceForReceivable(
   receivableId: string,
   email: string,
+  // Multi-CNPJ: emitente do seletor do PDV. Ausente ⇒ URL byte-idêntica à
+  // atual (CNPJ padrão no backend).
+  companyId?: string | null,
 ): Promise<NfceEmitOutcome> {
   try {
     // SEM "Content-Type: application/json": o POST não tem body, e declarar
     // JSON com body vazio faz o Fastify rejeitar na fase de parse
     // (FST_ERR_CTP_EMPTY_JSON_BODY, 400) ANTES do handler — mesmo padrão do
-    // POST /pay, que também não envia body.
+    // POST /pay, que também não envia body. O emitente vai por QUERY pelo
+    // mesmo motivo.
+    const query = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
     const res = await fetch(
-      `${getApiBaseUrl()}/finance/receivables/${receivableId}/nfce`,
+      `${getApiBaseUrl()}/finance/receivables/${receivableId}/nfce${query}`,
       { method: "POST", headers: { email } },
     );
     const data = await res.json().catch(() => ({}));

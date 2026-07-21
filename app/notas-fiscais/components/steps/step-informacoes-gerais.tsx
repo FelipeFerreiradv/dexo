@@ -22,16 +22,45 @@ import {
   NATUREZA_OPERACAO_OPTIONS,
 } from "../../lib/nfe-defaults";
 
+// Multi-CNPJ: opção de emitente (mesma forma do CompanyOption do wizard).
+interface CompanyOptionLike {
+  id: string;
+  cnpj: string;
+  razaoSocial: string;
+  nomeFantasia?: string | null;
+  isDefault?: boolean;
+  serieNfe?: number;
+}
+
 interface Props {
   control: Control<NfeDraftFormData>;
   errors: FieldErrors<NfeDraftFormData>;
+  // Multi-CNPJ (opcionais — ausentes, o passo renderiza EXATAMENTE como antes)
+  companies?: CompanyOptionLike[];
+  selectedCompanyId?: string | null;
+  onCompanyChange?: (companyId: string) => void;
 }
 
-export function StepInformacoesGerais({ control, errors }: Props) {
+function formatCnpj(cnpj: string): string {
+  const d = (cnpj ?? "").replace(/\D/g, "");
+  if (d.length !== 14) return cnpj;
+  return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+}
+
+export function StepInformacoesGerais({
+  control,
+  errors,
+  companies,
+  selectedCompanyId,
+  onCompanyChange,
+}: Props) {
   const { data: session } = useSession();
   const serie = useWatch({ control, name: "serie" });
   const [proximoNumero, setProximoNumero] = useState<number | null>(null);
   const [loadingNumero, setLoadingNumero] = useState(false);
+
+  // Seletor de emitente SÓ com 2+ empresas — tenant de 1 CNPJ nem percebe.
+  const showCompanySelector = (companies?.length ?? 0) > 1;
 
   // Preview do próximo número para a série selecionada. Read-only — o número
   // definitivo é reservado atomicamente na emissão (pode mudar se outra nota
@@ -47,8 +76,13 @@ export function StepInformacoesGerais({ control, errors }: Props) {
     setLoadingNumero(true);
     const timer = setTimeout(async () => {
       try {
+        // Multi-CNPJ: com 2+ empresas o preview é do EMITENTE selecionado.
+        const companyQs =
+          showCompanySelector && selectedCompanyId
+            ? `&companyId=${encodeURIComponent(selectedCompanyId)}`
+            : "";
         const res = await fetch(
-          `${getApiBaseUrl()}/fiscal/nfe/proximo-numero?serie=${s}`,
+          `${getApiBaseUrl()}/fiscal/nfe/proximo-numero?serie=${s}${companyQs}`,
           { headers: { email } },
         );
         const data = await res.json().catch(() => ({}));
@@ -65,7 +99,7 @@ export function StepInformacoesGerais({ control, errors }: Props) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [serie, session?.user?.email]);
+  }, [serie, session?.user?.email, selectedCompanyId, showCompanySelector]);
 
   return (
     <div className="space-y-6">
@@ -75,6 +109,31 @@ export function StepInformacoesGerais({ control, errors }: Props) {
         </h3>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {showCompanySelector && (
+            <div className="md:col-span-2 lg:col-span-3 space-y-1">
+              <label className="text-sm font-medium">Emitente (CNPJ) *</label>
+              <Select
+                value={selectedCompanyId ?? undefined}
+                onValueChange={(v) => onCompanyChange?.(v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione o CNPJ emissor" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(companies ?? []).map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {`${c.nomeFantasia || c.razaoSocial} — ${formatCnpj(c.cnpj)}${c.isDefault ? " (padrão)" : ""}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                A nota será emitida por este CNPJ (certificado e numeração
+                próprios).
+              </p>
+            </div>
+          )}
+
           <div className="space-y-1">
             <label className="text-sm font-medium">Série *</label>
             <Controller

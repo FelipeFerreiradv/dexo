@@ -7,6 +7,13 @@ import { Plus, Wallet } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
@@ -15,6 +22,7 @@ import { decideAutoReceive } from "../lib/pdv-finalize";
 import {
   emitNfceForReceivable,
   excedeLimiteNfce,
+  isMultiCnpjUiEnabled,
   isNfceUiEnabled,
   nfceToastFor,
 } from "../lib/pdv-nfce";
@@ -60,6 +68,36 @@ export function PdvView() {
   // automaticamente APÓS o recebimento OK; falha nunca desfaz a venda.
   const nfceUi = isNfceUiEnabled();
   const [emitNfce, setEmitNfce] = useState(false);
+  // Multi-CNPJ — seletor do emitente da NFC-e. Só aparece com a flag ligada E
+  // 2+ empresas; null = CNPJ padrão (comportamento atual do PDV).
+  const multiCnpjUi = nfceUi && isMultiCnpjUiEnabled();
+  const [companies, setCompanies] = useState<
+    Array<{ id: string; cnpj: string; razaoSocial: string; nomeFantasia?: string | null; isDefault?: boolean }>
+  >([]);
+  const [nfceCompanyId, setNfceCompanyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!multiCnpjUi) return;
+    const email = session?.user?.email;
+    if (!email) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/fiscal/companies`, {
+          headers: { email },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && Array.isArray(data?.companies)) {
+          setCompanies(data.companies);
+        }
+      } catch {
+        // silencioso — seletor simplesmente não aparece
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [multiCnpjUi, session?.user?.email]);
 
   const showToast = useCallback(
     (message: string, type: "success" | "error" | "warning") => {
@@ -116,12 +154,16 @@ export function PdvView() {
     async (receivableId: string, totalAmount?: number) => {
       const email = session?.user?.email;
       if (!email) return;
+      // Multi-CNPJ: emitente do seletor vai por QUERY (POST segue sem body).
+      const companyQs = nfceCompanyId
+        ? `?companyId=${encodeURIComponent(nfceCompanyId)}`
+        : "";
       if (excedeLimiteNfce(Number(totalAmount ?? 0))) {
         try {
           // Sem Content-Type: POST sem body — declarar JSON vazio derruba a
           // requisição no parse do Fastify (FST_ERR_CTP_EMPTY_JSON_BODY).
           const res = await fetch(
-            `${getApiBaseUrl()}/finance/receivables/${receivableId}/fiscal-draft`,
+            `${getApiBaseUrl()}/finance/receivables/${receivableId}/fiscal-draft${companyQs}`,
             { method: "POST", headers: { email } },
           );
           if (!res.ok) throw new Error();
@@ -137,11 +179,15 @@ export function PdvView() {
         }
         return;
       }
-      const outcome = await emitNfceForReceivable(receivableId, email);
+      const outcome = await emitNfceForReceivable(
+        receivableId,
+        email,
+        nfceCompanyId,
+      );
       const t = nfceToastFor(outcome);
       showToast(t.message, t.type);
     },
-    [session?.user?.email, showToast],
+    [session?.user?.email, showToast, nfceCompanyId],
   );
 
   // Encadeia o recebimento após o FinanceDialog salvar a venda. Fire-and-
@@ -264,6 +310,38 @@ export function PdvView() {
                 <span className="font-mono text-[11px] text-muted-foreground">
                   Emite após o recebimento (até R$ 10.000; acima vira rascunho
                   de NF-e).
+                </span>
+              </div>
+            </div>
+          )}
+          {/* Multi-CNPJ: emitente da NFC-e — só com a flag E 2+ empresas.
+              Sem seleção (ou seletor oculto), o backend usa o CNPJ padrão. */}
+          {multiCnpjUi && companies.length > 1 && (
+            <div className="flex items-center gap-3">
+              <div className="w-56">
+                <Select
+                  value={nfceCompanyId ?? "__default__"}
+                  onValueChange={(v) =>
+                    setNfceCompanyId(v === "__default__" ? null : v)
+                  }
+                >
+                  <SelectTrigger id="pdv-nfce-company">
+                    <SelectValue placeholder="CNPJ emissor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">CNPJ padrão</SelectItem>
+                    {companies.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.nomeFantasia || c.razaoSocial}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col">
+                <Label htmlFor="pdv-nfce-company">CNPJ emissor</Label>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  Emitente das NFC-e deste caixa.
                 </span>
               </div>
             </div>

@@ -30,6 +30,11 @@ interface Props {
   uf?: string | null;
   status: CertificateStatus | null;
   onUploaded: (status: CertificateStatus) => void;
+  /**
+   * Multi-CNPJ: empresa dona do certificado. Ausente ⇒ rota legada
+   * (/fiscal/config/certificate, empresa padrão) — comportamento atual.
+   */
+  companyId?: string | null;
 }
 
 function formatDate(iso: string | null): string {
@@ -52,6 +57,7 @@ export function CertificateUploadCard({
   uf,
   status,
   onUploaded,
+  companyId,
 }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [senha, setSenha] = useState("");
@@ -85,7 +91,12 @@ export function CertificateUploadCard({
       formData.append("certificate", file, file.name);
       formData.append("senha", senha);
 
-      const res = await fetch(`${getApiBaseUrl()}/fiscal/config/certificate`, {
+      // Multi-CNPJ: com companyId o certificado é da empresa selecionada
+      // (validado contra o CNPJ DELA); sem, rota legada (padrão) intacta.
+      const endpoint = companyId
+        ? `${getApiBaseUrl()}/fiscal/companies/${companyId}/certificate`
+        : `${getApiBaseUrl()}/fiscal/config/certificate`;
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { email: userEmail || "" },
         body: formData,
