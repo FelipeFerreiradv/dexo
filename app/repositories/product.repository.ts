@@ -24,6 +24,25 @@ import {
 } from "./product-search-terms";
 
 const LOW_STOCK_THRESHOLD = 10;
+
+/**
+ * Colisão de SKU num P2002 do Prisma.
+ *
+ * `meta.target` chega em DUAS formas: array de campos (`["userId","sku"]`) para
+ * as constraints declaradas no schema, e STRING com o nome do índice para as
+ * criadas por SQL, que o Prisma não conhece — o caso do
+ * `Product_userId_skuNormalized_key` (ver docs/dedupe-sku-sql.md). Um
+ * `target.includes("sku")` cru acerta a primeira forma e erra a segunda
+ * (`["userId","skuNormalized"].includes("sku")` é false), deixando o erro
+ * vazar cru para a tela. Normalizar para texto cobre as duas.
+ */
+function isSkuUniqueViolation(error: unknown): boolean {
+  const e = error as { code?: string; meta?: { target?: unknown } };
+  if (e?.code !== "P2002") return false;
+  const target = e?.meta?.target;
+  const asText = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  return /sku/i.test(asText);
+}
 const PUBLISHED_MARKETPLACE_PLATFORMS = [
   "MERCADO_LIVRE",
   "SHOPEE",
@@ -957,7 +976,7 @@ class ProductRepositoryPrisma implements ProductRepository {
     } catch (error: any) {
       console.error("Erro Prisma ao criar produto:", error);
 
-      if (error?.code === "P2002" && error?.meta?.target?.includes("sku")) {
+      if (isSkuUniqueViolation(error)) {
         throw new Error("Produto com esse sku já existe");
       }
 
@@ -1838,6 +1857,12 @@ class ProductRepositoryPrisma implements ProductRepository {
 
       return mapPrismaToProduct(result as unknown as PrismaProduct);
     } catch (error) {
+      // Mesma tradução do create: sem isto, editar o SKU de um produto para um
+      // que já existe devolve a mensagem CRUA do Prisma na tela. Só o texto do
+      // erro muda — nenhuma edição que passa hoje deixa de passar.
+      if (isSkuUniqueViolation(error)) {
+        throw new Error("Produto com esse sku já existe");
+      }
       throw new Error(error instanceof Error ? error.message : String(error));
     }
   }
