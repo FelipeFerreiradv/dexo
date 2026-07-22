@@ -2961,7 +2961,8 @@ export class SyncUseCase {
     try {
       const normalized = normalizeListingStatus(platform, rawRemoteStatus);
       if (!normalized || normalized === listing.status) return;
-      await ListingRepository.updateStatus(listing.id, normalized);
+      // EGRESS: variante lean — devolve 3 colunas, não a linha inteira.
+      await ListingRepository.updateStatusLean(listing.id, normalized);
       listing.status = normalized;
     } catch (err) {
       console.warn(

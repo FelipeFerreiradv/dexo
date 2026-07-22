@@ -480,6 +480,40 @@ export class ListingRepository {
   }
 
   /**
+   * EGRESS-lean: variante do updateStatus para o espelhamento de status —
+   * devolve só (id, status, updatedAt) em vez da linha inteira (os JSONs de
+   * override são o maior peso por linha). O espelho grava com frequência
+   * (webhook/sync/sweep/live), então a projeção importa.
+   */
+  static async updateStatusLean(listingId: string, status: string) {
+    return prisma.productListing.update({
+      where: { id: listingId },
+      data: { status },
+      select: { id: true, status: true, updatedAt: true },
+    });
+  }
+
+  /**
+   * EGRESS-lean: só (id, status) do par (conta, anúncio), para o espelho de
+   * status do webhook decidir se grava — NÃO usar findByExternalListingId
+   * aqui (include de Product inteiro por evento de webhook).
+   */
+  static async findStatusByExternalListingId(
+    marketplaceAccountId: string,
+    externalListingId: string,
+  ) {
+    return prisma.productListing.findUnique({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId,
+          externalListingId,
+        },
+      },
+      select: { id: true, status: true },
+    });
+  }
+
+  /**
    * Reaponta um listing para outra conta de marketplace.
    *
    * Usado pelo reparo automático de ownership: quando a remoção via API

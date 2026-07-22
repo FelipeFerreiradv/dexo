@@ -48,7 +48,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       available_quantity: 0,
     } as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({} as any);
 
     const result = await (SyncUseCase as any).syncMLProductStock(
@@ -74,7 +74,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       .spyOn(MLApiService, "updateItem")
       .mockResolvedValue({ id: "MLB-1", status: "paused" } as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({} as any);
 
     const result = await (SyncUseCase as any).syncMLProductStock(
@@ -99,7 +99,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       available_quantity: 0,
     } as any);
     vi.spyOn(MLApiService, "updateItemStock").mockResolvedValue({} as any);
-    vi.spyOn(ListingRepository, "updateStatus").mockRejectedValue(
+    vi.spyOn(ListingRepository, "updateStatusLean").mockRejectedValue(
       new Error("db down"),
     );
 
@@ -118,7 +118,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       status: "closed",
       available_quantity: 0,
     } as any);
-    const update = vi.spyOn(ListingRepository, "updateStatus");
+    const update = vi.spyOn(ListingRepository, "updateStatusLean");
 
     await (SyncUseCase as any).syncMLProductStock(mlListing(), {
       id: "prod-1",
@@ -135,7 +135,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       status: "closed",
       available_quantity: 0,
     } as any);
-    const update = vi.spyOn(ListingRepository, "updateStatus");
+    const update = vi.spyOn(ListingRepository, "updateStatusLean");
 
     const result = await (SyncUseCase as any).syncMLProductStock(
       mlListing({ id: undefined }),
@@ -156,7 +156,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       .spyOn(ShopeeApiService, "updateItemStock")
       .mockResolvedValue({} as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({} as any);
 
     const result = await (SyncUseCase as any).syncShopeeProductStock(
@@ -176,7 +176,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       has_model: true,
     } as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({} as any);
 
     const result = await (SyncUseCase as any).syncShopeeProductStock(
@@ -196,7 +196,7 @@ describe("SyncUseCase — espelho de status nos stock-syncs", () => {
       has_model: false,
     } as any);
     vi.spyOn(ShopeeApiService, "updateItemStock").mockResolvedValue({} as any);
-    const update = vi.spyOn(ListingRepository, "updateStatus");
+    const update = vi.spyOn(ListingRepository, "updateStatusLean");
 
     const result = await (SyncUseCase as any).syncShopeeProductStock(
       shopeeListing({ status: "active" }),

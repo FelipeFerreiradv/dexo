@@ -34,6 +34,7 @@ type AccountShape = NonNullable<RefreshableListingRow["marketplaceAccount"]>;
  * (single-use do ML). Reler os tokens do banco imediatamente antes da decisão
  * colapsa a janela para ~ms — mesma mitigação do processOrderWebhook.
  * Best-effort: falha na releitura mantém o snapshot.
+ * EGRESS: select de 3 colunas.
  */
 async function reloadFreshTokens(account: AccountShape): Promise<void> {
   try {
@@ -141,6 +142,11 @@ const parseShopeeItemId = (externalListingId: string): number | null => {
  * marketplace→Dexo: usada pelo GET /listings/status?live=1 (dialog) e pela
  * varredura periódica. Magalu fica de fora até a leitura da API ser validada.
  * Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 ⇒ Map vazio. Nunca lança.
+ *
+ * EGRESS/PERF: fetch ML via multiget lean (attributes=id,status), writes via
+ * updateStatusLean (3 colunas), e os grupos por conta rodam em PARALELO —
+ * cada grupo é try/catch isolado, então uma conta lenta/quebrada não atrasa
+ * nem derruba as demais (importa no live=1, que responde ao dialog).
  */
 export class ListingStatusRefreshService {
   /** listingId → { status, updatedAt } (só os que mudaram). */
@@ -169,7 +175,7 @@ export class ListingStatusRefreshService {
       else byAccount.set(accountId, [row]);
     }
 
-    for (const group of byAccount.values()) {
+    const processGroup = async (group: RefreshableListingRow[]) => {
       const account = group[0].marketplaceAccount!;
       try {
         let rawByExternalId: Map<string, string | undefined> | null = null;
@@ -177,19 +183,19 @@ export class ListingStatusRefreshService {
         if (account.platform === "MERCADO_LIVRE") {
           const accessToken = await ensureFreshMLToken(account);
           const ids = [...new Set(group.map((r) => r.externalListingId))];
-          const items = await MLApiService.getItemsDetails(accessToken, ids);
+          const items = await MLApiService.getItemsStatuses(accessToken, ids);
           const statusById = new Map(
-            items.map((item: any) => [String(item.id), item?.status]),
+            items.map((item) => [String(item.id), item.status]),
           );
           rawByExternalId = new Map(
             group.map((r) => [
               r.externalListingId,
-              statusById.get(r.externalListingId) as string | undefined,
+              statusById.get(r.externalListingId),
             ]),
           );
         } else if (account.platform === "SHOPEE") {
           const accessToken = await ensureFreshShopeeToken(account);
-          if (!accessToken) continue;
+          if (!accessToken) return;
           const itemIds = [
             ...new Set(
               group
@@ -225,7 +231,7 @@ export class ListingStatusRefreshService {
         } else {
           // MAGALU: leitura de status da API ainda não validada (TODO na
           // MagaluApiService) — sem espelhamento ativo nesta fase.
-          continue;
+          return;
         }
 
         for (const row of group) {
@@ -235,13 +241,13 @@ export class ListingStatusRefreshService {
           );
           if (!normalized || normalized === row.status) continue;
           try {
-            const updated = await ListingRepository.updateStatus(
+            const updated = await ListingRepository.updateStatusLean(
               row.id,
               normalized,
             );
             changed.set(row.id, {
               status: normalized,
-              updatedAt: (updated as any)?.updatedAt ?? new Date(),
+              updatedAt: updated?.updatedAt ?? new Date(),
             });
           } catch (err) {
             console.warn(
@@ -256,7 +262,9 @@ export class ListingStatusRefreshService {
           err instanceof Error ? err.message : err,
         );
       }
-    }
+    };
+
+    await Promise.all([...byAccount.values()].map(processGroup));
 
     return changed;
   }

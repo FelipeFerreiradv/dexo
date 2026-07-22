@@ -739,22 +739,24 @@ export class WebhookUseCase {
       // Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 restaura o fluxo anterior.
       if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
         try {
-          const existing = await ListingRepository.findByExternalListingId(
-            account.id,
-            mlItemId,
-          );
-          if (existing) {
-            const accessToken = await ensureFreshMLToken(account);
-            const item = await MLApiService.getItemDetails(
-              accessToken,
+          // EGRESS: select mínimo (id+status) e fetch lean no ML
+          // (attributes=id,status) — o espelho não precisa do resto.
+          const existing =
+            await ListingRepository.findStatusByExternalListingId(
+              account.id,
               mlItemId,
             );
+          if (existing) {
+            const accessToken = await ensureFreshMLToken(account);
+            const [item] = await MLApiService.getItemsStatuses(accessToken, [
+              mlItemId,
+            ]);
             const normalized = normalizeListingStatus(
               "MERCADO_LIVRE",
               item?.status,
             );
             if (normalized && normalized !== existing.status) {
-              await ListingRepository.updateStatus(existing.id, normalized);
+              await ListingRepository.updateStatusLean(existing.id, normalized);
               return {
                 success: true,
                 userId: account.userId,

@@ -79,14 +79,14 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account({ autoImportListingsSince: null })] as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockResolvedValue(
       listing() as any,
     );
-    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue(
-      mlItem({ status: "paused" }) as any,
-    );
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([
+      { id: "MLB123", status: "paused" },
+    ]);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue(listing({ status: "paused" }) as any);
     const upsert = vi.spyOn(
       ListingAutodetectUseCase,
@@ -107,13 +107,13 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account()] as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockResolvedValue(
       listing({ status: "active" }) as any,
     );
-    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue(
-      mlItem({ status: "active" }) as any,
-    );
-    const update = vi.spyOn(ListingRepository, "updateStatus");
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([
+      { id: "MLB123", status: "active" },
+    ]);
+    const update = vi.spyOn(ListingRepository, "updateStatusLean");
 
     const res = await WebhookUseCase.processItemWebhook(payload() as any);
 
@@ -127,14 +127,14 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account()] as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockResolvedValue(
       listing({ status: "paused" }) as any,
     );
-    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue(
-      mlItem({ status: "closed" }) as any,
-    );
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([
+      { id: "MLB123", status: "closed" },
+    ]);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue(listing({ status: "closed" }) as any);
 
     const res = await WebhookUseCase.processItemWebhook(payload() as any);
@@ -149,7 +149,7 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account()] as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockResolvedValue(
       null as any,
     );
     vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue(
@@ -173,7 +173,7 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account({ autoImportListingsSince: null })] as any);
-    const find = vi.spyOn(ListingRepository, "findByExternalListingId");
+    const find = vi.spyOn(ListingRepository, "findStatusByExternalListingId");
 
     const res = await WebhookUseCase.processItemWebhook(payload() as any);
 
@@ -187,7 +187,7 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
       MarketplaceRepository,
       "findAllByExternalUserId",
     ).mockResolvedValue([account()] as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockRejectedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockRejectedValue(
       new Error("db down"),
     );
     vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue(
@@ -224,12 +224,14 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
         refreshToken: "ref-novo",
         expiresIn: 21_600,
       } as any);
-    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+    vi.spyOn(ListingRepository, "findStatusByExternalListingId").mockResolvedValue(
       listing() as any,
+    );
+    vi.spyOn(MLApiService, "getItemsStatuses").mockRejectedValue(
+      new Error("timeout transitório do ML"), // mirror falha pós-refresh
     );
     const getItem = vi
       .spyOn(MLApiService, "getItemDetails")
-      .mockRejectedValueOnce(new Error("timeout transitório do ML")) // mirror
       .mockResolvedValue(mlItem() as any); // fluxo legado
     vi.spyOn(
       ListingAutodetectUseCase,
@@ -246,7 +248,7 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
 
   it("dedupe P2002 vem antes do espelho → duplicate_ignored", async () => {
     mockClaim(true);
-    const find = vi.spyOn(ListingRepository, "findByExternalListingId");
+    const find = vi.spyOn(ListingRepository, "findStatusByExternalListingId");
 
     const res = await WebhookUseCase.processItemWebhook(payload() as any);
 

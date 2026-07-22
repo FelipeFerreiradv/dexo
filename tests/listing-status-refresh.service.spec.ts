@@ -59,7 +59,7 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
 
   it("kill-switch ligado → Map vazio, zero chamadas de API", async () => {
     process.env.LISTING_STATUS_SYNC_DISABLED = "1";
-    const getItems = vi.spyOn(MLApiService, "getItemsDetails");
+    const getItems = vi.spyOn(MLApiService, "getItemsStatuses");
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
       row(),
@@ -70,13 +70,13 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   });
 
   it("ML: só os que mudaram entram no Map; token válido não refresca", async () => {
-    vi.spyOn(MLApiService, "getItemsDetails").mockResolvedValue([
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([
       { id: "MLB1", status: "paused" },
       { id: "MLB2", status: "active" },
     ] as any);
     const refresh = vi.spyOn(MLOAuthService, "refreshAccessTokenForAccount");
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({ updatedAt: new Date("2026-07-22T12:00:00Z") } as any);
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
@@ -92,8 +92,8 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   });
 
   it("ML: item ausente no multiget (deletado) → não escreve nada", async () => {
-    vi.spyOn(MLApiService, "getItemsDetails").mockResolvedValue([] as any);
-    const update = vi.spyOn(ListingRepository, "updateStatus");
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([] as any);
+    const update = vi.spyOn(ListingRepository, "updateStatusLean");
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
       row(),
@@ -108,7 +108,7 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
       { item_id: 111, item_status: "UNLIST" },
     ] as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({ updatedAt: new Date() } as any);
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
@@ -125,14 +125,14 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   });
 
   it("erro numa conta não derruba as outras", async () => {
-    vi.spyOn(MLApiService, "getItemsDetails").mockRejectedValue(
+    vi.spyOn(MLApiService, "getItemsStatuses").mockRejectedValue(
       new Error("ml down"),
     );
     vi.spyOn(ShopeeApiService, "getItemsBaseInfo").mockResolvedValue([
       { item_id: 111, item_status: "BANNED" },
     ] as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockResolvedValue({ updatedAt: new Date() } as any);
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
@@ -150,7 +150,7 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   });
 
   it("filtra PENDING_, conta inativa, sem token e Magalu — zero chamadas", async () => {
-    const getMl = vi.spyOn(MLApiService, "getItemsDetails");
+    const getMl = vi.spyOn(MLApiService, "getItemsStatuses");
     const getShp = vi.spyOn(ShopeeApiService, "getItemsBaseInfo");
 
     const changed = await ListingStatusRefreshService.refreshRowsBestEffort([
@@ -179,7 +179,7 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
     } as any);
     const refresh = vi.spyOn(MLOAuthService, "refreshAccessTokenForAccount");
     const getItems = vi
-      .spyOn(MLApiService, "getItemsDetails")
+      .spyOn(MLApiService, "getItemsStatuses")
       .mockResolvedValue([{ id: "MLB1", status: "active" }] as any);
 
     await ListingStatusRefreshService.refreshRowsBestEffort([
@@ -196,12 +196,12 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   });
 
   it("falha ao gravar uma row não impede as demais da mesma conta", async () => {
-    vi.spyOn(MLApiService, "getItemsDetails").mockResolvedValue([
+    vi.spyOn(MLApiService, "getItemsStatuses").mockResolvedValue([
       { id: "MLB1", status: "paused" },
       { id: "MLB2", status: "closed" },
     ] as any);
     const update = vi
-      .spyOn(ListingRepository, "updateStatus")
+      .spyOn(ListingRepository, "updateStatusLean")
       .mockRejectedValueOnce(new Error("db down"))
       .mockResolvedValueOnce({ updatedAt: new Date() } as any);
 

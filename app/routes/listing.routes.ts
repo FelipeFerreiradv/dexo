@@ -776,6 +776,8 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
+        const live = (request.query as any)?.live === "1";
+
         const listings = await (prisma as any).productListing.findMany({
           where: { productId },
           select: {
@@ -793,13 +795,18 @@ export async function listingRoutes(app: FastifyInstance) {
                 id: true,
                 accountName: true,
                 platform: true,
-                // Campos extras SÓ para o refresh live abaixo — a resposta é
-                // mapeada campo-a-campo e não expõe credenciais.
-                status: true,
-                accessToken: true,
-                refreshToken: true,
-                expiresAt: true,
-                shopId: true,
+                // EGRESS: campos extras SÓ quando live=1 (o refresh precisa
+                // deles); a resposta é mapeada campo-a-campo e não expõe
+                // credenciais em nenhum dos dois modos.
+                ...(live
+                  ? {
+                      status: true,
+                      accessToken: true,
+                      refreshToken: true,
+                      expiresAt: true,
+                      shopId: true,
+                    }
+                  : {}),
               },
             },
           },
@@ -814,7 +821,7 @@ export async function listingRoutes(app: FastifyInstance) {
         // estourou continua em background e grava no banco para a próxima.
         let changed: Map<string, { status: string; updatedAt: Date }> | null =
           null;
-        if ((request.query as any)?.live === "1") {
+        if (live) {
           const LIVE_REFRESH_DEADLINE_MS = 8000;
           let deadlineTimer: NodeJS.Timeout | undefined;
           const deadline = new Promise<null>((resolve) => {
