@@ -15,6 +15,7 @@ import {
 } from "../../app/usecases/import/mappers/vaapt-nfes.mapper";
 import {
   runVaaptNfes,
+  defaultNfeImportDeps,
   type NfeImportDeps,
 } from "../../app/usecases/import/nfe-import.usecase";
 import { detectFile } from "../../app/usecases/import/import-detector";
@@ -123,6 +124,58 @@ describe("import/nfe — mapper (paridade com migracao-vaapt-nfes)", () => {
     expect(r.items[0].chaveAcesso).toBeNull();
     expect(r.semChave).toBe(1);
     expect(r.avisos.some((a) => a.motivo.includes("chave de acesso"))).toBe(true);
+  });
+});
+
+describe("import/nfe — idempotência é por MODELO (NFC-e não bloqueia NF-e)", () => {
+  it("loadExisting filtra modelo 55: a NFC-e (65) do PDV nem é carregada", async () => {
+    const prismaMock = (
+      (await import("../../app/lib/prisma")).default as unknown as {
+        nfeEmitida: { findMany: ReturnType<typeof vi.fn> };
+      }
+    ).nfeEmitida;
+    prismaMock.findMany.mockClear();
+
+    await defaultNfeImportDeps.loadExisting("admin-1", "PRODUCAO");
+
+    const arg = prismaMock.findMany.mock.calls.at(-1)?.[0] as {
+      where: Record<string, unknown>;
+      select: Record<string, unknown>;
+    };
+    // Sem `modelo` aqui, uma NFC-e série 4/nº 2 emitida no PDV entrava no set
+    // de "já existe" e a NF-e 55 de mesma série/número era descartada.
+    expect(arg.where).toEqual({
+      userId: "admin-1",
+      ambiente: "PRODUCAO",
+      modelo: "55",
+    });
+    // O select não muda (egress idêntico, menos linhas).
+    expect(arg.select).toEqual({
+      serie: true,
+      numero: true,
+      chaveAcesso: true,
+    });
+  });
+
+  it("ANTI-DUPLICAÇÃO: NF-e 55 já existente continua bloqueando", async () => {
+    // O filtro só tira as de OUTRO modelo. Mesmo modelo segue deduplicando —
+    // é a garantia de que reimportar não cria segunda via.
+    const { deps, created } = makeDeps([
+      { serie: 1, numero: 33, chaveAcesso: CHAVE_33 },
+      { serie: 1, numero: 34, chaveAcesso: null },
+    ]);
+    const report = await runVaaptNfes(
+      ctx(
+        false,
+        nfeXlsx([
+          ["1", "33", "Autorizada", null, "5102", "MARIA", "31/05/2024", "31/05/2024", "150,00", CHAVE_33],
+          ["2", "34", "Autorizada", null, "5102", "JOSÉ", "01/06/2024", "01/06/2024", "200,00", ""],
+        ]),
+      ),
+      deps,
+    );
+    expect(created).toHaveLength(0);
+    expect(report.contadores.ja_existiam).toBe(2);
   });
 });
 

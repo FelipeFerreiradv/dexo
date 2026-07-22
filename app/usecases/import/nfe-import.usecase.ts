@@ -42,6 +42,19 @@ import { mapIbrNfes } from "./mappers/ibr-nfes.mapper";
  */
 const AMBIENTE = "PRODUCAO";
 
+/**
+ * A importação de histórico cria SEMPRE modelo 55 (`NfeRepository.createHistoric`
+ * grava `modelo: "55"` fixo, e o avanço de sequência abaixo também passa "55").
+ *
+ * Isso importa para a idempotência: a numeração da NFC-e (65) é INDEPENDENTE da
+ * NF-e (55) — o próprio schema diz isso e o índice
+ * `(companyFiscalConfigId, ambiente, serie, numero, modelo)` inclui o modelo.
+ * Série 4 / número 2 pode existir nos dois modelos sem colisão. Sem filtrar por
+ * modelo, uma NFC-e emitida no PDV fazia a NF-e de mesma série/número ser
+ * descartada como "já existia" — perda silenciosa na importação.
+ */
+const MODELO_HISTORICO = "55";
+
 export interface NfeImportDeps {
   createHistoric: (data: NfeHistoricCreate) => Promise<{ id: string }>;
   loadExisting: (
@@ -87,7 +100,9 @@ export const defaultNfeImportDeps: NfeImportDeps = {
   },
   loadExisting: (userId, ambiente) =>
     prisma.nfeEmitida.findMany({
-      where: { userId, ambiente },
+      // `modelo` no filtro: só NF-e 55 disputa série/número com o que este
+      // import cria. Também reduz o egress — as NFC-e do PDV nem vêm.
+      where: { userId, ambiente, modelo: MODELO_HISTORICO },
       select: { serie: true, numero: true, chaveAcesso: true },
     }),
   ajustarProximoNumero: async (userId, ambiente, serie, novoNumero) => {
@@ -97,7 +112,7 @@ export const defaultNfeImportDeps: NfeImportDeps = {
       ambiente as never,
       serie,
       novoNumero,
-      "55",
+      MODELO_HISTORICO,
       companyFiscalConfigId
         ? { companyFiscalConfigId, isDefaultConfig: true }
         : undefined,
@@ -192,7 +207,10 @@ export async function executeNfeHistoricPlan(
   items: NfePlanItem[],
   deps: NfeImportDeps,
 ): Promise<void> {
-  // Preload (idempotência): chaves e pares série/número já no tenant.
+  // Preload (idempotência): chaves e pares série/número já no tenant, SÓ do
+  // modelo 55 (ver MODELO_HISTORICO). Filtrar por modelo não enfraquece a
+  // guarda por chave de acesso: a chave carrega o modelo nas posições 21-22,
+  // então uma chave de NFC-e nunca poderia colidir com a de uma NF-e.
   const existing = await deps.loadExisting(ctx.targetUserId, AMBIENTE);
   const chavesExistentes = new Set(
     existing.map((e) => e.chaveAcesso).filter((c): c is string => !!c),
