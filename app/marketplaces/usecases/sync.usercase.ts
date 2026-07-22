@@ -1385,7 +1385,12 @@ export class SyncUseCase {
           };
         }
 
-        result.items.push(processedItem);
+        // `pushItemPreview` (e não `push` direto): `result.items` é PREVIEW e
+        // vai inteiro para o JSONB do SyncLog, reescrito a cada flush de
+        // progresso e relido pelo polling do front. Era o único dos três
+        // importadores sem teto — ML e Magalu já capavam, e o próprio ramo de
+        // erro logo abaixo já usava o helper.
+        pushItemPreview(processedItem);
 
         if (processedItem.status === "linked") {
           result.linkedItems++;
