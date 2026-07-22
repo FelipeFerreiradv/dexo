@@ -10,6 +10,8 @@ import { MagaluOrderWebhookPayload } from "../types/magalu-order.types";
 import { OrderUseCase } from "./order.usercase";
 import { MessagesUseCase } from "./messages.usecase";
 import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
+import { ListingRepository } from "../repositories/listing.repository";
+import { normalizeListingStatus } from "../lib/listing-status";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
@@ -713,6 +715,51 @@ export class WebhookUseCase {
           success: false,
           error: `Conta do Mercado Livre não está ativa (status: ${account.status})`,
         };
+      }
+
+      // Anúncio JÁ vinculado → espelha o status remoto na Dexo (pausado/
+      // finalizado no ML aparece imediatamente no dialog). Roda ANTES do gate
+      // de baseline de propósito: reconciliar não depende de auto-import.
+      // Best-effort: QUALQUER erro cai no fluxo legado idêntico.
+      // Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 restaura o fluxo anterior.
+      if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
+        try {
+          const existing = await ListingRepository.findByExternalListingId(
+            account.id,
+            mlItemId,
+          );
+          if (existing) {
+            const accessToken = await ensureFreshMLToken(account);
+            const item = await MLApiService.getItemDetails(
+              accessToken,
+              mlItemId,
+            );
+            const normalized = normalizeListingStatus(
+              "MERCADO_LIVRE",
+              item?.status,
+            );
+            if (normalized && normalized !== existing.status) {
+              await ListingRepository.updateStatus(existing.id, normalized);
+              return {
+                success: true,
+                userId: account.userId,
+                itemId: mlItemId,
+                action: "status_reconciled",
+              };
+            }
+            return {
+              success: true,
+              userId: account.userId,
+              itemId: mlItemId,
+              action: "status_unchanged",
+            };
+          }
+        } catch (err) {
+          console.warn(
+            `[WebhookUseCase] Espelho de status falhou p/ ${mlItemId} (fluxo legado segue):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
       }
 
       // Baseline "só novos": sem baseline a conta não importa nada (fail-safe).
