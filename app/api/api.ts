@@ -231,6 +231,7 @@ api.register(superadminImportRoutes, {
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry.service";
 import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
+import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
 
 // -----------------------------------------------------------------
 // Health e readiness
@@ -353,6 +354,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (ListingRetryService as any).stop?.();
     (StockSyncRetryService as any).stop?.();
     (StockReconciliationService as any).stop?.();
+    (ListingStatusSweepService as any).stop?.();
   } catch (err) {
     api.log.error({ err }, "error stopping background services");
   }
@@ -387,6 +389,10 @@ try {
       StockSyncRetryService.start();
       // start periodic drift reconciliation (defense in depth)
       StockReconciliationService.start();
+      // start hourly marketplace→Dexo listing status sweep (mirror phase)
+      if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
+        ListingStatusSweepService.start();
+      }
       backgroundServicesStarted = true;
     });
 } catch (err) {

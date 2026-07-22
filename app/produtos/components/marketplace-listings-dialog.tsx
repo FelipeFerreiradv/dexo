@@ -174,7 +174,7 @@ export function MarketplaceListingsDialog({
         const response = await fetch(
           `${getApiBaseUrl()}/listings/status?productId=${encodeURIComponent(
             product.id,
-          )}`,
+          )}&live=1`,
           {
             headers: { email },
             signal: controller.signal,

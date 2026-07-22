@@ -314,16 +314,28 @@ export class ListingRepository {
    * anúncio enquanto este existe gera duplicata no ML. `closed` NÃO conta —
    * recriar um anúncio encerrado é o fluxo legítimo de republicação.
    * EGRESS: select mínimo.
+   *
+   * Com o espelhamento de status ligado (LISTING_STATUS_SYNC_DISABLED ≠ "1"),
+   * o conjunto "vivo" inclui também estados em que o item AINDA EXISTE no
+   * marketplace (moderação/despublicado): under_review/reviewing (ML/Shopee),
+   * unlist (Shopee) e inactive (ML). Antes do espelho essas linhas ficavam
+   * stale em active/paused e o guard as via; sem a ampliação, o primeiro
+   * sweep as tiraria do radar e liberaria criar duplicata. closed/deleted/
+   * banned continuam FORA (republicar é o fluxo legítimo).
    */
   static async findLiveByProductAndAccount(
     productId: string,
     marketplaceAccountId: string,
   ) {
+    const liveStatuses =
+      process.env.LISTING_STATUS_SYNC_DISABLED === "1"
+        ? ["active", "paused"]
+        : ["active", "paused", "under_review", "reviewing", "unlist", "inactive"];
     return prisma.productListing.findFirst({
       where: {
         productId,
         marketplaceAccountId,
-        status: { in: ["active", "paused"] },
+        status: { in: liveStatuses },
         NOT: { externalListingId: { startsWith: "PENDING_" } },
       },
       orderBy: { createdAt: "desc" },
@@ -464,6 +476,40 @@ export class ListingRepository {
     return prisma.productListing.update({
       where: { id: listingId },
       data: { status },
+    });
+  }
+
+  /**
+   * EGRESS-lean: variante do updateStatus para o espelhamento de status —
+   * devolve só (id, status, updatedAt) em vez da linha inteira (os JSONs de
+   * override são o maior peso por linha). O espelho grava com frequência
+   * (webhook/sync/sweep/live), então a projeção importa.
+   */
+  static async updateStatusLean(listingId: string, status: string) {
+    return prisma.productListing.update({
+      where: { id: listingId },
+      data: { status },
+      select: { id: true, status: true, updatedAt: true },
+    });
+  }
+
+  /**
+   * EGRESS-lean: só (id, status) do par (conta, anúncio), para o espelho de
+   * status do webhook decidir se grava — NÃO usar findByExternalListingId
+   * aqui (include de Product inteiro por evento de webhook).
+   */
+  static async findStatusByExternalListingId(
+    marketplaceAccountId: string,
+    externalListingId: string,
+  ) {
+    return prisma.productListing.findUnique({
+      where: {
+        marketplaceAccountId_externalListingId: {
+          marketplaceAccountId,
+          externalListingId,
+        },
+      },
+      select: { id: true, status: true },
     });
   }
 

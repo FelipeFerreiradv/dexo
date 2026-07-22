@@ -10,6 +10,8 @@ import { MagaluOrderWebhookPayload } from "../types/magalu-order.types";
 import { OrderUseCase } from "./order.usercase";
 import { MessagesUseCase } from "./messages.usecase";
 import { ListingAutodetectUseCase } from "./listing-autodetect.usercase";
+import { ListingRepository } from "../repositories/listing.repository";
+import { normalizeListingStatus } from "../lib/listing-status";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
@@ -21,6 +23,9 @@ const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
 /**
  * Garante um accessToken ML válido para a conta, refrescando se estiver perto de
  * expirar. Mantida local (sem import cruzado) espelhando messages.usecase.ts.
+ * MUTA o `account` recebido após refresh: o refresh token do ML é SINGLE-USE —
+ * uma segunda chamada no mesmo handler com o snapshot stale re-refrescaria com
+ * o token já consumido (invalid_grant ⇒ conta auto-desativada).
  */
 async function ensureFreshMLToken(account: {
   id: string;
@@ -39,11 +44,15 @@ async function ensureFreshMLToken(account: {
     account.id,
     account.refreshToken,
   );
+  const newExpiresAt = new Date(Date.now() + refreshed.expiresIn * 1000);
   await MarketplaceRepository.updateTokens(account.id, {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken,
-    expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+    expiresAt: newExpiresAt,
   });
+  account.accessToken = refreshed.accessToken;
+  account.refreshToken = refreshed.refreshToken;
+  account.expiresAt = newExpiresAt;
   return refreshed.accessToken;
 }
 
@@ -75,11 +84,19 @@ async function ensureFreshShopeeToken(account: {
       account.refreshToken,
       account.shopId,
     );
+    const newExpiresAt = ShopeeOAuthService.calculateExpiryDate(
+      refreshed.expire_in,
+    );
     await MarketplaceRepository.updateTokens(account.id, {
       accessToken: refreshed.access_token,
       refreshToken: refreshed.refresh_token,
-      expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+      expiresAt: newExpiresAt,
     });
+    // Mesmo motivo do ensureFreshMLToken: snapshot em memória não pode ficar
+    // stale — o refresh token da Shopee também rotaciona a cada uso.
+    account.accessToken = refreshed.access_token;
+    account.refreshToken = refreshed.refresh_token;
+    account.expiresAt = newExpiresAt;
     return refreshed.access_token;
   } catch (err) {
     console.warn(
@@ -713,6 +730,53 @@ export class WebhookUseCase {
           success: false,
           error: `Conta do Mercado Livre não está ativa (status: ${account.status})`,
         };
+      }
+
+      // Anúncio JÁ vinculado → espelha o status remoto na Dexo (pausado/
+      // finalizado no ML aparece imediatamente no dialog). Roda ANTES do gate
+      // de baseline de propósito: reconciliar não depende de auto-import.
+      // Best-effort: QUALQUER erro cai no fluxo legado idêntico.
+      // Kill-switch: LISTING_STATUS_SYNC_DISABLED=1 restaura o fluxo anterior.
+      if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
+        try {
+          // EGRESS: select mínimo (id+status) e fetch lean no ML
+          // (attributes=id,status) — o espelho não precisa do resto.
+          const existing =
+            await ListingRepository.findStatusByExternalListingId(
+              account.id,
+              mlItemId,
+            );
+          if (existing) {
+            const accessToken = await ensureFreshMLToken(account);
+            const [item] = await MLApiService.getItemsStatuses(accessToken, [
+              mlItemId,
+            ]);
+            const normalized = normalizeListingStatus(
+              "MERCADO_LIVRE",
+              item?.status,
+            );
+            if (normalized && normalized !== existing.status) {
+              await ListingRepository.updateStatusLean(existing.id, normalized);
+              return {
+                success: true,
+                userId: account.userId,
+                itemId: mlItemId,
+                action: "status_reconciled",
+              };
+            }
+            return {
+              success: true,
+              userId: account.userId,
+              itemId: mlItemId,
+              action: "status_unchanged",
+            };
+          }
+        } catch (err) {
+          console.warn(
+            `[WebhookUseCase] Espelho de status falhou p/ ${mlItemId} (fluxo legado segue):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
       }
 
       // Baseline "só novos": sem baseline a conta não importa nada (fail-safe).

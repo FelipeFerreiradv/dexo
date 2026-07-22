@@ -14,6 +14,7 @@ import {
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
@@ -744,7 +745,7 @@ export async function listingRoutes(app: FastifyInstance) {
    *                  retryAttempts, nextRetryAt, updatedAt }] }
    */
   app.get<{
-    Querystring: { productId?: string };
+    Querystring: { productId?: string; live?: string };
   }>(
     "/status",
     { preHandler: [authMiddleware] },
@@ -775,6 +776,8 @@ export async function listingRoutes(app: FastifyInstance) {
           });
         }
 
+        const live = (request.query as any)?.live === "1";
+
         const listings = await (prisma as any).productListing.findMany({
           where: { productId },
           select: {
@@ -792,11 +795,46 @@ export async function listingRoutes(app: FastifyInstance) {
                 id: true,
                 accountName: true,
                 platform: true,
+                // EGRESS: campos extras SÓ quando live=1 (o refresh precisa
+                // deles); a resposta é mapeada campo-a-campo e não expõe
+                // credenciais em nenhum dos dois modos.
+                ...(live
+                  ? {
+                      status: true,
+                      accessToken: true,
+                      refreshToken: true,
+                      expiresAt: true,
+                      shopId: true,
+                    }
+                  : {}),
               },
             },
           },
           orderBy: { updatedAt: "desc" },
         });
+
+        // live=1 (dialog "Anúncios publicados"): consulta o status remoto ao
+        // vivo e grava/retorna o valor fresco. Best-effort — falha OU
+        // estouro do deadline devolve o snapshot do banco, como antes (o
+        // multiget do ML não tem timeout de axios; sem o deadline, um socket
+        // pendurado seguraria este GET até o 504 do nginx). O refresh que
+        // estourou continua em background e grava no banco para a próxima.
+        let changed: Map<string, { status: string; updatedAt: Date }> | null =
+          null;
+        if (live) {
+          const LIVE_REFRESH_DEADLINE_MS = 8000;
+          let deadlineTimer: NodeJS.Timeout | undefined;
+          const deadline = new Promise<null>((resolve) => {
+            deadlineTimer = setTimeout(
+              () => resolve(null),
+              LIVE_REFRESH_DEADLINE_MS,
+            );
+          });
+          changed = await Promise.race([
+            ListingStatusRefreshService.refreshRowsBestEffort(listings),
+            deadline,
+          ]).finally(() => clearTimeout(deadlineTimer));
+        }
 
         return reply.status(200).send({
           productId,
@@ -805,14 +843,14 @@ export async function listingRoutes(app: FastifyInstance) {
             platform: l.marketplaceAccount?.platform,
             accountId: l.marketplaceAccount?.id,
             accountName: l.marketplaceAccount?.accountName,
-            status: l.status,
+            status: changed?.get(l.id)?.status ?? l.status,
             externalListingId: l.externalListingId,
             permalink: l.permalink,
             lastError: l.lastError,
             retryAttempts: l.retryAttempts,
             retryEnabled: l.retryEnabled,
             nextRetryAt: l.nextRetryAt,
-            updatedAt: l.updatedAt,
+            updatedAt: changed?.get(l.id)?.updatedAt ?? l.updatedAt,
           })),
         });
       } catch (error) {

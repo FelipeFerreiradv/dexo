@@ -44,10 +44,29 @@ export class StockReconciliationService {
 
     const productIds = recentLogs.map((l) => l.productId);
 
+    // Com o espelhamento de status ligado, listings podem carregar
+    // under_review/reviewing/unlist/inactive (item ainda existe no
+    // marketplace e volta a vender) — antes do espelho essas linhas ficavam
+    // stale em active/paused e ENTRAVAM aqui; a ampliação preserva a
+    // cobertura de drift que elas sempre tiveram.
+    const reconcilableStatuses =
+      process.env.LISTING_STATUS_SYNC_DISABLED === "1"
+        ? ["ACTIVE", "active", "paused", "PAUSED"]
+        : [
+            "ACTIVE",
+            "active",
+            "paused",
+            "PAUSED",
+            "under_review",
+            "reviewing",
+            "unlist",
+            "inactive",
+          ];
+
     const rows = await prisma.productListing.findMany({
       where: {
         productId: { in: productIds },
-        status: { in: ["ACTIVE", "active", "paused", "PAUSED"] },
+        status: { in: reconcilableStatuses },
       },
       select: {
         id: true,

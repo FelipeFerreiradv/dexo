@@ -451,6 +451,35 @@ export class MLApiService {
   }
 
   /**
+   * EGRESS/PERF-lean: só (id, status) de múltiplos items via multiget com
+   * `attributes=id,status` (~100 bytes/item vs o JSON completo). Uso: espelho
+   * de status marketplace→Dexo (webhook/refresh/sweep), que não precisa do
+   * resto do item. Items deletados/inacessíveis (code≠200) são omitidos.
+   */
+  static async getItemsStatuses(
+    accessToken: string,
+    itemIds: string[],
+  ): Promise<Array<{ id: string; status: string }>> {
+    if (itemIds.length === 0) return [];
+
+    const results: Array<{ id: string; status: string }> = [];
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const chunk = itemIds.slice(i, i + 20);
+      const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}&attributes=id,status`;
+      const response = await axios.get<MLMultigetResponse[]>(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 10000,
+      });
+      for (const item of response.data) {
+        if (item.code === 200 && item.body?.id && item.body?.status) {
+          results.push({ id: item.body.id, status: item.body.status });
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * ObtÃ©m detalhes de um Ãºnico item
    * @param accessToken Token de acesso OAuth
    * @param itemId ID do item
