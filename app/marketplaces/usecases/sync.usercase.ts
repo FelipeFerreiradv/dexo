@@ -8,6 +8,7 @@
  */
 
 import prisma from "@/app/lib/prisma";
+import { findManyInChunks } from "@/app/lib/prisma-chunked";
 import { Platform, SyncType, SyncStatus } from "@prisma/client";
 import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
@@ -355,19 +356,25 @@ export class SyncUseCase {
     );
 
     // Buscar listings existentes em lote (EGRESS: só as colunas usadas abaixo).
-    const existingListings = await prisma.productListing.findMany({
-      where: {
-        marketplaceAccountId: account.id,
-        externalListingId: { in: externalItemIds },
-      },
-      select: {
-        id: true,
-        externalListingId: true,
-        status: true,
-        permalink: true,
-        productId: true,
-      },
-    });
+    // Em lotes: contas grandes (>32k anúncios ativos) estouravam o teto de
+    // bind variables do Postgres num único IN(...).
+    const existingListings = await findManyInChunks(
+      externalItemIds,
+      (ids) =>
+        prisma.productListing.findMany({
+          where: {
+            marketplaceAccountId: account.id,
+            externalListingId: { in: ids },
+          },
+          select: {
+            id: true,
+            externalListingId: true,
+            status: true,
+            permalink: true,
+            productId: true,
+          },
+        }),
+    );
     const existingListingsMap = new Map(
       existingListings.map((listing) => [listing.externalListingId, listing]),
     );
@@ -375,16 +382,12 @@ export class SyncUseCase {
     // Buscar produtos por SKU em lote (EGRESS: id + skuNormalized + name — o
     // name alimenta a guarda de título do box-label via cache, substituindo a
     // query fresca por item do núcleo).
-    const products =
-      normalizedSkus.length > 0
-        ? await prisma.product.findMany({
-            where: {
-              skuNormalized: { in: normalizedSkus },
-              userId: account.userId,
-            },
-            select: { id: true, skuNormalized: true, name: true },
-          })
-        : [];
+    const products = await findManyInChunks(normalizedSkus, (skus) =>
+      prisma.product.findMany({
+        where: { skuNormalized: { in: skus }, userId: account.userId },
+        select: { id: true, skuNormalized: true, name: true },
+      }),
+    );
     const productsMap = new Map(
       products
         .map((product) => [product.skuNormalized, product] as const)
@@ -405,16 +408,17 @@ export class SyncUseCase {
     // item casado por SKU. `withListing.add` no link do lote mantém idêntico.
     const matchedProductIds = products.map((p) => p.id);
     const withListing = new Set<string>(
-      (matchedProductIds.length > 0
-        ? await prisma.productListing.findMany({
+      (
+        await findManyInChunks(matchedProductIds, (productIds) =>
+          prisma.productListing.findMany({
             where: {
               marketplaceAccountId: account.id,
-              productId: { in: matchedProductIds },
+              productId: { in: productIds },
             },
             select: { productId: true },
             distinct: ["productId"],
-          })
-        : []
+          }),
+        )
       ).map((l) => l.productId),
     );
 
@@ -437,9 +441,7 @@ export class SyncUseCase {
     for (const item of activeItems) {
       try {
         const sku = this.extractSku(item);
-        const normalizedSku = normalizeSku(sku);
         const existingListing = existingListingsMap.get(item.id);
-        const product = normalizedSku ? productsMap.get(normalizedSku) : null;
 
         let processedItem: ImportResult["items"][0];
 
@@ -467,32 +469,14 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (product && !withListing.has(product.id)) {
-          // SKU casa com produto existente do dono e o produto NÃO tem anúncio
-          // nesta conta → só cria o listing (comportamento atual, mantido).
-          await ListingRepository.createListing({
-            productId: product.id,
-            marketplaceAccountId: account.id,
-            externalListingId: item.id,
-            externalSku: sku || undefined,
-            permalink: item.permalink || null,
-            status: item.status,
-          });
-          // Agora o produto tem anúncio nesta conta: itens seguintes com o mesmo
-          // SKU caem na guarda de box-label (idêntico ao findFirst live).
-          withListing.add(product.id);
-
-          processedItem = {
-            externalListingId: item.id,
-            title: item.title,
-            sku,
-            linkedProductId: product.id,
-            status: "linked",
-          };
         } else {
-          // NOVO anúncio sem produto, OU SKU de caixa (produto casado já tem
-          // anúncio nesta conta → SKU reutilizado como rótulo): cria produto
-          // próprio via o núcleo idempotente (que aplica a guarda de box-label).
+          // TODO o resto passa pelo MESMO núcleo idempotente: casa por SKU
+          // (vinculando ao produto existente, inclusive de outra plataforma),
+          // aplica a guarda de "SKU de caixa" e faz upsert do listing. Antes
+          // havia aqui um ramo próprio que criava o listing por fora — duas
+          // implementações da mesma regra, que podiam divergir. O núcleo já
+          // cobre esse caso (`linked_existing_product`, que não altera nenhum
+          // contador) e ainda é idempotente no listing.
           const outcome =
             await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
               ListingAutodetectUseCase.normalizeMLItem(
@@ -658,25 +642,41 @@ export class SyncUseCase {
     );
 
     // EGRESS: só as colunas usadas (id/externalListingId/externalSku/status/permalink/productId).
-    const existingListings = await prisma.productListing.findMany({
-      where: {
-        marketplaceAccountId: account.id,
-        OR: [
-          { externalListingId: { in: externalItemIds } },
-          ...(rawSkus.length > 0
-            ? [{ externalSku: { in: rawSkus } }]
-            : []),
-        ],
-      },
-      select: {
-        id: true,
-        externalListingId: true,
-        externalSku: true,
-        status: true,
-        permalink: true,
-        productId: true,
-      },
-    });
+    // O OR de duas listas somava os binds das DUAS (id externo + SKU) na mesma
+    // query. Rodamos cada ramo em lotes e unimos: a união é equivalente ao OR,
+    // com dedupe por id porque a mesma linha pode casar nos dois ramos.
+    const listingSelect = {
+      id: true,
+      externalListingId: true,
+      externalSku: true,
+      status: true,
+      permalink: true,
+      productId: true,
+    } as const;
+    const existingListings = [
+      ...new Map(
+        [
+          ...(await findManyInChunks(externalItemIds, (ids) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalListingId: { in: ids },
+              },
+              select: listingSelect,
+            }),
+          )),
+          ...(await findManyInChunks(rawSkus, (skus) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalSku: { in: skus },
+              },
+              select: listingSelect,
+            }),
+          )),
+        ].map((l) => [l.id, l] as const),
+      ).values(),
+    ];
     const existingListingsMap = new Map(
       existingListings.map((l) => [l.externalListingId, l]),
     );
@@ -689,17 +689,13 @@ export class SyncUseCase {
         .map((l) => [l.externalSku as string, l] as const),
     );
 
-    const products =
-      normalizedSkus.length > 0
-        ? await prisma.product.findMany({
-            where: {
-              skuNormalized: { in: normalizedSkus },
-              userId: account.userId,
-            },
-            // name alimenta a guarda de título do box-label via cache.
-            select: { id: true, skuNormalized: true, name: true },
-          })
-        : [];
+    const products = await findManyInChunks(normalizedSkus, (skus) =>
+      prisma.product.findMany({
+        where: { skuNormalized: { in: skus }, userId: account.userId },
+        // name alimenta a guarda de título do box-label via cache.
+        select: { id: true, skuNormalized: true, name: true },
+      }),
+    );
     const productsMap = new Map(
       products
         .map((p) => [p.skuNormalized, p] as const)
@@ -713,16 +709,17 @@ export class SyncUseCase {
     // anúncio NESTA conta (guarda de box-label sem N+1).
     const matchedProductIds = products.map((p) => p.id);
     const withListing = new Set<string>(
-      (matchedProductIds.length > 0
-        ? await prisma.productListing.findMany({
+      (
+        await findManyInChunks(matchedProductIds, (productIds) =>
+          prisma.productListing.findMany({
             where: {
               marketplaceAccountId: account.id,
-              productId: { in: matchedProductIds },
+              productId: { in: productIds },
             },
             select: { productId: true },
             distinct: ["productId"],
-          })
-        : []
+          }),
+        )
       ).map((l) => l.productId),
     );
 
@@ -742,7 +739,6 @@ export class SyncUseCase {
       const externalListingId = extractExternalId(s);
       try {
         const sku = extractSku(s);
-        const normalizedSku = normalizeSku(sku);
         // Casa primeiro pelo id externo; se não houver, tenta pelo SKU (caso do
         // placeholder PENDING_<sku> do create) p/ NÃO duplicar o vínculo. O
         // fallback por SKU só dispara quando não houve match por id — então se
@@ -750,7 +746,6 @@ export class SyncUseCase {
         const existingListing =
           existingListingsMap.get(externalListingId) ||
           (sku ? existingBySku.get(sku) : undefined);
-        const product = normalizedSku ? productsMap.get(normalizedSku) : null;
         const status = (s.status as string) || "active";
         const permalink = (s.permalink as string) || (s.url as string) || null;
 
@@ -773,21 +768,11 @@ export class SyncUseCase {
               permalink: needsPermalinkUpdate ? permalink : undefined,
             });
           }
-        } else if (product && !withListing.has(product.id)) {
-          linkedProductId = product.id;
-          await ListingRepository.createListing({
-            productId: product.id,
-            marketplaceAccountId: account.id,
-            externalListingId,
-            externalSku: sku || undefined,
-            permalink,
-            status,
-          });
-          withListing.add(product.id);
         } else {
-          // NOVO SKU sem produto, OU SKU de caixa (produto casado já tem anúncio
-          // nesta conta): cria produto próprio via o núcleo idempotente (que
-          // aplica a guarda de box-label).
+          // Mesma regra única do núcleo idempotente (ver importMLItems): casa
+          // por SKU e vincula ao produto existente — inclusive quando ele veio
+          // de outra plataforma —, aplica a guarda de "SKU de caixa" e faz
+          // upsert do listing.
           const outcome =
             await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
               ListingAutodetectUseCase.normalizeMagaluItem(
@@ -1230,18 +1215,20 @@ export class SyncUseCase {
 
     const externalItemIds = flatItems.map((fi) => fi.externalId);
     // Buscar listings existentes (EGRESS: só id/externalListingId/status/productId).
-    const existingListings = await prisma.productListing.findMany({
-      where: {
-        marketplaceAccountId: account.id,
-        externalListingId: { in: externalItemIds },
-      },
-      select: {
-        id: true,
-        externalListingId: true,
-        status: true,
-        productId: true,
-      },
-    });
+    const existingListings = await findManyInChunks(externalItemIds, (ids) =>
+      prisma.productListing.findMany({
+        where: {
+          marketplaceAccountId: account.id,
+          externalListingId: { in: ids },
+        },
+        select: {
+          id: true,
+          externalListingId: true,
+          status: true,
+          productId: true,
+        },
+      }),
+    );
     const existingListingsMap = new Map(
       existingListings.map((listing) => [listing.externalListingId, listing]),
     );
@@ -1255,13 +1242,13 @@ export class SyncUseCase {
           .filter((s): s is string => Boolean(s)),
       ),
     );
-    const userProducts = uniqueSkus.length
-      ? await prisma.product.findMany({
-          where: { userId: account.userId, skuNormalized: { in: uniqueSkus } },
-          // name alimenta a guarda de título do box-label via cache.
-          select: { id: true, sku: true, skuNormalized: true, name: true },
-        })
-      : [];
+    const userProducts = await findManyInChunks(uniqueSkus, (skus) =>
+      prisma.product.findMany({
+        where: { userId: account.userId, skuNormalized: { in: skus } },
+        // name alimenta a guarda de título do box-label via cache.
+        select: { id: true, sku: true, skuNormalized: true, name: true },
+      }),
+    );
     const productsMap = new Map<
       string,
       { id: string; sku: string; skuNormalized: string | null; name: string }
@@ -1275,16 +1262,17 @@ export class SyncUseCase {
     // anúncio NESTA conta (guarda de box-label sem N+1 por variação).
     const matchedProductIds = userProducts.map((p) => p.id);
     const withListing = new Set<string>(
-      (matchedProductIds.length > 0
-        ? await prisma.productListing.findMany({
+      (
+        await findManyInChunks(matchedProductIds, (productIds) =>
+          prisma.productListing.findMany({
             where: {
               marketplaceAccountId: account.id,
-              productId: { in: matchedProductIds },
+              productId: { in: productIds },
             },
             select: { productId: true },
             distinct: ["productId"],
-          })
-        : []
+          }),
+        )
       ).map((l) => l.productId),
     );
 
@@ -1327,10 +1315,8 @@ export class SyncUseCase {
     for (const item of flatItems) {
       try {
         const sku = item.sku;
-        const normSku = normalizeSku(sku);
         const externalId = item.externalId;
         const existingListing = existingListingsMap.get(externalId);
-        const product = normSku ? productsMap.get(normSku) : null;
 
         let processedItem: ImportResult["items"][0];
 
@@ -1350,29 +1336,11 @@ export class SyncUseCase {
             linkedProductId: existingListing.productId,
             status: "linked",
           };
-        } else if (product && !withListing.has(product.id)) {
-          // SKU casa com produto existente do dono e o produto NÃO tem anúncio
-          // nesta conta → só cria o listing (comportamento atual, mantido).
-          await ListingRepository.createListing({
-            productId: product.id,
-            marketplaceAccountId: account.id,
-            externalListingId: externalId,
-            externalSku: sku || undefined,
-            status: item.status,
-          });
-          withListing.add(product.id);
-
-          processedItem = {
-            externalListingId: externalId,
-            title: item.title,
-            sku,
-            linkedProductId: product.id,
-            status: "linked",
-          };
         } else {
-          // NOVO (sem produto) OU SKU de caixa (produto casado já tem anúncio
-          // nesta conta): cria produto próprio via o núcleo idempotente, que
-          // aplica a guarda de box-label, preservando a granularidade por VARIAÇÃO
+          // Mesma regra única do núcleo idempotente (ver importMLItems): casa
+          // por SKU e vincula ao produto existente — inclusive de outra
+          // plataforma —, aplica a guarda de box-label e faz upsert do listing,
+          // preservando a granularidade por VARIAÇÃO
           // (externalListingId = item_id:model_id). Preço/estoque/imagem vêm do
           // item completo quando disponível; o sync reconcilia depois.
           const full = itemDetailsMap.get(item.itemId);
@@ -2789,19 +2757,19 @@ export class SyncUseCase {
       )
       .filter((x): x is string => Boolean(x));
     const linkedSkus = new Set<string>(
-      rawSkusForCheck.length > 0
-        ? (
-            await prisma.productListing.findMany({
-              where: {
-                marketplaceAccountId: account.id,
-                externalSku: { in: rawSkusForCheck },
-              },
-              select: { externalSku: true },
-            })
-          )
-            .map((l) => l.externalSku)
-            .filter((x): x is string => Boolean(x))
-        : [],
+      (
+        await findManyInChunks(rawSkusForCheck, (skusChunk) =>
+          prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              externalSku: { in: skusChunk },
+            },
+            select: { externalSku: true },
+          }),
+        )
+      )
+        .map((l) => l.externalSku)
+        .filter((x): x is string => Boolean(x)),
     );
 
     let skipSamplesLogged = 0;

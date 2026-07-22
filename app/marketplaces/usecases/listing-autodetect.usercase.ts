@@ -309,6 +309,19 @@ export class ListingAutodetectUseCase {
     }
   }
 
+  /**
+   * Reconhece a colisão de identidade do produto, venha ela de onde vier:
+   *  - "Produto com esse sku já existe" — o repositório traduz o P2002 da
+   *    unique do SKU CRU (`userId`,`sku`);
+   *  - "Unique constraint failed …" — P2002 cru, incluindo o do índice
+   *    `Product_userId_skuNormalized_key` (SKU NORMALIZADO, ver
+   *    docs/dedupe-sku-sql.md), que o repositório não traduz por não conhecer.
+   *
+   * É esse segundo caso que fecha o buraco real: "mk2-204" e "Mk2-204" são o
+   * mesmo produto, mas não colidem na unique crua. Com o índice, o banco
+   * rejeita e a recuperação abaixo vincula ao produto vencedor em vez de
+   * duplicar — sem custar nenhuma query no caminho feliz.
+   */
   private static isDuplicateSkuError(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return /sku já existe/i.test(msg) || /unique constraint/i.test(msg);
