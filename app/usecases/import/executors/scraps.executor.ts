@@ -146,6 +146,11 @@ export async function executeScrapsPlan(
     if (ctx.dryRun) {
       bump(report, "a_criar");
       codToId.set(item.cod, `<dry-scrap-${item.cod}>`);
+      // A prévia também "reserva" placa/chassi, como o ramo de escrita faz —
+      // senão dois veículos da MESMA planilha com a mesma placa contam 2 a
+      // criar e o apply cria só 1 (a prévia prometia mais do que entrega).
+      if (item.plate) exPlate.set(item.plate, `<dry-scrap-${item.cod}>`);
+      if (item.chassis) exChassis.set(item.chassis, `<dry-scrap-${item.cod}>`);
       addSample(report, {
         marca: item.brand,
         modelo: item.model,
@@ -207,6 +212,11 @@ export async function executeScrapsPlan(
 function applyMapCounters(report: ImportReport, mapped: ScrapsMapResult): void {
   bump(report, "linhas_no_arquivo", mapped.totalRows);
   bump(report, "linhas_invalidas", mapped.invalidRows);
+  // Só aparece quando houve repetição (o export com uma linha por foto),
+  // para não poluir o relatório dos exports normais com um contador zerado.
+  if (mapped.duplicateRows) {
+    bump(report, "linhas_repetidas_mesmo_veiculo", mapped.duplicateRows);
+  }
   for (const aviso of mapped.avisos) {
     bump(report, "avisos");
     addIssue(report.avisos, aviso);

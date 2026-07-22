@@ -120,6 +120,9 @@ export async function runVaaptPacote(
     const mapped = mapVaaptScraps(veiculos);
     bump(r, "linhas_no_arquivo", mapped.totalRows);
     bump(r, "linhas_invalidas", mapped.invalidRows);
+    if (mapped.duplicateRows) {
+      bump(r, "linhas_repetidas_mesmo_veiculo", mapped.duplicateRows);
+    }
     for (const aviso of mapped.avisos) {
       bump(r, "avisos");
       addIssue(r.avisos, aviso);

@@ -7,7 +7,11 @@ import type { ImportEntity, ImportFile, ImportSystem } from "../import.types";
  * plano executado seria diferente do previsto). Incrementar a cada mudança
  * de comportamento em mappers/executors.
  */
-export const MAPPER_VERSION = 1;
+// 2: o detector passou a reconhecer a variante do relatório de veículos do
+// Vaapt sem Marca/Modelo, e o mapper de sucatas lê os rótulos por sinônimo —
+// uma prévia gerada antes deste deploy planejava menos sucatas do que o apply
+// criaria.
+export const MAPPER_VERSION = 2;
 
 /**
  * Hash que liga a prévia ao apply: sha256 dos bytes dos arquivos (em ordem

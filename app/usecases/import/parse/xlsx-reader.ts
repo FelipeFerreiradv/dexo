@@ -29,9 +29,25 @@ export interface ParsedWorkbook extends ParsedTable {
  */
 const MAX_SHEET_CELLS = 5_000_000;
 
+/**
+ * Aba a usar: a PRIMEIRA que tem dados (cabeçalho + ≥1 linha). Workbooks reais
+ * chegam com uma aba de capa/instruções vazia na frente, e pegar `[0]` cego
+ * fazia o arquivo inteiro cair em DESCONHECIDO. Se nenhuma aba tiver dados,
+ * devolve a primeira — comportamento idêntico ao de antes.
+ */
+function pickSheetName(wb: ReturnType<typeof XLSX.read>): string {
+  for (const name of wb.SheetNames) {
+    const ref = wb.Sheets[name]?.["!ref"];
+    if (!ref) continue;
+    const range = XLSX.utils.decode_range(ref);
+    if (range.e.r - range.s.r >= 1) return name;
+  }
+  return wb.SheetNames[0];
+}
+
 export function readXlsxBuffer(buffer: Buffer): ParsedWorkbook {
   const wb = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = wb.SheetNames[0];
+  const sheetName = pickSheetName(wb);
   if (!sheetName) throw new Error("Planilha sem abas");
   const sheet = wb.Sheets[sheetName];
   const ref = sheet?.["!ref"];

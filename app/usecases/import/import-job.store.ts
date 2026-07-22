@@ -51,6 +51,19 @@ export class SystemLogImportJobStore implements ImportJobStore {
   // heartbeat não precisa de read-modify-write no banco.
   private local = new Map<string, ImportJobDetails>();
   private lastWrite = new Map<string, number>();
+  /**
+   * Heartbeat e finish gravam a MESMA linha, e o heartbeat é fire-and-forget.
+   * O último tick de progresso sai imediatamente antes do finish; se ele
+   * passar pelo throttle, as duas escritas correm. Vencendo a do heartbeat
+   * (que carrega status RUNNING e nenhum relatório), a linha fica RUNNING sem
+   * relatório: o front faz polling por 15min até `deriveState` devolver
+   * INTERROMPIDO, a UI diz "o servidor reiniciou" para uma importação que
+   * terminou 100%, e o relatório de auditoria é perdido. `terminal` barra
+   * heartbeats depois do fim e `inFlight` faz o finish esperar o que está em
+   * voo, garantindo que a escrita final seja a última.
+   */
+  private inFlight = new Map<string, Promise<unknown>>();
+  private terminal = new Set<string>();
 
   async create(
     init: Omit<
@@ -89,47 +102,70 @@ export class SystemLogImportJobStore implements ImportJobStore {
 
   async heartbeat(jobId: string, progress: ImportJobProgress): Promise<void> {
     const details = this.local.get(jobId);
-    if (!details) return;
+    if (!details || this.terminal.has(jobId)) return;
     details.progress = progress;
     details.updatedAt = new Date().toISOString();
     // Throttle: no máximo 1 write por ~1,5s (o polling do front é de 2s).
     const last = this.lastWrite.get(jobId) ?? 0;
     if (Date.now() - last < HEARTBEAT_MIN_INTERVAL_MS) return;
     this.lastWrite.set(jobId, Date.now());
-    await prisma.systemLog.update({
+    const write = prisma.systemLog.update({
       where: { id: jobId },
       data: { details: details as unknown as object },
     });
+    this.inFlight.set(jobId, write);
+    try {
+      await write;
+    } finally {
+      if (this.inFlight.get(jobId) === write) this.inFlight.delete(jobId);
+    }
+  }
+
+  /** Fecha o job garantindo que a escrita final seja a ÚLTIMA da linha. */
+  private async settle(
+    jobId: string,
+    mutate: (d: ImportJobDetails) => void,
+    level?: "ERROR",
+  ): Promise<void> {
+    const details = this.local.get(jobId);
+    if (!details) return;
+    this.terminal.add(jobId);
+    await this.inFlight.get(jobId)?.catch(() => undefined);
+    mutate(details);
+    details.finishedAt = new Date().toISOString();
+    details.updatedAt = details.finishedAt;
+    await prisma.systemLog.update({
+      where: { id: jobId },
+      data: {
+        details: details as unknown as object,
+        ...(level ? { level } : {}),
+      },
+    });
+    // Só limpa DEPOIS de gravar: se a escrita falhar, o job continua conhecido
+    // e o `fail` do worker ainda consegue registrar o erro (com `finally` aqui,
+    // `fail` viraria no-op e o job ficaria pendurado até o stale-check).
+    this.local.delete(jobId);
+    this.lastWrite.delete(jobId);
+    this.inFlight.delete(jobId);
+    this.terminal.delete(jobId);
   }
 
   async finish(jobId: string, report: ImportReport): Promise<void> {
-    const details = this.local.get(jobId);
-    if (!details) return;
-    details.status = "DONE";
-    details.report = report;
-    details.finishedAt = new Date().toISOString();
-    details.updatedAt = details.finishedAt;
-    await prisma.systemLog.update({
-      where: { id: jobId },
-      data: { details: details as unknown as object },
+    await this.settle(jobId, (d) => {
+      d.status = "DONE";
+      d.report = report;
     });
-    this.local.delete(jobId);
-    this.lastWrite.delete(jobId);
   }
 
   async fail(jobId: string, error: string): Promise<void> {
-    const details = this.local.get(jobId);
-    if (!details) return;
-    details.status = "ERROR";
-    details.error = error;
-    details.finishedAt = new Date().toISOString();
-    details.updatedAt = details.finishedAt;
-    await prisma.systemLog.update({
-      where: { id: jobId },
-      data: { details: details as unknown as object, level: "ERROR" },
-    });
-    this.local.delete(jobId);
-    this.lastWrite.delete(jobId);
+    await this.settle(
+      jobId,
+      (d) => {
+        d.status = "ERROR";
+        d.error = error;
+      },
+      "ERROR",
+    );
   }
 
   async get(jobId: string): Promise<ImportJobStatus | null> {

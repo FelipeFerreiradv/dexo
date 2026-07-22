@@ -445,6 +445,11 @@ export async function runVaaptLinks(
       ctx.dryRun,
     );
     const scrapMapped = mapVaaptScraps(veiculos);
+    bump(scrapReport, "linhas_no_arquivo", scrapMapped.totalRows);
+    bump(scrapReport, "linhas_invalidas", scrapMapped.invalidRows);
+    if (scrapMapped.duplicateRows) {
+      bump(scrapReport, "linhas_repetidas_mesmo_veiculo", scrapMapped.duplicateRows);
+    }
     for (const aviso of scrapMapped.avisos) {
       bump(scrapReport, "avisos");
       addIssue(scrapReport.avisos, aviso);
