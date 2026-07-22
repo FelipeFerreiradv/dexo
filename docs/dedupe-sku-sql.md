@@ -47,16 +47,29 @@ grupos → 1 fusão real (`mk2-204`, Shopee + ML) e 7 preservados**.
 
 ### 2. Criar o índice
 
+O servidor de produção **não tem `psql` instalado**, então o SQL vai por um
+script que usa a conexão do próprio Prisma:
+
+```bash
+npx tsx scripts/create-sku-unique-index.ts --check   # diagnostica, não escreve
+npx tsx scripts/create-sku-unique-index.ts           # cria
+```
+
+O script se recusa a criar enquanto houver duplicata (aponta o passo 1), detecta
+índice deixado **INVÁLIDO** por uma tentativa anterior interrompida e confirma no
+fim se ficou válido. O SQL equivalente, para quem tiver `psql` à mão:
+
 ```sql
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "Product_userId_skuNormalized_key"
   ON "Product"("userId","skuNormalized")
   WHERE "skuNormalized" IS NOT NULL AND "skuNormalized" <> '';
 ```
 
-`CONCURRENTLY` evita lock de escrita na tabela (não pode rodar dentro de
-transação). O predicado deixa de fora produtos sem SKU — que devem mesmo poder
-coexistir. Verificado antes de escrever: **0** produtos com `skuNormalized = ''`
-e 8 com `NULL` (no Postgres, `NULL`s não conflitam entre si).
+`CONCURRENTLY` evita lock de escrita na tabela — e por isso **não pode** rodar
+dentro de transação (o script usa `$executeRawUnsafe` solto, nunca
+`$transaction`). O predicado deixa de fora produtos sem SKU, que devem mesmo
+poder coexistir: **0** produtos com `skuNormalized = ''` e 8 com `NULL` (no
+Postgres, `NULL`s não conflitam entre si).
 
 ### Rollback
 
