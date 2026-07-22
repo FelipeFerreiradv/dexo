@@ -807,13 +807,26 @@ export async function listingRoutes(app: FastifyInstance) {
         });
 
         // live=1 (dialog "Anúncios publicados"): consulta o status remoto ao
-        // vivo e grava/retorna o valor fresco. Best-effort — falha devolve o
-        // snapshot do banco, como antes.
+        // vivo e grava/retorna o valor fresco. Best-effort — falha OU
+        // estouro do deadline devolve o snapshot do banco, como antes (o
+        // multiget do ML não tem timeout de axios; sem o deadline, um socket
+        // pendurado seguraria este GET até o 504 do nginx). O refresh que
+        // estourou continua em background e grava no banco para a próxima.
         let changed: Map<string, { status: string; updatedAt: Date }> | null =
           null;
         if ((request.query as any)?.live === "1") {
-          changed =
-            await ListingStatusRefreshService.refreshRowsBestEffort(listings);
+          const LIVE_REFRESH_DEADLINE_MS = 8000;
+          let deadlineTimer: NodeJS.Timeout | undefined;
+          const deadline = new Promise<null>((resolve) => {
+            deadlineTimer = setTimeout(
+              () => resolve(null),
+              LIVE_REFRESH_DEADLINE_MS,
+            );
+          });
+          changed = await Promise.race([
+            ListingStatusRefreshService.refreshRowsBestEffort(listings),
+            deadline,
+          ]).finally(() => clearTimeout(deadlineTimer));
         }
 
         return reply.status(200).send({

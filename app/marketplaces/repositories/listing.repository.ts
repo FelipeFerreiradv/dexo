@@ -314,16 +314,28 @@ export class ListingRepository {
    * anúncio enquanto este existe gera duplicata no ML. `closed` NÃO conta —
    * recriar um anúncio encerrado é o fluxo legítimo de republicação.
    * EGRESS: select mínimo.
+   *
+   * Com o espelhamento de status ligado (LISTING_STATUS_SYNC_DISABLED ≠ "1"),
+   * o conjunto "vivo" inclui também estados em que o item AINDA EXISTE no
+   * marketplace (moderação/despublicado): under_review/reviewing (ML/Shopee),
+   * unlist (Shopee) e inactive (ML). Antes do espelho essas linhas ficavam
+   * stale em active/paused e o guard as via; sem a ampliação, o primeiro
+   * sweep as tiraria do radar e liberaria criar duplicata. closed/deleted/
+   * banned continuam FORA (republicar é o fluxo legítimo).
    */
   static async findLiveByProductAndAccount(
     productId: string,
     marketplaceAccountId: string,
   ) {
+    const liveStatuses =
+      process.env.LISTING_STATUS_SYNC_DISABLED === "1"
+        ? ["active", "paused"]
+        : ["active", "paused", "under_review", "reviewing", "unlist", "inactive"];
     return prisma.productListing.findFirst({
       where: {
         productId,
         marketplaceAccountId,
-        status: { in: ["active", "paused"] },
+        status: { in: liveStatuses },
         NOT: { externalListingId: { startsWith: "PENDING_" } },
       },
       orderBy: { createdAt: "desc" },

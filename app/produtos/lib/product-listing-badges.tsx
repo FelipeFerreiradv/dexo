@@ -56,14 +56,27 @@ const MARKETPLACE_ICONS: Record<
 
 // Considera "ativo" os mesmos statuses que ACTIVE_LISTING_STATUSES de
 // app/lib/marketplace-listing-links.ts ("active" e "normal"). "paused"/"unlist"
-// contam como pausado. Outros (closed, under_review, error) caem em no-actionable.
+// contam como pausado. Outros (under_review, error) caem em no-actionable.
+// Terminais (closed/deleted/seller_deleted) são NEUTROS: o anúncio não existe
+// mais no marketplace, então não pode entrar no cômputo — com o espelhamento
+// de status ligado, um produto com anúncio ativo + um encerrado precisa
+// continuar mostrando o botão de pausar o ativo.
+const TERMINAL_LISTING_STATUSES = new Set([
+  "closed",
+  "deleted",
+  "seller_deleted",
+]);
+
 export function computeProductPauseState(
   listings: Product["listings"],
 ): ProductPauseState {
   if (!listings || listings.length === 0) return "no-actionable";
 
   const publishable = listings.filter(
-    (l) => l.externalListingId && !l.externalListingId.startsWith("PENDING_"),
+    (l) =>
+      l.externalListingId &&
+      !l.externalListingId.startsWith("PENDING_") &&
+      !TERMINAL_LISTING_STATUSES.has(l.status?.toLowerCase() ?? ""),
   );
 
   if (publishable.length === 0) return "no-actionable";
