@@ -12,6 +12,11 @@ process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/test";
 // explicitamente por caso.
 process.env.ORDER_AUTO_CUSTOMER_DISABLED ??= "1";
 
+// Espelhamento de status marketplace→Dexo: desligado por default na suíte
+// para os specs existentes (webhook de item / stock sync) continuarem
+// byte-idênticos. Os specs da feature reabilitam explicitamente por caso.
+process.env.LISTING_STATUS_SYNC_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
