@@ -14,6 +14,7 @@ import {
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
+import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { Platform } from "@prisma/client";
@@ -744,7 +745,7 @@ export async function listingRoutes(app: FastifyInstance) {
    *                  retryAttempts, nextRetryAt, updatedAt }] }
    */
   app.get<{
-    Querystring: { productId?: string };
+    Querystring: { productId?: string; live?: string };
   }>(
     "/status",
     { preHandler: [authMiddleware] },
@@ -792,11 +793,28 @@ export async function listingRoutes(app: FastifyInstance) {
                 id: true,
                 accountName: true,
                 platform: true,
+                // Campos extras SÓ para o refresh live abaixo — a resposta é
+                // mapeada campo-a-campo e não expõe credenciais.
+                status: true,
+                accessToken: true,
+                refreshToken: true,
+                expiresAt: true,
+                shopId: true,
               },
             },
           },
           orderBy: { updatedAt: "desc" },
         });
+
+        // live=1 (dialog "Anúncios publicados"): consulta o status remoto ao
+        // vivo e grava/retorna o valor fresco. Best-effort — falha devolve o
+        // snapshot do banco, como antes.
+        let changed: Map<string, { status: string; updatedAt: Date }> | null =
+          null;
+        if ((request.query as any)?.live === "1") {
+          changed =
+            await ListingStatusRefreshService.refreshRowsBestEffort(listings);
+        }
 
         return reply.status(200).send({
           productId,
@@ -805,14 +823,14 @@ export async function listingRoutes(app: FastifyInstance) {
             platform: l.marketplaceAccount?.platform,
             accountId: l.marketplaceAccount?.id,
             accountName: l.marketplaceAccount?.accountName,
-            status: l.status,
+            status: changed?.get(l.id)?.status ?? l.status,
             externalListingId: l.externalListingId,
             permalink: l.permalink,
             lastError: l.lastError,
             retryAttempts: l.retryAttempts,
             retryEnabled: l.retryEnabled,
             nextRetryAt: l.nextRetryAt,
-            updatedAt: l.updatedAt,
+            updatedAt: changed?.get(l.id)?.updatedAt ?? l.updatedAt,
           })),
         });
       } catch (error) {
