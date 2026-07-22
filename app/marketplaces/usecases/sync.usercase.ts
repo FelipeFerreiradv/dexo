@@ -29,6 +29,7 @@ import type { MLItemUpdatePayload } from "../types/ml-api.types";
 import type { ShopeeItem } from "../types/shopee-api.types";
 import type { MagaluSku } from "../types/magalu-api.types";
 import { normalizeSku } from "@/app/lib/sku";
+import { normalizeListingStatus } from "../lib/listing-status";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -2944,6 +2945,32 @@ export class SyncUseCase {
     return results;
   }
 
+  /**
+   * Espelha o status remoto no ProductListing local (best-effort, aditivo).
+   * Muta listing.status em memória após gravar, para chamadas subsequentes
+   * na mesma execução compararem contra o valor novo.
+   * Kill-switch: LISTING_STATUS_SYNC_DISABLED=1. Nunca lança.
+   */
+  private static async mirrorListingStatusBestEffort(
+    listing: any,
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    rawRemoteStatus: string | null | undefined,
+  ): Promise<void> {
+    if (process.env.LISTING_STATUS_SYNC_DISABLED === "1") return;
+    if (!listing?.id) return;
+    try {
+      const normalized = normalizeListingStatus(platform, rawRemoteStatus);
+      if (!normalized || normalized === listing.status) return;
+      await ListingRepository.updateStatus(listing.id, normalized);
+      listing.status = normalized;
+    } catch (err) {
+      console.warn(
+        `[SyncUseCase] Espelho de status falhou p/ listing ${listing.id} (sync segue):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   private static async logMLStockWarningAndReturn(
     accountId: string,
     listing: any,
@@ -3038,6 +3065,15 @@ export class SyncUseCase {
       const previousStock = currentItem?.available_quantity ?? 0;
       const currentStatus = currentItem?.status;
 
+      // Espelho marketplace→Dexo: reflete o status remoto ANTES dos gates,
+      // para closed/paused/under_review aparecerem na Dexo mesmo quando o
+      // sync de estoque é ignorado logo abaixo.
+      await this.mirrorListingStatusBestEffort(
+        listing,
+        "MERCADO_LIVRE",
+        currentStatus,
+      );
+
       if (currentStatus === "closed") {
         return this.logMLStockWarningAndReturn(
           account.id,
@@ -3100,6 +3136,14 @@ export class SyncUseCase {
               remoteStatusBefore: currentStatus,
               remoteStatusAfter: "paused",
             },
+          );
+
+          // O remoto acabou de virar paused pela lógica pré-existente acima;
+          // espelha o valor NOVO (o mirror do topo gravou o pré-pausa).
+          await this.mirrorListingStatusBestEffort(
+            listing,
+            "MERCADO_LIVRE",
+            "paused",
           );
 
           return {
@@ -3478,6 +3522,16 @@ export class SyncUseCase {
       );
 
       const previousStock = this.getShopeeAvailableStock(currentItem);
+
+      // Espelho marketplace→Dexo: reflete o status do ITEM antes de qualquer
+      // gate (UNLIST/BANNED aparecem na Dexo mesmo se o sync falhar abaixo).
+      // A API real devolve item_status; o tipo declara status (defesa dupla,
+      // mesma convenção do autodetect).
+      await this.mirrorListingStatusBestEffort(
+        listing,
+        "SHOPEE",
+        (currentItem as any)?.item_status ?? currentItem?.status,
+      );
 
       // Se o item tem variações mas o listing não referencia um model_id,
       // update_stock a nível de item é ignorado pela Shopee.
