@@ -65,12 +65,78 @@ export class CompanyFiscalUseCase {
     return this.repo.findByUserId(userId);
   }
 
+  // ── Multi-CNPJ ──
+
+  async listByUserId(userId: string): Promise<CompanyFiscalConfig[]> {
+    return this.repo.listByUserId(userId);
+  }
+
+  async getByIdForUser(
+    id: string,
+    userId: string,
+  ): Promise<CompanyFiscalConfig | null> {
+    return this.repo.findByIdForUser(id, userId);
+  }
+
+  /**
+   * Cadastra um CNPJ ADICIONAL. Gated por FISCAL_MULTI_CNPJ_ENABLED (só pode
+   * ser ligada após o SQL-2 do docs/multi-cnpj-sql.md — antes disso o unique
+   * antigo de numeração ainda está de pé e um 2º CNPJ colidiria).
+   */
+  async createSecondary(
+    userId: string,
+    data: CompanyFiscalConfigUpsert,
+  ): Promise<CompanyFiscalConfig> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    if (process.env.FISCAL_MULTI_CNPJ_ENABLED !== "true") {
+      throw new Error(
+        "Cadastro de múltiplos CNPJs não está habilitado. Contate o suporte.",
+      );
+    }
+    const defaultConfig = await this.repo.findDefaultByUserId(userId);
+    if (!defaultConfig) {
+      throw new Error(
+        "Configure a empresa principal antes de adicionar outro CNPJ.",
+      );
+    }
+    this.validateUpsert(data);
+    return this.repo.createSecondary(userId, data);
+  }
+
+  async updateById(
+    id: string,
+    userId: string,
+    data: CompanyFiscalConfigUpsert,
+  ): Promise<CompanyFiscalConfig> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    this.validateUpsert(data);
+    return this.repo.updateById(id, userId, data);
+  }
+
+  async setDefault(id: string, userId: string): Promise<void> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    return this.repo.setDefault(id, userId);
+  }
+
+  async deleteById(id: string, userId: string): Promise<void> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    return this.repo.deleteById(id, userId);
+  }
+
   async upsert(
     userId: string,
     data: CompanyFiscalConfigUpsert,
   ): Promise<CompanyFiscalConfig> {
     if (!userId) throw new Error("Usuário não encontrado");
+    this.validateUpsert(data);
+    return this.repo.upsert(userId, data);
+  }
 
+  /**
+   * Validações compartilhadas entre upsert (legado), createSecondary e
+   * updateById — extraídas para os três caminhos nunca divergirem.
+   */
+  private validateUpsert(data: CompanyFiscalConfigUpsert): void {
     if (!data.cnpj || !isValidCnpj(data.cnpj)) {
       throw new Error("CNPJ inválido");
     }
@@ -126,8 +192,6 @@ export class CompanyFiscalUseCase {
         throw new Error("Série da NF-e deve ser um inteiro entre 1 e 999");
       }
     }
-
-    return this.repo.upsert(userId, data);
   }
 
   /**
@@ -144,6 +208,7 @@ export class CompanyFiscalUseCase {
     userId: string,
     pfxBuffer: Buffer,
     senha: string,
+    configId?: string,
   ): Promise<CertificateUploadResult> {
     if (!userId) {
       return { ok: false, status: 401, error: "Usuário não encontrado" };
@@ -160,14 +225,20 @@ export class CompanyFiscalUseCase {
     }
 
     // A empresa precisa existir para conferirmos o CNPJ do emissor.
-    const config = await this.repo.findByUserId(userId);
+    // Multi-CNPJ: com `configId`, o certificado é da empresa selecionada e o
+    // CNPJ conferido é o DELA; sem, caminho legado (empresa padrão) intacto.
+    const config = configId
+      ? await this.repo.findByIdForUser(configId, userId)
+      : await this.repo.findByUserId(userId);
     if (!config) {
-      return {
-        ok: false,
-        status: 409,
-        error:
-          "Salve os dados da empresa (CNPJ e endereço) antes de enviar o certificado.",
-      };
+      return configId
+        ? { ok: false, status: 404, error: "Empresa não encontrada" }
+        : {
+            ok: false,
+            status: 409,
+            error:
+              "Salve os dados da empresa (CNPJ e endereço) antes de enviar o certificado.",
+          };
     }
 
     const validation = validateCertForEmitter(pfxBuffer, senha, config.cnpj);
@@ -179,14 +250,29 @@ export class CompanyFiscalUseCase {
     // CertificateManagerService falha fechado (lança) sem FISCAL_CERT_ENC_KEY
     // válida em produção; cifrando primeiro, esse erro aborta sem deixar um
     // .pfx órfão no filesystem. Erros aqui sobem como exceção → 500 na rota.
+    // Path SEMPRE por config (certs/<userId>-<configId>.pfx), inclusive na
+    // rota legada: o path por-usuário era compartilhável entre configs — com
+    // multi-CNPJ, um upload pelo caminho legado (que opera sobre o PADRÃO,
+    // mutável via setDefault) sobrescreveria o A1 de OUTRO CNPJ cujo registro
+    // ainda aponta para certs/<userId>.pfx. Certificados antigos continuam
+    // lidos do path gravado na própria linha.
     const senhaEnc = this.getCertManager().encryptPassword(senha);
-    const certPath = await this.storage.saveCertificate(userId, pfxBuffer);
-    await this.repo.updateCertificate(userId, {
+    const certPath = await this.storage.saveCertificate(
+      userId,
+      pfxBuffer,
+      config.id,
+    );
+    const certData = {
       certificadoPath: certPath,
       certificadoSenhaEnc: senhaEnc,
       certificadoValidoAte: validation.notAfter as Date,
       certificadoSubjectCN: validation.subjectCN ?? null,
-    });
+    };
+    if (configId) {
+      await this.repo.updateCertificateById(config.id, userId, certData);
+    } else {
+      await this.repo.updateCertificate(userId, certData);
+    }
 
     return {
       ok: true,

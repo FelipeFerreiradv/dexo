@@ -58,9 +58,12 @@ async function main(): Promise<void> {
     process.exit(3);
   }
 
-  // 1. Empresa precisa existir
-  const config = await (prisma as any).companyFiscalConfig.findUnique({
+  // 1. Empresa precisa existir. Multi-CNPJ: userId deixou de ser unique —
+  // findFirst com "padrão primeiro" pega a config PADRÃO do tenant (única
+  // linha no legado; para tenant multi-CNPJ, use a UI por empresa).
+  const config = await (prisma as any).companyFiscalConfig.findFirst({
     where: { userId },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
   if (!config) {
     console.error(
@@ -153,13 +156,14 @@ async function main(): Promise<void> {
     data.ambiente = ambiente;
   }
 
+  // Multi-CNPJ: atualiza pela linha resolvida acima (userId não é mais unique).
   await (prisma as any).companyFiscalConfig.update({
-    where: { userId },
+    where: { id: config.id },
     data,
   });
 
-  const updated = await (prisma as any).companyFiscalConfig.findUnique({
-    where: { userId },
+  const updated = await (prisma as any).companyFiscalConfig.findFirst({
+    where: { id: config.id },
   });
 
   console.log("\n✓ Certificado A1 cadastrado e provider definido como SEFAZ_DIRECT.\n");

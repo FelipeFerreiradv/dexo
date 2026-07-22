@@ -49,18 +49,36 @@ export class NfeListingUseCase {
     userId: string,
     ano: number,
     mes: number,
+    // Multi-CNPJ: emitente do relatório. Ausente ⇒ CNPJ padrão. O cabeçalho e
+    // as notas são SEMPRE do mesmo emitente (nota de outro CNPJ do tenant
+    // nunca entra carimbada com o CNPJ errado). Tenant de 1 CNPJ: mesmo
+    // conjunto de notas de antes (config única + notas legadas NULL).
+    companyId?: string | null,
   ): Promise<{ xml: string; quantidade: number }> {
     // 00:00 de Brasília = 03:00 UTC (offset fixo -03:00, sem horário de verão
     // desde 2019 — mesma convenção do dhEmi gravado na emissão).
     const inicio = new Date(Date.UTC(ano, mes - 1, 1, 3, 0, 0));
     const fim = new Date(Date.UTC(ano, mes, 1, 3, 0, 0));
+
+    const config = companyId
+      ? await this.configRepo.findByIdForUser(companyId, userId)
+      : await this.configRepo.findByUserId(userId).catch(() => null);
+    if (companyId && !config) {
+      throw new Error("Emitente selecionado não encontrado");
+    }
+
     const rows = await this.repo.findAuthorizedByEmissionMonth(
       userId,
       inicio,
       fim,
+      config
+        ? {
+            companyFiscalConfigId: config.id,
+            // Notas da era 1-CNPJ (NULL) pertencem ao padrão do tenant.
+            includeLegacyNull: companyId ? (config.isDefault ?? true) : true,
+          }
+        : undefined,
     );
-
-    const config = await this.configRepo.findByUserId(userId).catch(() => null);
     const emitSnapshot = (rows[0]?.emitenteJson ?? {}) as any;
     const emitente = {
       cnpj: config?.cnpj ?? emitSnapshot.cnpj ?? "",

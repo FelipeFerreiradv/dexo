@@ -112,18 +112,18 @@ async function main(): Promise<void> {
   }
 
   // Reset da NfeSequence avançada pela migração (restaura o estado anterior).
-  const seqAtual = await prisma.nfeSequence.findUnique({
-    where: { userId_ambiente_serie_modelo: { userId, ambiente, serie, modelo: "55" } },
-    select: { proximoNumero: true },
+  // Multi-CNPJ: o @@unique composto saiu do schema — findFirst + delete por
+  // id (forma válida no client velho E novo). Migração é de tenant 1-CNPJ.
+  const seqAtual = await prisma.nfeSequence.findFirst({
+    where: { userId, ambiente, serie, modelo: "55" },
+    select: { id: true, proximoNumero: true },
   });
   sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual?.proximoNumero ?? null, acao: "nenhuma" };
   if (resetSequence && seqAtual) {
     if (dryRun) {
       sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual.proximoNumero, acao: "APAGARIA a linha" };
     } else {
-      await prisma.nfeSequence.delete({
-        where: { userId_ambiente_serie_modelo: { userId, ambiente, serie, modelo: "55" } },
-      });
+      await prisma.nfeSequence.delete({ where: { id: seqAtual.id } });
       sum.sequence = { ambiente, serie, proximoNumero_atual: seqAtual.proximoNumero, acao: "linha APAGADA (volta a 1)" };
     }
   }

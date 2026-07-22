@@ -32,8 +32,12 @@ vi.mock("../../app/lib/prisma", () => ({
       return fn(mockTx);
     }),
     nfeSequence: {
-      findUnique: vi.fn(async () => null),
-      upsert: vi.fn(async (args: any) => args.create || args.update),
+      // Multi-CNPJ: o @@unique composto por userId saiu do schema; consultar/
+      // ajustar passaram de findUnique/upsert para findFirst + update/create.
+      // Mesmas semânticas — o mock apenas acompanha a forma da chamada.
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async (args: any) => args.data),
+      update: vi.fn(async (args: any) => args.data),
     },
   },
 }));

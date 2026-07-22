@@ -23,6 +23,7 @@ import {
   type NfeHistoricCreate,
 } from "../../repositories/nfe.repository";
 import { NfeSequenceService } from "../../fiscal/sequence/nfe-sequence.service";
+import { CompanyFiscalRepository } from "../../repositories/company-fiscal.repository";
 import type { ImportContext, ImportReport } from "./import.types";
 import {
   ImportValidationError,
@@ -59,21 +60,49 @@ export interface NfeImportDeps {
 
 const nfeRepository = new NfeRepository();
 const nfeSequenceService = new NfeSequenceService();
+const companyFiscalRepository = new CompanyFiscalRepository();
+
+// Multi-CNPJ: notas históricas pertencem ao CNPJ PADRÃO do tenant — o
+// carimbo na nota (unique parcial por emitente) e o avanço do contador têm
+// que mirar a config padrão, nunca a de outro CNPJ do tenant. Cache por
+// userId: o import roda em lote para um único tenant.
+const defaultConfigIdCache = new Map<string, string | null>();
+async function resolveDefaultConfigId(userId: string): Promise<string | null> {
+  if (!defaultConfigIdCache.has(userId)) {
+    const cfg = await companyFiscalRepository
+      .findDefaultByUserId(userId)
+      .catch(() => null);
+    defaultConfigIdCache.set(userId, cfg?.id ?? null);
+  }
+  return defaultConfigIdCache.get(userId) ?? null;
+}
 
 export const defaultNfeImportDeps: NfeImportDeps = {
-  createHistoric: (data) => nfeRepository.createHistoric(data),
+  createHistoric: async (data) => {
+    const companyFiscalConfigId = await resolveDefaultConfigId(data.userId);
+    return nfeRepository.createHistoric({
+      ...data,
+      ...(companyFiscalConfigId ? { companyFiscalConfigId } : {}),
+    });
+  },
   loadExisting: (userId, ambiente) =>
     prisma.nfeEmitida.findMany({
       where: { userId, ambiente },
       select: { serie: true, numero: true, chaveAcesso: true },
     }),
-  ajustarProximoNumero: (userId, ambiente, serie, novoNumero) =>
-    nfeSequenceService.ajustarProximoNumero(
+  ajustarProximoNumero: async (userId, ambiente, serie, novoNumero) => {
+    const companyFiscalConfigId = await resolveDefaultConfigId(userId);
+    return nfeSequenceService.ajustarProximoNumero(
       userId,
       ambiente as never,
       serie,
       novoNumero,
-    ),
+      "55",
+      companyFiscalConfigId
+        ? { companyFiscalConfigId, isDefaultConfig: true }
+        : undefined,
+    );
+  },
 };
 
 function isUniqueViolation(err: unknown): boolean {

@@ -7,8 +7,11 @@ const OTHER_CNPJ = "11222333000181";
 const USER_ID = "user-123";
 
 function makeUseCase(opts: { config: any }) {
+  // Multi-CNPJ: todo upload grava path POR CONFIG (certs/<userId>-<configId>.pfx)
+  // — o path por-usuário permitiria um CNPJ sobrescrever o A1 do outro.
   const saveCertificate = vi.fn(
-    async (userId: string) => `/storage/certs/${userId}.pfx`,
+    async (userId: string, _buf: Buffer, configId?: string) =>
+      `/storage/certs/${userId}-${configId}.pfx`,
   );
   const updateCertificate = vi.fn(async (userId: string, data: any) => ({
     ...opts.config,
@@ -38,17 +41,17 @@ describe("CompanyFiscalUseCase.uploadCertificate", () => {
       daysValid: 200,
     });
     const { useCase, saveCertificate, updateCertificate, encryptPassword } =
-      makeUseCase({ config: { cnpj: EMITTER_CNPJ } });
+      makeUseCase({ config: { id: "cfg-1", cnpj: EMITTER_CNPJ } });
 
     const r = await useCase.uploadCertificate(USER_ID, tc.pfxBuffer, tc.password);
 
     expect(r.ok).toBe(true);
     expect(r.cnpjMatched).toBe(true);
-    expect(saveCertificate).toHaveBeenCalledWith(USER_ID, tc.pfxBuffer);
+    expect(saveCertificate).toHaveBeenCalledWith(USER_ID, tc.pfxBuffer, "cfg-1");
     expect(encryptPassword).toHaveBeenCalledWith(tc.password);
     expect(updateCertificate).toHaveBeenCalledTimes(1);
     const [, data] = updateCertificate.mock.calls[0];
-    expect(data.certificadoPath).toBe(`/storage/certs/${USER_ID}.pfx`);
+    expect(data.certificadoPath).toBe(`/storage/certs/${USER_ID}-cfg-1.pfx`);
     expect(data.certificadoSenhaEnc).toBe(`enc(${tc.password})`);
     expect(data.certificadoValidoAte.getTime()).toBeGreaterThan(Date.now());
     expect(data.certificadoSubjectCN).toBe(`EMPRESA TESTE:${EMITTER_CNPJ}`);
@@ -127,5 +130,110 @@ describe("CompanyFiscalUseCase.uploadCertificate", () => {
     expect(r.status).toBe(400);
     // validacao de senha vazia ocorre antes de buscar a empresa
     expect(repo.findByUserId).not.toHaveBeenCalled();
+  });
+});
+
+// ── Multi-CNPJ: upload por empresa específica (configId) ──
+// O caminho LEGADO acima permanece intacto (mesma aridade das chamadas).
+
+function makeUseCaseMulti(opts: { configById: any }) {
+  const saveCertificate = vi.fn(
+    async (userId: string, _buf: Buffer, configId?: string) =>
+      configId
+        ? `/storage/certs/${userId}-${configId}.pfx`
+        : `/storage/certs/${userId}.pfx`,
+  );
+  const updateCertificate = vi.fn();
+  const updateCertificateById = vi.fn(
+    async (_id: string, _userId: string, data: any) => ({
+      ...opts.configById,
+      ...data,
+    }),
+  );
+  const encryptPassword = vi.fn((s: string) => `enc(${s})`);
+
+  const repo = {
+    findByUserId: vi.fn(),
+    findByIdForUser: vi.fn(async () => opts.configById),
+    updateCertificate,
+    updateCertificateById,
+  };
+  const storage = { saveCertificate };
+  const certManager = { encryptPassword };
+
+  const useCase = new CompanyFiscalUseCase(
+    repo as any,
+    storage as any,
+    certManager as any,
+  );
+  return { useCase, saveCertificate, updateCertificate, updateCertificateById, repo };
+}
+
+describe("CompanyFiscalUseCase.uploadCertificate — por empresa (multi-CNPJ)", () => {
+  it("com configId: valida o CNPJ DA empresa, grava em path próprio e atualiza a linha certa", async () => {
+    const tc = generateTestCertificate({
+      subjectCN: `FILIAL TESTE:${OTHER_CNPJ}`,
+      daysValid: 200,
+    });
+    const { useCase, saveCertificate, updateCertificate, updateCertificateById, repo } =
+      makeUseCaseMulti({ configById: { id: "cfg-B", cnpj: OTHER_CNPJ } });
+
+    const r = await useCase.uploadCertificate(
+      USER_ID,
+      tc.pfxBuffer,
+      tc.password,
+      "cfg-B",
+    );
+
+    expect(r.ok).toBe(true);
+    expect(r.cnpjMatched).toBe(true);
+    expect(repo.findByIdForUser).toHaveBeenCalledWith("cfg-B", USER_ID);
+    expect(repo.findByUserId).not.toHaveBeenCalled();
+    // Path POR CONFIG — nunca sobrescreve o legado certs/<userId>.pfx.
+    expect(saveCertificate).toHaveBeenCalledWith(USER_ID, tc.pfxBuffer, "cfg-B");
+    expect(updateCertificateById).toHaveBeenCalledTimes(1);
+    expect(updateCertificateById.mock.calls[0][0]).toBe("cfg-B");
+    expect(updateCertificate).not.toHaveBeenCalled();
+  });
+
+  it("configId inexistente/de outro tenant → 404 sem persistir nada", async () => {
+    const tc = generateTestCertificate({ subjectCN: `X:${OTHER_CNPJ}` });
+    const { useCase, saveCertificate, updateCertificateById } = makeUseCaseMulti({
+      configById: null,
+    });
+
+    const r = await useCase.uploadCertificate(
+      USER_ID,
+      tc.pfxBuffer,
+      tc.password,
+      "cfg-x",
+    );
+
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(404);
+    expect(saveCertificate).not.toHaveBeenCalled();
+    expect(updateCertificateById).not.toHaveBeenCalled();
+  });
+
+  it("cert de CNPJ diferente do da empresa selecionada → 400 (confere contra ELA)", async () => {
+    const tc = generateTestCertificate({
+      subjectCN: `MATRIZ:${EMITTER_CNPJ}`,
+      daysValid: 200,
+    });
+    const { useCase, saveCertificate } = makeUseCaseMulti({
+      configById: { id: "cfg-B", cnpj: OTHER_CNPJ },
+    });
+
+    const r = await useCase.uploadCertificate(
+      USER_ID,
+      tc.pfxBuffer,
+      tc.password,
+      "cfg-B",
+    );
+
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(400);
+    expect(r.error).toMatch(/CNPJ/);
+    expect(saveCertificate).not.toHaveBeenCalled();
   });
 });

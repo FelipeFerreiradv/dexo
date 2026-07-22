@@ -6,8 +6,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const h = vi.hoisted(() => {
   const queryCalls: Array<{ sql: string; params: unknown[] }> = [];
-  const findUnique = vi.fn();
-  const upsert = vi.fn();
+  // Multi-CNPJ: o @@unique composto por userId saiu do schema; consultar/
+  // ajustar passaram de findUnique/upsert para findFirst + update/create.
+  // Mesmas semânticas — o mock apenas acompanha a forma da chamada.
+  const findFirst = vi.fn();
+  const create = vi.fn();
+  const update = vi.fn();
   const tx = {
     $queryRawUnsafe: vi.fn(async (sql: string, ...params: unknown[]) => {
       queryCalls.push({ sql, params });
@@ -19,9 +23,9 @@ const h = vi.hoisted(() => {
   };
   const prisma = {
     $transaction: vi.fn(async (fn: any) => fn(tx)),
-    nfeSequence: { findUnique, upsert },
+    nfeSequence: { findFirst, create, update },
   };
-  return { prisma, queryCalls, findUnique, upsert };
+  return { prisma, queryCalls, findFirst, create, update };
 });
 
 vi.mock("../../app/lib/prisma", () => ({ default: h.prisma }));
@@ -31,8 +35,9 @@ import { NfeSequenceService } from "../../app/fiscal/sequence/nfe-sequence.servi
 
 beforeEach(() => {
   h.queryCalls.length = 0;
-  h.findUnique.mockReset();
-  h.upsert.mockReset();
+  h.findFirst.mockReset();
+  h.create.mockReset();
+  h.update.mockReset();
 });
 
 describe("NfeSequenceService — dimensão modelo", () => {
@@ -75,38 +80,36 @@ describe("NfeSequenceService — dimensão modelo", () => {
   });
 
   it("consultar usa o seletor composto COM modelo (default '55')", async () => {
-    h.findUnique.mockResolvedValue({ proximoNumero: 3 });
+    h.findFirst.mockResolvedValue({ proximoNumero: 3 });
     const svc = new NfeSequenceService();
     const n = await svc.consultarProximoNumero("u1", "HOMOLOGACAO", 1);
     expect(n).toBe(3);
-    expect(h.findUnique).toHaveBeenCalledWith({
-      where: {
-        userId_ambiente_serie_modelo: {
+    expect(h.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
           userId: "u1",
           ambiente: "HOMOLOGACAO",
           serie: 1,
           modelo: "55",
-        },
-      },
-      select: { proximoNumero: true },
-    });
+        }),
+        select: { proximoNumero: true },
+      }),
+    );
   });
 
-  it("ajustar propaga modelo no upsert (create inclui modelo)", async () => {
-    h.findUnique.mockResolvedValue(null);
+  it("ajustar propaga modelo no create (primeira linha da combinação)", async () => {
+    h.findFirst.mockResolvedValue(null);
     const svc = new NfeSequenceService();
     await svc.ajustarProximoNumero("u1", "HOMOLOGACAO", 1, 10, "65");
-    expect(h.upsert).toHaveBeenCalledWith(
+    expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          userId_ambiente_serie_modelo: {
-            userId: "u1",
-            ambiente: "HOMOLOGACAO",
-            serie: 1,
-            modelo: "65",
-          },
-        },
-        create: expect.objectContaining({ modelo: "65", proximoNumero: 10 }),
+        data: expect.objectContaining({
+          userId: "u1",
+          ambiente: "HOMOLOGACAO",
+          serie: 1,
+          modelo: "65",
+          proximoNumero: 10,
+        }),
       }),
     );
   });

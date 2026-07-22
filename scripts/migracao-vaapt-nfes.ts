@@ -316,20 +316,27 @@ async function main(): Promise<void> {
   // Sem --seq-start explícito, deriva do maior número importado + 1.
   const effectiveSeqStart = flags.seqStart ?? sum.numero_max + 1;
   {
-    const existingSeq = await prisma.nfeSequence.findUnique({
-      where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" } },
-      select: { proximoNumero: true },
+    // Multi-CNPJ: o @@unique composto saiu do schema — findFirst + update por
+    // id (forma válida no client velho E novo). Migração é de tenant 1-CNPJ.
+    const existingSeq = await prisma.nfeSequence.findFirst({
+      where: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" },
+      select: { id: true, proximoNumero: true },
     });
     const current = existingSeq?.proximoNumero ?? 1;
     const novo = Math.max(current, effectiveSeqStart);
     sum.seq_de = current;
     sum.seq_para = novo;
     if (!flags.dryRun && !flags.skipSeqAdvance && (novo !== current || !existingSeq)) {
-      await prisma.nfeSequence.upsert({
-        where: { userId_ambiente_serie_modelo: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, modelo: "55" } },
-        create: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, proximoNumero: novo },
-        update: { proximoNumero: novo },
-      });
+      if (existingSeq) {
+        await prisma.nfeSequence.update({
+          where: { id: existingSeq.id },
+          data: { proximoNumero: novo },
+        });
+      } else {
+        await prisma.nfeSequence.create({
+          data: { userId: flags.userId, ambiente: AMBIENTE, serie: 1, proximoNumero: novo },
+        });
+      }
     }
   }
 

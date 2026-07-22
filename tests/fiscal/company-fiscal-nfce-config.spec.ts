@@ -4,15 +4,23 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // saneamento/preserve-when-blank no repository e sanitize na rota.
 
 const h = vi.hoisted(() => {
-  const upsert = vi.fn(async (args: any) => ({
+  // Multi-CNPJ: o @unique(userId) saiu do schema; o repo.upsert legado passou
+  // de prisma.upsert para findFirst (config padrão) + update/create. Mesmas
+  // semânticas de preserve-when-blank — o mock acompanha a forma da chamada.
+  const findFirst = vi.fn(async (): Promise<any> => null);
+  const create = vi.fn(async (args: any) => ({
     id: "cfg-1",
-    userId: args.where.userId,
-    ...args.create,
+    ...args.data,
+  }));
+  const update = vi.fn(async (args: any) => ({
+    id: args.where.id,
+    userId: "u1",
+    ...args.data,
   }));
   const prisma = {
-    companyFiscalConfig: { upsert, findUnique: vi.fn() },
+    companyFiscalConfig: { findFirst, create, update },
   };
-  return { prisma, upsert };
+  return { prisma, findFirst, create, update };
 });
 
 vi.mock("../../app/lib/prisma", () => ({ default: h.prisma }));
@@ -30,7 +38,10 @@ const BASE = {
 };
 
 beforeEach(() => {
-  h.upsert.mockClear();
+  h.findFirst.mockReset();
+  h.findFirst.mockResolvedValue(null);
+  h.create.mockClear();
+  h.update.mockClear();
 });
 
 describe("CompanyFiscalUseCase — validações NFC-e", () => {
@@ -59,7 +70,11 @@ describe("CompanyFiscalUseCase — validações NFC-e", () => {
 });
 
 describe("CompanyFiscalRepository — saneamento + preserve-when-blank do CSC", () => {
+  const EXISTING = { id: "cfg-1", userId: "u1", isDefault: true };
+
   it("cscToken vazio NÃO entra no update (preserva o salvo); cscId/ncmPadrao saneados", async () => {
+    // Config existente → ramo de UPDATE (era o `update` do prisma.upsert).
+    h.findFirst.mockResolvedValue(EXISTING);
     const repo = new CompanyFiscalRepository();
     await repo.upsert("u1", {
       ...BASE,
@@ -69,33 +84,40 @@ describe("CompanyFiscalRepository — saneamento + preserve-when-blank do CSC", 
       serieNfce: 3,
     });
 
-    const args = h.upsert.mock.calls[0][0];
-    expect(args.update).not.toHaveProperty("cscToken");
-    expect(args.update.cscId).toBe("000001");
-    expect(args.update.ncmPadrao).toBe("87089990");
-    expect(args.update.serieNfce).toBe(3);
-    // create de primeira configuração: segredo nulo quando não informado.
-    expect(args.create.cscToken).toBeNull();
+    const data = h.update.mock.calls[0][0].data;
+    expect(data).not.toHaveProperty("cscToken");
+    expect(data.cscId).toBe("000001");
+    expect(data.ncmPadrao).toBe("87089990");
+    expect(data.serieNfce).toBe(3);
+
+    // Primeira configuração (sem linha) → ramo de CREATE: segredo nulo
+    // quando não informado (era o `create` do prisma.upsert).
+    h.findFirst.mockResolvedValue(null);
+    h.create.mockClear();
+    await repo.upsert("u1", { ...BASE, cscToken: "" });
+    expect(h.create.mock.calls[0][0].data.cscToken).toBeNull();
   });
 
   it("cscToken informado ENTRA no update (substitui o salvo)", async () => {
+    h.findFirst.mockResolvedValue(EXISTING);
     const repo = new CompanyFiscalRepository();
     await repo.upsert("u1", { ...BASE, cscToken: "  NOVO-CSC  " });
-    const args = h.upsert.mock.calls[0][0];
-    expect(args.update.cscToken).toBe("NOVO-CSC");
-    expect(args.create.cscToken).toBe("NOVO-CSC");
+    expect(h.update.mock.calls[0][0].data.cscToken).toBe("NOVO-CSC");
+
+    h.findFirst.mockResolvedValue(null);
+    await repo.upsert("u1", { ...BASE, cscToken: "  NOVO-CSC  " });
+    expect(h.create.mock.calls[0][0].data.cscToken).toBe("NOVO-CSC");
   });
 
   it("REGRESSAO: providerToken mantém o preserve-when-blank original", async () => {
+    h.findFirst.mockResolvedValue(EXISTING);
     const repo = new CompanyFiscalRepository();
     await repo.upsert("u1", { ...BASE, providerToken: "" });
-    let args = h.upsert.mock.calls[0][0];
-    expect(args.update).not.toHaveProperty("providerToken");
+    expect(h.update.mock.calls[0][0].data).not.toHaveProperty("providerToken");
 
-    h.upsert.mockClear();
+    h.update.mockClear();
     await repo.upsert("u1", { ...BASE, providerToken: "tok" });
-    args = h.upsert.mock.calls[0][0];
-    expect(args.update.providerToken).toBe("tok");
+    expect(h.update.mock.calls[0][0].data.providerToken).toBe("tok");
   });
 });
 

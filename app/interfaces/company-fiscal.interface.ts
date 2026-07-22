@@ -48,6 +48,11 @@ export interface CompanyFiscalConfig {
   /** NCM padrão (8 dígitos) p/ autopreencher itens sem NCM. */
   ncmPadrao?: string | null;
 
+  // ── Multi-CNPJ. OPCIONAL para não quebrar construções literais existentes
+  // (projeção from-xml, fixtures) — ausente equivale ao único CNPJ do tenant. ──
+  /** CNPJ padrão do tenant (usado por todo caminho sem seleção explícita). */
+  isDefault?: boolean;
+
   createdAt: Date;
   updatedAt: Date;
 }
