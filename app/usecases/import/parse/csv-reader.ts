@@ -84,14 +84,29 @@ export interface ParsedTable {
 }
 
 /**
- * Decodifica o CSV. UTF-8 primeiro; se a decodificação produziu U+FFFD, os
- * bytes não eram UTF-8 válido — cai para cp1252/latin1, que é o que o Excel
- * brasileiro escreve. Sem isto, "Localização" vira "Localiza��o", o normKey
- * do cabeçalho muda e o arquivo inteiro cai em DESCONHECIDO.
+ * Decodifica o CSV. Tenta UTF-8 em modo ESTRITO; se os bytes não forem UTF-8
+ * válido, cai para cp1252/latin1, que é o que exportador BR costuma escrever.
+ * Sem o fallback, "Localização" vira "Localiza??o", o normKey do cabeçalho
+ * muda e o arquivo inteiro cai em DESCONHECIDO.
+ *
+ * Por que decode ESTRITO e não "procurar U+FFFD no texto decodificado":
+ * o decode tolerante só emite U+FFFD quando encontra sequência inválida — o
+ * mesmo caso em que o estrito lança. A única diferença é o arquivo que já
+ * TRAZ um U+FFFD gravado (base legada convertida duas vezes): esse é UTF-8
+ * legítimo e o sniff por caractere o mandava para latin1 sem necessidade,
+ * transformando o cabeçalho em mojibake.
+ *
+ * `ignoreBOM` mantém o BOM no texto — quem o remove é o chamador, e é assim
+ * que a diretiva `sep=` da 1ª linha continua casando.
  */
 function decodeCsvText(buffer: Buffer): string {
-  const utf8 = buffer.toString("utf8");
-  return utf8.includes("�") ? buffer.toString("latin1") : utf8;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      buffer,
+    );
+  } catch {
+    return buffer.toString("latin1");
+  }
 }
 
 /**

@@ -267,6 +267,20 @@ describe("leitura — encoding e formatos que faziam o arquivo virar DESCONHECID
     expect(detectFile(f).kind).toBe("VAAPT_PECAS");
   });
 
+  it("CSV UTF-8 que CONTÉM um U+FFFD gravado não é reinterpretado como latin1", () => {
+    // O sniff antigo procurava U+FFFD no texto decodificado; um arquivo de
+    // base legada que já traz esse caractere é UTF-8 VÁLIDO e virava mojibake
+    // ("Localização" → "LocalizaÃ§Ã£o"), derrubando a detecção.
+    const f = {
+      fieldname: "file",
+      filename: "pecas-com-fffd.csv",
+      buffer: Buffer.from("# Cod Peca;Localização\n100;peça � ok\n", "utf8"),
+    };
+    const d = detectFile(f);
+    expect(d.kind).toBe("VAAPT_PECAS");
+    expect(d.get(d.rows[0], "Localização")).toBe("peça � ok");
+  });
+
   it("CSV com a diretiva sep=; do Excel não confunde o cabeçalho", () => {
     const f = {
       fieldname: "file",

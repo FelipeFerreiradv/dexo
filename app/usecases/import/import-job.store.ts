@@ -112,6 +112,9 @@ export class SystemLogImportJobStore implements ImportJobStore {
     const write = prisma.systemLog.update({
       where: { id: jobId },
       data: { details: details as unknown as object },
+      // EGRESS: sem `select`, o UPDATE devolve a linha inteira — inclusive o
+      // JSONB `details` que acabamos de escrever. O retorno é descartado.
+      select: { id: true },
     });
     this.inFlight.set(jobId, write);
     try {
@@ -140,6 +143,9 @@ export class SystemLogImportJobStore implements ImportJobStore {
         details: details as unknown as object,
         ...(level ? { level } : {}),
       },
+      // EGRESS: o relatório final do PACOTE tem 6 sub-relatórios; sem `select`
+      // o UPDATE devolveria todo esse JSONB de volta, só para descartar.
+      select: { id: true },
     });
     // Só limpa DEPOIS de gravar: se a escrita falhar, o job continua conhecido
     // e o `fail` do worker ainda consegue registrar o erro (com `finally` aqui,

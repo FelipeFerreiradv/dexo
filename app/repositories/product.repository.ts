@@ -969,7 +969,15 @@ class ProductRepositoryPrisma implements ProductRepository {
             ? { compatibilities: { create: compatInput } }
             : {}),
         },
-        include: { compatibilities: true },
+        // PERF: `include` de relação to-many vira um SELECT SEPARADO no Prisma.
+        // Sem compatibilidades no payload, esse SELECT volta SEMPRE vazio — um
+        // round-trip jogado fora por produto criado, e o "Importar anúncios"
+        // cria produto a produto, em série. O objeto devolvido não muda:
+        // `mapPrismaCompatibilities` colapsa `[]` e `undefined` no mesmo
+        // `undefined`.
+        ...(compatInput.length > 0
+          ? { include: { compatibilities: true } }
+          : {}),
       });
 
       return mapPrismaToProduct(result);
