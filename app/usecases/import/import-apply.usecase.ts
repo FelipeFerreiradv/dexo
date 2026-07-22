@@ -59,6 +59,7 @@ export class ImportApplyUseCase {
         system,
         entity,
         files: detected,
+        ignored,
       } = resolveEffectiveSelection(input.system, input.entity, input.files);
 
       const expected = computePreviewHash({
@@ -94,7 +95,7 @@ export class ImportApplyUseCase {
 
       jobStarted = true;
       setImmediate(() => {
-        void this.runJob(jobId, input, detected, runner).finally(() => {
+        void this.runJob(jobId, input, detected, runner, ignored).finally(() => {
           applyingTargets.delete(input.targetUserId);
         });
       });
@@ -112,6 +113,7 @@ export class ImportApplyUseCase {
     input: { targetUserId: string },
     files: ReturnType<typeof resolveEffectiveSelection>["files"],
     runner: ReturnType<typeof resolveRunner>,
+    ignored: ReturnType<typeof resolveEffectiveSelection>["ignored"],
   ): Promise<void> {
     try {
       const report = await runner({
@@ -123,6 +125,14 @@ export class ImportApplyUseCase {
           void this.store.heartbeat(jobId, p).catch(() => undefined);
         },
       });
+      // O apply roda assíncrono e o operador só vê o relatório final — sem
+      // isto, um arquivo que o motor descartou some sem deixar rastro.
+      if (ignored.length > 0) {
+        report.ignorados = ignored.map((i) => ({
+          arquivo: i.filename,
+          motivo: i.motivo,
+        }));
+      }
       await this.store.finish(jobId, report);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

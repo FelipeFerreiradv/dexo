@@ -34,6 +34,9 @@ export type ImportEntity =
   | "CONTAS"
   | "NFE"
   | "PACOTE"
+  // Fotos das peças do sistema legado: casa a peça pelo SKU e preenche
+  // imageUrl/imageUrls de quem ainda não tem imagem.
+  | "FOTOS"
   // Estoque IBR: cria a árvore de localizações do próprio arquivo, casa o
   // produto por SKU (vincula a localização) e cria os produtos faltantes.
   | "ESTOQUE";
@@ -53,8 +56,16 @@ export interface ImportFile {
 export type DetectedKind =
   | "VAAPT_PECAS" // arquivo-ponte Vaapt: "# Cod Peca" + "Localizacao" (+ "Cod Veiculo")
   | "VAAPT_CLIENTES" // "# Cod Cliente" + "Nome Cliente" + "TipoPessoa"
-  | "VAAPT_VEICULOS" // "# Codigo Veiculo" + "Marca" + "Modelo" (pode não vir no pacote)
+  // "# Codigo Veiculo" + ≥2 atributos de veículo. Há DUAS variantes reais do
+  // mesmo relatório: a clássica ("Marca/Modelo/Chassi/…") e a de imagens
+  // ("Placa/numero motor/Numero chassi/Renavam/valor_compra/data_compra",
+  // uma linha por foto). Exigir Marca+Modelo deixava a 2ª como DESCONHECIDO.
+  | "VAAPT_VEICULOS"
   | "VAAPT_NFE" // resumo invoicy (aba "Java Books", rótulos deslocados)
+  // Fotos das peças ("# idPeca" + "Link das imagens"): uma linha por FOTO,
+  // com a peça repetida. "# idPeca" == "# Cod Peca" da planilha de peças, que
+  // é o SKU do produto no Dexo.
+  | "VAAPT_PECAS_IMAGENS"
   | "WD_LOCATIONS" // locations.csv (Id/Initials/InitialsPath/ParentId/Level)
   | "WD_PURCHASE_WASTE" // purchase_waste.csv (sucatas)
   | "WD_PRODUCTS" // products.csv (Code/LocationId/PurchaseWasteId) — arquivo-ponte IBR
@@ -77,6 +88,12 @@ export type ImportRow = Record<string, unknown>;
 
 export interface DetectedFile extends ImportFile {
   kind: DetectedKind;
+  /**
+   * Rótulos de coluna como vieram no arquivo. Serve para (a) diagnosticar um
+   * arquivo não reconhecido sem precisar do arquivo em mãos e (b) mappers
+   * distinguirem "coluna ausente" de "célula vazia".
+   */
+  header: string[];
   rows: ImportRow[];
   /** Getter tolerante a acento/caixa/pontuação (rótulo → valor da célula). */
   get: (row: ImportRow, label: string) => unknown;
@@ -114,6 +131,17 @@ export interface ImportReport {
   };
   /** Só no modo PACOTE (WebDesmonte): relatório por fase, na ordem executada. */
   porFase?: Record<string, ImportReport>;
+  /**
+   * Arquivos enviados que o motor NÃO usou. Vive no relatório (e não só nas
+   * dicas da prévia) porque o apply roda assíncrono e o operador só vê o
+   * relatório final — sem isto, um arquivo válido descartado passa batido.
+   */
+  ignorados?: IgnoredFileInfo[];
+}
+
+export interface IgnoredFileInfo {
+  arquivo: string;
+  motivo: string;
 }
 
 export interface PreviewFileInfo {

@@ -24,6 +24,7 @@ const KIND_LABEL: Record<DetectedKind, string> = {
   VAAPT_CLIENTES: "Vaapt — clientes",
   VAAPT_VEICULOS: "Vaapt — veículos (sucatas)",
   VAAPT_NFE: "Vaapt — notas fiscais emitidas (resumo)",
+  VAAPT_PECAS_IMAGENS: "Vaapt — fotos das peças",
   WD_LOCATIONS: "WebDesmonte — locations.csv",
   WD_PURCHASE_WASTE: "WebDesmonte — purchase_waste.csv (sucatas)",
   WD_PRODUCTS: "WebDesmonte — products.csv (arquivo-ponte)",
@@ -45,8 +46,29 @@ export function kindLabel(kind: DetectedKind): string {
   return KIND_LABEL[kind];
 }
 
-/** Assinaturas: todas as chaves (normKey) precisam estar no header. */
-const SIGNATURES: Array<{ kind: DetectedKind; requires: string[] }> = [
+/**
+ * Assinatura de um formato.
+ *
+ * - `requires`: colunas que identificam o formato — TODAS precisam existir.
+ * - `anyOf` + `anyOfMin`: colunas ACESSÓRIAS das quais bastam `anyOfMin`.
+ *
+ * A separação existe porque um mesmo sistema legado exporta VARIANTES do mesmo
+ * relatório, trocando ou omitindo colunas secundárias. Listar tudo como
+ * obrigatório faz uma variante legítima cair em DESCONHECIDO (foi o que
+ * aconteceu com o relatório de veículos do Vaapt); aceitar só uma coluna
+ * abriria a porta para falso positivo. `requires` guarda a identidade,
+ * `anyOf` absorve a variação.
+ */
+interface ColumnSignature {
+  kind: DetectedKind;
+  requires: string[];
+  anyOf?: string[];
+  anyOfMin?: number;
+}
+
+/** Assinaturas conhecidas, da MAIS específica para a mais genérica (o primeiro
+ *  match vence — por isso a ordem importa). Chaves sempre em normKey. */
+const SIGNATURES: ColumnSignature[] = [
   // IBR Soft completo (colunas PT snake_case, muito específicas).
   {
     kind: "IBRSOFT_PRODUTOS",
@@ -94,16 +116,64 @@ const SIGNATURES: Array<{ kind: DetectedKind; requires: string[] }> = [
   },
   { kind: "WD_CUSTOMERS", requires: ["name", "document", "type", "companyid"] },
   { kind: "VAAPT_PECAS", requires: ["codpeca", "localizacao"] },
+  // Fotos das peças: "# idPeca" (≠ "# Cod Peca" da planilha de peças) + a
+  // coluna de link. Reconhecido só para o operador receber uma mensagem
+  // precisa em vez de "colunas não reconhecidas".
+  {
+    kind: "VAAPT_PECAS_IMAGENS",
+    requires: ["idpeca"],
+    anyOf: ["linkdasimagens", "linkdaimagem", "linkimagem", "linkdasimagem"],
+    anyOfMin: 1,
+  },
   { kind: "VAAPT_CLIENTES", requires: ["codcliente", "nomecliente"] },
-  { kind: "VAAPT_VEICULOS", requires: ["codigoveiculo", "marca", "modelo"] },
+  // "# Codigo Veiculo" identifica sozinho o relatório de veículos: a planilha
+  // de peças traz "Cod Veiculo" e a de fotos "strCodigoVeiculo", que
+  // normalizam para chaves DIFERENTES ("codveiculo"/"strcodigoveiculo"). As
+  // demais colunas variam entre os exports — na variante com uma linha por
+  // foto não há Marca nem Modelo —, então entram como acessórias (≥2 basta),
+  // o que ainda barra um arquivo qualquer que só tenha essa coluna.
+  {
+    kind: "VAAPT_VEICULOS",
+    requires: ["codigoveiculo"],
+    anyOf: [
+      "marca",
+      "modelo",
+      "chassi",
+      "numerochassi",
+      "chassis",
+      "placa",
+      "renavam",
+      "numeromotor",
+      "motor",
+      "valordacompra",
+      "valorcompra",
+      "datacompra",
+      "anomodelo",
+      "ano",
+      "apelido",
+      "cor",
+    ],
+    anyOfMin: 2,
+  },
   { kind: "VAAPT_NFE", requires: ["nnfe", "chavedeacesso", "statusdanfe"] },
   { kind: "DEXO_CONTAS", requires: ["tipo", "valor", "vencimento"] },
 ];
 
+function matchesSignature(keys: Set<string>, sig: ColumnSignature): boolean {
+  for (const r of sig.requires) if (!keys.has(r)) return false;
+  if (!sig.anyOf || sig.anyOf.length === 0) return true;
+  const min = sig.anyOfMin ?? 1;
+  let hits = 0;
+  for (const k of sig.anyOf) {
+    if (keys.has(k) && ++hits >= min) return true;
+  }
+  return false;
+}
+
 function detectKind(header: string[]): DetectedKind {
   const keys = new Set(header.map((h) => normKey(h)));
   for (const sig of SIGNATURES) {
-    if (sig.requires.every((r) => keys.has(r))) return sig.kind;
+    if (matchesSignature(keys, sig)) return sig.kind;
   }
   return "DESCONHECIDO";
 }
@@ -122,9 +192,25 @@ export function detectFile(file: ImportFile): DetectedFile {
   return {
     ...file,
     kind,
+    header: table.header,
     rows: table.rows,
     get: table.get,
   };
+}
+
+/**
+ * Colunas lidas, resumidas para caber numa mensagem de erro. É o que permite
+ * diagnosticar um export novo sem pedir o arquivo ao cliente.
+ */
+const MAX_HEADER_IN_MESSAGE = 12;
+
+export function describeHeader(header: string[]): string {
+  const cols = header.filter((h) => h && !h.startsWith("__EMPTY"));
+  if (cols.length === 0) return "nenhuma coluna";
+  const shown = cols.slice(0, MAX_HEADER_IN_MESSAGE).join(", ");
+  return cols.length > MAX_HEADER_IN_MESSAGE
+    ? `${shown} … (+${cols.length - MAX_HEADER_IN_MESSAGE})`
+    : shown;
 }
 
 /** Papéis aceitos por sistema+entidade: [obrigatórios…] + [opcionais…]. */
@@ -152,16 +238,24 @@ export function expectedKinds(
       // (idempotente) e aceita o arquivo de veículos junto p/ criar sucatas.
       VINCULOS: { required: [["VAAPT_PECAS"]], optional: ["VAAPT_VEICULOS"] },
       NFE: { required: [["VAAPT_NFE"]], optional: [] },
+      FOTOS: { required: [["VAAPT_PECAS_IMAGENS"]], optional: [] },
       PACOTE: {
         // No pacote, qualquer combinação ≥1 das planilhas do export.
         required: [
-          ["VAAPT_PECAS", "VAAPT_CLIENTES", "VAAPT_VEICULOS", "VAAPT_NFE"],
+          [
+            "VAAPT_PECAS",
+            "VAAPT_CLIENTES",
+            "VAAPT_VEICULOS",
+            "VAAPT_NFE",
+            "VAAPT_PECAS_IMAGENS",
+          ],
         ],
         optional: [
           "VAAPT_PECAS",
           "VAAPT_CLIENTES",
           "VAAPT_VEICULOS",
           "VAAPT_NFE",
+          "VAAPT_PECAS_IMAGENS",
         ],
       },
     },
@@ -286,7 +380,7 @@ export function detectAndValidate(
         filename: f.filename,
         motivo:
           f.kind === "DESCONHECIDO"
-            ? "colunas não reconhecidas"
+            ? `colunas não reconhecidas (li: ${describeHeader(f.header)})`
             : `parece ser "${kindLabel(f.kind)}"`,
       });
     }
@@ -311,11 +405,23 @@ export function detectAndValidate(
     const ok = accepted.some((f) => slot.includes(f.kind));
     if (!ok) {
       const names = slot.map((k) => kindLabel(k)).join(" ou ");
+      // O MOTIVO de cada arquivo ignorado vai junto: é o que diz se o arquivo
+      // era de outra entidade ou se o formato não foi reconhecido (e, nesse
+      // caso, quais colunas o motor leu). Sem isso a mensagem culpa a escolha
+      // do sistema mesmo quando o problema é o arquivo.
       const extra = ignored.length
-        ? ` (ignorei ${ignored.length} arquivo(s) que não são desta importação: ${ignored.map((i) => i.filename).join(", ")})`
+        ? ` Ignorei ${ignored.length} arquivo(s): ${ignored
+            .map((i) => `${i.filename} — ${i.motivo}`)
+            .join("; ")}.`
         : "";
+      // A dica de "conferir o sistema" só faz sentido quando NADA foi
+      // aproveitado; se parte dos arquivos entrou, o sistema está certo e o
+      // que falta é a planilha em si.
+      const dica = accepted.length
+        ? `Envie-a junto para importar ${entity}.`
+        : `Confira se você escolheu o SISTEMA certo e envie-a para importar ${entity}.`;
       throw new ImportValidationError(
-        `Falta o arquivo obrigatório: ${names}. Confira se você escolheu o SISTEMA certo e envie-o para importar ${entity}.${extra}`,
+        `Falta o arquivo obrigatório: ${names}. ${dica}${extra}`,
       );
     }
   }

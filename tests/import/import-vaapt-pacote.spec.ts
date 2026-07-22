@@ -26,6 +26,7 @@ import type { LinksExecDeps, LinkedProductRef } from "../../app/usecases/import/
 import type { LocationExecDeps } from "../../app/usecases/import/executors/locations.executor";
 import type { ScrapsExecDeps } from "../../app/usecases/import/executors/scraps.executor";
 import type { CustomersExecDeps } from "../../app/usecases/import/executors/customers.executor";
+import type { PhotosExecDeps } from "../../app/usecases/import/executors/product-photos.executor";
 import type { NfeImportDeps } from "../../app/usecases/import/nfe-import.usecase";
 import type { CustomerCreate } from "../../app/interfaces/customer.interface";
 import type { NfeHistoricCreate } from "../../app/repositories/nfe.repository";
@@ -111,6 +112,7 @@ function makeDeps() {
   const scrapsCreated: Array<{ brand: string; model: string }> = [];
   const nfeCreated: NfeHistoricCreate[] = [];
   const locCreated: string[] = [];
+  const fotosGravadas: Array<{ productId: string; urls: string[] }> = [];
   let locSeq = 0;
   let scrapSeq = 0;
 
@@ -177,8 +179,23 @@ function makeDeps() {
     ajustarProximoNumero: vi.fn(async () => undefined),
   };
 
-  const deps: VaaptPacoteDeps = { links, locations, scraps, customers, nfe };
-  return { deps, attachCalls, linkCalls, customersCreated, scrapsCreated, nfeCreated, locCreated };
+  const photos: PhotosExecDeps = {
+    loadProductsBySkuNormalized: vi.fn(async (_u, norms: string[]) =>
+      [
+        { id: "p1", sku: "100", skuNormalized: "100", imageUrl: null, imageUrls: [] },
+        { id: "p2", sku: "200", skuNormalized: "200", imageUrl: null, imageUrls: [] },
+      ].filter((p) => norms.includes(p.skuNormalized)),
+    ),
+    setImageUrlsMany: vi.fn(
+      async (items: Array<{ productId: string; imageUrls: string[] }>) => {
+        for (const i of items) fotosGravadas.push({ productId: i.productId, urls: i.imageUrls });
+        return { count: items.length };
+      },
+    ) as PhotosExecDeps["setImageUrlsMany"],
+  };
+
+  const deps: VaaptPacoteDeps = { links, locations, scraps, customers, nfe, photos };
+  return { deps, attachCalls, linkCalls, customersCreated, scrapsCreated, nfeCreated, locCreated, fotosGravadas };
 }
 
 const ctx = (dryRun: boolean, files: DetectedFile[]): ImportContext => ({
@@ -233,6 +250,65 @@ describe("import/vaapt-pacote — detector", () => {
     expect(() =>
       detectAndValidate("VAAPT", "PACOTE", [wdLocations]),
     ).toThrow(ImportValidationError);
+  });
+});
+
+/* ------------------------- Fotos dentro do pacote ------------------------ */
+
+describe("import/vaapt-pacote — fase de fotos", () => {
+  const fotosFile = () =>
+    sheet(
+      [
+        ["# idPeca", "Titulo", "SKU", "Localização", "Codigo ML", "Link das imagens"],
+        ["100", "PARACHOQUE", "EXCLUIDO", "CX 1", "MLB1", "https://s3/a.jpg"],
+        ["100", "PARACHOQUE", "EXCLUIDO", "CX 1", "MLB1", "https://s3/b.jpg"],
+        ["200", "FAROL", "EXCLUIDO", "CX 1", "MLB2", "https://s3/c.jpg"],
+      ],
+      "BackupImagesPecasEmp583.xlsx",
+    );
+
+  it("as 5 planilhas entram juntas no pacote", () => {
+    const { files } = detectAndValidate("VAAPT", "PACOTE", [
+      pecasFile(),
+      clientesFile(),
+      veiculosFile(),
+      nfeFile(),
+      fotosFile(),
+    ]);
+    expect(files.map((f) => f.kind).sort()).toEqual([
+      "VAAPT_CLIENTES",
+      "VAAPT_NFE",
+      "VAAPT_PECAS",
+      "VAAPT_PECAS_IMAGENS",
+      "VAAPT_VEICULOS",
+    ]);
+  });
+
+  it("APPLY grava as fotos na fase própria, agrupadas por peça", async () => {
+    const d = makeDeps();
+    const report = await runVaaptPacote(
+      ctx(false, [pecasFile(), fotosFile()]),
+      d.deps,
+    );
+    expect(Object.keys(report.porFase!)).toContain("fotos");
+    expect(d.fotosGravadas).toHaveLength(2);
+    expect(d.fotosGravadas.find((f) => f.productId === "p1")?.urls).toEqual([
+      "https://s3/a.jpg",
+      "https://s3/b.jpg",
+    ]);
+  });
+
+  it("PRÉVIA do pacote não grava foto nenhuma", async () => {
+    const d = makeDeps();
+    await runVaaptPacote(ctx(true, [pecasFile(), fotosFile()]), d.deps);
+    expect(d.fotosGravadas).toHaveLength(0);
+  });
+
+  it("pacote só com fotos roda (não exige as outras planilhas)", async () => {
+    const d = makeDeps();
+    const report = await runVaaptPacote(ctx(false, [fotosFile()]), d.deps);
+    expect(Object.keys(report.porFase!)).toEqual(["fotos"]);
+    expect(d.fotosGravadas).toHaveLength(2);
   });
 });
 

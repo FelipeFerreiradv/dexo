@@ -43,10 +43,16 @@ type ImportEntity =
   | "CONTAS"
   | "NFE"
   | "PACOTE"
+  | "FOTOS"
   | "ESTOQUE";
 
 interface RowIssue {
   linha?: number;
+  motivo: string;
+}
+
+interface IgnoredFileInfo {
+  arquivo: string;
   motivo: string;
 }
 
@@ -56,6 +62,8 @@ interface ImportReport {
   erros: RowIssue[];
   avisos: RowIssue[];
   amostra: Array<Record<string, unknown>>;
+  /** Arquivos anexados que o motor NÃO usou. */
+  ignorados?: IgnoredFileInfo[];
   semProduto?: { total: number; exemplos: string[] };
   ambiguos?: {
     total: number;
@@ -104,6 +112,7 @@ const ENTITY_LABELS: Record<ImportEntity, string> = {
   VINCULOS: "Vínculo de produtos por SKU (localização + sucata)",
   CONTAS: "Contas a pagar / receber",
   NFE: "NF-e históricas",
+  FOTOS: "Fotos das peças",
   PACOTE: "Pacote completo (vários CSVs)",
   ESTOQUE: "Estoque (produtos + localização por SKU)",
 };
@@ -113,12 +122,14 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
     "Envie a planilha de peças (a que tem as colunas “# Cod Peca” e “Localizacao”).",
   "VAAPT/CLIENTES": "Envie a planilha de clientes (“# Cod Cliente”).",
   "VAAPT/SUCATAS":
-    "Envie a planilha de veículos (“# Codigo Veiculo”) — nem todo pacote traz esse arquivo.",
+    "Envie a planilha de veículos (“# Codigo Veiculo”) — nem todo pacote traz esse arquivo. Serve tanto o “Backup Veiculos” (com Marca/Modelo) quanto o “Veiculos<N>” (uma linha por foto); neste, sem Marca/Modelo, as sucatas ficam como INDEFINIDO e você as identifica pela placa/chassi.",
   "VAAPT/VINCULOS":
     "Envie a planilha de peças (“# Cod Peca” + “Localizacao” + “Cod Veiculo”).",
   "VAAPT/NFE": "Envie o resumo de notas emitidas (aba “Java Books”).",
+  "VAAPT/FOTOS":
+    "Envie a planilha de fotos das peças (“# idPeca” + “Link das imagens”). Casa a peça pelo mesmo código do vínculo e preenche só quem AINDA NÃO TEM foto — produto com imagem própria não é sobrescrito. As fotos continuam servidas pelo servidor de origem; nada é publicado nos anúncios.",
   "VAAPT/PACOTE":
-    "Envie as planilhas do export juntas: peças, clientes, veículos e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → NF-e.",
+    "Envie as planilhas do export juntas: peças, clientes, veículos, fotos das peças e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → fotos → NF-e. O que ele não usar aparece listado no relatório.",
   "WEBDESMONTE/VINCULOS":
     "Envie products.csv E locations.csv juntos (o locations.csv resolve os vínculos).",
   "WEBDESMONTE/PACOTE":
@@ -152,6 +163,7 @@ const COUNTER_LABELS: Record<string, string> = {
   ja_existiam: "já existiam",
   erros: "erros",
   avisos: "avisos",
+  linhas_repetidas_mesmo_veiculo: "linhas repetidas (mesmo veículo)",
 };
 
 function counterLabel(key: string): string {
@@ -618,6 +630,22 @@ function ReportView({ report }: { report: ImportReport }) {
           </Badge>
         ))}
       </div>
+
+      {report.ignorados && report.ignorados.length > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+          <div className="mb-1 flex items-center gap-1 font-medium">
+            <TriangleAlert className="h-3.5 w-3.5" />
+            {report.ignorados.length} arquivo(s) anexado(s) NÃO foram importados
+          </div>
+          <ul className="max-h-24 space-y-0.5 overflow-y-auto">
+            {report.ignorados.map((i) => (
+              <li key={i.arquivo}>
+                <span className="font-medium">{i.arquivo}</span> — {i.motivo}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {report.semProduto && report.semProduto.total > 0 && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">

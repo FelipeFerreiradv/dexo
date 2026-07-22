@@ -67,6 +67,15 @@ export class ImportPreviewUseCase {
       dryRun: true,
     });
 
+    // Também no relatório (e não só nas dicas): é o objeto que o operador
+    // copia/guarda, e o apply mostra apenas ele.
+    if (ignored.length > 0) {
+      report.ignorados = ignored.map((i) => ({
+        arquivo: i.filename,
+        motivo: i.motivo,
+      }));
+    }
+
     const dicas = buildDicas(report);
     if (ignored.length > 0) {
       dicas.unshift(

@@ -87,3 +87,57 @@ describe("ProductRepository.create — tenant guard de scrapId", () => {
     expect(mockProductCreate).toHaveBeenCalledTimes(1);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// PERF: `include` de relação to-many é um SELECT SEPARADO no Prisma. Sem
+// compatibilidades no payload ele volta sempre vazio — 1 round-trip por
+// produto criado, e o "Importar anúncios" cria em série. O objeto devolvido
+// não pode mudar: mapPrismaCompatibilities colapsa [] e undefined no mesmo
+// undefined.
+// ──────────────────────────────────────────────────────────────────────────
+describe("ProductRepository.create — include condicional de compatibilities", () => {
+  it("SEM compatibilidades: não pede include (evita o SELECT vazio)", async () => {
+    mockProductCreate.mockResolvedValue(makeRow());
+
+    await repo.create({ ...base });
+
+    const arg = mockProductCreate.mock.calls[0][0];
+    expect(arg.include).toBeUndefined();
+    expect(arg.data.compatibilities).toBeUndefined();
+  });
+
+  it("COM compatibilidades: mantém o include verbatim", async () => {
+    mockProductCreate.mockResolvedValue(
+      makeRow({
+        compatibilities: [{ brand: "VW", model: "GOL", yearFrom: 2010, yearTo: null, version: null }],
+      }),
+    );
+
+    const out = await repo.create({
+      ...base,
+      compatibilities: [{ brand: "VW", model: "GOL", yearFrom: 2010 }],
+    } as never);
+
+    const arg = mockProductCreate.mock.calls[0][0];
+    expect(arg.include).toEqual({ compatibilities: true });
+    expect(out.compatibilities).toEqual([
+      { brand: "VW", model: "GOL", yearFrom: 2010, yearTo: null, version: null },
+    ]);
+  });
+
+  it("o Product devolvido é o MESMO com include vazio ou sem include", async () => {
+    // Antes: a linha vinha com compatibilities: []. Agora: sem a chave.
+    mockProductCreate.mockResolvedValue(makeRow({ compatibilities: [] }));
+    const comArrayVazio = await repo.create({ ...base });
+
+    vi.clearAllMocks();
+    const semChave = makeRow();
+    delete (semChave as Record<string, unknown>).compatibilities;
+    mockProductCreate.mockResolvedValue(semChave);
+    const semInclude = await repo.create({ ...base });
+
+    expect(comArrayVazio.compatibilities).toBeUndefined();
+    expect(semInclude.compatibilities).toBeUndefined();
+    expect(semInclude).toEqual(comArrayVazio);
+  });
+});

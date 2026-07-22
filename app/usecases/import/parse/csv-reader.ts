@@ -83,10 +83,53 @@ export interface ParsedTable {
   get: (row: ImportRow, label: string) => unknown;
 }
 
-/** CSV (Buffer utf-8) → linhas keyed pelo header original + getter normKey. */
+/**
+ * Decodifica o CSV. Tenta UTF-8 em modo ESTRITO; se os bytes não forem UTF-8
+ * válido, cai para cp1252/latin1, que é o que exportador BR costuma escrever.
+ * Sem o fallback, "Localização" vira "Localiza??o", o normKey do cabeçalho
+ * muda e o arquivo inteiro cai em DESCONHECIDO.
+ *
+ * Por que decode ESTRITO e não "procurar U+FFFD no texto decodificado":
+ * o decode tolerante só emite U+FFFD quando encontra sequência inválida — o
+ * mesmo caso em que o estrito lança. A única diferença é o arquivo que já
+ * TRAZ um U+FFFD gravado (base legada convertida duas vezes): esse é UTF-8
+ * legítimo e o sniff por caractere o mandava para latin1 sem necessidade,
+ * transformando o cabeçalho em mojibake.
+ *
+ * `ignoreBOM` mantém o BOM no texto — quem o remove é o chamador, e é assim
+ * que a diretiva `sep=` da 1ª linha continua casando.
+ */
+function decodeCsvText(buffer: Buffer): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      buffer,
+    );
+  } catch {
+    return buffer.toString("latin1");
+  }
+}
+
+/**
+ * Diretiva `sep=;` na 1ª linha — NÃO é cabeçalho. Quem a emite são
+ * exportadores (Power BI, SSRS, vários ERPs BR); o Excel apenas a honra ao
+ * abrir. Sem tratá-la o header vira ["sep=", ""] e o arquivo cai em
+ * DESCONHECIDO — a mesma falha dupla do bug de veículos: erro duro num slot
+ * obrigatório, descarte silencioso num PACOTE.
+ */
+const SEP_DIRECTIVE = /^sep=(.)\r?\n/i;
+
+/** CSV (Buffer) → linhas keyed pelo header original + getter normKey. */
 export function readCsvBuffer(buffer: Buffer): ParsedTable {
-  const text = buffer.toString("utf8");
-  const matrix = parseCsv(text, detectDelimiter(text));
+  // BOM fora antes de tudo: senão a diretiva `sep=` da 1ª linha não casa.
+  let text = decodeCsvText(buffer).replace(/^﻿/, "");
+  let forced: CsvDelimiter | null = null;
+  const directive = text.match(SEP_DIRECTIVE);
+  if (directive) {
+    const cand = directive[1];
+    if (cand === "," || cand === ";" || cand === "\t") forced = cand;
+    text = text.slice(directive[0].length);
+  }
+  const matrix = parseCsv(text, forced ?? detectDelimiter(text));
   if (matrix.length === 0) return { header: [], rows: [], get: () => null };
   const header = matrix[0].map((h) => h.replace(/^﻿/, "").trim());
   const keyByNorm = new Map<string, string>();
@@ -95,7 +138,9 @@ export function readCsvBuffer(buffer: Buffer): ParsedTable {
   const rows: ImportRow[] = [];
   for (let r = 1; r < matrix.length; r++) {
     const cells = matrix[r];
-    if (cells.length === 1 && cells[0] === "") continue; // linha vazia
+    // Linha vazia — inclusive a que só tem separadores (";;;"), que o Excel
+    // deixa no fim do arquivo e que virava uma linha de dados toda nula.
+    if (cells.every((c) => c === "")) continue;
     const obj: ImportRow = {};
     for (let c = 0; c < header.length; c++) {
       const v = cells[c];

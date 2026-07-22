@@ -716,6 +716,42 @@ export class ProductUseCase {
     return { count: res.count };
   }
 
+  /**
+   * Grava as imagens de VÁRIOS produtos de uma vez, para a importação de
+   * fotos do sistema legado.
+   *
+   * `update` NÃO serve aqui: ele dispara `syncProductListings`, então uma
+   * importação de 13,6k peças viraria dezenas de milhares de chamadas ao
+   * ML/Shopee e ALTERARIA anúncios ao vivo que ninguém pediu para mexer.
+   * Importar é povoar o catálogo — publicar é outro ato, explícito.
+   *
+   * Pelo mesmo motivo NÃO limpa `imageUrlsOverride` dos anúncios (o que
+   * `update` faz): quem tiver override no anúncio continua com ele até
+   * decidir republicar.
+   *
+   * Espelha `linkScrapMany`: cap de 200 por chamada e `updateMany` escopado
+   * por `userId` — produto de outro tenant simplesmente não é afetado.
+   */
+  async setImageUrlsMany(
+    items: Array<{ productId: string; imageUrl: string; imageUrls: string[] }>,
+    userId: string,
+  ): Promise<{ count: number }> {
+    if (!userId) throw new Error("Usuário não encontrado");
+    if (!items.length) throw new Error("Nenhum produto selecionado");
+    if (items.length > 200) {
+      throw new Error("Limite de 200 produtos por batch");
+    }
+    const results = await prisma.$transaction(
+      items.map((i) =>
+        prisma.product.updateMany({
+          where: { id: i.productId, userId },
+          data: { imageUrl: i.imageUrl, imageUrls: i.imageUrls },
+        }),
+      ),
+    );
+    return { count: results.reduce((acc, r) => acc + r.count, 0) };
+  }
+
   async update(
     id: string,
     data: ProductUpdate,

@@ -19,23 +19,21 @@ const jobStore = new SystemLogImportJobStore();
 const previewUseCase = new ImportPreviewUseCase();
 const applyUseCase = new ImportApplyUseCase(jobStore);
 
-const VALID_SYSTEMS = new Set<ImportSystem>([
-  "VAAPT",
-  "WEBDESMONTE",
-  "DEXO",
-  "IBR",
-  "IBRSOFT",
-]);
-const VALID_ENTITIES = new Set<ImportEntity>([
-  "CLIENTES",
-  "LOCALIZACOES",
-  "SUCATAS",
-  "VINCULOS",
-  "CONTAS",
-  "NFE",
-  "PACOTE",
-  "ESTOQUE",
-]);
+/**
+ * Aceitos = exatamente o que o registry de runners expõe (é a MESMA lista que
+ * o GET /import/entities entrega ao seletor do modal).
+ *
+ * Antes eram dois `Set` escritos à mão aqui. Registrar um runner novo passava
+ * a anunciar a opção na UI mas a rota continuava recusando com 400 "Entidade
+ * inválida" — foi o que aconteceu com VAAPT/FOTOS. Derivar mata a classe do
+ * bug: a rota não tem mais como divergir do que o motor oferece.
+ */
+const VALID_SYSTEMS = new Set<ImportSystem>(
+  availableEntities().map((a) => a.system),
+);
+const VALID_ENTITIES = new Set<ImportEntity>(
+  availableEntities().map((a) => a.entity),
+);
 
 interface MultipartPayload {
   fields: Record<string, string>;

@@ -1,10 +1,16 @@
 /**
  * Sucatas (veículos) — dois formatos de origem, um plano comum:
  *
- * - Vaapt: "Backup Veiculos - <N>.xlsx" ("# Codigo Veiculo, Marca, Modelo,
- *   Chassi, Placa, Apelido, Cor, Ano modelo, Valor da compra"). Pode NÃO vir
- *   no pacote — a entidade é condicional ao arquivo. Espelha phase1Scraps de
- *   scripts/migracao-vaapt.ts.
+ * - Vaapt: pode NÃO vir no pacote — a entidade é condicional ao arquivo.
+ *   Espelha phase1Scraps de scripts/migracao-vaapt.ts. Há DUAS variantes reais
+ *   do mesmo relatório, e o mapper lê as duas por sinônimo de rótulo:
+ *   a) "Backup Veiculos - <N>.xlsx": # Codigo Veiculo, Marca, Modelo, Chassi,
+ *      Placa, Apelido, Cor, Ano modelo, Valor da compra — uma linha por
+ *      veículo;
+ *   b) "Veiculos<N>.xlsx": # Codigo Veiculo, Placa, numero motor, Numero
+ *      chassi, Renavam, valor_compra, data_compra, Link da Imagem, Nome da
+ *      Imagem — uma linha por FOTO (o veículo se repete) e SEM Marca/Modelo,
+ *      que caem para "INDEFINIDO" com um aviso único no arquivo.
  * - WebDesmonte: purchase_waste.csv (44 colunas ricas, com bloco fiscal).
  *   Espelha phaseScraps de scripts/migracao-webdesmonte.ts.
  *
@@ -14,7 +20,7 @@
  */
 
 import type { DetectedFile, ImportRowIssue } from "../import.types";
-import { addIssue } from "../import.types";
+import { MAX_ISSUES, addIssue } from "../import.types";
 import {
   asNumber,
   asString,
@@ -24,6 +30,7 @@ import {
   parseFlexibleDate,
 } from "../lib/normalize";
 import { importScrapWdMarker, importVehicleMarker } from "../lib/markers";
+import { aliasReader, hasColumn } from "../lib/columns";
 
 export interface ScrapPlanItem {
   linha: number;
@@ -55,6 +62,13 @@ export interface ScrapsMapResult {
   items: ScrapPlanItem[];
   totalRows: number;
   invalidRows: number;
+  /**
+   * Linhas descartadas por repetirem um código já visto. Separado de
+   * `invalidRows` de propósito: no export Vaapt com uma linha por FOTO do
+   * veículo, 2.265 linhas viram 379 sucatas — contar as 1.886 repetições como
+   * "inválidas" faria o operador achar que a importação falhou.
+   */
+  duplicateRows?: number;
   avisos: ImportRowIssue[];
 }
 
@@ -81,25 +95,37 @@ export function mapVaaptScraps(file: DetectedFile): ScrapsMapResult {
   const seenCod = new Set<string>();
   const seenChassis = new Set<string>();
   let invalidRows = 0;
+  let duplicateRows = 0;
+
+  // Sinônimos por campo: cobre as duas variantes reais do relatório de
+  // veículos do Vaapt sem duplicar o mapper. O 1º rótulo PRESENTE vence.
+  const read = aliasReader(file);
+  // Marca E Modelo são obrigatórios no ScrapUseCase: faltar QUALQUER uma das
+  // duas colunas já merece aviso (não só faltarem as duas).
+  const colunasAusentes = ["Marca", "Modelo"].filter((l) => !hasColumn(file, l));
 
   for (let i = 0; i < file.rows.length; i++) {
     const row = file.rows[i];
-    const get = (label: string) => file.get(row, label);
     const linha = i + 1;
 
-    const cod = asString(get("# Codigo Veiculo"));
+    // Mesmo normKey nas duas variantes ("# Codigo Veiculo" → codigoveiculo).
+    const cod = asString(read(row, "# Codigo Veiculo"));
     if (!cod) {
       invalidRows++;
       addIssue(avisos, { linha, motivo: "Linha sem '# Codigo Veiculo' — ignorada" });
       continue;
     }
     if (seenCod.has(cod)) {
-      invalidRows++;
+      duplicateRows++;
       continue;
     }
     seenCod.add(cod);
 
-    const chassis = chassisOrWarn(get("Chassi"), linha, avisos);
+    const chassis = chassisOrWarn(
+      read(row, "Chassi", "Numero chassi", "Num Chassi", "Chassis"),
+      linha,
+      avisos,
+    );
     if (chassis) {
       if (seenChassis.has(chassis)) {
         addIssue(avisos, {
@@ -113,19 +139,42 @@ export function mapVaaptScraps(file: DetectedFile): ScrapsMapResult {
     items.push({
       linha,
       cod,
-      brand: asString(get("Marca")) ?? "INDEFINIDO",
-      model: asString(get("Modelo")) ?? "INDEFINIDO",
-      year: asString(get("Ano modelo")),
-      version: asString(get("Apelido")),
-      color: asString(get("Cor")),
-      plate: cleanPlate(get("Placa")),
+      brand: asString(read(row, "Marca")) ?? "INDEFINIDO",
+      model: asString(read(row, "Modelo")) ?? "INDEFINIDO",
+      year: asString(read(row, "Ano modelo", "Ano")),
+      version: asString(read(row, "Apelido")),
+      color: asString(read(row, "Cor")),
+      plate: cleanPlate(read(row, "Placa")),
       chassis,
-      cost: asNumber(get("Valor da compra")),
+      // Campos que só a variante nova traz — na clássica a coluna não existe
+      // e o leitor devolve null, mantendo o comportamento de hoje.
+      renavam: asString(read(row, "Renavam")),
+      engineNumber: asString(read(row, "numero motor", "Numero do motor", "Motor")),
+      entryDate: parseFlexibleDate(read(row, "data_compra", "Data da compra")),
+      cost: asNumber(read(row, "Valor da compra", "valor_compra")),
       notes: importVehicleMarker(cod),
     });
   }
 
-  return { items, totalRows: file.rows.length, invalidRows, avisos };
+  // Um aviso para o arquivo inteiro, não um por linha. Entra no INÍCIO da
+  // lista: `addIssue` corta no MAX_ISSUES, e um arquivo com muitos chassis
+  // sujos empurraria justamente o aviso mais importante para fora.
+  if (colunasAusentes.length > 0 && items.length > 0) {
+    avisos.unshift({
+      motivo: `A planilha de veículos não tem a(s) coluna(s) ${colunasAusentes
+        .map((c) => `"${c}"`)
+        .join(" e ")} — as ${items.length} sucatas serão criadas como "INDEFINIDO" (identifique-as pela placa/chassi).`,
+    });
+    if (avisos.length > MAX_ISSUES) avisos.length = MAX_ISSUES;
+  }
+
+  return {
+    items,
+    totalRows: file.rows.length,
+    invalidRows,
+    duplicateRows,
+    avisos,
+  };
 }
 
 export function mapWdScraps(

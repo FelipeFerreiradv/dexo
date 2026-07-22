@@ -19,7 +19,6 @@
  */
 
 import prisma from "../../../lib/prisma";
-import { normalizeSku } from "../../../lib/sku";
 import {
   CapacityExceededError,
   LocationUseCase,
@@ -28,12 +27,12 @@ import { ProductUseCase } from "../../product.usercase";
 import type { ImportContext, ImportReport } from "../import.types";
 import {
   ImportValidationError,
-  MAX_EXAMPLES,
   addIssue,
   bump,
   newReport,
 } from "../import.types";
 import { chunk } from "../lib/normalize";
+import { matchItemsBySku } from "../lib/sku-match";
 import { parseScrapWdMarker, parseVehicleMarker } from "../lib/markers";
 import { fileOfKind } from "../import-detector";
 import type { LinkPlanItem, LinksMapResult } from "../mappers/vinculos.mapper";
@@ -112,7 +111,6 @@ export interface LinksResolvedMaps {
 }
 
 const BATCH = 200; // limite hard do attachProducts (e adotado no linkScrapMany)
-const PRELOAD_CHUNK = 500;
 
 export async function executeLinksPlan(
   ctx: ImportContext,
@@ -123,84 +121,15 @@ export async function executeLinksPlan(
 ): Promise<void> {
   bump(report, "linhas_de_vinculo", items.length);
 
-  /* 1. Casamento por skuNormalized (preload em chunks; zero query por linha). */
-  const normToItems = new Map<string, LinkPlanItem[]>();
-  for (const item of items) {
-    const norm = normalizeSku(item.sku);
-    if (!norm) {
-      bump(report, "erros");
-      addIssue(report.erros, { linha: item.linha, motivo: "SKU vazio" });
-      continue;
-    }
-    const arr = normToItems.get(norm) ?? [];
-    arr.push(item);
-    normToItems.set(norm, arr);
-  }
-
-  const allNorms = Array.from(normToItems.keys());
-  const bySkuNorm = new Map<string, LinkedProductRef[]>();
-  let preloaded = 0;
-  for (const part of chunk(allNorms, PRELOAD_CHUNK)) {
-    const refs = await deps.loadProductsBySkuNormalized(ctx.targetUserId, part);
-    for (const ref of refs) {
-      if (!ref.skuNormalized) continue;
-      const arr = bySkuNorm.get(ref.skuNormalized) ?? [];
-      arr.push(ref);
-      bySkuNorm.set(ref.skuNormalized, arr);
-    }
-    preloaded += part.length;
-    ctx.onProgress?.({
-      fase: "casando produtos por SKU",
-      processadas: preloaded,
-      total: allNorms.length,
-    });
-  }
-
-  const semProduto: string[] = [];
-  let semProdutoTotal = 0;
-  const ambiguos: Array<{ sku: string; produtoIds: string[] }> = [];
-  let ambiguosTotal = 0;
-  const matched: Array<{ item: LinkPlanItem; product: LinkedProductRef }> = [];
-
-  for (const [norm, itemsOfSku] of normToItems) {
-    const refs = bySkuNorm.get(norm) ?? [];
-    if (refs.length === 0) {
-      semProdutoTotal += itemsOfSku.length;
-      for (const it of itemsOfSku) {
-        if (semProduto.length < MAX_EXAMPLES) semProduto.push(it.sku);
-      }
-      continue;
-    }
-    if (refs.length > 1) {
-      ambiguosTotal += itemsOfSku.length;
-      if (ambiguos.length < MAX_EXAMPLES) {
-        ambiguos.push({
-          sku: itemsOfSku[0].sku,
-          produtoIds: refs.map((r) => r.id),
-        });
-      }
-      continue;
-    }
-    // Duas linhas com SKUs CRUS distintos que normalizam igual ("X10" e
-    // "x10") casariam o MESMO produto com destinos possivelmente
-    // divergentes — flip-flop a cada re-execução. Só a 1ª linha vale
-    // (determinístico); as demais são contadas e avisadas.
-    matched.push({ item: itemsOfSku[0], product: refs[0] });
-    if (itemsOfSku.length > 1) {
-      bump(report, "linhas_extras_mesmo_sku", itemsOfSku.length - 1);
-      bump(report, "avisos");
-      addIssue(report.avisos, {
-        linha: itemsOfSku[1].linha,
-        motivo: `SKU "${itemsOfSku[1].sku}" repete "${itemsOfSku[0].sku}" (diferem só em caixa/espaço) — apenas a 1ª linha vincula`,
-      });
-    }
-  }
-
-  bump(report, "produtos_casados", matched.length);
-  bump(report, "sem_produto", semProdutoTotal);
-  bump(report, "sku_ambiguo", ambiguosTotal);
-  report.semProduto = { total: semProdutoTotal, exemplos: semProduto };
-  report.ambiguos = { total: ambiguosTotal, exemplos: ambiguos };
+  /* 1. Casamento por skuNormalized (preload em chunks; zero query por linha).
+   *    As regras (sem_produto / ambíguo / linha extra do mesmo SKU) vivem em
+   *    `lib/sku-match.ts` porque a importação de FOTOS precisa das mesmas. */
+  const matched = await matchItemsBySku(
+    ctx,
+    report,
+    items,
+    deps.loadProductsBySkuNormalized,
+  );
 
   /* 2. Vínculo de LOCALIZAÇÃO (agrupado por destino, chunks ≤200, serial). */
   let locCodeToId = maps.locCodeToId;
@@ -445,6 +374,11 @@ export async function runVaaptLinks(
       ctx.dryRun,
     );
     const scrapMapped = mapVaaptScraps(veiculos);
+    bump(scrapReport, "linhas_no_arquivo", scrapMapped.totalRows);
+    bump(scrapReport, "linhas_invalidas", scrapMapped.invalidRows);
+    if (scrapMapped.duplicateRows) {
+      bump(scrapReport, "linhas_repetidas_mesmo_veiculo", scrapMapped.duplicateRows);
+    }
     for (const aviso of scrapMapped.avisos) {
       bump(scrapReport, "avisos");
       addIssue(scrapReport.avisos, aviso);

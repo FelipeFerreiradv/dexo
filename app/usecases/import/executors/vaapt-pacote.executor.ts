@@ -2,7 +2,8 @@
  * PACOTE Vaapt — uma request com as planilhas do export (peças, clientes,
  * veículos, notas emitidas — qualquer subconjunto) executa as fases NA ORDEM
  * DE DEPENDÊNCIA com os mapas vivendo em memória:
- * clientes → localizações → sucatas → vínculo de produtos → NF-e históricas.
+ * clientes → localizações → sucatas → vínculo de produtos → fotos das peças →
+ * NF-e históricas.
  *
  * Espelha o PACOTE do WebDesmonte (`wd-pacote.executor.ts`): mesma estrutura,
  * mesmos `execute*Plan` já validados, mesmo relatório `porFase`. O operador
@@ -37,6 +38,7 @@ import { mapVaaptCustomers } from "../mappers/vaapt-clientes.mapper";
 import { mapVaaptLocations } from "../mappers/vaapt-localizacoes.mapper";
 import { mapVaaptScraps } from "../mappers/sucatas.mapper";
 import { mapVaaptLinks } from "../mappers/vinculos.mapper";
+import { mapVaaptPhotos } from "../mappers/vaapt-fotos.mapper";
 import {
   executeCustomersPlan,
   defaultCustomersDeps,
@@ -50,6 +52,11 @@ import {
   type LinksRunnerDeps,
 } from "./product-links.executor";
 import {
+  executePhotosPlan,
+  defaultPhotosDeps,
+  type PhotosExecDeps,
+} from "./product-photos.executor";
+import {
   runVaaptNfes,
   defaultNfeImportDeps,
   type NfeImportDeps,
@@ -58,12 +65,14 @@ import {
 export interface VaaptPacoteDeps extends LinksRunnerDeps {
   customers: CustomersExecDeps;
   nfe: NfeImportDeps;
+  photos: PhotosExecDeps;
 }
 
 export const defaultVaaptPacoteDeps: VaaptPacoteDeps = {
   ...defaultLinksRunnerDeps,
   customers: defaultCustomersDeps,
   nfe: defaultNfeImportDeps,
+  photos: defaultPhotosDeps,
 };
 
 export async function runVaaptPacote(
@@ -74,9 +83,10 @@ export async function runVaaptPacote(
   const pecas = fileOfKind(ctx.files, "VAAPT_PECAS");
   const veiculos = fileOfKind(ctx.files, "VAAPT_VEICULOS");
   const nfe = fileOfKind(ctx.files, "VAAPT_NFE");
-  if (!clientes && !pecas && !veiculos && !nfe) {
+  const fotos = fileOfKind(ctx.files, "VAAPT_PECAS_IMAGENS");
+  if (!clientes && !pecas && !veiculos && !nfe && !fotos) {
     throw new ImportValidationError(
-      "Envie ao menos uma planilha do export Vaapt (peças, clientes, veículos ou notas emitidas).",
+      "Envie ao menos uma planilha do export Vaapt (peças, clientes, veículos, notas emitidas ou fotos das peças).",
     );
   }
 
@@ -120,6 +130,9 @@ export async function runVaaptPacote(
     const mapped = mapVaaptScraps(veiculos);
     bump(r, "linhas_no_arquivo", mapped.totalRows);
     bump(r, "linhas_invalidas", mapped.invalidRows);
+    if (mapped.duplicateRows) {
+      bump(r, "linhas_repetidas_mesmo_veiculo", mapped.duplicateRows);
+    }
     for (const aviso of mapped.avisos) {
       bump(r, "avisos");
       addIssue(r.avisos, aviso);
@@ -159,7 +172,24 @@ export async function runVaaptPacote(
     bump(report, "produtos_casados", r.contadores.produtos_casados ?? 0);
   }
 
-  // Fase 5 — NF-e históricas (independente das demais: nenhum mapa em comum).
+  // Fase 5 — fotos das peças. Casa pelo MESMO SKU do vínculo e só preenche
+  // produto sem imagem; não depende dos mapas das fases anteriores.
+  if (fotos) {
+    const r = sub();
+    const mapped = mapVaaptPhotos(fotos);
+    bump(r, "linhas_no_arquivo", mapped.totalRows);
+    bump(r, "linhas_invalidas", mapped.invalidRows);
+    if (mapped.urlsInvalidas) bump(r, "links_invalidos", mapped.urlsInvalidas);
+    if (mapped.urlsDuplicadas) bump(r, "links_repetidos", mapped.urlsDuplicadas);
+    for (const aviso of mapped.avisos) {
+      bump(r, "avisos");
+      addIssue(r.avisos, aviso);
+    }
+    await executePhotosPlan(ctx, r, mapped.items, deps.photos);
+    report.porFase["fotos"] = r;
+  }
+
+  // Fase 6 — NF-e históricas (independente das demais: nenhum mapa em comum).
   // Reusa o runner VAAPT/NFE inteiro — o avanço da NfeSequence é irreversível,
   // então esse caminho fiscal roda exatamente como roda sozinho.
   if (nfe) {

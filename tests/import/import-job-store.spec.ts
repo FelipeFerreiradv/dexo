@@ -98,6 +98,42 @@ describe("import/job-store — SystemLog carrier", () => {
     expect(prismaMock.systemLog.update.mock.calls.length).toBe(before);
   });
 
+  it("heartbeat em voo NÃO sobrescreve o finish (job não fica RUNNING para sempre)", async () => {
+    const store = new SystemLogImportJobStore();
+    const jobId = await store.create(baseInit);
+    // Solta o throttle que o create acabou de armar.
+    await new Promise((r) => setTimeout(r, 1600));
+
+    // Modela o Prisma: o payload é serializado no momento da chamada. A
+    // escrita do heartbeat (status RUNNING) fica pendurada e só resolve
+    // DEPOIS que o finish foi disparado.
+    const gravadas: Array<{ status: string; report?: unknown }> = [];
+    let liberaHeartbeat: () => void = () => {};
+    prismaMock.systemLog.update.mockImplementation((async (arg: {
+      data: { details: { status: string } };
+    }) => {
+      const snapshot = JSON.parse(JSON.stringify(arg.data.details));
+      if (snapshot.status === "RUNNING") {
+        await new Promise<void>((r) => {
+          liberaHeartbeat = r;
+        });
+      }
+      gravadas.push(snapshot);
+      return {};
+    }) as never);
+
+    const hb = store.heartbeat(jobId, { fase: "x", processadas: 1, total: 10 });
+    const fin = store.finish(jobId, fakeReport);
+    liberaHeartbeat();
+    await Promise.all([hb, fin]);
+
+    // A ÚLTIMA escrita na linha tem de ser a do finish, com o relatório.
+    expect(gravadas.at(-1)?.status).toBe("DONE");
+    expect(gravadas.at(-1)?.report).toBeTruthy();
+
+    prismaMock.systemLog.update.mockImplementation((async () => ({})) as never);
+  });
+
   it("get deriva INTERROMPIDO quando RUNNING está sem heartbeat >15min", async () => {
     const stale = new Date(Date.now() - IMPORT_JOB_STALE_MS - 1000).toISOString();
     prismaMock.systemLog.findUnique.mockResolvedValueOnce({
