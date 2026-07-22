@@ -117,11 +117,17 @@ describe("SyncUseCase.importMagaluItems — dedup do placeholder PENDING_", () =
     const create = vi
       .spyOn(ListingRepository, "createListing")
       .mockResolvedValue({ id: "new" } as any);
+    // O vínculo passa pelo núcleo idempotente (rota única): ele casa o SKU pelo
+    // cache do lote e vincula ao produto existente, sem criar produto novo.
+    const upsert = vi
+      .spyOn(ListingRepository, "upsertAutodetectedListing")
+      .mockResolvedValue({ id: "new", productId: "p9" } as any);
 
     const result = await SyncUseCase.importMagaluItems("u1", "acc-mg");
 
     expect(update).not.toHaveBeenCalled();
-    expect(create).toHaveBeenCalledWith(
+    expect(create).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         productId: "p9",
         marketplaceAccountId: "acc-mg",

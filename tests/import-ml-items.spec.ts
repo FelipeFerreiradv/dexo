@@ -74,25 +74,35 @@ describe("SyncUseCase.importMLItems — roteia anúncios ativos sem produto pelo
       ListingRepository,
       "productHasListingInAccount",
     ).mockResolvedValue(false);
+    // TODO item sem listing prévio passa pelo MESMO núcleo (antes havia um ramo
+    // paralelo que criava o listing por fora — duas implementações da mesma
+    // regra). O núcleo devolve o produto casado quando o SKU bate.
     const core = vi
       .spyOn(ListingAutodetectUseCase, "upsertProductFromMarketplaceItem")
-      .mockResolvedValue({ action: "created_product", productId: "p-new" });
+      .mockImplementation(async (normalized: any) =>
+        normalized.rawSku === "MATCH-1"
+          ? { action: "linked_existing_product", productId: "p-match" }
+          : { action: "created_product", productId: "p-new" },
+      );
     vi.spyOn(SyncUseCase as any, "logSync").mockResolvedValue(undefined);
 
     const result = await SyncUseCase.importMLItems("u1");
 
     // (v) inativo (MLB3) filtrado → só 2 processados
     expect(result.totalItems).toBe(2);
-    // SKU casado → createListing 1x, para MLB1
-    expect(createListing).toHaveBeenCalledTimes(1);
-    expect(createListing).toHaveBeenCalledWith(
+    // Uma rota só: nada de criação de listing por fora do núcleo.
+    expect(createListing).not.toHaveBeenCalled();
+    // SKU casado (MLB1) → o núcleo recebe o item e vincula ao produto existente
+    // (é a garantia anti-duplicação: NÃO cria produto novo).
+    expect(core).toHaveBeenCalledWith(
       expect.objectContaining({
-        productId: "p-match",
         externalListingId: "MLB1",
+        rawSku: "MATCH-1",
       }),
+      expect.anything(),
     );
-    // (i) ativo sem produto (MLB2) → roteado pelo núcleo 1x, NÃO para o casado
-    expect(core).toHaveBeenCalledTimes(1);
+    // (i) ativo sem produto (MLB2) → também pelo núcleo, com o payload normalizado
+    expect(core).toHaveBeenCalledTimes(2);
     expect(core).toHaveBeenCalledWith(
       expect.objectContaining({
         platform: Platform.MERCADO_LIVRE,
