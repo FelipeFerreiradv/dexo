@@ -43,6 +43,7 @@ type ImportEntity =
   | "CONTAS"
   | "NFE"
   | "PACOTE"
+  | "FOTOS"
   | "ESTOQUE";
 
 interface RowIssue {
@@ -111,6 +112,7 @@ const ENTITY_LABELS: Record<ImportEntity, string> = {
   VINCULOS: "Vínculo de produtos por SKU (localização + sucata)",
   CONTAS: "Contas a pagar / receber",
   NFE: "NF-e históricas",
+  FOTOS: "Fotos das peças",
   PACOTE: "Pacote completo (vários CSVs)",
   ESTOQUE: "Estoque (produtos + localização por SKU)",
 };
@@ -124,8 +126,10 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
   "VAAPT/VINCULOS":
     "Envie a planilha de peças (“# Cod Peca” + “Localizacao” + “Cod Veiculo”).",
   "VAAPT/NFE": "Envie o resumo de notas emitidas (aba “Java Books”).",
+  "VAAPT/FOTOS":
+    "Envie a planilha de fotos das peças (“# idPeca” + “Link das imagens”). Casa a peça pelo mesmo código do vínculo e preenche só quem AINDA NÃO TEM foto — produto com imagem própria não é sobrescrito. As fotos continuam servidas pelo servidor de origem; nada é publicado nos anúncios.",
   "VAAPT/PACOTE":
-    "Envie as planilhas do export juntas: peças, clientes, veículos e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → NF-e. O que ele não usar aparece listado no relatório (a planilha de FOTOS das peças, por exemplo, ainda não é importada).",
+    "Envie as planilhas do export juntas: peças, clientes, veículos, fotos das peças e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → fotos → NF-e. O que ele não usar aparece listado no relatório.",
   "WEBDESMONTE/VINCULOS":
     "Envie products.csv E locations.csv juntos (o locations.csv resolve os vínculos).",
   "WEBDESMONTE/PACOTE":

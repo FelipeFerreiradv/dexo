@@ -34,6 +34,9 @@ export type ImportEntity =
   | "CONTAS"
   | "NFE"
   | "PACOTE"
+  // Fotos das peças do sistema legado: casa a peça pelo SKU e preenche
+  // imageUrl/imageUrls de quem ainda não tem imagem.
+  | "FOTOS"
   // Estoque IBR: cria a árvore de localizações do próprio arquivo, casa o
   // produto por SKU (vincula a localização) e cria os produtos faltantes.
   | "ESTOQUE";
@@ -59,8 +62,9 @@ export type DetectedKind =
   // uma linha por foto). Exigir Marca+Modelo deixava a 2ª como DESCONHECIDO.
   | "VAAPT_VEICULOS"
   | "VAAPT_NFE" // resumo invoicy (aba "Java Books", rótulos deslocados)
-  // Fotos das peças ("# idPeca" + "Link das imagens"). Reconhecido só para dar
-  // mensagem precisa ao operador — a importação de fotos ainda não existe.
+  // Fotos das peças ("# idPeca" + "Link das imagens"): uma linha por FOTO,
+  // com a peça repetida. "# idPeca" == "# Cod Peca" da planilha de peças, que
+  // é o SKU do produto no Dexo.
   | "VAAPT_PECAS_IMAGENS"
   | "WD_LOCATIONS" // locations.csv (Id/Initials/InitialsPath/ParentId/Level)
   | "WD_PURCHASE_WASTE" // purchase_waste.csv (sucatas)

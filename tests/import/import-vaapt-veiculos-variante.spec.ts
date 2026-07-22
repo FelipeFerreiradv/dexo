@@ -132,7 +132,7 @@ describe("detector — cenário exato reportado pelo operador", () => {
     expect(res.ignored).toHaveLength(0);
   });
 
-  it("PACOTE com os 3 arquivos: peças + veículos entram, fotos são ignoradas COM motivo", () => {
+  it("PACOTE com os 3 arquivos: peças + veículos + fotos, nada ignorado", () => {
     const pecas = xlsx([H_PECAS, ["100", "MLB1", "PARACHOQUE", "CX PR 1", "36"]], "BackupPecas583.xlsx");
     const imagens = xlsx(
       [H_PECAS_IMAGENS, [2808524, "LANTERNA", "EXCLUIDO", "124.00", "Vendido", "CX PR 1", 1000, 1000, "0.000", "MLB1", "V76", "https://s3/a.jpg"]],
@@ -142,11 +142,10 @@ describe("detector — cenário exato reportado pelo operador", () => {
 
     expect(res.files.map((f) => f.kind).sort()).toEqual([
       "VAAPT_PECAS",
+      "VAAPT_PECAS_IMAGENS",
       "VAAPT_VEICULOS",
     ]);
-    expect(res.ignored).toHaveLength(1);
-    expect(res.ignored[0].filename).toBe("BackupImagesPecasEmp583.xlsx");
-    expect(res.ignored[0].motivo).toContain("fotos das peças");
+    expect(res.ignored).toHaveLength(0);
   });
 
   it("dois arquivos do MESMO papel continuam sendo erro (ambiguidade)", () => {

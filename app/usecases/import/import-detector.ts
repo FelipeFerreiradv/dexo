@@ -24,8 +24,7 @@ const KIND_LABEL: Record<DetectedKind, string> = {
   VAAPT_CLIENTES: "Vaapt — clientes",
   VAAPT_VEICULOS: "Vaapt — veículos (sucatas)",
   VAAPT_NFE: "Vaapt — notas fiscais emitidas (resumo)",
-  VAAPT_PECAS_IMAGENS:
-    "Vaapt — fotos das peças (a importação de fotos ainda não está disponível)",
+  VAAPT_PECAS_IMAGENS: "Vaapt — fotos das peças",
   WD_LOCATIONS: "WebDesmonte — locations.csv",
   WD_PURCHASE_WASTE: "WebDesmonte — purchase_waste.csv (sucatas)",
   WD_PRODUCTS: "WebDesmonte — products.csv (arquivo-ponte)",
@@ -239,16 +238,24 @@ export function expectedKinds(
       // (idempotente) e aceita o arquivo de veículos junto p/ criar sucatas.
       VINCULOS: { required: [["VAAPT_PECAS"]], optional: ["VAAPT_VEICULOS"] },
       NFE: { required: [["VAAPT_NFE"]], optional: [] },
+      FOTOS: { required: [["VAAPT_PECAS_IMAGENS"]], optional: [] },
       PACOTE: {
         // No pacote, qualquer combinação ≥1 das planilhas do export.
         required: [
-          ["VAAPT_PECAS", "VAAPT_CLIENTES", "VAAPT_VEICULOS", "VAAPT_NFE"],
+          [
+            "VAAPT_PECAS",
+            "VAAPT_CLIENTES",
+            "VAAPT_VEICULOS",
+            "VAAPT_NFE",
+            "VAAPT_PECAS_IMAGENS",
+          ],
         ],
         optional: [
           "VAAPT_PECAS",
           "VAAPT_CLIENTES",
           "VAAPT_VEICULOS",
           "VAAPT_NFE",
+          "VAAPT_PECAS_IMAGENS",
         ],
       },
     },
