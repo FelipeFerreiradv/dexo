@@ -24,6 +24,28 @@ import {
 
 export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
 
+/**
+ * Teto do multiget de DETALHES (`/items?ids=...`). Generoso de propósito: o
+ * irmão `getItemsStatuses` usa 10s, mas pede `attributes=id,status` (~100
+ * bytes/item) — aqui vem o body completo de 20 itens, com 4 workers em
+ * paralelo. Um teto apertado transformaria cauda de latência em importação
+ * descartada, que é pior do que o problema.
+ */
+const MULTIGET_TIMEOUT_MS = 30_000;
+/** Repetições do MESMO chunk antes de propagar (ver getItemsDetails). */
+const MULTIGET_TIMEOUT_RETRIES = 2;
+
+/** Só timeout/conexão abortada — erro de HTTP (4xx/5xx) NÃO é repetido. */
+function isTimeoutError(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  if (error.response) return false; // servidor respondeu: não é timeout
+  return (
+    error.code === "ECONNABORTED" ||
+    error.code === "ETIMEDOUT" ||
+    error.code === "ERR_CANCELED"
+  );
+}
+
 const ML_ATTR = {
   BRAND: "BRAND",
   MODEL: "MODEL",
@@ -412,26 +434,45 @@ export class MLApiService {
         const chunk = chunks[current];
         const url = `${ML_CONSTANTS.API_URL}/items?ids=${chunk.join(",")}`;
 
-        try {
-          const response = await axios.get<MLMultigetResponse[]>(url, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
-          });
+        // Timeout + retry NO MESMO chunk. Sem timeout, um socket pendurado
+        // travava a importação inteira (os 4 workers ficam num Promise.all).
+        // O retry não é opcional: este método é tudo-ou-nada — um throw
+        // rejeita o Promise.all, descarta a importação da conta e mexe nos
+        // contadores. Com a repetição, qualquer chunk que realisticamente
+        // completaria continua completando; só o pendurado de verdade cai.
+        let attempt = 0;
+        for (;;) {
+          try {
+            const response = await axios.get<MLMultigetResponse[]>(url, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+              timeout: MULTIGET_TIMEOUT_MS,
+            });
 
-          for (const item of response.data) {
-            if (item.code === 200) {
-              allItems.push(item.body);
+            for (const item of response.data) {
+              if (item.code === 200) {
+                allItems.push(item.body);
+              }
             }
+            break;
+          } catch (error) {
+            if (isTimeoutError(error) && attempt < MULTIGET_TIMEOUT_RETRIES) {
+              attempt++;
+              console.warn(
+                `[ML API] timeout no chunk ${current} — tentativa ${attempt}/${MULTIGET_TIMEOUT_RETRIES}`,
+              );
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+            console.error(`[ML API] Error fetching item details chunk ${current}:`, error);
+            if (axios.isAxiosError(error)) {
+              throw new Error(
+                `Erro ao obter detalhes dos items: ${error.response?.data?.message || error.message}`,
+              );
+            }
+            throw error;
           }
-        } catch (error) {
-          console.error(`[ML API] Error fetching item details chunk ${current}:`, error);
-          if (axios.isAxiosError(error)) {
-            throw new Error(
-              `Erro ao obter detalhes dos items: ${error.response?.data?.message || error.message}`,
-            );
-          }
-          throw error;
         }
 
         // Pausa leve entre requisições do mesmo worker para suavizar burst
