@@ -36,6 +36,11 @@ import {
   MEIO_PAGAMENTO_COD,
 } from "../domain/nfe.types";
 import { composeInfCpl } from "../domain/inf-cpl";
+import {
+  exigeGrupoCard,
+  TP_INTEGRA_NAO_INTEGRADO,
+  type ModeloDocumento,
+} from "../domain/pagamento-card";
 import { COD_UF, type UF } from "./endpoints";
 import { montarChave, chaveToString, type ChaveAcessoParts } from "./chave-acesso";
 
@@ -656,11 +661,26 @@ export class NfeXmlBuilderSefazService {
       detPag.ele("vPag").txt("0.00").up();
       detPag.up();
     } else {
+      const modelo: ModeloDocumento = draft.modelo === "65" ? "65" : "55";
       pagamentos.forEach((p) => {
         const detPag = pag.ele("detPag");
         const cod = MEIO_PAGAMENTO_COD[p.meio as MeioPagamento] ?? "99";
         detPag.ele("tPag").txt(cod).up();
         detPag.ele("vPag").txt(fmt2(Number(p.valor ?? 0))).up();
+        // Grupo `card` (YA04a) — obrigatório em cartão (03/04) e, desde a NT
+        // 2025.001, também em PIX (17). Sem ele a SEFAZ rejeita com 391.
+        // A decisão é centralizada em exigeGrupoCard: aqui só se OBEDECE.
+        // Ordem do layout: <card> vem DEPOIS de <vPag>, dentro do detPag —
+        // por isso é montado por último, e por pagamento (misto funciona:
+        // cada detPag decide sozinho).
+        if (exigeGrupoCard(cod, modelo)) {
+          const card = detPag.ele("card");
+          // tpIntegra=2 (não integrado): o Dexo registra o meio, não captura a
+          // transação. Com 2, CNPJ/tBand/cAut são opcionais e ficam de fora —
+          // informá-los em branco ou inventados é que causaria rejeição.
+          card.ele("tpIntegra").txt(TP_INTEGRA_NAO_INTEGRADO).up();
+          card.up();
+        }
         detPag.up();
       });
     }

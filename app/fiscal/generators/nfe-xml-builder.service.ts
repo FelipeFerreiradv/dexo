@@ -22,6 +22,11 @@ import {
   type IndicadorPresenca,
   type MeioPagamento,
 } from "../domain/nfe.types";
+import {
+  exigeGrupoCard,
+  TP_INTEGRA_NAO_INTEGRADO,
+  type ModeloDocumento,
+} from "../domain/pagamento-card";
 import { composeInfCpl } from "../domain/inf-cpl";
 
 export interface FocusNfePayload {
@@ -148,10 +153,20 @@ export class NfeXmlBuilderService {
     // ── Pagamentos ──
     const pagamentos = draft.pagamentosJson as any[];
     if (pagamentos && pagamentos.length > 0) {
-      payload.formas_pagamento = pagamentos.map((p: any) => ({
-        forma_pagamento: MEIO_PAGAMENTO_COD[p.meio as MeioPagamento] ?? "99",
-        valor_pagamento: p.valor ? String(Number(p.valor).toFixed(2)) : "0.00",
-      }));
+      const modeloDoc: ModeloDocumento = draft.modelo === "65" ? "65" : "55";
+      payload.formas_pagamento = pagamentos.map((p: any) => {
+        const cod = MEIO_PAGAMENTO_COD[p.meio as MeioPagamento] ?? "99";
+        return {
+          forma_pagamento: cod,
+          valor_pagamento: p.valor ? String(Number(p.valor).toFixed(2)) : "0.00",
+          // Mesma regra do grupo `card` do XML SEFAZ (rejeição 391), aqui no
+          // vocabulário do Focus. Mesma função de decisão — a política vive em
+          // UM lugar só. Omitido quando não se aplica (chave ausente do JSON).
+          ...(exigeGrupoCard(cod, modeloDoc)
+            ? { tipo_integracao: TP_INTEGRA_NAO_INTEGRADO }
+            : {}),
+        };
+      });
     } else {
       // Default: sem pagamento
       payload.formas_pagamento = [
