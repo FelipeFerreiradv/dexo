@@ -23,6 +23,9 @@ const TOKEN_REFRESH_SAFETY_MS = 60 * 1000;
 /**
  * Garante um accessToken ML válido para a conta, refrescando se estiver perto de
  * expirar. Mantida local (sem import cruzado) espelhando messages.usecase.ts.
+ * MUTA o `account` recebido após refresh: o refresh token do ML é SINGLE-USE —
+ * uma segunda chamada no mesmo handler com o snapshot stale re-refrescaria com
+ * o token já consumido (invalid_grant ⇒ conta auto-desativada).
  */
 async function ensureFreshMLToken(account: {
   id: string;
@@ -41,11 +44,15 @@ async function ensureFreshMLToken(account: {
     account.id,
     account.refreshToken,
   );
+  const newExpiresAt = new Date(Date.now() + refreshed.expiresIn * 1000);
   await MarketplaceRepository.updateTokens(account.id, {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken,
-    expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+    expiresAt: newExpiresAt,
   });
+  account.accessToken = refreshed.accessToken;
+  account.refreshToken = refreshed.refreshToken;
+  account.expiresAt = newExpiresAt;
   return refreshed.accessToken;
 }
 
@@ -77,11 +84,19 @@ async function ensureFreshShopeeToken(account: {
       account.refreshToken,
       account.shopId,
     );
+    const newExpiresAt = ShopeeOAuthService.calculateExpiryDate(
+      refreshed.expire_in,
+    );
     await MarketplaceRepository.updateTokens(account.id, {
       accessToken: refreshed.access_token,
       refreshToken: refreshed.refresh_token,
-      expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+      expiresAt: newExpiresAt,
     });
+    // Mesmo motivo do ensureFreshMLToken: snapshot em memória não pode ficar
+    // stale — o refresh token da Shopee também rotaciona a cada uso.
+    account.accessToken = refreshed.access_token;
+    account.refreshToken = refreshed.refresh_token;
+    account.expiresAt = newExpiresAt;
     return refreshed.access_token;
   } catch (err) {
     console.warn(

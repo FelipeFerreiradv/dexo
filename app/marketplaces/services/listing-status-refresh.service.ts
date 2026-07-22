@@ -1,3 +1,4 @@
+import prisma from "@/app/lib/prisma";
 import { MLApiService } from "./ml-api.service";
 import { MLOAuthService } from "./ml-oauth.service";
 import { ShopeeApiService } from "./shopee-api.service";
@@ -27,10 +28,38 @@ export type RefreshableListingRow = {
 type AccountShape = NonNullable<RefreshableListingRow["marketplaceAccount"]>;
 
 /**
+ * O snapshot da conta pode estar MINUTOS velho (o sweep lê todas as contas no
+ * início da rodada). Refrescar com um refresh token stale já consumido por
+ * outro fluxo (webhook/mensagens) gera invalid_grant e AUTO-DESATIVA a conta
+ * (single-use do ML). Reler os tokens do banco imediatamente antes da decisão
+ * colapsa a janela para ~ms — mesma mitigação do processOrderWebhook.
+ * Best-effort: falha na releitura mantém o snapshot.
+ */
+async function reloadFreshTokens(account: AccountShape): Promise<void> {
+  try {
+    const fresh = await (prisma as any).marketplaceAccount.findUnique({
+      where: { id: account.id },
+      select: { accessToken: true, refreshToken: true, expiresAt: true },
+    });
+    if (fresh) {
+      account.accessToken = fresh.accessToken;
+      account.refreshToken = fresh.refreshToken;
+      account.expiresAt = fresh.expiresAt;
+    }
+  } catch (err) {
+    console.warn(
+      `[ListingStatusRefresh] Falha ao reler tokens da conta ${account.id} (segue com snapshot):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Token ML fresco. Mantida local (sem import cruzado) espelhando
  * webhook.usercase.ts / messages.usecase.ts.
  */
 async function ensureFreshMLToken(account: AccountShape): Promise<string> {
+  await reloadFreshTokens(account);
   const expiresMs = account.expiresAt
     ? new Date(account.expiresAt).getTime()
     : 0;
@@ -44,11 +73,15 @@ async function ensureFreshMLToken(account: AccountShape): Promise<string> {
     account.id,
     account.refreshToken!,
   );
+  const newExpiresAt = new Date(Date.now() + refreshed.expiresIn * 1000);
   await MarketplaceRepository.updateTokens(account.id, {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken,
-    expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+    expiresAt: newExpiresAt,
   });
+  account.accessToken = refreshed.accessToken;
+  account.refreshToken = refreshed.refreshToken;
+  account.expiresAt = newExpiresAt;
   return refreshed.accessToken;
 }
 
@@ -59,6 +92,7 @@ async function ensureFreshMLToken(account: AccountShape): Promise<string> {
 async function ensureFreshShopeeToken(
   account: AccountShape,
 ): Promise<string | null> {
+  await reloadFreshTokens(account);
   if (!account.accessToken || !account.shopId) return null;
   const expiresMs = account.expiresAt
     ? new Date(account.expiresAt).getTime()
@@ -75,11 +109,17 @@ async function ensureFreshShopeeToken(
       account.refreshToken,
       account.shopId,
     );
+    const newExpiresAt = ShopeeOAuthService.calculateExpiryDate(
+      refreshed.expire_in,
+    );
     await MarketplaceRepository.updateTokens(account.id, {
       accessToken: refreshed.access_token,
       refreshToken: refreshed.refresh_token,
-      expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
+      expiresAt: newExpiresAt,
     });
+    account.accessToken = refreshed.access_token;
+    account.refreshToken = refreshed.refresh_token;
+    account.expiresAt = newExpiresAt;
     return refreshed.access_token;
   } catch (err) {
     console.warn(

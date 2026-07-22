@@ -5,6 +5,7 @@ import { WebhookUseCase } from "@/app/marketplaces/usecases/webhook.usercase";
 import { MarketplaceRepository } from "@/app/marketplaces/repositories/marketplace.repository";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
+import { MLOAuthService } from "@/app/marketplaces/services/ml-oauth.service";
 import { ListingAutodetectUseCase } from "@/app/marketplaces/usecases/listing-autodetect.usercase";
 
 const payload = (over: Record<string, any> = {}) => ({
@@ -201,6 +202,46 @@ describe("WebhookUseCase.processItemWebhook — espelho de status (mirror)", () 
     expect(res.success).toBe(true);
     expect(res.action).toBe("created_product");
     expect(upsert).toHaveBeenCalled();
+  });
+
+  it("token perto de expirar + falha pós-refresh no mirror → refresh acontece UMA só vez (single-use preservado)", async () => {
+    // Regressão crítica evitada: o refresh token do ML é single-use. Se o
+    // mirror refresca e depois falha, o fall-through legado NÃO pode
+    // refrescar de novo com o par antigo (invalid_grant → conta ERROR).
+    mockClaim();
+    const acc = account({ expiresAt: new Date(Date.now() + 1_000) }); // <60s
+    vi.spyOn(
+      MarketplaceRepository,
+      "findAllByExternalUserId",
+    ).mockResolvedValue([acc] as any);
+    vi.spyOn(MarketplaceRepository, "updateTokens").mockResolvedValue(
+      {} as any,
+    );
+    const refresh = vi
+      .spyOn(MLOAuthService, "refreshAccessTokenForAccount")
+      .mockResolvedValue({
+        accessToken: "tok-novo",
+        refreshToken: "ref-novo",
+        expiresIn: 21_600,
+      } as any);
+    vi.spyOn(ListingRepository, "findByExternalListingId").mockResolvedValue(
+      listing() as any,
+    );
+    const getItem = vi
+      .spyOn(MLApiService, "getItemDetails")
+      .mockRejectedValueOnce(new Error("timeout transitório do ML")) // mirror
+      .mockResolvedValue(mlItem() as any); // fluxo legado
+    vi.spyOn(
+      ListingAutodetectUseCase,
+      "upsertProductFromMarketplaceItem",
+    ).mockResolvedValue({ action: "created_product", productId: "p-new" });
+
+    const res = await WebhookUseCase.processItemWebhook(payload() as any);
+
+    expect(res.success).toBe(true);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // O fluxo legado reutilizou o token NOVO (objeto account mutado).
+    expect(getItem).toHaveBeenLastCalledWith("tok-novo", "MLB123");
   });
 
   it("dedupe P2002 vem antes do espelho → duplicate_ignored", async () => {

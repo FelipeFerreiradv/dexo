@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import prisma from "@/app/lib/prisma";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "@/app/marketplaces/services/ml-oauth.service";
 import { ShopeeApiService } from "@/app/marketplaces/services/shopee-api.service";
@@ -45,6 +46,10 @@ const row = (over: Record<string, any> = {}): RefreshableListingRow =>
 describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
   beforeEach(() => {
     process.env.LISTING_STATUS_SYNC_DISABLED = "0";
+    // reloadFreshTokens: null = mantém o snapshot (caso base dos testes).
+    vi.spyOn(prisma.marketplaceAccount, "findUnique").mockResolvedValue(
+      null as any,
+    );
   });
 
   afterEach(() => {
@@ -161,6 +166,33 @@ describe("ListingStatusRefreshService.refreshRowsBestEffort", () => {
     expect(getMl).not.toHaveBeenCalled();
     expect(getShp).not.toHaveBeenCalled();
     expect(changed.size).toBe(0);
+  });
+
+  it("snapshot stale: releitura do banco fornece o token atual (sem refresh com token consumido)", async () => {
+    // Cenário do sweep: snapshot antigo com token vencido, mas outro fluxo já
+    // refrescou — o banco tem o par novo. A releitura deve usá-lo e NÃO
+    // disparar refresh (que consumiria um refresh token já usado).
+    vi.spyOn(prisma.marketplaceAccount, "findUnique").mockResolvedValue({
+      accessToken: "tok-novo",
+      refreshToken: "ref-novo",
+      expiresAt: FUTURE,
+    } as any);
+    const refresh = vi.spyOn(MLOAuthService, "refreshAccessTokenForAccount");
+    const getItems = vi
+      .spyOn(MLApiService, "getItemsDetails")
+      .mockResolvedValue([{ id: "MLB1", status: "active" }] as any);
+
+    await ListingStatusRefreshService.refreshRowsBestEffort([
+      row({
+        marketplaceAccount: mlAccount({
+          accessToken: "tok-velho",
+          expiresAt: new Date(Date.now() - 1000), // snapshot vencido
+        }),
+      }),
+    ]);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(getItems).toHaveBeenCalledWith("tok-novo", ["MLB1"]);
   });
 
   it("falha ao gravar uma row não impede as demais da mesma conta", async () => {
