@@ -79,11 +79,27 @@ const TOTAL_STEPS = STEPS.length;
 
 interface Props {
   productionUnlocked: boolean;
+  // ── Multi-CNPJ (todas opcionais — ausentes, o form opera EXATAMENTE como
+  // antes, sobre a empresa padrão via /fiscal/config*). ──
+  /** Empresa específica a editar (endpoints /fiscal/companies/:id*). */
+  companyId?: string | null;
+  /** Dados sanitizados da empresa (evita fetch — o manager já tem a lista). */
+  initialCompany?: Record<string, any> | null;
+  /** true = cadastro de CNPJ ADICIONAL (POST /fiscal/companies). */
+  createMode?: boolean;
+  /** Notifica o wrapper após salvar (para recarregar a lista). */
+  onSaved?: () => void;
 }
 
 type ToastType = "success" | "error" | "warning";
 
-export function FiscalConfigForm({ productionUnlocked }: Props) {
+export function FiscalConfigForm({
+  productionUnlocked,
+  companyId = null,
+  initialCompany = null,
+  createMode = false,
+  onSaved,
+}: Props) {
   const { data: session } = useSession();
   const [currentStep, setCurrentStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -117,7 +133,60 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
     setTimeout(() => setToast(null), 4000);
   };
 
+  // Aplica uma config (do GET legado ou do manager multi-CNPJ) ao formulário
+  // — extraído para os dois caminhos nunca divergirem.
+  const applyConfigToForm = (config: Record<string, any>) => {
+    setConfigExists(Boolean(config.cnpj));
+    setProviderTokenConfigured(Boolean(config.providerTokenConfigurado));
+    setCscConfigured(Boolean(config.cscConfigurado));
+    setCertStatus({
+      configured: Boolean(config.certificadoConfigurado),
+      validoAte: config.certificadoValidoAte ?? null,
+      subjectCN: config.certificadoSubjectCN ?? null,
+      // null (sem cert) → undefined; false (cert não confirmado) → false,
+      // preservando o aviso de risco através de reloads.
+      cnpjMatched: config.certificadoCnpjConfirmado ?? undefined,
+    });
+    reset({
+      ...DEFAULT_FISCAL_CONFIG,
+      ...config,
+      cnpj: config.cnpj ?? "",
+      nomeFantasia: config.nomeFantasia ?? "",
+      inscricaoMunicipal: config.inscricaoMunicipal ?? "",
+      cnae: config.cnae ?? "",
+      // NFC-e (Fase 2): cscToken NUNCA volta do backend — campo começa
+      // vazio (vazio = preserva o salvo, padrão providerToken).
+      serieNfce: config.serieNfce ?? 1,
+      cscId: config.cscId ?? "",
+      cscToken: "",
+      ncmPadrao: config.ncmPadrao ?? "",
+      cep: config.cep ?? "",
+      logradouro: config.logradouro ?? "",
+      numero: config.numero ?? "",
+      complemento: config.complemento ?? "",
+      bairro: config.bairro ?? "",
+      municipio: config.municipio ?? "",
+      codMunicipio: config.codMunicipio ?? "",
+      uf: config.uf ?? "",
+      providerName: config.providerName ?? "FOCUS_NFE",
+      providerToken: config.providerToken ?? "",
+      serieNfe: config.serieNfe ?? 1,
+    });
+  };
+
   useEffect(() => {
+    // Multi-CNPJ: cadastro de empresa nova — form vazio, sem fetch.
+    if (createMode) {
+      setIsLoading(false);
+      return;
+    }
+    // Multi-CNPJ: empresa específica — dados vêm do manager (sem GET próprio;
+    // não existe GET /companies/:id, a lista já é sanitizada).
+    if (companyId && initialCompany) {
+      applyConfigToForm(initialCompany);
+      setIsLoading(false);
+      return;
+    }
     const load = async () => {
       if (!session?.user?.email) return;
       try {
@@ -127,44 +196,7 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
         if (!res.ok) throw new Error("Erro ao carregar configuração");
         const data = await res.json();
         if (data?.config) {
-          setConfigExists(Boolean(data.config.cnpj));
-          setProviderTokenConfigured(
-            Boolean(data.config.providerTokenConfigurado),
-          );
-          setCscConfigured(Boolean(data.config.cscConfigurado));
-          setCertStatus({
-            configured: Boolean(data.config.certificadoConfigurado),
-            validoAte: data.config.certificadoValidoAte ?? null,
-            subjectCN: data.config.certificadoSubjectCN ?? null,
-            // null (sem cert) → undefined; false (cert não confirmado) → false,
-            // preservando o aviso de risco através de reloads.
-            cnpjMatched: data.config.certificadoCnpjConfirmado ?? undefined,
-          });
-          reset({
-            ...DEFAULT_FISCAL_CONFIG,
-            ...data.config,
-            cnpj: data.config.cnpj ?? "",
-            nomeFantasia: data.config.nomeFantasia ?? "",
-            inscricaoMunicipal: data.config.inscricaoMunicipal ?? "",
-            cnae: data.config.cnae ?? "",
-            // NFC-e (Fase 2): cscToken NUNCA volta do backend — campo começa
-            // vazio (vazio = preserva o salvo, padrão providerToken).
-            serieNfce: data.config.serieNfce ?? 1,
-            cscId: data.config.cscId ?? "",
-            cscToken: "",
-            ncmPadrao: data.config.ncmPadrao ?? "",
-            cep: data.config.cep ?? "",
-            logradouro: data.config.logradouro ?? "",
-            numero: data.config.numero ?? "",
-            complemento: data.config.complemento ?? "",
-            bairro: data.config.bairro ?? "",
-            municipio: data.config.municipio ?? "",
-            codMunicipio: data.config.codMunicipio ?? "",
-            uf: data.config.uf ?? "",
-            providerName: data.config.providerName ?? "FOCUS_NFE",
-            providerToken: data.config.providerToken ?? "",
-            serieNfe: data.config.serieNfe ?? 1,
-          });
+          applyConfigToForm(data.config);
         }
       } catch (err) {
         console.error(err);
@@ -173,7 +205,8 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
       }
     };
     load();
-  }, [session?.user?.email, reset]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.email, reset, companyId, createMode]);
 
   const validateStep = async () => {
     const fields = STEPS[currentStep - 1].fields;
@@ -206,8 +239,15 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
         cnpj: onlyDigits(data.cnpj),
         cep: data.cep ? onlyDigits(data.cep) : null,
       };
-      const res = await fetch(`${getApiBaseUrl()}/fiscal/config`, {
-        method: "PUT",
+      // Multi-CNPJ: destino conforme o modo — criação (POST /companies),
+      // empresa específica (PUT /companies/:id) ou legado (PUT /config).
+      const endpoint = createMode
+        ? `${getApiBaseUrl()}/fiscal/companies`
+        : companyId
+          ? `${getApiBaseUrl()}/fiscal/companies/${companyId}`
+          : `${getApiBaseUrl()}/fiscal/config`;
+      const res = await fetch(endpoint, {
+        method: createMode ? "POST" : "PUT",
         headers: {
           "Content-Type": "application/json",
           email: session?.user?.email || "",
@@ -222,7 +262,13 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
       // Token salvo se já havia um ou se um novo foi digitado agora (o backend
       // preserva o anterior quando o campo vai vazio).
       setProviderTokenConfigured((prev) => prev || Boolean(payload.providerToken));
-      showToast("Configuração fiscal salva com sucesso!", "success");
+      showToast(
+        createMode
+          ? "Empresa adicionada com sucesso!"
+          : "Configuração fiscal salva com sucesso!",
+        "success",
+      );
+      onSaved?.();
     } catch (e) {
       showToast(
         e instanceof Error ? e.message : "Erro ao salvar configuração",
@@ -272,6 +318,7 @@ export function FiscalConfigForm({ productionUnlocked }: Props) {
             onCertUploaded={setCertStatus}
             providerTokenConfigured={providerTokenConfigured}
             cscConfigured={cscConfigured}
+            companyId={companyId}
           />
         )}
       </div>

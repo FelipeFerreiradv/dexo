@@ -71,6 +71,18 @@ interface RejeicaoInfo {
   reaproveitavel: boolean;
 }
 
+// Multi-CNPJ: opção de emitente do seletor (payload sanitizado de
+// GET /fiscal/companies). O seletor SÓ aparece com 2+ empresas — tenant de
+// 1 CNPJ tem DOM idêntico ao anterior.
+export interface CompanyOption {
+  id: string;
+  cnpj: string;
+  razaoSocial: string;
+  nomeFantasia?: string | null;
+  isDefault?: boolean;
+  serieNfe?: number;
+}
+
 export function NfeWizard() {
   const { data: session } = useSession();
   const email = session?.user?.email ?? "";
@@ -79,6 +91,9 @@ export function NfeWizard() {
   const [draftId, setDraftId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [rejeicaoInfo, setRejeicaoInfo] = useState<RejeicaoInfo | null>(null);
+  // Multi-CNPJ: empresas do tenant + emitente do draft atual.
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
+  const [draftCompanyId, setDraftCompanyId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: ToastType } | null>(
     null,
   );
@@ -110,6 +125,30 @@ export function NfeWizard() {
       onSaved: () => showToast("Rascunho salvo", "info"),
     });
 
+  // Multi-CNPJ: lista de empresas do tenant (best-effort — sem ela o wizard
+  // funciona exatamente como antes, só sem o seletor).
+  useEffect(() => {
+    if (!email) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/fiscal/companies`, {
+          headers: { email },
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && Array.isArray(data?.companies)) {
+          setCompanies(data.companies);
+        }
+      } catch {
+        // silencioso — seletor simplesmente não aparece
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [email]);
+
   // Create or load draft on mount
   useEffect(() => {
     if (!email) return;
@@ -126,6 +165,7 @@ export function NfeWizard() {
           if (cancelled) return;
           if (draft) {
             setDraftId(existingId);
+            setDraftCompanyId(draft.companyFiscalConfigId ?? null);
             populateFormFromDraft(draft);
             // Reabrindo uma nota REJEITADA: guarda os dados para o banner do
             // motivo (gated). Nao altera o formulario nem o fluxo de emissao.
@@ -151,6 +191,7 @@ export function NfeWizard() {
         if (cancelled) return;
         if (newDraft) {
           setDraftId(newDraft.id);
+          setDraftCompanyId(newDraft.companyFiscalConfigId ?? null);
           // A série padrão vem da configuração fiscal (CompanyFiscalConfig.
           // serieNfe), já resolvida pelo backend ao criar o draft. Sem isto o
           // form ficaria preso no default hardcoded (série 1). Toca SÓ a série;
@@ -371,6 +412,23 @@ export function NfeWizard() {
     }
   };
 
+  // Multi-CNPJ: troca de emitente no passo 1. Salva no draft (posse validada
+  // no backend) e alinha a série com a padrão da empresa escolhida.
+  const handleCompanyChange = useCallback(
+    async (companyId: string) => {
+      if (!draftId || isEmitting || companyId === draftCompanyId) return;
+      const company = companies.find((c) => c.id === companyId);
+      if (!company) return;
+      setDraftCompanyId(companyId);
+      setValue("serie", company.serieNfe ?? 1);
+      await saveDraft(draftId, {
+        companyFiscalConfigId: companyId,
+        serie: company.serieNfe ?? 1,
+      } as any);
+    },
+    [draftId, isEmitting, draftCompanyId, companies, setValue, saveDraft],
+  );
+
   const handleEmitir = async () => {
     if (!draftId || isEmitting) return;
 
@@ -473,7 +531,13 @@ export function NfeWizard() {
 
       <div className="min-h-[300px]">
         {currentStep === 1 && (
-          <StepInformacoesGerais control={control} errors={errors} />
+          <StepInformacoesGerais
+            control={control}
+            errors={errors}
+            companies={companies}
+            selectedCompanyId={draftCompanyId}
+            onCompanyChange={handleCompanyChange}
+          />
         )}
         {currentStep === 2 && (
           <StepDestinatario

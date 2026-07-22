@@ -52,6 +52,24 @@ describe("emitNfceForReceivable — shape da requisição", () => {
     );
     expect(headerKeys).not.toContain("content-type");
     expect(init.headers.email).toBe("user@test.com");
+    // Multi-CNPJ: sem seleção, a URL é BYTE-idêntica à anterior (sem query).
+    expect(String(url)).not.toContain("companyId");
+  });
+
+  it("multi-CNPJ: emitente selecionado vai por QUERY — POST segue sem body/Content-Type", async () => {
+    fetchMock.mockResolvedValue(
+      okResponse({ state: "authorized", nfeId: "n1", numero: 1 }),
+    );
+
+    await emitNfceForReceivable("r-1", "user@test.com", "cfg-B");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/finance/receivables/r-1/nfce?companyId=cfg-B");
+    expect(init.body).toBeUndefined();
+    const headerKeys = Object.keys(init.headers ?? {}).map((h) =>
+      h.toLowerCase(),
+    );
+    expect(headerKeys).not.toContain("content-type");
   });
 
   it("sucesso → { ok: true, nfce } e toast de autorizada", async () => {

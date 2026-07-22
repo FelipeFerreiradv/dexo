@@ -25,12 +25,20 @@ export function useNfeDraft({ email, draftId, onSaved }: UseNfeDraftOptions) {
   );
 
   const createDraft = useCallback(
-    async (orderId?: string | null): Promise<NfeDraftResponse | null> => {
+    async (
+      orderId?: string | null,
+      // Multi-CNPJ: emitente explícito (opcional). Ausente ⇒ resolução
+      // automática no backend (conta do pedido → padrão).
+      companyFiscalConfigId?: string | null,
+    ): Promise<NfeDraftResponse | null> => {
       try {
         const res = await fetch(`${getApiBaseUrl()}/fiscal/nfe/draft`, {
           method: "POST",
           headers: headers(),
-          body: JSON.stringify({ orderId: orderId ?? null }),
+          body: JSON.stringify({
+            orderId: orderId ?? null,
+            ...(companyFiscalConfigId ? { companyFiscalConfigId } : {}),
+          }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
