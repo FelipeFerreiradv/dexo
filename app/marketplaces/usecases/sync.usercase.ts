@@ -2254,7 +2254,19 @@ export class SyncUseCase {
     for (const account of accounts) {
       const listings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
-        include: { product: true, marketplaceAccount: true },
+        // EGRESS: `product: true` fazia o Prisma resolver a relação com UM
+        // batch-load `Product WHERE id IN (<TODOS os productIds da conta>)`
+        // trazendo TODAS as colunas — incluindo o JSONB pesado `mlCatalogSnapshot`,
+        // `attributes` e `imageUrls`. Em contas com o catálogo inteiro anunciado
+        // isso vira um IN de dezenas de milhares de ids × colunas gordas (o maior
+        // dreno de tempo do banco em produção, com detoast do JSONB por linha). O
+        // sync de estoque só lê id/sku/stock/name do produto (syncMLProductStock,
+        // syncShopeeProductStock, logMLStockWarningAndReturn, alertMLReactivationRisk),
+        // então restringimos o select — MESMAS linhas, sem carregar o resto.
+        include: {
+          product: { select: { id: true, sku: true, stock: true, name: true } },
+          marketplaceAccount: true,
+        },
       });
 
       // Deduplicar por productId (mesmo produto pode ter listings duplicados)
