@@ -55,9 +55,9 @@ export const FACEBOOK_CONSTANTS = {
     process.env.FACEBOOK_SCOPES ||
     ["catalog_management", "business_management"].join(","),
 
-  // URL base da PÁGINA de produto — o item de catálogo EXIGE `link`. Sem ela o
-  // build de payload falha com erro claro (pendente de decisão do cliente).
-  // link = `${PRODUCT_URL_BASE}/${sku}` quando setada.
+  // URL da página do vendedor — o item de catálogo EXIGE `link`. O Dexo não tem
+  // vitrine pública por produto, então todos os itens apontam para esta página
+  // FIXA do Facebook (sem sufixo /sku). Sem ela o build falha com erro claro.
   PRODUCT_URL_BASE: process.env.FB_PRODUCT_URL_BASE || "",
 
   // Moeda dos preços do catálogo (ISO 4217).

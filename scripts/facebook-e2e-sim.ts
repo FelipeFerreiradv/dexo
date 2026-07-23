@@ -162,8 +162,8 @@ async function main() {
   check("retailer_id = SKU sanitizado", retailerId === "ABC-123", retailerId);
   check("price = '199.90 BRL'", data.price === "199.90 BRL", data.price);
   check(
-    "link via FB_PRODUCT_URL_BASE",
-    data.link === "https://loja.example.com/produto/ABC-123",
+    "link = página fixa (FB_PRODUCT_URL_BASE, sem /sku)",
+    data.link === "https://loja.example.com/produto",
     data.link,
   );
   check("image_url principal", data.image_url === "https://img/1.jpg");

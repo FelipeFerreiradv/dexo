@@ -30,7 +30,7 @@ describe("FacebookPayloadBuilderService", () => {
     expect(data.condition).toBe("used");
     expect(data.price).toBe("199.90 BRL");
     expect(data.currency).toBe("BRL");
-    expect(data.link).toBe("https://loja.example.com/produto/ABC-123");
+    expect(data.link).toBe("https://loja.example.com/produto");
     expect(data.image_url).toBe("https://img/1.jpg");
     expect(data.additional_image_urls).toEqual(["https://img/2.jpg"]);
     expect(data.brand).toBe("VW");

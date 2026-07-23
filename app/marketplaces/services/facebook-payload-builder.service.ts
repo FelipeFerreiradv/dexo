@@ -11,9 +11,10 @@ import type {
  * retailer_id=SKU, name (≤200), description, price "<amount> <currency>",
  * image_url + additional_image_urls (máx 20), brand, google_product_category.
  *
- * ⚠️ O item de catálogo EXIGE `link` (URL da página do produto). A base vem de
- * FB_PRODUCT_URL_BASE (pendente de decisão do cliente); sem ela o build lança
- * um erro CLARO — o publish real fica bloqueado, mas o código/testes seguem.
+ * ⚠️ O item de catálogo EXIGE `link` (URL da página do produto). O Dexo não tem
+ * vitrine pública por produto, então o `link` aponta para a PÁGINA FIXA do
+ * vendedor no Facebook (FB_PRODUCT_URL_BASE) — sem sufixo /sku. Sem a base
+ * configurada o build lança erro CLARO (o publish real fica bloqueado).
  */
 
 export interface FacebookBuildItemOptions {
@@ -80,12 +81,14 @@ export class FacebookPayloadBuilderService {
   }
 
   /**
-   * Monta o `link` (URL da página do produto). EXIGIDO pelo catálogo. Sem
-   * FB_PRODUCT_URL_BASE configurada, lança erro claro (bloqueio conhecido).
+   * Monta o `link` do item de catálogo. EXIGIDO pela Meta. O Dexo não tem
+   * página pública por produto → todos os itens apontam para a PÁGINA FIXA do
+   * vendedor (FB_PRODUCT_URL_BASE), sem sufixo /sku. Sem a base configurada,
+   * lança erro claro (bloqueio conhecido).
    */
-  static buildLink(product: any): string {
-    // Lê o env em call-time (não do const capturado no import): a base é
-    // pendente de decisão do cliente e pode ser setada sem redeploy.
+  static buildLink(_product?: any): string {
+    // Lê o env em call-time (não do const capturado no import) p/ permitir setar
+    // sem redeploy.
     const base = (
       process.env.FB_PRODUCT_URL_BASE ||
       FACEBOOK_CONSTANTS.PRODUCT_URL_BASE ||
@@ -96,8 +99,7 @@ export class FacebookPayloadBuilderService {
         "FB_PRODUCT_URL_BASE não configurada — o item de catálogo Meta exige `link` (URL da página do produto).",
       );
     }
-    const sku = this.buildRetailerId(product);
-    return `${base}/${encodeURIComponent(sku)}`;
+    return base;
   }
 
   /** Preço no formato "<amount> <currency>" (ex.: "199.90 BRL"). */
