@@ -67,6 +67,8 @@ model User {
 
   accounts            MarketplaceAccount[]
   products            Product[]
+  productsCreated     Product[]           @relation("ProductCreatedBy")
+  listingsCreated     ProductListing[]    @relation("ListingCreatedBy")
   systemLogs          SystemLog[]
   locations           Location[]
   scraps              Scrap[]
@@ -116,6 +118,13 @@ model Product {
   weightKg               Decimal?               @db.Decimal(6, 2)
   widthCm                Int?
   userId                 String?
+  // Autor real do cadastro (request.user.id — colaborador ou admin que agiu),
+  // distinto de `userId` (dono/tenant = dataOwnerId). NULL = registro legado ou
+  // fluxo de sistema (import/autodetect/scripts) → UI exibe "—".
+  // Sem FK física no banco (decisão): Prisma resolve o include sem constraint e
+  // id órfão (colaborador excluído) vira relação null → "—".
+  // Migração: ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
+  createdByUserId        String?
   mlCategorySource       String?
   mlCategoryChosenAt     DateTime?
   shopeeCategoryId       String?
@@ -136,6 +145,7 @@ model Product {
   compatibilities        ProductCompatibility[]
   mlCategory             MarketplaceCategory?   @relation("ProductMlCategory", fields: [mlCategoryId], references: [id])
   user                   User?                  @relation(fields: [userId], references: [id])
+  createdBy              User?                  @relation("ProductCreatedBy", fields: [createdByUserId], references: [id])
   productLocation        Location?              @relation(fields: [locationId], references: [id])
   scrap                  Scrap?                 @relation(fields: [scrapId], references: [id], onDelete: SetNull)
   listings               ProductListing[]
@@ -315,6 +325,12 @@ model ProductListing {
   localPickup          Boolean?
   manufacturingTime    Int?
 
+  // Autor real da criação do anúncio (actorId do dispatcher = request.user.id).
+  // NULL = legado ou fluxo de sistema (autodetect/sync/retry) → UI exibe "—".
+  // Sem FK física no banco — mesma decisão do Product.createdByUserId.
+  // Migração: ALTER TABLE "ProductListing" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
+  createdByUserId      String?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é
@@ -343,6 +359,7 @@ model ProductListing {
   orderItems         OrderItem[]
   marketplaceAccount MarketplaceAccount    @relation(fields: [marketplaceAccountId], references: [id])
   product            Product               @relation(fields: [productId], references: [id])
+  createdBy          User?                 @relation("ListingCreatedBy", fields: [createdByUserId], references: [id])
   questions          MarketplaceQuestion[]
   receivableItems    ReceivableItem[]
   budgetItems        BudgetItem[]

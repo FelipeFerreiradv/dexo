@@ -110,6 +110,9 @@ interface DetailedListing {
   shopId?: number;
   createdAt: string;
   updatedAt: string;
+  // Autor real da criação do anúncio. null/ausente = legado ou fluxo de
+  // sistema (autodetect/sync/retry) → exibe "—".
+  createdBy?: CreatorSummary | null;
 }
 
 interface StockChange {
@@ -150,6 +153,9 @@ interface ProductDetailResponse {
   recentStockChanges: StockChange[];
   scrapSummary?: ScrapSummary;
   creator?: CreatorSummary;
+  // Autor real do cadastro (colaborador/admin que agiu) — distinto de
+  // `creator` (dono/tenant). null/ausente = legado → exibe "—".
+  createdBy?: CreatorSummary | null;
   productLocation?: ProductLocationSummary;
 }
 
@@ -344,7 +350,10 @@ export function ProductDetailSheet({
   const recentStockChanges = detail?.recentStockChanges ?? [];
   const scrapSummary = detail?.scrapSummary;
   const productLocation = detail?.productLocation;
-  const creator = detail?.creator;
+  // Autor real do cadastro (createdBy). O antigo `detail.creator` (dono/tenant)
+  // segue no contrato da API, mas o card "Criado por" agora mostra QUEM agiu;
+  // legado sem autor → InfoCard cai no "—".
+  const createdBy = detail?.createdBy;
 
   return (
     <>
@@ -875,6 +884,7 @@ export function ProductDetailSheet({
                           <TableHead>Plataforma</TableHead>
                           <TableHead>Conta</TableHead>
                           <TableHead>Status</TableHead>
+                          <TableHead>Criado por</TableHead>
                           <TableHead className="text-right">Link</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -897,6 +907,9 @@ export function ProductDetailSheet({
                                 {LISTING_STATUS_LABELS[l.status]?.label ??
                                   l.status}
                               </Badge>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {l.createdBy?.name ?? l.createdBy?.email ?? "—"}
                             </TableCell>
                             <TableCell className="text-right">
                               {l.permalink ? (
@@ -991,8 +1004,8 @@ export function ProductDetailSheet({
                   <InfoCard
                     icon={<User className="size-4" />}
                     label="Criado por"
-                    value={creator?.name ?? creator?.email}
-                    secondary={creator?.name ? creator?.email : undefined}
+                    value={createdBy?.name ?? createdBy?.email}
+                    secondary={createdBy?.name ? createdBy?.email : undefined}
                   />
                   <InfoCard
                     icon={<Calendar className="size-4" />}

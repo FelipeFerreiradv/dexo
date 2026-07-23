@@ -891,6 +891,12 @@ export class ListingUseCase {
      * o ML não permite alterar `family_name` de items UP existentes.
      */
     titleOverride?: string,
+    /**
+     * Autor real da criação (request.user.id — colaborador/admin que agiu).
+     * Persistido em ProductListing.createdByUserId quando uma linha NOVA é
+     * criada; fluxos de sistema (sync/retry) não passam → NULL → UI "—".
+     */
+    actorId?: string,
   ): Promise<CreateListingResult> {
     try {
       let account = accountId
@@ -1881,6 +1887,7 @@ export class ListingUseCase {
           nextRetryAt: null,
           lastError: null,
           retryEnabled: false,
+          createdByUserId: actorId ?? null,
           requestedCategoryId: payload.category_id || null,
           listingType: effectiveSettings.listingType ?? null,
           itemCondition: effectiveSettings.itemCondition ?? null,
@@ -2987,6 +2994,7 @@ export class ListingUseCase {
           status: remoteStatus,
           retryEnabled: false,
           nextRetryAt: null,
+          createdByUserId: actorId ?? null,
           lastError:
             remoteStatus === "paused" && remoteSubStatus?.length
               ? `ML retornou status=paused (${remoteSubStatus.join(",")})`
@@ -3268,6 +3276,8 @@ export class ListingUseCase {
     productId: string,
     categoryId?: string,
     accountId?: string,
+    /** Autor real da criação (request.user.id) — ver createMLListing. */
+    actorId?: string,
   ): Promise<CreateListingResult> {
     let account: any = null;
     let product: any = null;
@@ -3510,6 +3520,7 @@ export class ListingUseCase {
         lastError: null,
         retryEnabled: false,
         nextRetryAt: null,
+        createdByUserId: actorId ?? null,
       });
 
       return {
@@ -3542,6 +3553,7 @@ export class ListingUseCase {
             lastError: message.slice(0, 490),
             retryEnabled: true,
             nextRetryAt: new Date(Date.now() + 5 * 60 * 1000),
+            createdByUserId: actorId ?? null,
           });
         } catch (persistErr) {
           console.warn(
@@ -3653,6 +3665,8 @@ export class ListingUseCase {
     productId: string,
     categoryId?: string,
     accountId?: string,
+    /** Autor real da criação (request.user.id) — ver createMLListing. */
+    actorId?: string,
   ): Promise<CreateListingResult> {
     let account: any = null;
     try {
@@ -4401,6 +4415,7 @@ export class ListingUseCase {
           nextRetryAt: null,
           lastError: null,
           retryEnabled: false,
+          createdByUserId: actorId ?? null,
           requestedCategoryId: String(numericCategoryId),
         });
         console.log(

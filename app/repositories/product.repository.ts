@@ -250,6 +250,9 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
   return {
     id: item.id,
     userId: item.userId ?? undefined,
+    // `?? undefined` também cobre rows do productSelect da listagem, que não
+    // projetam o campo (payload lean) — fica ausente, como os demais opcionais.
+    createdByUserId: (item as any).createdByUserId ?? undefined,
     sku: item.sku,
     name: item.name,
     description: item.description ?? undefined,
@@ -920,6 +923,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       const result = await prisma.product.create({
         data: {
           userId: data.userId ?? null,
+          createdByUserId: data.createdByUserId ?? null,
           name: data.name,
           sku: data.sku,
           skuNormalized: normalizeSku(data.sku),
@@ -1575,6 +1579,13 @@ class ProductRepositoryPrisma implements ProductRepository {
                   shopId: true,
                 },
               },
+              createdBy: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                },
+              },
             },
           },
           scrap: {
@@ -1590,6 +1601,13 @@ class ProductRepositoryPrisma implements ProductRepository {
             },
           },
           user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          createdBy: {
             select: {
               id: true,
               name: true,
@@ -1647,6 +1665,16 @@ class ProductRepositoryPrisma implements ProductRepository {
       freeShipping: (listing as any).freeShipping ?? null,
       localPickup: (listing as any).localPickup ?? null,
       manufacturingTime: (listing as any).manufacturingTime ?? null,
+      // Autor real da criação do anúncio (aditivo). null = legado/fluxo de
+      // sistema (autodetect/sync/retry) → UI exibe "—".
+      createdBy: (listing as any).createdBy
+        ? {
+            id: (listing as any).createdBy.id as string,
+            name:
+              ((listing as any).createdBy.name as string | null) ?? undefined,
+            email: (listing as any).createdBy.email as string,
+          }
+        : null,
     }));
 
     const scrapSummary = item.scrap
@@ -1676,6 +1704,22 @@ class ProductRepositoryPrisma implements ProductRepository {
         }
       : undefined;
 
+    // Autor real do cadastro (aditivo — NÃO substitui `creator`, que segue
+    // sendo o dono/tenant p/ compatibilidade). null = legado/fluxo de sistema.
+    const createdByAuthor = (
+      item as {
+        createdBy?: { id: string; name: string | null; email: string } | null;
+      }
+    ).createdBy
+      ? {
+          id: (item as { createdBy: { id: string } }).createdBy.id,
+          name:
+            (item as { createdBy: { name: string | null } }).createdBy.name ??
+            undefined,
+          email: (item as { createdBy: { email: string } }).createdBy.email,
+        }
+      : null;
+
     const productLocationSummary = (
       item as {
         productLocation?: {
@@ -1701,6 +1745,7 @@ class ProductRepositoryPrisma implements ProductRepository {
       recentStockChanges,
       scrapSummary,
       creator,
+      createdBy: createdByAuthor,
       productLocation: productLocationSummary,
     };
   }

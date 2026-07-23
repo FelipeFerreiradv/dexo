@@ -55,6 +55,10 @@ export interface ProductFilterOptions {
 export interface Product {
   id: string;
   userId?: string;
+  // Autor real do cadastro (request.user.id — colaborador ou admin que agiu),
+  // distinto de `userId` (dono/tenant). Ausente/undefined = legado ou fluxo de
+  // sistema (import/autodetect/scripts) → UI exibe "—".
+  createdByUserId?: string;
   sku: string;
   name: string;
   description?: string;
@@ -132,6 +136,9 @@ export interface Product {
 
 export interface ProductCreate {
   userId: string;
+  // Autor real do cadastro (request.user.id). Opcional/aditivo: fluxos sem
+  // request (imports, autodetect, scripts) não passam → grava NULL.
+  createdByUserId?: string | null;
   sku: string;
   name: string;
   description?: string;
