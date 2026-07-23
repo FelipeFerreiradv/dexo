@@ -241,23 +241,42 @@ export class ListingRepository {
    * ou listings marcados com retryEnabled=true e nextRetryAt <= now
    */
   static async findPendingRetries(cutoff: Date, limit = 100) {
+    // PERF: o WHERE legado — (LIKE 'PENDING\_%' ∧ retryEnabled≠false) ∨
+    // retryEnabled=true — é logicamente equivalente a `retryEnabled = true`:
+    // `retryEnabled` é Boolean NOT NULL (schema), então `{ not: false }` ≡
+    // `= true` e, por absorção, (A ∧ B) ∨ B ≡ B. O conjunto retornado é
+    // IDÊNTICO para qualquer estado do banco (placeholders PENDING_ nascem
+    // com retryEnabled=false de propósito e nunca entravam pelo ramo LIKE).
+    // O ramo LIKE, porém, forçava seq scan + sort na ProductListing inteira
+    // a cada tick de 60s do ListingRetryService — a query nº 1 do
+    // pg_stat_statements em produção (~94k calls, ~2,3M ms). O WHERE simples
+    // casa com o índice ProductListing_retryEnabled_updatedAt_idx (DDL
+    // manual, padrão do projeto) e elimina o sort.
+    // Kill-switch: LISTING_RETRY_SIMPLE_WHERE_DISABLED=1 volta ao WHERE
+    // legado (lido a cada chamada — rollback por env sem redeploy).
     return prisma.productListing.findMany({
-      where: {
-        AND: [
-          {
-            OR: [
-              {
-                externalListingId: { startsWith: "PENDING_" },
-                retryEnabled: { not: false },
-              },
-              { retryEnabled: true },
-            ],
-          },
-          {
-            OR: [{ nextRetryAt: { lte: cutoff } }, { nextRetryAt: null }],
-          },
-        ],
-      },
+      where:
+        process.env.LISTING_RETRY_SIMPLE_WHERE_DISABLED === "1"
+          ? {
+              AND: [
+                {
+                  OR: [
+                    {
+                      externalListingId: { startsWith: "PENDING_" },
+                      retryEnabled: { not: false },
+                    },
+                    { retryEnabled: true },
+                  ],
+                },
+                {
+                  OR: [{ nextRetryAt: { lte: cutoff } }, { nextRetryAt: null }],
+                },
+              ],
+            }
+          : {
+              retryEnabled: true,
+              OR: [{ nextRetryAt: { lte: cutoff } }, { nextRetryAt: null }],
+            },
       include: { product: true, marketplaceAccount: true },
       orderBy: { updatedAt: "asc" },
       take: limit,
