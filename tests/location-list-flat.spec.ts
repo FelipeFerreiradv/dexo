@@ -11,16 +11,23 @@ import fastify from "fastify";
 
 // vi.mock é içado ao topo do arquivo, então as refs dos mocks precisam vir de
 // vi.hoisted (senão "Cannot access before initialization").
-const { findManyMock, countMock } = vi.hoisted(() => ({
-  findManyMock: vi.fn(),
-  countMock: vi.fn(),
-}));
+const { findManyMock, countMock, locationGroupByMock, productGroupByMock } =
+  vi.hoisted(() => ({
+    findManyMock: vi.fn(),
+    countMock: vi.fn(),
+    locationGroupByMock: vi.fn(),
+    productGroupByMock: vi.fn(),
+  }));
 
 vi.mock("../app/lib/prisma", () => ({
   default: {
     location: {
       findMany: (...args: any[]) => findManyMock(...args),
       count: (...args: any[]) => countMock(...args),
+      groupBy: (...args: any[]) => locationGroupByMock(...args),
+    },
+    product: {
+      groupBy: (...args: any[]) => productGroupByMock(...args),
     },
   },
 }));
@@ -29,6 +36,10 @@ vi.mock("@/app/lib/prisma", () => ({
     location: {
       findMany: (...args: any[]) => findManyMock(...args),
       count: (...args: any[]) => countMock(...args),
+      groupBy: (...args: any[]) => locationGroupByMock(...args),
+    },
+    product: {
+      groupBy: (...args: any[]) => productGroupByMock(...args),
     },
   },
 }));
@@ -71,23 +82,25 @@ beforeEach(() => {
 });
 
 describe("GET /locations?tree=full", () => {
-  it("retorna lista achatada com childrenCount do _count e occupancy calculada", async () => {
+  it("retorna lista achatada com counts dos groupBy escopados e occupancy calculada", async () => {
+    // Caminho NOVO do findAllFlat: findMany sem _count + 2 groupBy escopados
+    // nos ids retornados (Product por locationId, Location por parentId).
     findManyMock.mockResolvedValue([
-      row({
-        id: "g1",
-        code: "G1",
-        maxCapacity: 0,
-        parentId: null,
-        _count: { products: 2, children: 3 },
-      }),
+      row({ id: "g1", code: "G1", maxCapacity: 0, parentId: null }),
       row({
         id: "p1",
         code: "PRAT-01",
         description: "Prateleira",
         maxCapacity: 10,
         parentId: "g1",
-        _count: { products: 5, children: 0 },
       }),
+    ]);
+    productGroupByMock.mockResolvedValue([
+      { locationId: "g1", _count: { _all: 2 } },
+      { locationId: "p1", _count: { _all: 5 } },
+    ]);
+    locationGroupByMock.mockResolvedValue([
+      { parentId: "g1", _count: { _all: 3 } },
     ]);
 
     const app = buildApp();
@@ -110,7 +123,7 @@ describe("GET /locations?tree=full", () => {
     expect(body.locations).toHaveLength(2);
 
     const g1 = body.locations.find((l: any) => l.id === "g1");
-    expect(g1.childrenCount).toBe(3); // do _count, NÃO de children.length
+    expect(g1.childrenCount).toBe(3); // do groupBy por parentId, NÃO de children.length
     expect(g1.productsCount).toBe(2);
     expect(g1.occupancy).toBe(0); // maxCapacity 0 ⇒ 0
     expect(g1.children).toBeUndefined(); // sem nested children
@@ -121,24 +134,33 @@ describe("GET /locations?tree=full", () => {
     expect(p1.occupancy).toBe(50); // 5/10
     expect(p1.parentId).toBe("g1");
 
-    // findMany: 1 chamada, where só por userId, sem paginação; count não usado
+    // findMany: 1 chamada, where só por userId, sem paginação nem _count;
+    // count não usado
     expect(findManyMock).toHaveBeenCalledTimes(1);
     const arg = findManyMock.mock.calls[0][0];
     expect(arg.where).toEqual({ userId: "user-1" });
     expect(arg.skip).toBeUndefined();
     expect(arg.take).toBeUndefined();
+    expect(arg.include).toBeUndefined();
     expect(countMock).not.toHaveBeenCalled();
+
+    // groupBy ESCOPADOS nos ids retornados (nunca a tabela inteira)
+    expect(productGroupByMock).toHaveBeenCalledTimes(1);
+    expect(productGroupByMock.mock.calls[0][0].where).toEqual({
+      locationId: { in: ["g1", "p1"] },
+    });
+    expect(locationGroupByMock).toHaveBeenCalledTimes(1);
+    expect(locationGroupByMock.mock.calls[0][0].where).toEqual({
+      parentId: { in: ["g1", "p1"] },
+    });
   });
 
   it("occupancy satura em 100 quando ocupação excede a capacidade", async () => {
-    findManyMock.mockResolvedValue([
-      row({
-        id: "c1",
-        code: "CX",
-        maxCapacity: 2,
-        _count: { products: 5, children: 0 },
-      }),
+    findManyMock.mockResolvedValue([row({ id: "c1", code: "CX", maxCapacity: 2 })]);
+    productGroupByMock.mockResolvedValue([
+      { locationId: "c1", _count: { _all: 5 } },
     ]);
+    locationGroupByMock.mockResolvedValue([]);
 
     const app = buildApp();
     const res = await app.inject({
@@ -149,6 +171,40 @@ describe("GET /locations?tree=full", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().locations[0].occupancy).toBe(100);
+  });
+
+  it("kill-switch LOCATION_FLAT_COUNTS_DISABLED=1 usa o include legado (_count)", async () => {
+    process.env.LOCATION_FLAT_COUNTS_DISABLED = "1";
+    try {
+      findManyMock.mockResolvedValue([
+        row({
+          id: "g1",
+          code: "G1",
+          maxCapacity: 10,
+          _count: { products: 4, children: 2 },
+        }),
+      ]);
+
+      const app = buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/locations?tree=full",
+        headers: { email: OWNER },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const loc = res.json().locations[0];
+      expect(loc.productsCount).toBe(4);
+      expect(loc.childrenCount).toBe(2);
+      // caminho legado: findMany com include._count e NENHUM groupBy
+      expect(findManyMock.mock.calls[0][0].include).toEqual({
+        _count: { select: { products: true, children: true } },
+      });
+      expect(productGroupByMock).not.toHaveBeenCalled();
+      expect(locationGroupByMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.LOCATION_FLAT_COUNTS_DISABLED;
+    }
   });
 
   it("regressão: sem tree=full mantém listLocations (root-only + paginação)", async () => {
