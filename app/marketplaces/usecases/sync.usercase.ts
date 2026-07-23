@@ -2254,16 +2254,22 @@ export class SyncUseCase {
     for (const account of accounts) {
       const listings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
-        // EGRESS: `product: true` fazia o Prisma resolver a relação com UM
-        // batch-load `Product WHERE id IN (<TODOS os productIds da conta>)`
-        // trazendo TODAS as colunas — incluindo o JSONB pesado `mlCatalogSnapshot`,
-        // `attributes` e `imageUrls`. Em contas com o catálogo inteiro anunciado
-        // isso vira um IN de dezenas de milhares de ids × colunas gordas (o maior
-        // dreno de tempo do banco em produção, com detoast do JSONB por linha). O
-        // sync de estoque só lê id/sku/stock/name do produto (syncMLProductStock,
-        // syncShopeeProductStock, logMLStockWarningAndReturn, alertMLReactivationRisk),
-        // então restringimos o select — MESMAS linhas, sem carregar o resto.
-        include: {
+        // EGRESS (2 ofensores do pg_stat_statements no MESMO call-site):
+        // - Relação: `product: true` fazia o Prisma resolver com UM batch-load
+        //   `Product WHERE id IN (<TODOS os productIds da conta>)` trazendo
+        //   TODAS as colunas — incluindo o JSONB pesado `mlCatalogSnapshot`,
+        //   `attributes` e `imageUrls` (IN de dezenas de milhares de ids ×
+        //   colunas gordas, com detoast por linha).
+        // - Query-mãe: sem `select`, puxava as ~46 colunas do ProductListing
+        //   (20 delas *Override de texto) de TODOS os anúncios da conta
+        //   (7.459 calls @285ms).
+        // A árvore de sync de estoque (syncMLProductStock, syncShopeeProductStock,
+        // logMLStockWarningAndReturn, alertMLReactivationRisk) lê APENAS
+        // listing.id e listing.externalListingId + product.{id,sku,stock,name}
+        // + marketplaceAccount.* — MESMAS linhas, sem trafegar o resto.
+        select: {
+          id: true,
+          externalListingId: true,
           product: { select: { id: true, sku: true, stock: true, name: true } },
           marketplaceAccount: true,
         },
