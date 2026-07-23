@@ -994,38 +994,99 @@ class ProductRepositoryPrisma implements ProductRepository {
   }): Promise<{ products: Product[]; total: number }> {
     const { search, baseSqlWhere, baseWhere, skip, limit } = params;
     const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
-    const fuzzyPredicate = Prisma.sql`(
-      immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
-      immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
-      immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-      immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-      immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
-      similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
-      similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold} OR
-      similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
-      similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
-      similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}
-    )`;
-    const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
 
-    const [rankedIds, totalRow] = await Promise.all([
-      prisma.$queryRaw<{ id: string; score: number }[]>`
-        SELECT p."id",
-               GREATEST(
-                 similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
-                 similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
-               ) AS score
-        FROM "Product" p
-        WHERE ${rankedWhere}
-        ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
-        OFFSET ${skip} LIMIT ${limit};
-      `,
-      prisma.$queryRaw<{ count: bigint }[]>`
-        SELECT COUNT(*)::bigint as count
-        FROM "Product" p
-        WHERE ${rankedWhere};
-      `,
-    ]);
+    let rankedIds: { id: string; score: number }[];
+    let totalRow: { count: bigint }[];
+
+    if (process.env.PRODUCT_FUZZY_TRGM_DISABLED === "1") {
+      // Caminho LEGADO verbatim (kill-switch). Os braços de name/sku sem
+      // lower() não casam com os índices trgm (que são em
+      // immutable_unaccent(lower(campo))) e similarity() >= t nunca usa
+      // índice — um único braço não-indexável num OR força seq scan de tudo.
+      const fuzzyPredicate = Prisma.sql`(
+        immutable_unaccent(p."name") ILIKE immutable_unaccent(${`%${search}%`}) OR
+        immutable_unaccent(p."sku") ILIKE immutable_unaccent(${`%${search}%`}) OR
+        immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        similarity(immutable_unaccent(p."name"), ${search}) >= ${similarityThreshold} OR
+        similarity(immutable_unaccent(p."sku"), ${search}) >= ${similarityThreshold} OR
+        similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+        similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold} OR
+        similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}
+      )`;
+      const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
+
+      [rankedIds, totalRow] = await Promise.all([
+        prisma.$queryRaw<{ id: string; score: number }[]>`
+          SELECT p."id",
+                 GREATEST(
+                   similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
+                   similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
+                 ) AS score
+          FROM "Product" p
+          WHERE ${rankedWhere}
+          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          OFFSET ${skip} LIMIT ${limit};
+        `,
+        prisma.$queryRaw<{ count: bigint }[]>`
+          SELECT COUNT(*)::bigint as count
+          FROM "Product" p
+          WHERE ${rankedWhere};
+        `,
+      ]);
+    } else {
+      // PERF (Tier 2 indexável): mesmo conjunto de resultados do legado,
+      // braço a braço, mas com TODOS os braços casando com os índices trgm:
+      // - name/sku ILIKE ganham lower() dos DOIS lados — ILIKE já é
+      //   case-insensitive, então o resultado não muda, mas a expressão
+      //   passa a bater com o índice (immutable_unaccent(lower(campo))).
+      // - brand/model/partNumber ILIKE ficam byte-idênticos (já batiam).
+      // - Cada similarity(expr, q) >= t vira (expr % q AND similarity(expr,
+      //   q) >= t): o `%` é pré-filtro indexado (superconjunto — o GUC vai
+      //   para 0.2, abaixo dos thresholds 0.22/0.3) e o similarity() exato
+      //   preserva a semântica ao bit. O lado direito fica CRU como no
+      //   legado (não mexemos no recall). O lado esquerdo ganha lower(),
+      //   que não altera similarity: o pg_trgm extrai trigramas já em
+      //   minúsculas (case-insensitive por construção).
+      // set_config(..., true) = SET LOCAL: só vale dentro da transação
+      // (sequencial), zero vazamento p/ outras queries do pooler.
+      const fuzzyPredicate = Prisma.sql`(
+        immutable_unaccent(lower(p."name")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."sku")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."brand")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."model")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        immutable_unaccent(lower(p."partNumber")) ILIKE immutable_unaccent(lower(${`%${search}%`})) OR
+        (immutable_unaccent(lower(p."name")) % ${search} AND similarity(immutable_unaccent(lower(p."name")), ${search}) >= ${similarityThreshold}) OR
+        (immutable_unaccent(lower(p."sku")) % ${search} AND similarity(immutable_unaccent(lower(p."sku")), ${search}) >= ${similarityThreshold}) OR
+        (immutable_unaccent(lower(p."brand")) % immutable_unaccent(lower(${search})) AND similarity(immutable_unaccent(lower(p."brand")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}) OR
+        (immutable_unaccent(lower(p."model")) % immutable_unaccent(lower(${search})) AND similarity(immutable_unaccent(lower(p."model")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold}) OR
+        (immutable_unaccent(lower(p."partNumber")) % immutable_unaccent(lower(${search})) AND similarity(immutable_unaccent(lower(p."partNumber")), immutable_unaccent(lower(${search}))) >= ${similarityThreshold})
+      )`;
+      const rankedWhere = combineSqlClauses([baseSqlWhere, fuzzyPredicate]);
+
+      const res = await prisma.$transaction([
+        prisma.$queryRaw`SELECT set_config('pg_trgm.similarity_threshold', ${"0.2"}, true)`,
+        prisma.$queryRaw<{ id: string; score: number }[]>`
+          SELECT p."id",
+                 GREATEST(
+                   similarity(immutable_unaccent(lower(p."name")), immutable_unaccent(lower(${search}))),
+                   similarity(immutable_unaccent(lower(p."sku")), immutable_unaccent(lower(${search})))
+                 ) AS score
+          FROM "Product" p
+          WHERE ${rankedWhere}
+          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          OFFSET ${skip} LIMIT ${limit};
+        `,
+        prisma.$queryRaw<{ count: bigint }[]>`
+          SELECT COUNT(*)::bigint as count
+          FROM "Product" p
+          WHERE ${rankedWhere};
+        `,
+      ]);
+      rankedIds = res[1] as { id: string; score: number }[];
+      totalRow = res[2] as { count: bigint }[];
+    }
 
     const total = Number(totalRow?.[0]?.count ?? 0);
     const idOrder = rankedIds.map((item) => item.id);

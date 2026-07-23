@@ -9,6 +9,7 @@ const {
   mockCount,
   mockProductListingFindMany,
   mockMarketplaceCategoryFindMany,
+  mockTransaction,
 } = vi.hoisted(() => ({
   mockQueryRaw: vi.fn(),
   mockExecuteRawUnsafe: vi.fn(),
@@ -16,6 +17,10 @@ const {
   mockCount: vi.fn(),
   mockProductListingFindMany: vi.fn(),
   mockMarketplaceCategoryFindMany: vi.fn(),
+  // O Tier 2 indexável roda [set_config, ranked, count] num $transaction
+  // sequencial; os elementos do array já são promises dos $queryRaw
+  // mockados, então resolver com Promise.all reproduz o batch do Prisma.
+  mockTransaction: vi.fn((ops: any[]) => Promise.all(ops)),
 }));
 
 vi.mock("../app/lib/prisma", () => ({
@@ -39,7 +44,7 @@ vi.mock("../app/lib/prisma", () => ({
     marketplaceCategory: {
       findMany: mockMarketplaceCategoryFindMany,
     },
-    $transaction: vi.fn(),
+    $transaction: (...args: any[]) => (mockTransaction as any)(...args),
   },
 }));
 
@@ -95,6 +100,9 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     mockCount.mockReset();
     mockProductListingFindMany.mockReset();
     mockMarketplaceCategoryFindMany.mockReset();
+    // mockClear (não mockReset): preserva a implementação Promise.all e
+    // zera só o histórico de chamadas entre testes.
+    mockTransaction.mockClear();
   });
 
   it("orders results by trigram score while returning hydrated products", async () => {
@@ -693,6 +701,7 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
     mockQueryRaw
       .mockResolvedValueOnce([]) // Tier 1 ranked ids vazio
       .mockResolvedValueOnce([{ count: BigInt(0) }]) // Tier 1 total 0
+      .mockResolvedValueOnce([{ set_config: "0.2" }]) // fuzzy: SET LOCAL do threshold trgm
       .mockResolvedValueOnce([{ id: "prod-molla", score: 0.5 }]) // fuzzy ranked ids
       .mockResolvedValueOnce([{ count: BigInt(1) }]); // fuzzy total
 
@@ -714,14 +723,55 @@ describe("ProductRepositoryPrisma.findAll - fuzzy search", () => {
       "user-1",
     );
 
-    // Tier 1 (2 queries) + fuzzy (2 queries) = 4; o fuzzy foi alcançado.
-    expect(mockQueryRaw).toHaveBeenCalledTimes(4);
+    // Tier 1 (2 queries) + fuzzy ($transaction: set_config + ranked + count
+    // = 3 queries) = 5; o fuzzy foi alcançado.
+    expect(mockQueryRaw).toHaveBeenCalledTimes(5);
     expect(result.total).toBe(1);
     expect(result.products).toHaveLength(1);
     expect(result.products[0]).toMatchObject({
       id: "prod-molla",
       sku: "MOLA-1",
     });
+  });
+
+  it("kill-switch PRODUCT_FUZZY_TRGM_DISABLED=1 usa o fuzzy legado (2 queries, sem $transaction)", async () => {
+    process.env.PRODUCT_FUZZY_TRGM_DISABLED = "1";
+    try {
+      const repo = new ProductRepositoryPrisma();
+
+      mockQueryRaw
+        .mockResolvedValueOnce([]) // Tier 1 ranked ids vazio
+        .mockResolvedValueOnce([{ count: BigInt(0) }]) // Tier 1 total 0
+        .mockResolvedValueOnce([{ id: "prod-molla", score: 0.5 }]) // fuzzy legado ranked ids
+        .mockResolvedValueOnce([{ count: BigInt(1) }]); // fuzzy legado total
+
+      mockFindMany.mockResolvedValue([
+        {
+          ...baseProduct,
+          id: "prod-molla",
+          sku: "MOLA-1",
+          name: "Mola dianteira Gol",
+          price: money(80),
+          stock: 2,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-02"),
+        },
+      ]);
+
+      const result = await repo.findAll(
+        { search: "molla", page: 1, limit: 10 },
+        "user-1",
+      );
+
+      // Caminho legado: Tier 1 (2) + fuzzy via Promise.all (2) = 4, e o
+      // $transaction (usado só pelo caminho indexável) não é chamado.
+      expect(mockQueryRaw).toHaveBeenCalledTimes(4);
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(result.total).toBe(1);
+      expect(result.products[0]).toMatchObject({ id: "prod-molla" });
+    } finally {
+      delete process.env.PRODUCT_FUZZY_TRGM_DISABLED;
+    }
   });
 
   it("busca numérica sem SKU exato cai para o Tier 1 (guarda não interfere)", async () => {
