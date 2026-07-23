@@ -367,6 +367,10 @@ model ProductListing {
   @@unique([marketplaceAccountId, externalListingId])
   @@index([marketplaceAccountId, metricsUpdatedAt])
   @@index([productId])
+  // PERF: serve o findPendingRetries do ListingRetryService (tick 60s) —
+  // WHERE retryEnabled=true ORDER BY updatedAt. DDL aplicado manualmente em
+  // produção (CREATE INDEX CONCURRENTLY); este @@index é o espelho.
+  @@index([retryEnabled, updatedAt])
 }
 
 model MarketplaceCategory {
@@ -476,6 +480,10 @@ model StockLog {
 
   @@index([productId])
   @@index([productId, createdAt])
+  // PERF: serve o StockReconciliationService (tick 15min) — WHERE
+  // createdAt >= now()-1h numa tabela append-only que só cresce (era seq
+  // scan). DDL manual em produção; este @@index é o espelho.
+  @@index([createdAt])
 }
 
 model StockSyncJob {
@@ -564,6 +572,11 @@ model SyncLog {
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
 
   @@index([marketplaceAccountId])
+  // PERF: serve o COUNT do health-check de token (sync.usercase logSync) —
+  // WHERE marketplaceAccountId AND status=FAILURE AND createdAt>=now()-30min.
+  // NÃO substitui o índice simples acima (deleteMany de conta o usa).
+  // DDL manual em produção; este @@index é o espelho.
+  @@index([marketplaceAccountId, status, createdAt])
 }
 
 model SystemLog {

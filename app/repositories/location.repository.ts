@@ -147,18 +147,65 @@ export class LocationRepositoryPrisma implements LocationRepository {
    * pequeno o suficiente (mesma premissa de `listForSelect`).
    */
   async findAllFlat(userId: string): Promise<LocationFlat[]> {
+    // PERF: o include `_count` do Prisma vira LEFT JOINs de subqueries SEM
+    // correlação (WHERE 1=1) — agregava a tabela Product INTEIRA (todos os
+    // tenants) a cada chamada (~97ms de servidor, 9.065 calls no
+    // pg_stat_statements). Aqui buscamos as linhas sem `_count` e contamos
+    // com dois groupBy ESCOPADOS nos ids retornados — números IDÊNTICOS (o
+    // subquery original também contava por locationId/parentId sem filtro de
+    // dono), servidos pelos índices Product(locationId) e Location(parentId).
+    // Kill-switch: LOCATION_FLAT_COUNTS_DISABLED=1 volta ao include legado.
+    if (process.env.LOCATION_FLAT_COUNTS_DISABLED === "1") {
+      const rows = await prisma.location.findMany({
+        where: { userId },
+        orderBy: { code: "asc" },
+        include: {
+          _count: { select: { products: true, children: true } },
+        },
+      });
+
+      return rows.map((item) => ({
+        ...mapPrismaToLocation(item),
+        childrenCount: item._count?.children ?? 0,
+      }));
+    }
+
     const rows = await prisma.location.findMany({
       where: { userId },
       orderBy: { code: "asc" },
-      include: {
-        _count: { select: { products: true, children: true } },
-      },
     });
+    if (rows.length === 0) return [];
 
-    return rows.map((item) => ({
-      ...mapPrismaToLocation(item),
-      childrenCount: item._count?.children ?? 0,
-    }));
+    const ids = rows.map((r) => r.id);
+    const [productCounts, childCounts] = await Promise.all([
+      prisma.product.groupBy({
+        by: ["locationId"],
+        where: { locationId: { in: ids } },
+        _count: { _all: true },
+      }),
+      prisma.location.groupBy({
+        by: ["parentId"],
+        where: { parentId: { in: ids } },
+        _count: { _all: true },
+      }),
+    ]);
+    const productsByLoc = new Map(
+      productCounts.map((c) => [c.locationId, c._count._all]),
+    );
+    const childrenByLoc = new Map(
+      childCounts.map((c) => [c.parentId, c._count._all]),
+    );
+
+    return rows.map((item) => {
+      const counts = {
+        products: productsByLoc.get(item.id) ?? 0,
+        children: childrenByLoc.get(item.id) ?? 0,
+      };
+      return {
+        ...mapPrismaToLocation({ ...item, _count: counts }),
+        childrenCount: counts.children,
+      };
+    });
   }
 
   async findByCode(code: string, userId: string): Promise<Location | null> {
