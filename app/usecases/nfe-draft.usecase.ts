@@ -96,12 +96,14 @@ export class NfeDraftUseCase {
     // quantidade + valor) e os dados do cliente do pedido — autopreenchimento
     // rico. NÃO toca o wizard/emissão: só enriquece os valores iniciais.
     // Multi-CNPJ: a resolução do emitente (vínculo da conta do pedido)
-    // acontece lá dentro — daqui só segue a escolha explícita, se houver.
+    // acontece lá dentro. A config já carregada acima segue como explícita OU
+    // como padrão-já-resolvido — nunca é rebuscada no mesmo request (egress).
     if (input.orderId) {
       return this.createPopulatedFromOrder(
         userId,
         input.orderId,
         explicitId ? config : null,
+        explicitId ? null : config,
         input.serie ?? null,
         input.customerId ?? null,
       );
@@ -152,6 +154,10 @@ export class NfeDraftUseCase {
     userId: string,
     orderId: string,
     explicitConfig: CompanyFiscalConfig | null,
+    // Config PADRÃO já resolvida pelo caller (create() a busca de qualquer
+    // forma para o guard de existência) — evita rebuscar a mesma linha no
+    // mesmo request quando o pedido não tem vínculo (o caso comum).
+    defaultConfig: CompanyFiscalConfig | null,
     serieOverride: number | null,
     customerId?: string | null,
   ): Promise<NfeDraftResponse> {
@@ -174,7 +180,7 @@ export class NfeDraftUseCase {
       }
     }
     if (!config) {
-      config = await this.configRepo.findByUserId(userId);
+      config = defaultConfig ?? (await this.configRepo.findByUserId(userId));
     }
     if (!config) {
       throw new Error(

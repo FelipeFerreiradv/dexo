@@ -112,4 +112,16 @@ export class FiscalStorageService {
       return null;
     }
   }
+
+  /**
+   * Remove arquivo do storage (best-effort — nunca lança). Usado na exclusão
+   * de empresa para não deixar o .pfx por-config órfão no disco.
+   */
+  async deleteFile(filePath: string): Promise<void> {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // best-effort: arquivo ausente/sem permissão não bloqueia a operação
+    }
+  }
 }

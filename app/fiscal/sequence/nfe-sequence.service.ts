@@ -210,9 +210,10 @@ export class NfeSequenceService {
       // INSERT conflitou mas o SELECT filtrado não enxerga a linha conflitante
       // (ex.: linha legada NULL de um emitente que não pode adotá-la — janela
       // pré-SQL-2 com config fora do padrão). Falhar ALTO: devolver um número
-      // aqui arriscaria duplicidade de nNF na SEFAZ.
+      // aqui arriscaria duplicidade de nNF na SEFAZ. Mensagem sem detalhe
+      // interno (não vazar path de doc/repo na resposta da API).
       throw new Error(
-        "Não foi possível reservar número para o emitente — numeração em migração (ver docs/multi-cnpj-sql.md)",
+        "Não foi possível reservar número para o emitente — contate o suporte",
       );
     });
   }
@@ -255,26 +256,23 @@ export class NfeSequenceService {
     if (novoNumero < 1 || !Number.isInteger(novoNumero))
       throw new Error("Número deve ser um inteiro positivo");
 
-    const atual = await this.consultarProximoNumero(
-      userId,
-      ambiente,
-      serie,
-      modelo,
-      opts,
-    );
+    // Leitura ÚNICA (egress): id + contador na mesma query — antes eram duas
+    // idas ao banco com o MESMO where (consultar + findFirst). Mesmo guard,
+    // mesma mensagem, mesma linha escolhida (ordenação idêntica).
+    // Reescrito de upsert→findFirst+update/create (input composto saiu do
+    // client). Com `opts`, o update também adota a linha legada (configId).
+    const existing = await (prisma as any).nfeSequence.findFirst({
+      where: this.buildWhere(userId, ambiente, serie, modelo, opts),
+      select: { id: true, proximoNumero: true },
+      orderBy: { companyFiscalConfigId: "asc" },
+    });
+
+    const atual = existing?.proximoNumero ?? 1;
     if (novoNumero <= atual) {
       throw new Error(
         `Novo número (${novoNumero}) deve ser maior que o atual (${atual})`,
       );
     }
-
-    // Reescrito de upsert→findFirst+update/create (input composto saiu do
-    // client). Com `opts`, o update também adota a linha legada (configId).
-    const existing = await (prisma as any).nfeSequence.findFirst({
-      where: this.buildWhere(userId, ambiente, serie, modelo, opts),
-      select: { id: true },
-      orderBy: { companyFiscalConfigId: "asc" },
-    });
 
     if (existing) {
       await (prisma as any).nfeSequence.update({

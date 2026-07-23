@@ -14,6 +14,7 @@ import {
 } from "../lib/finance-report";
 import { renderFinanceReport } from "../reports/finance-report";
 import { FinanceStatus as PrismaFinanceStatus } from "@prisma/client";
+import { parseCompanyIdParam } from "./fiscal.routes";
 
 function fmtDateTimeBR(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -309,10 +310,14 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         // Multi-CNPJ: emitente opcional via QUERY (o POST segue sem body —
-        // contrato do PDV pinado em teste). Ausente = CNPJ padrão.
-        const companyId =
-          (request.query as { companyId?: string } | undefined)?.companyId ??
-          null;
+        // contrato do PDV pinado em teste). Ausente = CNPJ padrão. Fronteira
+        // de tipo: query repetida (array) → 400, nunca erro interno.
+        const companyId = parseCompanyIdParam(
+          (request.query as { companyId?: unknown } | undefined)?.companyId,
+        );
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const draft = await useCase.createFiscalDraftFromReceivable(
           id,
           userId,
@@ -349,10 +354,14 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params as { id: string };
         // Multi-CNPJ: emitente opcional via QUERY (o POST segue sem body —
-        // contrato do PDV pinado em teste). Ausente = CNPJ padrão.
-        const companyId =
-          (request.query as { companyId?: string } | undefined)?.companyId ??
-          null;
+        // contrato do PDV pinado em teste). Ausente = CNPJ padrão. Fronteira
+        // de tipo: query repetida (array) → 400, nunca erro interno.
+        const companyId = parseCompanyIdParam(
+          (request.query as { companyId?: unknown } | undefined)?.companyId,
+        );
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const nfce = await useCase.emitNfceFromReceivable(id, userId, companyId);
         return reply.status(200).send({ nfce });
       } catch (error) {

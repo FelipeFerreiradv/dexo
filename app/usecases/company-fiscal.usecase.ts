@@ -24,6 +24,10 @@ export interface CertificateUploadResult {
   cnpjMatched?: boolean;
 }
 
+// Teto de empresas emissoras por tenant — defensivo (exaustão de disco/linhas),
+// muito acima de qualquer uso real de matriz+filiais.
+const MAX_EMPRESAS_POR_TENANT = 20;
+
 const REGIMES: RegimeTributario[] = [
   "SIMPLES",
   "LUCRO_PRESUMIDO",
@@ -100,6 +104,14 @@ export class CompanyFiscalUseCase {
       );
     }
     this.validateUpsert(data);
+    // Teto defensivo por tenant (hardening): nenhum uso legítimo chega perto
+    // disso; fecha superfície de exaustão (linhas + .pfx por config no disco).
+    const total = await this.repo.countByUserId(userId);
+    if (total >= MAX_EMPRESAS_POR_TENANT) {
+      throw new Error(
+        "Limite de empresas por cadastro atingido. Contate o suporte.",
+      );
+    }
     return this.repo.createSecondary(userId, data);
   }
 
@@ -120,7 +132,13 @@ export class CompanyFiscalUseCase {
 
   async deleteById(id: string, userId: string): Promise<void> {
     if (!userId) throw new Error("Usuário não encontrado");
-    return this.repo.deleteById(id, userId);
+    const certPath = await this.repo.deleteById(id, userId);
+    // Higiene: remove do disco o A1 POR-CONFIG da empresa excluída (best-
+    // effort). NUNCA o path legado compartilhado certs/<userId>.pfx — a
+    // config padrão pode apontar para ele.
+    if (certPath && certPath.endsWith(`${userId}-${id}.pfx`)) {
+      await this.storage.deleteFile(certPath);
+    }
   }
 
   async upsert(

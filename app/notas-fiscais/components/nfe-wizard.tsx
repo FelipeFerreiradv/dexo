@@ -62,6 +62,11 @@ const TOTAL_STEPS = 9;
 const REEMISSAO_REJEITADA_ENABLED =
   process.env.NEXT_PUBLIC_NFE_REEMISSAO_REJEITADA_ENABLED === "true";
 
+// Multi-CNPJ: gate do fetch de empresas (mesmo padrão do PDV) — com a flag
+// desligada o wizard nem pergunta (egress zero) e o seletor não existe.
+const MULTI_CNPJ_ENABLED =
+  process.env.NEXT_PUBLIC_MULTI_CNPJ_ENABLED === "true";
+
 type ToastType = "success" | "error" | "warning" | "info";
 
 interface RejeicaoInfo {
@@ -126,15 +131,17 @@ export function NfeWizard() {
     });
 
   // Multi-CNPJ: lista de empresas do tenant (best-effort — sem ela o wizard
-  // funciona exatamente como antes, só sem o seletor).
+  // funciona exatamente como antes, só sem o seletor). `view=summary`: só os
+  // campos que o seletor usa (egress ~6 campos vs ~30, mesmos valores).
   useEffect(() => {
-    if (!email) return;
+    if (!email || !MULTI_CNPJ_ENABLED) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${getApiBaseUrl()}/fiscal/companies`, {
-          headers: { email },
-        });
+        const res = await fetch(
+          `${getApiBaseUrl()}/fiscal/companies?view=summary`,
+          { headers: { email } },
+        );
         if (!res.ok) return;
         const data = await res.json().catch(() => ({}));
         if (!cancelled && Array.isArray(data?.companies)) {

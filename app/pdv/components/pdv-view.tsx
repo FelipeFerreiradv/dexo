@@ -83,9 +83,11 @@ export function PdvView() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${getApiBaseUrl()}/fiscal/companies`, {
-          headers: { email },
-        });
+        // view=summary: só os campos do seletor (egress; mesmos valores).
+        const res = await fetch(
+          `${getApiBaseUrl()}/fiscal/companies?view=summary`,
+          { headers: { email } },
+        );
         const data = await res.json().catch(() => ({}));
         if (!cancelled && Array.isArray(data?.companies)) {
           setCompanies(data.companies);
