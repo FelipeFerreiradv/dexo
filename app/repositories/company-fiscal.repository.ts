@@ -128,13 +128,24 @@ export class CompanyFiscalRepository {
     return row ? toConfig(row) : null;
   }
 
-  /** Todas as configs do tenant, padrão primeiro. */
+  /**
+   * Todas as configs do tenant, padrão primeiro. `omit` da senha cifrada do
+   * A1 (egress): o único consumidor é a listagem sanitizada, que descarta o
+   * campo sem derivar nada dele — os demais segredos FICAM no select porque o
+   * sanitize deriva booleanos deles (certificadoPath/providerToken/cscToken).
+   */
   async listByUserId(userId: string): Promise<CompanyFiscalConfig[]> {
     const rows = await (prisma as any).companyFiscalConfig.findMany({
       where: { userId },
       orderBy: DEFAULT_FIRST,
+      omit: { certificadoSenhaEnc: true },
     });
     return rows.map(toConfig);
+  }
+
+  /** Contagem enxuta (1 escalar) — usada pelo teto de empresas por tenant. */
+  async countByUserId(userId: string): Promise<number> {
+    return (prisma as any).companyFiscalConfig.count({ where: { userId } });
   }
 
   /**
@@ -257,8 +268,13 @@ export class CompanyFiscalRepository {
    * em uso (notas/sequences/contas de marketplace referenciando — a numeração
    * fiscal do CNPJ não pode órfã).
    */
-  async deleteById(id: string, userId: string): Promise<void> {
-    const target = await this.findByIdForUser(id, userId);
+  async deleteById(id: string, userId: string): Promise<string | null> {
+    // Select enxuto (egress): só o necessário para os guards + o path do A1
+    // (devolvido ao caller para a limpeza best-effort do arquivo por-config).
+    const target = await (prisma as any).companyFiscalConfig.findFirst({
+      where: { id, userId },
+      select: { id: true, isDefault: true, certificadoPath: true },
+    });
     if (!target) throw new Error("Empresa não encontrada");
     if (target.isDefault) {
       throw new Error(
@@ -287,6 +303,7 @@ export class CompanyFiscalRepository {
     await (prisma as any).companyFiscalConfig.deleteMany({
       where: { id, userId, isDefault: false },
     });
+    return target.certificadoPath ?? null;
   }
 
   /**

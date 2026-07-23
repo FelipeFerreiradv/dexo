@@ -230,6 +230,7 @@ describe("CompanyFiscalUseCase — gate e guards do multi-CNPJ", () => {
     vi.stubEnv("FISCAL_MULTI_CNPJ_ENABLED", "true");
     const repo = {
       findDefaultByUserId: vi.fn(async () => ({ id: "cfg-A" })),
+      countByUserId: vi.fn(async () => 1),
       createSecondary: vi.fn(async () => ({ id: "cfg-B" })),
     };
     const uc = makeUseCase(repo);
@@ -242,6 +243,20 @@ describe("CompanyFiscalUseCase — gate e guards do multi-CNPJ", () => {
     await expect(
       uc.createSecondary("u1", { ...BASE, cnpj: "123" }),
     ).rejects.toThrow(/CNPJ inválido/);
+  });
+
+  it("createSecondary respeita o teto de empresas por tenant (hardening)", async () => {
+    vi.stubEnv("FISCAL_MULTI_CNPJ_ENABLED", "true");
+    const repo = {
+      findDefaultByUserId: vi.fn(async () => ({ id: "cfg-A" })),
+      countByUserId: vi.fn(async () => 20),
+      createSecondary: vi.fn(),
+    };
+    const uc = makeUseCase(repo);
+    await expect(uc.createSecondary("u1", BASE)).rejects.toThrow(
+      /Limite de empresas/,
+    );
+    expect(repo.createSecondary).not.toHaveBeenCalled();
   });
 
   it("REGRESSAO: upsert legado continua validando e delegando ao repo.upsert", async () => {

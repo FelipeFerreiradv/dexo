@@ -128,6 +128,20 @@ async function readCertificateMultipart(
   return { buffer, senha };
 }
 
+/**
+ * Fronteira de tipo p/ ids de emitente vindos de query/body: só string
+ * não-vazia passa; null/ausente/"" viram null (= padrão); qualquer outro tipo
+ * (array por repetição de query, objeto) retorna undefined = inválido, para a
+ * rota responder 400 ANTES de o valor chegar ao Prisma — evita 500 com erro
+ * interno ecoado. Clientes legítimos (string ou omissão) não mudam em nada.
+ */
+export function parseCompanyIdParam(v: unknown): string | null | undefined {
+  if (v == null) return null;
+  if (typeof v !== "string") return undefined; // inválido
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export const fiscalRoutes = async (fastify: FastifyInstance) => {
   const companyFiscal = new CompanyFiscalUseCase();
   const nfeDraft = new NfeDraftUseCase();
@@ -257,11 +271,13 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       message.includes("obrigat") ||
       message.includes("bloqueado") ||
       message.includes("dígitos") ||
-      message.includes("principal")
+      message.includes("principal") ||
+      message.includes("Limite de empresas")
     )
       return 400;
     return 500;
   };
+
 
   fastify.get(
     "/companies",
@@ -270,6 +286,25 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const companies = await companyFiscal.listByUserId(userId);
+
+        // Egress: `?view=summary` devolve SÓ os campos que os seletores do
+        // wizard/PDV usam (~6 campos vs ~30). Pick feito AQUI sobre a lista
+        // completa — valores idênticos, mesma ordenação padrão-primeiro.
+        // Sem o parâmetro (ou com valor diferente), resposta byte-idêntica.
+        const view = (request.query as { view?: string } | undefined)?.view;
+        if (view === "summary") {
+          return reply.status(200).send({
+            companies: companies.map((c) => ({
+              id: c.id,
+              cnpj: c.cnpj,
+              razaoSocial: c.razaoSocial,
+              nomeFantasia: c.nomeFantasia ?? null,
+              isDefault: c.isDefault ?? false,
+              serieNfe: c.serieNfe ?? 1,
+            })),
+          });
+        }
+
         return reply.status(200).send({
           companies: companies.map((c) => sanitizeFiscalConfig(c)),
         });
@@ -457,7 +492,12 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const { accountId } = request.params as { accountId: string };
         const body = (request.body as any) ?? {};
-        const companyId: string | null = body.companyFiscalConfigId ?? null;
+        // Fronteira de tipo + normalização: "" e null significam o mesmo
+        // ("usa o padrão") e gravam NULL; tipo inválido → 400 antes do Prisma.
+        const companyId = parseCompanyIdParam(body.companyFiscalConfigId);
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
 
         const account = await (prisma as any).marketplaceAccount.findFirst({
           where: { id: accountId, userId },
@@ -475,10 +515,16 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             return reply.status(404).send({ error: "Empresa não encontrada" });
           }
         }
-        await (prisma as any).marketplaceAccount.update({
-          where: { id: accountId },
+        // Escrita ESCOPADA por tenant (padrão da casa: updateMany {id, userId}
+        // — update simples por id não teria o escopo). count 0 só na corrida
+        // conta-apagada-no-meio → mesmo 404 externo de sempre.
+        const res = await (prisma as any).marketplaceAccount.updateMany({
+          where: { id: accountId, userId },
           data: { companyFiscalConfigId: companyId },
         });
+        if (res.count === 0) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
         return reply
           .status(200)
           .send({ success: true, companyFiscalConfigId: companyId });
@@ -511,7 +557,10 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         }
         // Multi-CNPJ: companyId opcional seleciona o emitente do preview.
         // Sem o parâmetro, resposta byte-idêntica à atual (config padrão).
-        const companyId = query?.companyId?.trim() || null;
+        const companyId = parseCompanyIdParam(query?.companyId);
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const config = companyId
           ? await companyFiscal.getByIdForUser(companyId, userId)
           : await companyFiscal.getByUserId(userId);
@@ -555,11 +604,16 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const body = (request.body as any) ?? {};
+        // Multi-CNPJ: seleção explícita de emitente (opcional) — fronteira de
+        // tipo antes do usecase (tipo inválido → 400, nunca erro interno).
+        const draftCompanyId = parseCompanyIdParam(body.companyFiscalConfigId);
+        if (draftCompanyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const draft = await nfeDraft.create(userId, {
           orderId: body.orderId ?? null,
           customerId: body.customerId ?? null,
-          // Multi-CNPJ: seleção explícita de emitente (opcional).
-          companyFiscalConfigId: body.companyFiscalConfigId ?? null,
+          companyFiscalConfigId: draftCompanyId,
         });
         return reply.status(201).send({ draft });
       } catch (error) {
@@ -607,6 +661,15 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const userId = (request as any).user?.dataOwnerId as string;
         const { id } = request.params;
         const body = request.body as any;
+        // Multi-CNPJ: fronteira de tipo do emitente (quando enviado) — tipo
+        // inválido → 400 antes do usecase/Prisma. Ausente segue ausente.
+        if (body?.companyFiscalConfigId !== undefined) {
+          const draftCompanyId = parseCompanyIdParam(body.companyFiscalConfigId);
+          if (draftCompanyId === undefined) {
+            return reply.status(400).send({ error: "Emitente inválido" });
+          }
+          body.companyFiscalConfigId = draftCompanyId;
+        }
         const draft = await nfeDraft.update(userId, id, body);
         return reply.status(200).send({ draft });
       } catch (error) {
@@ -932,7 +995,10 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
 
         // Multi-CNPJ: companyId opcional escolhe o emitente do relatório
         // (ausente = padrão; notas de outro CNPJ do tenant nunca entram).
-        const companyId = (q.companyId as string | undefined)?.trim() || null;
+        const companyId = parseCompanyIdParam(q.companyId);
+        if (companyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const { xml } = await nfeListing.relatorioMensalXml(
           userId,
           ano,
@@ -1195,13 +1261,19 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
         const body = request.body as any;
+        // Multi-CNPJ: emitente da faixa (opcional; ausente = padrão). Tipo
+        // inválido → 400 — NUNCA degradar em silêncio para o padrão numa
+        // operação irreversível na SEFAZ (inutilizaria a faixa do CNPJ errado).
+        const inutCompanyId = parseCompanyIdParam(body.companyFiscalConfigId);
+        if (inutCompanyId === undefined) {
+          return reply.status(400).send({ error: "Emitente inválido" });
+        }
         const result = await nfeInutilizacao.inutilizar(userId, {
           serie: Number(body.serie),
           numeroInicial: Number(body.numeroInicial),
           numeroFinal: Number(body.numeroFinal),
           justificativa: body.justificativa ?? "",
-          // Multi-CNPJ: emitente da faixa (opcional; ausente = padrão).
-          companyFiscalConfigId: body.companyFiscalConfigId ?? null,
+          companyFiscalConfigId: inutCompanyId,
         });
         return reply.status(result.success ? 200 : 422).send(result);
       } catch (error) {
