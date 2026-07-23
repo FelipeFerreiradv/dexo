@@ -216,6 +216,8 @@ export class ListingDispatcher {
           req.categoryId,
           req.accountId,
           req.mlSettings,
+          undefined, // titleOverride
+          actorId,
         );
         this.logDispatchResult({
           userId,
@@ -260,6 +262,7 @@ export class ListingDispatcher {
           productId,
           req.categoryId,
           req.accountId,
+          actorId,
         );
         this.logDispatchResult({
           userId,
@@ -304,6 +307,7 @@ export class ListingDispatcher {
           productId,
           req.categoryId,
           req.accountId,
+          actorId,
         );
         this.logDispatchResult({
           userId,
@@ -581,6 +585,8 @@ export class ListingDispatcher {
           categoryId,
           req.accountId,
           mlSettings,
+          undefined, // titleOverride
+          actorId,
         );
       } else if (req.platform === "SHOPEE") {
         const categoryId = ov?.shopee?.categoryId ?? req.categoryId;
@@ -589,6 +595,7 @@ export class ListingDispatcher {
           productId,
           categoryId,
           req.accountId,
+          actorId,
         );
       } else if (req.platform === "MAGALU") {
         // Override por-produto de Magalu (modo Revisão individual): categoria
@@ -599,6 +606,7 @@ export class ListingDispatcher {
           productId,
           categoryId,
           req.accountId,
+          actorId,
         );
       } else {
         return {

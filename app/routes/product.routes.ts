@@ -756,6 +756,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           stock: sanitized.stock,
           price: sanitized.price,
           userId: user?.dataOwnerId,
+          // Autor real do cadastro (colaborador/admin que agiu) — distinto do
+          // dono dos dados acima.
+          createdByUserId: user?.id ?? null,
           // Campos de autopeças
           costPrice: sanitized.costPrice,
           markup: sanitized.markup,

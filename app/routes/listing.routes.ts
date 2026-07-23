@@ -180,6 +180,8 @@ export async function listingRoutes(app: FastifyInstance) {
             localPickup: body.localPickup,
             manufacturingTime: body.manufacturingTime,
           },
+          undefined, // titleOverride
+          request.user!.id, // autor real (ator) — ver SystemLog abaixo
         );
 
         if (!result.success) {
@@ -269,6 +271,7 @@ export async function listingRoutes(app: FastifyInstance) {
           body.productId,
           body.categoryId,
           accountId,
+          request.user!.id, // autor real (ator) — ver rota ML
         );
 
         if (!result.success) {

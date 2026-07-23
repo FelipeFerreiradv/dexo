@@ -32,6 +32,9 @@ export class ListingRepository {
     freeShipping?: boolean | null;
     localPickup?: boolean | null;
     manufacturingTime?: number | null;
+    // Autor real da criação (actorId = request.user.id). Ausente = fluxo de
+    // sistema (autodetect/sync/retry) → NULL → UI exibe "—".
+    createdByUserId?: string | null;
   }) {
     try {
       const listing = await prisma.productListing.create({
@@ -56,6 +59,7 @@ export class ListingRepository {
           freeShipping: data.freeShipping ?? null,
           localPickup: data.localPickup ?? null,
           manufacturingTime: data.manufacturingTime ?? null,
+          createdByUserId: data.createdByUserId ?? null,
         },
       });
       return listing;
@@ -85,6 +89,9 @@ export class ListingRepository {
     retryEnabled?: boolean;
     nextRetryAt?: Date | null;
     retryAttempts?: number;
+    // Autor real da criação. Só entra no branch `create` — autoria = quem
+    // criou a linha pela primeira vez; retries/updates nunca sobrescrevem.
+    createdByUserId?: string | null;
   }) {
     return prisma.productListing.upsert({
       where: {
@@ -104,6 +111,7 @@ export class ListingRepository {
         retryEnabled: data.retryEnabled ?? false,
         nextRetryAt: data.nextRetryAt ?? null,
         retryAttempts: data.retryAttempts ?? 0,
+        createdByUserId: data.createdByUserId ?? null,
       },
       update: {
         status: data.status,
