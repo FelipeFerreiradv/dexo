@@ -975,6 +975,9 @@ model Scrap {
   // Dados do veículo
   brand              String
   model              String
+  // Apelido do veículo (identificação humana no pátio, ex.: "Gol bola azul").
+  // Migração: ALTER TABLE "Scrap" ADD COLUMN "nickname" TEXT;
+  nickname           String?
   year               String?
   version            String?
   color              String?

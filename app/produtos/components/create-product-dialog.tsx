@@ -275,6 +275,19 @@ interface CreateProductDialogProps {
   source?: "manual" | "nfe";
   /** Oculta o gatilho "Novo Produto" (quando o pai controla a abertura). */
   hideTrigger?: boolean;
+  /** Sucata TRAVADA (fluxo "Adicionar peça" do detalhe do lote). Quando
+   *  presente: pré-seleciona e trava o vínculo no Step de veículo (sem Select),
+   *  herda marca/modelo/ano/versão da sucata e pula o fetch de sucatas
+   *  disponíveis. Ausente = comportamento IDÊNTICO ao atual. */
+  lockedScrap?: {
+    id: string;
+    brand: string;
+    model: string;
+    year?: string;
+    version?: string;
+    plate?: string;
+    nickname?: string;
+  };
 }
 
 const qualityOptions = [
@@ -449,6 +462,7 @@ export function CreateProductDialog({
   initialValues,
   source = "manual",
   hideTrigger = false,
+  lockedScrap,
 }: CreateProductDialogProps) {
   const { data: session } = useSession();
   const backendBase = getApiBaseUrl();
@@ -549,6 +563,12 @@ export function CreateProductDialog({
   initialValuesRef.current = initialValues;
   // Garante que o pré-preenchimento da NF-e seja aplicado uma vez por abertura.
   const nfeAppliedRef = useRef(false);
+  // Espelha `lockedScrap` (fluxo "Adicionar peça" da sucata) para o fetch
+  // on-open ler sem virar dependência do effect.
+  const lockedScrapRef = useRef(lockedScrap);
+  lockedScrapRef.current = lockedScrap;
+  // Garante que a sucata travada seja aplicada uma vez por abertura.
+  const lockedScrapAppliedRef = useRef(false);
   // Guarda o SKU sugerido pelo servidor (autoSku) na abertura. No submit,
   // comparamos o valor atual do campo com este: se o usuário NÃO alterou (ou
   // apagou), seguimos o caminho automático de hoje (autoSku:true, sku omitido);
@@ -927,22 +947,26 @@ export function CreateProductDialog({
         }
       })();
 
-      // Buscar sucatas disponíveis para seleção
-      (async () => {
-        try {
-          const base = getApiBaseUrl();
-          const respScraps = await fetch(
-            `${base}/scraps?status=AVAILABLE&limit=100`,
-            { headers: { email: session?.user?.email || "" } },
-          );
-          if (respScraps.ok) {
-            const scrapsJson = await respScraps.json();
-            setAvailableScraps(scrapsJson.scraps || []);
+      // Buscar sucatas disponíveis para seleção. Com sucata TRAVADA
+      // (lockedScrap) o Select nem renderiza — pular o fetch evita um request
+      // e o caso da sucata travada não estar na lista (filtro AVAILABLE).
+      if (!lockedScrapRef.current) {
+        (async () => {
+          try {
+            const base = getApiBaseUrl();
+            const respScraps = await fetch(
+              `${base}/scraps?status=AVAILABLE&limit=100`,
+              { headers: { email: session?.user?.email || "" } },
+            );
+            if (respScraps.ok) {
+              const scrapsJson = await respScraps.json();
+              setAvailableScraps(scrapsJson.scraps || []);
+            }
+          } catch (err) {
+            console.error("Erro ao buscar sucatas:", err);
           }
-        } catch (err) {
-          console.error("Erro ao buscar sucatas:", err);
-        }
-      })();
+        })();
+      }
 
       (async () => {
         try {
@@ -987,6 +1011,37 @@ export function CreateProductDialog({
       });
     }
   }, [open, source, initialValues, setValue]);
+
+  // Pré-seleciona a sucata TRAVADA (fluxo "Adicionar peça" do detalhe do lote).
+  // ADITIVO: sem `lockedScrap`, não faz NADA — os fluxos manual e NF-e seguem
+  // idênticos. Roda 1x por abertura (lockedScrapAppliedRef) e replica a mesma
+  // herança de veículo que o Select de sucata faz no caminho manual.
+  useEffect(() => {
+    if (!open || !lockedScrap) return;
+    if (lockedScrapAppliedRef.current) return;
+    lockedScrapAppliedRef.current = true;
+    setSelectedScrap({
+      id: lockedScrap.id,
+      brand: lockedScrap.brand,
+      model: lockedScrap.model,
+      year: lockedScrap.year,
+      version: lockedScrap.version,
+      plate: lockedScrap.plate,
+    });
+    const sourceDesc = `${lockedScrap.brand} ${lockedScrap.model}${lockedScrap.year ? ` ${lockedScrap.year}` : ""}${lockedScrap.plate ? ` (${lockedScrap.plate})` : ""}`;
+    setValue("brand", lockedScrap.brand);
+    setValue("model", lockedScrap.model);
+    if (lockedScrap.year) setValue("year", lockedScrap.year);
+    if (lockedScrap.version) setValue("version", lockedScrap.version);
+    setValue("sourceVehicle", sourceDesc);
+    scrapAutofilledRef.current = {
+      brand: lockedScrap.brand,
+      model: lockedScrap.model,
+      year: lockedScrap.year,
+      version: lockedScrap.version,
+      sourceVehicle: sourceDesc,
+    };
+  }, [open, lockedScrap, setValue]);
 
   // Define descrição padrão quando carregada
   useEffect(() => {
@@ -2738,6 +2793,8 @@ export function CreateProductDialog({
     autoSuggestedSkuRef.current = "";
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
+    // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
+    lockedScrapAppliedRef.current = false;
     // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
     scrollContainerRef.current?.scrollTo({ top: 0 });
     setOpen(false);
@@ -3240,8 +3297,25 @@ export function CreateProductDialog({
           >
             <SectionHeading step={STEPS[3]} />
             <div className="space-y-4">
-              {/* Seleção de Sucata (opcional) */}
-              {availableScraps.length > 0 && (
+              {/* Sucata TRAVADA (fluxo "Adicionar peça" do lote): card
+                  informativo no lugar do Select — o vínculo não é alterável. */}
+              {lockedScrap ? (
+                <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-1">
+                  <Label>Peça vinculada ao lote</Label>
+                  <p className="text-sm font-medium">
+                    {lockedScrap.brand} {lockedScrap.model}
+                    {lockedScrap.year ? ` ${lockedScrap.year}` : ""}
+                    {lockedScrap.plate ? ` — ${lockedScrap.plate}` : ""}
+                    {lockedScrap.nickname ? ` · “${lockedScrap.nickname}”` : ""}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Marca, modelo, ano e versão foram herdados do lote. O
+                    vínculo não pode ser alterado aqui.
+                  </p>
+                </div>
+              ) : (
+                /* Seleção de Sucata (opcional) */
+                availableScraps.length > 0 && (
                 <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
                   <Label>Vincular a uma sucata (opcional)</Label>
                   <Select
@@ -3311,6 +3385,7 @@ export function CreateProductDialog({
                     </p>
                   )}
                 </div>
+                )
               )}
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

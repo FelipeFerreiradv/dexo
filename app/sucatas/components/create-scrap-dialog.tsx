@@ -78,6 +78,7 @@ interface LocationOption {
 interface ScrapFormData {
   brand: string;
   model: string;
+  nickname: string;
   year: string;
   version: string;
   color: string;
@@ -114,6 +115,7 @@ interface ScrapFormData {
 const EMPTY_FORM: ScrapFormData = {
   brand: "",
   model: "",
+  nickname: "",
   year: "",
   version: "",
   color: "",
@@ -222,6 +224,7 @@ export function CreateScrapDialog({
       setForm({
         brand: editData.brand || "",
         model: editData.model || "",
+        nickname: editData.nickname || "",
         year: editData.year || "",
         version: editData.version || "",
         color: editData.color || "",
@@ -311,6 +314,7 @@ export function CreateScrapDialog({
       const payload: any = {
         brand: form.brand,
         model: form.model,
+        nickname: form.nickname || undefined,
         year: form.year || undefined,
         version: form.version || undefined,
         color: form.color || undefined,
@@ -551,6 +555,16 @@ export function CreateScrapDialog({
                     }
                     placeholder="ABC-1D23"
                     maxLength={8}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Apelido do veículo</Label>
+                  <Input
+                    value={form.nickname}
+                    onChange={(e) => updateField("nickname", e.target.value)}
+                    placeholder='Ex.: "Gol bola azul"'
+                    maxLength={60}
                   />
                 </div>
 

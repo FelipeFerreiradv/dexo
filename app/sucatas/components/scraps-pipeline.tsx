@@ -37,6 +37,7 @@ interface PipelineScrap {
   id: string;
   brand: string;
   model: string;
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;
@@ -296,6 +297,11 @@ function PipelineCard({
           {scrap.brand} {scrap.model}
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] uppercase tracking-[0.08em]">
+          {scrap.nickname && (
+            <span className="font-semibold text-foreground/85">
+              “{scrap.nickname}”
+            </span>
+          )}
           {specs && <span className="text-muted-foreground">{specs}</span>}
           {scrap.color && (
             <span className="inline-flex items-center gap-1 font-semibold text-foreground/85">

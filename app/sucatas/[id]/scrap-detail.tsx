@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import {
   ArrowLeft,
   ArrowRightLeft,
@@ -12,6 +13,8 @@ import {
   Wallet,
   TrendingUp,
   Package,
+  PackageCheck,
+  Plus,
   Boxes,
   Hash,
   Gauge,
@@ -38,6 +41,17 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
+import { ToastViewport } from "@/components/ui/toast-viewport";
 import { RoiGauge } from "@/components/charts/roi-gauge";
 import {
   LOGISTICS_ORDER,
@@ -45,6 +59,16 @@ import {
   type LogisticsStatus,
 } from "../lib/logistics";
 import { ImpalaProgress } from "../components/impala-progress";
+
+// Dialog de produto (~5k linhas + RHF/zod) fora do bundle inicial da rota de
+// sucatas: só baixa quando o detalhe monta. ssr:false — componente 100% client.
+const CreateProductDialog = dynamic(
+  () =>
+    import("@/app/produtos/components/create-product-dialog").then(
+      (m) => m.CreateProductDialog,
+    ),
+  { ssr: false },
+);
 
 interface ScrapPart {
   id: string;
@@ -84,6 +108,7 @@ interface ScrapDetailData {
   id: string;
   brand: string;
   model: string;
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;
@@ -221,6 +246,34 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
   const [partFilter, setPartFilter] = useState<"ALL" | "IN_STOCK" | "SOLD">(
     "ALL",
   );
+  // Desmembramento: dialog de peça (CreateProductDialog travado no lote) +
+  // confirmação do avanço para DISMANTLED + toasts que o dialog exige.
+  // O dialog só MONTA no primeiro clique (addPartMounted): o chunk dinâmico
+  // (~5k linhas + RHF/zod) não baixa para quem só consulta o lote — mesmo
+  // padrão do QrCamera no location-scan-button. Depois do primeiro uso fica
+  // montado, então reaberturas são instantâneas.
+  const [addPartMounted, setAddPartMounted] = useState(false);
+  const [addPartOpen, setAddPartOpen] = useState(false);
+  const [confirmDismantle, setConfirmDismantle] = useState(false);
+  const [toasts, setToasts] = useState<
+    { id: string; message: string; type: "success" | "error" | "warning" }[]
+  >([]);
+
+  const showToast = useCallback(
+    (message: string, type: "success" | "error" | "warning") => {
+      const id = crypto.randomUUID();
+      setToasts((prev) => [...prev, { id, message, type }]);
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((toast) => toast.id !== id));
+      }, 4000);
+    },
+    [],
+  );
+
+  const openAddPart = useCallback(() => {
+    setAddPartMounted(true);
+    setAddPartOpen(true);
+  }, []);
 
   const load = useCallback(async () => {
     if (!email) return;
@@ -376,6 +429,11 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
             <h1 className="text-xl font-semibold leading-tight sm:text-2xl">
               {data.brand} {data.model}
             </h1>
+            {data.nickname ? (
+              <p className="text-sm font-medium text-muted-foreground">
+                “{data.nickname}”
+              </p>
+            ) : null}
             {subtitle ? (
               <p className="text-sm text-muted-foreground">{subtitle}</p>
             ) : null}
@@ -410,32 +468,44 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
           </div>
         </div>
 
-        {/* Transição de estágio */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" disabled={moving}>
-              {moving ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <ArrowRightLeft className="mr-2 size-4" />
-              )}
-              Mover estágio
+        {/* Transição de estágio + conclusão do desmembramento */}
+        <div className="flex flex-wrap items-center gap-2">
+          {data.logisticsStatus !== "DISMANTLED" ? (
+            <Button
+              size="sm"
+              disabled={moving}
+              onClick={() => setConfirmDismantle(true)}
+            >
+              <PackageCheck className="mr-2 size-4" />
+              Concluir desmembramento
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuLabel>Mover para</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {targets.map((t) => {
-              const TIcon = LOGISTICS_CONFIG[t].icon;
-              return (
-                <DropdownMenuItem key={t} onSelect={() => handleMove(t)}>
-                  <TIcon className="mr-2 size-4" />
-                  {LOGISTICS_CONFIG[t].label}
-                </DropdownMenuItem>
-              );
-            })}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          ) : null}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={moving}>
+                {moving ? (
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                ) : (
+                  <ArrowRightLeft className="mr-2 size-4" />
+                )}
+                Mover estágio
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Mover para</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {targets.map((t) => {
+                const TIcon = LOGISTICS_CONFIG[t].icon;
+                return (
+                  <DropdownMenuItem key={t} onSelect={() => handleMove(t)}>
+                    <TIcon className="mr-2 size-4" />
+                    {LOGISTICS_CONFIG[t].label}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       {/* Progresso visual da desmontagem (Impala pintado por peça vendida) */}
@@ -542,8 +612,13 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
               <Boxes className="size-4" />
               Peças do lote ({data.productsCount ?? parts.length})
             </CardTitle>
-            {parts.length > 0 ? (
-              <div className="flex items-center gap-0.5 rounded-lg border p-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={openAddPart}>
+                <Plus className="mr-1 size-4" />
+                Adicionar peça
+              </Button>
+              {parts.length > 0 ? (
+                <div className="flex items-center gap-0.5 rounded-lg border p-0.5">
                 {(
                   [
                     ["ALL", "Todas"],
@@ -561,8 +636,9 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
                     {label}
                   </Button>
                 ))}
-              </div>
-            ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -570,6 +646,10 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
             <div className="flex flex-col items-center justify-center py-10 text-center text-sm text-muted-foreground">
               <Package className="mb-2 size-8 text-muted-foreground/40" />
               Nenhuma peça cadastrada para este lote ainda.
+              <Button size="sm" className="mt-4" onClick={openAddPart}>
+                <Plus className="mr-1 size-4" />
+                Adicionar peça
+              </Button>
             </div>
           ) : filteredParts.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
@@ -758,6 +838,65 @@ export function ScrapDetail({ scrapId }: { scrapId: string }) {
         <span>·</span>
         <span>Atualizado em {formatDate(data.updatedAt)}</span>
       </div>
+
+      {/* Desmembramento: cadastro de peça já vinculada a este lote (reuso do
+          cadastro de produto completo, com a sucata travada). Montado sob
+          demanda — ver comentário em addPartMounted. */}
+      {addPartMounted ? (
+        <CreateProductDialog
+          open={addPartOpen}
+          onOpenChange={setAddPartOpen}
+          hideTrigger
+          lockedScrap={{
+            id: data.id,
+            brand: data.brand,
+            model: data.model,
+            year: data.year,
+            version: data.version,
+            plate: data.plate,
+            nickname: data.nickname,
+          }}
+          onProductCreated={load}
+          onToast={showToast}
+        />
+      ) : null}
+
+      {/* Confirmação do avanço para Desmembrado (reusa handleMove/PATCH). */}
+      <AlertDialog open={confirmDismantle} onOpenChange={setConfirmDismantle}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Concluir desmembramento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {parts.length > 0
+                ? `O veículo será marcado como Desmembrado (${parts.length} peça${parts.length === 1 ? "" : "s"} cadastrada${parts.length === 1 ? "" : "s"}). `
+                : "Nenhuma peça foi cadastrada para este lote ainda. "}
+              A transição fica registrada no histórico e você pode continuar
+              cadastrando peças depois.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleMove("DISMANTLED")}>
+              Concluir desmembramento
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <ToastViewport className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`rounded-lg px-4 py-3 text-sm font-medium shadow-lg animate-in slide-in-from-right-full ${
+              toast.type === "success"
+                ? "bg-green-100 text-green-800 dark:bg-green-900/80 dark:text-green-200"
+                : "bg-destructive text-white"
+            }`}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </ToastViewport>
     </div>
   );
 }

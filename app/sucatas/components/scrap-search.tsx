@@ -29,6 +29,7 @@ interface SearchScrap {
   id: string;
   brand: string;
   model: string;
+  nickname?: string;
   year?: string;
   plate?: string;
   logisticsStatus: LogisticsStatus;
@@ -161,6 +162,7 @@ export function ScrapSearch() {
                               {s.year ? ` · ${s.year}` : ""}
                             </div>
                             <div className="truncate text-xs text-muted-foreground">
+                              {s.nickname ? `“${s.nickname}” · ` : ""}
                               {s.plate ? `Placa ${s.plate} · ` : ""}
                               {s.productsCount ?? 0} peça(s)
                             </div>

@@ -49,6 +49,7 @@ function mapPrismaToScrap(
 
     brand: item.brand,
     model: item.model,
+    nickname: item.nickname ?? undefined,
     year: item.year ?? undefined,
     version: item.version ?? undefined,
     color: item.color ?? undefined,
@@ -102,6 +103,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
           userId: data.userId,
           brand: data.brand,
           model: data.model,
+          nickname: data.nickname ?? null,
           year: data.year ?? null,
           version: data.version ?? null,
           color: data.color ?? null,
@@ -191,6 +193,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         { plate: { contains: search, mode: "insensitive" as const } },
         { chassis: { contains: search, mode: "insensitive" as const } },
         { lot: { contains: search, mode: "insensitive" as const } },
+        { nickname: { contains: search, mode: "insensitive" as const } },
       ];
     }
 
@@ -539,6 +542,7 @@ export class ScrapRepositoryPrisma implements ScrapRepository {
         data: {
           ...(data.brand !== undefined && { brand: data.brand }),
           ...(data.model !== undefined && { model: data.model }),
+          ...(data.nickname !== undefined && { nickname: data.nickname }),
           ...(data.year !== undefined && { year: data.year }),
           ...(data.version !== undefined && { version: data.version }),
           ...(data.color !== undefined && { color: data.color }),
