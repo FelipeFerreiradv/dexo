@@ -27,6 +27,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           userId: user?.dataOwnerId,
           brand: body.brand,
           model: body.model,
+          nickname: body.nickname ?? undefined,
           year: body.year ?? undefined,
           version: body.version ?? undefined,
           color: body.color ?? undefined,
@@ -276,6 +277,7 @@ export const scrapRoutes = async (fastify: FastifyInstance) => {
           {
             brand: body.brand,
             model: body.model,
+            nickname: body.nickname,
             year: body.year,
             version: body.version,
             color: body.color,

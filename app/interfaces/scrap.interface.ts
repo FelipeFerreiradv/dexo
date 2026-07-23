@@ -9,6 +9,8 @@ export interface Scrap {
   // Dados do veículo
   brand: string;
   model: string;
+  // Apelido do veículo (identificação humana no pátio) — aditivo.
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;
@@ -65,6 +67,7 @@ export interface ScrapCreate {
 
   brand: string;
   model: string;
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;
@@ -106,6 +109,7 @@ export interface ScrapCreate {
 export interface ScrapUpdate {
   brand?: string;
   model?: string;
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;

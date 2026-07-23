@@ -58,6 +58,7 @@ interface Scrap {
   id: string;
   brand: string;
   model: string;
+  nickname?: string;
   year?: string;
   version?: string;
   color?: string;
@@ -278,7 +279,14 @@ export function ScrapsList() {
                                 {scrap.brand} {scrap.model}
                               </div>
                               <div className="text-xs text-muted-foreground">
-                                {[scrap.year, scrap.version, scrap.color]
+                                {[
+                                  scrap.nickname
+                                    ? `“${scrap.nickname}”`
+                                    : null,
+                                  scrap.year,
+                                  scrap.version,
+                                  scrap.color,
+                                ]
                                   .filter(Boolean)
                                   .join(" · ") || "—"}
                               </div>
@@ -373,7 +381,12 @@ export function ScrapsList() {
                             {scrap.brand} {scrap.model}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            {[scrap.year, scrap.version, scrap.color]
+                            {[
+                              scrap.nickname ? `“${scrap.nickname}”` : null,
+                              scrap.year,
+                              scrap.version,
+                              scrap.color,
+                            ]
                               .filter(Boolean)
                               .join(" · ") || "—"}
                           </div>
