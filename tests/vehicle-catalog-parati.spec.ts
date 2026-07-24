@@ -77,6 +77,61 @@ describe("VEHICLE_CATALOG — VW Parati", () => {
   });
 });
 
+/**
+ * Clássicos VW que também faltavam. Aparecem em título real de produção
+ * ("Chave Seta Limpador Vw Santana Quantum 1984 1997") e são peça corrente em
+ * desmonte, então a ausência no catálogo custava compatibilidade nos anúncios.
+ */
+describe("VEHICLE_CATALOG — clássicos VW", () => {
+  const esperados: Array<{
+    nome: string;
+    de: number;
+    ate: number;
+    versao: string;
+  }> = [
+    { nome: "Apollo", de: 1990, ate: 1992, versao: "GL" },
+    { nome: "Brasília", de: 1973, ate: 1982, versao: "1600" },
+    { nome: "Kombi", de: 1957, ate: 2013, versao: "Carat" },
+    { nome: "Logus", de: 1993, ate: 1997, versao: "GLS" },
+    { nome: "Pointer", de: 1993, ate: 1996, versao: "GTi" },
+    { nome: "Quantum", de: 1985, ate: 2002, versao: "Exclusiv" },
+    { nome: "Santana", de: 1984, ate: 2006, versao: "Evidence" },
+    { nome: "Variant", de: 1969, ate: 1980, versao: "1600" },
+  ];
+
+  it.each(esperados)(
+    "$nome existe com intervalo e versões corretos",
+    ({ nome, de, ate, versao }) => {
+      expect(getModelsForBrand("Volkswagen")).toContain(nome);
+      const anos = getYearsForModel("Volkswagen", nome);
+      expect(anos[0]).toBe(de);
+      expect(anos.at(-1)).toBe(ate);
+      expect(anos).toHaveLength(ate - de + 1);
+      expect(getVersionsForModel("Volkswagen", nome)).toContain(versao);
+    },
+  );
+
+  it("a lista de modelos VW segue ordenada e sem duplicata", () => {
+    const modelos = getModelsForBrand("Volkswagen");
+    expect(modelos).toEqual(
+      [...modelos].sort((a, b) => a.localeCompare(b, "pt-BR")),
+    );
+    expect(new Set(modelos).size).toBe(modelos.length);
+  });
+
+  it("Brasília é encontrada mesmo sem acento na busca", () => {
+    expect(matchesVehicleQuery("Brasília", "brasilia")).toBe(true);
+    expect(matchesVehicleQuery("Brasília", "BRASILIA")).toBe(true);
+  });
+
+  it("nenhuma marca nova foi criada", () => {
+    const marcas = getVehicleBrands();
+    for (const { nome } of esperados) {
+      expect(marcas).not.toContain(nome);
+    }
+  });
+});
+
 describe("matchesVehicleQuery — alias de busca", () => {
   it("acha Parati pelo termo canônico, em qualquer caixa", () => {
     expect(matchesVehicleQuery("Parati", "parati")).toBe(true);

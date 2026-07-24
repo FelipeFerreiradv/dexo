@@ -2973,6 +2973,19 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         yearTo: 2011,
         versions: ["2.0", "1.8 Turbo"],
       },
+      {
+        // Rebadge do Ford Verona, fruto da Autolatina.
+        name: "Apollo",
+        yearFrom: 1990,
+        yearTo: 1992,
+        versions: ["GL", "GLS", "1.8"],
+      },
+      {
+        name: "Brasília",
+        yearFrom: 1973,
+        yearTo: 1982,
+        versions: ["1600", "LS"],
+      },
       { name: "CrossFox", yearFrom: 2005, yearTo: 2016, versions: ["1.6"] },
       {
         name: "Fox",
@@ -3062,6 +3075,30 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         ],
       },
       {
+        // Produzida no Brasil de 1957 a 2013 (a última saiu em dezembro/2013).
+        name: "Kombi",
+        yearFrom: 1957,
+        yearTo: 2013,
+        versions: [
+          "Standard",
+          "Luxo",
+          "Carat",
+          "Furgão",
+          "Pick-up",
+          "Escolar",
+          "Last Edition",
+          "1.4",
+          "1.6",
+        ],
+      },
+      {
+        // Irmão do Pointer, também da fase Autolatina.
+        name: "Logus",
+        yearFrom: 1993,
+        yearTo: 1997,
+        versions: ["CL", "GL", "GLS", "CLi", "GLi", "1.8", "2.0"],
+      },
+      {
         name: "Nivus",
         yearFrom: 2020,
         yearTo: 2025,
@@ -3104,6 +3141,12 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         versions: ["2.0 TSI", "Variant", "Comfortline", "Highline"],
       },
       {
+        name: "Pointer",
+        yearFrom: 1993,
+        yearTo: 1996,
+        versions: ["CL", "GL", "GLi", "GTi", "1.8", "2.0"],
+      },
+      {
         name: "Polo",
         yearFrom: 2002,
         yearTo: 2025,
@@ -3122,6 +3165,30 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
           "TSI",
           "200 TSI",
           "Beats",
+        ],
+      },
+      {
+        // Perua derivada do Santana.
+        name: "Quantum",
+        yearFrom: 1985,
+        yearTo: 2002,
+        versions: ["CL", "GL", "GLS", "CLi", "GLi", "Exclusiv", "1.8", "2.0"],
+      },
+      {
+        name: "Santana",
+        yearFrom: 1984,
+        yearTo: 2006,
+        versions: [
+          "CL",
+          "GL",
+          "GLS",
+          "CD",
+          "CLi",
+          "GLi",
+          "Exclusiv",
+          "Evidence",
+          "1.8",
+          "2.0",
         ],
       },
       {
@@ -3196,6 +3263,13 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
           "TSI",
           "1.0",
         ],
+      },
+      {
+        // Perua do Fusca. Variant I (1969-1977) e Variant II (1977-1980).
+        name: "Variant",
+        yearFrom: 1969,
+        yearTo: 1980,
+        versions: ["1600", "II"],
       },
       {
         name: "Virtus",
