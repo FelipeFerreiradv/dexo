@@ -37,7 +37,7 @@ import anyio
 import anyio.to_thread
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from PIL import Image
 from rembg import new_session, remove
@@ -86,6 +86,24 @@ ORT_DISABLE_ARENA = os.getenv("REMBG_ORT_DISABLE_ARENA", "false").lower() == "tr
 # Default off => fluxo identico ao atual. Ativar SO depois de golden+bench.
 ASYNC_OFFLOAD = os.getenv("REMBG_ASYNC_OFFLOAD", "false").lower() == "true"
 MAX_PENDING = int(os.getenv("REMBG_MAX_PENDING", "8"))
+
+# Anti-ZUMBI (incidente 24/07 tarde): o caller (axios no Node) desiste em ~42s,
+# mas a requisicao ja aceita continua na fila e o worker processa um recorte
+# que NINGUEM vai receber. Sob demanda proxima da capacidade isso vira colapso:
+# o worker passa o dia inteiro em trabalho-zumbi e todo pedido novo tambem
+# estoura o orcamento. Com a flag, checamos se o cliente AINDA esta conectado
+# imediatamente antes de iniciar a inferencia (ponto em que a requisicao pode
+# ter esperado minutos na fila) e descartamos em ms os abandonados (499).
+# Opt-in => default off = comportamento identico ao atual.
+SKIP_DISCONNECTED = os.getenv("REMBG_SKIP_DISCONNECTED", "false").lower() == "true"
+
+# Cap defensivo de megapixels (0 = off). MAX_BYTES limita bytes COMPRIMIDOS,
+# nao pixels: um JPEG de 8MB pode ter 40MP e monopolizar o worker unico por
+# varios minutos em full-res (comprovado em 24/07 com um teste manual de
+# ~4min). O app SEMPRE manda <=1600px (~2MP), entao um cap de 6MP nao toca o
+# trafego real — so protege de callers diretos/patologicos. Downscale LANCZOS
+# preserva o contrato (PNG do recorte sai na resolucao reduzida).
+MAX_INPUT_MP = float(os.getenv("REMBG_MAX_INPUT_MP", "0"))
 
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
@@ -235,6 +253,8 @@ def health():
         "arena_disabled": ORT_DISABLE_ARENA,
         "async_offload": ASYNC_OFFLOAD,
         "pending": _pending,
+        "skip_disconnected": SKIP_DISCONNECTED,
+        "max_input_mp": MAX_INPUT_MP,
     }
 
 
@@ -393,6 +413,14 @@ def _process_sync(
     # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
     t0 = perf_counter() if prof else 0.0
     src = Image.open(BytesIO(raw)).convert("RGB")
+    if MAX_INPUT_MP > 0:
+        mp = (src.width * src.height) / 1_000_000
+        if mp > MAX_INPUT_MP:
+            scale = (MAX_INPUT_MP / mp) ** 0.5
+            src = src.resize(
+                (max(1, int(src.width * scale)), max(1, int(src.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
     if prof:
         timings["decode"] = perf_counter() - t0
         t0 = perf_counter()
@@ -425,6 +453,7 @@ def _process_sync(
 
 @app.post("/remove-bg")
 async def remove_bg(
+    request: Request,
     file: UploadFile = File(...),
     add_shadow: bool = Form(False),
 ):
@@ -448,6 +477,12 @@ async def remove_bg(
     prof = PROFILE_ENABLED
     timings: dict[str, float] = {}
 
+    # Anti-zumbi: no momento em que este handler finalmente roda, a requisicao
+    # pode ter esperado MINUTOS (fila serializada). Se o caller ja desistiu
+    # (axios timeout -> conexao fechada), inferir seria trabalho para ninguem.
+    if SKIP_DISCONNECTED and await request.is_disconnected():
+        raise HTTPException(status_code=499, detail="client disconnected")
+
     try:
         if not ASYNC_OFFLOAD:
             # Caminho default: identico ao historico (inline no event loop).
@@ -461,6 +496,11 @@ async def remove_bg(
             _pending += 1
             try:
                 async with _get_infer_lock():
+                    # Re-checa apos a espera no semaforo (pode ter sido longa).
+                    if SKIP_DISCONNECTED and await request.is_disconnected():
+                        raise HTTPException(
+                            status_code=499, detail="client disconnected"
+                        )
                     png_bytes = await anyio.to_thread.run_sync(
                         _process_sync, raw, add_shadow, prof, timings
                     )
