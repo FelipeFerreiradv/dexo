@@ -1,4 +1,6 @@
-import "dotenv/config";
+// PRIMEIRA linha de propósito: carrega o .env (subindo diretórios) antes que o
+// import do prisma seja avaliado. Ver o comentário em scripts/lib/load-env.ts.
+import "./lib/load-env";
 import axios from "axios";
 import prisma from "../app/lib/prisma";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";

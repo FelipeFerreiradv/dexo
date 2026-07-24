@@ -6,16 +6,23 @@ import {
 } from "../app/marketplaces/services/ml-api.service";
 
 /**
- * O `value_id` de uma marca vindo de `top_values` NÃO pertence ao mesmo espaço
- * de IDs dos catalog products devolvidos por `products_search/chunks`. O código
- * usava esse id de duas formas erradas: na query (known_attributes) e no filtro
- * local (igualdade de value_id). O resultado em produção foi
- * "0 of 1500 matched brand+model" — 1500 produtos buscados, todos descartados,
- * e a compatibilidade caindo no caminho por atributos que não persiste.
+ * Sonda contra a API real (24/07/2026) estabeleceu dois fatos que guiam estes
+ * testes:
  *
- * A correção rastreia a PROCEDÊNCIA do id e, quando ela não é confiável, busca
- * e casa por nome normalizado. O filtro continua existindo: compatibilidade
- * errada no anúncio é pior do que compatibilidade faltando.
+ * 1. `GET /catalog_domains/MLB-CARS_AND_VANS` devolve as marcas em
+ *    `suggested_values` ({value_id, value_name}), NÃO em `values`. Ler só
+ *    `values` produzia lista sempre vazia — a origem do
+ *    "brandsCache loaded: 0 brands" do log de produção.
+ *
+ * 2. catalog_domains, top_values e os catalog products compartilham o MESMO
+ *    espaço de IDs (Volkswagen = 60249 nos três). Quem devolve lixo é
+ *    `open_attributes`: pedindo BRAND=Volkswagen + MODEL=Gol por nome, o ML
+ *    respondeu com Fiat Mobi. É isso que produz o
+ *    "0 of 1500 matched brand+model" — o filtro local está CERTO ao descartar.
+ *
+ * Logo: privilegiar known_attributes sempre que houver value_id, e manter o
+ * filtro por value_id. Compatibilidade errada no anúncio é pior do que
+ * compatibilidade faltando.
  */
 
 vi.mock("axios");
@@ -42,11 +49,27 @@ const produto = (
   ],
 });
 
-/** catalog_domains com as marcas informadas (fonte confiável). */
+/** catalog_domains no formato legado (`values`). */
 const domainCom = (marcas: Array<{ id: string; name: string }>) => ({
   data: {
     domain_id: "MLB-CARS_AND_VANS",
     attributes: [{ id: "BRAND", values: marcas }],
+  },
+});
+
+/** catalog_domains no formato REAL do ML hoje (`suggested_values`). */
+const domainComSuggested = (marcas: Array<{ id: string; name: string }>) => ({
+  data: {
+    domain_id: "MLB-CARS_AND_VANS",
+    attributes: [
+      {
+        id: "BRAND",
+        suggested_values: marcas.map((m) => ({
+          value_id: m.id,
+          value_name: m.name,
+        })),
+      },
+    ],
   },
 });
 
@@ -92,52 +115,31 @@ describe("resolveCompatibilityCatalogProducts — espaço de value_id", () => {
     expect(r.catalogProductIds).not.toContain("MLB_LIXO");
   });
 
-  it("marca de top_values: busca por open_attributes, não por value_id", async () => {
-    // catalog_domains vazio (cenário do log de prod) força o fallback.
-    (mockedAxios as any).get.mockResolvedValue(domainCom([]));
-    (mockedAxios as any).post.mockImplementation((url: string) => {
-      if (url.includes("/attributes/BRAND/top_values")) {
-        return Promise.resolve({
-          data: { values: [{ id: "TV_VW", name: "Volkswagen" }] },
-        });
-      }
-      if (url.includes("/top_values")) {
-        return Promise.resolve({ data: { values: [] } });
-      }
-      if (url.includes("/chunks")) {
-        return Promise.resolve({
-          data: {
-            results: [produto("CP_VW", "Volkswagen", "CP_GOL", "Gol", "2012")],
-          },
-        });
-      }
-      return Promise.resolve({ data: {} });
-    });
-
-    await MLApiService.resolveCompatibilityCatalogProducts("tok", [
-      { brand: "Volkswagen", model: "Gol", yearFrom: 2012, yearTo: 2012 },
-    ]);
-
-    const chunkCall = (mockedAxios as any).post.mock.calls.find(
-      ([url]: [string]) => url.includes("/chunks"),
+  it("lê as marcas de suggested_values (formato real do ML)", async () => {
+    // Fix da causa-raiz do "brandsCache loaded: 0 brands": o parser lia
+    // `values`, que o ML não preenche neste endpoint.
+    (mockedAxios as any).get.mockResolvedValue(
+      domainComSuggested([{ id: "60249", name: "Volkswagen" }]),
     );
-    expect(chunkCall).toBeTruthy();
-    const body = chunkCall[1];
-    // O id de top_values não pode ir como known_attributes: buscaria no espaço
-    // errado e o ML devolveria lixo.
-    expect(body.known_attributes).toBeUndefined();
-    expect(body.open_attributes).toEqual([
-      { id: "BRAND", value_name: "Volkswagen" },
-      { id: "MODEL", value_name: "Gol" },
-    ]);
+
+    const marcas = await MLApiService.listCompatibilityBrands("tok");
+    expect(marcas).toHaveLength(1);
+    expect(marcas[0]).toMatchObject({ valueId: "60249", name: "Volkswagen" });
   });
 
-  it("marca de top_values: casa por nome — a regressão do 0 of 1500", async () => {
+  it("marca resolvida por top_values usa known_attributes (ids são o mesmo espaço)", async () => {
+    // catalog_domains vazio força o fallback por top_values. O id de lá é
+    // válido para a busca — open_attributes é que devolve lixo.
     (mockedAxios as any).get.mockResolvedValue(domainCom([]));
     (mockedAxios as any).post.mockImplementation((url: string) => {
       if (url.includes("/attributes/BRAND/top_values")) {
         return Promise.resolve({
-          data: { values: [{ id: "TV_VW", name: "Volkswagen" }] },
+          data: { values: [{ id: "60249", name: "Volkswagen" }] },
+        });
+      }
+      if (url.includes("/attributes/MODEL/top_values")) {
+        return Promise.resolve({
+          data: { values: [{ id: "62109", name: "Gol" }] },
         });
       }
       if (url.includes("/top_values")) {
@@ -146,10 +148,8 @@ describe("resolveCompatibilityCatalogProducts — espaço de value_id", () => {
       if (url.includes("/chunks")) {
         return Promise.resolve({
           data: {
-            // value_id do produto é de outro espaço que o de top_values.
-            // Antes, este produto era descartado — junto com os outros 1499.
             results: [
-              produto("CP_VW", "Volkswagen", "CP_GOL", "Gol", "2012", "MLB_VW"),
+              produto("60249", "Volkswagen", "62109", "Gol", "2012", "MLB_VW"),
             ],
           },
         });
@@ -161,8 +161,51 @@ describe("resolveCompatibilityCatalogProducts — espaço de value_id", () => {
       { brand: "Volkswagen", model: "Gol", yearFrom: 2012, yearTo: 2012 },
     ]);
 
+    // A primeira chamada ao chunks é a de listCompatibilityModels (só BRAND);
+    // a que interessa é a busca final, com BRAND + MODEL.
+    const buscaFinal = (mockedAxios as any).post.mock.calls
+      .filter(([url]: [string]) => url.includes("/chunks"))
+      .map(([, body]: [string, any]) => body)
+      .find((b: any) =>
+        (b.known_attributes ?? []).some((a: any) => a.id === "MODEL"),
+      );
+    expect(buscaFinal).toBeTruthy();
+    expect(buscaFinal.known_attributes).toEqual([
+      { id: "BRAND", value_ids: ["60249"] },
+      { id: "MODEL", value_ids: ["62109"] },
+    ]);
+    expect(buscaFinal.open_attributes).toBeUndefined();
     expect(r.catalogProductIds).toContain("MLB_VW");
-    expect(r.unresolved).toHaveLength(0);
+  });
+
+  it("marca que não resolve em fonte nenhuma cai em open_attributes e o lixo é descartado", async () => {
+    // Cenário real do log: "CAOA Chery" não casa com "Chery" do catálogo. Sem
+    // value_id, a busca vai por nome e o ML devolve produto de outra marca —
+    // o filtro local descartar isso é o comportamento CORRETO.
+    (mockedAxios as any).get.mockResolvedValue(domainCom([]));
+    (mockedAxios as any).post.mockImplementation((url: string) => {
+      if (url.includes("/top_values")) {
+        return Promise.resolve({ data: { values: [] } });
+      }
+      if (url.includes("/chunks")) {
+        return Promise.resolve({
+          data: {
+            results: [
+              produto("67781", "Fiat", "275412", "Mobi", "2023", "MLB_LIXO"),
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    const r = await MLApiService.resolveCompatibilityCatalogProducts("tok", [
+      { brand: "CAOA Chery", model: "iCar", yearFrom: 2024, yearTo: 2024 },
+    ]);
+
+    expect(r.catalogProductIds).not.toContain("MLB_LIXO");
+    expect(r.unresolved.length).toBeGreaterThan(0);
+    expect(r.unresolved[0].reason).toContain("ML ignored filter");
   });
 
   it("não afrouxa demais: nome divergente continua descartado", async () => {

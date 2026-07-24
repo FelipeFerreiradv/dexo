@@ -2751,29 +2751,20 @@ export class MLApiService {
     ): Promise<MLCompatibilityModelOption | null> => {
       let models = modelListCache.get(brand.valueId);
       if (!models) {
-        // listCompatibilityModels busca por known_attributes[BRAND.value_id].
-        // Quando o id da marca veio de top_values ele pertence a outro espaço,
-        // então a busca ou falha ("Invalid arguments") ou devolve lixo — não
-        // adianta gastar a chamada. Vai direto ao top_values de MODEL, que
-        // aceita o mesmo espaço de id da marca.
-        if (brand.source === "top_values") {
+        try {
+          // Cópia defensiva pelo mesmo motivo do brandsCache: o push abaixo
+          // não pode escrever no array do cache global.
+          models = [
+            ...(await this.listCompatibilityModels(accessToken, {
+              valueId: brand.valueId,
+              name: brand.name,
+            })),
+          ];
+        } catch (err) {
+          console.warn(
+            `[ML Compat] listCompatibilityModels(${brand.valueId}) falhou: ${err instanceof Error ? err.message : String(err)} — caindo em top_values direto`,
+          );
           models = [];
-        } else {
-          try {
-            // Cópia defensiva pelo mesmo motivo do brandsCache: o push abaixo
-            // não pode escrever no array do cache global.
-            models = [
-              ...(await this.listCompatibilityModels(accessToken, {
-                valueId: brand.valueId,
-                name: brand.name,
-              })),
-            ];
-          } catch (err) {
-            console.warn(
-              `[ML Compat] listCompatibilityModels(${brand.valueId}) falhou: ${err instanceof Error ? err.message : String(err)} — caindo em top_values direto`,
-            );
-            models = [];
-          }
         }
         modelListCache.set(brand.valueId, models);
       }
@@ -2828,13 +2819,21 @@ export class MLApiService {
       const brand = await findBrand(brandName);
       const model = brand ? await findModel(brand, modelName) : null;
 
-      // "Confiável" = o value_id veio de catalog_domains (ou dos próprios
-      // catalog products) e portanto vive no MESMO espaço de IDs que o filtro
-      // compara. Quando veio de top_values, usar o id na query devolve lixo e
-      // no filtro descarta 100% — foi o que produziu o
-      // "0 of 1500 matched brand+model" do log de produção.
-      const brandTrusted = !!brand && brand.source !== "top_values";
-      const modelTrusted = !!model && model.source !== "top_values";
+      // Sonda contra a API real (24/07/2026) mostrou que catalog_domains,
+      // top_values e os catalog products compartilham o MESMO espaço de IDs
+      // (Volkswagen = 60249 nos três). Então qualquer value_id resolvido serve
+      // tanto para a query quanto para o filtro — `source` fica só como
+      // diagnóstico.
+      //
+      // O que de fato devolve lixo é `open_attributes`: pedindo
+      // BRAND=Volkswagen + MODEL=Gol por NOME, o ML respondeu com Fiat Mobi.
+      // Ou seja, o "0 of 1500 matched brand+model" acontece quando a marca não
+      // resolve em fonte nenhuma (ex.: "CAOA Chery", que o ML cataloga como
+      // "Chery"), caímos em open_attributes e o filtro local — corretamente —
+      // descarta tudo que voltou. Por isso o caminho a privilegiar é sempre o
+      // known_attributes.
+      const brandTrusted = !!brand;
+      const modelTrusted = !!model;
 
       // Expande range de anos. Se nenhum ano for informado, busca todos os
       // catalog products para o par marca+modelo (sem filtro de ano).
@@ -3043,16 +3042,11 @@ export class MLApiService {
                 brandAttr?.values?.[0]?.name ??
                 "",
             );
-            // Aceita tanto o que foi digitado quanto o nome canônico que o ML
-            // devolveu ("VW" digitado → "Volkswagen" no catálogo).
-            const canonicalBrand = brand ? normalize(brand.name) : null;
-            if (
-              prodBrand &&
-              prodBrand !== normalizedBrand &&
-              prodBrand !== canonicalBrand
-            ) {
-              continue;
-            }
+            // Só chegamos aqui quando a marca não resolveu em fonte nenhuma,
+            // então a busca foi por open_attributes — que o ML ignora. Este
+            // gate por nome é o que impede o lixo devolvido de virar
+            // compatibilidade errada no anúncio.
+            if (prodBrand && prodBrand !== normalizedBrand) continue;
           }
           if (modelTrusted) {
             const prodModelValueId =
@@ -3066,12 +3060,7 @@ export class MLApiService {
                 modelAttr?.values?.[0]?.name ??
                 "",
             );
-            const canonicalModel = model ? normalize(model.name) : null;
-            if (
-              prodModel &&
-              prodModel !== normalizedModel &&
-              prodModel !== canonicalModel
-            ) {
+            if (prodModel && prodModel !== normalizedModel) {
               continue;
             }
           }
@@ -3438,7 +3427,26 @@ export class MLApiService {
     const brandAttr = (domain.attributes ?? []).find(
       (a: MLCatalogDomainAttribute) => a?.id === ML_ATTR.BRAND,
     );
-    const values = brandAttr?.values ?? [];
+    // O ML devolve as marcas em `suggested_values` (formato
+    // {value_id, value_name}), não em `values`. Ler só `values` produzia lista
+    // SEMPRE vazia — é a origem do `brandsCache loaded: 0 brands` do log de
+    // produção, que derrubava a fonte primária e empurrava tudo para o
+    // fallback. Confirmado por sonda contra a API real em 24/07/2026.
+    // Aceitamos os dois formatos: `values` continua valendo se voltar.
+    const values: Array<{ id: string; name: string }> = [
+      ...(brandAttr?.values ?? []).map((v) => ({
+        id: String(v?.id ?? ""),
+        name: String(v?.name ?? ""),
+      })),
+      ...(
+        (brandAttr as unknown as {
+          suggested_values?: Array<{ value_id?: string; value_name?: string }>;
+        })?.suggested_values ?? []
+      ).map((v) => ({
+        id: String(v?.value_id ?? ""),
+        name: String(v?.value_name ?? ""),
+      })),
+    ].filter((v) => v.id && v.name);
 
     const seen = new Map<string, MLCompatibilityBrandOption>();
     for (const v of values) {
