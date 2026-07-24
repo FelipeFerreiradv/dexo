@@ -66,10 +66,19 @@ services:
       # 5xx). DORMENTE por default; ativar so apos golden/bench com flag ON.
       REMBG_ASYNC_OFFLOAD: "false"
       REMBG_MAX_PENDING: "8"
+      # Profiling ligado TEMPORARIAMENTE (estabilizacao do incidente 24/07):
+      # imprime [rembg-profile] com o tempo de cada estagio por requisicao.
+      # Desligar (remover a linha + up -d) apos ~1 semana estavel.
+      REMBG_PROFILE: "true"
       # Anti-ZUMBI (incidente 24/07 tarde): descarta em ms requisicoes cujo
       # caller ja desistiu (axios ~42s) em vez de inferir para ninguem — era o
       # combustivel do colapso de congestao. Semantica: so elimina desperdicio.
       REMBG_SKIP_DISCONNECTED: "true"
+      # Cap do custo do blur da sombra (incidente 24/07: "imagem-veneno" com
+      # bbox de quadro inteiro => sigma ~72 => shadow=34s medido por profile;
+      # com cap 12, blur roda em canvas reduzido e re-amplia — visualmente
+      # identico p/ sombra suave, custo em ms).
+      REMBG_SHADOW_SIGMA_CAP: "12"
       # Cap defensivo de pixels: o app manda <=1600px (~2MP), NUNCA e' afetado.
       # Protege o worker unico de callers diretos full-res (12MP+ = minutos).
       REMBG_MAX_INPUT_MP: "6"
