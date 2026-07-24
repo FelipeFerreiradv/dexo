@@ -152,6 +152,14 @@ SHADOW_OFFSET_Y = float(os.getenv("REMBG_SHADOW_OFFSET_Y", "0.08"))  # + = baixo
 SHADOW_SHEAR = float(os.getenv("REMBG_SHADOW_SHEAR", "0.28"))
 # Blur gaussiano: sigma = fator * maior lado do objeto (suaviza/espalha).
 SHADOW_BLUR = float(os.getenv("REMBG_SHADOW_BLUR", "0.045"))
+# Cap do CUSTO do blur da sombra (0 = off). Incidente 24/07: recorte com alpha
+# espalhado pelo quadro => bbox ~1600px => sigma ~72 => kernel ~433x433 num
+# canvas float de ~4-5MP = ~34s SO no estagio shadow (medido em prod; normal
+# e' ~1s). Com o cap, sigmas acima do teto desfocam numa versao REDUZIDA do
+# canvas e re-ampliam — gaussiano e' passa-baixa: blur(sigma*s) em escala s
+# == blur(sigma) em escala 1; para sombra suave e' visualmente identico e o
+# custo fica limitado a ms. Opt-in => default off = comportamento atual.
+SHADOW_SIGMA_CAP = float(os.getenv("REMBG_SHADOW_SIGMA_CAP", "0"))
 # Cap do lado longo do resultado (nao estourar muito alem de ~1600px).
 SHADOW_MAX_LONG = int(os.getenv("REMBG_SHADOW_MAX_LONG", "1600"))
 SHADOW_ALPHA_THRESH = int(os.getenv("REMBG_SHADOW_ALPHA_THRESH", "16"))
@@ -255,6 +263,7 @@ def health():
         "pending": _pending,
         "skip_disconnected": SKIP_DISCONNECTED,
         "max_input_mp": MAX_INPUT_MP,
+        "shadow_sigma_cap": SHADOW_SIGMA_CAP,
     }
 
 
@@ -378,7 +387,19 @@ def _add_drop_shadow(rgba: np.ndarray) -> np.ndarray:
     sil = alpha.astype(np.float32) / 255.0
     shadow = cv2.warpAffine(sil, M, (new_w, new_h), flags=cv2.INTER_LINEAR,
                             borderValue=0.0)
-    shadow = cv2.GaussianBlur(shadow, (0, 0), sigma)
+    if SHADOW_SIGMA_CAP > 0 and sigma > SHADOW_SIGMA_CAP:
+        # Blur bounded: reduz o canvas na razao cap/sigma, desfoca com o cap e
+        # re-amplia. Equivalente ao gaussiano cheio (passa-baixa), custo O(cap).
+        s = SHADOW_SIGMA_CAP / sigma
+        small_w = max(1, int(round(new_w * s)))
+        small_h = max(1, int(round(new_h * s)))
+        small = cv2.resize(shadow, (small_w, small_h),
+                           interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), SHADOW_SIGMA_CAP)
+        shadow = cv2.resize(small, (new_w, new_h),
+                            interpolation=cv2.INTER_LINEAR)
+    else:
+        shadow = cv2.GaussianBlur(shadow, (0, 0), sigma)
     shadow = np.clip(shadow * SHADOW_OPACITY, 0.0, 1.0)
 
     bg = np.zeros((new_h, new_w, 4), np.float32)
