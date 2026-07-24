@@ -1,4 +1,6 @@
-import "dotenv/config";
+// Sobe a árvore até achar o .env — permite rodar de dentro de um git worktree,
+// que não tem .env próprio. Precisa vir antes do import do prisma.
+import "./lib/load-env";
 import prisma from "../app/lib/prisma";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
@@ -21,6 +23,8 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-name=fat  (outra conta por nome)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-id=cmp... (conta exata)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --all-accounts  (sem filtro de conta)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --item=MLB123 (restringe a um
+ *       anúncio; combina com --report e --apply)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --report   (só diagnóstico:
  *       compara "banco tem N" com "ML tem M" por anúncio, sem escrever nada)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --apply    (ESCREVE no ML;
@@ -71,6 +75,17 @@ const dryRun = !apply;
  * compatibilidades e lista as divergências. Não escreve nada, nem com --apply.
  */
 const reportOnly = args.includes("--report");
+/**
+ * Restringe a UM anúncio (ou a uma lista separada por vírgula). Existe para
+ * validar a correção num item só antes de mexer na conta inteira — escrever em
+ * ficha técnica de anúncio ativo não é operação para estrear em lote.
+ */
+const itemFilter = (
+  args.find((a) => a.startsWith("--item="))?.split("=")[1] ?? ""
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 /**
  * Resolve quais contas ML serão alvo. Por padrão filtra para a conta
@@ -290,6 +305,12 @@ async function main(): Promise<void> {
     }
 
     for (const listing of product.listings) {
+      if (
+        itemFilter.length > 0 &&
+        !itemFilter.includes(listing.externalListingId)
+      ) {
+        continue;
+      }
       const lprefix = `  ${prefix} listing=${listing.externalListingId} (status=${listing.status})`;
       try {
         const token = await getValidToken(listing.marketplaceAccount);
