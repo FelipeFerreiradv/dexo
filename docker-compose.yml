@@ -66,6 +66,13 @@ services:
       # 5xx). DORMENTE por default; ativar so apos golden/bench com flag ON.
       REMBG_ASYNC_OFFLOAD: "false"
       REMBG_MAX_PENDING: "8"
+      # Anti-ZUMBI (incidente 24/07 tarde): descarta em ms requisicoes cujo
+      # caller ja desistiu (axios ~42s) em vez de inferir para ninguem — era o
+      # combustivel do colapso de congestao. Semantica: so elimina desperdicio.
+      REMBG_SKIP_DISCONNECTED: "true"
+      # Cap defensivo de pixels: o app manda <=1600px (~2MP), NUNCA e' afetado.
+      # Protege o worker unico de callers diretos full-res (12MP+ = minutos).
+      REMBG_MAX_INPUT_MP: "6"
     # ⚠️ PONTE do incidente 2026-07-24 (era 12g): o ratchet de RSS (glibc +
     # arena do ONNX) leva o container a OOM kill sob carga contínua (medido
     # 21/07: 11,9GiB/12g, 4 kills em 53min, CONSTRAINT_MEMCG). 16g compra horas
