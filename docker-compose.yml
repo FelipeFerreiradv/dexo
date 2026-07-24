@@ -54,10 +54,10 @@ services:
       # Fix RAIZ do ratchet de RSS (incidente 2026-07-24; runbook 8.5 item 2):
       # desliga a arena de CPU do ONNX Runtime, que cresce e nunca devolve RAM
       # ao SO (o MALLOC_ARENA_MAX acima so ataca a metade glibc do problema).
-      # Ligar ("true") SOMENTE apos golden.py + bench.py verdes num container
-      # de bench com a flag ON. So tem efeito com REMBG_ORT_TUNE=true.
+      # LIGADO em producao 24/07 apos gate golden VERDE (SSIM 1.0000 / alpha
+      # Linf 0.0 — saida bit-identica). So tem efeito com REMBG_ORT_TUNE=true.
       # Reverter: "false" + docker compose up -d rembg (sem rebuild).
-      REMBG_ORT_DISABLE_ARENA: "false"
+      REMBG_ORT_DISABLE_ARENA: "true"
       # Offload da inferencia p/ thread (event loop livre => /health responde
       # durante inferencia) + backpressure explicito: 503 imediato quando a
       # fila interna passa de REMBG_MAX_PENDING (o app degrada graceful em
