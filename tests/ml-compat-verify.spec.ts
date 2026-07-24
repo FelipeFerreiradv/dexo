@@ -4,6 +4,7 @@ import {
   MLApiService,
   inspectCompatWriteResponse,
   countCompatibilitiesFromPayload,
+  extractUnsupportedDomain,
   __resetCompatCacheForTests,
 } from "../app/marketplaces/services/ml-api.service";
 
@@ -389,5 +390,21 @@ describe("MLApiService.applyCompatibilitiesVerified — escada", () => {
     expect(r.verified).toBe(true);
     // Não deve seguir para o degrau seguinte depois de confirmar persistência.
     expect(r.strategy).not.toBe("none");
+  });
+});
+
+describe("extractUnsupportedDomain", () => {
+  it("reconhece a recusa por dominio do user product", () => {
+    // Mensagem real do ML, capturada ao aplicar em MLB4911882525.
+    const msg =
+      '400 {"error":"bad_request","message":"The user product domain MLB-LIGHT_VEHICLE_ACCESSORIES does not have active compatibilities.","status":400}';
+    expect(extractUnsupportedDomain(msg)).toBe("MLB-LIGHT_VEHICLE_ACCESSORIES");
+  });
+
+  it("ignora erro comum", () => {
+    expect(
+      extractUnsupportedDomain('400 {"message":"Invalid request body"}'),
+    ).toBeNull();
+    expect(extractUnsupportedDomain("")).toBeNull();
   });
 });

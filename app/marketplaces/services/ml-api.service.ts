@@ -271,6 +271,25 @@ export function inspectCompatWriteResponse(data: unknown): {
  * Quando nenhuma forma conhecida aparece, devolve `available: false` — que o
  * chamador trata como "não sei", nunca como "está vazio".
  */
+/**
+ * Detecta a recusa estrutural do ML: o User Product está num domínio que
+ * simplesmente não habilita compatibilidade (ex.:
+ * `MLB-LIGHT_VEHICLE_ACCESSORIES`, `MLB-VEHICLE_SEATS`).
+ *
+ * Confirmado em produção: a mensagem é
+ * "The user product domain X does not have active compatibilities."
+ *
+ * Distinguir isso de uma falha comum importa porque a ação do vendedor é
+ * outra — não adianta reenviar nem corrigir o cadastro de veículos; o anúncio
+ * precisa estar em outra categoria. Reenviar em loop só queima chamada.
+ */
+export function extractUnsupportedDomain(mensagem: string): string | null {
+  const m = /user product domain\s+([A-Z0-9_-]+)\s+does not have active compatibilities/i.exec(
+    mensagem || "",
+  );
+  return m ? m[1] : null;
+}
+
 export function countCompatibilitiesFromPayload(
   data: unknown,
 ): MLCompatibilityReadResult {
@@ -2058,10 +2077,17 @@ export class MLApiService {
       return valueId;
     };
 
-    // YEAR no endpoint de compat usa value_id numérico (e não o ano
-    // literal). Sem esse mapeamento o PUT retorna ids:[] mesmo com
-    // BRAND/MODEL resolvidos — o ML não consegue amarrar à família de
-    // produto real. Resolvido via top_values filtrado por BRAND+MODEL.
+    // O ano no endpoint de compat usa value_id numérico (não o ano literal).
+    // Sem esse mapeamento o PUT retorna ids:[] mesmo com BRAND/MODEL
+    // resolvidos — o ML não consegue amarrar à família de produto real.
+    //
+    // ATENÇÃO ao nome do atributo, que difere entre os dois usos:
+    //   - CONSULTA (aqui): `VEHICLE_YEAR`. É o atributo que existe no domínio.
+    //     Consultar `YEAR` devolve HTTP 400 "Attribute not found" — era o que
+    //     acontecia sempre, e por isso o log de produção mostrava
+    //     "YEAR value_id resolved: 0/N tuples" em 100% dos casos.
+    //   - ESCRITA (toFamily): `YEAR`. Confirmado em produção e travado por
+    //     teste; não uniformizar os dois.
     const resolveYearValueId = async (
       brandValueId: string,
       modelValueId: string,
@@ -2072,7 +2098,7 @@ export class MLApiService {
       if (!canLookup()) return null;
       const values = await this.getCompatAttributeTopValues(
         accessToken,
-        "YEAR",
+        ML_ATTR.VEHICLE_YEAR,
         [
           { id: ML_ATTR.BRAND, value_id: brandValueId },
           { id: ML_ATTR.MODEL, value_id: modelValueId },
@@ -2137,6 +2163,20 @@ export class MLApiService {
     console.warn(
       `[ML Compat] YEAR value_id resolved: ${yearResolvedCount}/${resolvedYears.size} tuples`,
     );
+
+    // Marca+modelo resolvem mas o ANO não: o catálogo do ML não cobre aquele
+    // ano para aquele modelo (ex.: HB20 só existe de 2013 em diante, então
+    // "HB20 2012" nunca vai amarrar). Sem esta linha o operador só via
+    // "200 com ids:[]", que não diz o que fazer. Aqui ele vê o ano exato que
+    // precisa corrigir no cadastro.
+    for (const [tupleKey, yearId] of resolvedYears) {
+      if (yearId) continue;
+      const [brandKey, modelKey, ano] = tupleKey.split("|");
+      console.warn(
+        `[ML Compat] ano ${ano} indisponivel no catalogo do ML para ${brandKey}/${modelKey} — ` +
+          `essa linha de compatibilidade nao tem como persistir; corrija o ano no cadastro`,
+      );
+    }
 
     /** Um tuplo só é "completo" quando BRAND, MODEL e (se houver) YEAR têm id. */
     const hasFullValueIds = (t: Tuple): boolean => {
@@ -2520,6 +2560,12 @@ export class MLApiService {
     errors: string[];
     budgetExhausted: boolean;
     userProductId: string | null;
+    /**
+     * Preenchido quando o ML recusa por domínio do User Product. Sinaliza que
+     * NENHUMA estratégia vai funcionar enquanto o anúncio estiver nessa
+     * categoria — a correção é recategorizar, não reenviar.
+     */
+    unsupportedDomain?: string;
   }> {
     const requested = (vehicles || []).filter((v) => v?.brand && v?.model)
       .length;
@@ -2588,6 +2634,37 @@ export class MLApiService {
       }
     }
 
+    /** Recusa por domínio: nenhum degrau adiante muda o resultado. */
+    const dominioRecusado = (): string | null => {
+      for (const e of errors) {
+        const d = extractUnsupportedDomain(e);
+        if (d) return d;
+      }
+      return null;
+    };
+
+    {
+      const dom = dominioRecusado();
+      if (dom) {
+        console.warn(
+          `[ML Compat] dominio ${dom} do user product nao aceita compatibilidade — ` +
+            `nenhuma estrategia vai funcionar; o anuncio precisa de outra categoria`,
+        );
+        return {
+          ok: false,
+          strategy: "none",
+          requested,
+          persisted: 0,
+          verified,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+          unsupportedDomain: dom,
+        };
+      }
+    }
+
     // Degraus 2 e 3 — por atributos. `requireFullValueIds` primeiro porque
     // value_id completo é o que o ML consegue amarrar a uma família real.
     for (const requireFullValueIds of [true, false]) {
@@ -2615,6 +2692,27 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+        };
+      }
+      // Recusa por domínio pode aparecer só agora (o degrau 1 nem sempre a
+      // provoca). Interrompe em vez de gastar o degrau seguinte à toa.
+      const dom = dominioRecusado();
+      if (dom) {
+        console.warn(
+          `[ML Compat] dominio ${dom} do user product nao aceita compatibilidade — ` +
+            `nenhuma estrategia vai funcionar; o anuncio precisa de outra categoria`,
+        );
+        return {
+          ok: false,
+          strategy: "none",
+          requested,
+          persisted: 0,
+          verified,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+          unsupportedDomain: dom,
         };
       }
     }

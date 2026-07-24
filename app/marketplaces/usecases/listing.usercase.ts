@@ -3157,6 +3157,7 @@ export class ListingUseCase {
                   verified: compat.verified,
                   unresolved: compat.unresolved.length,
                   unresolvedSample: compat.unresolved.slice(0, 5),
+                  unsupportedDomain: compat.unsupportedDomain,
                   at: new Date().toISOString(),
                 },
               });
@@ -5657,6 +5658,7 @@ export class ListingUseCase {
           verified: compat.verified,
           unresolved: compat.unresolved.length,
           unresolvedSample: compat.unresolved.slice(0, 5),
+          unsupportedDomain: compat.unsupportedDomain,
           origin: args.origin,
           at: new Date().toISOString(),
         },
