@@ -290,14 +290,37 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < productsWithListings.length; i++) {
     const product = productsWithListings[i];
-    const prefix = `[${i + 1}/${productsWithListings.length}] sku=${product.sku ?? "?"} (${product.compatibilities.length} compats locais)`;
-
-    const vehicles = product.compatibilities.map((c) => ({
-      brand: c.brand,
-      model: c.model,
-      yearFrom: c.yearFrom,
-      yearTo: c.yearTo,
-    }));
+    // Deduplica (marca, modelo, ano) antes de qualquer comparação.
+    //
+    // O cadastro acumula linhas repetidas do mesmo veículo — visto em produção
+    // um produto com "Fiat Palio 2006" 16 vezes. Comparar 16 com o que o ML
+    // devolve produz falso "DIVERGENTE": o ML guarda VEÍCULOS, e ainda expande
+    // cada um em vários catalog products (aquele Palio 2006 virou 11). Sem o
+    // dedupe o relatório manda corrigir anúncio que já está certo.
+    const vistos = new Set<string>();
+    const vehicles: Array<{
+      brand: string;
+      model: string;
+      yearFrom: number | null;
+      yearTo: number | null;
+    }> = [];
+    for (const c of product.compatibilities) {
+      const chave = `${(c.brand || "").trim().toLowerCase()}|${(c.model || "")
+        .trim()
+        .toLowerCase()}|${c.yearFrom ?? ""}|${c.yearTo ?? ""}`;
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      vehicles.push({
+        brand: c.brand,
+        model: c.model,
+        yearFrom: c.yearFrom,
+        yearTo: c.yearTo,
+      });
+    }
+    const duplicadas = product.compatibilities.length - vehicles.length;
+    const prefix =
+      `[${i + 1}/${productsWithListings.length}] sku=${product.sku ?? "?"} ` +
+      `(${vehicles.length} veiculo(s) unico(s)${duplicadas > 0 ? `, ${duplicadas} linha(s) duplicada(s) no cadastro` : ""})`;
 
     if (vehicles.length === 0) {
       console.log(`  ${prefix}: sem compats efetivas — skip`);
