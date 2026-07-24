@@ -51,13 +51,15 @@ services:
       # Aplicar SEM rebuild: docker compose --env-file /dev/null up -d rembg
       # Reverter: apagar esta linha + o mesmo comando.
       MALLOC_ARENA_MAX: "2"
-      # Fix RAIZ do ratchet de RSS (incidente 2026-07-24; runbook 8.5 item 2):
-      # desliga a arena de CPU do ONNX Runtime, que cresce e nunca devolve RAM
-      # ao SO (o MALLOC_ARENA_MAX acima so ataca a metade glibc do problema).
-      # LIGADO em producao 24/07 apos gate golden VERDE (SSIM 1.0000 / alpha
-      # Linf 0.0 — saida bit-identica). So tem efeito com REMBG_ORT_TUNE=true.
-      # Reverter: "false" + docker compose up -d rembg (sem rebuild).
-      REMBG_ORT_DISABLE_ARENA: "true"
+      # ⚠️ MANTER "false" — TENTADO E REVERTIDO em producao 24/07: desligar a
+      # arena do ONNX Runtime elimina o ratchet de RSS e a saida e' bit-identica
+      # (golden SSIM 1.0000), MAS a inferencia fica MUITO mais lenta (alocacao
+      # por Run em modelo memory-bound): cluster de timeouts de ~42s (orcamento
+      # inteiro) mesmo com fila vazia, ~34 inferencias/45min com CPU cravado.
+      # O ratchet fica contido por mem_limit 16g + MALLOC_ARENA_MAX + retry de
+      # conexao no app. Proxima mitigacao candidata: reciclagem controlada do
+      # worker (uvicorn --limit-max-requests) — runbook 8.5 item 3.
+      REMBG_ORT_DISABLE_ARENA: "false"
       # Offload da inferencia p/ thread (event loop livre => /health responde
       # durante inferencia) + backpressure explicito: 503 imediato quando a
       # fila interna passa de REMBG_MAX_PENDING (o app degrada graceful em
