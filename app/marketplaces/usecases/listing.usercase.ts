@@ -30,6 +30,27 @@ import {
 } from "../services/listing-removal.helpers";
 import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
 import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
+import {
+  MLAttributeCatalogService,
+  type NormalizedMLAttribute,
+} from "../services/ml-attribute-catalog.service";
+import {
+  inferPositionFromName,
+  resolvePositionValue,
+} from "../lib/ml-position.logic";
+
+/**
+ * Ids que o ML usa para lado/posição da peça. Não é uma lista de categorias —
+ * é o vocabulário do atributo. A decisão de enviar ou não continua sendo do
+ * catálogo da categoria; isto só diz "quando aparecer um destes, é posição".
+ */
+const POSITION_ATTRIBUTE_IDS = new Set([
+  "POSITION",
+  "SIDE",
+  "VEHICLE_SIDE",
+  "MOUNTING_POSITION",
+  "PART_POSITION",
+]);
 
 export interface CreateListingResult {
   success: boolean;
@@ -607,8 +628,17 @@ export class ListingUseCase {
    * GET /categories/{id}/attributes). Ids já incluídos pelos campos
    * fixos NÃO são sobrescritos para preservar a higiene atual de marca/
    * modelo/ano e a integração com `setItemCompatibilities`.
+   *
+   * `categoryAttrs` (opcional) é a ficha oficial da categoria vinda de
+   * GET /categories/{id}/attributes. Quando fornecida, ela — e não uma lista
+   * hardcoded — decide se o lado/posição entra no payload e com qual value_id.
+   * Quando ausente, o comportamento é o legado (ver bloco de POSITION abaixo).
    */
-  private static buildMLAttributes(product: any, resolvedCategoryId?: string) {
+  private static buildMLAttributes(
+    product: any,
+    resolvedCategoryId?: string,
+    categoryAttrs?: NormalizedMLAttribute[],
+  ) {
     const attrs: Array<{ id: string; value_id?: string; value_name?: string }> =
       [];
     const brand = this.cleanBrand(product.brand);
@@ -636,18 +666,44 @@ export class ListingUseCase {
         opPos.value_id.trim().length > 0) ||
         (typeof opPos.value_name === "string" &&
           opPos.value_name.trim().length > 0));
-    if (
-      !hasOperatorPosition &&
-      resolvedCategoryId &&
-      positionCategories.has(resolvedCategoryId)
-    ) {
-      const name = (product.name || "").toLowerCase();
-      const pos = /dianteir|frente/.test(name)
-        ? "Dianteira"
-        : /traseir|tras|trás/.test(name)
-          ? "Traseira"
-          : null;
-      if (pos) attrs.push({ id: "POSITION", value_name: pos });
+    if (!hasOperatorPosition) {
+      if (categoryAttrs) {
+        // Caminho dirigido pelo catálogo: quem manda é o que a categoria
+        // expõe. Se ela não tem atributo de posição, nada é inferido — é isso
+        // que aposenta a lista hardcoded de 2 categorias. Se tem, resolvemos
+        // o value_id oficial, porque value_name livre em lista fechada o ML
+        // aceita e ignora (mesma classe de falha silenciosa da compat).
+        const posAttr = categoryAttrs.find((a) =>
+          POSITION_ATTRIBUTE_IDS.has(a?.id ?? ""),
+        );
+        if (posAttr) {
+          const inferred = inferPositionFromName(product.name || "");
+          const resolved = inferred
+            ? resolvePositionValue(inferred, posAttr.allowedValues)
+            : null;
+          if (resolved) {
+            const entry: {
+              id: string;
+              value_id?: string;
+              value_name?: string;
+            } = { id: posAttr.id };
+            if (resolved.valueId) entry.value_id = resolved.valueId;
+            entry.value_name = resolved.valueName;
+            attrs.push(entry);
+          }
+        }
+      } else if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
+        // Fallback legado — usado quando o catálogo da categoria não pôde ser
+        // carregado. Mantido byte-idêntico de propósito: só Dianteira/Traseira,
+        // só nas 2 categorias de porta, sem value_id.
+        const name = (product.name || "").toLowerCase();
+        const pos = /dianteir|frente/.test(name)
+          ? "Dianteira"
+          : /traseir|tras|trás/.test(name)
+            ? "Traseira"
+            : null;
+        if (pos) attrs.push({ id: "POSITION", value_name: pos });
+      }
     }
 
     attrs.push({ id: "SELLER_SKU", value_name: product.sku });
@@ -1524,7 +1580,22 @@ export class ListingUseCase {
         );
       descriptionSource = derivedDescriptionSource;
 
-      let attributes = this.buildMLAttributes(product, resolvedCategoryId);
+      // Ficha oficial da categoria (cache 24h em memória + Postgres). Alimenta
+      // a decisão de lado/posição: sem ela caímos no fallback legado, por isso
+      // a falha é engolida em vez de derrubar a publicação.
+      const categoryAttrsForBuild = categoryIdForML
+        ? await MLAttributeCatalogService.getAll(categoryIdForML).catch(
+            () => undefined,
+          )
+        : undefined;
+
+      let attributes = this.buildMLAttributes(
+        product,
+        resolvedCategoryId,
+        categoryAttrsForBuild && categoryAttrsForBuild.length > 0
+          ? categoryAttrsForBuild
+          : undefined,
+      );
 
       // ─── Pré-flight: atributos obrigatórios da categoria ─────────────────
       // Busca required attributes do catálogo ML (cache 24h) e verifica se
