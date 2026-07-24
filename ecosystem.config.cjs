@@ -57,6 +57,14 @@ module.exports = {
       script: "/root/.nvm/versions/node/v22.22.2/bin/npm",
       args: "run stats:catalog",
       interpreter: "/root/.nvm/versions/node/v22.22.2/bin/node",
+      // ⚠️ OBRIGATÓRIO: é um batch ONE-SHOT (termina e sai). O default do pm2
+      // (autorestart true) transformou-o em LOOP INFINITO na migração de
+      // 23/07 (↺190 execuções seguidas em ~18h, queimando CPU e banco — o
+      // `pm2 describe` que este arquivo espelhou não exibe esse campo, e o
+      // flag se perdeu). O agendamento diário continua sendo do cron do host;
+      // cada deploy (`pm2 restart all`) também dispara UMA execução, como
+      // sempre foi.
+      autorestart: false,
     },
   ],
 };
