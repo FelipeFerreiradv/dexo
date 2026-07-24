@@ -51,12 +51,30 @@ services:
       # Aplicar SEM rebuild: docker compose --env-file /dev/null up -d rembg
       # Reverter: apagar esta linha + o mesmo comando.
       MALLOC_ARENA_MAX: "2"
-    # ⚠️ NÃO subir sem tratar a causa: se o crescimento for ilimitado, subir o
-    # limite move o OOM do container para o HOST — e aí em vez de um container
-    # reiniciando (degradação graceful) caem API, frontend e workers juntos.
-    # O pico real medido (~11,9GiB) é ~40% acima dos ~8.5GB para os quais este
-    # 12g foi dimensionado. Ver Passo 8.5 do infra/hardening/RUNBOOK_VPS.md.
-    mem_limit: 12g
+      # Fix RAIZ do ratchet de RSS (incidente 2026-07-24; runbook 8.5 item 2):
+      # desliga a arena de CPU do ONNX Runtime, que cresce e nunca devolve RAM
+      # ao SO (o MALLOC_ARENA_MAX acima so ataca a metade glibc do problema).
+      # Ligar ("true") SOMENTE apos golden.py + bench.py verdes num container
+      # de bench com a flag ON. So tem efeito com REMBG_ORT_TUNE=true.
+      # Reverter: "false" + docker compose up -d rembg (sem rebuild).
+      REMBG_ORT_DISABLE_ARENA: "false"
+      # Offload da inferencia p/ thread (event loop livre => /health responde
+      # durante inferencia) + backpressure explicito: 503 imediato quando a
+      # fila interna passa de REMBG_MAX_PENDING (o app degrada graceful em
+      # 5xx). DORMENTE por default; ativar so apos golden/bench com flag ON.
+      REMBG_ASYNC_OFFLOAD: "false"
+      REMBG_MAX_PENDING: "8"
+    # ⚠️ PONTE do incidente 2026-07-24 (era 12g): o ratchet de RSS (glibc +
+    # arena do ONNX) leva o container a OOM kill sob carga contínua (medido
+    # 21/07: 11,9GiB/12g, 4 kills em 53min, CONSTRAINT_MEMCG). 16g compra horas
+    # de runway por ciclo enquanto o fix raiz (REMBG_ORT_DISABLE_ARENA acima)
+    # é validado e ligado. Pré-condição: host com MemAvailable ≥ 10GiB (senão
+    # usar 14g). REVERTER para 12g após 48h de RSS em platô ≤9GiB com a arena
+    # OFF. O aviso original continua valendo: crescimento ILIMITADO + limite
+    # alto move o OOM do container para o HOST (derruba API/frontend juntos) —
+    # por isso a ponte é temporária e monitorada (docker stats + dmesg).
+    # Ver Passo 8.5 do infra/hardening/RUNBOOK_VPS.md.
+    mem_limit: 16g
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health').read(); sys.exit(0)\" || exit 1"]
       interval: 30s

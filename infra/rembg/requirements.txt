@@ -9,3 +9,6 @@ onnxruntime==1.19.2
 numpy==2.4.6
 opencv-python-headless==4.13.0.92
 pillow==12.2.0
+# Dep transitiva do fastapi/starlette (faixa exigida: >=3.4,<5), mas o app.py
+# agora importa direto (offload REMBG_ASYNC_OFFLOAD) — pinada (regra 7).
+anyio==4.6.2.post1

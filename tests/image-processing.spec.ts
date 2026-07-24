@@ -473,3 +473,141 @@ describe("processUploadedImage — gate de concorrência do sidecar", () => {
     expect(getPeak()).toBe(3);
   });
 });
+
+/**
+ * Retry único de CONEXÃO (incidente 24/07): quando o container do sidecar
+ * morre (OOM-kill) e volta, a primeira chamada leva ECONNREFUSED em ms. Um
+ * único retry após backoff curto recupera o recorte em vez de degradar.
+ * Nunca em timeout (inferência pode estar viva no worker) nem em 4xx/5xx.
+ */
+describe("processUploadedImage — retry de conexão do sidecar", () => {
+  /** Erro no formato que o axios produz para falha de conexão (sem response). */
+  function makeAxiosConnError(code: string, message: string): Error {
+    return Object.assign(new Error(message), { isAxiosError: true, code });
+  }
+
+  beforeEach(() => {
+    delete process.env.REMBG_SIDECAR_URL;
+    delete process.env.REMBG_ENABLED;
+    delete process.env.REMBG_GATE_DISABLED;
+    delete process.env.REMBG_RETRY_DISABLED;
+    __resetRembgGate();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    delete process.env.REMBG_RETRY_DISABLED;
+  });
+
+  it("ECONNREFUSED na 1ª tentativa → retry único que salva o recorte", async () => {
+    const buf = await makeImage(1200, 900);
+    const cutout = await makeImage(800, 600, { hasAlpha: true });
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(
+        makeAxiosConnError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:8000"),
+      )
+      .mockResolvedValueOnce(cutout);
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 30_000,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result.removedBackground).toBe(true);
+    expect(result.format).toBe("png");
+  });
+
+  it("timeout do axios (ECONNABORTED) NÃO é retryado — degrada direto", async () => {
+    const buf = await makeImage(1200, 900);
+    const fetcher = vi
+      .fn()
+      .mockRejectedValue(
+        makeAxiosConnError("ECONNABORTED", "timeout of 10000ms exceeded"),
+      );
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 30_000,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.removedBackground).toBe(false);
+    expect(result.warning).toBeTruthy();
+  });
+
+  it("resposta HTTP 5xx NÃO é retryada — degrada direto", async () => {
+    const buf = await makeImage(1200, 900);
+    const fetcher = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Request failed with status code 500"), {
+        isAxiosError: true,
+        response: { status: 500 },
+      }),
+    );
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 30_000,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.removedBackground).toBe(false);
+    expect(result.warning).toBeTruthy();
+  });
+
+  it("sem orçamento para uma 2ª inferência após o backoff → não retrya", async () => {
+    const buf = await makeImage(1200, 900);
+    // Deadline de 12s: a 1ª chamada entra folgada (timeout ~9s ≥ 7s), mas o
+    // fetcher queima 2s antes de falhar → sobra <7,5s ⇒ pós-backoff (0,5s)
+    // não cabe outra inferência inteira e o retry é recusado.
+    const fetcher = vi.fn(
+      () =>
+        new Promise<Buffer>((_resolve, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                makeAxiosConnError(
+                  "ECONNRESET",
+                  "read ECONNRESET",
+                ),
+              ),
+            2_000,
+          );
+        }),
+    );
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 12_000,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.removedBackground).toBe(false);
+    expect(result.warning).toBeTruthy();
+  }, 15_000);
+
+  it("REMBG_RETRY_DISABLED=1 desliga o retry (killswitch)", async () => {
+    process.env.REMBG_RETRY_DISABLED = "1";
+    const buf = await makeImage(1200, 900);
+    const fetcher = vi
+      .fn()
+      .mockRejectedValue(
+        makeAxiosConnError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:8000"),
+      );
+
+    const result = await processUploadedImage(buf, {
+      removeBackground: true,
+      rembgFetcher: fetcher,
+      deadlineAt: Date.now() + 30_000,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.removedBackground).toBe(false);
+    expect(result.warning).toBeTruthy();
+  });
+});

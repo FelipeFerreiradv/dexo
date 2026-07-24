@@ -33,6 +33,8 @@ import os
 from io import BytesIO
 from time import perf_counter
 
+import anyio
+import anyio.to_thread
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -61,6 +63,29 @@ PROFILE_ENABLED = os.getenv("REMBG_PROFILE", "false").lower() == "true"
 ORT_TUNE = os.getenv("REMBG_ORT_TUNE", "false").lower() == "true"
 ORT_INTRA_OP = int(os.getenv("REMBG_INTRA_OP_THREADS", "0")) or (os.cpu_count() or 8)
 ORT_INTER_OP = int(os.getenv("REMBG_INTER_OP_THREADS", "1"))
+
+# Fix raiz do ratchet de RSS (runbook 8.5 item 2, incidente 2026-07-24):
+# a arena de CPU do ONNX Runtime (enable_cpu_mem_arena, default True) cresce e
+# NUNCA devolve memoria ao SO — somada a fragmentacao do glibc, o RSS escala
+# ate o mem_limit do container (OOM kill CONSTRAINT_MEMCG, medido 11,9GiB/12g).
+# Desligar a arena troca o alocador (malloc por request), nao a matematica —
+# saida identica (gate SSIM cobre). Opt-in => default off = comportamento
+# byte-a-byte o de hoje. So tem efeito no caminho tunado (REMBG_ORT_TUNE=true).
+ORT_DISABLE_ARENA = os.getenv("REMBG_ORT_DISABLE_ARENA", "false").lower() == "true"
+
+# Offload opt-in da inferencia para thread (REMBG_ASYNC_OFFLOAD=true):
+# o handler e' async mas remove() e' sincrono — hoje ele BLOQUEIA o event loop,
+# entao /health nao responde durante uma inferencia (~9s) e requisicoes
+# concorrentes empilham invisiveis na accept queue do kernel. Com offload:
+#  - a inferencia roda em thread (serializada por um semaforo de 1 — mesmo
+#    paralelismo de hoje, 1 inferencia por vez);
+#  - o event loop fica livre => /health responde sempre;
+#  - backpressure explicito: acima de REMBG_MAX_PENDING aguardando, responde
+#    503 na hora (o app Node ja degrada graceful em 5xx) em vez de enfileirar
+#    trabalho que ninguem vai esperar.
+# Default off => fluxo identico ao atual. Ativar SO depois de golden+bench.
+ASYNC_OFFLOAD = os.getenv("REMBG_ASYNC_OFFLOAD", "false").lower() == "true"
+MAX_PENDING = int(os.getenv("REMBG_MAX_PENDING", "8"))
 
 # --- Tunables do refino de borda (env override; defaults calibrados) -------
 # Killswitch: REMBG_REFINE_EDGES=false volta pro recorte cru do modelo.
@@ -117,6 +142,19 @@ app = FastAPI(title="Dexo rembg sidecar", version="2.1.0")
 
 _session = None
 
+# Estado do offload (so usado com REMBG_ASYNC_OFFLOAD=true). O contador e o
+# lazy-init do semaforo mutam apenas no event loop (sem await entre leitura e
+# escrita) => sem race. Semaforo lazy para nao depender de loop no import.
+_pending = 0
+_infer_lock = None
+
+
+def _get_infer_lock():
+    global _infer_lock
+    if _infer_lock is None:
+        _infer_lock = anyio.Semaphore(1)
+    return _infer_lock
+
 
 def _build_tuned_session():
     """Sessao do rembg com SessionOptions explicito (REMBG_ORT_TUNE).
@@ -141,6 +179,8 @@ def _build_tuned_session():
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     so.intra_op_num_threads = ORT_INTRA_OP
     so.inter_op_num_threads = ORT_INTER_OP
+    if ORT_DISABLE_ARENA:
+        so.enable_cpu_mem_arena = False
     return session_class(MODEL_NAME, so, ["CPUExecutionProvider"])
 
 
@@ -153,7 +193,8 @@ def _get_session():
                 _session = _build_tuned_session()
                 print(
                     f"[rembg] ORT tune ON: intra_op={ORT_INTRA_OP} "
-                    f"inter_op={ORT_INTER_OP} mode=SEQUENTIAL",
+                    f"inter_op={ORT_INTER_OP} mode=SEQUENTIAL "
+                    f"arena={'OFF' if ORT_DISABLE_ARENA else 'ON'}",
                     flush=True,
                 )
             except Exception as exc:  # noqa: BLE001 — fallback seguro p/ o padrao
@@ -163,6 +204,12 @@ def _get_session():
                 )
                 _session = new_session(MODEL_NAME)
         else:
+            if ORT_DISABLE_ARENA:
+                print(
+                    "[rembg] REMBG_ORT_DISABLE_ARENA=true sem REMBG_ORT_TUNE=true: "
+                    "flag sem efeito (new_session padrao nao expoe SessionOptions)",
+                    flush=True,
+                )
             _session = new_session(MODEL_NAME)
     return _session
 
@@ -184,6 +231,10 @@ def health():
         "ort_tune": ORT_TUNE,
         "intra_op": ORT_INTRA_OP if ORT_TUNE else None,
         "inter_op": ORT_INTER_OP if ORT_TUNE else None,
+        # Aditivos (incidente 2026-07-24): estado das flags novas + fila real.
+        "arena_disabled": ORT_DISABLE_ARENA,
+        "async_offload": ASYNC_OFFLOAD,
+        "pending": _pending,
     }
 
 
@@ -330,6 +381,48 @@ def _add_drop_shadow(rgba: np.ndarray) -> np.ndarray:
     return out_u8
 
 
+def _process_sync(
+    raw: bytes, add_shadow: bool, prof: bool, timings: dict
+) -> bytes:
+    """Pipeline completo de uma inferencia (extraido byte-a-byte do handler).
+
+    Sincrono de proposito: roda inline no event loop (default, comportamento
+    historico) ou numa thread via anyio (REMBG_ASYNC_OFFLOAD=true)."""
+    # Decodifica uma vez e passa PIL ao rembg — evita round-trip de PNG
+    # (com bytes, o rembg encodaria o resultado em PNG e nos decodariamos
+    # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
+    t0 = perf_counter() if prof else 0.0
+    src = Image.open(BytesIO(raw)).convert("RGB")
+    if prof:
+        timings["decode"] = perf_counter() - t0
+        t0 = perf_counter()
+    out = remove(src, session=_get_session(), post_process_mask=POST_PROCESS_MASK)
+    if prof:
+        timings["remove"] = perf_counter() - t0
+        t0 = perf_counter()
+    rgba = _to_rgba_array(out)
+    if prof:
+        timings["to_rgba"] = perf_counter() - t0
+        t0 = perf_counter()
+    if REFINE_ENABLED:
+        rgba = _refine_edges(rgba)
+    if prof:
+        timings["refine"] = perf_counter() - t0
+        t0 = perf_counter()
+    if add_shadow and SHADOW_GLOBAL_ENABLED:
+        try:
+            rgba = _add_drop_shadow(rgba)
+        except Exception:  # noqa: BLE001 — sombra best-effort, nao derruba o recorte
+            pass
+    if prof:
+        timings["shadow"] = perf_counter() - t0
+        t0 = perf_counter()
+    png_bytes = _encode_png(rgba)
+    if prof:
+        timings["encode"] = perf_counter() - t0
+    return png_bytes
+
+
 @app.post("/remove-bg")
 async def remove_bg(
     file: UploadFile = File(...),
@@ -356,38 +449,25 @@ async def remove_bg(
     timings: dict[str, float] = {}
 
     try:
-        # Decodifica uma vez e passa PIL ao rembg — evita round-trip de PNG
-        # (com bytes, o rembg encodaria o resultado em PNG e nos decodariamos
-        # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
-        t0 = perf_counter() if prof else 0.0
-        src = Image.open(BytesIO(raw)).convert("RGB")
-        if prof:
-            timings["decode"] = perf_counter() - t0
-            t0 = perf_counter()
-        out = remove(src, session=_get_session(), post_process_mask=POST_PROCESS_MASK)
-        if prof:
-            timings["remove"] = perf_counter() - t0
-            t0 = perf_counter()
-        rgba = _to_rgba_array(out)
-        if prof:
-            timings["to_rgba"] = perf_counter() - t0
-            t0 = perf_counter()
-        if REFINE_ENABLED:
-            rgba = _refine_edges(rgba)
-        if prof:
-            timings["refine"] = perf_counter() - t0
-            t0 = perf_counter()
-        if add_shadow and SHADOW_GLOBAL_ENABLED:
+        if not ASYNC_OFFLOAD:
+            # Caminho default: identico ao historico (inline no event loop).
+            png_bytes = _process_sync(raw, add_shadow, prof, timings)
+        else:
+            # Offload: backpressure explicito ANTES de enfileirar + inferencia
+            # em thread, serializada pelo semaforo (1 por vez, como hoje).
+            global _pending
+            if _pending >= MAX_PENDING:
+                raise HTTPException(status_code=503, detail="rembg backlog full")
+            _pending += 1
             try:
-                rgba = _add_drop_shadow(rgba)
-            except Exception:  # noqa: BLE001 — sombra best-effort, nao derruba o recorte
-                pass
-        if prof:
-            timings["shadow"] = perf_counter() - t0
-            t0 = perf_counter()
-        png_bytes = _encode_png(rgba)
-        if prof:
-            timings["encode"] = perf_counter() - t0
+                async with _get_infer_lock():
+                    png_bytes = await anyio.to_thread.run_sync(
+                        _process_sync, raw, add_shadow, prof, timings
+                    )
+            finally:
+                _pending -= 1
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"rembg failed: {exc}") from exc
 
