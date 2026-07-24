@@ -242,6 +242,26 @@ export function inspectCompatWriteResponse(data: unknown): {
   let sawIds = false;
   let total = 0;
 
+  // `create.products`: envio por catalog product ID. Cada entrada ecoa o `id`
+  // que aceitamos enviar, e o `ids` interno vem SEMPRE vazio mesmo quando o
+  // vínculo é criado — confirmado em produção (MLB7216055142 saiu de 0 para 57
+  // compatibilidades com essa exata resposta). Portanto aqui o sinal de
+  // sucesso é o `id` presente, não o `ids`.
+  const produtos = scope.products;
+  if (Array.isArray(produtos) && produtos.length > 0) {
+    const aceitos = produtos.filter(
+      (p) =>
+        p &&
+        typeof p === "object" &&
+        typeof (p as Record<string, unknown>).id === "string" &&
+        ((p as Record<string, unknown>).id as string).length > 0,
+    ).length;
+    if (aceitos > 0) return { verdict: "persisted", count: aceitos };
+  }
+
+  // `create.products_families`: envio por atributos. Aqui o `ids` É o
+  // resultado da resolução — vazio significa que o ML não amarrou a veículo
+  // nenhum. É o vínculo fantasma que deixa o painel do vendedor vazio.
   const walk = (list: unknown): void => {
     if (!Array.isArray(list)) return;
     for (const entry of list) {
@@ -255,7 +275,7 @@ export function inspectCompatWriteResponse(data: unknown): {
   };
 
   walk(scope.products_families);
-  walk(scope.products);
+  walk(produtos);
 
   if (!sawIds) return { verdict: "unknown", count: 0 };
   return total > 0

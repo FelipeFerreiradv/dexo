@@ -74,11 +74,20 @@ describe("inspectCompatWriteResponse", () => {
     expect(r.count).toBe(0);
   });
 
-  it("reconhece o vínculo fantasma de products (log de prod)", () => {
-    // `id` presente com `ids: []` NÃO é sucesso — foi exatamente o que fez o
-    // caminho por catalog products parecer que tinha funcionado.
+  it("create.products com id presente É persistência, apesar do ids vazio", () => {
+    // Aplicação real em MLB7216055142: esta exata resposta acompanhou o
+    // anúncio saindo de 0 para 57 compatibilidades. Neste shape o `ids`
+    // interno vem sempre vazio; quem sinaliza aceitação é o `id`.
     const r = inspectCompatWriteResponse(PROD_GHOST_PRODUCTS);
-    expect(r.verdict).toBe("empty");
+    expect(r.verdict).toBe("persisted");
+    expect(r.count).toBe(1);
+  });
+
+  it("create.products sem id nenhum não conta como persistido", () => {
+    expect(
+      inspectCompatWriteResponse({ create: { products: [{ ids: [] }] } })
+        .verdict,
+    ).toBe("empty");
   });
 
   it("reconhece persistência real e conta os vínculos", () => {
