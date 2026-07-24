@@ -210,6 +210,26 @@ function compatCacheSet<T>(key: string, data: T, ttlMs?: number): void {
 }
 
 /**
+ * Serializa para log cortando no limite.
+ *
+ * As respostas de compatibilidade trazem a lista inteira de catalog products
+ * (uma delas passou de 50 entradas num único PUT), e despejar isso a cada
+ * chamada afogava o pm2 log — os erros de outras contas sumiam no meio. O
+ * começo do corpo já basta para reconhecer o formato e a mensagem de erro.
+ */
+function logResumo(data: unknown, max = 300): string {
+  let texto: string;
+  try {
+    texto = JSON.stringify(data ?? {});
+  } catch {
+    return "(nao serializavel)";
+  }
+  return texto.length <= max
+    ? texto
+    : `${texto.slice(0, max)}…(+${texto.length - max} chars)`;
+}
+
+/**
  * Veredito sobre o corpo de uma ESCRITA de compatibilidade.
  *
  * O ML responde HTTP 200 mesmo quando não amarra o item a veículo nenhum: o
@@ -1772,7 +1792,7 @@ export class MLApiService {
           });
           const inspected = inspectCompatWriteResponse(response?.data);
           console.warn(
-            `[ML Compat] PUT ${url} (${variant.label}) ${inspected.verdict} — ids=${ids.length}, response=${JSON.stringify(response.data ?? {})}`,
+            `[ML Compat] PUT ${url} (${variant.label}) ${inspected.verdict} — ids=${ids.length}, response=${logResumo(response.data)}`,
           );
           if (inspected.verdict === "empty") {
             // 200 com ids:[] é vínculo fantasma: o ML aceitou o corpo e não
@@ -1791,7 +1811,7 @@ export class MLApiService {
             ? error.response?.data
             : undefined;
           console.warn(
-            `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+            `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${logResumo(body)} response=${logResumo(data)}`,
           );
           lastErr = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
           // Só tenta próximas variantes se foi 400 (body mal formado).
@@ -1837,7 +1857,7 @@ export class MLApiService {
           ? error.response?.data
           : undefined;
         console.warn(
-          `[ML Compat] POST ${url} FAIL — status=${status} ids=${ids.length} response=${JSON.stringify(data)}`,
+          `[ML Compat] POST ${url} FAIL — status=${status} ids=${ids.length} response=${logResumo(data)}`,
         );
         const msg = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
         return { ok: false, error: msg };
@@ -2368,7 +2388,7 @@ export class MLApiService {
         const inspected = inspectCompatWriteResponse(response?.data);
         if (!diagLogged) {
           console.warn(
-            `[ML Compat] PUT ${url} ${inspected.verdict} — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}, response=${JSON.stringify(response.data ?? {})}`,
+            `[ML Compat] PUT ${url} ${inspected.verdict} — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}, response=${logResumo(response.data)}`,
           );
           diagLogged = true;
         }
@@ -2394,8 +2414,8 @@ export class MLApiService {
           // problema real é outro campo).
           console.warn(
             `[ML Compat] PUT ${url} FAIL — status=${status} domain=${domainId}` +
-              ` body=${JSON.stringify(body)}` +
-              ` response=${JSON.stringify(responseData)}`,
+              ` body=${logResumo(body)}` +
+              ` response=${logResumo(responseData)}`,
           );
           diagLogged = true;
         }
@@ -2817,9 +2837,13 @@ export class MLApiService {
         // abaixo) escrevia nesse array compartilhado entre todas as contas do
         // processo — e servido também pelo endpoint público de marcas.
         brandsCache = [...(await this.listCompatibilityBrands(accessToken))];
-        console.warn(
-          `[ML Compat] brandsCache loaded: ${brandsCache.length} brands from catalog_domains; first=${JSON.stringify(brandsCache.slice(0, 10).map((b) => b.name))}`,
-        );
+        // Só avisa quando a fonte primária vem VAZIA — esse é o sintoma. Carga
+        // bem-sucedida não precisa de linha no log a cada publicação.
+        if (brandsCache.length === 0) {
+          console.warn(
+            `[ML Compat] catalog_domains devolveu 0 marcas — resolucao vai depender de top_values`,
+          );
+        }
       }
       const n = normalize(name);
       if (!n) return null;
@@ -2834,9 +2858,6 @@ export class MLApiService {
         // traz os 100+ valores reais. Sem esse fallback, marcas comuns
         // caíam como "unresolved" e o item ia só com compat por atributos
         // (que o ML aceita mas não persiste).
-        console.warn(
-          `[ML Compat] brand "${name}" not in catalog_domains (${brandsCache.length} brands); tentando top_values`,
-        );
         const topValues = await this.getCompatAttributeTopValues(
           accessToken,
           ML_ATTR.BRAND,
@@ -2846,14 +2867,11 @@ export class MLApiService {
           topValues.find((v) => normalize(v.name).includes(n)) ??
           null;
         if (tv) {
-          // `source` marca que este value_id NÃO está no espaço de IDs dos
-          // catalog products. Quem usa depois (query e filtro) precisa saber
-          // disso para casar por nome em vez de por id.
+          // `source` registra a procedência do value_id. Hoje é só
+          // diagnóstico: a sonda mostrou que catalog_domains, top_values e os
+          // catalog products compartilham o mesmo espaço de IDs.
           match = { valueId: tv.id, name: tv.name, source: "top_values" };
           brandsCache.push(match);
-          console.warn(
-            `[ML Compat] brand "${name}" resolvido via top_values: value_id=${tv.id} name=${tv.name}`,
-          );
         } else {
           console.warn(
             `[ML Compat] brand "${name}" NÃO encontrada nem em top_values (${topValues.length} valores) — cai para open_attributes`,
@@ -3068,43 +3086,13 @@ export class MLApiService {
       // Sem essa guarda, 50 veículos do mesmo Ford/Ka em anos diferentes
       // produzem 50 linhas idênticas no pm2, que escondem os logs das outras
       // marcas e estouram o buffer do grep.
+      // As cinco amostras de nome/id que este bloco imprimia serviram para
+      // descobrir que catalog_domains, top_values e os catalog products usam o
+      // mesmo espaço de IDs. Confirmado isso, viraram ruído: eram ~5 arrays por
+      // par marca+modelo, em toda publicação. Fica só a contagem e a
+      // procedência, que é o que ainda diagnostica ("0 products fetched" ou
+      // "fallback" apontam onde a resolução parou).
       if (fetchErr === null && loggedThisIteration) {
-        const samplePool = cachedProducts.slice(0, 30);
-        const nameSample = (id: string): string[] =>
-          Array.from(
-            new Set(
-              samplePool
-                .map((p) => {
-                  const attr = p.attributes?.find((a) => a?.id === id);
-                  return (
-                    attr?.value_name ?? attr?.values?.[0]?.name ?? null
-                  );
-                })
-                .filter(
-                  (v): v is string => typeof v === "string" && v.length > 0,
-                ),
-            ),
-          ).slice(0, 10);
-        const idSample = (id: string): string[] =>
-          Array.from(
-            new Set(
-              samplePool
-                .map((p) => {
-                  const attr = p.attributes?.find((a) => a?.id === id);
-                  return (
-                    attr?.value_id ?? attr?.values?.[0]?.id ?? null
-                  );
-                })
-                .filter(
-                  (v): v is string => typeof v === "string" && v.length > 0,
-                ),
-            ),
-          ).slice(0, 10);
-        const yearSamples = nameSample(ML_ATTR.VEHICLE_YEAR);
-        const brandNameSamples = nameSample(ML_ATTR.BRAND);
-        const modelNameSamples = nameSample(ML_ATTR.MODEL);
-        const brandIdSamples = idSample(ML_ATTR.BRAND);
-        const modelIdSamples = idSample(ML_ATTR.MODEL);
         const brandTag = brand
           ? `brand=${brand.valueId}`
           : `brand=fallback(${brandName})`;
@@ -3114,7 +3102,7 @@ export class MLApiService {
         // Usa console.warn pois este ambiente filtra console.info do pm2
         // stdout; o objetivo do log é aparecer junto com os "não resolvidas".
         console.warn(
-          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); brand names: ${JSON.stringify(brandNameSamples)}; brand ids: ${JSON.stringify(brandIdSamples)}; model names: ${JSON.stringify(modelNameSamples)}; model ids: ${JSON.stringify(modelIdSamples)}; year samples: ${JSON.stringify(yearSamples)}`,
+          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag})`,
         );
       }
 
@@ -3442,9 +3430,17 @@ export class MLApiService {
         .map((v) => ({ id: v.id, name: v.name }));
       // Log único por chamada para diagnóstico — mostra quantos vieram e os
       // primeiros nomes (para sabermos se Ford/Audi estão presentes).
-      console.warn(
-        `[ML Compat] top_values ${attributeId}${knownAttributes ? ` (filtered ${knownAttributes.length})` : ""}: got ${values.length} values; first=${JSON.stringify(values.slice(0, 8).map((v) => v.name))}`,
-      );
+      // Só reporta o caso anômalo: lista vazia. O sucesso é o caminho normal e
+      // acontece várias vezes por publicação (uma por marca, por modelo e por
+      // ano) — logar tudo enterrava os erros de verdade.
+      if (values.length === 0) {
+        console.warn(
+          `[ML Compat] top_values ${attributeId} devolveu 0 valores` +
+            (knownAttributes
+              ? ` (filtro: ${knownAttributes.map((a) => a.id).join(",")})`
+              : ""),
+        );
+      }
       // Lista vazia entra com TTL curto (compatCacheSet decide pelo tamanho):
       // resposta vazia costuma ser transitória e não pode grudar por 10 min.
       compatCacheSet(cacheKey, values);
@@ -3457,7 +3453,7 @@ export class MLApiService {
         ? error.response?.data
         : undefined;
       console.warn(
-        `[ML Compat] top_values ${attributeId} FAILED status=${status ?? "?"} response=${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`,
+        `[ML Compat] top_values ${attributeId} FAILED status=${status ?? "?"} response=${logResumo(data ?? (error instanceof Error ? error.message : String(error)))}`,
       );
       return [];
     }
@@ -3519,7 +3515,7 @@ export class MLApiService {
         : undefined;
       const data = axios.isAxiosError(error) ? error.response?.data : undefined;
       console.warn(
-        `[ML Compat] chunks FAIL — status=${status ?? "?"} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+        `[ML Compat] chunks FAIL — status=${status ?? "?"} body=${logResumo(body)} response=${logResumo(data)}`,
       );
       throw new Error(
         this.formatAxiosError(
