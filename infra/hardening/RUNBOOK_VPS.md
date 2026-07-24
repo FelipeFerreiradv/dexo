@@ -292,6 +292,12 @@ com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
 > em vez de um container reiniciando (degradação graceful) você derruba API,
 > frontend e workers de uma vez. Trate a causa primeiro. Lembre também que
 > `REMBG_WORKERS=2` já foi testado e **descartado** (~20 GB, OOM).
+>
+> **Exceção registrada (incidente 2026-07-24):** o compose está com `mem_limit:
+> 16g` como **PONTE temporária** — a condição do aviso foi satisfeita porque a
+> causa (item 2 abaixo) entrou em tratamento no mesmo PR. Pré-condição checada:
+> host com MemAvailable ≥ 10GiB. **Reverter para 12g após 48h de RSS em platô
+> ≤9GiB com `REMBG_ORT_DISABLE_ARENA=true` ativo.**
 
 **Ordem de investigação da causa (da menor para a maior fricção):**
 
@@ -315,10 +321,15 @@ com folga"* está **desatualizado**. O working set real é ~40% maior que isso.
    `sbrk` — e esses **não** voltam pro SO no `free`. Fixar o valor desliga esse
    ratchet. Também é só env.
 2. **Arena do ONNX Runtime.** `enable_cpu_mem_arena` é `True` por default e a
-   estratégia de extensão dobra sem devolver memória. Exige rebuild: setar
-   `so.enable_cpu_mem_arena = False` no `_build_tuned_session` de
-   `infra/rembg/app.py`, atrás de flag. É troca de **alocador**, não de
-   matemática — a saída é bit-idêntica —, mas rode o gate SSIM assim mesmo.
+   estratégia de extensão dobra sem devolver memória. **JÁ IMPLEMENTADO
+   (2026-07-24)** atrás da flag `REMBG_ORT_DISABLE_ARENA` (default off) em
+   `infra/rembg/app.py` / `docker-compose.yml`. Ativar exige: **rebuild da
+   imagem** (`docker compose up -d --build rembg` — a imagem em produção pode
+   ser anterior à flag), golden.py + bench.py verdes num container de bench
+   com a flag ON, e então `REMBG_ORT_DISABLE_ARENA: "true"` no compose. Só tem
+   efeito com `REMBG_ORT_TUNE=true` (o caminho vivo em produção). É troca de
+   **alocador**, não de matemática — a saída é bit-idêntica —, mas rode o gate
+   SSIM assim mesmo. Reverter: `"false"` + `up -d` (sem rebuild).
 3. **Reciclagem controlada** do worker após N requisições: pior que corrigir a
    causa, porém muito melhor que o OOM atual, porque termina a resposta antes de
    sair em vez de matar a conexão no meio.

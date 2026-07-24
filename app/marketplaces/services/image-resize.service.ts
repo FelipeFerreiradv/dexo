@@ -232,7 +232,49 @@ export async function processUploadedImage(
             `orçamento esgotado após espera na fila (restavam ${timeoutMs}ms)`,
           );
         }
-        const cutout = await fetcher(normalized, { addShadow, timeoutMs });
+        let cutout: Buffer;
+        try {
+          cutout = await fetcher(normalized, { addShadow, timeoutMs });
+        } catch (err) {
+          // Retry ÚNICO, apenas para erro de CONEXÃO (sidecar morto/reiniciando
+          // pós OOM-kill): a conexão recusada falha em milissegundos, então uma
+          // segunda tentativa após backoff curto recupera o recorte assim que o
+          // container volta. NUNCA em timeout (a inferência pode ainda estar
+          // rodando no worker único — repetir dobraria a carga) nem em resposta
+          // HTTP 4xx/5xx (o sidecar respondeu; repetir não muda o resultado).
+          // O slot do gate é MANTIDO durante o backoff: com o sidecar fora do
+          // ar ninguém está inferindo, e re-adquirir jogaria esta requisição
+          // para o fim da fila, estourando o orçamento.
+          if (isRembgRetryDisabled() || !isRetryableConnectionError(err)) {
+            throw err;
+          }
+          const afterBackoffMs =
+            computeSidecarTimeoutMs({ deadlineAt: opts.deadlineAt }) -
+            REMBG_RETRY_BACKOFF_MS;
+          if (!isWorthCallingSidecar(afterBackoffMs)) {
+            throw err;
+          }
+          console.warn(
+            "[processUploadedImage] erro de conexão do sidecar; retry único após backoff:",
+            err instanceof Error ? err.message : String(err),
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, REMBG_RETRY_BACKOFF_MS),
+          );
+          // Piso re-checado APÓS o backoff: se jitter comeu a sobra, degrada
+          // em vez de despachar — e nunca entrega ≤0 ao fetcher (que trataria
+          // como "sem deadline" e voltaria ao teto de 60s do env).
+          const retryTimeoutMs = computeSidecarTimeoutMs({
+            deadlineAt: opts.deadlineAt,
+          });
+          if (!isWorthCallingSidecar(retryTimeoutMs)) {
+            throw err;
+          }
+          cutout = await fetcher(normalized, {
+            addShadow,
+            timeoutMs: retryTimeoutMs,
+          });
+        }
         const tFetch = profNow();
 
         // A2: passthrough. O sidecar já devolve PNG RGBA pronto; re-encodar no
@@ -347,6 +389,33 @@ function isRembgEnabled(): boolean {
   const url = process.env.REMBG_SIDECAR_URL;
   const enabled = (process.env.REMBG_ENABLED ?? "true").toLowerCase();
   return Boolean(url) && enabled !== "false";
+}
+
+/** Backoff antes do retry de conexão: cobre o gap accept→listen do sidecar
+ *  voltando de um restart, sem segurar o slot do gate por tempo relevante. */
+const REMBG_RETRY_BACKOFF_MS = 500;
+
+/** Kill-switch do retry (mesma convenção do REMBG_GATE_DISABLED). Lido por
+ *  chamada para funcionar com edição de .env + restart, sem rebuild. */
+function isRembgRetryDisabled(): boolean {
+  const raw = (process.env.REMBG_RETRY_DISABLED ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+/**
+ * Só erros de CONEXÃO são retryáveis: o request nem chegou a ser processado,
+ * então repetir não duplica trabalho no worker único do sidecar.
+ * - `err.response` presente ⇒ houve resposta HTTP (4xx/5xx) ⇒ nunca retry.
+ * - Timeout do axios ⇒ code `ECONNABORTED` ⇒ excluído por construção (a
+ *   inferência pode ainda estar rodando; repetir dobraria a carga).
+ * - `socket hang up` sem code ⇒ conexão morta no meio (kill do container).
+ */
+function isRetryableConnectionError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false;
+  if (err.response) return false;
+  const code = err.code ?? "";
+  if (["ECONNREFUSED", "ECONNRESET", "EPIPE"].includes(code)) return true;
+  return /socket hang up/i.test(err.message ?? "");
 }
 
 async function defaultRembgFetcher(
