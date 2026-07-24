@@ -4239,6 +4239,43 @@ export class SyncUseCase {
         result.previousPrice = currentItem.price;
         result.newPrice = Number(product.price);
 
+        // Compatibilidade veicular no re-sync de produto.
+        //
+        // Aqui as compatibilidades só entravam como bloco de TEXTO na
+        // descrição (appendCompatibilityBlock) — o endpoint nativo do ML nunca
+        // era chamado. Resultado: editar o produto e salvar não corrigia a
+        // ficha técnica de um anúncio que subiu sem compat.
+        //
+        // Idempotente (lê antes de escrever), best-effort e atrás da mesma
+        // flag opt-in do reenvio na edição.
+        try {
+          const listingForCompat = await prisma.productListing.findFirst({
+            where: {
+              externalListingId,
+              marketplaceAccountId: account.id,
+            },
+            select: { id: true },
+          });
+          if (listingForCompat) {
+            const { ListingUseCase } = await import("./listing.usercase");
+            await ListingUseCase.resendCompatibilitiesIfNeeded({
+              accessToken: account.accessToken,
+              itemId: externalListingId,
+              listingId: listingForCompat.id,
+              productId: product.id,
+              vehicles: Array.isArray(product.compatibilities)
+                ? product.compatibilities
+                : null,
+              origin: "product_sync",
+            });
+          }
+        } catch (compatErr) {
+          console.warn(
+            `[SYNC] Falha ao reenviar compatibilidades de ${externalListingId}:`,
+            compatErr instanceof Error ? compatErr.message : String(compatErr),
+          );
+        }
+
         // Registrar log de sucesso
         await this.logSync(
           account.id,

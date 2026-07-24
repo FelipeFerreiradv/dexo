@@ -621,6 +621,9 @@ export class ListingRepository {
       attributesOverride?: unknown;
       compatibilitiesOverride?: unknown;
       sourceVehicleOverride?: string | null;
+      // Diagnóstico do envio de compatibilidade ao marketplace.
+      compatSyncedAt?: Date | null;
+      compatDiagnostics?: unknown;
     },
   ) {
     return prisma.productListing.update({
@@ -733,6 +736,12 @@ export class ListingRepository {
           data.sourceVehicleOverride === undefined
             ? undefined
             : data.sourceVehicleOverride,
+        compatSyncedAt:
+          data.compatSyncedAt === undefined ? undefined : data.compatSyncedAt,
+        compatDiagnostics:
+          data.compatDiagnostics === undefined
+            ? undefined
+            : (data.compatDiagnostics as never),
       },
     });
   }

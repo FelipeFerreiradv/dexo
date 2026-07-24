@@ -21,22 +21,29 @@ import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-name=fat  (outra conta por nome)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --account-id=cmp... (conta exata)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --all-accounts  (sem filtro de conta)
- *   tsx scripts/backfill-product-compatibilities-on-ml.ts --dry-run   (preview)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --report   (só diagnóstico:
+ *       compara "banco tem N" com "ML tem M" por anúncio, sem escrever nada)
+ *   tsx scripts/backfill-product-compatibilities-on-ml.ts --apply    (ESCREVE no ML;
+ *       sem esta flag o script é dry-run)
  *   tsx scripts/backfill-product-compatibilities-on-ml.ts --only-missing  (só envia
  *       para anúncios cujo HAS_COMPATIBILITIES não é "Sim" — pula os que já têm)
  *
  * Como funciona:
  *  1. Busca produtos do user que têm pelo menos 1 ProductCompatibility cadastrada.
  *  2. Para cada produto, itera os ProductListings ML ativos.
- *  3. Reenvia via MLApiService.setItemCompatibilitiesByAttributes — mesma
- *     função usada durante a criação (que já foi validada em produção,
- *     com pipeline brand→value_id → top_values → PUT
- *     /user-products/{up}/compatibilities { create: { products: [...] } }).
+ *  3. Reenvia via MLApiService.applyCompatibilitiesVerified — mesma escada
+ *     usada na criação, que só considera uma estratégia bem-sucedida depois de
+ *     RELER as compatibilidades do ML. Isso importa porque o ML responde 200
+ *     com `ids: []` quando aceita e ignora o vínculo; o relatório e o log
+ *     passam a mostrar quantas ficaram gravadas, não quantas foram enviadas.
  *  4. O ML, ao receber compatibilidades válidas, automaticamente reativa o
  *     anúncio caso ele estivesse pausado por falta de ficha técnica.
  *
  * Idempotente: re-enviar para anúncios que já têm a compat correta é no-op
  * pelo lado do ML. Use --only-missing se quiser pular esses por economia.
+ *
+ * Rode `--report` PRIMEIRO: ele lista "banco tem 15, ML tem 0" por anúncio sem
+ * escrever nada, e é o que diz se o backfill é necessário.
  */
 
 const DEFAULT_USER_ID = "cmnq8opbl0000vsiw19duv1i0";
@@ -50,8 +57,20 @@ const accountIdOverride =
 const accountNameOverride =
   args.find((a) => a.startsWith("--account-name="))?.split("=")[1] ?? null;
 const allAccounts = args.includes("--all-accounts");
-const dryRun = args.includes("--dry-run");
 const onlyMissing = args.includes("--only-missing");
+/**
+ * Escrita agora é OPT-IN. O default seguro passou a ser dry-run: este script
+ * escreve na ficha técnica de anúncios reais em produção, e o padrão anterior
+ * (escrever a menos que passassem --dry-run) tornava um esquecimento caro.
+ * `--dry-run` continua aceito para não quebrar quem já usa.
+ */
+const apply = args.includes("--apply");
+const dryRun = !apply;
+/**
+ * Só relatório: compara o que o banco tem com o que o ML devolve na LEITURA de
+ * compatibilidades e lista as divergências. Não escreve nada, nem com --apply.
+ */
+const reportOnly = args.includes("--report");
 
 /**
  * Resolve quais contas ML serão alvo. Por padrão filtra para a conta
@@ -194,7 +213,7 @@ async function itemAlreadyHasCompatibilities(
 
 async function main(): Promise<void> {
   console.log(
-    `[backfill-compat] userId=${userId} dryRun=${dryRun} onlyMissing=${onlyMissing}`,
+    `[backfill-compat] userId=${userId} modo=${reportOnly ? "report" : dryRun ? "dry-run" : "APPLY"} onlyMissing=${onlyMissing}`,
   );
 
   const target = await resolveTargetAccountIds();
@@ -244,6 +263,15 @@ async function main(): Promise<void> {
   let listingsSkippedAlreadyOk = 0;
   let listingsFailed = 0;
   let totalCompatSent = 0;
+  // Relatório de divergência banco × ML.
+  const divergentes: Array<{
+    itemId: string;
+    sku: string;
+    noBanco: number;
+    noMl: number;
+  }> = [];
+  let reportOk = 0;
+  let reportIlegivel = 0;
 
   for (let i = 0; i < productsWithListings.length; i++) {
     const product = productsWithListings[i];
@@ -266,6 +294,43 @@ async function main(): Promise<void> {
       try {
         const token = await getValidToken(listing.marketplaceAccount);
 
+        if (reportOnly) {
+          // Lê o que está gravado no ML e compara com o banco. É o diagnóstico
+          // que faltava: "o banco tem 15, o ML tem 0" era invisível antes.
+          const item = await MLApiService.getItemDetails(
+            token,
+            listing.externalListingId,
+          ).catch(() => null);
+          const upId =
+            (item as { user_product_id?: string | null } | null)
+              ?.user_product_id ?? null;
+          const read = await MLApiService.readCompatibilities(
+            token,
+            listing.externalListingId,
+            upId,
+          );
+          if (!read.available) {
+            console.warn(`${lprefix}: leitura indisponível — inconclusivo`);
+            reportIlegivel++;
+          } else if (read.count < vehicles.length) {
+            console.warn(
+              `${lprefix}: banco tem ${vehicles.length}, ML tem ${read.count} → DIVERGENTE`,
+            );
+            divergentes.push({
+              itemId: listing.externalListingId,
+              sku: product.sku ?? "?",
+              noBanco: vehicles.length,
+              noMl: read.count,
+            });
+          } else {
+            console.log(
+              `${lprefix}: banco tem ${vehicles.length}, ML tem ${read.count} → ok`,
+            );
+            reportOk++;
+          }
+          continue;
+        }
+
         if (onlyMissing) {
           const already = await itemAlreadyHasCompatibilities(
             listing.externalListingId,
@@ -287,21 +352,29 @@ async function main(): Promise<void> {
           continue;
         }
 
-        const result = await MLApiService.setItemCompatibilitiesByAttributes(
+        // Escada verificada: cada estratégia só vale se o read-back confirmar
+        // veículos gravados. Antes usávamos direto o caminho por atributos,
+        // que o ML aceita com 200 e ignora (ids:[]).
+        const result = await MLApiService.applyCompatibilitiesVerified(
           token,
           listing.externalListingId,
           vehicles,
         );
 
-        if (result.success) {
+        if (result.ok) {
           console.log(
-            `${lprefix}: ✓ ${result.createdCount} compat enviadas (de ${vehicles.length} tentativas)`,
+            `${lprefix}: ✓ ${result.persisted}/${result.requested} gravadas no ML ` +
+              `(estrategia=${result.strategy}, verificado=${result.verified})`,
           );
           listingsOk++;
-          totalCompatSent += result.createdCount;
+          totalCompatSent += result.persisted;
         } else {
-          const err = result.errors.length > 0 ? result.errors.join("; ") : "sem detalhes";
-          console.warn(`${lprefix}: ✗ falhou — ${err}`);
+          const err =
+            result.errors.length > 0 ? result.errors.join("; ") : "sem detalhes";
+          console.warn(
+            `${lprefix}: ✗ nao persistiu — ${result.persisted}/${result.requested}, ` +
+              `estrategia=${result.strategy}, verificado=${result.verified} — ${err}`,
+          );
           listingsFailed++;
         }
       } catch (e) {
@@ -316,12 +389,44 @@ async function main(): Promise<void> {
   console.log("=== Resumo ===");
   console.log(`  Produtos com compats locais:           ${products.length}`);
   console.log(`  Produtos com pelo menos 1 listing ML:  ${productsWithListings.length}`);
+
+  if (reportOnly) {
+    console.log(`  Anuncios ok (ML cobre o banco):        ${reportOk}`);
+    console.log(`  Anuncios DIVERGENTES:                  ${divergentes.length}`);
+    console.log(`  Anuncios ilegiveis (inconclusivo):     ${reportIlegivel}`);
+    if (divergentes.length > 0) {
+      const piores = [...divergentes]
+        .sort((a, b) => b.noBanco - b.noMl - (a.noBanco - a.noMl))
+        .slice(0, 20);
+      console.log("");
+      console.log(`  Top ${piores.length} por diferenca:`);
+      for (const d of piores) {
+        console.log(
+          `    ${d.itemId} (sku ${d.sku}): banco tem ${d.noBanco}, ML tem ${d.noMl}`,
+        );
+      }
+      if (divergentes.length > piores.length) {
+        console.log(
+          `    ... e mais ${divergentes.length - piores.length} anuncio(s) divergente(s) nao listados aqui.`,
+        );
+      }
+    }
+    console.log("");
+    console.log("  Nada foi escrito. Para corrigir: rode de novo com --apply.");
+    await prisma.$disconnect();
+    return;
+  }
+
   console.log(`  Listings OK${dryRun ? " (dry-run)" : ""}:                ${listingsOk}`);
   if (onlyMissing) {
     console.log(`  Listings skip (já tinham compat):       ${listingsSkippedAlreadyOk}`);
   }
   console.log(`  Listings com falha:                     ${listingsFailed}`);
-  console.log(`  Total compat entries enviadas:          ${totalCompatSent}`);
+  console.log(`  Total compat gravadas no ML:            ${totalCompatSent}`);
+  if (dryRun) {
+    console.log("");
+    console.log("  DRY-RUN: nada foi escrito. Use --apply para valer.");
+  }
 
   await prisma.$disconnect();
 }

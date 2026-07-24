@@ -331,6 +331,19 @@ model ProductListing {
   // Migração: ALTER TABLE "ProductListing" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
   createdByUserId      String?
 
+  // Diagnóstico do envio de compatibilidade veicular ao marketplace.
+  // O ML responde HTTP 200 mesmo quando ignora os veículos (`ids: []`), então
+  // "enviado" nunca foi sinônimo de "gravado". Aqui fica o que o read-back
+  // encontrou de fato, para o vendedor ver na aplicação em vez de descobrir
+  // semanas depois no painel do ML.
+  // NÃO usar `lastError` para isto: aquele campo é o canal de retry (prefixo
+  // [TERMINAL]) e é zerado a cada sucesso de sync, o que apagaria o aviso.
+  // Migração: ALTER TABLE "ProductListing"
+  //   ADD COLUMN IF NOT EXISTS "compatSyncedAt" TIMESTAMP(3),
+  //   ADD COLUMN IF NOT EXISTS "compatDiagnostics" JSONB;
+  compatSyncedAt       DateTime?
+  compatDiagnostics    Json?
+
   // Override fields: quando preenchidos, sobrescrevem o valor do produto
   // PARA ESTE ANÚNCIO ESPECÍFICO. NULL = herda do produto.
   // Estoque NÃO tem override por design (evita oversell — unidade física é

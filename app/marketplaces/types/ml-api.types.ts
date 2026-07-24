@@ -201,10 +201,25 @@ export interface MLCatalogCompatibilityChunkResponse {
   results?: MLCatalogCompatibilityProduct[];
 }
 
+/**
+ * De onde veio o `value_id` de uma marca/modelo de compatibilidade.
+ *
+ * Importa porque os dois endpoints do ML vivem em espaços de ID diferentes:
+ * o `value_id` de `top_values` não bate com o que aparece dentro dos catalog
+ * products de `products_search/chunks`. Filtrar por igualdade de id quando a
+ * procedência é `top_values` descarta 100% dos produtos; nesses casos o
+ * casamento tem que ser por nome normalizado.
+ *
+ * Ausente = "catalog_domains" (retrocompatível com cache TTL e JSON já
+ * serializado antes deste campo existir).
+ */
+export type MLCompatValueSource = "catalog_domains" | "top_values";
+
 /** Opções normalizadas que o backend devolve ao frontend. */
 export interface MLCompatibilityBrandOption {
   valueId: string;
   name: string;
+  source?: MLCompatValueSource;
 }
 
 export interface MLCompatibilityModelOption {
@@ -212,6 +227,22 @@ export interface MLCompatibilityModelOption {
   name: string;
   brandValueId: string;
   brandName: string;
+  source?: MLCompatValueSource;
+}
+
+/**
+ * Resultado da LEITURA de compatibilidades de um item/user product.
+ *
+ * `available: false` significa "não conseguimos ler" (rede, 404, shape
+ * desconhecido) — e não "está vazio". A distinção é o que impede a verificação
+ * de reprovar uma publicação que na verdade funcionou: sem leitura, o veredito
+ * volta a ser o legado (otimista).
+ */
+export interface MLCompatibilityReadResult {
+  available: boolean;
+  count: number;
+  productIds: string[];
+  universal: boolean;
 }
 
 export interface MLCompatibilityVehicleOption {
