@@ -132,9 +132,18 @@ describe("POST /upload/image com o sidecar travado", () => {
     expect(payload.warning).toBeTruthy();
     expect(payload.imageUrl).toMatch(/\.webp$/);
 
-    // 4) DENTRO do orçamento — antes de qualquer proxy_read_timeout plausível.
-    //    Sem o clamp, ficaria pendurado nos 60s do REMBG_TIMEOUT_MS.
-    expect(elapsed).toBeLessThan(13_000);
+    // 4) Respondeu MUITO antes de qualquer proxy_read_timeout plausível.
+    //    Sem o clamp, ficaria pendurado nos 60s do REMBG_TIMEOUT_MS — é essa
+    //    a regressão que o limite abaixo trava.
+    //
+    //    O teto é 20s e não os 13s do orçamento porque `elapsed` mede o
+    //    wall-clock do `inject` inteiro, não só a janela do sidecar: depois do
+    //    fallback ainda entra o parse do multipart e o encode webp do sharp,
+    //    que são CPU-bound. Medido em ~10,2-10,7s, mas a suíte roda com um
+    //    worker por core e sob carga essa cauda cresce, encostando nos 13s sem
+    //    que o clamp tenha falhado. 20s mantém a separação contra os 60s do
+    //    caminho regredido e tira o teste da faixa de flakiness.
+    expect(elapsed).toBeLessThan(20_000);
 
     await app.close();
   }, 30_000);
