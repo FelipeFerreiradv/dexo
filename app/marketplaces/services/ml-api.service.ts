@@ -1614,25 +1614,32 @@ export class MLApiService {
   }
 
   /**
-   * Read-back de compatibilidades, roteando igual à escrita: User Product
-   * primeiro quando existe, `/items` como fallback.
+   * Read-back de compatibilidades. É a única forma de saber se o ML realmente
+   * amarrou os veículos — o PUT responde 200 mesmo quando ignora tudo.
    *
-   * É a única forma de saber se o ML realmente amarrou os veículos — o PUT
-   * responde 200 mesmo quando ignora tudo.
+   * EGRESS: `/items/{id}/compatibilities` PRIMEIRO, de propósito. A escrita
+   * roteia para `/user-products` quando o item tem um, mas na LEITURA esse
+   * endpoint responde 400 "Missing request parameter" — verificado contra a
+   * API em 24/07/2026 (MLBU4432566442) — enquanto `/items` responde 200 tanto
+   * para item legado quanto para User Product. Como praticamente todo item de
+   * autopeça tem user_product_id, tentar o UP antes queimava uma chamada
+   * garantidamente inútil em TODA leitura, e o read-back roda uma vez por
+   * degrau da escada.
+   *
+   * O UP continua como fallback: se um dia `/items` deixar de servir esse
+   * item, a capacidade de ler não se perde.
    */
   static async readCompatibilities(
     accessToken: string,
     itemId: string,
     userProductId?: string | null,
   ): Promise<MLCompatibilityReadResult> {
+    const viaItem = await this.getItemCompatibilities(accessToken, itemId);
+    if (viaItem.available) return viaItem;
     if (userProductId) {
-      const viaUp = await this.getUserProductCompatibilities(
-        accessToken,
-        userProductId,
-      );
-      if (viaUp.available) return viaUp;
+      return this.getUserProductCompatibilities(accessToken, userProductId);
     }
-    return this.getItemCompatibilities(accessToken, itemId);
+    return viaItem;
   }
 
   /**

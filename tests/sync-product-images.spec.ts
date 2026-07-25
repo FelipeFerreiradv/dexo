@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prisma from "@/app/lib/prisma";
 import { MLApiService } from "@/app/marketplaces/services/ml-api.service";
 import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
+import { ListingUseCase } from "@/app/marketplaces/usecases/listing.usercase";
 
 /**
  * Trocar as fotos de um produto e salvar não refletia em anúncio nenhum — em
@@ -279,5 +280,85 @@ describe("SyncUseCase.syncMLProductData → dimensões e peso", () => {
       (a: any) => a.id,
     );
     expect(ids).not.toContain("SELLER_PACKAGE_HEIGHT");
+  });
+});
+
+/**
+ * Guardas de EGRESS do re-sync. O padrão do repo é: caminho novo com flag
+ * desligada custa ZERO, e nunca se relê a mesma linha já carregada.
+ */
+describe("SyncUseCase.syncMLProductData → egress do bloco de compatibilidade", () => {
+  beforeEach(() => {
+    vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
+    vi.spyOn(MLApiService, "getItemDetails").mockResolvedValue({
+      id: "MLB-300",
+      status: "active",
+      available_quantity: 1,
+      price: 10,
+      title: "X",
+      pictures: [],
+    } as any);
+    vi.spyOn(MLApiService, "updateItem").mockResolvedValue({} as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED;
+    delete process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED;
+  });
+
+  const produto = {
+    id: "prod-9",
+    sku: "SKU-9",
+    name: "Peça",
+    description: "D",
+    price: 10,
+    stock: 1,
+    compatibilities: [{ brand: "Fiat", model: "Uno", yearFrom: 2010 }],
+  };
+  const conta = { id: "acc-9", accessToken: "tok", userId: "u9" };
+
+  it("flag desligada: não consulta ProductListing nem chama o ML", async () => {
+    const busca = vi.spyOn(prisma.productListing, "findFirst");
+
+    await (SyncUseCase as any).syncMLProductData(produto, "MLB-300", conta);
+
+    expect(busca).not.toHaveBeenCalled();
+  });
+
+  it("flag ligada: reusa o listingId recebido em vez de reconsultar", async () => {
+    process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED = "true";
+    const busca = vi.spyOn(prisma.productListing, "findFirst");
+    const reenvio = vi
+      .spyOn(ListingUseCase, "resendCompatibilitiesIfNeeded")
+      .mockResolvedValue(undefined);
+
+    await (SyncUseCase as any).syncMLProductData(
+      produto,
+      "MLB-300",
+      conta,
+      "listing-ja-carregado",
+    );
+
+    expect(busca).not.toHaveBeenCalled();
+    expect(reenvio).toHaveBeenCalledWith(
+      expect.objectContaining({ listingId: "listing-ja-carregado" }),
+    );
+  });
+
+  it("flag ligada sem listingId conhecido: consulta com select mínimo", async () => {
+    process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED = "true";
+    const busca = vi
+      .spyOn(prisma.productListing, "findFirst")
+      .mockResolvedValue({ id: "achado" } as any);
+    vi.spyOn(ListingUseCase, "resendCompatibilitiesIfNeeded").mockResolvedValue(
+      undefined,
+    );
+
+    await (SyncUseCase as any).syncMLProductData(produto, "MLB-300", conta);
+
+    expect(busca).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { id: true } }),
+    );
   });
 });

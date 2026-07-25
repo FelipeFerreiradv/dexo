@@ -3148,18 +3148,15 @@ export class ListingUseCase {
           // não pode derrubar uma publicação que deu certo.
           if (finalListingId) {
             try {
-              await ListingRepository.updateListing(finalListingId, {
-                compatSyncedAt: new Date(),
-                compatDiagnostics: {
-                  requested: compat.requested,
-                  persisted: compat.persisted,
-                  strategy: compat.strategy,
-                  verified: compat.verified,
-                  unresolved: compat.unresolved.length,
-                  unresolvedSample: compat.unresolved.slice(0, 5),
-                  unsupportedDomain: compat.unsupportedDomain,
-                  at: new Date().toISOString(),
-                },
+              await ListingRepository.updateCompatDiagnostics(finalListingId, {
+                requested: compat.requested,
+                persisted: compat.persisted,
+                strategy: compat.strategy,
+                verified: compat.verified,
+                unresolved: compat.unresolved.length,
+                unresolvedSample: compat.unresolved.slice(0, 5),
+                unsupportedDomain: compat.unsupportedDomain,
+                at: new Date().toISOString(),
               });
             } catch (diagErr) {
               console.warn(
@@ -5649,19 +5646,16 @@ export class ListingUseCase {
         }),
       );
 
-      await ListingRepository.updateListing(args.listingId, {
-        compatSyncedAt: new Date(),
-        compatDiagnostics: {
-          requested: compat.requested,
-          persisted: compat.persisted,
-          strategy: compat.strategy,
-          verified: compat.verified,
-          unresolved: compat.unresolved.length,
-          unresolvedSample: compat.unresolved.slice(0, 5),
-          unsupportedDomain: compat.unsupportedDomain,
-          origin: args.origin,
-          at: new Date().toISOString(),
-        },
+      await ListingRepository.updateCompatDiagnostics(args.listingId, {
+        requested: compat.requested,
+        persisted: compat.persisted,
+        strategy: compat.strategy,
+        verified: compat.verified,
+        unresolved: compat.unresolved.length,
+        unresolvedSample: compat.unresolved.slice(0, 5),
+        unsupportedDomain: compat.unsupportedDomain,
+        origin: args.origin,
+        at: new Date().toISOString(),
       });
     } catch (err) {
       console.warn(

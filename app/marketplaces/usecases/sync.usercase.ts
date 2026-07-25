@@ -3842,6 +3842,9 @@ export class SyncUseCase {
             effectiveProduct,
             externalListingId,
             account,
+            // O listing desta conta já foi carregado acima para aplicar os
+            // overrides; passar o id evita reconsultar a MESMA linha lá dentro.
+            listingForOverrides?.id ?? null,
           );
         case Platform.SHOPEE:
           return await this.syncShopeeProductData(
@@ -3887,6 +3890,13 @@ export class SyncUseCase {
     product: any,
     externalListingId: string,
     account: any,
+    /**
+     * Id do ProductListing desta conta, quando o chamador já o carregou.
+     * Opcional de propósito: sem ele o comportamento é o mesmo, só custa a
+     * consulta extra. Existe para não reler a MESMA linha que `syncProductData`
+     * acabou de buscar para aplicar os overrides.
+     */
+    knownListingId?: string | null,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -4404,32 +4414,46 @@ export class SyncUseCase {
         //
         // Idempotente (lê antes de escrever), best-effort e atrás da mesma
         // flag opt-in do reenvio na edição.
-        try {
-          const listingForCompat = await prisma.productListing.findFirst({
-            where: {
-              externalListingId,
-              marketplaceAccountId: account.id,
-            },
-            select: { id: true },
-          });
-          if (listingForCompat) {
-            const { ListingUseCase } = await import("./listing.usercase");
-            await ListingUseCase.resendCompatibilitiesIfNeeded({
-              accessToken: account.accessToken,
-              itemId: externalListingId,
-              listingId: listingForCompat.id,
-              productId: product.id,
-              vehicles: Array.isArray(product.compatibilities)
-                ? product.compatibilities
-                : null,
-              origin: "product_sync",
-            });
+        // Gate da flag ANTES de qualquer trabalho: desligada (o default), o
+        // re-sync não paga import dinâmico nem consulta nenhuma, ficando
+        // byte-idêntico ao comportamento anterior.
+        if (process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED === "true") {
+          try {
+            // Reusa o id que `syncProductData` já carregou para aplicar os
+            // overrides; só consulta se o chamador não passou (ex.: chamada
+            // direta em teste). Evita reler a MESMA linha no caminho quente.
+            let listingIdParaCompat = knownListingId ?? null;
+            if (!listingIdParaCompat) {
+              const encontrado = await prisma.productListing.findFirst({
+                where: {
+                  externalListingId,
+                  marketplaceAccountId: account.id,
+                },
+                select: { id: true },
+              });
+              listingIdParaCompat = encontrado?.id ?? null;
+            }
+            if (listingIdParaCompat) {
+              const { ListingUseCase } = await import("./listing.usercase");
+              await ListingUseCase.resendCompatibilitiesIfNeeded({
+                accessToken: account.accessToken,
+                itemId: externalListingId,
+                listingId: listingIdParaCompat,
+                productId: product.id,
+                vehicles: Array.isArray(product.compatibilities)
+                  ? product.compatibilities
+                  : null,
+                origin: "product_sync",
+              });
+            }
+          } catch (compatErr) {
+            console.warn(
+              `[SYNC] Falha ao reenviar compatibilidades de ${externalListingId}:`,
+              compatErr instanceof Error
+                ? compatErr.message
+                : String(compatErr),
+            );
           }
-        } catch (compatErr) {
-          console.warn(
-            `[SYNC] Falha ao reenviar compatibilidades de ${externalListingId}:`,
-            compatErr instanceof Error ? compatErr.message : String(compatErr),
-          );
         }
 
         // Registrar log de sucesso

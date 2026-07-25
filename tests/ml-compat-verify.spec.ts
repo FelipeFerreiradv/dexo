@@ -178,13 +178,40 @@ describe("MLApiService.readCompatibilities", () => {
     expect(r.count).toBe(2);
   });
 
-  it("prefere user-products quando o item tem um", async () => {
+  it("EGRESS: lê por /items primeiro, mesmo havendo user product", async () => {
+    // Na LEITURA o endpoint de user-product responde 400 "Missing request
+    // parameter" (verificado contra a API real), enquanto /items serve os dois
+    // tipos. Tentar o UP antes queimava uma chamada inútil em toda leitura.
     (mockedAxios as any).get.mockResolvedValue({
       data: { products: [{ id: "MLB1" }] },
     });
-    await MLApiService.readCompatibilities("tok", "MLB123", "MLBU9");
+    const r = await MLApiService.readCompatibilities("tok", "MLB123", "MLBU9");
+    expect((mockedAxios as any).get).toHaveBeenCalledTimes(1);
     const [url] = (mockedAxios as any).get.mock.calls[0];
-    expect(url).toMatch(/\/user-products\/MLBU9\/compatibilities$/);
+    expect(url).toMatch(/\/items\/MLB123\/compatibilities$/);
+    expect(r.count).toBe(1);
+  });
+
+  it("cai para user-products se /items não servir a leitura", async () => {
+    // A capacidade de ler pelo UP não se perde — só deixa de ser a 1ª opção.
+    (mockedAxios as any).get = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/items/")) return Promise.reject(new Error("404"));
+      return Promise.resolve({ data: { products: [{ id: "MLB7" }] } });
+    });
+    const r = await MLApiService.readCompatibilities("tok", "MLB123", "MLBU9");
+    const urls = (mockedAxios as any).get.mock.calls.map(([u]: [string]) => u);
+    expect(urls[0]).toMatch(/\/items\/MLB123\/compatibilities$/);
+    expect(urls[1]).toMatch(/\/user-products\/MLBU9\/compatibilities$/);
+    expect(r.count).toBe(1);
+  });
+
+  it("sem user product, não tenta o endpoint de user-products", async () => {
+    (mockedAxios as any).get = vi
+      .fn()
+      .mockRejectedValue(new Error("ECONNRESET"));
+    const r = await MLApiService.readCompatibilities("tok", "MLB123", null);
+    expect((mockedAxios as any).get).toHaveBeenCalledTimes(1);
+    expect(r.available).toBe(false);
   });
 
   it("erro de rede vira indisponível, sem lançar", async () => {
