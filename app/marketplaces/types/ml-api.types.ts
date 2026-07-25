@@ -238,11 +238,41 @@ export interface MLCompatibilityModelOption {
  * de reprovar uma publicação que na verdade funcionou: sem leitura, o veredito
  * volta a ser o legado (otimista).
  */
+export type MLCompatReadUnavailableReason =
+  /** 404 — o anúncio não existe no ML (vínculo quebrado do nosso lado). */
+  | "item_inexistente"
+  /** 403 — existe, mas o token da conta não tem acesso a ele. */
+  | "sem_permissao"
+  /** 429 — throttling; a mesma leitura tende a funcionar depois. */
+  | "rate_limit"
+  /** Estourou o timeout do cliente HTTP. */
+  | "timeout"
+  /** Outro status HTTP de erro; `httpStatus` traz qual. */
+  | "erro_http"
+  /** 200, mas o corpo não bate com nenhuma forma conhecida. */
+  | "shape_desconhecido"
+  /** Falhou antes de ter resposta (DNS, conexão recusada, etc). */
+  | "erro_rede";
+
 export interface MLCompatibilityReadResult {
   available: boolean;
   count: number;
   productIds: string[];
   universal: boolean;
+  /**
+   * POR QUE a leitura não ficou disponível. Preenchido apenas quando
+   * `available` é false; ausente em leitura bem-sucedida.
+   *
+   * Existe porque "inconclusivo" sem causa não é acionável: 404 (vínculo
+   * quebrado, corrigir o cadastro), 403 (anúncio de outra conta) e 429
+   * (throttling, basta repetir) exigem respostas completamente diferentes, e
+   * antes disso os três colapsavam no mesmo silêncio. Diagnóstico apenas —
+   * nenhum caminho de decisão lê este campo, quem manda continua sendo
+   * `available`.
+   */
+  reason?: MLCompatReadUnavailableReason;
+  /** Status HTTP quando houve resposta. Diagnóstico apenas. */
+  httpStatus?: number;
 }
 
 export interface MLCompatibilityVehicleOption {

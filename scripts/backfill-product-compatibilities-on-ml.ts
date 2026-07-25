@@ -287,6 +287,12 @@ async function main(): Promise<void> {
   }> = [];
   let reportOk = 0;
   let reportIlegivel = 0;
+  // Agrupa os ilegíveis por CAUSA. Sem isto o relatório só sabia dizer
+  // "inconclusivo", e 404 (vínculo quebrado), 403 (anúncio de outra conta) e
+  // 429 (throttling) — que pedem ações opostas — ficavam indistinguíveis.
+  const ilegiveisPorMotivo = new Map<string, number>();
+  // Primeiros exemplos de cada causa, para conferir sem reprocessar tudo.
+  const exemploPorMotivo = new Map<string, string[]>();
 
   for (let i = 0; i < productsWithListings.length; i++) {
     const product = productsWithListings[i];
@@ -354,8 +360,22 @@ async function main(): Promise<void> {
             upId,
           );
           if (!read.available) {
-            console.warn(`${lprefix}: leitura indisponível — inconclusivo`);
+            const motivo = read.reason ?? "desconhecido";
+            const httpTxt =
+              read.httpStatus != null ? ` HTTP ${read.httpStatus}` : "";
+            console.warn(
+              `${lprefix}: leitura indisponível (${motivo}${httpTxt}) — inconclusivo`,
+            );
             reportIlegivel++;
+            ilegiveisPorMotivo.set(
+              motivo,
+              (ilegiveisPorMotivo.get(motivo) ?? 0) + 1,
+            );
+            const exemplos = exemploPorMotivo.get(motivo) ?? [];
+            if (exemplos.length < 3) {
+              exemplos.push(listing.externalListingId);
+              exemploPorMotivo.set(motivo, exemplos);
+            }
           } else if (read.count < vehicles.length) {
             console.warn(
               `${lprefix}: banco tem ${vehicles.length}, ML tem ${read.count} → DIVERGENTE`,
@@ -438,6 +458,32 @@ async function main(): Promise<void> {
     console.log(`  Anuncios ok (ML cobre o banco):        ${reportOk}`);
     console.log(`  Anuncios DIVERGENTES:                  ${divergentes.length}`);
     console.log(`  Anuncios ilegiveis (inconclusivo):     ${reportIlegivel}`);
+    if (ilegiveisPorMotivo.size > 0) {
+      // A ação muda por causa, então o resumo precisa separá-las: reenviar
+      // compat num anuncio 404 nunca vai funcionar, e num 429 basta repetir.
+      const acao: Record<string, string> = {
+        item_inexistente:
+          "anuncio nao existe no ML — corrigir o VINCULO, nao a compat",
+        sem_permissao: "anuncio de outra conta — conferir a qual conta pertence",
+        rate_limit: "throttling do ML — repetir depois, o dado esta la",
+        timeout: "estourou o tempo — repetir",
+        erro_http: "erro do ML — ver o status",
+        shape_desconhecido: "respondeu 200 com corpo nao reconhecido — investigar",
+        erro_rede: "falhou antes da resposta — repetir",
+      };
+      console.log("");
+      console.log("  Ilegiveis por causa:");
+      const ordenado = [...ilegiveisPorMotivo.entries()].sort(
+        (a, b) => b[1] - a[1],
+      );
+      for (const [motivo, qtd] of ordenado) {
+        console.log(`    ${qtd} x ${motivo} — ${acao[motivo] ?? "?"}`);
+        const exemplos = exemploPorMotivo.get(motivo) ?? [];
+        if (exemplos.length > 0) {
+          console.log(`        ex.: ${exemplos.join(", ")}`);
+        }
+      }
+    }
     if (divergentes.length > 0) {
       const piores = [...divergentes]
         .sort((a, b) => b.noBanco - b.noMl - (a.noBanco - a.noMl))
