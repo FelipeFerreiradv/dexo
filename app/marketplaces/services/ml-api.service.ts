@@ -15,6 +15,7 @@ import {
   MLCompatibilityModelOption,
   MLCompatibilityVehicleOption,
   MLCompatibilityReadResult,
+  MLCompatReadUnavailableReason,
 } from "../types/ml-api.types";
 import {
   MLOrderDetails,
@@ -330,6 +331,43 @@ export function extractUnsupportedDomain(mensagem: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Traduz a falha de uma LEITURA de compatibilidade em causa acionável.
+ *
+ * Antes, os dois getters tinham `catch { return { available: false, ... } }`:
+ * 404, 403, 429, timeout e erro de rede colapsavam no mesmo silêncio, e o
+ * relatório de divergências só sabia dizer "inconclusivo". Em produção
+ * (25/07/2026) isso escondeu 451 anúncios cujo diagnóstico real era 404 —
+ * vínculo quebrado da importação de 18/05, não problema de compatibilidade.
+ * Cada causa pede uma ação diferente, e sem ela a única saída era sondar
+ * anúncio por anúncio.
+ *
+ * Pura de propósito: é o pedaço que dá para travar em teste sem tocar a rede.
+ */
+export function classifyCompatReadFailure(error: unknown): {
+  reason: MLCompatReadUnavailableReason;
+  httpStatus?: number;
+} {
+  if (!axios.isAxiosError(error)) return { reason: "erro_rede" };
+
+  const status = error.response?.status;
+  if (typeof status === "number") {
+    if (status === 404) {
+      return { reason: "item_inexistente", httpStatus: status };
+    }
+    if (status === 403) return { reason: "sem_permissao", httpStatus: status };
+    if (status === 429) return { reason: "rate_limit", httpStatus: status };
+    return { reason: "erro_http", httpStatus: status };
+  }
+
+  // Sem resposta: o axios sinaliza estouro de tempo por `code`, nunca por
+  // status — checar `response` aqui daria sempre undefined.
+  if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+    return { reason: "timeout" };
+  }
+  return { reason: "erro_rede" };
+}
+
 export function countCompatibilitiesFromPayload(
   data: unknown,
 ): MLCompatibilityReadResult {
@@ -338,6 +376,9 @@ export function countCompatibilitiesFromPayload(
     count: 0,
     productIds: [],
     universal: false,
+    // Chegou resposta (o chamador só entra aqui depois de um 2xx), mas o corpo
+    // não bate com nenhuma forma conhecida.
+    reason: "shape_desconhecido",
   };
   if (!data || typeof data !== "object") return empty;
 
@@ -1589,8 +1630,16 @@ export class MLApiService {
         },
       );
       return countCompatibilitiesFromPayload(resp?.data);
-    } catch {
-      return { available: false, count: 0, productIds: [], universal: false };
+    } catch (error) {
+      const { reason, httpStatus } = classifyCompatReadFailure(error);
+      return {
+        available: false,
+        count: 0,
+        productIds: [],
+        universal: false,
+        reason,
+        httpStatus,
+      };
     }
   }
 
@@ -1608,8 +1657,16 @@ export class MLApiService {
         },
       );
       return countCompatibilitiesFromPayload(resp?.data);
-    } catch {
-      return { available: false, count: 0, productIds: [], universal: false };
+    } catch (error) {
+      const { reason, httpStatus } = classifyCompatReadFailure(error);
+      return {
+        available: false,
+        count: 0,
+        productIds: [],
+        universal: false,
+        reason,
+        httpStatus,
+      };
     }
   }
 
@@ -1637,7 +1694,17 @@ export class MLApiService {
     const viaItem = await this.getItemCompatibilities(accessToken, itemId);
     if (viaItem.available) return viaItem;
     if (userProductId) {
-      return this.getUserProductCompatibilities(accessToken, userProductId);
+      const viaUp = await this.getUserProductCompatibilities(
+        accessToken,
+        userProductId,
+      );
+      if (viaUp.available) return viaUp;
+      // Os dois falharam. Devolve o resultado do /items porque o motivo dele é
+      // o acionável: o endpoint de UP responde 400 na leitura por contrato
+      // (ver o comentário acima), então o `reason` dele seria sempre o mesmo
+      // ruído e esconderia o 404/403 que interessa. Os demais campos são
+      // idênticos nos dois (false/0/[]/false) — só o diagnóstico muda.
+      return viaItem;
     }
     return viaItem;
   }
