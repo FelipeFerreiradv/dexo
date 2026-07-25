@@ -14,6 +14,7 @@ import {
   MLCompatibilityBrandOption,
   MLCompatibilityModelOption,
   MLCompatibilityVehicleOption,
+  MLCompatibilityReadResult,
 } from "../types/ml-api.types";
 import {
   MLOrderDetails,
@@ -180,6 +181,13 @@ export function mapCatalogProductToVehicle(
 /** Cache global leve (TTL) para dados públicos do catálogo do ML. */
 type CompatCacheEntry<T> = { data: T; exp: number };
 const COMPAT_CACHE_TTL_MS = 10 * 60 * 1000;
+/**
+ * TTL curto para resultado VAZIO. Uma falha momentânea do
+ * GET /catalog_domains devolvendo lista vazia ficava grudada 10 minutos e
+ * derrubava a resolução de compat de todo mundo (o cache é por processo e
+ * compartilhado entre contas). Errar por 30s é recuperável; por 10 min, não.
+ */
+const COMPAT_EMPTY_CACHE_TTL_MS = 30 * 1000;
 const compatCache = new Map<string, CompatCacheEntry<unknown>>();
 
 function compatCacheGet<T>(key: string): T | null {
@@ -192,8 +200,192 @@ function compatCacheGet<T>(key: string): T | null {
   return entry.data as T;
 }
 
-function compatCacheSet<T>(key: string, data: T): void {
-  compatCache.set(key, { data, exp: Date.now() + COMPAT_CACHE_TTL_MS });
+function compatCacheSet<T>(key: string, data: T, ttlMs?: number): void {
+  const ttl =
+    ttlMs ??
+    (Array.isArray(data) && data.length === 0
+      ? COMPAT_EMPTY_CACHE_TTL_MS
+      : COMPAT_CACHE_TTL_MS);
+  compatCache.set(key, { data, exp: Date.now() + ttl });
+}
+
+/**
+ * Serializa para log cortando no limite.
+ *
+ * As respostas de compatibilidade trazem a lista inteira de catalog products
+ * (uma delas passou de 50 entradas num único PUT), e despejar isso a cada
+ * chamada afogava o pm2 log — os erros de outras contas sumiam no meio. O
+ * começo do corpo já basta para reconhecer o formato e a mensagem de erro.
+ */
+function logResumo(data: unknown, max = 300): string {
+  let texto: string;
+  try {
+    texto = JSON.stringify(data ?? {});
+  } catch {
+    return "(nao serializavel)";
+  }
+  return texto.length <= max
+    ? texto
+    : `${texto.slice(0, max)}…(+${texto.length - max} chars)`;
+}
+
+/**
+ * Veredito sobre o corpo de uma ESCRITA de compatibilidade.
+ *
+ * O ML responde HTTP 200 mesmo quando não amarra o item a veículo nenhum: o
+ * corpo volta com `ids: []` dentro de `products_families` ou `products`. Isso é
+ * o "vínculo fantasma" — o painel do vendedor mostra Compatibilidades vazio e o
+ * sistema declara sucesso. Distinguir os dois casos é o núcleo da correção.
+ *
+ * - "persisted": achou pelo menos um `ids` com conteúdo.
+ * - "empty": achou `ids` e TODOS estão vazios.
+ * - "unknown": não achou nenhuma chave `ids` — resposta que não sabemos ler.
+ *
+ * O bucket "unknown" existe de propósito: sem ele, qualquer resposta em formato
+ * novo (ou um mock de teste que devolve `{}`) seria lida como falha e a
+ * verificação passaria a reprovar publicações que funcionam. Só reprovamos com
+ * evidência positiva de que o ML ignorou o vínculo.
+ */
+export function inspectCompatWriteResponse(data: unknown): {
+  verdict: "persisted" | "empty" | "unknown";
+  count: number;
+} {
+  if (!data || typeof data !== "object") {
+    return { verdict: "unknown", count: 0 };
+  }
+  const root = data as Record<string, unknown>;
+  const scope =
+    root.create && typeof root.create === "object"
+      ? (root.create as Record<string, unknown>)
+      : root;
+
+  let sawIds = false;
+  let total = 0;
+
+  // `create.products`: envio por catalog product ID. Cada entrada ecoa o `id`
+  // que aceitamos enviar, e o `ids` interno vem SEMPRE vazio mesmo quando o
+  // vínculo é criado — confirmado em produção (MLB7216055142 saiu de 0 para 57
+  // compatibilidades com essa exata resposta). Portanto aqui o sinal de
+  // sucesso é o `id` presente, não o `ids`.
+  const produtos = scope.products;
+  if (Array.isArray(produtos) && produtos.length > 0) {
+    const aceitos = produtos.filter(
+      (p) =>
+        p &&
+        typeof p === "object" &&
+        typeof (p as Record<string, unknown>).id === "string" &&
+        ((p as Record<string, unknown>).id as string).length > 0,
+    ).length;
+    if (aceitos > 0) return { verdict: "persisted", count: aceitos };
+  }
+
+  // `create.products_families`: envio por atributos. Aqui o `ids` É o
+  // resultado da resolução — vazio significa que o ML não amarrou a veículo
+  // nenhum. É o vínculo fantasma que deixa o painel do vendedor vazio.
+  const walk = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const ids = (entry as Record<string, unknown>).ids;
+      if (Array.isArray(ids)) {
+        sawIds = true;
+        total += ids.length;
+      }
+    }
+  };
+
+  walk(scope.products_families);
+  walk(produtos);
+
+  if (!sawIds) return { verdict: "unknown", count: 0 };
+  return total > 0
+    ? { verdict: "persisted", count: total }
+    : { verdict: "empty", count: 0 };
+}
+
+/**
+ * Conta as compatibilidades de um corpo de LEITURA.
+ *
+ * Tolerante a shape de propósito: o endpoint de leitura não estava mapeado no
+ * serviço e a documentação do ML varia entre item legado e User Product.
+ * Quando nenhuma forma conhecida aparece, devolve `available: false` — que o
+ * chamador trata como "não sei", nunca como "está vazio".
+ */
+/**
+ * Detecta a recusa estrutural do ML: o User Product está num domínio que
+ * simplesmente não habilita compatibilidade (ex.:
+ * `MLB-LIGHT_VEHICLE_ACCESSORIES`, `MLB-VEHICLE_SEATS`).
+ *
+ * Confirmado em produção: a mensagem é
+ * "The user product domain X does not have active compatibilities."
+ *
+ * Distinguir isso de uma falha comum importa porque a ação do vendedor é
+ * outra — não adianta reenviar nem corrigir o cadastro de veículos; o anúncio
+ * precisa estar em outra categoria. Reenviar em loop só queima chamada.
+ */
+export function extractUnsupportedDomain(mensagem: string): string | null {
+  const m = /user product domain\s+([A-Z0-9_-]+)\s+does not have active compatibilities/i.exec(
+    mensagem || "",
+  );
+  return m ? m[1] : null;
+}
+
+export function countCompatibilitiesFromPayload(
+  data: unknown,
+): MLCompatibilityReadResult {
+  const empty: MLCompatibilityReadResult = {
+    available: false,
+    count: 0,
+    productIds: [],
+    universal: false,
+  };
+  if (!data || typeof data !== "object") return empty;
+
+  const root = data as Record<string, unknown>;
+  const universal = root.universal === true;
+  const productIds = new Set<string>();
+  let sawKnownShape = false;
+
+  const collect = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    sawKnownShape = true;
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const rec = entry as Record<string, unknown>;
+      if (typeof rec.id === "string" && rec.id.length > 0) {
+        productIds.add(rec.id);
+      }
+      if (typeof rec.product_id === "string" && rec.product_id.length > 0) {
+        productIds.add(rec.product_id);
+      }
+      if (Array.isArray(rec.ids)) {
+        for (const id of rec.ids) {
+          if (typeof id === "string" && id.length > 0) productIds.add(id);
+        }
+      }
+    }
+  };
+
+  collect(root.products);
+  collect(root.products_families);
+  collect(root.results);
+  collect(root.compatibilities);
+
+  if (!sawKnownShape) {
+    // Universal declarado sem lista ainda é uma leitura válida: o item vale
+    // para qualquer veículo, então não há o que contar.
+    if (universal) {
+      return { available: true, count: 0, productIds: [], universal: true };
+    }
+    return empty;
+  }
+
+  return {
+    available: true,
+    count: productIds.size,
+    productIds: Array.from(productIds),
+    universal,
+  };
 }
 
 /** Test-only: limpa o cache global de compat (brands/models/vehicles). */
@@ -1378,6 +1570,79 @@ export class MLApiService {
   }
 
   /**
+   * Lê as compatibilidades gravadas de um item legado.
+   *
+   * Nunca lança: falha de rede/404 vira `available: false`, que o chamador
+   * interpreta como "não sei", nunca como "está vazio". Essa distinção é o que
+   * garante que a verificação não passe a reprovar publicações que funcionam.
+   */
+  static async getItemCompatibilities(
+    accessToken: string,
+    itemId: string,
+  ): Promise<MLCompatibilityReadResult> {
+    try {
+      const resp = await axios.get(
+        `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        },
+      );
+      return countCompatibilitiesFromPayload(resp?.data);
+    } catch {
+      return { available: false, count: 0, productIds: [], universal: false };
+    }
+  }
+
+  /** Mesma leitura para itens vinculados a um User Product. */
+  static async getUserProductCompatibilities(
+    accessToken: string,
+    userProductId: string,
+  ): Promise<MLCompatibilityReadResult> {
+    try {
+      const resp = await axios.get(
+        `${ML_CONSTANTS.API_URL}/user-products/${userProductId}/compatibilities`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        },
+      );
+      return countCompatibilitiesFromPayload(resp?.data);
+    } catch {
+      return { available: false, count: 0, productIds: [], universal: false };
+    }
+  }
+
+  /**
+   * Read-back de compatibilidades. É a única forma de saber se o ML realmente
+   * amarrou os veículos — o PUT responde 200 mesmo quando ignora tudo.
+   *
+   * EGRESS: `/items/{id}/compatibilities` PRIMEIRO, de propósito. A escrita
+   * roteia para `/user-products` quando o item tem um, mas na LEITURA esse
+   * endpoint responde 400 "Missing request parameter" — verificado contra a
+   * API em 24/07/2026 (MLBU4432566442) — enquanto `/items` responde 200 tanto
+   * para item legado quanto para User Product. Como praticamente todo item de
+   * autopeça tem user_product_id, tentar o UP antes queimava uma chamada
+   * garantidamente inútil em TODA leitura, e o read-back roda uma vez por
+   * degrau da escada.
+   *
+   * O UP continua como fallback: se um dia `/items` deixar de servir esse
+   * item, a capacidade de ler não se perde.
+   */
+  static async readCompatibilities(
+    accessToken: string,
+    itemId: string,
+    userProductId?: string | null,
+  ): Promise<MLCompatibilityReadResult> {
+    const viaItem = await this.getItemCompatibilities(accessToken, itemId);
+    if (viaItem.available) return viaItem;
+    if (userProductId) {
+      return this.getUserProductCompatibilities(accessToken, userProductId);
+    }
+    return viaItem;
+  }
+
+  /**
    * Anexa uma lista de catalog products (IDs já resolvidos) como compatibilidades
    * do item — preenche a aba "Ficha técnica → Compatibilidades" no ML.
    *
@@ -1389,14 +1654,28 @@ export class MLApiService {
    *   { products: [{id}] }.
    *
    * Nunca lança — erros são reportados via `errors`; o caller decide se é fatal.
+   *
+   * `opts.verify` liga o read-back: depois do PUT/POST, relê as compatibilidades
+   * e devolve quantas de fato ficaram (`persisted`). `createdCount` continua
+   * sendo o número ENVIADO — é o contrato dos chamadores atuais.
    */
   static async setItemCompatibilities(
     accessToken: string,
     itemId: string,
     catalogProductIds: string[],
-  ): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
+    opts?: { verify?: boolean },
+  ): Promise<{
+    success: boolean;
+    createdCount: number;
+    errors: string[];
+    persisted?: number;
+    verified?: boolean;
+    userProductId?: string | null;
+  }> {
     const errors: string[] = [];
     let createdCount = 0;
+    const verifyEnabled =
+      opts?.verify === true && process.env.ML_COMPAT_VERIFY_DISABLED !== "1";
 
     const unique = Array.from(
       new Set(
@@ -1499,7 +1778,7 @@ export class MLApiService {
 
     const putUserProduct = async (
       ids: string[],
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       if (!userProductId) return { ok: false, error: "no user_product_id" };
       const url = `${ML_CONSTANTS.API_URL}/user-products/${userProductId}/compatibilities`;
       const order =
@@ -1518,9 +1797,17 @@ export class MLApiService {
             },
             timeout: 15000,
           });
+          const inspected = inspectCompatWriteResponse(response?.data);
           console.warn(
-            `[ML Compat] PUT ${url} (${variant.label}) OK — ids=${ids.length}, response=${JSON.stringify(response.data ?? {})}`,
+            `[ML Compat] PUT ${url} (${variant.label}) ${inspected.verdict} — ids=${ids.length}, response=${logResumo(response.data)}`,
           );
+          if (inspected.verdict === "empty") {
+            // 200 com ids:[] é vínculo fantasma: o ML aceitou o corpo e não
+            // amarrou nada. NÃO promove esta variante a "campeã", senão o
+            // processo inteiro fica preso na forma de payload que não grava.
+            lastErr = `200 com ids:[] em ${variant.label} (aceito sem persistir)`;
+            continue;
+          }
           workingVariantIndex = idx;
           return { ok: true };
         } catch (error) {
@@ -1531,7 +1818,7 @@ export class MLApiService {
             ? error.response?.data
             : undefined;
           console.warn(
-            `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+            `[ML Compat] PUT ${url} (${variant.label}) FAIL — status=${status} ids=${ids.length} body=${logResumo(body)} response=${logResumo(data)}`,
           );
           lastErr = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
           // Só tenta próximas variantes se foi 400 (body mal formado).
@@ -1544,10 +1831,10 @@ export class MLApiService {
 
     const postItem = async (
       ids: string[],
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       const url = `${ML_CONSTANTS.API_URL}/items/${itemId}/compatibilities`;
       try {
-        await axios.post(
+        const response = await axios.post(
           url,
           { products: ids.map((id) => ({ id })) },
           {
@@ -1558,9 +1845,16 @@ export class MLApiService {
             timeout: 15000,
           },
         );
+        const inspected = inspectCompatWriteResponse(response?.data);
         console.warn(
-          `[ML Compat] POST ${url} OK — ids=${ids.length}`,
+          `[ML Compat] POST ${url} ${inspected.verdict} — ids=${ids.length}`,
         );
+        if (inspected.verdict === "empty") {
+          return {
+            ok: false,
+            error: "200 com ids:[] (aceito sem persistir)",
+          };
+        }
         return { ok: true };
       } catch (error) {
         const status = axios.isAxiosError(error)
@@ -1570,7 +1864,7 @@ export class MLApiService {
           ? error.response?.data
           : undefined;
         console.warn(
-          `[ML Compat] POST ${url} FAIL — status=${status} ids=${ids.length} response=${JSON.stringify(data)}`,
+          `[ML Compat] POST ${url} FAIL — status=${status} ids=${ids.length} response=${logResumo(data)}`,
         );
         const msg = `${status ?? ""} ${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`;
         return { ok: false, error: msg };
@@ -1583,7 +1877,7 @@ export class MLApiService {
     // disponível; só caímos para /items como fallback.
     const postBatch = async (
       ids: string[],
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       if (userProductId) {
         const viaUp = await putUserProduct(ids);
         if (viaUp.ok) return viaUp;
@@ -1593,10 +1887,49 @@ export class MLApiService {
       return postItem(ids);
     };
 
+    /**
+     * Confere no ML o que ficou gravado. Leitura indisponível (`available:
+     * false`) devolve o veredito legado — nunca reprovamos por não conseguir
+     * ler.
+     */
+    const finish = async (
+      sentCount: number,
+      legacySuccess: boolean,
+    ): Promise<{
+      success: boolean;
+      createdCount: number;
+      errors: string[];
+      persisted?: number;
+      verified?: boolean;
+      userProductId?: string | null;
+    }> => {
+      if (!verifyEnabled) {
+        return {
+          success: legacySuccess,
+          createdCount: sentCount,
+          errors,
+          userProductId,
+        };
+      }
+      const read = await this.readCompatibilities(
+        accessToken,
+        itemId,
+        userProductId,
+      );
+      return {
+        success: read.available ? read.count > 0 : legacySuccess,
+        createdCount: sentCount,
+        errors,
+        persisted: read.available ? read.count : undefined,
+        verified: read.available,
+        userProductId,
+      };
+    };
+
     // Tentativa 1: batch único.
     const batch = await postBatch(unique);
     if (batch.ok) {
-      return { success: true, createdCount: unique.length, errors: [] };
+      return finish(unique.length, true);
     }
 
     // Fallback: chamadas individuais — isola qual ID o ML rejeita sem perder
@@ -1610,11 +1943,7 @@ export class MLApiService {
       }
     }
 
-    return {
-      success: errors.length === 0 && createdCount > 0,
-      createdCount,
-      errors,
-    };
+    return finish(createdCount, errors.length === 0 && createdCount > 0);
   }
 
   /**
@@ -1662,9 +1991,47 @@ export class MLApiService {
       yearFrom?: number | null;
       yearTo?: number | null;
     }>,
-  ): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
+    opts?: {
+      /**
+       * Só envia tuplos cujo BRAND, MODEL e YEAR resolveram para value_id.
+       * Sem os ids o ML aceita por nome e devolve ids:[] — enviar assim é o
+       * que produz o "vínculo fantasma". Usado como degrau intermediário da
+       * escada em `applyCompatibilitiesVerified`.
+       */
+      requireFullValueIds?: boolean;
+      verify?: boolean;
+      /** Teto de chamadas a top_values nesta publicação. */
+      lookupBudget?: number;
+    },
+  ): Promise<{
+    success: boolean;
+    createdCount: number;
+    errors: string[];
+    persisted?: number;
+    verified?: boolean;
+    skipped?: string;
+    budgetExhausted?: boolean;
+    userProductId?: string | null;
+  }> {
     const errors: string[] = [];
     let createdCount = 0;
+    const verifyEnabled =
+      opts?.verify === true && process.env.ML_COMPAT_VERIFY_DISABLED !== "1";
+    // Resolver value_id veículo a veículo custa uma chamada por marca, por
+    // (marca,modelo) e por (marca,modelo,ano). Um produto com dezenas de
+    // compatibilidades transformava a publicação em centenas de requests.
+    const lookupBudget =
+      opts?.lookupBudget ?? Number(process.env.ML_COMPAT_MAX_LOOKUPS ?? 60);
+    let lookupsUsed = 0;
+    let budgetExhausted = false;
+    const canLookup = (): boolean => {
+      if (lookupsUsed >= lookupBudget) {
+        budgetExhausted = true;
+        return false;
+      }
+      lookupsUsed += 1;
+      return true;
+    };
 
     type Tuple = { brand: string; model: string; year: number | null };
     const tuples: Tuple[] = [];
@@ -1721,6 +2088,7 @@ export class MLApiService {
       const key = normalize(brandName);
       if (!key) return null;
       if (brandValueIdCache.has(key)) return brandValueIdCache.get(key) ?? null;
+      if (!canLookup()) return null;
       const values = await this.getCompatAttributeTopValues(
         accessToken,
         ML_ATTR.BRAND,
@@ -1740,6 +2108,7 @@ export class MLApiService {
     ): Promise<string | null> => {
       const key = `${brandValueId}|${normalize(modelName)}`;
       if (modelValueIdCache.has(key)) return modelValueIdCache.get(key) ?? null;
+      if (!canLookup()) return null;
       const values = await this.getCompatAttributeTopValues(
         accessToken,
         ML_ATTR.MODEL,
@@ -1755,10 +2124,17 @@ export class MLApiService {
       return valueId;
     };
 
-    // YEAR no endpoint de compat usa value_id numérico (e não o ano
-    // literal). Sem esse mapeamento o PUT retorna ids:[] mesmo com
-    // BRAND/MODEL resolvidos — o ML não consegue amarrar à família de
-    // produto real. Resolvido via top_values filtrado por BRAND+MODEL.
+    // O ano no endpoint de compat usa value_id numérico (não o ano literal).
+    // Sem esse mapeamento o PUT retorna ids:[] mesmo com BRAND/MODEL
+    // resolvidos — o ML não consegue amarrar à família de produto real.
+    //
+    // ATENÇÃO ao nome do atributo, que difere entre os dois usos:
+    //   - CONSULTA (aqui): `VEHICLE_YEAR`. É o atributo que existe no domínio.
+    //     Consultar `YEAR` devolve HTTP 400 "Attribute not found" — era o que
+    //     acontecia sempre, e por isso o log de produção mostrava
+    //     "YEAR value_id resolved: 0/N tuples" em 100% dos casos.
+    //   - ESCRITA (toFamily): `YEAR`. Confirmado em produção e travado por
+    //     teste; não uniformizar os dois.
     const resolveYearValueId = async (
       brandValueId: string,
       modelValueId: string,
@@ -1766,9 +2142,10 @@ export class MLApiService {
     ): Promise<string | null> => {
       const key = `${brandValueId}|${modelValueId}|${year}`;
       if (yearValueIdCache.has(key)) return yearValueIdCache.get(key) ?? null;
+      if (!canLookup()) return null;
       const values = await this.getCompatAttributeTopValues(
         accessToken,
-        "YEAR",
+        ML_ATTR.VEHICLE_YEAR,
         [
           { id: ML_ATTR.BRAND, value_id: brandValueId },
           { id: ML_ATTR.MODEL, value_id: modelValueId },
@@ -1833,6 +2210,45 @@ export class MLApiService {
     console.warn(
       `[ML Compat] YEAR value_id resolved: ${yearResolvedCount}/${resolvedYears.size} tuples`,
     );
+
+    // Marca+modelo resolvem mas o ANO não: o catálogo do ML não cobre aquele
+    // ano para aquele modelo (ex.: HB20 só existe de 2013 em diante, então
+    // "HB20 2012" nunca vai amarrar). Sem esta linha o operador só via
+    // "200 com ids:[]", que não diz o que fazer. Aqui ele vê o ano exato que
+    // precisa corrigir no cadastro.
+    for (const [tupleKey, yearId] of resolvedYears) {
+      if (yearId) continue;
+      const [brandKey, modelKey, ano] = tupleKey.split("|");
+      console.warn(
+        `[ML Compat] ano ${ano} indisponivel no catalogo do ML para ${brandKey}/${modelKey} — ` +
+          `essa linha de compatibilidade nao tem como persistir; corrija o ano no cadastro`,
+      );
+    }
+
+    /** Um tuplo só é "completo" quando BRAND, MODEL e (se houver) YEAR têm id. */
+    const hasFullValueIds = (t: Tuple): boolean => {
+      const pairKey = `${normalize(t.brand)}|${normalize(t.model)}`;
+      const pair = resolvedIds.get(pairKey);
+      if (!pair?.brandId || !pair?.modelId) return false;
+      if (t.year == null) return true;
+      return !!resolvedYears.get(`${pairKey}|${t.year}`);
+    };
+
+    // Degrau intermediário da escada: manda só o que tem id completo. Se nada
+    // qualifica, devolve sem chamar a API — quem orquestra passa ao próximo
+    // degrau em vez de gastar um PUT que voltaria ids:[].
+    const sendable = opts?.requireFullValueIds
+      ? tuples.filter(hasFullValueIds)
+      : tuples;
+    if (sendable.length === 0) {
+      return {
+        success: false,
+        createdCount: 0,
+        errors: [],
+        skipped: "no_full_value_ids",
+        budgetExhausted,
+      };
+    }
 
     const toFamily = (
       t: Tuple,
@@ -1947,7 +2363,7 @@ export class MLApiService {
       url: string,
       batch: Tuple[],
       domainId: string,
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       // Shape confirmado pelo suporte do ML: domain_id e category_id são
       // obrigatórios no nível raiz do body, não apenas dentro de
       // products_families. Sem eles, a API responde 400 com mensagem
@@ -1971,16 +2387,24 @@ export class MLApiService {
           },
           timeout: 15000,
         });
+        // O ML retorna HTTP 200 mesmo quando não persiste nenhum vínculo: o
+        // corpo volta com `ids: []` quando os atributos não batem em nenhum
+        // veículo conhecido. É o "vínculo fantasma" — painel vazio para o
+        // vendedor e sucesso para o sistema. Aqui é onde os dois casos deixam
+        // de ser tratados como um só.
+        const inspected = inspectCompatWriteResponse(response?.data);
         if (!diagLogged) {
-          // Incluímos o response.data completo aqui porque o ML retorna
-          // HTTP 200 mesmo quando não persiste nenhum vínculo (o body pode
-          // trazer `created_count: 0` ou semelhante quando os atributos não
-          // batem em nenhum veículo conhecido). Precisamos distinguir
-          // "aceito e salvo" de "aceito e ignorado".
           console.warn(
-            `[ML Compat] PUT ${url} OK — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}, response=${JSON.stringify(response.data ?? {})}`,
+            `[ML Compat] PUT ${url} ${inspected.verdict} — domain=${domainId}, category=${categoryId ?? "null"}, families=${batch.length}, response=${logResumo(response.data)}`,
           );
           diagLogged = true;
+        }
+        if (inspected.verdict === "empty") {
+          return {
+            ok: false,
+            error: "200 com ids:[] (aceito sem persistir)",
+            ghost: true,
+          };
         }
         return { ok: true };
       } catch (error) {
@@ -1997,8 +2421,8 @@ export class MLApiService {
           // problema real é outro campo).
           console.warn(
             `[ML Compat] PUT ${url} FAIL — status=${status} domain=${domainId}` +
-              ` body=${JSON.stringify(body)}` +
-              ` response=${JSON.stringify(responseData)}`,
+              ` body=${logResumo(body)}` +
+              ` response=${logResumo(responseData)}`,
           );
           diagLogged = true;
         }
@@ -2014,7 +2438,7 @@ export class MLApiService {
     const putCompat = async (
       url: string,
       batch: Tuple[],
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       let lastError: string | undefined;
       for (const domainId of DOMAIN_IDS_TO_TRY) {
         const res = await putCompatWithDomain(url, batch, domainId);
@@ -2031,7 +2455,7 @@ export class MLApiService {
 
     const postProducts = async (
       batch: Tuple[],
-    ): Promise<{ ok: boolean; error?: string }> => {
+    ): Promise<{ ok: boolean; error?: string; ghost?: boolean }> => {
       // Hoje quase todo item novo de auto-peça é publicado como User Product
       // (quando o ML exige family_name). O endpoint /items/{id}/compatibilities
       // rejeita products_families para esses casos — às vezes com mensagem
@@ -2066,7 +2490,10 @@ export class MLApiService {
       // Fallback tardio: se a mensagem explicitamente sugere User Product,
       // refaz lookup (caso tenha sido criado entre o GET inicial e este PUT).
       if (viaItem.error && isUserProductHint(viaItem.error)) {
-        userProductLookupAttempted = false;
+        // A flag real é esta. Antes o código atribuía a um identificador que
+        // nunca foi declarado, o que em ESM (strict) lança ReferenceError e
+        // fazia este fallback explodir em vez de reconsultar o item.
+        itemMetaLookupAttempted = false;
         const lateUp = await getUserProductId();
         if (lateUp) {
           return putCompat(
@@ -2078,12 +2505,50 @@ export class MLApiService {
       return viaItem;
     };
 
-    const batch = await postProducts(tuples);
+    /**
+     * Confere no ML o que ficou gravado. Leitura indisponível devolve o
+     * veredito legado — nunca reprovamos por não conseguir ler.
+     */
+    const finish = async (
+      sentCount: number,
+      legacySuccess: boolean,
+    ): Promise<{
+      success: boolean;
+      createdCount: number;
+      errors: string[];
+      persisted?: number;
+      verified?: boolean;
+      budgetExhausted?: boolean;
+      userProductId?: string | null;
+    }> => {
+      const upId = await getUserProductId();
+      if (!verifyEnabled) {
+        return {
+          success: legacySuccess,
+          createdCount: sentCount,
+          errors,
+          budgetExhausted,
+          userProductId: upId,
+        };
+      }
+      const read = await this.readCompatibilities(accessToken, itemId, upId);
+      return {
+        success: read.available ? read.count > 0 : legacySuccess,
+        createdCount: sentCount,
+        errors,
+        persisted: read.available ? read.count : undefined,
+        verified: read.available,
+        budgetExhausted,
+        userProductId: upId,
+      };
+    };
+
+    const batch = await postProducts(sendable);
     if (batch.ok) {
-      return { success: true, createdCount: tuples.length, errors: [] };
+      return finish(sendable.length, true);
     }
 
-    for (const t of tuples) {
+    for (const t of sendable) {
       const single = await postProducts([t]);
       if (single.ok) {
         createdCount += 1;
@@ -2094,10 +2559,221 @@ export class MLApiService {
       }
     }
 
+    return finish(createdCount, errors.length === 0 && createdCount > 0);
+  }
+
+  /**
+   * Aplica compatibilidades ao item VERIFICANDO que elas persistiram.
+   *
+   * A escada existente parava na primeira resposta HTTP 200 — que é justamente
+   * a que não grava (`ids: []`). Aqui cada degrau só é considerado vencedor se
+   * o read-back confirmar veículos gravados; caso contrário passa ao próximo:
+   *
+   *   1. catalog product IDs resolvidos (vínculo forte, é o que o ML prefere);
+   *   2. atributos com BRAND+MODEL+YEAR todos com value_id;
+   *   3. atributos com value_id parcial (comportamento histórico);
+   *   4. falha registrada — nunca "sucesso" silencioso.
+   *
+   * Degradação segura: quando o read-back não está disponível (rede, endpoint
+   * diferente do esperado) e o corpo do PUT não é conclusivo, o degrau conta
+   * como sucesso e a escada PARA — exatamente como antes desta função existir.
+   * Só descemos a escada com evidência de falha, nunca por falta de evidência.
+   */
+  static async applyCompatibilitiesVerified(
+    accessToken: string,
+    itemId: string,
+    vehicles: Array<{
+      brand: string;
+      model: string;
+      yearFrom?: number | null;
+      yearTo?: number | null;
+    }>,
+  ): Promise<{
+    ok: boolean;
+    strategy:
+      | "catalog_products"
+      | "attributes_full"
+      | "attributes_partial"
+      | "none";
+    requested: number;
+    persisted: number;
+    verified: boolean;
+    unresolved: Array<{
+      brand: string;
+      model: string;
+      year?: number | null;
+      reason: string;
+    }>;
+    errors: string[];
+    budgetExhausted: boolean;
+    userProductId: string | null;
+    /**
+     * Preenchido quando o ML recusa por domínio do User Product. Sinaliza que
+     * NENHUMA estratégia vai funcionar enquanto o anúncio estiver nessa
+     * categoria — a correção é recategorizar, não reenviar.
+     */
+    unsupportedDomain?: string;
+  }> {
+    const requested = (vehicles || []).filter((v) => v?.brand && v?.model)
+      .length;
+    const errors: string[] = [];
+    let unresolved: Array<{
+      brand: string;
+      model: string;
+      year?: number | null;
+      reason: string;
+    }> = [];
+    let budgetExhausted = false;
+    let userProductId: string | null = null;
+    let verified = false;
+
+    if (requested === 0) {
+      return {
+        ok: false,
+        strategy: "none",
+        requested: 0,
+        persisted: 0,
+        verified: false,
+        unresolved: [],
+        errors: [],
+        budgetExhausted: false,
+        userProductId: null,
+      };
+    }
+
+    // Degrau 1 — catalog product IDs.
+    let resolvedIds: string[] = [];
+    try {
+      const resolved = await this.resolveCompatibilityCatalogProducts(
+        accessToken,
+        vehicles,
+      );
+      resolvedIds = resolved.catalogProductIds;
+      unresolved = resolved.unresolved;
+    } catch (err) {
+      errors.push(
+        `resolve falhou: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (resolvedIds.length > 0) {
+      const r = await this.setItemCompatibilities(
+        accessToken,
+        itemId,
+        resolvedIds,
+        { verify: true },
+      );
+      if (r.errors.length > 0) errors.push(...r.errors);
+      if (r.userProductId !== undefined) userProductId = r.userProductId ?? null;
+      verified = verified || r.verified === true;
+      if (r.success) {
+        return {
+          ok: true,
+          strategy: "catalog_products",
+          requested,
+          persisted: r.persisted ?? r.createdCount,
+          verified: r.verified === true,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+        };
+      }
+    }
+
+    /** Recusa por domínio: nenhum degrau adiante muda o resultado. */
+    const dominioRecusado = (): string | null => {
+      for (const e of errors) {
+        const d = extractUnsupportedDomain(e);
+        if (d) return d;
+      }
+      return null;
+    };
+
+    {
+      const dom = dominioRecusado();
+      if (dom) {
+        console.warn(
+          `[ML Compat] dominio ${dom} do user product nao aceita compatibilidade — ` +
+            `nenhuma estrategia vai funcionar; o anuncio precisa de outra categoria`,
+        );
+        return {
+          ok: false,
+          strategy: "none",
+          requested,
+          persisted: 0,
+          verified,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+          unsupportedDomain: dom,
+        };
+      }
+    }
+
+    // Degraus 2 e 3 — por atributos. `requireFullValueIds` primeiro porque
+    // value_id completo é o que o ML consegue amarrar a uma família real.
+    for (const requireFullValueIds of [true, false]) {
+      const r = await this.setItemCompatibilitiesByAttributes(
+        accessToken,
+        itemId,
+        vehicles,
+        { requireFullValueIds, verify: true },
+      );
+      if (r.errors.length > 0) errors.push(...r.errors);
+      if (r.budgetExhausted) budgetExhausted = true;
+      if (r.userProductId !== undefined) userProductId = r.userProductId ?? null;
+      verified = verified || r.verified === true;
+      if (r.skipped) continue;
+      if (r.success) {
+        return {
+          ok: true,
+          strategy: requireFullValueIds
+            ? "attributes_full"
+            : "attributes_partial",
+          requested,
+          persisted: r.persisted ?? r.createdCount,
+          verified: r.verified === true,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+        };
+      }
+      // Recusa por domínio pode aparecer só agora (o degrau 1 nem sempre a
+      // provoca). Interrompe em vez de gastar o degrau seguinte à toa.
+      const dom = dominioRecusado();
+      if (dom) {
+        console.warn(
+          `[ML Compat] dominio ${dom} do user product nao aceita compatibilidade — ` +
+            `nenhuma estrategia vai funcionar; o anuncio precisa de outra categoria`,
+        );
+        return {
+          ok: false,
+          strategy: "none",
+          requested,
+          persisted: 0,
+          verified,
+          unresolved,
+          errors,
+          budgetExhausted,
+          userProductId,
+          unsupportedDomain: dom,
+        };
+      }
+    }
+
     return {
-      success: errors.length === 0 && createdCount > 0,
-      createdCount,
+      ok: false,
+      strategy: "none",
+      requested,
+      persisted: 0,
+      verified,
+      unresolved,
       errors,
+      budgetExhausted,
+      userProductId,
     };
   }
 
@@ -2163,10 +2839,18 @@ export class MLApiService {
       name: string,
     ): Promise<MLCompatibilityBrandOption | null> => {
       if (!brandsCache) {
-        brandsCache = await this.listCompatibilityBrands(accessToken);
-        console.warn(
-          `[ML Compat] brandsCache loaded: ${brandsCache.length} brands from catalog_domains; first=${JSON.stringify(brandsCache.slice(0, 10).map((b) => b.name))}`,
-        );
+        // Cópia defensiva: listCompatibilityBrands devolve o array do cache
+        // global POR REFERÊNCIA. O push de marcas vindas de top_values (logo
+        // abaixo) escrevia nesse array compartilhado entre todas as contas do
+        // processo — e servido também pelo endpoint público de marcas.
+        brandsCache = [...(await this.listCompatibilityBrands(accessToken))];
+        // Só avisa quando a fonte primária vem VAZIA — esse é o sintoma. Carga
+        // bem-sucedida não precisa de linha no log a cada publicação.
+        if (brandsCache.length === 0) {
+          console.warn(
+            `[ML Compat] catalog_domains devolveu 0 marcas — resolucao vai depender de top_values`,
+          );
+        }
       }
       const n = normalize(name);
       if (!n) return null;
@@ -2181,9 +2865,6 @@ export class MLApiService {
         // traz os 100+ valores reais. Sem esse fallback, marcas comuns
         // caíam como "unresolved" e o item ia só com compat por atributos
         // (que o ML aceita mas não persiste).
-        console.warn(
-          `[ML Compat] brand "${name}" not in catalog_domains (${brandsCache.length} brands); tentando top_values`,
-        );
         const topValues = await this.getCompatAttributeTopValues(
           accessToken,
           ML_ATTR.BRAND,
@@ -2193,11 +2874,11 @@ export class MLApiService {
           topValues.find((v) => normalize(v.name).includes(n)) ??
           null;
         if (tv) {
-          match = { valueId: tv.id, name: tv.name };
+          // `source` registra a procedência do value_id. Hoje é só
+          // diagnóstico: a sonda mostrou que catalog_domains, top_values e os
+          // catalog products compartilham o mesmo espaço de IDs.
+          match = { valueId: tv.id, name: tv.name, source: "top_values" };
           brandsCache.push(match);
-          console.warn(
-            `[ML Compat] brand "${name}" resolvido via top_values: value_id=${tv.id} name=${tv.name}`,
-          );
         } else {
           console.warn(
             `[ML Compat] brand "${name}" NÃO encontrada nem em top_values (${topValues.length} valores) — cai para open_attributes`,
@@ -2213,15 +2894,15 @@ export class MLApiService {
     ): Promise<MLCompatibilityModelOption | null> => {
       let models = modelListCache.get(brand.valueId);
       if (!models) {
-        // listCompatibilityModels usa chunks search, que em algumas contas
-        // falha com "Invalid arguments" quando BRAND.value_id vem de
-        // top_values (espaço de IDs diferente). Se falhar, seguimos com
-        // lista vazia — a fallback via top_values logo abaixo resolve.
         try {
-          models = await this.listCompatibilityModels(accessToken, {
-            valueId: brand.valueId,
-            name: brand.name,
-          });
+          // Cópia defensiva pelo mesmo motivo do brandsCache: o push abaixo
+          // não pode escrever no array do cache global.
+          models = [
+            ...(await this.listCompatibilityModels(accessToken, {
+              valueId: brand.valueId,
+              name: brand.name,
+            })),
+          ];
         } catch (err) {
           console.warn(
             `[ML Compat] listCompatibilityModels(${brand.valueId}) falhou: ${err instanceof Error ? err.message : String(err)} — caindo em top_values direto`,
@@ -2253,6 +2934,7 @@ export class MLApiService {
             name: tv.name,
             brandValueId: brand.valueId,
             brandName: brand.name,
+            source: "top_values",
           };
           models.push(match);
         }
@@ -2279,6 +2961,22 @@ export class MLApiService {
       // do endpoint de domínio retornar a marca.
       const brand = await findBrand(brandName);
       const model = brand ? await findModel(brand, modelName) : null;
+
+      // Sonda contra a API real (24/07/2026) mostrou que catalog_domains,
+      // top_values e os catalog products compartilham o MESMO espaço de IDs
+      // (Volkswagen = 60249 nos três). Então qualquer value_id resolvido serve
+      // tanto para a query quanto para o filtro — `source` fica só como
+      // diagnóstico.
+      //
+      // O que de fato devolve lixo é `open_attributes`: pedindo
+      // BRAND=Volkswagen + MODEL=Gol por NOME, o ML respondeu com Fiat Mobi.
+      // Ou seja, o "0 of 1500 matched brand+model" acontece quando a marca não
+      // resolve em fonte nenhuma (ex.: "CAOA Chery", que o ML cataloga como
+      // "Chery"), caímos em open_attributes e o filtro local — corretamente —
+      // descarta tudo que voltou. Por isso o caminho a privilegiar é sempre o
+      // known_attributes.
+      const brandTrusted = !!brand;
+      const modelTrusted = !!model;
 
       // Expande range de anos. Se nenhum ano for informado, busca todos os
       // catalog products para o par marca+modelo (sem filtro de ano).
@@ -2316,14 +3014,16 @@ export class MLApiService {
         limit?: number;
         offset?: number;
       } = {};
-      if (brand && model) {
+      // Só usa known_attributes (busca por id) para o que é confiável; o resto
+      // vai por open_attributes, delegando o casamento textual ao próprio ML.
+      if (brandTrusted && modelTrusted) {
         searchParams.knownAttributes = [
-          { id: ML_ATTR.BRAND, value_id: brand.valueId },
-          { id: ML_ATTR.MODEL, value_id: model.valueId },
+          { id: ML_ATTR.BRAND, value_id: brand!.valueId },
+          { id: ML_ATTR.MODEL, value_id: model!.valueId },
         ];
-      } else if (brand) {
+      } else if (brandTrusted) {
         searchParams.knownAttributes = [
-          { id: ML_ATTR.BRAND, value_id: brand.valueId },
+          { id: ML_ATTR.BRAND, value_id: brand!.valueId },
         ];
         searchParams.openAttributes = [
           { id: ML_ATTR.MODEL, value_name: modelName },
@@ -2393,43 +3093,13 @@ export class MLApiService {
       // Sem essa guarda, 50 veículos do mesmo Ford/Ka em anos diferentes
       // produzem 50 linhas idênticas no pm2, que escondem os logs das outras
       // marcas e estouram o buffer do grep.
+      // As cinco amostras de nome/id que este bloco imprimia serviram para
+      // descobrir que catalog_domains, top_values e os catalog products usam o
+      // mesmo espaço de IDs. Confirmado isso, viraram ruído: eram ~5 arrays por
+      // par marca+modelo, em toda publicação. Fica só a contagem e a
+      // procedência, que é o que ainda diagnostica ("0 products fetched" ou
+      // "fallback" apontam onde a resolução parou).
       if (fetchErr === null && loggedThisIteration) {
-        const samplePool = cachedProducts.slice(0, 30);
-        const nameSample = (id: string): string[] =>
-          Array.from(
-            new Set(
-              samplePool
-                .map((p) => {
-                  const attr = p.attributes?.find((a) => a?.id === id);
-                  return (
-                    attr?.value_name ?? attr?.values?.[0]?.name ?? null
-                  );
-                })
-                .filter(
-                  (v): v is string => typeof v === "string" && v.length > 0,
-                ),
-            ),
-          ).slice(0, 10);
-        const idSample = (id: string): string[] =>
-          Array.from(
-            new Set(
-              samplePool
-                .map((p) => {
-                  const attr = p.attributes?.find((a) => a?.id === id);
-                  return (
-                    attr?.value_id ?? attr?.values?.[0]?.id ?? null
-                  );
-                })
-                .filter(
-                  (v): v is string => typeof v === "string" && v.length > 0,
-                ),
-            ),
-          ).slice(0, 10);
-        const yearSamples = nameSample(ML_ATTR.VEHICLE_YEAR);
-        const brandNameSamples = nameSample(ML_ATTR.BRAND);
-        const modelNameSamples = nameSample(ML_ATTR.MODEL);
-        const brandIdSamples = idSample(ML_ATTR.BRAND);
-        const modelIdSamples = idSample(ML_ATTR.MODEL);
         const brandTag = brand
           ? `brand=${brand.valueId}`
           : `brand=fallback(${brandName})`;
@@ -2439,7 +3109,7 @@ export class MLApiService {
         // Usa console.warn pois este ambiente filtra console.info do pm2
         // stdout; o objetivo do log é aparecer junto com os "não resolvidas".
         console.warn(
-          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag}); brand names: ${JSON.stringify(brandNameSamples)}; brand ids: ${JSON.stringify(brandIdSamples)}; model names: ${JSON.stringify(modelNameSamples)}; model ids: ${JSON.stringify(modelIdSamples)}; year samples: ${JSON.stringify(yearSamples)}`,
+          `[ML Compat] ${brandName}/${modelName}: ${cachedProducts.length} products fetched (${brandTag}, ${modelTag})`,
         );
       }
 
@@ -2467,17 +3137,16 @@ export class MLApiService {
           const modelAttr = prod.attributes?.find(
             (a) => a?.id === ML_ATTR.MODEL,
           );
-          // Validação SEMPRE. O ML ignora (ou aplica parcialmente) o
-          // known_attributes em vários casos — o log de produção mostrou
-          // 500 produtos retornados para pares como "Dodge Ram 3500" e
-          // "Citroën Berlingo", que na prática têm poucas variações. O
-          // filtro por value_id (quando brand/model foram resolvidos via
-          // catalog_domains) é o único gate confiável; quando caímos no
-          // fallback open_attributes, comparamos por nome normalizado.
-          if (brand) {
+          // Validação SEMPRE — o ML ignora (ou aplica parcialmente) o
+          // known_attributes em vários casos, e compatibilidade ERRADA no
+          // anúncio é pior do que compatibilidade faltando. O que muda por
+          // procedência é COMO comparar: por value_id só quando o id está no
+          // mesmo espaço dos catalog products; por nome normalizado quando
+          // veio de top_values (ou quando não resolvemos nada).
+          if (brandTrusted) {
             const prodBrandValueId =
               brandAttr?.value_id ?? brandAttr?.values?.[0]?.id ?? null;
-            if (prodBrandValueId && prodBrandValueId !== brand.valueId) {
+            if (prodBrandValueId && prodBrandValueId !== brand!.valueId) {
               continue;
             }
           } else {
@@ -2486,12 +3155,16 @@ export class MLApiService {
                 brandAttr?.values?.[0]?.name ??
                 "",
             );
+            // Só chegamos aqui quando a marca não resolveu em fonte nenhuma,
+            // então a busca foi por open_attributes — que o ML ignora. Este
+            // gate por nome é o que impede o lixo devolvido de virar
+            // compatibilidade errada no anúncio.
             if (prodBrand && prodBrand !== normalizedBrand) continue;
           }
-          if (model) {
+          if (modelTrusted) {
             const prodModelValueId =
               modelAttr?.value_id ?? modelAttr?.values?.[0]?.id ?? null;
-            if (prodModelValueId && prodModelValueId !== model.valueId) {
+            if (prodModelValueId && prodModelValueId !== model!.valueId) {
               continue;
             }
           } else {
@@ -2500,7 +3173,9 @@ export class MLApiService {
                 modelAttr?.values?.[0]?.name ??
                 "",
             );
-            if (prodModel && prodModel !== normalizedModel) continue;
+            if (prodModel && prodModel !== normalizedModel) {
+              continue;
+            }
           }
           matchedBrandModel += 1;
 
@@ -2724,6 +3399,20 @@ export class MLApiService {
     if (knownAttributes && knownAttributes.length > 0) {
       body.known_attributes = knownAttributes;
     }
+
+    // Este endpoint não tinha cache nenhum e é o mais chamado do fluxo de
+    // compatibilidade: uma vez por marca, por (marca,modelo) e por
+    // (marca,modelo,ano). Um produto com dezenas de veículos repetia as
+    // mesmas consultas dentro da mesma publicação e entre publicações.
+    // Dados públicos de catálogo, iguais para todas as contas.
+    const cacheKey = `compat:topvalues:${attributeId}:${JSON.stringify(
+      (knownAttributes ?? [])
+        .map((a) => `${a.id}=${a.value_id}`)
+        .sort(),
+    )}`;
+    const cached = compatCacheGet<Array<{ id: string; name: string }>>(cacheKey);
+    if (cached) return cached;
+
     try {
       const response = await axios.post<
         | { values?: Array<{ id?: string; name?: string }> }
@@ -2748,9 +3437,20 @@ export class MLApiService {
         .map((v) => ({ id: v.id, name: v.name }));
       // Log único por chamada para diagnóstico — mostra quantos vieram e os
       // primeiros nomes (para sabermos se Ford/Audi estão presentes).
-      console.warn(
-        `[ML Compat] top_values ${attributeId}${knownAttributes ? ` (filtered ${knownAttributes.length})` : ""}: got ${values.length} values; first=${JSON.stringify(values.slice(0, 8).map((v) => v.name))}`,
-      );
+      // Só reporta o caso anômalo: lista vazia. O sucesso é o caminho normal e
+      // acontece várias vezes por publicação (uma por marca, por modelo e por
+      // ano) — logar tudo enterrava os erros de verdade.
+      if (values.length === 0) {
+        console.warn(
+          `[ML Compat] top_values ${attributeId} devolveu 0 valores` +
+            (knownAttributes
+              ? ` (filtro: ${knownAttributes.map((a) => a.id).join(",")})`
+              : ""),
+        );
+      }
+      // Lista vazia entra com TTL curto (compatCacheSet decide pelo tamanho):
+      // resposta vazia costuma ser transitória e não pode grudar por 10 min.
+      compatCacheSet(cacheKey, values);
       return values;
     } catch (error) {
       const status = axios.isAxiosError(error)
@@ -2760,7 +3460,7 @@ export class MLApiService {
         ? error.response?.data
         : undefined;
       console.warn(
-        `[ML Compat] top_values ${attributeId} FAILED status=${status ?? "?"} response=${JSON.stringify(data ?? (error instanceof Error ? error.message : String(error)))}`,
+        `[ML Compat] top_values ${attributeId} FAILED status=${status ?? "?"} response=${logResumo(data ?? (error instanceof Error ? error.message : String(error)))}`,
       );
       return [];
     }
@@ -2822,7 +3522,7 @@ export class MLApiService {
         : undefined;
       const data = axios.isAxiosError(error) ? error.response?.data : undefined;
       console.warn(
-        `[ML Compat] chunks FAIL — status=${status ?? "?"} body=${JSON.stringify(body)} response=${JSON.stringify(data)}`,
+        `[ML Compat] chunks FAIL — status=${status ?? "?"} body=${logResumo(body)} response=${logResumo(data)}`,
       );
       throw new Error(
         this.formatAxiosError(
@@ -2848,13 +3548,36 @@ export class MLApiService {
     const brandAttr = (domain.attributes ?? []).find(
       (a: MLCatalogDomainAttribute) => a?.id === ML_ATTR.BRAND,
     );
-    const values = brandAttr?.values ?? [];
+    // O ML devolve as marcas em `suggested_values` (formato
+    // {value_id, value_name}), não em `values`. Ler só `values` produzia lista
+    // SEMPRE vazia — é a origem do `brandsCache loaded: 0 brands` do log de
+    // produção, que derrubava a fonte primária e empurrava tudo para o
+    // fallback. Confirmado por sonda contra a API real em 24/07/2026.
+    // Aceitamos os dois formatos: `values` continua valendo se voltar.
+    const values: Array<{ id: string; name: string }> = [
+      ...(brandAttr?.values ?? []).map((v) => ({
+        id: String(v?.id ?? ""),
+        name: String(v?.name ?? ""),
+      })),
+      ...(
+        (brandAttr as unknown as {
+          suggested_values?: Array<{ value_id?: string; value_name?: string }>;
+        })?.suggested_values ?? []
+      ).map((v) => ({
+        id: String(v?.value_id ?? ""),
+        name: String(v?.value_name ?? ""),
+      })),
+    ].filter((v) => v.id && v.name);
 
     const seen = new Map<string, MLCompatibilityBrandOption>();
     for (const v of values) {
       if (!v?.id || !v?.name) continue;
       if (!seen.has(v.id)) {
-        seen.set(v.id, { valueId: v.id, name: v.name });
+        seen.set(v.id, {
+          valueId: v.id,
+          name: v.name,
+          source: "catalog_domains",
+        });
       }
     }
     const brands = Array.from(seen.values()).sort((a, b) =>
@@ -2906,6 +3629,9 @@ export class MLApiService {
             name: modelVal.name,
             brandValueId: brand.valueId,
             brandName: brandVal.name || brandName || "",
+            // Veio de dentro dos próprios catalog products, então o id está no
+            // mesmo espaço que o filtro compara.
+            source: "catalog_domains",
           });
         }
       }

@@ -30,6 +30,27 @@ import {
 } from "../services/listing-removal.helpers";
 import { findCorrectMLAccount } from "../services/listing-ownership-repair.service";
 import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
+import {
+  MLAttributeCatalogService,
+  type NormalizedMLAttribute,
+} from "../services/ml-attribute-catalog.service";
+import {
+  inferPositionFromName,
+  resolvePositionValue,
+} from "../lib/ml-position.logic";
+
+/**
+ * Ids que o ML usa para lado/posição da peça. Não é uma lista de categorias —
+ * é o vocabulário do atributo. A decisão de enviar ou não continua sendo do
+ * catálogo da categoria; isto só diz "quando aparecer um destes, é posição".
+ */
+const POSITION_ATTRIBUTE_IDS = new Set([
+  "POSITION",
+  "SIDE",
+  "VEHICLE_SIDE",
+  "MOUNTING_POSITION",
+  "PART_POSITION",
+]);
 
 export interface CreateListingResult {
   success: boolean;
@@ -607,8 +628,17 @@ export class ListingUseCase {
    * GET /categories/{id}/attributes). Ids já incluídos pelos campos
    * fixos NÃO são sobrescritos para preservar a higiene atual de marca/
    * modelo/ano e a integração com `setItemCompatibilities`.
+   *
+   * `categoryAttrs` (opcional) é a ficha oficial da categoria vinda de
+   * GET /categories/{id}/attributes. Quando fornecida, ela — e não uma lista
+   * hardcoded — decide se o lado/posição entra no payload e com qual value_id.
+   * Quando ausente, o comportamento é o legado (ver bloco de POSITION abaixo).
    */
-  private static buildMLAttributes(product: any, resolvedCategoryId?: string) {
+  private static buildMLAttributes(
+    product: any,
+    resolvedCategoryId?: string,
+    categoryAttrs?: NormalizedMLAttribute[],
+  ) {
     const attrs: Array<{ id: string; value_id?: string; value_name?: string }> =
       [];
     const brand = this.cleanBrand(product.brand);
@@ -636,18 +666,44 @@ export class ListingUseCase {
         opPos.value_id.trim().length > 0) ||
         (typeof opPos.value_name === "string" &&
           opPos.value_name.trim().length > 0));
-    if (
-      !hasOperatorPosition &&
-      resolvedCategoryId &&
-      positionCategories.has(resolvedCategoryId)
-    ) {
-      const name = (product.name || "").toLowerCase();
-      const pos = /dianteir|frente/.test(name)
-        ? "Dianteira"
-        : /traseir|tras|trás/.test(name)
-          ? "Traseira"
-          : null;
-      if (pos) attrs.push({ id: "POSITION", value_name: pos });
+    if (!hasOperatorPosition) {
+      if (categoryAttrs) {
+        // Caminho dirigido pelo catálogo: quem manda é o que a categoria
+        // expõe. Se ela não tem atributo de posição, nada é inferido — é isso
+        // que aposenta a lista hardcoded de 2 categorias. Se tem, resolvemos
+        // o value_id oficial, porque value_name livre em lista fechada o ML
+        // aceita e ignora (mesma classe de falha silenciosa da compat).
+        const posAttr = categoryAttrs.find((a) =>
+          POSITION_ATTRIBUTE_IDS.has(a?.id ?? ""),
+        );
+        if (posAttr) {
+          const inferred = inferPositionFromName(product.name || "");
+          const resolved = inferred
+            ? resolvePositionValue(inferred, posAttr.allowedValues)
+            : null;
+          if (resolved) {
+            const entry: {
+              id: string;
+              value_id?: string;
+              value_name?: string;
+            } = { id: posAttr.id };
+            if (resolved.valueId) entry.value_id = resolved.valueId;
+            entry.value_name = resolved.valueName;
+            attrs.push(entry);
+          }
+        }
+      } else if (resolvedCategoryId && positionCategories.has(resolvedCategoryId)) {
+        // Fallback legado — usado quando o catálogo da categoria não pôde ser
+        // carregado. Mantido byte-idêntico de propósito: só Dianteira/Traseira,
+        // só nas 2 categorias de porta, sem value_id.
+        const name = (product.name || "").toLowerCase();
+        const pos = /dianteir|frente/.test(name)
+          ? "Dianteira"
+          : /traseir|tras|trás/.test(name)
+            ? "Traseira"
+            : null;
+        if (pos) attrs.push({ id: "POSITION", value_name: pos });
+      }
     }
 
     attrs.push({ id: "SELLER_SKU", value_name: product.sku });
@@ -1524,7 +1580,22 @@ export class ListingUseCase {
         );
       descriptionSource = derivedDescriptionSource;
 
-      let attributes = this.buildMLAttributes(product, resolvedCategoryId);
+      // Ficha oficial da categoria (cache 24h em memória + Postgres). Alimenta
+      // a decisão de lado/posição: sem ela caímos no fallback legado, por isso
+      // a falha é engolida em vez de derrubar a publicação.
+      const categoryAttrsForBuild = categoryIdForML
+        ? await MLAttributeCatalogService.getAll(categoryIdForML).catch(
+            () => undefined,
+          )
+        : undefined;
+
+      let attributes = this.buildMLAttributes(
+        product,
+        resolvedCategoryId,
+        categoryAttrsForBuild && categoryAttrsForBuild.length > 0
+          ? categoryAttrsForBuild
+          : undefined,
+      );
 
       // ─── Pré-flight: atributos obrigatórios da categoria ─────────────────
       // Busca required attributes do catálogo ML (cache 24h) e verifica se
@@ -3032,74 +3103,76 @@ export class ListingUseCase {
             yearTo: c.yearTo ?? null,
           }));
         if (vehicles.length > 0) {
-          const resolved =
-            await MLApiService.resolveCompatibilityCatalogProducts(
-              acc.accessToken,
-              vehicles,
-            );
-          if (resolved.unresolved.length > 0) {
+          // Escada verificada: cada estratégia só é dada como boa se o
+          // read-back confirmar veículos gravados. Antes, qualquer HTTP 200
+          // encerrava o fluxo — inclusive o 200 com `ids: []`, que é o ML
+          // dizendo "aceitei e ignorei".
+          const compat = await MLApiService.applyCompatibilitiesVerified(
+            acc.accessToken,
+            mlItem.id,
+            vehicles,
+          );
+
+          if (compat.unresolved.length > 0) {
             console.warn(
               `[ListingUseCase] Compatibilidades não resolvidas (${mlItem.id}): ` +
-                `${resolved.unresolved.length} entrada(s) — ${JSON.stringify(
-                  resolved.unresolved.slice(0, 3),
+                `${compat.unresolved.length} entrada(s) — ${JSON.stringify(
+                  compat.unresolved.slice(0, 3),
                 )}`,
             );
           }
-          if (resolved.catalogProductIds.length > 0) {
-            const compatResult = await MLApiService.setItemCompatibilities(
-              acc.accessToken,
-              mlItem.id,
-              resolved.catalogProductIds,
-            );
-            if (compatResult.errors.length > 0) {
+
+          // Log estruturado: `persisted` é o que o ML devolveu na leitura,
+          // não o que enviamos. Sem access_token e sem PII — marca, modelo e
+          // ano de veículo não identificam pessoa.
+          console.log(
+            JSON.stringify({
+              event: "ml.compat.verified",
+              itemId: mlItem.id,
+              userProductId: compat.userProductId,
+              productId,
+              listingId: finalListingId,
+              requested: compat.requested,
+              persisted: compat.persisted,
+              strategy: compat.strategy,
+              verified: compat.verified,
+              unresolved: compat.unresolved.length,
+              unresolvedSample: compat.unresolved.slice(0, 3),
+              budgetExhausted: compat.budgetExhausted,
+              firstError: compat.errors[0],
+            }),
+          );
+
+          // Persiste o diagnóstico para o vendedor ver na aplicação em vez de
+          // descobrir semanas depois no painel do ML. Best-effort: falhar aqui
+          // não pode derrubar uma publicação que deu certo.
+          if (finalListingId) {
+            try {
+              await ListingRepository.updateCompatDiagnostics(finalListingId, {
+                requested: compat.requested,
+                persisted: compat.persisted,
+                strategy: compat.strategy,
+                verified: compat.verified,
+                unresolved: compat.unresolved.length,
+                unresolvedSample: compat.unresolved.slice(0, 5),
+                unsupportedDomain: compat.unsupportedDomain,
+                at: new Date().toISOString(),
+              });
+            } catch (diagErr) {
               console.warn(
-                `[ListingUseCase] Compatibilidades parciais em ${mlItem.id}: ` +
-                  `createdCount=${compatResult.createdCount} errors=${compatResult.errors.length} ` +
-                  `firstError=${compatResult.errors[0]}`,
-              );
-            } else if (compatResult.createdCount > 0) {
-              console.log(
-                `[ListingUseCase] Compatibilidades anexadas ao ML item ${mlItem.id}: ` +
-                  `${compatResult.createdCount} catalog product(s)`,
+                `[ListingUseCase] Falha ao gravar diagnóstico de compat (${mlItem.id}):`,
+                diagErr instanceof Error ? diagErr.message : String(diagErr),
               );
             }
           }
-          // Fallback por atributos crus: marcas como Chevrolet, Dodge, CAOA
-          // Chery não aparecem no /catalog_domains (endpoint truncado) e a
-          // busca por chunks retorna lixo genérico. O ML aceita compat via
-          // `products: [{ attributes: [BRAND/MODEL/YEAR por nome] }]` — é o
-          // caminho que o próprio dashboard deles usa para adicionar veículos
-          // fora do catálogo restrito.
-          if (resolved.unresolved.length > 0) {
-            const unresolvedVehicles = vehicles.filter((v) => {
-              const b = (v.brand || "").trim().toLowerCase();
-              const m = (v.model || "").trim().toLowerCase();
-              return resolved.unresolved.some(
-                (u) =>
-                  (u.brand || "").trim().toLowerCase() === b &&
-                  (u.model || "").trim().toLowerCase() === m,
-              );
-            });
-            if (unresolvedVehicles.length > 0) {
-              const attrResult =
-                await MLApiService.setItemCompatibilitiesByAttributes(
-                  acc.accessToken,
-                  mlItem.id,
-                  unresolvedVehicles,
-                );
-              if (attrResult.errors.length > 0) {
-                console.warn(
-                  `[ListingUseCase] Compat por atributos parcial em ${mlItem.id}: ` +
-                    `createdCount=${attrResult.createdCount} errors=${attrResult.errors.length} ` +
-                    `firstError=${attrResult.errors[0]}`,
-                );
-              } else if (attrResult.createdCount > 0) {
-                console.log(
-                  `[ListingUseCase] Compat por atributos anexada ao ML item ${mlItem.id}: ` +
-                    `${attrResult.createdCount} veículo(s)`,
-                );
-              }
-            }
+
+          if (!compat.ok) {
+            console.warn(
+              `[ListingUseCase] Compatibilidades NÃO persistiram no ML ${mlItem.id}: ` +
+                `${compat.requested} pedida(s), ${compat.persisted} gravada(s), ` +
+                `estrategia=${compat.strategy}, verificado=${compat.verified}, ` +
+                `primeiroErro=${compat.errors[0] ?? "n/a"}`,
+            );
           }
         }
       } catch (compatErr) {
@@ -5488,6 +5561,110 @@ export class ListingUseCase {
    * Mapeia os campos do MLListingSettings para o payload aceito pelo
    * PUT /items/{id}, faz a chamada externa e persiste localmente.
    */
+  /**
+   * Reenvia compatibilidades para um anúncio ML JÁ publicado, de forma
+   * idempotente e não destrutiva.
+   *
+   * Idempotência: lê primeiro o que está no ML. Se já cobre o que o banco tem,
+   * não faz nada — reenviar à toa gasta chamada e arrisca rejeição. Nunca
+   * emite `delete` (o `create` do ML é aditivo) e nunca republica o anúncio.
+   *
+   * Opt-in por `ML_COMPAT_RESEND_ON_EDIT_ENABLED=true`: é comportamento novo em
+   * produção. Com a flag ausente, nada é chamado e o fluxo fica byte-idêntico.
+   *
+   * Best-effort: qualquer falha só gera warning — não pode derrubar a edição
+   * nem o re-sync que a chamou.
+   */
+  static async resendCompatibilitiesIfNeeded(args: {
+    accessToken: string;
+    itemId: string;
+    listingId: string;
+    productId: string;
+    vehicles: Array<{
+      brand?: string;
+      model?: string;
+      yearFrom?: number | null;
+      yearTo?: number | null;
+    }> | null;
+    origin: "edit" | "product_sync";
+  }): Promise<void> {
+    if (process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED !== "true") return;
+    if (!args.itemId || args.itemId.startsWith("PENDING_")) return;
+
+    const vehicles = (args.vehicles ?? [])
+      .filter((v) => !!v?.brand && !!v?.model)
+      .map((v) => ({
+        brand: String(v.brand),
+        model: String(v.model),
+        yearFrom: v.yearFrom ?? null,
+        yearTo: v.yearTo ?? null,
+      }));
+    if (vehicles.length === 0) return;
+
+    try {
+      const current = await MLApiService.readCompatibilities(
+        args.accessToken,
+        args.itemId,
+      );
+      if (current.available && current.count >= vehicles.length) {
+        console.log(
+          JSON.stringify({
+            event: "ml.compat.resend.skipped",
+            itemId: args.itemId,
+            listingId: args.listingId,
+            productId: args.productId,
+            origin: args.origin,
+            reason: "already_covered",
+            desired: vehicles.length,
+            current: current.count,
+          }),
+        );
+        return;
+      }
+
+      const compat = await MLApiService.applyCompatibilitiesVerified(
+        args.accessToken,
+        args.itemId,
+        vehicles,
+      );
+
+      console.log(
+        JSON.stringify({
+          event: "ml.compat.resend",
+          itemId: args.itemId,
+          userProductId: compat.userProductId,
+          listingId: args.listingId,
+          productId: args.productId,
+          origin: args.origin,
+          requested: compat.requested,
+          persisted: compat.persisted,
+          strategy: compat.strategy,
+          verified: compat.verified,
+          unresolved: compat.unresolved.length,
+          budgetExhausted: compat.budgetExhausted,
+          firstError: compat.errors[0],
+        }),
+      );
+
+      await ListingRepository.updateCompatDiagnostics(args.listingId, {
+        requested: compat.requested,
+        persisted: compat.persisted,
+        strategy: compat.strategy,
+        verified: compat.verified,
+        unresolved: compat.unresolved.length,
+        unresolvedSample: compat.unresolved.slice(0, 5),
+        unsupportedDomain: compat.unsupportedDomain,
+        origin: args.origin,
+        at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(
+        `[ListingUseCase] Falha ao reenviar compatibilidades (${args.itemId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   private static async updateMLListingFields(
     listing: NonNullable<Awaited<ReturnType<typeof ListingRepository.findById>>>,
     fields: ListingFullEditInput,
@@ -5955,6 +6132,32 @@ export class ListingUseCase {
       listing.id,
       buildListingPersistData(fields),
     );
+
+    // Reenvio de compatibilidade na EDIÇÃO de anúncio já publicado.
+    //
+    // Até aqui `compatibilitiesOverride` era aceito pela rota e persistido no
+    // banco, mas nunca chegava ao ML: adicionar um veículo depois da
+    // publicação não tinha efeito nenhum no anúncio.
+    //
+    // Comportamento novo em produção, então entra opt-in. Só o caminho de
+    // edição unitária emite `compatibilitiesOverride` — o dispatcher de massa
+    // (applyOverridesAfterCreate) nunca seta esse campo, então o gate abaixo
+    // já exclui o bulk por construção.
+    await ListingUseCase.resendCompatibilitiesIfNeeded({
+      accessToken: account.accessToken,
+      itemId: listing.externalListingId,
+      listingId: listing.id,
+      productId: listing.productId,
+      vehicles: Array.isArray(fields.compatibilitiesOverride)
+        ? (fields.compatibilitiesOverride as Array<{
+            brand?: string;
+            model?: string;
+            yearFrom?: number | null;
+            yearTo?: number | null;
+          }>)
+        : null,
+      origin: "edit",
+    });
 
     // Deduplica labels (mesmo campo pode aparecer em rounds diferentes
     // do retry).

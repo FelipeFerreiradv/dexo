@@ -621,6 +621,9 @@ export class ListingRepository {
       attributesOverride?: unknown;
       compatibilitiesOverride?: unknown;
       sourceVehicleOverride?: string | null;
+      // Diagnóstico do envio de compatibilidade ao marketplace.
+      compatSyncedAt?: Date | null;
+      compatDiagnostics?: unknown;
     },
   ) {
     return prisma.productListing.update({
@@ -733,6 +736,12 @@ export class ListingRepository {
           data.sourceVehicleOverride === undefined
             ? undefined
             : data.sourceVehicleOverride,
+        compatSyncedAt:
+          data.compatSyncedAt === undefined ? undefined : data.compatSyncedAt,
+        compatDiagnostics:
+          data.compatDiagnostics === undefined
+            ? undefined
+            : (data.compatDiagnostics as never),
       },
     });
   }
@@ -792,6 +801,31 @@ export class ListingRepository {
       data: {
         priceOverride:
           priceOverride !== null && priceOverride > 0 ? priceOverride : null,
+      },
+      select: { id: true },
+    });
+  }
+
+  /**
+   * Write cirúrgico do diagnóstico de compatibilidade — mesmo padrão
+   * perf(egress) do `updatePriceOverride`.
+   *
+   * O `updateListing` genérico devolveria as ~46 colunas do ProductListing
+   * (20 delas `*Override` de texto, mais os JSONBs `imageUrlsOverride`,
+   * `attributesOverride`, `compatibilitiesOverride` e o próprio
+   * `compatDiagnostics` recém-escrito) só para o caller descartar tudo. Este
+   * write roda em toda publicação com compatibilidade e no re-sync.
+   */
+  static async updateCompatDiagnostics(
+    listingId: string,
+    diagnostics: unknown,
+    syncedAt: Date = new Date(),
+  ): Promise<void> {
+    await prisma.productListing.update({
+      where: { id: listingId },
+      data: {
+        compatSyncedAt: syncedAt,
+        compatDiagnostics: diagnostics as never,
       },
       select: { id: true },
     });

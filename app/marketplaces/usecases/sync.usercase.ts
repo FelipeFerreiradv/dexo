@@ -14,6 +14,7 @@ import { MLApiService } from "../services/ml-api.service";
 import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeApiService } from "../services/shopee-api.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
+import { ShopeeAttributeCatalogService } from "../services/shopee-attribute-catalog.service";
 import { MagaluApiService } from "../services/magalu-api.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import CategoryRepository from "../repositories/category.repository";
@@ -3363,6 +3364,25 @@ export class SyncUseCase {
     if (typeof product.description === "string" && product.description.trim()) {
       patch.description = product.description.trim();
     }
+    // Imagens: mesmo shape que o payload de criação usa
+    // ({ reference, type: "image/jpeg" }). Antes o patch só levava
+    // título/descrição, então trocar as fotos no cadastro não chegava aqui.
+    if (process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED === "true") {
+      const urls: string[] = Array.isArray(product.imageUrls)
+        ? product.imageUrls.filter(
+            (u: unknown): u is string =>
+              typeof u === "string" && u.trim().length > 0,
+          )
+        : product.imageUrl
+          ? [product.imageUrl]
+          : [];
+      if (urls.length > 0) {
+        patch.images = urls.map((reference) => ({
+          reference,
+          type: "image/jpeg" as const,
+        }));
+      }
+    }
     if (Object.keys(patch).length > 0) {
       try {
         await MagaluApiService.patchSku(account.accessToken, sku, patch);
@@ -3822,6 +3842,9 @@ export class SyncUseCase {
             effectiveProduct,
             externalListingId,
             account,
+            // O listing desta conta já foi carregado acima para aplicar os
+            // overrides; passar o id evita reconsultar a MESMA linha lá dentro.
+            listingForOverrides?.id ?? null,
           );
         case Platform.SHOPEE:
           return await this.syncShopeeProductData(
@@ -3867,6 +3890,13 @@ export class SyncUseCase {
     product: any,
     externalListingId: string,
     account: any,
+    /**
+     * Id do ProductListing desta conta, quando o chamador já o carregou.
+     * Opcional de propósito: sem ele o comportamento é o mesmo, só custa a
+     * consulta extra. Existe para não reler a MESMA linha que `syncProductData`
+     * acabou de buscar para aplicar os overrides.
+     */
+    knownListingId?: string | null,
   ): Promise<SyncResult> {
     const result: SyncResult = {
       success: false,
@@ -3996,10 +4026,12 @@ export class SyncUseCase {
         );
       }
 
-      // Sincronizar imagem se foi alterada (pode nÃ£o ser permitido em anÃºncios ativos)
+      // Imagens: NÃO entram no payload principal de propósito. Vão num PUT
+      // separado, depois deste, para que uma rejeição da galeria não derrube
+      // preço e estoque junto. Ver o bloco de imagens após o loop de retry.
       if (product.imageUrl) {
         console.log(
-          `[SYNC] Imagem detectada mas pode nÃ£o ser sincronizada em anÃºncio ativo`,
+          `[SYNC] Imagem detectada — envio em PUT separado apos preco/estoque`,
         );
       }
 
@@ -4048,6 +4080,37 @@ export class SyncUseCase {
         }
         if (list.length > 0) {
           updateData.attributes = list;
+        }
+      }
+
+      // Dimensões e peso do pacote. A Shopee já recebia; o ML não recebia
+      // nada, então editar as medidas no produto não corrigia o frete do
+      // anúncio. Entram como atributos SELLER_PACKAGE_*, que não estão na
+      // lista de imutáveis. Anúncio com venda pode responder
+      // field_not_modifiable — nesse caso o retry abaixo solta `attributes`
+      // inteiro e preço/estoque continuam subindo.
+      if (process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED === "true") {
+        const dimAttrs: Array<{ id: string; value_name: string }> = [];
+        const addDim = (id: string, valor: unknown, unidade: string): void => {
+          const n = Number(valor);
+          if (!Number.isFinite(n) || n <= 0) return;
+          dimAttrs.push({ id, value_name: `${n} ${unidade}` });
+        };
+        addDim("SELLER_PACKAGE_HEIGHT", product.heightCm, "cm");
+        addDim("SELLER_PACKAGE_WIDTH", product.widthCm, "cm");
+        addDim("SELLER_PACKAGE_LENGTH", product.lengthCm, "cm");
+        addDim("SELLER_PACKAGE_WEIGHT", product.weightKg, "kg");
+        if (dimAttrs.length > 0) {
+          const existentes = new Set(
+            (updateData.attributes ?? []).map((a) => a.id),
+          );
+          const novos = dimAttrs.filter((a) => !existentes.has(a.id));
+          if (novos.length > 0) {
+            updateData.attributes = [
+              ...(updateData.attributes ?? []),
+              ...novos,
+            ];
+          }
         }
       }
 
@@ -4115,6 +4178,16 @@ export class SyncUseCase {
             ) {
               blockedThisRound.push("description");
             }
+            // Defesa em profundidade: hoje as imagens vão num PUT separado, mas
+            // se alguma vez entrarem neste payload uma rejeição da galeria não
+            // pode derrubar preço e estoque junto (blockedThisRound vazio faz
+            // throw e mata o sync inteiro).
+            if (
+              "pictures" in currentPayload &&
+              (lower.includes("picture") || lower.includes("image"))
+            ) {
+              blockedThisRound.push("pictures");
+            }
 
             if (blockedThisRound.length === 0) {
               // Erro não conhecido — propaga e marca sync como falho.
@@ -4145,6 +4218,99 @@ export class SyncUseCase {
           );
         }
         console.log(`[SYNC] Resposta do ML:`, updatedItem);
+
+        // Imagens do produto → galeria do anúncio.
+        //
+        // Editar as fotos no cadastro e salvar não refletia em anúncio nenhum:
+        // este ponto só logava a intenção. O encanamento já existia — o
+        // override é limpo em clearOverridesForEditedFields e
+        // applyOverridesToProduct já monta effectiveProduct.imageUrls — faltava
+        // consumir.
+        //
+        // PUT SEPARADO, depois do principal e em try/catch próprio: preço e
+        // estoque já subiram e não podem ser derrubados por uma galeria que o
+        // ML recuse. Upload via uploadPictureFromUrl (síncrono) em vez de
+        // `{source}` (assíncrono), que gera image_download_pending — mesma
+        // decisão já tomada no fluxo de criação.
+        if (process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED === "true") {
+          try {
+            const desejadas: string[] = Array.isArray(product.imageUrls)
+              ? product.imageUrls.filter(
+                  (u: unknown): u is string =>
+                    typeof u === "string" && u.trim().length > 0,
+                )
+              : product.imageUrl
+                ? [product.imageUrl]
+                : [];
+
+            if (desejadas.length > 0) {
+              // Só envia se mudou: comparar evita gastar chamada e arriscar
+              // rejeição à toa em anúncio que já está com as fotos certas.
+              const atuais = (
+                (currentItem as { pictures?: Array<{ url?: string; secure_url?: string }> })
+                  .pictures ?? []
+              )
+                .map((p) => p?.secure_url || p?.url || "")
+                .filter(Boolean);
+              const mesmaGaleria =
+                atuais.length === desejadas.length &&
+                desejadas.every((url, i) => {
+                  const a = (atuais[i] || "").split("?")[0];
+                  const b = url.split("?")[0];
+                  return a === b;
+                });
+
+              if (mesmaGaleria) {
+                console.log(
+                  `[SYNC] Galeria de ${externalListingId} ja esta atualizada — nenhum PUT de imagem`,
+                );
+              } else {
+                const pictureIds: Array<{ id: string }> = [];
+                for (const url of desejadas) {
+                  try {
+                    const pic = await MLApiService.uploadPictureFromUrl(
+                      account.accessToken,
+                      url,
+                    );
+                    if (pic?.id) pictureIds.push({ id: pic.id });
+                  } catch (upErr) {
+                    console.warn(
+                      `[SYNC] Falha no upload de imagem (${url}):`,
+                      upErr instanceof Error ? upErr.message : String(upErr),
+                    );
+                  }
+                }
+
+                if (pictureIds.length > 0) {
+                  await MLApiService.updateItem(
+                    account.accessToken,
+                    externalListingId,
+                    { pictures: pictureIds } as never,
+                  );
+                  console.log(
+                    JSON.stringify({
+                      event: "ml.pictures.synced",
+                      externalListingId,
+                      productId: product.id,
+                      enviadas: pictureIds.length,
+                      desejadas: desejadas.length,
+                    }),
+                  );
+                } else {
+                  console.warn(
+                    `[SYNC] Nenhuma imagem pode ser enviada para ${externalListingId} (upload falhou em todas)`,
+                  );
+                }
+              }
+            }
+          } catch (imgErr) {
+            // Nunca fatal: o sync de preço/estoque já foi concluído acima.
+            console.warn(
+              `[SYNC] Falha ao sincronizar imagens de ${externalListingId} (preco/estoque preservados):`,
+              imgErr instanceof Error ? imgErr.message : String(imgErr),
+            );
+          }
+        }
 
         // Atualização do título em items UP: o ML NÃO permite alterar
         // `family_name` (e portanto o título) via PUT /items nem via qualquer
@@ -4238,6 +4404,57 @@ export class SyncUseCase {
         result.newStock = product.stock;
         result.previousPrice = currentItem.price;
         result.newPrice = Number(product.price);
+
+        // Compatibilidade veicular no re-sync de produto.
+        //
+        // Aqui as compatibilidades só entravam como bloco de TEXTO na
+        // descrição (appendCompatibilityBlock) — o endpoint nativo do ML nunca
+        // era chamado. Resultado: editar o produto e salvar não corrigia a
+        // ficha técnica de um anúncio que subiu sem compat.
+        //
+        // Idempotente (lê antes de escrever), best-effort e atrás da mesma
+        // flag opt-in do reenvio na edição.
+        // Gate da flag ANTES de qualquer trabalho: desligada (o default), o
+        // re-sync não paga import dinâmico nem consulta nenhuma, ficando
+        // byte-idêntico ao comportamento anterior.
+        if (process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED === "true") {
+          try {
+            // Reusa o id que `syncProductData` já carregou para aplicar os
+            // overrides; só consulta se o chamador não passou (ex.: chamada
+            // direta em teste). Evita reler a MESMA linha no caminho quente.
+            let listingIdParaCompat = knownListingId ?? null;
+            if (!listingIdParaCompat) {
+              const encontrado = await prisma.productListing.findFirst({
+                where: {
+                  externalListingId,
+                  marketplaceAccountId: account.id,
+                },
+                select: { id: true },
+              });
+              listingIdParaCompat = encontrado?.id ?? null;
+            }
+            if (listingIdParaCompat) {
+              const { ListingUseCase } = await import("./listing.usercase");
+              await ListingUseCase.resendCompatibilitiesIfNeeded({
+                accessToken: account.accessToken,
+                itemId: externalListingId,
+                listingId: listingIdParaCompat,
+                productId: product.id,
+                vehicles: Array.isArray(product.compatibilities)
+                  ? product.compatibilities
+                  : null,
+                origin: "product_sync",
+              });
+            }
+          } catch (compatErr) {
+            console.warn(
+              `[SYNC] Falha ao reenviar compatibilidades de ${externalListingId}:`,
+              compatErr instanceof Error
+                ? compatErr.message
+                : String(compatErr),
+            );
+          }
+        }
 
         // Registrar log de sucesso
         await this.logSync(
@@ -4356,6 +4573,54 @@ export class SyncUseCase {
         updateData.weight = weightKg;
       }
 
+      // Imagens: a Shopee aceita `image.image_id_list` no update_item (o tipo
+      // já previa isso), mas só a criação usava. Editar as fotos do produto
+      // não refletia no anúncio. Upload primeiro (a Shopee exige image_id, não
+      // URL), depois entra no mesmo update_item de título/descrição.
+      if (process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED === "true") {
+        try {
+          const urls: string[] = Array.isArray(product.imageUrls)
+            ? product.imageUrls.filter(
+                (u: unknown): u is string =>
+                  typeof u === "string" && u.trim().length > 0,
+              )
+            : product.imageUrl
+              ? [product.imageUrl]
+              : [];
+          if (urls.length > 0) {
+            const uploads = await Promise.allSettled(
+              urls.map((url) =>
+                ShopeeApiService.uploadImage(
+                  account.accessToken,
+                  account.shopId,
+                  url,
+                ),
+              ),
+            );
+            // Tolera falha parcial: quem subiu entra na galeria, quem falhou
+            // vira warning. Melhor um anúncio com 3 de 4 fotos do que nenhuma.
+            const ids = uploads.flatMap((r) => {
+              if (r.status !== "fulfilled") return [];
+              const id = r.value?.image_info?.image_id;
+              return typeof id === "string" && id.length > 0 ? [id] : [];
+            });
+            if (ids.length > 0) {
+              updateData.image = { image_id_list: ids };
+            } else {
+              console.warn(
+                `[SYNC] Nenhuma imagem Shopee enviada para ${externalListingId} (upload falhou em todas)`,
+              );
+            }
+          }
+        } catch (imgErr) {
+          // Não fatal: preço e estoque seguem pelo caminho normal.
+          console.warn(
+            `[SYNC] Falha ao preparar imagens Shopee de ${externalListingId}:`,
+            imgErr instanceof Error ? imgErr.message : String(imgErr),
+          );
+        }
+      }
+
       console.log(`[SYNC] Dados a serem enviados para Shopee:`, updateData);
 
       // 1) Campos não-preço via update_item.
@@ -4374,6 +4639,119 @@ export class SyncUseCase {
           "keys=",
           Object.keys(updatedItem || {}).join(","),
         );
+      }
+
+      // 1b) Ficha técnica via update_item SEPARADO.
+      //
+      //     A Shopee não recebia atributo nenhum no re-sync — só o ML recebia.
+      //     Vai em chamada própria de propósito: a Shopee rejeita
+      //     `attribute_list` inválida por contrato, e uma rejeição aqui não
+      //     pode derrubar título, descrição e dimensões que já subiram acima.
+      //
+      //     O casamento é por NOME do atributo (é o que a criação já faz): os
+      //     ids da Shopee não têm relação com os do ML.
+      if (process.env.PRODUCT_SYNC_FULL_FIELDS_ENABLED === "true") {
+        try {
+          const extrasShopee = (product as { attributes?: unknown }).attributes;
+          const categoriaShopee = Number(
+            (currentItem as { category_id?: number }).category_id,
+          );
+          if (
+            extrasShopee &&
+            typeof extrasShopee === "object" &&
+            !Array.isArray(extrasShopee) &&
+            Number.isFinite(categoriaShopee) &&
+            categoriaShopee > 0
+          ) {
+            const porNome: Record<string, string> = {};
+            for (const [id, raw] of Object.entries(
+              extrasShopee as Record<string, unknown>,
+            )) {
+              if (!raw || typeof raw !== "object") continue;
+              const v = raw as { value_id?: string; value_name?: string };
+              const texto = (v.value_name ?? "").trim();
+              if (!texto) continue;
+              porNome[id.toLowerCase()] = texto;
+            }
+
+            if (Object.keys(porNome).length > 0) {
+              const resolucao =
+                await ShopeeAttributeCatalogService.getCategoryAttributes(
+                  "BR",
+                  categoriaShopee,
+                  "pt-BR",
+                  {
+                    fetchLive: async () =>
+                      ShopeeApiService.getCategoryAttributes(
+                        account.accessToken,
+                        account.shopId,
+                        categoriaShopee,
+                        "pt-BR",
+                      ),
+                  },
+                );
+
+              const lista: Array<Record<string, unknown>> = [];
+              for (const attr of resolucao?.attribute_list ?? []) {
+                const nome = String(attr?.attribute_name ?? "").toLowerCase();
+                const valor = porNome[nome];
+                // Só envia o que o operador preencheu: não inventamos valor
+                // para obrigatório aqui (isso é decisão da criação, que tem o
+                // contexto para escolher um default seguro).
+                if (!valor) continue;
+                const opcoes = attr?.attribute_value_list;
+                let valueId = 0;
+                let valueName = valor;
+                if (Array.isArray(opcoes) && opcoes.length > 0) {
+                  const exato = opcoes.find(
+                    (o: { value_name?: string }) =>
+                      (o?.value_name ?? "").toLowerCase() ===
+                      valor.toLowerCase(),
+                  );
+                  if (exato) {
+                    valueId = exato.value_id;
+                    valueName = exato.value_name;
+                  }
+                }
+                lista.push({
+                  attribute_id: attr.attribute_id,
+                  attribute_name: attr.attribute_name,
+                  attribute_value_list: [
+                    valueId > 0
+                      ? { value_id: valueId, original_value_name: valueName }
+                      : { value_id: 0, original_value_name: valueName },
+                  ],
+                });
+              }
+
+              if (lista.length > 0) {
+                await ShopeeApiService.updateItem(
+                  account.accessToken,
+                  account.shopId,
+                  {
+                    item_id: parseInt(externalListingId),
+                    attribute_list: lista,
+                  } as never,
+                );
+                console.log(
+                  JSON.stringify({
+                    event: "shopee.attributes.synced",
+                    externalListingId,
+                    productId: product.id,
+                    enviados: lista.length,
+                  }),
+                );
+              }
+            }
+          }
+        } catch (attrErr) {
+          // Nunca fatal: título/descrição/dimensões já subiram, preço vem a
+          // seguir por endpoint dedicado.
+          console.warn(
+            `[SYNC] Falha ao sincronizar ficha tecnica Shopee de ${externalListingId}:`,
+            attrErr instanceof Error ? attrErr.message : String(attrErr),
+          );
+        }
       }
 
       // 2) Preço via /api/v2/product/update_price (endpoint dedicado).

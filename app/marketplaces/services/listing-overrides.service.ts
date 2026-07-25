@@ -137,6 +137,47 @@ export function effectiveListingValues(
 export type EffectiveListingValues = ReturnType<typeof effectiveListingValues>;
 
 /**
+ * Funde o mapa de ficha técnica do produto com o override do anúncio.
+ *
+ * O override vence chave a chave; chaves que ele não menciona permanecem com o
+ * valor herdado do produto (é o ponto todo — um override parcial não pode
+ * apagar o lado/posição que o operador informou no cadastro). Para apagar um
+ * atributo de propósito, o override manda `null` explicitamente naquela chave.
+ *
+ * Array não é ficha técnica válida (o formato é `{ [id]: { value_id?,
+ * value_name? } }`); nesse caso devolve o override cru, preservando o
+ * comportamento anterior em vez de tentar adivinhar.
+ */
+export function mergeAttributeOverride(
+  productAttributes: unknown,
+  overrideAttributes: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (overrideAttributes === null || overrideAttributes === undefined) {
+    return overrideAttributes ?? null;
+  }
+  if (Array.isArray(overrideAttributes)) return overrideAttributes;
+  if (
+    !productAttributes ||
+    typeof productAttributes !== "object" ||
+    Array.isArray(productAttributes)
+  ) {
+    return overrideAttributes;
+  }
+
+  const merged: Record<string, unknown> = {
+    ...(productAttributes as Record<string, unknown>),
+  };
+  for (const [id, value] of Object.entries(overrideAttributes)) {
+    if (value === null) {
+      delete merged[id];
+      continue;
+    }
+    merged[id] = value;
+  }
+  return merged;
+}
+
+/**
  * Retorna uma cópia do produto com os campos override do listing aplicados
  * in-memory. Usado em pontos do backend (sync, retry, dispatch) que constroem
  * payload para o ML/Shopee — substituindo `product` por `effectiveProduct`
@@ -216,7 +257,16 @@ export function applyOverridesToProduct<T extends AnyProduct>(
     listing.attributesOverride !== null &&
     listing.attributesOverride !== undefined
   ) {
-    result.attributes = eff.attributes;
+    // Por padrão o override SUBSTITUI o mapa inteiro. Isso é correto para a
+    // edição unitária (o modal manda a ficha técnica completa), mas apaga
+    // atributos herdados quando o override é parcial — que é o caso da Revisão
+    // individual em massa, onde só os campos tocados viram override. Efeito
+    // prático: o lado/posição do produto some do anúncio no re-sync seguinte.
+    // O merge fica atrás de flag porque muda o payload de anúncios vivos.
+    result.attributes =
+      process.env.ML_ATTR_OVERRIDE_MERGE_ENABLED === "true"
+        ? mergeAttributeOverride(product.attributes, eff.attributes)
+        : eff.attributes;
   }
   result.sourceVehicle = eff.sourceVehicle;
 

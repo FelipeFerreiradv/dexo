@@ -2973,6 +2973,19 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         yearTo: 2011,
         versions: ["2.0", "1.8 Turbo"],
       },
+      {
+        // Rebadge do Ford Verona, fruto da Autolatina.
+        name: "Apollo",
+        yearFrom: 1990,
+        yearTo: 1992,
+        versions: ["GL", "GLS", "1.8"],
+      },
+      {
+        name: "Brasília",
+        yearFrom: 1973,
+        yearTo: 1982,
+        versions: ["1600", "LS"],
+      },
       { name: "CrossFox", yearFrom: 2005, yearTo: 2016, versions: ["1.6"] },
       {
         name: "Fox",
@@ -3062,16 +3075,76 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
         ],
       },
       {
+        // Produzida no Brasil de 1957 a 2013 (a última saiu em dezembro/2013).
+        name: "Kombi",
+        yearFrom: 1957,
+        yearTo: 2013,
+        versions: [
+          "Standard",
+          "Luxo",
+          "Carat",
+          "Furgão",
+          "Pick-up",
+          "Escolar",
+          "Last Edition",
+          "1.4",
+          "1.6",
+        ],
+      },
+      {
+        // Irmão do Pointer, também da fase Autolatina.
+        name: "Logus",
+        yearFrom: 1993,
+        yearTo: 1997,
+        versions: ["CL", "GL", "GLS", "CLi", "GLi", "1.8", "2.0"],
+      },
+      {
         name: "Nivus",
         yearFrom: 2020,
         yearTo: 2025,
         versions: ["Comfortline", "Highline", "Launching Edition", "200 TSI"],
       },
       {
+        // Perua derivada do Gol, vendida no Brasil de 1982 a 2012 (G1 a G4).
+        // Compartilha boa parte da mecânica e da lataria dianteira do Gol, por
+        // isso a lista de versões espelha a dele nas linhas de acabamento.
+        name: "Parati",
+        yearFrom: 1982,
+        yearTo: 2012,
+        versions: [
+          "CL",
+          "GL",
+          "GLS",
+          "LS",
+          "S",
+          "CD",
+          "GTI",
+          "Summer",
+          "Surf",
+          "Crossover",
+          "Track & Field",
+          "City",
+          "Comfortline",
+          "Trendline",
+          "1.6",
+          "1.8",
+          "2.0",
+          "16V",
+          "G3",
+          "G4",
+        ],
+      },
+      {
         name: "Passat",
         yearFrom: 2006,
         yearTo: 2019,
         versions: ["2.0 TSI", "Variant", "Comfortline", "Highline"],
+      },
+      {
+        name: "Pointer",
+        yearFrom: 1993,
+        yearTo: 1996,
+        versions: ["CL", "GL", "GLi", "GTi", "1.8", "2.0"],
       },
       {
         name: "Polo",
@@ -3092,6 +3165,30 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
           "TSI",
           "200 TSI",
           "Beats",
+        ],
+      },
+      {
+        // Perua derivada do Santana.
+        name: "Quantum",
+        yearFrom: 1985,
+        yearTo: 2002,
+        versions: ["CL", "GL", "GLS", "CLi", "GLi", "Exclusiv", "1.8", "2.0"],
+      },
+      {
+        name: "Santana",
+        yearFrom: 1984,
+        yearTo: 2006,
+        versions: [
+          "CL",
+          "GL",
+          "GLS",
+          "CD",
+          "CLi",
+          "GLi",
+          "Exclusiv",
+          "Evidence",
+          "1.8",
+          "2.0",
         ],
       },
       {
@@ -3166,6 +3263,13 @@ export const VEHICLE_CATALOG: VehicleBrand[] = [
           "TSI",
           "1.0",
         ],
+      },
+      {
+        // Perua do Fusca. Variant I (1969-1977) e Variant II (1977-1980).
+        name: "Variant",
+        yearFrom: 1969,
+        yearTo: 1980,
+        versions: ["1600", "II"],
       },
       {
         name: "Virtus",
@@ -3395,4 +3499,50 @@ export function getVersionsForModel(brand: string, model: string): string[] {
   return m.versions
     .filter((v) => v !== "")
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
+// ---------------------------------------------------------------------------
+// Busca textual tolerante (acento + erro de digitação conhecido)
+// ---------------------------------------------------------------------------
+
+/** NFD + remoção de diacríticos + trim + lowercase. */
+export function normalizeVehicleTerm(s: string): string {
+  return (s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Erros de digitação recorrentes → termo canônico do catálogo.
+ *
+ * Existe para que o operador ache o modelo do jeito que ele escreve, SEM
+ * duplicar a entrada no VEHICLE_CATALOG: "Pareti" não é um modelo da VW, é
+ * como a vendedora escreve "Parati". Chave e valor sempre normalizados.
+ */
+export const VEHICLE_SEARCH_ALIASES: Readonly<Record<string, string>> = {
+  pareti: "parati",
+  paratti: "parati",
+};
+
+/**
+ * Casa um rótulo do catálogo contra o que foi digitado.
+ *
+ * Ordem: (1) substring normalizada — cobre acento, então "citroen" acha
+ * "Citroën"; (2) alias, aceitando também prefixo do termo errado, para que a
+ * lista já filtre enquanto o operador ainda está digitando ("paret" → Parati).
+ * Query vazia não filtra nada, preservando a semântica do campo de busca.
+ */
+export function matchesVehicleQuery(label: string, query: string): boolean {
+  const nq = normalizeVehicleTerm(query);
+  if (!nq) return true;
+  const nl = normalizeVehicleTerm(label);
+  if (nl.includes(nq)) return true;
+  for (const [wrong, right] of Object.entries(VEHICLE_SEARCH_ALIASES)) {
+    if (wrong === nq || wrong.startsWith(nq)) {
+      if (nl.includes(right)) return true;
+    }
+  }
+  return false;
 }

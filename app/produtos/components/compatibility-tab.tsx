@@ -60,6 +60,7 @@ import {
   getModelsForBrand,
   getYearsForModel,
   getVersionsForModel,
+  matchesVehicleQuery,
 } from "../../lib/vehicle-catalog";
 
 // ---- Tipos locais ----
@@ -142,6 +143,12 @@ interface MultiSearchableSelectProps {
   emptyMessage?: string;
   disabled?: boolean;
   showSelectAll?: boolean;
+  /**
+   * Casamento customizado do termo digitado com o rótulo da opção. Sem esta
+   * prop o filtro continua sendo o `includes` case-insensitive de sempre —
+   * quem não passa nada não muda de comportamento.
+   */
+  matchFn?: (label: string, query: string) => boolean;
 }
 
 function MultiSearchableSelect({
@@ -153,6 +160,7 @@ function MultiSearchableSelect({
   emptyMessage = "Nenhuma opção encontrada.",
   disabled = false,
   showSelectAll = false,
+  matchFn,
 }: MultiSearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
@@ -173,9 +181,12 @@ function MultiSearchableSelect({
 
   const filteredOptions = useMemo(() => {
     if (!inputValue.trim()) return options;
+    if (matchFn) {
+      return options.filter((o) => matchFn(o.label, inputValue));
+    }
     const q = inputValue.toLowerCase();
     return options.filter((o) => o.label.toLowerCase().includes(q));
-  }, [options, inputValue]);
+  }, [options, inputValue, matchFn]);
 
   // Agrupar opções por grupo quando existir
   const grouped = useMemo(() => {
@@ -769,6 +780,7 @@ export function CompatibilityTab({
                 searchPlaceholder="Buscar modelo..."
                 emptyMessage="Nenhum modelo encontrado."
                 disabled={addBrands.length === 0}
+                matchFn={matchesVehicleQuery}
               />
             </div>
 
