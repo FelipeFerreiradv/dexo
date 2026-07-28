@@ -1,6 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
+// Gate real do bloqueio de Dashboard por colaborador. Sem ele, esconder o item
+// no menu e barrar o Server Component não impediria um GET direto nestas rotas,
+// que expõem faturamento do período, receita por conta e top produtos.
+import { requirePageAccess } from "../middlewares/require-page-access.middleware";
 import { Platform, Prisma } from "@prisma/client";
 import {
   aggregateTeamProductivity,
@@ -30,7 +34,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/listing-stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user?.dataOwnerId;
@@ -132,7 +136,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -182,7 +186,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/integrations",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user?.dataOwnerId;
@@ -220,7 +224,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/products-by-category",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -253,7 +257,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-distribution",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -301,7 +305,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/orders-over-time",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -364,6 +368,12 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    * GET /dashboard/search?q=term&limit=5
    * Busca unificada em produtos, pedidos e anúncios (todas as contas do usuário)
    */
+  // SEM requirePageAccess de propósito: apesar do prefixo /dashboard, esta é a
+  // BUSCA GLOBAL do menu lateral (components/app-sidebar.tsx), presente em
+  // todas as páginas. Bloqueá-la para quem não vê o Dashboard tiraria a busca
+  // do colaborador — bem além do que o cliente pediu, que é esconder
+  // faturamento e estatística de vendas. Ela devolve produtos, pedidos e
+  // anúncios, nenhum número agregado de receita.
   fastify.get(
     "/search",
     { preHandler: [authMiddleware] },
@@ -463,7 +473,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-changes",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       // @deprecated Usado somente pelo dashboard antigo. Remover após migração para listing-stats.
       try {
@@ -527,7 +537,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/product-metrics",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
@@ -695,7 +705,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/account-stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
@@ -740,6 +750,12 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    * GET /dashboard/notifications
    * Eventos recentes para o dashboard (pedidos, produtos, integrações, métricas de anúncios)
    */
+  // SEM requirePageAccess de propósito: alimenta o SINO de notificações do
+  // cabeçalho (components/app-header.tsx), presente em todas as páginas.
+  // Devolve eventos recentes com o valor de cada pedido — o mesmo dado que a
+  // página de Pedidos já mostra —, nunca receita agregada. Bloquear aqui
+  // quebraria o cabeçalho do colaborador sem esconder nada que ele não veja
+  // em outro lugar.
   fastify.get(
     "/notifications",
     { preHandler: [authMiddleware] },
@@ -944,7 +960,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/report.pdf",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const ownerId = (request as any).user?.dataOwnerId as

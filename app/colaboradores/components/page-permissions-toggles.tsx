@@ -8,15 +8,20 @@ export type PagePerms = Record<string, boolean>;
 
 /**
  * Deriva o estado dos toggles a partir do valor salvo. Regra: TUDO ligado por
- * padrão (zero regressão) — só `=== false` desliga. `dashboard` é omitido (é
- * sempre acessível, não pode ser bloqueado).
+ * padrão (zero regressão) — só `=== false` desliga.
+ *
+ * `dashboard` era omitido aqui e na renderização porque a página não podia ser
+ * bloqueada (o redirect das páginas bloqueadas apontava para "/"). Com o
+ * redirect indo para a primeira página liberada, ela entra na lista — é o que
+ * permite esconder faturamento de colaborador. Colaboradores já cadastrados
+ * não mudam de acesso: a chave só passa a existir quando o admin desligar o
+ * toggle, e ausente continua significando liberado.
  */
 export function pagePermsFromValue(
   value?: Record<string, boolean> | null,
 ): PagePerms {
   const out: PagePerms = {};
   for (const p of PAGE_DEFS) {
-    if (p.id === "dashboard") continue;
     out[p.id] = value?.[p.id] !== false;
   }
   return out;
@@ -40,10 +45,11 @@ export function PagePermissionsToggles({
       <Label>Acesso às páginas</Label>
       <p className="text-xs text-muted-foreground">
         Todas ligadas por padrão. Desligue as páginas que este colaborador não
-        deve ver.
+        deve ver. Ao desligar o Dashboard, ele passa a entrar direto na primeira
+        página liberada.
       </p>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {PAGE_DEFS.filter((p) => p.id !== "dashboard").map((p) => (
+        {PAGE_DEFS.map((p) => (
           <label
             key={p.id}
             className="flex items-center justify-between rounded-md border p-2 text-sm"

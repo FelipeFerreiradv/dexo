@@ -398,11 +398,74 @@ export function AppSidebar({ session }: AppSidebarProps) {
   }, [setOpen]);
 
   const isCollaborator = Boolean((session?.user as any)?.parentUserId);
-  const accessUser = (session?.user ?? null) as {
-    parentUserId?: string | null;
-    role?: string | null;
-    pagePermissions?: Record<string, boolean> | null;
-  } | null;
+
+  // `pagePermissions` chega aqui pelo JWT, que só é reemitido no relogin —
+  // então desligar uma página não sumia do menu até o colaborador sair e
+  // entrar. Esta sonda lê o valor fresco, no mesmo padrão de interval +
+  // visibilityState que o contador de mensagens usa. `undefined` = ainda não
+  // sondado ⇒ vale o JWT, o que evita o menu piscar. Admins não fazem request
+  // nenhum.
+  //
+  // EGRESS: usa `/users/me/page-access` (2 colunas) e não `/users/me`, que
+  // devolveria o usuário inteiro — ~28 colunas mais um join com o pai, o hash
+  // de senha lido só para ser descartado, e `defaultProductDescription`, que é
+  // texto livre. A resposta cai de ~1 KB (podendo chegar a 4 KB com um
+  // template de descrição preenchido) para ~300 bytes, e a leitura no banco
+  // vira um select de 2 colunas. A CADÊNCIA continua a mesma de 60s, para não
+  // alterar o comportamento percebido: o menu segue refletindo um bloqueio em
+  // até um minuto.
+  const [livePagePerms, setLivePagePerms] = React.useState<
+    Record<string, boolean> | null | undefined
+  >(undefined);
+
+  const sessionEmail = session?.user?.email ?? null;
+  React.useEffect(() => {
+    if (!isCollaborator || !sessionEmail) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${getApiBaseUrl()}/users/me/page-access`, {
+          headers: { email: sessionEmail },
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setLivePagePerms(
+          (data?.pagePermissions as Record<string, boolean> | null) ?? null,
+        );
+      } catch {
+        // Erro de rede mantém o valor anterior: nunca alarga nem estreita o
+        // acesso por falha de leitura.
+      }
+    };
+    load();
+    const id = setInterval(() => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        load();
+      }
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [isCollaborator, sessionEmail]);
+
+  const accessUser = React.useMemo(() => {
+    const base = (session?.user ?? null) as {
+      parentUserId?: string | null;
+      role?: string | null;
+      pagePermissions?: Record<string, boolean> | null;
+    } | null;
+    if (!base) return null;
+    return livePagePerms !== undefined
+      ? { ...base, pagePermissions: livePagePerms }
+      : base;
+  }, [session?.user, livePagePerms]);
+
   // Chave estável p/ o useMemo reagir só quando as permissões mudam (o objeto
   // accessUser é recriado a cada render).
   const pagePermsKey = JSON.stringify(accessUser?.pagePermissions ?? null);

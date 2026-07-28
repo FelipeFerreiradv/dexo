@@ -78,6 +78,12 @@ export interface FirePostEffectsInput {
    * sempre apesar do estoque restaurado.
    */
   reopenOnRefill?: { userId: string; force?: boolean };
+  /**
+   * Opcional, só para observabilidade: o mesmo `reason` que foi para o
+   * StockLog. Enriquece o SystemLog de `STOCK_ZEROED_IN_ONE_MOVE`. Ausente =
+   * o alerta ainda é gravado, apenas sem a origem do movimento.
+   */
+  reason?: string;
 }
 
 export class StockDeductionService {
@@ -144,6 +150,25 @@ export class StockDeductionService {
       console.log(
         `${logPrefix} Stock deducted: ${product.name} (${previousStock} → ${newStock})`,
       );
+
+      // OBSERVABILIDADE (não altera o cálculo): um único movimento levou um
+      // produto multi-unidade a zero. Com a aritmética acima isso só acontece
+      // quando a quantidade vendida cobre TODO o saldo — legítimo em venda de
+      // lote, suspeito em qualquer outro caso. Sem este sinal, uma zeragem
+      // indevida de produto com 50 unidades fica invisível por semanas (foi o
+      // que ocorreu com scripts/balcao-stock-fix.ts em 21-22/05/2026).
+      // O SystemLog correspondente é gravado em firePostEffects (pós-commit).
+      if (previousStock > 1 && newStock === 0) {
+        console.warn(
+          JSON.stringify({
+            event: "stock.zeroed_in_one_move",
+            productId: item.productId,
+            previousStock,
+            quantity: item.quantity,
+            reason: input.reason,
+          }),
+        );
+      }
 
       // Enfileira sync durável para cada listing vinculado ao produto.
       const listings = await tx.productListing.findMany({
@@ -317,6 +342,47 @@ export class StockDeductionService {
           ),
         );
     });
+
+    // OBSERVABILIDADE (não altera comportamento): grava SystemLog para cada
+    // produto multi-unidade que foi a zero num único movimento. Roda para
+    // todos os callers, sem opt-in, porque o objetivo é justamente não depender
+    // de ninguém lembrar de ligar. Em restauração o filtro nunca casa
+    // (restoreWithinTx só aumenta o estoque). Best-effort e pós-commit: falha
+    // aqui não afeta o estoque já persistido.
+    const zeroedInOneMove = input.deductions.filter(
+      (d) => d.previousStock > 1 && d.newStock === 0,
+    );
+    if (zeroedInOneMove.length > 0) {
+      setImmediate(() => {
+        void import("@/app/services/system-log.service")
+          .then(async ({ SystemLogService }) => {
+            for (const d of zeroedInOneMove) {
+              await SystemLogService.logWarning(
+                "STOCK_ZEROED_IN_ONE_MOVE",
+                `Produto "${d.productName}" foi de ${d.previousStock} para 0 em um unico movimento`,
+                {
+                  resource: "Product",
+                  resourceId: d.productId,
+                  details: {
+                    productId: d.productId,
+                    productName: d.productName,
+                    previousStock: d.previousStock,
+                    newStock: d.newStock,
+                    quantity: d.quantity,
+                    reason: input.reason ?? null,
+                  },
+                },
+              );
+            }
+          })
+          .catch((err) =>
+            console.error(
+              `${logPrefix} Falha ao registrar SystemLog de zeragem em um movimento (best-effort):`,
+              err,
+            ),
+          );
+      });
+    }
 
     // Pausa-ao-zerar é OPT-IN por caller (venda balcão na Fase 7). Order não
     // passa esse campo → comportamento atual preservado.

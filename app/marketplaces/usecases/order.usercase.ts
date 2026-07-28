@@ -36,6 +36,10 @@ import type {
   MagaluOrder,
   MagaluOrderItem,
 } from "../types/magalu-order.types";
+import {
+  extractMagaluOrderItems,
+  magaluMoneyToNumber,
+} from "../types/magalu-order.types";
 import type {
   OrderCreate,
   OrderItemCreate,
@@ -66,6 +70,18 @@ export interface ImportOrdersResult {
   noProducts: number;
   errors: number;
   stockDeductions: number;
+  /**
+   * Pedidos que a importacao descartou por status fora da janela de venda
+   * confirmada (PAID/SHIPPED/DELIVERED). Antes esse descarte era um `continue`
+   * mudo: um vocabulario de status inesperado zerava a importacao sem deixar
+   * rastro. Opcional para nao alterar o shape de quem ja consome o resultado.
+   */
+  skippedByStatus?: number;
+  /**
+   * Os rotulos de status crus que causaram descarte, de-duplicados. E o dado
+   * que responde "a API mudou o vocabulario?" sem precisar de um pedido real.
+   */
+  skippedStatuses?: string[];
   results: ImportOrderResult[];
 }
 
@@ -117,6 +133,16 @@ interface SyncLogContext {
 // ====================================================================
 
 export class OrderUseCase {
+  /**
+   * Pedidos Magalu já reportados como "sem produto vinculado", por processo.
+   *
+   * Existe para não repetir o alerta a cada ciclo do poll: um pedido sem
+   * vínculo nunca vira Order, então reaparece em todas as passagens enquanto
+   * estiver na janela de data. Memória: só os ids da janela corrente (7 dias)
+   * de pedidos órfãos — na prática dezenas, no pior caso.
+   */
+  private static readonly magaluNoProductsLogged = new Set<string>();
+
   /**
    * Importa pedidos recentes do Mercado Livre
    * @param userId ID do usuário
@@ -875,10 +901,16 @@ export class OrderUseCase {
       return null;
     }
 
+    // EGRESS: os três chamadores (ML, Shopee e Magalu) usam SÓ `product.id`.
+    // Sem o select, cada item de pedido sem vínculo trazia a linha inteira do
+    // Product — ~50 colunas, incluindo `description`, o array `imageUrls` e o
+    // Json `attributes`. Este caminho roda por item, a cada ciclo de
+    // importação, nas três plataformas.
     return prisma.product.findFirst({
       where: userId
         ? { skuNormalized: normalizedSku, userId }
         : { skuNormalized: normalizedSku },
+      select: { id: true },
     });
   }
 
@@ -952,6 +984,18 @@ export class OrderUseCase {
         aggregated.noProducts += result.noProducts;
         aggregated.errors += result.errors;
         aggregated.stockDeductions += result.stockDeductions;
+        if (result.skippedByStatus) {
+          aggregated.skippedByStatus =
+            (aggregated.skippedByStatus ?? 0) + result.skippedByStatus;
+        }
+        for (const s of result.skippedStatuses ?? []) {
+          if (!aggregated.skippedStatuses?.includes(s)) {
+            aggregated.skippedStatuses = [
+              ...(aggregated.skippedStatuses ?? []),
+              s,
+            ];
+          }
+        }
         aggregated.results.push(...result.results);
       } catch (error) {
         aggregated.errors += 1;
@@ -977,10 +1021,20 @@ export class OrderUseCase {
   /**
    * Importa pedidos recentes da Magalu para uma conta específica.
    */
+  /**
+   * @param opts.orderIds Ids de pedido a buscar EXPLICITAMENTE via
+   *   `GET /seller/v1/orders/{id}`, somados (com dedupe) ao resultado do poll
+   *   por janela de data. É o que o webhook usa: ele conhece o id exato do
+   *   pedido (`data.params.id`) e antes o descartava, dependendo de o pedido
+   *   aparecer no poll genérico. Um pedido fora da janela, ou além do teto de
+   *   paginação, ficava invisível. Toda a lógica de criação, vínculo, baixa e
+   *   cancelamento é a mesma — só a origem da lista muda.
+   */
   static async importRecentMagaluOrdersForAccount(
     marketplaceAccountId: string,
     days: number = 7,
     deductStock: boolean = true,
+    opts?: { orderIds?: string[] },
   ): Promise<ImportOrdersResult> {
     const account = await MarketplaceRepository.findById(marketplaceAccountId);
     if (!account || !account.accessToken || !account.externalUserId) {
@@ -1006,10 +1060,67 @@ export class OrderUseCase {
       days,
     );
 
-    result.totalOrders = magaluOrders.length;
-
     const extractExternalOrderId = (o: MagaluOrder): string =>
       String(o.id ?? o.code ?? o.order_id ?? "");
+
+    // Pedidos pedidos explicitamente (webhook / backfill dirigido). Buscados um
+    // a um e mesclados por id — o poll continua sendo a rede de segurança.
+    // Best-effort por pedido: falhar em buscar UM não pode derrubar o ciclo.
+    if (opts?.orderIds?.length) {
+      const jaNaLista = new Set(
+        magaluOrders.map((o) => extractExternalOrderId(o)).filter(Boolean),
+      );
+      // Também indexa por `code`: o poll devolve o pedido com `id` (UUID) e
+      // `code` (número), e quem pede pode conhecer qualquer um dos dois.
+      for (const o of magaluOrders) {
+        if (o.code) jaNaLista.add(String(o.code));
+      }
+      for (const wantedId of opts.orderIds) {
+        const id = String(wantedId ?? "").trim();
+        if (!id || jaNaLista.has(id)) continue;
+        // EGRESS/chamadas externas: o endpoint de detalhe só aceita o `code`
+        // (numérico) — com um UUID responde 404 sempre. O webhook manda
+        // `data.params.id`, que é UUID; tentar buscá-lo gastaria uma requisição
+        // garantidamente inútil e ainda poluiria o log a cada evento. Nesse
+        // caso o poll por janela, que já rodou acima, é quem cobre o pedido.
+        if (!/^\d+$/.test(id)) {
+          console.log(
+            JSON.stringify({
+              event: "magalu.order.fetch_by_id_skipped",
+              externalOrderId: id,
+              marketplaceAccountId,
+              motivo: "detalhe_exige_code_numerico",
+            }),
+          );
+          continue;
+        }
+        try {
+          const one = await this.getMagaluOrderWithRefresh(
+            {
+              id: account.id,
+              accessToken: account.accessToken,
+              refreshToken: account.refreshToken,
+            },
+            id,
+          );
+          if (one) {
+            magaluOrders.push(one);
+            jaNaLista.add(id);
+          }
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              event: "magalu.order.fetch_by_id_failed",
+              externalOrderId: id,
+              marketplaceAccountId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      }
+    }
+
+    result.totalOrders = magaluOrders.length;
 
     const externalIds = magaluOrders
       .map((o) => extractExternalOrderId(o))
@@ -1052,7 +1163,10 @@ export class OrderUseCase {
 
     for (const magaluOrder of magaluOrders) {
       const externalOrderId = extractExternalOrderId(magaluOrder);
-      const itemList = magaluOrder.items ?? [];
+      // Os itens vivem em `deliveries[].items[]`, não em `order.items`. Ler o
+      // campo errado fazia TODO pedido cair em `no_products` — a razão pela
+      // qual nenhuma venda Magalu jamais virou Order.
+      const itemList = extractMagaluOrderItems(magaluOrder);
       try {
         if (!externalOrderId) {
           result.errors++;
@@ -1079,13 +1193,17 @@ export class OrderUseCase {
           // mapeia para CANCELLED, mas é cancelamento por INDISPONIBILIDADE
           // (o vendedor declarou que a peça não existe) — estornar criaria
           // estoque fantasma e oversell cross-channel. Não tocar.
-          const rawMagaluStatus = String(
-            magaluOrder.status ?? "",
-          ).toLowerCase();
+          // normalizeMagaluStatus (e nao String(...)) para que um status vindo
+          // como objeto tambem seja reconhecido — antes viraria
+          // "[object Object]" e o cancelamento passaria despercebido.
+          const rawMagaluStatus = this.normalizeMagaluStatus(
+            magaluOrder.status,
+          );
           if (
             process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1" &&
             (rawMagaluStatus === "cancelled" ||
-              rawMagaluStatus === "canceled") &&
+              rawMagaluStatus === "canceled" ||
+              rawMagaluStatus === "cancelado") &&
             // EGRESS: já CANCELLED local (snapshot deste ciclo) ⇒ o handler
             // seria fast-path no-op — pular poupa 1 query por cancelado por
             // ciclo, para sempre. Snapshot stale ⇒ no pior caso o handler
@@ -1134,6 +1252,27 @@ export class OrderUseCase {
           mappedStatus !== "SHIPPED" &&
           mappedStatus !== "DELIVERED"
         ) {
+          // Antes era um `continue` mudo. Um pedido descartado aqui e um
+          // pedido que nao existe para o sistema: sem Order, sem baixa de
+          // estoque, sem aparecer no financeiro. Se o vocabulario de status
+          // da API mudar, este log e o contador sao o unico aviso.
+          const rawSkipped = this.normalizeMagaluStatus(magaluOrder.status);
+          console.log(
+            JSON.stringify({
+              event: "magalu.order.skipped_status",
+              externalOrderId,
+              marketplaceAccountId,
+              rawStatus: rawSkipped || null,
+              mappedStatus,
+            }),
+          );
+          result.skippedByStatus = (result.skippedByStatus ?? 0) + 1;
+          if (rawSkipped && !result.skippedStatuses?.includes(rawSkipped)) {
+            result.skippedStatuses = [
+              ...(result.skippedStatuses ?? []),
+              rawSkipped,
+            ];
+          }
           continue;
         }
 
@@ -1156,15 +1295,62 @@ export class OrderUseCase {
             itemsTotal: itemList.length,
           });
           result.noProducts++;
+          // Venda existe na Magalu e NAO entrou no sistema: dinheiro perdido,
+          // estoque estufado e oversell nos outros canais. Antes so havia um
+          // console.log que ninguem le — agora aparece na tela de Logs.
+          //
+          // Dedupe por processo: um pedido sem vinculo NUNCA vira Order, entao
+          // reaparece em todo ciclo do poll (15 min) enquanto estiver na janela.
+          // Sem esta guarda seria um INSERT em SystemLog a cada ciclo, para
+          // sempre, pelo mesmo pedido — a tabela cresceria sozinha e o alerta
+          // viraria ruido. O alerta continua aparecendo uma vez por pedido; um
+          // restart do processo pode reemiti-lo, o que e inofensivo.
+          if (!OrderUseCase.magaluNoProductsLogged.has(externalOrderId)) {
+            OrderUseCase.magaluNoProductsLogged.add(externalOrderId);
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              `Pedido Magalu #${externalOrderId} nao pode ser vinculado a nenhum produto`,
+              {
+                resource: "Order",
+                details: {
+                  externalOrderId,
+                  marketplaceAccountId,
+                  itemsTotal: itemList.length,
+                  platform: "MAGALU",
+                },
+              },
+            ).catch(() => {});
+          }
           continue;
         }
 
+        // Vinculo parcial: parte dos itens entrou, parte sumiu. O pedido e
+        // criado (melhor que perder tudo), mas a baixa fica incompleta.
+        if (linkedCount < itemList.length) {
+          console.warn(
+            JSON.stringify({
+              event: "magalu.order.items_partially_linked",
+              externalOrderId,
+              marketplaceAccountId,
+              linked: linkedCount,
+              total: itemList.length,
+            }),
+          );
+        }
+
+        // `amounts.total` vem em CENTAVOS com o divisor no próprio objeto
+        // ({ total: 19999, normalizer: 100 }) e já inclui o frete. Os campos
+        // planos (total/total_amount/amount) nunca aparecem na API real, mas
+        // seguem como fallback.
+        const totalDoPedido = magaluMoneyToNumber(magaluOrder.amounts);
         const rawTotal =
           magaluOrder.total ?? magaluOrder.total_amount ?? magaluOrder.amount;
         const totalAmount =
-          typeof rawTotal === "number" && Number.isFinite(rawTotal)
-            ? Number(rawTotal)
-            : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+          totalDoPedido > 0
+            ? totalDoPedido
+            : typeof rawTotal === "number" && Number.isFinite(rawTotal)
+              ? Number(rawTotal)
+              : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
 
         const orderData: OrderCreate = {
           marketplaceAccountId,
@@ -1172,6 +1358,7 @@ export class OrderUseCase {
           status: mappedStatus,
           totalAmount,
           customerName:
+            magaluOrder.customer?.name ??
             magaluOrder.customer_name ??
             magaluOrder.buyer?.name ??
             undefined,
@@ -1193,6 +1380,27 @@ export class OrderUseCase {
               `[OrderUseCase] Falha ao descontar estoque para pedido Magalu #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
               err,
             );
+            // O pedido JA foi criado, entao o ciclo seguinte o vera em
+            // `already_exists` e nunca retentara a baixa: o estoque fica
+            // estufado para sempre e sem rastro. Este SystemLog e o unico
+            // aviso acionavel — sem ele o oversell so aparece na reclamacao
+            // do comprador.
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              `Pedido Magalu #${externalOrderId} importado SEM baixa de estoque`,
+              {
+                resource: "Order",
+                resourceId: created.id,
+                details: {
+                  externalOrderId,
+                  orderId: created.id,
+                  marketplaceAccountId,
+                  platform: "MAGALU",
+                  productIds: items.map((it) => it.productId),
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              },
+            ).catch(() => {});
           }
         }
 
@@ -1273,11 +1481,44 @@ export class OrderUseCase {
     let linkedCount = 0;
 
     for (const item of items) {
+      // Shape REAL da Magalu (validado 28/07/2026): o SKU do vendedor está em
+      // `item.info.sku`. Os campos de topo (`sku`, `seller_sku`, `product_id`)
+      // nunca aparecem na API — ficam como fallback defensivo. O anúncio Magalu
+      // é criado com `externalListingId = SKU`, então casar por `info.sku` é o
+      // caminho principal, e `info.id` (UUID do produto na Magalu) o secundário.
       const externalListingId = String(
-        item.product_id ?? item.sku ?? item.seller_sku ?? "",
+        item.info?.sku ??
+          item.product_id ??
+          item.sku ??
+          item.seller_sku ??
+          item.info?.id ??
+          "",
       );
       const quantity = Number(item.quantity ?? item.qty ?? 0) || 0;
-      const unitPrice = Number(item.unit_price ?? item.price ?? 0) || 0;
+      // `unit_price` é objeto em centavos: { value: 19999, normalizer: 100 }.
+      // O `Number(objeto)` anterior dava NaN → 0, zerando o valor do pedido.
+      const unitPrice =
+        magaluMoneyToNumber(item.unit_price) ||
+        magaluMoneyToNumber(item.amounts) ||
+        Number(item.price ?? 0) ||
+        0;
+
+      // A Magalu é o único mapper cuja quantidade cai para 0 quando o campo
+      // real do payload tem outro nome (o tipo MagaluOrderItem é declaradamente
+      // não-validado). Quantidade 0 faz `deductWithinTx` descontar zero em
+      // silêncio — e SEM alerta de oversell, porque o alerta só dispara com
+      // quantity > estoque. Este log é o único sinal de que a venda entrou sem
+      // baixar estoque.
+      if (quantity <= 0) {
+        console.warn(
+          JSON.stringify({
+            event: "magalu.order.item_quantity_missing",
+            externalListingId: externalListingId || null,
+            marketplaceAccountId,
+            itemKeys: Object.keys(item ?? {}),
+          }),
+        );
+      }
 
       const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
       const listing =
@@ -1342,7 +1583,10 @@ export class OrderUseCase {
   }
 
   private static extractSkuFromMagalu(item: MagaluOrderItem): string | null {
+    // `info.sku` PRIMEIRO: é onde a API real coloca o SKU do vendedor. Os
+    // demais são fallback defensivo do shape antigo.
     return (
+      (item.info?.sku as string) ||
       (item.seller_sku as string) ||
       (item.sku as string) ||
       (item.product_sku as string) ||
@@ -1350,19 +1594,63 @@ export class OrderUseCase {
     );
   }
 
-  private static mapMagaluStatus(status?: string): OrderStatus {
-    switch ((status ?? "").toLowerCase()) {
+  /**
+   * Normaliza o campo `status` de um pedido Magalu para uma string simples.
+   *
+   * O tipo `MagaluOrder.status` e declarado como `string?`, mas o shape real do
+   * JSON nunca foi confirmado contra a API (ver magalu-order.types.ts). Se a
+   * Magalu devolver um objeto — `{ type: "approved" }`, `{ code: "shipped" }` —
+   * o `String(...)` anterior produzia "[object Object]", que nao casa com
+   * nenhum rotulo conhecido e faz TODO pedido cair no default PENDING e ser
+   * descartado em silencio. Aqui o objeto e desembrulhado pelas chaves usuais.
+   */
+  static normalizeMagaluStatus(status: unknown): string {
+    if (status == null) return "";
+    if (typeof status === "string") return status.trim().toLowerCase();
+    if (typeof status === "number") return String(status);
+    if (typeof status === "object") {
+      const o = status as Record<string, unknown>;
+      for (const key of ["type", "code", "status", "name", "value", "slug"]) {
+        const v = o[key];
+        if (typeof v === "string" && v.trim().length > 0) {
+          return v.trim().toLowerCase();
+        }
+      }
+    }
+    return "";
+  }
+
+  private static mapMagaluStatus(status?: unknown): OrderStatus {
+    switch (this.normalizeMagaluStatus(status)) {
       case "delivered":
+      // Variantes pt-BR. ADITIVAS: nenhum rotulo ja reconhecido muda de
+      // significado. Sem elas, um vocabulario em portugues faria todo pedido
+      // cair no default PENDING e ser descartado sem baixa de estoque.
+      case "entregue":
         return "DELIVERED";
       case "shipped":
+      case "sent":
+      case "enviado":
+      case "despachado":
         return "SHIPPED";
       case "approved":
       case "processing":
       case "invoiced":
+      // "paid" nao estava na lista original — e o rotulo mais provavel de
+      // venda confirmada e o mais caro de perder.
+      case "paid":
+      case "payment_approved":
+      case "payment-approved":
+      case "aprovado":
+      case "pago":
+      case "faturado":
+      case "processando":
         return "PAID";
       case "cancelled":
       case "canceled":
+      case "cancelado":
       case "unavailable":
+      case "indisponivel":
         return "CANCELLED";
       case "new":
       default:
@@ -1397,6 +1685,41 @@ export class OrderUseCase {
       });
 
       return MagaluApiService.getRecentOrders(refreshed.accessToken, days);
+    }
+  }
+
+  /**
+   * Busca UM pedido Magalu por id, com o mesmo tratamento de token expirado do
+   * poll. `MagaluApiService.getOrder` já existia e era código morto: o webhook
+   * tinha o id em mãos e mesmo assim fazia poll genérico por janela de data.
+   */
+  private static async getMagaluOrderWithRefresh(
+    account: {
+      id: string;
+      accessToken: string;
+      refreshToken: string | null;
+    },
+    orderId: string,
+  ): Promise<MagaluOrder | null> {
+    try {
+      return await MagaluApiService.getOrder(account.accessToken, orderId);
+    } catch (error) {
+      if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
+        throw error;
+      }
+
+      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
+        account.id,
+        account.refreshToken,
+      );
+
+      await MarketplaceRepository.updateTokens(account.id, {
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
+      });
+
+      return MagaluApiService.getOrder(refreshed.accessToken, orderId);
     }
   }
 
@@ -1669,6 +1992,7 @@ export class OrderUseCase {
     StockDeductionService.firePostEffects({
       deductions,
       logPrefix: "[OrderUseCase]",
+      reason,
       // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
     });
 

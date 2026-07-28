@@ -45,10 +45,18 @@ export interface PerProductMlOverride {
 
 export interface PerProductShopeeOverride {
   categoryId?: string;
+  /**
+   * "Valor do Anúncio" da Shopee: preço só deste anúncio, sem alterar o preço
+   * do produto. Mesmo contrato do ML. Persistido na coluna JSON
+   * `overrideTemplate`, então não exige migration.
+   */
+  listingPrice?: number;
 }
 
 export interface PerProductMagaluOverride {
   categoryId?: string;
+  /** Idem Shopee. */
+  listingPrice?: number;
 }
 
 export interface PerProductOverrideEntry {

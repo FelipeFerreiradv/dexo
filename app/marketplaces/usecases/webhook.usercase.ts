@@ -129,6 +129,34 @@ async function claimWebhookEvent(
 }
 
 /**
+ * Desfaz o claim de um evento que falhou no processamento.
+ *
+ * O claim é gravado ANTES do processamento (é o que garante idempotência sob
+ * entregas concorrentes). O efeito colateral é que, se o processamento falhar
+ * depois disso, a reentrega do marketplace cai em `duplicate_ignored` e o
+ * pedido se perde em definitivo. Liberando o claim, a reentrega volta a ser
+ * processável — sem abrir mão da proteção contra concorrência, que continua
+ * valendo durante a janela de processamento.
+ *
+ * Best-effort: se a remoção falhar, o pior caso é o comportamento anterior.
+ */
+async function releaseWebhookEvent(
+  source: string,
+  externalId: string,
+): Promise<void> {
+  try {
+    await (prisma as any).webhookEventLog.deleteMany({
+      where: { source, externalId },
+    });
+  } catch (err) {
+    console.warn(
+      `[WebhookUseCase] Falha ao liberar claim do evento ${source}:${externalId} (reentrega sera ignorada):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Use Case para processar webhooks do Mercado Livre e Shopee
  * Responsável por:
  * 1. Validar webhook payload
@@ -505,66 +533,83 @@ export class WebhookUseCase {
         return { success: true, action: "duplicate_ignored" };
       }
 
-      const accounts = await MarketplaceRepository.findAllByExternalUserId(
-        tenantId,
-        Platform.MAGALU,
-        true,
-      );
-
-      if (accounts.length === 0) {
-        void SystemLogService.logWarning(
-          "WEBHOOK_ACCOUNT_NOT_FOUND",
-          `Webhook Magalu ignorado: conta não encontrada para tenant_id=${tenantId}. Pedidos podem estar sendo perdidos.`,
-          {
-            resource: "MarketplaceAccount",
-            details: { tenantId, platform: "MAGALU", topic, resourceId },
-          },
-        ).catch(() => {});
-        return {
-          success: false,
-          error: `Conta Magalu não encontrada para tenant_id: ${tenantId}`,
-        };
-      }
-
-      if (accounts.length > 1) {
-        return {
-          success: false,
-          error: `Múltiplas contas Magalu ativas encontradas para tenant_id: ${tenantId}. Resolva a duplicidade antes de processar webhooks.`,
-        };
-      }
-
-      const [account] = accounts;
-      if (account.status !== "ACTIVE") {
-        return {
-          success: false,
-          error: `Conta Magalu não está ativa (status: ${account.status})`,
-        };
-      }
-
-      // Janela curta (2 dias) — cobre o pedido recém-atualizado + borda de fuso.
-      const importResult =
-        await OrderUseCase.importRecentMagaluOrdersForAccount(
-          account.id,
-          2,
+      // A partir daqui o evento já está reivindicado. Todo caminho de falha
+      // precisa liberar o claim, senão a reentrega da Magalu cai em
+      // `duplicate_ignored` e o pedido se perde em definitivo.
+      try {
+        const accounts = await MarketplaceRepository.findAllByExternalUserId(
+          tenantId,
+          Platform.MAGALU,
           true,
         );
 
-      if (importResult.errors > 0) {
-        return {
-          success: false,
-          accountId: account.id,
-          error: `Erro ao importar pedidos Magalu: ${importResult.errors} erros`,
-        };
-      }
+        if (accounts.length === 0) {
+          void SystemLogService.logWarning(
+            "WEBHOOK_ACCOUNT_NOT_FOUND",
+            `Webhook Magalu ignorado: conta não encontrada para tenant_id=${tenantId}. Pedidos podem estar sendo perdidos.`,
+            {
+              resource: "MarketplaceAccount",
+              details: { tenantId, platform: "MAGALU", topic, resourceId },
+            },
+          ).catch(() => {});
+          await releaseWebhookEvent("MAGALU", dedupKey);
+          return {
+            success: false,
+            error: `Conta Magalu não encontrada para tenant_id: ${tenantId}`,
+          };
+        }
 
-      return {
-        success: true,
-        accountId: account.id,
-        action:
-          importResult.imported > 0
-            ? `imported_${importResult.imported}_orders`
-            : "no_new_orders",
-      };
+        if (accounts.length > 1) {
+          await releaseWebhookEvent("MAGALU", dedupKey);
+          return {
+            success: false,
+            error: `Múltiplas contas Magalu ativas encontradas para tenant_id: ${tenantId}. Resolva a duplicidade antes de processar webhooks.`,
+          };
+        }
+
+        const [account] = accounts;
+        if (account.status !== "ACTIVE") {
+          await releaseWebhookEvent("MAGALU", dedupKey);
+          return {
+            success: false,
+            error: `Conta Magalu não está ativa (status: ${account.status})`,
+          };
+        }
+
+        // Janela curta (2 dias) — cobre o pedido recém-atualizado + borda de
+        // fuso — MAIS o pedido exato do evento, buscado por id. O poll sozinho
+        // não bastava: pedido fora da janela ou além do teto de paginação
+        // simplesmente não aparecia. A duplicidade segue protegida pelo unique
+        // (marketplaceAccountId, externalOrderId) e pelo tratamento de P2002.
+        const importResult =
+          await OrderUseCase.importRecentMagaluOrdersForAccount(
+            account.id,
+            2,
+            true,
+            resourceId ? { orderIds: [String(resourceId)] } : undefined,
+          );
+
+        if (importResult.errors > 0) {
+          await releaseWebhookEvent("MAGALU", dedupKey);
+          return {
+            success: false,
+            accountId: account.id,
+            error: `Erro ao importar pedidos Magalu: ${importResult.errors} erros`,
+          };
+        }
+
+        return {
+          success: true,
+          accountId: account.id,
+          action:
+            importResult.imported > 0
+              ? `imported_${importResult.imported}_orders`
+              : "no_new_orders",
+        };
+      } catch (innerError) {
+        await releaseWebhookEvent("MAGALU", dedupKey);
+        throw innerError;
+      }
     } catch (error) {
       return {
         success: false,

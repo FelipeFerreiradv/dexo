@@ -17,8 +17,13 @@ import { MLApiService } from "../app/marketplaces/services/ml-api.service";
  * banco está desatualizado). Só zera os não-`active`; grava StockLog (guarda o
  * estoque anterior → reversível). Idempotente.
  *
+ * ⚠️ ZERA o estoque, não decrementa. Produtos com `stock > 1` são pulados por
+ * padrão (a premissa "anúncio fora do ar = peça vendida" é de peça única); e
+ * `--apply` exige `--confirmar-zeragem`.
+ *
  *   npx tsx scripts/retire-704-inactive-listings.ts --dry-run
- *   npx tsx scripts/retire-704-inactive-listings.ts --apply
+ *   npx tsx scripts/retire-704-inactive-listings.ts --apply --confirmar-zeragem
+ *   npx tsx scripts/retire-704-inactive-listings.ts --dry-run --incluir-multi-unidade
  */
 
 type RawRow = Record<string, unknown>;
@@ -35,6 +40,10 @@ interface Flags {
   apply: boolean;
   file: string;
   limit: number | null;
+  /** Confirmação explícita além de --apply: a escrita aqui é ZERAGEM. */
+  confirmarZeragem: boolean;
+  /** Sem esta flag, produto com stock > 1 nunca é zerado. */
+  incluirMultiUnidade: boolean;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -52,6 +61,8 @@ function parseFlags(argv: string[]): Flags {
     dryRun: has("dry-run") || !apply,
     file: get("file") ?? DEFAULT_FILE,
     limit: limitRaw && /^\d+$/.test(limitRaw) ? parseInt(limitRaw, 10) : null,
+    confirmarZeragem: has("confirmar-zeragem"),
+    incluirMultiUnidade: has("incluir-multi-unidade"),
   };
 }
 
@@ -125,6 +136,18 @@ async function main(): Promise<void> {
   const flags = parseFlags(process.argv.slice(2));
   console.log(`[retire-704] userId=${flags.userId} modo=${flags.dryRun ? "DRY-RUN" : "APPLY"}`);
 
+  // TRAVA: este script ZERA estoque (não decrementa). `--apply` sozinho não
+  // basta — o estoque anterior só sobrevive no StockLog.
+  if (flags.apply && !flags.confirmarZeragem) {
+    console.error(
+      `[retire-704] ABORTADO: --apply exige também --confirmar-zeragem.` +
+        `\n[retire-704] Rode primeiro com --dry-run, confira os números e repita com --confirmar-zeragem.`,
+    );
+    await prisma.$disconnect();
+    process.exitCode = 1;
+    return;
+  }
+
   const user = await prisma.user.findUnique({
     where: { id: flags.userId },
     select: { email: true, role: true },
@@ -186,6 +209,8 @@ async function main(): Promise<void> {
     ja_zerado: 0,
     zerados: 0,
     manter_ativo: 0,
+    pulado_multi_unidade: 0,
+    pulado_multi_unidade_unidades: 0,
     por_status: {} as Record<string, number>,
     errors: 0,
     detalhes: [] as unknown[],
@@ -216,6 +241,17 @@ async function main(): Promise<void> {
     // RETIRAR
     if (c.stock <= 0) {
       sum.ja_zerado++;
+      continue;
+    }
+    // TRAVA: "anúncio inativo ⇒ retirar do catálogo" zera TODO o saldo. Para
+    // produto multi-unidade isso descarta as unidades restantes, que continuam
+    // fisicamente em prateleira. Excluído por padrão.
+    if (c.stock > 1 && !flags.incluirMultiUnidade) {
+      sum.pulado_multi_unidade++;
+      sum.pulado_multi_unidade_unidades += c.stock;
+      console.warn(
+        `[retire-704][MULTI-UNIDADE] sku=${c.sku} stock=${c.stock} — pulado; use --incluir-multi-unidade para zerar mesmo assim`,
+      );
       continue;
     }
     sum.zerar++;
@@ -283,6 +319,9 @@ async function main(): Promise<void> {
   console.log(`  ${flags.dryRun ? "a zerar" : "zerados"}:              ${flags.dryRun ? sum.zerar : sum.zerados}`);
   console.log(`  já zerados (stock=0):  ${sum.ja_zerado}`);
   console.log(`  MANTIDOS (active ML):  ${sum.manter_ativo}`);
+  console.log(
+    `  pulados multi-unidade: ${sum.pulado_multi_unidade} (${sum.pulado_multi_unidade_unidades} unidades preservadas)`,
+  );
   console.log(`  status ML:             ${JSON.stringify(sum.por_status)}`);
   console.log(`  erros:                 ${sum.errors}`);
   console.log(`  relatório:             ${xlsxPath}`);

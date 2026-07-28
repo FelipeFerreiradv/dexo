@@ -1,6 +1,23 @@
 /**
  * balcao-stock-fix.ts
  *
+ * ⚠️ ESTE SCRIPT É PARA DESMONTE DE PEÇA ÚNICA. Ele ZERA o estoque — não
+ * decrementa. A premissa embutida ("o anúncio saiu do ar, logo a peça foi
+ * vendida no balcão") só vale quando cada produto representa UMA unidade
+ * física. Para quem trabalha com 50 ou 100 unidades do mesmo item, um anúncio
+ * pausado (modo férias, pausa manual, pausa automática do ML) não significa
+ * estoque zero — significa apenas anúncio fora do ar.
+ *
+ * Histórico: em 21-22/05/2026 este script gravou 7.236 movimentos de estoque.
+ * Em 40 deles o produto tinha MAIS DE UMA unidade, e 120 unidades reais
+ * sumiram do catálogo de uma vez. Daí as travas abaixo.
+ *
+ * TRAVAS (ver parseFlags):
+ *   - `--apply` sozinho NÃO grava mais: exige também `--confirmar-zeragem`.
+ *   - produtos com `stock > 1` são EXCLUÍDOS por padrão; para incluí-los é
+ *     preciso `--incluir-multi-unidade`, e cada um é listado no console.
+ *   - antes de gravar, o script imprime o total de unidades que serão perdidas.
+ *
  * Detecta produtos vendidos "no balcão" (offline) cujo estoque local ainda
  * está > 0 mas todos os anúncios ML estão inativos (paused/closed/etc.).
  *
@@ -68,9 +85,10 @@
  *   npx tsx scripts/balcao-stock-fix.ts --user-id=<id>
  *   npx tsx scripts/balcao-stock-fix.ts --feiras-account=JOTABEDESMONTE              # regra modo-feiras
  *   npx tsx scripts/balcao-stock-fix.ts --feiras-account=JOTABEDESMONTE --require-closed  # + só sinal forte
- *   npx tsx scripts/balcao-stock-fix.ts --apply                                       # APLICA
- *   npx tsx scripts/balcao-stock-fix.ts --apply --feiras-account=JOTABEDESMONTE --require-closed
- *   npx tsx scripts/balcao-stock-fix.ts --apply --limit=10                            # só 10 (teste)
+ *   npx tsx scripts/balcao-stock-fix.ts --apply --confirmar-zeragem                   # APLICA
+ *   npx tsx scripts/balcao-stock-fix.ts --apply --confirmar-zeragem --feiras-account=JOTABEDESMONTE --require-closed
+ *   npx tsx scripts/balcao-stock-fix.ts --apply --confirmar-zeragem --limit=10        # só 10 (teste)
+ *   npx tsx scripts/balcao-stock-fix.ts --incluir-multi-unidade                       # dry-run incluindo stock>1
  */
 import "dotenv/config";
 import path from "path";
@@ -166,6 +184,12 @@ function parseFlags() {
     scopeBy, // "db-tag" (default) ou "physical" — usa conta REAL da API (não a tag do DB)
     feirasAccount: get("feiras-account"), // conta em modo feiras: ignora SÓ seus anúncios paused
     requireClosed: argv.includes("--require-closed"), // só candidatos com >=1 closed/inactive/deleted
+    // TRAVA 1: confirmação explícita além de --apply. Este script ZERA estoque;
+    // um --apply digitado por engano custa unidades reais de catálogo.
+    confirmarZeragem: argv.includes("--confirmar-zeragem"),
+    // TRAVA 2: a heurística de peça única não vale para multi-unidade. Fora
+    // desta flag, produto com stock > 1 nunca é candidato.
+    incluirMultiUnidade: argv.includes("--incluir-multi-unidade"),
   };
 }
 
@@ -418,8 +442,25 @@ async function main(): Promise<void> {
   // --require-closed: produtos que seriam candidatos mas só têm paused (sem
   // nenhum closed/inactive/deleted) — sinal mais fraco, segurados pra revisão.
   let skippedPausedOnly = 0;
+  // TRAVA 2 — produtos multi-unidade descartados (ou incluídos sob protesto).
+  let skippedMultiUnidade = 0;
+  let skippedMultiUnidadeUnits = 0;
 
   for (const p of products) {
+    // TRAVA 2: a inferência "anúncio fora do ar ⇒ peça vendida no balcão" só
+    // é válida para peça única. Com stock > 1, zerar destrói as unidades
+    // restantes — foi exatamente o que aconteceu em 21-22/05/2026.
+    if (p.stock > 1) {
+      if (!flags.incluirMultiUnidade) {
+        skippedMultiUnidade++;
+        skippedMultiUnidadeUnits += p.stock;
+        continue;
+      }
+      console.warn(
+        `[balcao][MULTI-UNIDADE] sku=${p.sku} stock=${p.stock} — incluído por --incluir-multi-unidade; zerar perde ${p.stock} unidades`,
+      );
+    }
+
     if (p.listings.length === 0) {
       noListings++;
       continue;
@@ -649,9 +690,12 @@ async function main(): Promise<void> {
         scopeBy: flags.scopeBy,
         feirasAccount: feirasAccountName,
         requireClosed: flags.requireClosed,
+        incluirMultiUnidade: flags.incluirMultiUnidade,
         statusDistribution: Object.fromEntries(statusDist),
         counts: {
           productsStockGt0: products.length,
+          skippedMultiUnidade,
+          skippedMultiUnidadeUnits,
           noListings,
           noMlListings,
           excludedByPhysicalScope,
@@ -672,13 +716,21 @@ async function main(): Promise<void> {
   );
   console.log(`[report] ${outPath}`);
 
+  if (skippedMultiUnidade > 0) {
+    console.log(
+      `\n[balcao] ${skippedMultiUnidade} produto(s) multi-unidade (${skippedMultiUnidadeUnits} unidades) EXCLUÍDOS — a heurística de peça única não vale para eles.` +
+        `\n[balcao] Para incluí-los mesmo assim (e perder essas unidades), passe --incluir-multi-unidade.`,
+    );
+  }
+
   if (isDry) {
-    const args: string[] = ["--apply"];
+    const args: string[] = ["--apply", "--confirmar-zeragem"];
     if (flags.mlAccount) args.push(`--ml-account=${flags.mlAccount}`);
     if (flags.statusSource === "all") args.push(`--status-source=all`);
     if (flags.scopeBy === "physical") args.push(`--scope-by=physical`);
     if (flags.feirasAccount) args.push(`--feiras-account=${flags.feirasAccount}`);
     if (flags.requireClosed) args.push(`--require-closed`);
+    if (flags.incluirMultiUnidade) args.push(`--incluir-multi-unidade`);
     if (flags.limit !== null) args.push(`--limit=${flags.limit}`);
     console.log(
       `\n[balcao] DRY-RUN. Para aplicar:\n  npx tsx scripts/balcao-stock-fix.ts ${args.join(" ")}`,
@@ -689,6 +741,31 @@ async function main(): Promise<void> {
 
   // 5) Apply
   const targets = flags.limit !== null ? candidates.slice(0, flags.limit) : candidates;
+
+  // TRAVA 1 — `--apply` sozinho não basta. A escrita aqui é uma ZERAGEM, não
+  // um decremento: cada produto perde TODO o saldo de uma vez, e o estoque
+  // anterior só sobrevive no StockLog.
+  const unidadesPerdidas = targets.reduce((acc, c) => acc + c.stock, 0);
+  const multiUnidadeAlvo = targets.filter((c) => c.stock > 1);
+  console.log(`\n========== CONFIRMAÇÃO DE ZERAGEM ==========`);
+  console.log(`Produtos a zerar:         ${targets.length}`);
+  console.log(`Unidades que serão PERDIDAS: ${unidadesPerdidas}`);
+  console.log(`Destes, multi-unidade:    ${multiUnidadeAlvo.length}`);
+  for (const c of multiUnidadeAlvo) {
+    console.log(`  - sku=${c.sku} stock=${c.stock} "${c.name.slice(0, 45)}"`);
+  }
+  console.log(`=============================================`);
+
+  if (!flags.confirmarZeragem) {
+    console.error(
+      `\n[balcao] ABORTADO: --apply exige também --confirmar-zeragem.` +
+        `\n[balcao] Confira os números acima e, se estiverem certos, repita o comando com --confirmar-zeragem.`,
+    );
+    await prisma.$disconnect();
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(
     `\n[balcao] APLICANDO decremento em ${targets.length}${flags.limit !== null ? ` (limitado por --limit)` : ""}…`,
   );

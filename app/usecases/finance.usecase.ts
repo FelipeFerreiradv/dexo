@@ -350,6 +350,7 @@ export class FinanceUseCase {
     StockDeductionService.firePostEffects({
       deductions,
       logPrefix: "[FinanceUseCase]",
+      reason: `Venda balcão — Conta a Receber ${id}`,
       pauseOnZero: { userId },
     });
 

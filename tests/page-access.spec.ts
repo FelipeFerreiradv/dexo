@@ -43,8 +43,31 @@ describe("hasPageAccess", () => {
     expect(hasPageAccess(collab({ produtos: true }), "produtos")).toBe(true);
   });
 
-  it("dashboard é SEMPRE acessível (anti-loop), mesmo se marcado false", () => {
-    expect(hasPageAccess(collab({ dashboard: false }), "dashboard")).toBe(true);
+  it("dashboard é bloqueável (chave ausente continua liberando)", () => {
+    // O curto-circuito anti-loop saiu: o redirect das páginas bloqueadas
+    // agora vai para a primeira página liberada, não mais para "/".
+    expect(hasPageAccess(collab({ dashboard: false }), "dashboard")).toBe(
+      false,
+    );
+    // Compatibilidade: TODO registro de hoje está neste caso, porque a UI
+    // nunca enviou a chave `dashboard` no PATCH.
+    expect(hasPageAccess(collab({ financeiro: false }), "dashboard")).toBe(
+      true,
+    );
+    expect(hasPageAccess(collab(null), "dashboard")).toBe(true);
+    // Admin e superadmin nunca são afetados.
+    expect(
+      hasPageAccess(
+        { ...admin, pagePermissions: { dashboard: false } },
+        "dashboard",
+      ),
+    ).toBe(true);
+    expect(
+      hasPageAccess(
+        { ...superadmin, pagePermissions: { dashboard: false } },
+        "dashboard",
+      ),
+    ).toBe(true);
   });
 });
 

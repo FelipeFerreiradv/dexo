@@ -317,6 +317,50 @@ export class ListingRepository {
   }
 
   /**
+   * Overrides que alimentam a FICHA TÉCNICA de um anúncio do par (produto,
+   * conta). Mesma preferência determinística do `findByProductAndAccount`
+   * (placeholder PENDING_ primeiro, senão o mais recente).
+   *
+   * EGRESS-lean: o `findByProductAndAccount` traz a linha INTEIRA do
+   * ProductListing — ~40 colunas, incluindo `imageUrlsOverride`,
+   * `descriptionOverride` e `compatDiagnostics`, que são Json e podem ser
+   * grandes. No caminho de publicação Shopee só interessam os campos que o
+   * mapper de atributos lê, e são estes 14. O resto é bytes trafegados à toa a
+   * cada anúncio criado.
+   */
+  static async findAttributeOverridesByProductAndAccount(
+    productId: string,
+    marketplaceAccountId: string,
+  ) {
+    const rows = await prisma.productListing.findMany({
+      where: { productId, marketplaceAccountId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        externalListingId: true,
+        titleOverride: true,
+        brandOverride: true,
+        modelOverride: true,
+        yearOverride: true,
+        versionOverride: true,
+        partNumberOverride: true,
+        qualityOverride: true,
+        sourceVehicleOverride: true,
+        heightCmOverride: true,
+        widthCmOverride: true,
+        lengthCmOverride: true,
+        weightKgOverride: true,
+        attributesOverride: true,
+        compatibilitiesOverride: true,
+      },
+    });
+    if (rows.length === 0) return null;
+    return (
+      rows.find((r) => r.externalListingId?.startsWith("PENDING_")) ?? rows[0]
+    );
+  }
+
+  /**
    * Anúncio VIVO (active/paused, com id real) do par (produto, conta), se
    * houver. Usado pelo guard anti-duplicata do createMLListing: criar outro
    * anúncio enquanto este existe gera duplicata no ML. `closed` NÃO conta —

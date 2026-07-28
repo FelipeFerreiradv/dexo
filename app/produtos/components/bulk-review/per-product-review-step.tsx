@@ -266,6 +266,8 @@ function LivePreview({
     imageUrls: product.imageUrls ?? undefined,
     price: product.price,
     mlListingPrice: values.mlListingPrice,
+    shopeeListingPrice: values.shopeeListingPrice,
+    magaluListingPrice: values.magaluListingPrice,
     mlItemCondition: values.mlItemCondition,
     mlFreeShipping: values.mlFreeShipping,
     mlHasWarranty: values.mlHasWarranty,

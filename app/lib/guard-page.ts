@@ -2,7 +2,13 @@ import { redirect } from "next/navigation";
 import type { Session } from "next-auth";
 
 import prisma from "@/app/lib/prisma";
-import { hasPageAccess, type PageId } from "@/app/lib/page-access";
+import {
+  firstAllowedPage,
+  hasPageAccess,
+  pageHref,
+  NO_ACCESS_HREF,
+  type PageId,
+} from "@/app/lib/page-access";
 
 /**
  * Entrega C — Guarda server-side de acesso a uma página (colaboradores).
@@ -13,7 +19,16 @@ import { hasPageAccess, type PageId } from "@/app/lib/page-access";
  *  - Admin/superadmin (sem parentUserId) → acesso total, sem query extra.
  *  - Colaborador → LEITURA FRESCA de pagePermissions (efeito imediato quando o
  *    admin desliga a página; não depende do JWT, que só atualiza no relogin).
- *    Bloqueado → redireciona para '/' (Dashboard é sempre acessível → sem loop).
+ *    Bloqueado → redireciona para a PRIMEIRA página liberada; se não houver
+ *    nenhuma, para `/sem-acesso`.
+ *
+ * Por que não redireciona mais para "/" fixo: "/" é o Dashboard, que passou a
+ * ser bloqueável. O alvo agora sai de `firstAllowedPage`, que já filtrou por
+ * `hasPageAccess`, por `exclude` (a página recém-bloqueada) e por
+ * `isPageRoutable` (feature flag). Logo o destino é, por construção, uma página
+ * que não redireciona de volta — a cadeia tem no máximo um salto. E
+ * `/sem-acesso` é terminal porque não é PageId, não está em PAGE_DEFS e não
+ * chama esta função.
  */
 export async function assertPageAccess(
   session: Session,
@@ -33,17 +48,15 @@ export async function assertPageAccess(
     select: { parentUserId: true, role: true, pagePermissions: true },
   });
 
-  const allowed = hasPageAccess(
-    {
-      parentUserId: fresh?.parentUserId ?? user.parentUserId,
-      role: fresh?.role ?? user.role,
-      pagePermissions:
-        (fresh?.pagePermissions as Record<string, boolean> | null) ?? null,
-    },
-    pageId,
-  );
+  const access = {
+    parentUserId: fresh?.parentUserId ?? user.parentUserId,
+    role: fresh?.role ?? user.role,
+    pagePermissions:
+      (fresh?.pagePermissions as Record<string, boolean> | null) ?? null,
+  };
 
-  if (!allowed) {
-    redirect("/");
-  }
+  if (hasPageAccess(access, pageId)) return;
+
+  const alvo = firstAllowedPage(access, { exclude: pageId });
+  redirect(alvo ? pageHref(alvo) : NO_ACCESS_HREF);
 }

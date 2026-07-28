@@ -24,6 +24,13 @@ async function runOnce() {
         await OrderUseCase.importRecentOrdersForAccount(account.id, syncDays, true);
       } else if (account.platform === Platform.SHOPEE) {
         await OrderUseCase.importRecentShopeeOrdersForAccount(account.id, Math.min(syncDays, 15), true);
+      } else if (account.platform === Platform.MAGALU) {
+        // Sem este branch, a Magalu nao tinha NENHUM poll de pedidos: o webhook
+        // era ponto unico de falha e, como nunca chegou (zero registros em
+        // WebhookEventLog com source MAGALU), nenhuma venda Magalu jamais virou
+        // Order — nem para contas com centenas de anuncios ativos. Os blocos
+        // Magalu mais abaixo neste arquivo tratam apenas anuncios e chat.
+        await OrderUseCase.importRecentMagaluOrdersForAccount(account.id, syncDays, true);
       }
     } catch (err) {
       console.error(`[sync-loop] Falha ao importar pedidos para conta ${account.id}:`, err);

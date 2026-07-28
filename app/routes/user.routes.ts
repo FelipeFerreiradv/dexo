@@ -6,6 +6,7 @@ import { SystemLogService } from "../services/system-log.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
 import { toPublicUser } from "../lib/user-serializer";
+import prisma from "../lib/prisma";
 
 //Create User Routes, POST/GET
 export const userRoutes = async (fastify: FastifyInstance) => {
@@ -180,6 +181,44 @@ export const userRoutes = async (fastify: FastifyInstance) => {
         const user = await userRepository.findById(me.id);
         if (!user) return reply.status(404).send({ message: "User not found" });
         return reply.status(200).send(toPublicUser(user));
+      } catch (error) {
+        return reply.status(500).send({
+          message:
+            error instanceof Error ? error.message : "Internal server error",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /users/me/page-access
+   * Só as permissões de página do usuário autenticado.
+   *
+   * ADITIVO — não altera `GET /users/me`. Existe por EGRESS: a sidebar sonda
+   * este dado periodicamente para o menu do colaborador refletir um bloqueio
+   * sem exigir relogin, e usar `/users/me` para isso trafegaria o usuário
+   * inteiro (~28 colunas, incluindo `defaultProductDescription`, que é texto
+   * livre) a cada sondagem. Aqui a leitura é de 2 colunas.
+   *
+   * Não é um gate de segurança: quem decide acesso é `assertPageAccess`
+   * (server component, leitura fresca) e o preHandler `requirePageAccess` nas
+   * rotas. Este endpoint só alimenta a exibição do menu.
+   */
+  fastify.get(
+    "/me/page-access",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const me = (request as any).user as { id: string };
+      try {
+        const row = await prisma.user.findUnique({
+          where: { id: me.id },
+          select: { parentUserId: true, pagePermissions: true },
+        });
+        if (!row) return reply.status(404).send({ message: "User not found" });
+        return reply.status(200).send({
+          parentUserId: row.parentUserId ?? null,
+          pagePermissions: row.pagePermissions ?? null,
+        });
       } catch (error) {
         return reply.status(500).send({
           message:

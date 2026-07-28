@@ -43,6 +43,13 @@ export type LogAction =
   | "USER_ACTIVITY"
   | "OVERSELL_DETECTED"
   | "STOCK_SYNC_FAILED"
+  // Um único movimento levou um produto MULTI-UNIDADE (previousStock > 1) a
+  // estoque zero. A aritmética de venda é decremental e nunca faz isso quando
+  // a quantidade vendida é menor que o estoque; então este registro aponta ou
+  // uma venda que realmente levou todo o saldo, ou um caminho de zeragem
+  // indevida (ver scripts/balcao-stock-fix.ts). Observabilidade: NÃO altera o
+  // cálculo do estoque (ver StockDeductionService).
+  | "STOCK_ZEROED_IN_ONE_MOVE"
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
   | "ML_REACTIVATION_RISK"

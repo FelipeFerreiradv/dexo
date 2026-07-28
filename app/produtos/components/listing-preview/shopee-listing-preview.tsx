@@ -9,8 +9,9 @@
 //
 // Dynamic content comes from the form view-model. Everything labelled
 // "placeholder visual" below is STATIC/illustrative, present only so the mock
-// resembles a real Shopee listing page. Shopee has no price/free-shipping
-// override field, so price = base price and the shipping line is illustrative.
+// resembles a real Shopee listing page. Price now honours the "Valor do
+// Anúncio" field (shopeeListingPrice ?? price); the shipping line is still
+// illustrative — Shopee has no free-shipping override here.
 
 import React from "react";
 import { ImageOff, Search, Minus, Plus, ShoppingCart } from "lucide-react";
