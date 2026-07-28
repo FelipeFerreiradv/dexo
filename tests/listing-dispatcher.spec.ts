@@ -370,6 +370,200 @@ describe("ListingDispatcher.runOneWithResult — aumento escalonado entre contas
   });
 });
 
+// ──────────────────────────────────────────────────────────
+// Bloco B — "Valor do Anúncio" nas 3 plataformas.
+//
+// O motor de push já existia por inteiro (updateShopeeListingFields aplica
+// priceOverride via update_price; updateMagaluListingFields via setPrice). O
+// que bloqueava era um gate de plataforma no dispatcher:
+//   if (ppm && req.platform === "MERCADO_LIVRE")
+// ──────────────────────────────────────────────────────────
+describe("ListingDispatcher — preço por anúncio (perProductOverrides)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const cacheFor = (price: number, costPrice = 50) =>
+    new Map([
+      ["prod-1", { id: "prod-1", name: "Produto X", price, costPrice }],
+    ]) as any;
+
+  function mockCreates() {
+    vi.spyOn(ListingUseCase, "createMLListing").mockResolvedValue({
+      success: true,
+      listingId: "L-ml",
+      externalListingId: "MLB1",
+    } as any);
+    vi.spyOn(ListingUseCase, "createShopeeListing").mockResolvedValue({
+      success: true,
+      listingId: "L-shp",
+    } as any);
+    vi.spyOn(ListingUseCase, "createMagaluListing").mockResolvedValue({
+      success: true,
+      listingId: "L-mgl",
+    } as any);
+    return vi
+      .spyOn(ListingUseCase, "updateListingFields")
+      .mockResolvedValue({ success: true } as any);
+  }
+
+  const template = (
+    ov: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) =>
+    ({
+      ...extra,
+      perProductOverrides: { "prod-1": ov },
+    }) as any;
+
+  const casos = [
+    { plataforma: "MERCADO_LIVRE", chave: "ml" },
+    { plataforma: "SHOPEE", chave: "shopee" },
+    { plataforma: "MAGALU", chave: "magalu" },
+  ] as const;
+
+  for (const { plataforma, chave } of casos) {
+    it(`${plataforma}: listingPrice 150 vira priceOverride 150`, async () => {
+      const updateSpy = mockCreates();
+
+      await ListingDispatcher.runOneWithResult(
+        "user-1",
+        "prod-1",
+        { platform: plataforma, accountId: "acc1" } as any,
+        template({ [chave]: { listingPrice: 150 } }),
+        cacheFor(100),
+      );
+
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(150);
+    });
+
+    it(`${plataforma}: listingPrice 0 NÃO vira override (herda o produto)`, async () => {
+      const updateSpy = mockCreates();
+
+      await ListingDispatcher.runOneWithResult(
+        "user-1",
+        "prod-1",
+        { platform: plataforma, accountId: "acc1" } as any,
+        template({ [chave]: { listingPrice: 0 } }),
+        cacheFor(100),
+      );
+
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it(`${plataforma}: listingPrice negativo NÃO vira override`, async () => {
+      const updateSpy = mockCreates();
+
+      await ListingDispatcher.runOneWithResult(
+        "user-1",
+        "prod-1",
+        { platform: plataforma, accountId: "acc1" } as any,
+        template({ [chave]: { listingPrice: -10 } }),
+        cacheFor(100),
+      );
+
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+  }
+
+  it("o preço de uma plataforma não vaza para as outras", async () => {
+    const updateSpy = mockCreates();
+    const tpl = template({ shopee: { listingPrice: 199.9 } });
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "MERCADO_LIVRE" as const, accountId: "acc1" } as any,
+      tpl,
+      cacheFor(100),
+    );
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "SHOPEE" as const, accountId: "acc1" } as any,
+      tpl,
+      cacheFor(100),
+    );
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(199.9);
+  });
+
+  it("PRECEDÊNCIA: o Valor do Anúncio vence a escada entre contas", async () => {
+    const updateSpy = mockCreates();
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "SHOPEE" as const, accountId: "acc2" } as any,
+      template(
+        { shopee: { listingPrice: 150 } },
+        {
+          crossAccountIncrease: {
+            enabled: true,
+            percent: 10,
+            shopeeIndexByAccountId: { acc2: 1 },
+          },
+        },
+      ),
+      cacheFor(100),
+    );
+
+    // A escada calcularia 110; o preço informado no modal vence.
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(150);
+  });
+
+  it("PRECEDÊNCIA: sem Valor do Anúncio, a escada continua valendo", async () => {
+    const updateSpy = mockCreates();
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "SHOPEE" as const, accountId: "acc2" } as any,
+      template(
+        { shopee: { categoryId: "SHP_1" } },
+        {
+          crossAccountIncrease: {
+            enabled: true,
+            percent: 10,
+            shopeeIndexByAccountId: { acc2: 1 },
+          },
+        },
+      ),
+      cacheFor(100),
+    );
+
+    expect((updateSpy.mock.calls[0][2] as any).priceOverride).toBe(110);
+  });
+
+  it("REGRESSÃO: `attributes` continua restrito ao ML", async () => {
+    const updateSpy = mockCreates();
+    const attrs = { BRAND: { value_name: "Fiat" } };
+
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "MERCADO_LIVRE" as const, accountId: "acc1" } as any,
+      template({ ml: { attributes: attrs } }),
+      cacheFor(100),
+    );
+    expect((updateSpy.mock.calls[0][2] as any).attributesOverride).toEqual(
+      attrs,
+    );
+
+    updateSpy.mockClear();
+    await ListingDispatcher.runOneWithResult(
+      "user-1",
+      "prod-1",
+      { platform: "SHOPEE" as const, accountId: "acc1" } as any,
+      template({ ml: { attributes: attrs } }),
+      cacheFor(100),
+    );
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("ListingDispatcher.dispatch — aumento escalonado no fluxo single (Opção A)", () => {
   beforeEach(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});

@@ -6,9 +6,9 @@
 // IMPORTANT (price/title parity with the Revisão step): this module never
 // formats currency on its own — it receives the SAME `formatCurrency` instance
 // that the dialog/Revisão uses, guaranteeing the preview can never diverge from
-// the review. ML price uses the effective listing price (`mlListingPrice ?? price`,
-// the value the ML listing is actually created with); Shopee has no override and
-// always uses `price`.
+// the review. Every marketplace uses its effective listing price
+// (`<mkt>ListingPrice ?? price`) — the value the listing is actually created
+// with. The "Valor do Anúncio" field now exists for the three of them.
 
 import { ML_CATEGORIES } from "@/app/lib/product-parser";
 
@@ -23,6 +23,8 @@ export interface PreviewFormValues {
   price?: number;
   stock?: number;
   mlListingPrice?: number | null;
+  shopeeListingPrice?: number | null;
+  magaluListingPrice?: number | null;
   mlItemCondition?: string;
   mlFreeShipping?: boolean;
   mlHasWarranty?: boolean;
@@ -296,8 +298,12 @@ export function buildPreviewViewModel(
     condition: values.mlItemCondition === "used" ? "Usado" : "Novo",
 
     mlPriceFormatted: formatCurrency(values.mlListingPrice ?? values.price),
-    shopeePriceFormatted: formatCurrency(values.price),
-    magaluPriceFormatted: formatCurrency(values.price),
+    shopeePriceFormatted: formatCurrency(
+      values.shopeeListingPrice ?? values.price,
+    ),
+    magaluPriceFormatted: formatCurrency(
+      values.magaluListingPrice ?? values.price,
+    ),
 
     freeShipping: !!values.mlFreeShipping,
     warranty: buildWarranty(values),

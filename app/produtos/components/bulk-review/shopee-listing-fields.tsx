@@ -17,6 +17,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { CurrencyInput } from "@/components/ui/currency-input";
 import type {
   PerProductListingConfig,
   ReviewAccountLite,
@@ -216,6 +217,26 @@ export function ShopeeListingFields({
                 sincronize as categorias da Shopee.
               </p>
             )}
+          </div>
+
+          {/* Mesmo campo, rótulo e helper text do ML (ml-listing-fields.tsx). */}
+          <div className="space-y-2">
+            <Label htmlFor="pp-shopeeListingPrice">Valor do Anúncio (R$)</Label>
+            <Controller
+              name="shopeeListingPrice"
+              control={control}
+              render={({ field }) => (
+                <CurrencyInput
+                  id="pp-shopeeListingPrice"
+                  placeholder="Usar preço de venda do produto"
+                  value={field.value}
+                  onChange={field.onChange}
+                />
+              )}
+            />
+            <p className="text-xs text-muted-foreground">
+              Se não informado, será usado o preço de venda do produto.
+            </p>
           </div>
         </div>
       )}

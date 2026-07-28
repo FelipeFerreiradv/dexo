@@ -232,3 +232,155 @@ describe("POST /products — Valor do Anúncio (ML) do fluxo individual", () => 
     expect(tpl?.perProductOverrides?.["prod-1"]?.ml?.listingPrice).toBe(150.5);
   });
 });
+
+// ──────────────────────────────────────────────────────────
+// Bloco B — o mesmo campo passa a valer para Shopee e Magalu.
+//
+// A rota lia `listingPrice` APENAS da entrada MERCADO_LIVRE e gravava em `ml`
+// hardcoded; o preço digitado nas outras seções era descartado no servidor.
+// ──────────────────────────────────────────────────────────
+describe("POST /products — Valor do Anúncio nas 3 plataformas", () => {
+  let app: ReturnType<typeof fastify>;
+
+  const payloadMultiplataforma = (
+    precos: Partial<Record<"ml" | "shopee" | "magalu", number>>,
+  ) => ({
+    sku: "PROD-MULTI",
+    name: "Farol Dianteiro Gol",
+    price: 100.0,
+    stock: 5,
+    imageUrl: "http://localhost:3333/uploads/test.jpg",
+    category: "Carroceria e Lataria",
+    heightCm: 25,
+    widthCm: 25,
+    lengthCm: 45,
+    weightKg: 10,
+    listings: [
+      {
+        platform: "MERCADO_LIVRE",
+        accountIds: ["acc-ml"],
+        categoryId: "MLB1744",
+        ...(precos.ml !== undefined ? { listingPrice: precos.ml } : {}),
+      },
+      {
+        platform: "SHOPEE",
+        accountIds: ["acc-shp"],
+        categoryId: "SHP_102298",
+        ...(precos.shopee !== undefined
+          ? { listingPrice: precos.shopee }
+          : {}),
+      },
+      {
+        platform: "MAGALU",
+        accountIds: ["acc-mgl"],
+        ...(precos.magalu !== undefined
+          ? { listingPrice: precos.magalu }
+          : {}),
+      },
+    ],
+  });
+
+  beforeEach(async () => {
+    app = fastify();
+    await app.register(productRoutes, { prefix: "/products" });
+
+    (CategoryResolutionService.resolveMLCategory as any).mockResolvedValue({
+      externalId: "MLB-MOCK",
+      fullPath: "Mock > Category",
+      source: "explicit",
+    });
+    (CategoryResolutionService.ensureLeafLocalOnly as any).mockResolvedValue({
+      externalId: "MLB-MOCK",
+      fullPath: "Mock > Category",
+    });
+    vi.spyOn(UserRepositoryPrisma.prototype, "findByEmail").mockResolvedValue(
+      fakeUser,
+    );
+    // ProductUseCase.create busca o dono por id (sem preloadedOwner na rota).
+    vi.spyOn(UserRepositoryPrisma.prototype, "findById").mockResolvedValue(
+      fakeUser,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "existsBySku").mockResolvedValue(
+      false,
+    );
+    vi.spyOn(ProductRepositoryPrisma.prototype, "create").mockImplementation(
+      async (data: any) =>
+        ({
+          id: "prod-1",
+          sku: data.sku,
+          name: data.name,
+          price: data.price ?? 0,
+          stock: data.stock ?? 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }) as any,
+    );
+    vi.spyOn(ListingDispatcher, "dispatch").mockReturnValue({
+      queued: [],
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  const post = (payload: unknown) =>
+    app.inject({
+      method: "POST",
+      url: "/products",
+      headers: { email: "test@example.com" },
+      payload: payload as any,
+    });
+
+  it("preço 150 nas 3 entradas vira override nas 3 chaves", async () => {
+    const res = await post(
+      payloadMultiplataforma({ ml: 150, shopee: 150, magalu: 150 }),
+    );
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.ml?.listingPrice).toBe(150);
+    expect(ov?.shopee?.listingPrice).toBe(150);
+    expect(ov?.magalu?.listingPrice).toBe(150);
+  });
+
+  it("preço só na Shopee não contamina ML nem Magalu", async () => {
+    const res = await post(payloadMultiplataforma({ shopee: 199.9 }));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.shopee?.listingPrice).toBe(199.9);
+    expect(ov?.ml).toBeUndefined();
+    expect(ov?.magalu).toBeUndefined();
+  });
+
+  it("preços diferentes por plataforma são preservados", async () => {
+    const res = await post(
+      payloadMultiplataforma({ ml: 100, shopee: 120, magalu: 140 }),
+    );
+
+    expect(res.statusCode, res.payload).toBe(201);
+    const ov = dispatchedTemplate()?.perProductOverrides?.["prod-1"];
+    expect(ov?.ml?.listingPrice).toBe(100);
+    expect(ov?.shopee?.listingPrice).toBe(120);
+    expect(ov?.magalu?.listingPrice).toBe(140);
+  });
+
+  it("zero e negativo não viram override (herdam o produto)", async () => {
+    const res = await post(
+      payloadMultiplataforma({ ml: 0, shopee: 0, magalu: -10 }),
+    );
+
+    expect(res.statusCode, res.payload).toBe(201);
+    // Sem nenhum preço válido e sem cascata, o template segue nulo.
+    expect(dispatchedTemplate()).toBeFalsy();
+  });
+
+  it("nenhum preço informado mantém o dispatch idêntico ao de hoje", async () => {
+    const res = await post(payloadMultiplataforma({}));
+
+    expect(res.statusCode, res.payload).toBe(201);
+    expect(dispatchedTemplate()).toBeFalsy();
+  });
+});

@@ -885,13 +885,11 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           // dispatchRequests (1ª de cada marketplace = preço base; escadas
           // independentes por plataforma). Sem isso, o dispatch segue
           // idêntico ao de hoje (overrideTemplate undefined).
-          const mlListingCfg = (
-            bgListings as Array<{
-              platform?: string;
-              listingPrice?: number;
-              crossAccountIncrease?: { enabled?: boolean; percent?: number };
-            }>
-          ).find((l) => l.platform === "MERCADO_LIVRE");
+          const listingCfgs = bgListings as Array<{
+            platform?: string;
+            listingPrice?: number;
+            crossAccountIncrease?: { enabled?: boolean; percent?: number };
+          }>;
           // A config pode vir em QUALQUER entrada (o modal replica o controle
           // nas seções Shopee/Magalu com estado compartilhado). Lê a 1ª
           // habilitada — clientes antigos (config só na entrada ML) seguem
@@ -916,21 +914,33 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           // fluxo em massa (modo Revisão individual) já usa, e o dispatcher
           // aplica no override pós-create. Só > 0 vira override: vazio/zero
           // significa herdar o preço do produto, nunca publicar por R$ 0.
-          const mlListingPrice = mlListingCfg?.listingPrice;
-          if (typeof mlListingPrice === "number" && mlListingPrice > 0) {
+          //
+          // Antes lia apenas a entrada MERCADO_LIVRE e gravava em `ml`
+          // hardcoded — o campo existia só na seção ML do modal. Agora as três
+          // entradas são lidas, cada uma para a sua chave.
+          const PLATAFORMA_PARA_CHAVE = {
+            MERCADO_LIVRE: "ml",
+            SHOPEE: "shopee",
+            MAGALU: "magalu",
+          } as const;
+          const produtoId = data.id as string;
+          for (const [plataforma, chave] of Object.entries(
+            PLATAFORMA_PARA_CHAVE,
+          )) {
+            const preco = listingCfgs.find(
+              (l) => l.platform === plataforma,
+            )?.listingPrice;
+            if (typeof preco !== "number" || preco <= 0) continue;
+            const atual = overrideTemplate?.perProductOverrides?.[produtoId];
             overrideTemplate = {
               ...(overrideTemplate ?? {}),
               perProductOverrides: {
                 ...(overrideTemplate?.perProductOverrides ?? {}),
-                [data.id as string]: {
-                  ...(overrideTemplate?.perProductOverrides?.[
-                    data.id as string
-                  ] ?? {}),
-                  ml: {
-                    ...(overrideTemplate?.perProductOverrides?.[
-                      data.id as string
-                    ]?.ml ?? {}),
-                    listingPrice: mlListingPrice,
+                [produtoId]: {
+                  ...(atual ?? {}),
+                  [chave]: {
+                    ...((atual as any)?.[chave] ?? {}),
+                    listingPrice: preco,
                   },
                 },
               },

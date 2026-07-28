@@ -749,16 +749,38 @@ export class ListingDispatcher {
 
       // Override por produto (modo Revisão individual): ficha técnica e preço do
       // anúncio entram pelo caminho pós-create existente (updateListingFields já
-      // aceita attributesOverride/priceOverride). Só ML; preço explícito do
-      // produto vence a regra global/escalonada para ESTE produto.
-      const ppm = overrideTemplate.perProductOverrides?.[productId]?.ml;
+      // aceita attributesOverride/priceOverride).
+      //
+      // PRECEDÊNCIA (é o último `fields = {...}` do fluxo, então vence tudo):
+      //   "Valor do Anúncio" > escada crossAccountIncrease > regra global de
+      //   preço do bulk > product.price.
+      // Regra `> 0` deliberada: vazio ou zero significa herdar o preço do
+      // produto — os três marketplaces rejeitam publicação por R$ 0.
+      const ov = overrideTemplate.perProductOverrides?.[productId];
+      const ppm = ov?.ml;
       if (ppm && req.platform === "MERCADO_LIVRE") {
+        // `attributes` segue restrito ao ML: o mapa é de attribute_id do ML.
+        // A ficha da Shopee tem vocabulário próprio e é montada no create,
+        // pelo shopee-attribute-mapper.
         if (ppm.attributes && Object.keys(ppm.attributes).length > 0) {
           fields = { ...(fields ?? {}), attributesOverride: ppm.attributes };
         }
-        if (typeof ppm.listingPrice === "number" && ppm.listingPrice > 0) {
-          fields = { ...(fields ?? {}), priceOverride: ppm.listingPrice };
-        }
+      }
+
+      // Preço por anúncio nas 3 plataformas. O motor já existia por inteiro
+      // (updateShopeeListingFields aplica via update_price;
+      // updateMagaluListingFields via setPrice) — só o gate de plataforma
+      // impedia Shopee e Magalu de usá-lo.
+      const perProductPrice =
+        req.platform === "MERCADO_LIVRE"
+          ? ppm?.listingPrice
+          : req.platform === "SHOPEE"
+            ? ov?.shopee?.listingPrice
+            : req.platform === "MAGALU"
+              ? ov?.magalu?.listingPrice
+              : undefined;
+      if (typeof perProductPrice === "number" && perProductPrice > 0) {
+        fields = { ...(fields ?? {}), priceOverride: perProductPrice };
       }
 
       if (fields) {

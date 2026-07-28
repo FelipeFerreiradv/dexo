@@ -63,6 +63,13 @@ export const perProductListingSchema = z.object({
   mlLocalPickup: z.boolean().optional(),
   mlManufacturingTime: z.number().int().min(0).nullable().optional(),
   mlListingPrice: z.number().min(0).nullable().optional(),
+  /**
+   * "Valor do Anúncio" da Shopee e da Magalu — mesmo contrato do
+   * `mlListingPrice`: preço só daquele anúncio, sem alterar o preço do
+   * produto. Vazio/0 = herda o produto (nunca publica por R$ 0).
+   */
+  shopeeListingPrice: z.number().min(0).nullable().optional(),
+  magaluListingPrice: z.number().min(0).nullable().optional(),
 });
 
 export type PerProductListingConfig = z.infer<typeof perProductListingSchema>;
@@ -122,10 +129,18 @@ export interface PerProductMlOverride {
 
 export interface PerProductShopeeOverride {
   categoryId?: string;
+  /**
+   * Preço só deste anúncio, sem alterar o preço do produto. Aplicado no
+   * override pós-create, pelo mesmo caminho do ML (updateListingFields já sabe
+   * empurrar priceOverride para a Shopee via update_price).
+   */
+  listingPrice?: number;
 }
 
 export interface PerProductMagaluOverride {
   categoryId?: string;
+  /** Idem Shopee; na Magalu o push vai por setPrice. */
+  listingPrice?: number;
 }
 
 export interface PerProductOverrideEntry {
@@ -174,6 +189,8 @@ export function configFromDefaults(
     mlLocalPickup: false,
     mlManufacturingTime: null,
     mlListingPrice: null,
+    shopeeListingPrice: null,
+    magaluListingPrice: null,
   };
 }
 
@@ -240,6 +257,7 @@ export function buildPerProductOverrides(
       if (cfg.includeShopee) {
         const shopee = pruneUndefined({
           categoryId: cfg.shopeeCategory || undefined,
+          listingPrice: cfg.shopeeListingPrice ?? undefined,
         }) as PerProductShopeeOverride;
         if (Object.keys(shopee).length > 0) entry.shopee = shopee;
         const disabled = globalShopeeIds.filter(
@@ -255,6 +273,7 @@ export function buildPerProductOverrides(
       if (cfg.includeMagalu) {
         const magalu = pruneUndefined({
           categoryId: cfg.magaluCategory || undefined,
+          listingPrice: cfg.magaluListingPrice ?? undefined,
         }) as PerProductMagaluOverride;
         if (Object.keys(magalu).length > 0) entry.magalu = magalu;
         const disabled = globalMagaluIds.filter(

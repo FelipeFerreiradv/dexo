@@ -164,12 +164,16 @@ const productSchema = z.object({
   createShopeeListing: z.boolean().optional(),
   shopeeAccountIds: z.array(z.string()).optional(),
   shopeeCategory: z.string().optional(),
+  /** "Valor do Anúncio" da Shopee — mesmo contrato do mlListingPrice. */
+  shopeeListingPrice: z.number().min(0).optional().nullable(),
 
   // Step Magalu (opcional). A categoria é sugerida automaticamente (mesma
   // resolução do backend) e o usuário pode buscar/trocar — paridade ML/Shopee.
   createMagaluListing: z.boolean().optional(),
   magaluAccountIds: z.array(z.string()).optional(),
   magaluCategory: z.string().optional(),
+  /** "Valor do Anúncio" da Magalu — mesmo contrato do mlListingPrice. */
+  magaluListingPrice: z.number().min(0).optional().nullable(),
 
   // Step 2: Preços e Estoque
   price: z
@@ -616,9 +620,11 @@ export function CreateProductDialog({
       createShopeeListing: false,
       shopeeAccountIds: [],
       shopeeCategory: "",
+      shopeeListingPrice: null,
       createMagaluListing: false,
       magaluAccountIds: [],
       magaluCategory: "",
+      magaluListingPrice: null,
       price: 0,
       stock: 0,
       costPrice: null,
@@ -2625,6 +2631,7 @@ export function CreateProductDialog({
           platform: "SHOPEE",
           accountIds: selectedShopeeAccounts,
           categoryId: data.shopeeCategory || undefined,
+          listingPrice: data.shopeeListingPrice ?? undefined,
           crossAccountIncrease: crossAccountCfg,
         });
       }
@@ -2635,6 +2642,7 @@ export function CreateProductDialog({
           accountIds: selectedMagaluAccounts,
           // categoria escolhida no modal; se vazia, o backend resolve no envio.
           categoryId: data.magaluCategory || undefined,
+          listingPrice: data.magaluListingPrice ?? undefined,
           crossAccountIncrease: crossAccountCfg,
         });
       }
@@ -4485,6 +4493,29 @@ export function CreateProductDialog({
                     )}
                   </div>
                 )}
+
+                {watchCreateShopeeListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="shopeeListingPrice">
+                      Valor do Anúncio (R$)
+                    </Label>
+                    <Controller
+                      name="shopeeListingPrice"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="shopeeListingPrice"
+                          placeholder="Usar preço de venda do produto"
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Se não informado, será usado o preço de venda do produto.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -4733,6 +4764,29 @@ export function CreateProductDialog({
                             .filter(Boolean)
                             .join(" > ")
                         : "Nenhuma"}
+                    </p>
+                  </div>
+                )}
+
+                {watchCreateMagaluListing && (
+                  <div className="space-y-2">
+                    <Label htmlFor="magaluListingPrice">
+                      Valor do Anúncio (R$)
+                    </Label>
+                    <Controller
+                      name="magaluListingPrice"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="magaluListingPrice"
+                          placeholder="Usar preço de venda do produto"
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Se não informado, será usado o preço de venda do produto.
                     </p>
                   </div>
                 )}
