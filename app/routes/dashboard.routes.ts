@@ -368,9 +368,15 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    * GET /dashboard/search?q=term&limit=5
    * Busca unificada em produtos, pedidos e anúncios (todas as contas do usuário)
    */
+  // SEM requirePageAccess de propósito: apesar do prefixo /dashboard, esta é a
+  // BUSCA GLOBAL do menu lateral (components/app-sidebar.tsx), presente em
+  // todas as páginas. Bloqueá-la para quem não vê o Dashboard tiraria a busca
+  // do colaborador — bem além do que o cliente pediu, que é esconder
+  // faturamento e estatística de vendas. Ela devolve produtos, pedidos e
+  // anúncios, nenhum número agregado de receita.
   fastify.get(
     "/search",
-    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -744,9 +750,15 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    * GET /dashboard/notifications
    * Eventos recentes para o dashboard (pedidos, produtos, integrações, métricas de anúncios)
    */
+  // SEM requirePageAccess de propósito: alimenta o SINO de notificações do
+  // cabeçalho (components/app-header.tsx), presente em todas as páginas.
+  // Devolve eventos recentes com o valor de cada pedido — o mesmo dado que a
+  // página de Pedidos já mostra —, nunca receita agregada. Bloquear aqui
+  // quebraria o cabeçalho do colaborador sem esconder nada que ele não veja
+  // em outro lugar.
   fastify.get(
     "/notifications",
-    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;

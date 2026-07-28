@@ -134,6 +134,16 @@ interface SyncLogContext {
 
 export class OrderUseCase {
   /**
+   * Pedidos Magalu já reportados como "sem produto vinculado", por processo.
+   *
+   * Existe para não repetir o alerta a cada ciclo do poll: um pedido sem
+   * vínculo nunca vira Order, então reaparece em todas as passagens enquanto
+   * estiver na janela de data. Memória: só os ids da janela corrente (7 dias)
+   * de pedidos órfãos — na prática dezenas, no pior caso.
+   */
+  private static readonly magaluNoProductsLogged = new Set<string>();
+
+  /**
    * Importa pedidos recentes do Mercado Livre
    * @param userId ID do usuário
    * @param days Número de dias para trás (padrão: 7)
@@ -891,10 +901,16 @@ export class OrderUseCase {
       return null;
     }
 
+    // EGRESS: os três chamadores (ML, Shopee e Magalu) usam SÓ `product.id`.
+    // Sem o select, cada item de pedido sem vínculo trazia a linha inteira do
+    // Product — ~50 colunas, incluindo `description`, o array `imageUrls` e o
+    // Json `attributes`. Este caminho roda por item, a cada ciclo de
+    // importação, nas três plataformas.
     return prisma.product.findFirst({
       where: userId
         ? { skuNormalized: normalizedSku, userId }
         : { skuNormalized: normalizedSku },
+      select: { id: true },
     });
   }
 
@@ -1054,9 +1070,30 @@ export class OrderUseCase {
       const jaNaLista = new Set(
         magaluOrders.map((o) => extractExternalOrderId(o)).filter(Boolean),
       );
+      // Também indexa por `code`: o poll devolve o pedido com `id` (UUID) e
+      // `code` (número), e quem pede pode conhecer qualquer um dos dois.
+      for (const o of magaluOrders) {
+        if (o.code) jaNaLista.add(String(o.code));
+      }
       for (const wantedId of opts.orderIds) {
         const id = String(wantedId ?? "").trim();
         if (!id || jaNaLista.has(id)) continue;
+        // EGRESS/chamadas externas: o endpoint de detalhe só aceita o `code`
+        // (numérico) — com um UUID responde 404 sempre. O webhook manda
+        // `data.params.id`, que é UUID; tentar buscá-lo gastaria uma requisição
+        // garantidamente inútil e ainda poluiria o log a cada evento. Nesse
+        // caso o poll por janela, que já rodou acima, é quem cobre o pedido.
+        if (!/^\d+$/.test(id)) {
+          console.log(
+            JSON.stringify({
+              event: "magalu.order.fetch_by_id_skipped",
+              externalOrderId: id,
+              marketplaceAccountId,
+              motivo: "detalhe_exige_code_numerico",
+            }),
+          );
+          continue;
+        }
         try {
           const one = await this.getMagaluOrderWithRefresh(
             {
@@ -1261,19 +1298,29 @@ export class OrderUseCase {
           // Venda existe na Magalu e NAO entrou no sistema: dinheiro perdido,
           // estoque estufado e oversell nos outros canais. Antes so havia um
           // console.log que ninguem le — agora aparece na tela de Logs.
-          void SystemLogService.logError(
-            "SYNC_ORDERS",
-            `Pedido Magalu #${externalOrderId} nao pode ser vinculado a nenhum produto`,
-            {
-              resource: "Order",
-              details: {
-                externalOrderId,
-                marketplaceAccountId,
-                itemsTotal: itemList.length,
-                platform: "MAGALU",
+          //
+          // Dedupe por processo: um pedido sem vinculo NUNCA vira Order, entao
+          // reaparece em todo ciclo do poll (15 min) enquanto estiver na janela.
+          // Sem esta guarda seria um INSERT em SystemLog a cada ciclo, para
+          // sempre, pelo mesmo pedido — a tabela cresceria sozinha e o alerta
+          // viraria ruido. O alerta continua aparecendo uma vez por pedido; um
+          // restart do processo pode reemiti-lo, o que e inofensivo.
+          if (!OrderUseCase.magaluNoProductsLogged.has(externalOrderId)) {
+            OrderUseCase.magaluNoProductsLogged.add(externalOrderId);
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              `Pedido Magalu #${externalOrderId} nao pode ser vinculado a nenhum produto`,
+              {
+                resource: "Order",
+                details: {
+                  externalOrderId,
+                  marketplaceAccountId,
+                  itemsTotal: itemList.length,
+                  platform: "MAGALU",
+                },
               },
-            },
-          ).catch(() => {});
+            ).catch(() => {});
+          }
           continue;
         }
 

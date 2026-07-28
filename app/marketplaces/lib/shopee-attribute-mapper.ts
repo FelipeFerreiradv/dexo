@@ -549,18 +549,34 @@ function resolveFromOperator(
   return null;
 }
 
+/**
+ * Índices do dicionário, montados UMA vez no carregamento do módulo.
+ *
+ * A busca linear anterior re-normalizava (NFD + regex) todos os ~40 sinônimos
+ * do dicionário para cada atributo da categoria — algo como 300 normalizações
+ * por publicação, sempre com o mesmo resultado. Aqui a normalização acontece
+ * uma vez e o lookup vira O(1). Mesmo resultado, mesma ordem de precedência
+ * (id primeiro, nome depois).
+ */
+const DICT_POR_ID = new Map<number, ShopeeAttrDictionaryEntry>();
+const DICT_POR_NOME = new Map<string, ShopeeAttrDictionaryEntry>();
+for (const entry of SHOPEE_ATTR_DICTIONARY) {
+  for (const id of entry.ids) {
+    if (!DICT_POR_ID.has(id)) DICT_POR_ID.set(id, entry);
+  }
+  for (const nome of entry.names) {
+    const k = normalizeAttrText(nome);
+    if (k && !DICT_POR_NOME.has(k)) DICT_POR_NOME.set(k, entry);
+  }
+}
+
 function findDictionaryEntry(
   attr: ShopeeAttrSchema,
 ): ShopeeAttrDictionaryEntry | null {
-  const byId = SHOPEE_ATTR_DICTIONARY.find((e) =>
-    e.ids.includes(attr.attribute_id),
-  );
-  if (byId) return byId;
-  const nome = normalizeAttrText(attr.attribute_name);
   return (
-    SHOPEE_ATTR_DICTIONARY.find((e) =>
-      e.names.some((n) => normalizeAttrText(n) === nome),
-    ) ?? null
+    DICT_POR_ID.get(attr.attribute_id) ??
+    DICT_POR_NOME.get(normalizeAttrText(attr.attribute_name)) ??
+    null
   );
 }
 

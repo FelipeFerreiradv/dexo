@@ -3922,10 +3922,14 @@ export class ListingUseCase {
       let attrSourceProduct: typeof product = product;
       if (process.env.SHOPEE_ATTR_MAPPER_ENABLED === "true") {
         try {
-          const existente = await ListingRepository.findByProductAndAccount(
-            productId,
-            account.id,
-          );
+          // EGRESS-lean: só os 14 campos de override que a ficha técnica usa.
+          // O findByProductAndAccount traria a linha inteira (~40 colunas, com
+          // imageUrlsOverride e compatDiagnostics em Json) a cada publicação.
+          const existente =
+            await ListingRepository.findAttributeOverridesByProductAndAccount(
+              productId,
+              account.id,
+            );
           if (existente) {
             attrSourceProduct = applyOverridesToProduct(
               product as any,

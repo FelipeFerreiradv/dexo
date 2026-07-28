@@ -221,6 +221,38 @@ describe("importRecentMagaluOrdersForAccount — perda de dado vira SystemLog", 
     });
   });
 
+  it("pedido sem vínculo NÃO regrava o SystemLog a cada ciclo do poll", async () => {
+    // Um pedido sem vínculo nunca vira Order, então reaparece em todo ciclo
+    // (15 min). Sem dedupe seria um INSERT em SystemLog por ciclo, para
+    // sempre, pelo mesmo pedido.
+    const pedido = {
+      id: "MG-ORFAO-UNICO",
+      status: "approved",
+      deliveries: [{ items: [{ info: {}, quantity: 1 }] }],
+    };
+    const { logError } = setup({ magaluOrders: [pedido] });
+
+    const r1 = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      7,
+      true,
+    );
+    const r2 = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      7,
+      true,
+    );
+
+    // O contador do resultado continua reportando nas DUAS passagens...
+    expect(r1.noProducts).toBe(1);
+    expect(r2.noProducts).toBe(1);
+    // ...mas o SystemLog é gravado uma única vez.
+    const gravacoes = logError.mock.calls.filter((c) =>
+      String(c[1]).includes("MG-ORFAO-UNICO"),
+    );
+    expect(gravacoes).toHaveLength(1);
+  });
+
   it("falha na baixa de estoque: pedido entra, mas o erro vira SystemLog", async () => {
     const { logError, deductSpy } = setup({
       magaluOrders: [
@@ -496,7 +528,7 @@ describe("shape REAL da API (pedidos do cliente Ribeiro)", () => {
 });
 
 describe("importRecentMagaluOrdersForAccount — importar pedido por id", () => {
-  it("busca o pedido exato por id e mescla com o poll, sem duplicar", async () => {
+  it("busca o pedido exato pelo code e mescla com o poll, sem duplicar", async () => {
     const { createSpy } = setup({
       // O poll não devolve o pedido do webhook (fora da janela / além do teto).
       magaluOrders: [],
@@ -513,7 +545,7 @@ describe("importRecentMagaluOrdersForAccount — importar pedido por id", () => 
     const byId = vi
       .spyOn(OrderUseCase as any, "getMagaluOrderWithRefresh")
       .mockResolvedValue({
-        id: "MG-EXATO",
+        id: "1556570118572354",
         status: "approved",
         total: 99,
         items: [{ product_id: "L1", quantity: 1, unit_price: 99 }],
@@ -523,12 +555,76 @@ describe("importRecentMagaluOrdersForAccount — importar pedido por id", () => 
       "acc-mg",
       2,
       true,
-      { orderIds: ["MG-EXATO"] },
+      { orderIds: ["1556570118572354"] },
     );
 
-    expect(byId).toHaveBeenCalledWith(expect.anything(), "MG-EXATO");
+    expect(byId).toHaveBeenCalledWith(expect.anything(), "1556570118572354");
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(r.imported).toBe(1);
+  });
+
+  it("UUID não gasta requisição: o detalhe só aceita code numérico", async () => {
+    // O webhook manda `data.params.id`, que é UUID. O endpoint de detalhe
+    // responde 404 para UUID, então buscar seria uma chamada garantidamente
+    // inútil — o poll por janela, que já rodou, é quem cobre.
+    setup({ magaluOrders: [], listings: [] });
+    const byId = vi
+      .spyOn(OrderUseCase as any, "getMagaluOrderWithRefresh")
+      .mockResolvedValue(null);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 2, true, {
+      orderIds: ["e12e2e6b-da61-40be-87e7-5492a39e3d33"],
+    });
+
+    expect(byId).not.toHaveBeenCalled();
+    const evento = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes("magalu.order.fetch_by_id_skipped"));
+    expect(evento).toBeTruthy();
+    logSpy.mockRestore();
+  });
+
+  it("não busca por id quando o poll já trouxe o pedido pelo code", async () => {
+    setup({
+      magaluOrders: [
+        {
+          id: "uuid-abc",
+          code: "1556570118572354",
+          status: "approved",
+          amounts: { normalizer: 100, total: 100 },
+          deliveries: [
+            {
+              items: [
+                {
+                  info: { sku: "L1" },
+                  quantity: 1,
+                  unit_price: { normalizer: 100, value: 100 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      listings: [
+        {
+          id: "l-1",
+          productId: "p-1",
+          marketplaceAccountId: "acc-mg",
+          externalListingId: "L1",
+          product: { id: "p-1" },
+        },
+      ],
+    });
+    const byId = vi
+      .spyOn(OrderUseCase as any, "getMagaluOrderWithRefresh")
+      .mockResolvedValue(null);
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 2, true, {
+      orderIds: ["1556570118572354"],
+    });
+
+    expect(byId).not.toHaveBeenCalled();
   });
 
   it("não busca por id o pedido que o poll já trouxe", async () => {
@@ -591,7 +687,7 @@ describe("importRecentMagaluOrdersForAccount — importar pedido por id", () => 
       "acc-mg",
       2,
       true,
-      { orderIds: ["MG-SUMIU"] },
+      { orderIds: ["1555470118272862"] },
     );
 
     expect(r.imported).toBe(1);

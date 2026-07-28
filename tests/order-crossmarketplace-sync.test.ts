@@ -229,6 +229,9 @@ describe("OrderUseCase fallback SKU normalization", () => {
         skuNormalized: "abc-001",
         userId: "user-1",
       },
+      // EGRESS: só o id é usado pelo chamador. O `where` — que é a regra de
+      // vínculo — segue idêntico.
+      select: { id: true },
     });
     expect(upsertSpy).toHaveBeenCalledWith({
       productId: "prod-abc",

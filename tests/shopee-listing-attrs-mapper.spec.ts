@@ -50,6 +50,8 @@ vi.mock("../app/marketplaces/repositories/marketplace.repository", () => ({
 vi.mock("../app/marketplaces/repositories/listing.repository", () => ({
   ListingRepository: {
     findByProductAndAccount: vi.fn(),
+    // EGRESS-lean: variante com select mínimo usada pela ficha técnica.
+    findAttributeOverridesByProductAndAccount: vi.fn(async () => null),
     findLiveByProductAndAccount: vi.fn(async () => null),
     createListing: vi.fn(),
     updateListing: vi.fn(),
@@ -145,6 +147,10 @@ function setupCommon() {
   vi.spyOn(ListingRepository, "findByProductAndAccount").mockResolvedValue(
     null,
   );
+  vi.spyOn(
+    ListingRepository,
+    "findAttributeOverridesByProductAndAccount",
+  ).mockResolvedValue(null);
   vi.spyOn(ListingRepository, "createListing").mockResolvedValue({
     id: "listing-shp-mapper",
   } as any);
@@ -250,7 +256,10 @@ describe("createShopeeListing com SHOPEE_ATTR_MAPPER_ENABLED", () => {
 
   it("aplica os overrides do anúncio na ficha (partNumberOverride vence o produto)", async () => {
     const createSpy = setupCommon();
-    vi.spyOn(ListingRepository, "findByProductAndAccount").mockResolvedValue({
+    vi.spyOn(
+      ListingRepository,
+      "findAttributeOverridesByProductAndAccount",
+    ).mockResolvedValue({
       id: "l-existente",
       partNumberOverride: "OVERRIDE-123",
     } as any);

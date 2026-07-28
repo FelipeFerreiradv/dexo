@@ -181,6 +181,9 @@ describe("OrderUseCase.processOrder - Mercado Livre", () => {
         skuNormalized: "ml-sku-1",
         userId: "user-ml-1",
       },
+      // EGRESS: só o id é usado pelo chamador. O `where` — que é a regra de
+      // vínculo — segue idêntico.
+      select: { id: true },
     });
     expect(upsertFallbackSpy).toHaveBeenCalledWith({
       productId: "prod-1",
