@@ -1279,6 +1279,23 @@ export class OrderUseCase {
       const quantity = Number(item.quantity ?? item.qty ?? 0) || 0;
       const unitPrice = Number(item.unit_price ?? item.price ?? 0) || 0;
 
+      // A Magalu é o único mapper cuja quantidade cai para 0 quando o campo
+      // real do payload tem outro nome (o tipo MagaluOrderItem é declaradamente
+      // não-validado). Quantidade 0 faz `deductWithinTx` descontar zero em
+      // silêncio — e SEM alerta de oversell, porque o alerta só dispara com
+      // quantity > estoque. Este log é o único sinal de que a venda entrou sem
+      // baixar estoque.
+      if (quantity <= 0) {
+        console.warn(
+          JSON.stringify({
+            event: "magalu.order.item_quantity_missing",
+            externalListingId: externalListingId || null,
+            marketplaceAccountId,
+            itemKeys: Object.keys(item ?? {}),
+          }),
+        );
+      }
+
       const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
       const listing =
         externalListingId && listingMap
@@ -1669,6 +1686,7 @@ export class OrderUseCase {
     StockDeductionService.firePostEffects({
       deductions,
       logPrefix: "[OrderUseCase]",
+      reason,
       // NÃO passamos pauseOnZero → Order não pausa anúncios ao zerar.
     });
 
