@@ -257,8 +257,19 @@ export class MagaluApiService {
   }
 
   /**
-   * Lista pedidos recentes (últimos `days` dias).
-   * TODO(validar): nome do filtro de data (updated_at__ge?) e paginação real.
+   * Lista pedidos recentes (últimos `days` dias), paginando até `maxOrders`.
+   *
+   * A versão anterior fazia UMA requisição com `limit = min(maxOrders,
+   * DEFAULT_PAGE_SIZE)` — ou seja, o `maxOrders = 500` do parâmetro era
+   * inoperante e o teto real eram 50 pedidos por chamada, sem nenhum aviso.
+   * Num pico de vendas os pedidos além do 50º simplesmente não existiam para
+   * o sistema. Agora percorre as páginas por `offset` até acabar a lista,
+   * bater `maxOrders` ou atingir o limite de páginas (guarda anti-loop).
+   *
+   * TODO(validar): o nome do filtro de data (`updated_at__ge`) segue não
+   * confirmado contra a API real — sem Sandbox não há como. A paginação por
+   * `limit`/`offset` acompanha o que o próprio tipo `MagaluOrderListResponse`
+   * declara em `meta` ({ total, limit, offset }).
    */
   static async getRecentOrders(
     accessToken: string,
@@ -269,27 +280,57 @@ export class MagaluApiService {
       const since = new Date(
         Date.now() - days * 24 * 60 * 60 * 1000,
       ).toISOString();
-      const url = new URL(
-        MAGALU_CONSTANTS.ORDERS_ENDPOINT,
-        MAGALU_CONSTANTS.API_URL,
+      const pageSize = Math.max(
+        1,
+        Math.min(maxOrders, MAGALU_CONSTANTS.DEFAULT_PAGE_SIZE),
       );
-      url.searchParams.set(
-        "limit",
-        String(Math.min(maxOrders, MAGALU_CONSTANTS.DEFAULT_PAGE_SIZE)),
-      );
-      url.searchParams.set("updated_at__ge", since);
+      // Guarda anti-loop: mesmo que a API ignore o offset e devolva sempre a
+      // mesma página cheia, o laço termina.
+      const maxPages = Math.ceil(maxOrders / pageSize) + 1;
 
-      const response = await axios.get<MagaluOrderListResponse>(
-        url.toString(),
-        {
-          headers: this.authHeaders(accessToken),
-          timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
-        },
-      );
+      const all: MagaluOrder[] = [];
+      const seenIds = new Set<string>();
+      for (let page = 0; page < maxPages; page++) {
+        const url = new URL(
+          MAGALU_CONSTANTS.ORDERS_ENDPOINT,
+          MAGALU_CONSTANTS.API_URL,
+        );
+        url.searchParams.set("limit", String(pageSize));
+        url.searchParams.set("updated_at__ge", since);
+        if (page > 0) url.searchParams.set("offset", String(page * pageSize));
 
-      const body = response.data;
-      const list = body.results ?? body.data ?? [];
-      return list.slice(0, maxOrders);
+        const response = await axios.get<MagaluOrderListResponse>(
+          url.toString(),
+          {
+            headers: this.authHeaders(accessToken),
+            timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
+          },
+        );
+
+        const body = response.data;
+        const list = body.results ?? body.data ?? [];
+        if (list.length === 0) break;
+
+        // Dedupe defensivo: se a API ignorar `offset`, a mesma página volta e
+        // sem isso o resultado teria duplicatas (que o import trataria como
+        // `already_exists`, mas custando trabalho à toa).
+        let novos = 0;
+        for (const o of list) {
+          const id = String(o.id ?? o.code ?? o.order_id ?? "");
+          if (id && seenIds.has(id)) continue;
+          if (id) seenIds.add(id);
+          all.push(o);
+          novos++;
+          if (all.length >= maxOrders) break;
+        }
+
+        if (all.length >= maxOrders) break;
+        // Página incompleta = fim da lista. Nenhum item novo = a API não está
+        // paginando; insistir só repetiria a mesma resposta.
+        if (list.length < pageSize || novos === 0) break;
+      }
+
+      return all;
     } catch (error) {
       throw this.formatError("Erro ao listar pedidos da Magalu", error);
     }

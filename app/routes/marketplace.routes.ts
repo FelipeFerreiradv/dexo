@@ -2217,6 +2217,24 @@ small{color:#666}</style></head><body>
           const r = await WebhookUseCase.processMagaluOrderWebhook(body);
           if (!r.success) {
             console.warn(`[magalu/webhook] ${r.error}`);
+            // Já respondemos 200: a Magalu considera o evento entregue. Sem
+            // este registro, uma venda perdida aqui não deixa nenhum rastro
+            // acionável — só uma linha de log no processo. O claim do evento
+            // é liberado pelo use case, então a reentrega ainda pode salvar.
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              `Webhook Magalu falhou no processamento: ${r.error ?? "erro desconhecido"}`,
+              {
+                resource: "Order",
+                details: {
+                  platform: "MAGALU",
+                  topic: body?.topic ?? null,
+                  resourceId: body?.data?.params?.id ?? null,
+                  tenantId: body?.tenant_id ?? null,
+                  accountId: r.accountId ?? null,
+                },
+              },
+            ).catch(() => {});
           } else {
             console.log(`[magalu/webhook] ${r.action ?? "ok"}`);
           }
@@ -2225,6 +2243,20 @@ small{color:#666}</style></head><body>
             "[magalu/webhook] erro:",
             e instanceof Error ? e.message : e,
           );
+          void SystemLogService.logError(
+            "SYNC_ORDERS",
+            `Webhook Magalu lancou excecao no processamento`,
+            {
+              resource: "Order",
+              details: {
+                platform: "MAGALU",
+                topic: body?.topic ?? null,
+                resourceId: body?.data?.params?.id ?? null,
+                tenantId: body?.tenant_id ?? null,
+                error: e instanceof Error ? e.message : String(e),
+              },
+            },
+          ).catch(() => {});
         }
       });
     },

@@ -172,6 +172,11 @@ export async function orderRoutes(app: FastifyInstance) {
                     imported: magaluResult.imported,
                     alreadyExists: magaluResult.alreadyExists,
                     errors: magaluResult.errors,
+                    // Descarte por status deixou de ser mudo: se a API mudar o
+                    // vocabulario, e aqui que aparece antes de virar "sumiu
+                    // uma venda".
+                    skippedByStatus: magaluResult.skippedByStatus ?? 0,
+                    skippedStatuses: magaluResult.skippedStatuses ?? [],
                     days,
                     deductStock,
                   },
