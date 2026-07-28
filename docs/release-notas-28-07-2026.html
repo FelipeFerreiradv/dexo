@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dexo — Notas da Atualização de 28/07/2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --pergaminho:#f2ede2; --petroleo:#0e1f2a; --creme:#fbf7ee;
+    --amarelo:#f2c419; --bege:#e8dfca; --aco:#3f4a52; --areia:#ddd3bd;
+    --verde:#1f6f4a; --vermelho:#9b2c2c;
+    --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+    --display:'Bricolage Grotesque','Inter',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--pergaminho); color:var(--petroleo);
+    font-family:var(--sans); font-size:10.5pt; line-height:1.62;
+  }
+  .pagina{
+    max-width:190mm; margin:0 auto; padding:14mm 0 18mm;
+  }
+  /* ---------- Capa ---------- */
+  .capa{
+    min-height:247mm; display:flex; flex-direction:column; justify-content:space-between;
+    padding:22mm 16mm; background:var(--petroleo); color:var(--pergaminho);
+    border-radius:14px; page-break-after:always;
+  }
+  .marca{display:flex; align-items:center; gap:12px}
+  .marca .logo{
+    width:38px;height:38px;border-radius:10px;background:var(--amarelo);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--display); font-weight:700; font-size:20px; color:var(--petroleo);
+  }
+  .marca .nome{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em}
+  .capa h1{
+    font-family:var(--display); font-weight:700; font-size:34pt; line-height:1.1;
+    letter-spacing:-.025em; margin:0 0 10px;
+  }
+  .capa .sub{font-size:13pt;color:#c9c0ad;max-width:135mm;margin:0}
+  .capa .faixa{height:5px;width:96px;background:var(--amarelo);border-radius:3px;margin:22px 0}
+  .capa .meta{display:flex;gap:34px;flex-wrap:wrap;font-size:9.5pt;color:#c9c0ad}
+  .capa .meta b{display:block;color:var(--pergaminho);font-size:10.5pt;font-weight:600;margin-top:3px}
+  /* ---------- Tipografia ---------- */
+  h2{
+    font-family:var(--display); font-size:19pt; font-weight:700; letter-spacing:-.02em;
+    margin:30px 0 4px; padding-top:14px; border-top:2px solid var(--petroleo);
+    page-break-after:avoid;
+  }
+  h2 .num{color:var(--aco); font-size:12pt; font-weight:600; margin-right:9px}
+  h3{font-family:var(--display);font-size:12.5pt;font-weight:600;margin:20px 0 6px;page-break-after:avoid}
+  h4{font-size:10.5pt;font-weight:600;margin:14px 0 4px;page-break-after:avoid}
+  p{margin:7px 0}
+  ul,ol{margin:7px 0;padding-left:19px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:9pt;background:var(--bege);padding:1px 5px;border-radius:4px}
+  strong{font-weight:600}
+  a{color:var(--petroleo)}
+  /* ---------- Blocos ---------- */
+  .card{background:var(--creme);border:1px solid var(--areia);border-radius:10px;padding:14px 16px;margin:12px 0;page-break-inside:avoid}
+  .destaque{background:var(--creme);border-left:5px solid var(--amarelo);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .atencao{background:#fdf6f6;border-left:5px solid var(--vermelho);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .ok{background:#f2f8f4;border-left:5px solid var(--verde);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .destaque p:first-child,.atencao p:first-child,.ok p:first-child,.card p:first-child{margin-top:0}
+  .destaque p:last-child,.atencao p:last-child,.ok p:last-child,.card p:last-child{margin-bottom:0}
+  /* ---------- Tabelas ---------- */
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:9.5pt;page-break-inside:avoid}
+  th{background:var(--petroleo);color:var(--pergaminho);text-align:left;padding:8px 10px;font-weight:600;font-size:9pt}
+  td{padding:7px 10px;border-bottom:1px solid var(--areia);vertical-align:top}
+  tr:nth-child(even) td{background:var(--creme)}
+  th:first-child{border-radius:7px 0 0 0} th:last-child{border-radius:0 7px 0 0}
+  /* ---------- Sumário ---------- */
+  .sumario{background:var(--creme);border:1px solid var(--areia);border-radius:12px;padding:18px 22px;page-break-after:always}
+  .sumario h2{border:0;margin:0 0 10px;padding:0}
+  .sumario ol{list-style:none;padding:0;counter-reset:s}
+  .sumario li{counter-increment:s;padding:7px 0;border-bottom:1px dashed var(--areia);display:flex;gap:10px;align-items:baseline}
+  .sumario li:last-child{border:0}
+  .sumario li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--aco);font-size:9pt;min-width:22px}
+  .sumario li b{font-weight:600}
+  .sumario li span{color:var(--aco);font-size:9pt}
+  /* ---------- Etiquetas ---------- */
+  .tag{display:inline-block;font-size:8pt;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--bege);color:var(--aco);vertical-align:middle;margin-left:7px}
+  .tag.novo{background:var(--amarelo);color:var(--petroleo)}
+  .tag.corr{background:#e3efe8;color:var(--verde)}
+  .tag.flag{background:#efe6f3;color:#5b3a72}
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:26px;position:relative;margin:6px 0}
+  .check li::before{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border:2px solid var(--aco);border-radius:4px}
+  .faq dt{font-weight:600;margin-top:13px}
+  .faq dd{margin:3px 0 0;padding-left:0;color:var(--aco)}
+  .rodape{margin-top:26px;padding-top:11px;border-top:1px solid var(--areia);font-size:8.5pt;color:var(--aco);display:flex;justify-content:space-between}
+  /* ---------- Impressão ---------- */
+  @page{size:A4;margin:14mm 12mm 16mm}
+  @media print{
+    body{background:#fff}
+    .pagina{max-width:none;padding:0}
+    .capa{border-radius:0;min-height:250mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    .quebra{page-break-before:always}
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+
+  <!-- ============ CAPA ============ -->
+  <section class="capa">
+    <div class="marca">
+      <div class="logo">D</div>
+      <div class="nome">Dexo</div>
+    </div>
+    <div>
+      <div class="faixa"></div>
+      <h1>Notas da Atualização</h1>
+      <p class="sub">Cinco correções solicitadas por clientes e uma revisão de desempenho — o que mudou, para quem, e como orientar.</p>
+    </div>
+    <div class="meta">
+      <div>Data<b>28 de julho de 2026</b></div>
+      <div>Público<b>Suporte · Implantação · CS</b></div>
+      <div>Referência<b>PR #209</b></div>
+      <div>Classificação<b>Uso interno</b></div>
+    </div>
+  </section>
+
+  <!-- ============ SUMÁRIO ============ -->
+  <section class="sumario">
+    <h2>Sumário</h2>
+    <ol>
+      <li><b>Resumo executivo</b> <span>— o que foi entregue e por quê</span></li>
+      <li><b>Alterações realizadas</b> <span>— uma seção por assunto</span></li>
+      <li><b>Melhorias de desempenho</b> <span>— o que ficou mais leve</span></li>
+      <li><b>Segurança e consumo de recursos</b> <span>— verificações feitas</span></li>
+      <li><b>Impacto para o cliente</b> <span>— o que muda na tela dele</span></li>
+      <li><b>Como usar</b> <span>— passo a passo do que é novo</span></li>
+      <li><b>Perguntas frequentes</b> <span>— respostas prontas para o atendimento</span></li>
+      <li><b>Checklist do Suporte</b> <span>— validação pós-atualização</span></li>
+      <li><b>Resumo técnico</b> <span>— para a equipe de Engenharia</span></li>
+    </ol>
+  </section>
+
+  <!-- ============ 1 ============ -->
+  <h2><span class="num">01</span>Resumo executivo</h2>
+
+  <p>Esta atualização resolve cinco problemas relatados por clientes e inclui uma revisão de desempenho da própria entrega. Todas as causas foram confirmadas com dados reais de produção antes de qualquer alteração — e em dois casos o diagnóstico mudou completamente a solução.</p>
+
+  <div class="destaque">
+    <p><strong>O achado mais importante:</strong> nenhuma venda feita na Magalu jamais entrou no Dexo. Não era um caso isolado de um cliente — eram <strong>todas as contas Magalu, desde sempre</strong>. Havia 8 contas conectadas, 756 anúncios publicados e zero pedidos importados.</p>
+  </div>
+
+  <h3>O que foi entregue</h3>
+  <table>
+    <tr><th style="width:26%">Assunto</th><th>Situação anterior</th><th style="width:30%">Depois</th></tr>
+    <tr><td><b>Pedidos da Magalu</b></td><td>Venda na Magalu não virava pedido e não dava baixa no estoque — em nenhuma conta.</td><td>Importação automática a cada 15 minutos, com baixa de estoque.</td></tr>
+    <tr><td><b>Ficha técnica na Shopee</b></td><td>Anúncio nascia quase sem atributos: 1 de 12 campos preenchidos na categoria mais usada.</td><td>Envia tudo o que o produto tem e a categoria aceita.</td></tr>
+    <tr><td><b>Dashboard por colaborador</b></td><td>O administrador não conseguia esconder o Dashboard, que mostra faturamento.</td><td>Pode desligar por colaborador, com bloqueio real.</td></tr>
+    <tr><td><b>Valor do Anúncio</b></td><td>Só existia para o Mercado Livre.</td><td>Disponível também na Shopee e na Magalu.</td></tr>
+    <tr><td><b>Estoque</b></td><td>Relato de estoque zerando indevidamente.</td><td>Verificado: o cálculo estava correto. Foram adicionadas travas e alertas.</td></tr>
+  </table>
+
+  <h3>Resultado esperado</h3>
+  <ul>
+    <li>Vendas da Magalu passam a aparecer em Pedidos e a baixar o estoque, o que evita vender a mesma peça em dois canais.</li>
+    <li>Anúncios da Shopee ganham atributos, o que melhora a busca por veículo e a exposição.</li>
+    <li>O administrador consegue esconder informação financeira de quem não deve vê-la.</li>
+    <li>Menos consumo de banco e de rede, sem mudança na experiência de uso.</li>
+  </ul>
+
+  <!-- ============ 2 ============ -->
+  <h2 class="quebra"><span class="num">02</span>Alterações realizadas</h2>
+
+  <h3>2.1 Importação de pedidos da Magalu <span class="tag corr">Correção crítica</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> importação de pedidos e baixa automática de estoque.</p>
+    <p><b>Problema anterior:</b> a rotina que roda de tempos em tempos buscando pedidos novos cobria Mercado Livre e Shopee, mas não a Magalu. Restava o aviso automático da Magalu (webhook) — que nunca chegou. Além disso, ao ler o pedido, o sistema procurava os itens no lugar errado do arquivo enviado pela Magalu, então mesmo quando um pedido era buscado ele era descartado por “não tem produto”.</p>
+    <p><b>Solução:</b> a Magalu entrou na rotina automática e a leitura do pedido foi corrigida contra a API real (itens, código do produto, quantidade e valores).</p>
+    <p><b>Benefício:</b> toda venda confirmada na Magalu vira pedido no Dexo em até um ciclo, com baixa de estoque e propagação da nova quantidade para os outros canais.</p>
+    <p><b>Impacto esperado:</b> fim do estoque inflado e do risco de vender a mesma peça duas vezes.</p>
+  </div>
+
+  <div class="atencao">
+    <p><strong>Atenção do Suporte.</strong> Clientes com Magalu conectada vão ver pedidos “aparecendo do nada” no primeiro ciclo após a atualização. <b>É esperado</b>: são vendas reais que já tinham acontecido e nunca haviam sido importadas. O estoque desses produtos vai cair de acordo. Vale avisar os clientes de Magalu antes.</p>
+  </div>
+
+  <h3>2.2 Ficha técnica dos anúncios da Shopee <span class="tag flag">Ativação controlada</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> publicação de anúncios na Shopee.</p>
+    <p><b>Problema anterior:</b> o sistema conhecia apenas quatro campos do produto (marca, modelo, ano e part number) e só os enviava quando o nome do campo batia exatamente. Tudo o mais era descartado. Medição em produção: <b>1 de 12</b> atributos preenchidos na categoria mais usada (1.161 anúncios), <b>2 de 11</b> e <b>1 de 13</b> nas duas seguintes.</p>
+    <p><b>Solução:</b> um novo tradutor de ficha técnica que reconhece os atributos pelo código oficial da Shopee, lê a ficha preenchida pelo operador e aproveita dados que antes eram ignorados — condição, peso, dimensões, lado e posição da peça.</p>
+    <p><b>Benefício:</b> o anúncio nasce com os campos que o comprador usa para filtrar.</p>
+    <p><b>Impacto esperado:</b> mais visibilidade na busca por veículo.</p>
+  </div>
+
+  <div class="destaque">
+    <p><strong>Dado errado que deixou de ser publicado.</strong> Descobrimos que o campo “Model” da Shopee, em várias categorias, não é o modelo do carro — os valores que a própria Shopee oferece são linhas de produto (“MAX”, “PREMIUM”). O sistema enviava “Argo” para esse campo. Agora só envia quando o valor corresponde exatamente a uma opção da categoria.</p>
+  </div>
+
+  <h3>2.3 Bloqueio do Dashboard por colaborador <span class="tag novo">Novo</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> aba Colaboradores, permissões por página.</p>
+    <p><b>Problema anterior:</b> o Dashboard era a única página que não podia ser desligada, por uma limitação técnica: quem era bloqueado em qualquer página era mandado de volta para a tela inicial — que é justamente o Dashboard.</p>
+    <p><b>Solução:</b> o redirecionamento passa a levar para a primeira página que o colaborador pode ver. Quem não tem nenhuma liberada vai para uma tela explicativa. O bloqueio também vale no servidor, não só no menu.</p>
+    <p><b>Benefício:</b> o administrador esconde faturamento e estatística de vendas de quem não deve ver.</p>
+    <p><b>Impacto esperado:</b> nenhuma mudança para quem não usar o recurso.</p>
+  </div>
+
+  <h3>2.4 “Valor do Anúncio” na Shopee e na Magalu <span class="tag novo">Novo</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> modal “Novo Produto” e modo Revisão individual.</p>
+    <p><b>Problema anterior:</b> o campo que publica o anúncio com um preço diferente do preço do produto existia só para o Mercado Livre.</p>
+    <p><b>Solução:</b> o mesmo campo, com o mesmo comportamento, nas seções Shopee e Magalu.</p>
+    <p><b>Benefício:</b> preço por canal sem alterar o cadastro do produto.</p>
+    <p><b>Impacto esperado:</b> quem deixar o campo vazio continua publicando pelo preço do produto, exatamente como hoje.</p>
+  </div>
+
+  <h3>2.5 Estoque: verificação e travas <span class="tag corr">Verificado</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> baixa automática de estoque.</p>
+    <p><b>Problema relatado:</b> um cliente informou que um produto com 50 unidades foi a zero após vender 1.</p>
+    <p><b>O que a verificação mostrou:</b> o cálculo está correto e sempre esteve. O histórico de produção comprova baixas como 7→6, 2→1 e uma sequência 15→14→13… uma unidade por venda. Também não existe nenhuma alteração de estoque sem registro no histórico. <b>O cliente confirmou depois que houve um engano na leitura da tela.</b></p>
+    <p><b>O que foi feito mesmo assim:</b> encontramos um script de manutenção interno que, ao ser executado em maio, zerou o estoque de 40 produtos que tinham mais de uma unidade. Ele agora exige confirmação explícita e ignora produtos multi-unidade. Foi criado também um alerta para quando um produto com várias unidades for a zero de uma só vez.</p>
+    <p><b>Benefício:</b> um caso desses deixa de passar despercebido por meses.</p>
+  </div>
+
+  <!-- ============ 3 ============ -->
+  <h2 class="quebra"><span class="num">03</span>Melhorias de desempenho</h2>
+
+  <p>Depois de concluir as correções, revisamos a própria entrega procurando desperdício de banco de dados e de rede, usando como referência as diretrizes já adotadas pela empresa em trabalhos anteriores de otimização.</p>
+
+  <table>
+    <tr><th style="width:30%">Onde</th><th>O que era lido a mais</th><th style="width:24%">Ganho</th></tr>
+    <tr>
+      <td><b>Vínculo de pedido por código</b></td>
+      <td>Para descobrir apenas o identificador do produto, o sistema carregava o cadastro inteiro — descrição, lista de imagens e ficha técnica.</td>
+      <td>Passou a ler um único campo. Vale para os três marketplaces e roda a cada item de pedido.</td>
+    </tr>
+    <tr>
+      <td><b>Publicação na Shopee</b></td>
+      <td>Carregava o anúncio inteiro só para consultar os ajustes da ficha técnica.</td>
+      <td>Lê apenas os 14 campos usados.</td>
+    </tr>
+    <tr>
+      <td><b>Menu lateral</b></td>
+      <td>A verificação periódica de permissões trazia o cadastro completo do usuário.</td>
+      <td>Consulta enxuta: a resposta caiu de cerca de 1 KB para 300 bytes.</td>
+    </tr>
+    <tr>
+      <td><b>Alerta de pedido sem vínculo</b></td>
+      <td>Um pedido sem produto correspondente gerava um registro de alerta a cada 15 minutos, indefinidamente.</td>
+      <td>O alerta sai uma vez por pedido.</td>
+    </tr>
+    <tr>
+      <td><b>Aviso automático da Magalu</b></td>
+      <td>Fazia uma consulta que sempre falhava, por usar um identificador que a Magalu não aceita nesse endereço.</td>
+      <td>A consulta inútil deixou de ser feita.</td>
+    </tr>
+    <tr>
+      <td><b>Tradutor de ficha da Shopee</b></td>
+      <td>Reprocessava a mesma tabela de sinônimos a cada atributo — cerca de 300 vezes por publicação.</td>
+      <td>Tabela preparada uma única vez.</td>
+    </tr>
+  </table>
+
+  <div class="ok">
+    <p><strong>Nenhuma dessas mudanças altera o que o usuário vê.</strong> São ajustes na forma de buscar o dado, não no dado em si nem em regra de negócio.</p>
+  </div>
+
+  <!-- ============ 4 ============ -->
+  <h2><span class="num">04</span>Segurança e consumo de recursos</h2>
+
+  <h3>Verificações realizadas</h3>
+  <ul>
+    <li>Revisão de toda a entrega em quatro frentes — leituras de banco, chamadas a serviços externos, tráfego do navegador e processamento —, com cada apontamento verificado por uma segunda análise independente antes de virar correção.</li>
+    <li>Comparação com as diretrizes de otimização já adotadas pela empresa (leituras enxutas, evitar repetir consultas, reaproveitar dados já carregados).</li>
+    <li>Conferência de que a atualização não desfez nenhuma otimização anterior.</li>
+  </ul>
+
+  <h3>Resultado</h3>
+  <ul>
+    <li><b>Não houve aumento de consumo.</b> Todos os pontos identificados foram corrigidos e o saldo final é de redução.</li>
+    <li>A rotina automática passa a consultar a Magalu — é a funcionalidade que estava faltando —, e cada consulta traz uma página de até 50 pedidos, sem repetição.</li>
+    <li>O acesso ao Dashboard passou a ser verificado no servidor sem nenhuma consulta adicional ao banco.</li>
+  </ul>
+
+  <div class="atencao">
+    <p><strong>Regressão encontrada e corrigida durante a revisão.</strong> O bloqueio do Dashboard havia sido aplicado, por engano, também à <b>busca global do menu</b> e ao <b>sino de notificações</b> — que ficam sob o mesmo endereço interno, mas aparecem em todas as telas. Um colaborador sem acesso ao Dashboard teria perdido busca e notificações. Foi corrigido antes da publicação, e existe agora uma verificação automática que impede alguém de reintroduzir o problema.</p>
+  </div>
+
+  <!-- ============ 5 ============ -->
+  <h2 class="quebra"><span class="num">05</span>Impacto para o cliente</h2>
+
+  <h3>O que muda</h3>
+  <ul>
+    <li><b>Quem vende na Magalu:</b> as vendas passam a aparecer em Pedidos e a dar baixa no estoque. No primeiro ciclo após a atualização, vendas antigas que nunca entraram serão importadas de uma vez.</li>
+    <li><b>Quem publica na Shopee:</b> os anúncios novos passam a sair com a ficha técnica preenchida — depois que o recurso for ativado para a conta.</li>
+    <li><b>Administradores:</b> aparece o item “Dashboard” na lista de permissões da aba Colaboradores.</li>
+    <li><b>Quem cria anúncios:</b> o campo “Valor do Anúncio (R$)” passa a existir também nas seções Shopee e Magalu.</li>
+  </ul>
+
+  <h3>O que não muda</h3>
+  <ul>
+    <li>Publicação no Mercado Livre: nada foi alterado.</li>
+    <li>Preços, compatibilidades, dimensões, frete e emissão de notas: sem alteração.</li>
+    <li>Venda balcão e PDV: sem alteração.</li>
+    <li>Colaboradores já cadastrados continuam com exatamente os mesmos acessos. O Dashboard só é bloqueado se o administrador desligar o novo controle.</li>
+    <li>Aparência do sistema: sem mudanças, exceto os dois campos novos e a nova opção de permissão.</li>
+  </ul>
+
+  <h3>Ações necessárias</h3>
+  <table>
+    <tr><th style="width:34%">Item</th><th>Ação</th></tr>
+    <tr><td>Atualização geral</td><td>Nenhuma. Entra com o deploy.</td></tr>
+    <tr><td>Ficha técnica da Shopee</td><td><b>Precisa ser ativada pela Engenharia.</b> Vem desligada de propósito, para ser acompanhada conta a conta.</td></tr>
+    <tr><td>Pedidos da Magalu</td><td>Nenhuma. Começa sozinho após o deploy.</td></tr>
+    <tr><td>Bloqueio do Dashboard</td><td>Opcional, feito pelo próprio administrador do cliente.</td></tr>
+    <tr><td>Valor do Anúncio</td><td>Nenhuma. O campo aparece disponível e vazio.</td></tr>
+  </table>
+
+  <p>Não há mudança operacional obrigatória, nem alteração de configuração do lado do cliente.</p>
+
+  <!-- ============ 6 ============ -->
+  <h2><span class="num">06</span>Como usar</h2>
+
+  <h3>6.1 Esconder o Dashboard de um colaborador</h3>
+  <ol>
+    <li>Entre em <b>Colaboradores</b>.</li>
+    <li>Abra o colaborador desejado.</li>
+    <li>Em <b>Acesso às páginas</b>, desligue a chave <b>Dashboard</b>.</li>
+    <li>Salve.</li>
+  </ol>
+  <p>O colaborador deixa de ver o item no menu em até um minuto, <b>sem precisar sair e entrar de novo</b>. Se ele tentar abrir a tela inicial, é levado para a primeira página que pode acessar. Se nenhuma estiver liberada, vê uma tela orientando a falar com o administrador.</p>
+
+  <h3>6.2 Publicar com um preço diferente na Shopee ou na Magalu</h3>
+  <ol>
+    <li>No modal <b>Novo Produto</b>, marque a publicação na Shopee ou na Magalu.</li>
+    <li>Preencha <b>Valor do Anúncio (R$)</b> naquela seção.</li>
+    <li>Publique.</li>
+  </ol>
+  <p>O anúncio vai ao ar com esse valor e o <b>preço do produto não muda</b>. Deixando vazio, vale o preço do produto — como sempre foi. O campo também está no modo <b>Revisão individual</b> do envio em massa.</p>
+
+  <h3>6.3 Conferir se uma venda da Magalu entrou</h3>
+  <ol>
+    <li>Abra <b>Pedidos</b> e filtre por Magalu.</li>
+    <li>Se preferir não esperar o ciclo automático, clique em <b>Importar pedidos</b>.</li>
+    <li>Confira o estoque do produto vendido — deve ter caído conforme a quantidade.</li>
+  </ol>
+
+  <!-- ============ 7 ============ -->
+  <h2 class="quebra"><span class="num">07</span>Perguntas frequentes</h2>
+  <dl class="faq">
+    <dt>Apareceram vários pedidos da Magalu de uma vez. Está certo?</dt>
+    <dd>Sim. São vendas reais que já tinham acontecido e nunca foram importadas, porque a integração não buscava pedidos da Magalu. Elas entram de uma vez no primeiro ciclo após a atualização.</dd>
+
+    <dt>O estoque de alguns produtos caiu depois da atualização. Por quê?</dt>
+    <dd>Porque a baixa dessas vendas da Magalu nunca havia sido feita. O estoque estava maior do que o real. Agora está correto.</dd>
+
+    <dt>O cliente diz que vendeu 1 unidade e o estoque zerou. Procede?</dt>
+    <dd>O cálculo foi verificado no histórico de produção e está correto: vendeu 1, tira 1. Peça o código (SKU) do produto e a data. Na maioria dos casos o produto estava cadastrado com 1 unidade, e não com o total do galpão. O histórico de estoque de cada produto mostra exatamente quem alterou e quando.</dd>
+
+    <dt>Ativei o bloqueio do Dashboard e o colaborador ainda vê o menu.</dt>
+    <dd>Aguarde até um minuto. O menu se atualiza sozinho, sem precisar sair e entrar. O bloqueio de verdade já é imediato: se ele tentar abrir a tela, é redirecionado.</dd>
+
+    <dt>O colaborador perdeu a busca ou o sino de notificações?</dt>
+    <dd>Não deve acontecer. Busca e notificações continuam funcionando mesmo com o Dashboard bloqueado. Se algum cliente relatar isso, abra chamado para a Engenharia informando qual colaborador.</dd>
+
+    <dt>Os anúncios da Shopee continuam sem ficha técnica. O que houve?</dt>
+    <dd>O recurso vem desligado e precisa ser ativado pela Engenharia, conta a conta. Além disso, ele vale para anúncios <b>novos</b>; para os já publicados existe um procedimento de atualização em massa que a Engenharia executa.</dd>
+
+    <dt>Preenchi “Valor do Anúncio” e o preço do produto mudou?</dt>
+    <dd>Não muda. O campo altera só o preço daquele anúncio. Se mudar, é caso para a Engenharia.</dd>
+
+    <dt>Coloquei zero em “Valor do Anúncio”. O que acontece?</dt>
+    <dd>Zero e vazio significam a mesma coisa: usa o preço do produto. O sistema nunca publica um anúncio por R$ 0.</dd>
+
+    <dt>Preciso avisar o cliente antes de atualizar?</dt>
+    <dd>Se ele vende na Magalu, sim — vale avisar que pedidos antigos vão entrar e o estoque vai se ajustar. Nos demais casos, não é necessário.</dd>
+  </dl>
+
+  <!-- ============ 8 ============ -->
+  <h2><span class="num">08</span>Checklist do Suporte</h2>
+  <p>Validação rápida após a atualização, de preferência em uma conta que use Magalu e Shopee.</p>
+
+  <h4>Pedidos e estoque</h4>
+  <ul class="check">
+    <li>Abrir <b>Pedidos</b>, filtrar por Magalu e confirmar que há pedidos listados.</li>
+    <li>Escolher um pedido novo e conferir que o produto teve o estoque reduzido pela quantidade vendida.</li>
+    <li>Conferir que o Mercado Livre e a Shopee continuam importando pedidos normalmente.</li>
+  </ul>
+
+  <h4>Permissões</h4>
+  <ul class="check">
+    <li>Em <b>Colaboradores</b>, confirmar que a chave <b>Dashboard</b> aparece na lista.</li>
+    <li>Desligar para um colaborador de teste e confirmar que o item some do menu em até um minuto.</li>
+    <li>Confirmar que a <b>busca do menu</b> e o <b>sino de notificações</b> continuam funcionando para esse colaborador.</li>
+    <li>Confirmar que administradores continuam vendo tudo.</li>
+  </ul>
+
+  <h4>Anúncios</h4>
+  <ul class="check">
+    <li>Abrir o modal <b>Novo Produto</b> e confirmar que “Valor do Anúncio (R$)” aparece nas seções Shopee e Magalu.</li>
+    <li>Publicar um produto de teste com valor diferente e confirmar que o preço do produto <b>não</b> mudou.</li>
+    <li>Publicar sem preencher o campo e confirmar que o anúncio saiu com o preço do produto.</li>
+  </ul>
+
+  <h4>Geral</h4>
+  <ul class="check">
+    <li>Criar, editar e excluir um produto.</li>
+    <li>Fazer uma venda balcão e conferir a baixa de estoque.</li>
+    <li>Conferir que a emissão de notas fiscais continua normal.</li>
+  </ul>
+
+  <!-- ============ 9 ============ -->
+  <h2 class="quebra"><span class="num">09</span>Resumo técnico</h2>
+
+  <h3>Commits</h3>
+  <table>
+    <tr><th style="width:16%">Hash</th><th>Conteúdo</th></tr>
+    <tr><td><code>2d8a8ba</code></td><td>Travas nos scripts de zeragem, alerta <code>stock.zeroed_in_one_move</code>, script de restauração.</td></tr>
+    <tr><td><code>b634f0c</code></td><td>Magalu no ciclo de importação, paginação, vocabulário de status, webhook sem perda, alertas.</td></tr>
+    <tr><td><code>5bdeb60</code></td><td>Tradutor de atributos Shopee, overrides na criação, <code>attribute_list</code> na edição, backfill.</td></tr>
+    <tr><td><code>6f1a731</code></td><td><code>firstAllowedPage</code>, rota <code>/sem-acesso</code>, middleware <code>requirePageAccess</code>, sonda no menu.</td></tr>
+    <tr><td><code>fb861a9</code></td><td>Preço por anúncio nas três plataformas (tipos, dispatcher, rota, interface).</td></tr>
+    <tr><td><code>c4d474c</code></td><td>Leitura do pedido Magalu conforme o shape real da API.</td></tr>
+    <tr><td><code>0b692a2</code></td><td>Revisão de egress e correção do escopo do gate do Dashboard.</td></tr>
+  </table>
+
+  <h3>Módulos impactados</h3>
+  <ul>
+    <li><b>Marketplaces:</b> <code>order.usercase</code>, <code>listing.usercase</code>, <code>webhook.usercase</code>, <code>magalu-api.service</code>, <code>listing-dispatcher</code>, <code>stock-deduction.service</code> (só observabilidade), novo <code>lib/shopee-attribute-mapper</code>.</li>
+    <li><b>Permissões:</b> <code>lib/page-access</code>, <code>lib/guard-page</code>, novo <code>middlewares/require-page-access</code>, <code>routes/dashboard.routes</code>, nova página <code>/sem-acesso</code>.</li>
+    <li><b>Interface:</b> <code>create-product-dialog</code>, <code>bulk-review/*</code>, <code>listing-preview/*</code>, <code>app-sidebar</code>.</li>
+    <li><b>Operação:</b> <code>sync-orders-and-metrics-loop</code> e quatro scripts (dois novos), todos com simulação como padrão.</li>
+  </ul>
+
+  <h3>Riscos avaliados</h3>
+  <table>
+    <tr><th style="width:40%">Risco</th><th>Mitigação</th></tr>
+    <tr><td>Mudar a ficha técnica de anúncios em produção</td><td>Atrás de chave de ativação desligada, com teste que prova envio idêntico quando desligada.</td></tr>
+    <tr><td>Loop de redirecionamento ao bloquear o Dashboard</td><td>Destino sempre é página liberada e existente; verificação automática varrendo todas as páginas.</td></tr>
+    <tr><td>Colaboradores atuais perderem acesso</td><td>A permissão do Dashboard nunca foi gravada, então todos seguem liberados até o administrador mudar.</td></tr>
+    <tr><td>Importar pedidos antigos em massa</td><td>Comportamento correto e desejado; protegido contra duplicidade. Comunicar aos clientes de Magalu.</td></tr>
+    <tr><td>Alterar o cálculo de estoque</td><td>Não foi alterado. Só foram adicionados alertas.</td></tr>
+  </table>
+
+  <h3>Validações executadas</h3>
+  <ul>
+    <li><b>Verificação de tipos:</b> 102 ocorrências, idêntico ao valor medido antes de qualquer alteração.</li>
+    <li><b>Análise estática (lint):</b> sem erros.</li>
+    <li><b>Compilação:</b> concluída com sucesso.</li>
+    <li><b>Testes automatizados:</b> 331 arquivos e cerca de 3.190 casos, todos passando. A única falha observada foi reproduzida de forma idêntica na versão anterior — instabilidade conhecida por tempo limite, não relacionada a esta entrega.</li>
+    <li><b>Verificação em produção (somente leitura):</b> histórico de estoque, contagem de pedidos por plataforma, catálogo de atributos da Shopee e chamada real à API da Magalu.</li>
+  </ul>
+
+  <h3>Pendências</h3>
+  <ul>
+    <li>Ativar a chave da ficha técnica da Shopee, conta a conta, acompanhando a cobertura registrada nos logs.</li>
+    <li>Recuperar duas vendas da Magalu de um cliente: precisa ser executado no servidor de produção, porque exige credenciais que não existem fora dele. Alternativamente, o ciclo automático faz isso sozinho, desde que as vendas ainda estejam dentro da janela de sete dias.</li>
+    <li>Atualizar a ficha técnica dos anúncios Shopee já publicados, por conta e categoria, com o procedimento em massa.</li>
+  </ul>
+
+  <div class="rodape">
+    <span>Dexo — Notas da Atualização · 28/07/2026 · PR #209</span>
+    <span>Uso interno</span>
+  </div>
+</div>
+</body>
+</html>
