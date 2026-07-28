@@ -1,6 +1,10 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
+// Gate real do bloqueio de Dashboard por colaborador. Sem ele, esconder o item
+// no menu e barrar o Server Component não impediria um GET direto nestas rotas,
+// que expõem faturamento do período, receita por conta e top produtos.
+import { requirePageAccess } from "../middlewares/require-page-access.middleware";
 import { Platform, Prisma } from "@prisma/client";
 import {
   aggregateTeamProductivity,
@@ -30,7 +34,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/listing-stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user?.dataOwnerId;
@@ -132,7 +136,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -182,7 +186,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/integrations",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user?.dataOwnerId;
@@ -220,7 +224,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/products-by-category",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -253,7 +257,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-distribution",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -301,7 +305,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/orders-over-time",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -366,7 +370,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/search",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string;
@@ -463,7 +467,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/stock-changes",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       // @deprecated Usado somente pelo dashboard antigo. Remover após migração para listing-stats.
       try {
@@ -527,7 +531,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/product-metrics",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
@@ -695,7 +699,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/account-stats",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
@@ -742,7 +746,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/notifications",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = (request as any).user?.dataOwnerId as string | undefined;
@@ -944,7 +948,7 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
    */
   fastify.get(
     "/report.pdf",
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const ownerId = (request as any).user?.dataOwnerId as

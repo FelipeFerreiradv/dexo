@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import type { Metadata } from "next";
 
 import { authOptions } from "./lib/auth";
+import { assertPageAccess } from "./lib/guard-page";
 import { getApiBaseUrl, authHeaders } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { MetricCard } from "@/components/dashboard/metric-card";
@@ -169,6 +170,12 @@ export default async function Home() {
   if (!userSession) {
     redirect("/login");
   }
+
+  // O Dashboard era a única página protegida sem este guard — justamente a que
+  // mostra faturamento. Vem ANTES do Promise.all de propósito: senão um
+  // colaborador bloqueado ainda dispararia as 4 chamadas de /dashboard/* antes
+  // de ser redirecionado.
+  await assertPageAccess(userSession, "dashboard");
 
   const email = userSession.user?.email || "";
   const apiToken = (userSession as { apiToken?: string }).apiToken;
