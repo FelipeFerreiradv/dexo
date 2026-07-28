@@ -293,6 +293,208 @@ describe("importRecentMagaluOrdersForAccount — perda de dado vira SystemLog", 
   });
 });
 
+// ──────────────────────────────────────────────────────────
+// Shape REAL da API, capturado em 28/07/2026 da conta do cliente Ribeiro.
+// Os dois pedidos abaixo são as vendas que nunca entraram no sistema.
+//
+// O que o codigo antigo fazia com isto: lia `order.items` (que NAO existe) →
+// items vazio → `no_products` → nenhum Order criado, nenhuma baixa de estoque.
+// ──────────────────────────────────────────────────────────
+const PEDIDO_REAL_4085 = {
+  id: "e12e2e6b-da61-40be-87e7-5492a39e3d33",
+  code: "1556570118572354",
+  status: "approved",
+  purchased_at: "2026-07-25T12:00:00Z",
+  amounts: { currency: "BRL", normalizer: 100, total: 19999 },
+  customer: { name: "Comprador Teste" },
+  deliveries: [
+    {
+      id: "d-1",
+      code: "D1",
+      items: [
+        {
+          sequencial: 1,
+          info: {
+            sku: "4085",
+            id: "37a690c1-8b61-4c68-9c96-dbe7842388a6",
+            brand: "Ford",
+            name: "Bomba Combustível Ford Fiesta Flex 2004 A 2007",
+          },
+          unit_price: { currency: "BRL", normalizer: 100, value: 19999 },
+          amounts: { currency: "BRL", normalizer: 100, total: 19999 },
+          quantity: 1,
+        },
+      ],
+    },
+  ],
+};
+
+const PEDIDO_REAL_5735 = {
+  id: "cdd4de61-53f4-429c-bd62-531e4ceeeb55",
+  code: "1556670118624033",
+  status: "approved",
+  // Total do pedido inclui frete (49,99 + 14,90 = 64,89).
+  amounts: { currency: "BRL", normalizer: 100, total: 6489 },
+  deliveries: [
+    {
+      id: "d-2",
+      items: [
+        {
+          sequencial: 1,
+          info: { sku: "5735", id: "uuid-5735" },
+          unit_price: { currency: "BRL", normalizer: 100, value: 4999 },
+          quantity: 1,
+        },
+      ],
+    },
+  ],
+};
+
+describe("shape REAL da API (pedidos do cliente Ribeiro)", () => {
+  it("importa o pedido do SKU 4085 lendo deliveries[].items[].info.sku", async () => {
+    const { createSpy, deductSpy } = setup({
+      magaluOrders: [PEDIDO_REAL_4085],
+      listings: [
+        {
+          id: "l-4085",
+          productId: "p-4085",
+          marketplaceAccountId: "acc-mg",
+          // O anúncio Magalu é criado com externalListingId = SKU.
+          externalListingId: "4085",
+          product: { id: "p-4085" },
+        },
+      ],
+    });
+
+    const r = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      30,
+      true,
+    );
+
+    expect(r.imported).toBe(1);
+    expect(r.noProducts).toBe(0);
+    const pedido = createSpy.mock.calls[0][0] as any;
+    expect(pedido.externalOrderId).toBe(
+      "e12e2e6b-da61-40be-87e7-5492a39e3d33",
+    );
+    expect(pedido.status).toBe("PAID");
+    // Centavos convertidos: 19999/100.
+    expect(pedido.totalAmount).toBe(199.99);
+    expect(pedido.items).toEqual([
+      {
+        productId: "p-4085",
+        listingId: "l-4085",
+        quantity: 1,
+        unitPrice: 199.99,
+      },
+    ]);
+    // E a baixa de estoque acontece.
+    expect(deductSpy).toHaveBeenCalledTimes(1);
+    expect(r.stockDeductions).toBe(1);
+  });
+
+  it("importa o pedido do SKU 5735 e usa o total do pedido (com frete)", async () => {
+    const { createSpy } = setup({
+      magaluOrders: [PEDIDO_REAL_5735],
+      listings: [
+        {
+          id: "l-5735",
+          productId: "p-5735",
+          marketplaceAccountId: "acc-mg",
+          externalListingId: "5735",
+          product: { id: "p-5735" },
+        },
+      ],
+    });
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 30, true);
+
+    const pedido = createSpy.mock.calls[0][0] as any;
+    // Item a 49,99; total do pedido 64,89 porque inclui 14,90 de frete.
+    expect(pedido.items[0].unitPrice).toBe(49.99);
+    expect(pedido.totalAmount).toBe(64.89);
+  });
+
+  it("vincula por SKU quando o anúncio não casa por externalListingId", async () => {
+    const { createSpy } = setup({
+      magaluOrders: [PEDIDO_REAL_4085],
+      listings: [],
+    });
+    vi.spyOn(OrderUseCase as any, "findProductByFallbackSku").mockResolvedValue({
+      id: "p-4085",
+    });
+    vi.spyOn(OrderUseCase as any, "upsertFallbackListing").mockResolvedValue({
+      id: "l-novo",
+    });
+
+    const r = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      30,
+      true,
+    );
+
+    expect(r.imported).toBe(1);
+    expect((createSpy.mock.calls[0][0] as any).items[0].productId).toBe(
+      "p-4085",
+    );
+  });
+
+  it("pedido cancelado real (SKU 8374) continua sendo descartado", async () => {
+    const { createSpy } = setup({
+      magaluOrders: [
+        {
+          id: "b44974d3-0b54-45dd-b363-59659c574613",
+          code: "1555470118272862",
+          status: "cancelled",
+          amounts: { normalizer: 100, total: 79995 },
+          deliveries: [
+            {
+              items: [
+                {
+                  info: { sku: "8374" },
+                  unit_price: { normalizer: 100, value: 79995 },
+                  quantity: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const r = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      30,
+      true,
+    );
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(r.skippedByStatus).toBe(1);
+  });
+
+  it("nome do comprador vem de customer.name", async () => {
+    const { createSpy } = setup({
+      magaluOrders: [PEDIDO_REAL_4085],
+      listings: [
+        {
+          id: "l-4085",
+          productId: "p-4085",
+          marketplaceAccountId: "acc-mg",
+          externalListingId: "4085",
+          product: { id: "p-4085" },
+        },
+      ],
+    });
+
+    await OrderUseCase.importRecentMagaluOrdersForAccount("acc-mg", 30, true);
+
+    expect((createSpy.mock.calls[0][0] as any).customerName).toBe(
+      "Comprador Teste",
+    );
+  });
+});
+
 describe("importRecentMagaluOrdersForAccount — importar pedido por id", () => {
   it("busca o pedido exato por id e mescla com o poll, sem duplicar", async () => {
     const { createSpy } = setup({

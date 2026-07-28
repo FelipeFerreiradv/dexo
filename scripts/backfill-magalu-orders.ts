@@ -4,6 +4,10 @@ import "./lib/load-env";
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
+import {
+  extractMagaluOrderItems,
+  magaluMoneyToNumber,
+} from "../app/marketplaces/types/magalu-order.types";
 
 /**
  * backfill-magalu-orders.ts
@@ -148,8 +152,17 @@ async function main(): Promise<void> {
           const id = String(o.id ?? o.code ?? o.order_id ?? "");
           const st = OrderUseCase.normalizeMagaluStatus(o.status);
           if (st) statusDesconhecidos.add(st);
+          // Os itens vêm em deliveries[].items[] — ler `o.items` mostraria 0
+          // em todo pedido, que é exatamente o bug que o import tinha.
+          const itens = extractMagaluOrderItems(o);
+          const resumo = itens
+            .map(
+              (it) =>
+                `${it.info?.sku ?? it.sku ?? "?"}x${it.quantity ?? 0} (R$ ${magaluMoneyToNumber(it.unit_price).toFixed(2)})`,
+            )
+            .join(", ");
           console.log(
-            `    - #${id} status="${st || "(vazio)"}" itens=${(o.items ?? []).length}`,
+            `    - #${id} code=${o.code ?? "-"} status="${st || "(vazio)"}" total=R$ ${magaluMoneyToNumber(o.amounts).toFixed(2)} itens=${itens.length}${resumo ? ` [${resumo}]` : ""}`,
           );
         }
         if (novos.length > 20) {

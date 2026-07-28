@@ -36,6 +36,10 @@ import type {
   MagaluOrder,
   MagaluOrderItem,
 } from "../types/magalu-order.types";
+import {
+  extractMagaluOrderItems,
+  magaluMoneyToNumber,
+} from "../types/magalu-order.types";
 import type {
   OrderCreate,
   OrderItemCreate,
@@ -1122,7 +1126,10 @@ export class OrderUseCase {
 
     for (const magaluOrder of magaluOrders) {
       const externalOrderId = extractExternalOrderId(magaluOrder);
-      const itemList = magaluOrder.items ?? [];
+      // Os itens vivem em `deliveries[].items[]`, não em `order.items`. Ler o
+      // campo errado fazia TODO pedido cair em `no_products` — a razão pela
+      // qual nenhuma venda Magalu jamais virou Order.
+      const itemList = extractMagaluOrderItems(magaluOrder);
       try {
         if (!externalOrderId) {
           result.errors++;
@@ -1284,12 +1291,19 @@ export class OrderUseCase {
           );
         }
 
+        // `amounts.total` vem em CENTAVOS com o divisor no próprio objeto
+        // ({ total: 19999, normalizer: 100 }) e já inclui o frete. Os campos
+        // planos (total/total_amount/amount) nunca aparecem na API real, mas
+        // seguem como fallback.
+        const totalDoPedido = magaluMoneyToNumber(magaluOrder.amounts);
         const rawTotal =
           magaluOrder.total ?? magaluOrder.total_amount ?? magaluOrder.amount;
         const totalAmount =
-          typeof rawTotal === "number" && Number.isFinite(rawTotal)
-            ? Number(rawTotal)
-            : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+          totalDoPedido > 0
+            ? totalDoPedido
+            : typeof rawTotal === "number" && Number.isFinite(rawTotal)
+              ? Number(rawTotal)
+              : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
 
         const orderData: OrderCreate = {
           marketplaceAccountId,
@@ -1297,6 +1311,7 @@ export class OrderUseCase {
           status: mappedStatus,
           totalAmount,
           customerName:
+            magaluOrder.customer?.name ??
             magaluOrder.customer_name ??
             magaluOrder.buyer?.name ??
             undefined,
@@ -1419,11 +1434,27 @@ export class OrderUseCase {
     let linkedCount = 0;
 
     for (const item of items) {
+      // Shape REAL da Magalu (validado 28/07/2026): o SKU do vendedor está em
+      // `item.info.sku`. Os campos de topo (`sku`, `seller_sku`, `product_id`)
+      // nunca aparecem na API — ficam como fallback defensivo. O anúncio Magalu
+      // é criado com `externalListingId = SKU`, então casar por `info.sku` é o
+      // caminho principal, e `info.id` (UUID do produto na Magalu) o secundário.
       const externalListingId = String(
-        item.product_id ?? item.sku ?? item.seller_sku ?? "",
+        item.info?.sku ??
+          item.product_id ??
+          item.sku ??
+          item.seller_sku ??
+          item.info?.id ??
+          "",
       );
       const quantity = Number(item.quantity ?? item.qty ?? 0) || 0;
-      const unitPrice = Number(item.unit_price ?? item.price ?? 0) || 0;
+      // `unit_price` é objeto em centavos: { value: 19999, normalizer: 100 }.
+      // O `Number(objeto)` anterior dava NaN → 0, zerando o valor do pedido.
+      const unitPrice =
+        magaluMoneyToNumber(item.unit_price) ||
+        magaluMoneyToNumber(item.amounts) ||
+        Number(item.price ?? 0) ||
+        0;
 
       // A Magalu é o único mapper cuja quantidade cai para 0 quando o campo
       // real do payload tem outro nome (o tipo MagaluOrderItem é declaradamente
@@ -1505,7 +1536,10 @@ export class OrderUseCase {
   }
 
   private static extractSkuFromMagalu(item: MagaluOrderItem): string | null {
+    // `info.sku` PRIMEIRO: é onde a API real coloca o SKU do vendedor. Os
+    // demais são fallback defensivo do shape antigo.
     return (
+      (item.info?.sku as string) ||
       (item.seller_sku as string) ||
       (item.sku as string) ||
       (item.product_sku as string) ||

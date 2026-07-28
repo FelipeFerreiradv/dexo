@@ -457,13 +457,22 @@ export class MagaluApiService {
   /**
    * Busca um pedido específico (usado pelo webhook, via data.params.id).
    */
+  /**
+   * Detalhe de um pedido.
+   *
+   * ATENÇÃO (validado 28/07/2026 contra a API real): o path aceita o **`code`**
+   * do pedido (o número, ex.: "1556570118572354"). Passando o `id` (UUID) a
+   * Magalu responde **404 Not Found**. Quem só tem o UUID — o webhook, que
+   * recebe `data.params.id` — deve usar `GET /seller/v1/orders?id=<uuid>` ou
+   * simplesmente cair no poll por janela, que já devolve o pedido completo.
+   */
   static async getOrder(
     accessToken: string,
-    orderId: string,
+    orderCode: string,
   ): Promise<MagaluOrder> {
     try {
       const response = await axios.get<MagaluOrder>(
-        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`,
+        `${MAGALU_CONSTANTS.API_URL}${MAGALU_CONSTANTS.ORDERS_ENDPOINT}/${encodeURIComponent(orderCode)}`,
         {
           headers: this.authHeaders(accessToken),
           timeout: MAGALU_CONSTANTS.REQUEST_TIMEOUT,
