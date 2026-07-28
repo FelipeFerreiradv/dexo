@@ -38,6 +38,27 @@ import {
   inferPositionFromName,
   resolvePositionValue,
 } from "../lib/ml-position.logic";
+import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
+import { applyOverridesToProduct } from "../services/listing-overrides.service";
+
+/**
+ * Campos cuja edição muda a ficha técnica de um anúncio Shopee. Só quando um
+ * deles é tocado vale a pena remontar a `attribute_list` (o que custa uma
+ * leitura do produto e uma do catálogo da categoria). Editar só o título ou o
+ * preço segue com o mesmo custo de antes.
+ */
+const ATTR_RELEVANT_EDIT_FIELDS = [
+  "attributesOverride",
+  "partNumberOverride",
+  "brandOverride",
+  "modelOverride",
+  "qualityOverride",
+  "weightKgOverride",
+  "heightCmOverride",
+  "widthCmOverride",
+  "lengthCmOverride",
+  "shopeeCategoryOverride",
+] as const;
 
 /**
  * Ids que o ML usa para lado/posição da peça. Não é uma lista de categorias —
@@ -3890,6 +3911,35 @@ export class ListingUseCase {
         };
       }
 
+      // Produto EFETIVO (com os overrides do anúncio) — usado EXCLUSIVAMENTE
+      // como fonte da ficha técnica. Deliberadamente não substitui `product`
+      // no resto da função: trocar a fonte de título, preço, dimensões e
+      // imagens seria outra entrega, com outro risco. O contrato do
+      // listing-overrides.service manda usar os helpers no payload da Shopee;
+      // aqui ele passa a valer para os atributos, que é onde ele estava
+      // faltando (brandOverride/partNumberOverride/attributesOverride não
+      // chegavam ao anúncio no momento da criação).
+      let attrSourceProduct: typeof product = product;
+      if (process.env.SHOPEE_ATTR_MAPPER_ENABLED === "true") {
+        try {
+          const existente = await ListingRepository.findByProductAndAccount(
+            productId,
+            account.id,
+          );
+          if (existente) {
+            attrSourceProduct = applyOverridesToProduct(
+              product as any,
+              existente as any,
+            ) as typeof product;
+          }
+        } catch (ovErr) {
+          console.warn(
+            `[ListingUseCase] Falha ao aplicar overrides na ficha Shopee (seguindo com o produto cru):`,
+            ovErr instanceof Error ? ovErr.message : ovErr,
+          );
+        }
+      }
+
       // Estoque e preço são exigidos pela Shopee também — fail-fast antes de
       // montar payload evita chamadas desperdiçadas e loop de retry.
       if (typeof product.stock !== "number" || product.stock <= 0) {
@@ -4100,6 +4150,61 @@ export class ListingUseCase {
           `[ListingUseCase] Shopee category ${numericCategoryId} has ${attrs.length} attributes (${attrs.filter((a: any) => a.is_mandatory).length} mandatory) [source=${source}]`,
         );
 
+        // Mapper novo (opt-in). O laço legado abaixo fica INTOCADO no `else`:
+        // com a flag desligada o payload sai byte-idêntico ao de hoje.
+        // Motivo da flag: isto muda a ficha técnica de anúncios reais.
+        if (process.env.SHOPEE_ATTR_MAPPER_ENABLED === "true") {
+          const { attributeList: mapped, report } = buildShopeeAttributeList({
+            product: attrSourceProduct as any,
+            categoryAttrs: attrs as any,
+            pickSafeMandatoryValue:
+              ListingUseCase.pickSafeMandatoryShopeeValue,
+            options: {
+              legacyMandatoryFallback:
+                process.env.SHOPEE_ATTR_MAPPER_STRICT !== "true",
+            },
+          });
+          attributeList.push(...(mapped as any));
+          console.log(
+            JSON.stringify({
+              event: "shopee.create_item.attributes",
+              categoryId: numericCategoryId,
+              productId,
+              source,
+              total: report.categoryAttrCount,
+              filled: report.emittedCount,
+              mandatoryTotal: report.mandatoryCount,
+              mandatoryFilled: report.mandatoryEmittedCount,
+              coverage: report.coverage,
+              fallbacks: report.fallbacks.map((f) => ({
+                attributeId: f.attributeId,
+                attributeName: f.attributeName,
+                value: f.valueName,
+                reason: f.reason,
+              })),
+              unmapped: report.unmapped.map((u) => ({
+                attributeId: u.attributeId,
+                attributeName: u.attributeName,
+                mandatory: u.isMandatory,
+                reason: u.reason,
+              })),
+            }),
+          );
+          for (const f of report.fallbacks) {
+            console.warn(
+              JSON.stringify({
+                event: "shopee.attr.fallback_safe_value",
+                attributeId: f.attributeId,
+                attributeName: f.attributeName,
+                categoryId: numericCategoryId,
+                productId,
+                value: f.valueName,
+                reason: f.reason,
+              }),
+            );
+          }
+        } else {
+        // ── Caminho LEGADO (flag desligada). Byte-idêntico ao anterior. ──
         for (const attr of attrs) {
           const attrNameLower = attr.attribute_name.toLowerCase();
           const productValue = productAttrValues[attrNameLower];
@@ -4164,6 +4269,7 @@ export class ListingUseCase {
               attribute_value_list: [attrValue as any],
             });
           }
+        }
         }
       } else {
         // Sem schema de atributos, mandar payload é garantia de rejeição da
@@ -4515,7 +4621,12 @@ export class ListingUseCase {
           attributes: (payload.attribute_list || []).map((a) => ({
             id: a.attribute_id,
             name: a.attribute_name,
-            value: a.attribute_value_list?.[0]?.value_name,
+            // O payload grava `original_value_name` (ver montagem acima); ler
+            // `value_name` fazia TODO atributo aparecer como `undefined` neste
+            // log — justamente o dado necessário para diagnosticar ficha vazia.
+            value:
+              (a.attribute_value_list?.[0] as any)?.original_value_name ??
+              (a.attribute_value_list?.[0] as any)?.value_name,
           })),
           imageIds: shopeeImageIds,
           imageCount: shopeeImageIds.length,
@@ -6316,6 +6427,103 @@ export class ListingUseCase {
             success: false,
             error: `Anúncio Shopee em status ${currentItem.status} não aceita edição. Reative o item no painel da Shopee antes.`,
           };
+        }
+      }
+
+      // 1b) Ficha técnica. Sem isto não havia NENHUM caminho para consertar os
+      // atributos de um anúncio Shopee já publicado — nem editando, nem no
+      // re-sync. Só dispara quando um campo que alimenta a ficha mudou, para
+      // que editar título ou preço siga sem custo extra.
+      //
+      // O `update_item` SUBSTITUI a attribute_list inteira, então mesclamos
+      // por attribute_id sobre o que o item já tem: o que o vendedor ajustou
+      // no Seller Center e o mapper não produz é preservado.
+      if (
+        process.env.SHOPEE_ATTR_MAPPER_ENABLED === "true" &&
+        ATTR_RELEVANT_EDIT_FIELDS.some((k) => fields[k] !== undefined)
+      ) {
+        try {
+          const fullProduct =
+            await ListingUseCase.productRepository.findById(listing.productId);
+          const rawCategoryId =
+            (fields.shopeeCategoryOverride as string | undefined) ??
+            (listing as any).shopeeCategoryOverride ??
+            fullProduct?.shopeeCategoryId ??
+            null;
+          const numericCategoryId = rawCategoryId
+            ? Number(String(rawCategoryId).replace(/^SHP_/i, ""))
+            : NaN;
+
+          const shopId = account.shopId;
+          if (
+            fullProduct &&
+            Number.isFinite(numericCategoryId) &&
+            typeof shopId === "number"
+          ) {
+            const efetivo = applyOverridesToProduct(
+              fullProduct as any,
+              { ...(listing as any), ...fields } as any,
+            );
+            const catalogo =
+              await ShopeeAttributeCatalogService.getCategoryAttributes(
+                "BR",
+                numericCategoryId,
+                "pt-BR",
+                {
+                  fetchLive: () =>
+                    ShopeeApiService.getCategoryAttributes(
+                      account.accessToken,
+                      shopId,
+                      numericCategoryId,
+                      "pt-BR",
+                    ).then((r) => r.attribute_list as any),
+                },
+              );
+
+            if (catalogo?.attribute_list?.length) {
+              const { attributeList: mapped, report } =
+                buildShopeeAttributeList({
+                  product: efetivo as any,
+                  categoryAttrs: catalogo.attribute_list as any,
+                  pickSafeMandatoryValue:
+                    ListingUseCase.pickSafeMandatoryShopeeValue,
+                  options: {
+                    legacyMandatoryFallback:
+                      process.env.SHOPEE_ATTR_MAPPER_STRICT !== "true",
+                  },
+                });
+
+              if (mapped.length > 0) {
+                const porId = new Map<number, any>();
+                for (const a of currentItem?.attribute_list ?? []) {
+                  porId.set(a.attribute_id, a);
+                }
+                for (const a of mapped) porId.set(a.attribute_id, a);
+                payload.attribute_list = Array.from(porId.values());
+                hasItemUpdateField = true;
+                console.log(
+                  JSON.stringify({
+                    event: "shopee.update_item.attributes",
+                    listingId: listing.id,
+                    categoryId: numericCategoryId,
+                    total: report.categoryAttrCount,
+                    filled: report.emittedCount,
+                    preservados:
+                      porId.size - mapped.length > 0
+                        ? porId.size - mapped.length
+                        : 0,
+                  }),
+                );
+              }
+            }
+          }
+        } catch (attrErr) {
+          // Catálogo indisponível não pode quebrar a edição de título/preço,
+          // que hoje funciona sem atributo nenhum.
+          console.warn(
+            `[ListingUseCase] Shopee: nao foi possivel montar attribute_list na edicao (listingId=${listing.id}):`,
+            attrErr instanceof Error ? attrErr.message : attrErr,
+          );
         }
       }
 
