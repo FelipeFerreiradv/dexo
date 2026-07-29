@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -72,9 +73,43 @@ function mergeSeries(
   return Object.values(result).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/**
+ * Cor da série por conta. Antes era `hsl(idx * 57)`, que gerava vermelho, roxo
+ * e azul-elétrico — cores fora da paleta da Dexo e que, no gráfico, sugeriam
+ * "erro"/"alerta" onde só há contagem de anúncios. Agora sai dos tokens de
+ * marca, que também acompanham o tema claro/escuro.
+ */
+/** Rótulos em PT-BR — o resto do painel não mostra enum cru ao usuário. */
+const PLATFORM_LABEL: Record<string, string> = {
+  MERCADO_LIVRE: "Mercado Livre",
+  SHOPEE: "Shopee",
+  MAGALU: "Magalu",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: "Ativa",
+  INACTIVE: "Inativa",
+  ERROR: "Erro",
+};
+
+const STATUS_STYLE: Record<string, string> = {
+  ACTIVE:
+    "border border-primary/30 bg-primary/10 text-foreground",
+  INACTIVE: "border border-border/60 bg-muted/40 text-muted-foreground",
+  ERROR: "border border-destructive/30 bg-destructive/10 text-destructive",
+  DEFAULT: "border border-border/60 bg-muted/40 text-muted-foreground",
+};
+
+const ACCOUNT_TOKENS = [
+  "--color-chart-2",
+  "--color-chart-3",
+  "--color-chart-5",
+  "--color-chart-4",
+  "--color-chart-1",
+] as const;
+
 function colorForIndex(idx: number) {
-  const hue = (idx * 57) % 360;
-  return `hsl(${hue} 70% 50%)`;
+  return `var(${ACCOUNT_TOKENS[idx % ACCOUNT_TOKENS.length]})`;
 }
 
 export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
@@ -95,6 +130,15 @@ export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
   const perAccount = stats?.perAccount ?? [];
   const totalListings = stats?.totalListings ?? 0;
   const totalListingsActive = stats?.totalListingsActive ?? 0;
+
+  // A timeline é indexada por id de conta; o nome legível está em perAccount.
+  const nomePorConta = useMemo(
+    () =>
+      Object.fromEntries(
+        (stats?.perAccount ?? []).map((a) => [a.accountId, a.accountName]),
+      ) as Record<string, string>,
+    [stats],
+  );
 
   return (
     <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
@@ -138,14 +182,29 @@ export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
                     key={acc.accountId}
                     className="border-border/60 text-sm transition-colors hover:bg-muted/30"
                   >
-                    <TableCell className="text-foreground">
-                      {acc.accountName} · {acc.platform}
+                    <TableCell className="max-w-[16rem] text-foreground">
+                      <span
+                        className="block truncate"
+                        title={`${acc.accountName} · ${acc.platform}`}
+                      >
+                        {acc.accountName}
+                      </span>
+                      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+                        {PLATFORM_LABEL[acc.platform] ?? acc.platform}
+                      </span>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {acc.status}
+                    <TableCell>
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                          STATUS_STYLE[acc.status] ?? STATUS_STYLE.DEFAULT,
+                        )}
+                      >
+                        {STATUS_LABEL[acc.status] ?? acc.status}
+                      </span>
                     </TableCell>
-                    <TableCell className="text-right text-foreground">
-                      {acc.totalListings}
+                    <TableCell className="text-right tabular-nums text-foreground">
+                      {acc.totalListings.toLocaleString("pt-BR")}
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground">
                       {acc.status === "ACTIVE" ? "Sim" : "Não"}
@@ -206,7 +265,9 @@ export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
                   key={accId}
                   type="monotone"
                   dataKey={`acc_${accId}`}
-                  name={accId}
+                  // O tooltip mostrava o ID técnico da conta (um cuid). Agora
+                  // mostra o nome que o usuário reconhece.
+                  name={nomePorConta[accId] ?? accId}
                   stroke={colorForIndex(idx)}
                   strokeWidth={1.8}
                   dot={false}
@@ -216,6 +277,32 @@ export function ListingsOverview({ stats }: { stats: ListingStats | null }) {
             </LineChart>
           </ResponsiveContainer>
         </div>
+
+        {/* Sem legenda, as linhas coloridas não diziam a que conta pertenciam. */}
+        {accountIds.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="h-0.5 w-4 rounded-full"
+                style={{ backgroundColor: "var(--color-primary)" }}
+                aria-hidden
+              />
+              Total
+            </span>
+            {accountIds.map((accId, idx) => (
+              <span key={accId} className="inline-flex items-center gap-1.5">
+                <span
+                  className="h-0.5 w-4 rounded-full"
+                  style={{ backgroundColor: colorForIndex(idx) }}
+                  aria-hidden
+                />
+                <span className="max-w-[13rem] truncate">
+                  {nomePorConta[accId] ?? accId}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

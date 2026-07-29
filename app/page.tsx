@@ -10,6 +10,7 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { HeroAreaChart } from "@/components/dashboard/hero-area-chart";
 import { OrdersHeatmap } from "@/components/dashboard/orders-heatmap";
 import { DashboardReportButton } from "@/components/dashboard/dashboard-report-button";
+import { DashboardInsights } from "@/components/dashboard/insights/dashboard-insights";
 import {
   CountryGrid,
   type AccountStat,
@@ -94,7 +95,7 @@ async function getListingStats(
       },
     );
     if (!res.ok) return null;
-    return (await res.json()) as ListingStatsResponse;
+    return (await res.json()) as ListingStats;
   } catch {
     return null;
   }
@@ -301,6 +302,8 @@ export default async function Home() {
           <ListingsOverview stats={listingStats} />
         </div>
       </section>
+
+      <DashboardInsights />
     </div>
   );
 }

@@ -11,6 +11,24 @@ import {
   resolveProductivityRange,
 } from "../lib/team-productivity";
 import { fetchProductivityGroups } from "../lib/team-productivity.query";
+import {
+  buildCategoryBreakdown,
+  buildChannelSplit,
+  buildPaymentMethodBreakdown,
+  buildPlatformBreakdown,
+  parseBooleanFlag,
+  parsePlatformFilter,
+  parseTopN,
+  resolveDashboardRange,
+  serializeRange,
+} from "../lib/dashboard-breakdowns";
+import {
+  fetchOrdersByPlatform,
+  fetchReceivablesByChannel,
+  fetchReceivablesByPaymentMethod,
+  fetchRevenueByCategory,
+  fetchRevenueByCategoryTotals,
+} from "../lib/dashboard-breakdowns.query";
 import { renderDashboardReport } from "../reports/dashboard-report";
 
 function fmtDateTimeBR(d: Date): string {
@@ -1208,6 +1226,184 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
       } catch (error) {
         console.error("Erro dashboard report:", error);
         return reply.status(500).send({ error: "Erro ao gerar o relatório" });
+      }
+    },
+  );
+
+  /**
+   * GET /dashboard/sales-by-platform?startDate&endDate&days&platform&excludeCancelled
+   * Pedidos e receita por marketplace (ML / Shopee / Magalu) no período.
+   * Cancelados ENTRAM por padrão, igual ao resto do Dashboard; vêm também
+   * separados em `cancelledOrders`/`cancelledRevenue`.
+   */
+  fastify.get(
+    "/sales-by-platform",
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user?.dataOwnerId;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveDashboardRange(q);
+        const platforms = parsePlatformFilter(q.platform);
+        const excludeCancelled = parseBooleanFlag(q.excludeCancelled);
+
+        const rows = await fetchOrdersByPlatform(
+          userId,
+          range.startDate,
+          range.endDate,
+          platforms,
+          excludeCancelled,
+        );
+
+        return reply.status(200).send({
+          range: serializeRange(range),
+          platform: platforms,
+          excludeCancelled,
+          ...buildPlatformBreakdown(rows),
+        });
+      } catch (error) {
+        console.error("Erro sales-by-platform:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar vendas por plataforma" });
+      }
+    },
+  );
+
+  /**
+   * GET /dashboard/sales-by-category?startDate&endDate&days&platform&limit&excludeCancelled
+   * Receita e unidades vendidas por categoria de produto no período, com filtro
+   * opcional de plataforma. Top-N + linha "Outras" derivada dos totais exatos.
+   */
+  fastify.get(
+    "/sales-by-category",
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user?.dataOwnerId;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveDashboardRange(q);
+        const platforms = parsePlatformFilter(q.platform);
+        const excludeCancelled = parseBooleanFlag(q.excludeCancelled);
+        const limit = parseTopN(q.limit, 10, 50);
+
+        const [rows, totals] = await Promise.all([
+          fetchRevenueByCategory(
+            userId,
+            range.startDate,
+            range.endDate,
+            platforms,
+            excludeCancelled,
+          ),
+          fetchRevenueByCategoryTotals(
+            userId,
+            range.startDate,
+            range.endDate,
+            platforms,
+            excludeCancelled,
+          ),
+        ]);
+
+        return reply.status(200).send({
+          range: serializeRange(range),
+          platform: platforms,
+          excludeCancelled,
+          limit,
+          ...buildCategoryBreakdown(rows, totals, limit),
+        });
+      } catch (error) {
+        console.error("Erro sales-by-category:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar vendas por categoria" });
+      }
+    },
+  );
+
+  /**
+   * GET /dashboard/sales-by-payment-method?startDate&endDate&days&unidadeId
+   * Contas a receber lançadas no período, por forma de pagamento. Domínio
+   * FINANCEIRO (Receivable), não marketplace: CANCELADA fica de fora.
+   */
+  fastify.get(
+    "/sales-by-payment-method",
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user?.dataOwnerId;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveDashboardRange(q);
+        const unidadeId = q.unidadeId || undefined;
+
+        const rows = await fetchReceivablesByPaymentMethod(
+          userId,
+          range.startDate,
+          range.endDate,
+          new Date(),
+          unidadeId,
+        );
+
+        return reply.status(200).send({
+          range: serializeRange(range),
+          ...buildPaymentMethodBreakdown(rows),
+        });
+      } catch (error) {
+        console.error("Erro sales-by-payment-method:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar formas de pagamento" });
+      }
+    },
+  );
+
+  /**
+   * GET /dashboard/sales-by-channel?startDate&endDate&days&unidadeId
+   * Divisão por forma de venda: balcão (conta a receber COM itens) × avulso.
+   * Mesmo critério do relatório financeiro em PDF.
+   */
+  fastify.get(
+    "/sales-by-channel",
+    { preHandler: [authMiddleware, requirePageAccess("dashboard")] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user?.dataOwnerId;
+        if (!userId) {
+          return reply.status(401).send({ error: "Usuário não autenticado" });
+        }
+
+        const q = request.query as Record<string, string | undefined>;
+        const range = resolveDashboardRange(q);
+        const unidadeId = q.unidadeId || undefined;
+
+        const rows = await fetchReceivablesByChannel(
+          userId,
+          range.startDate,
+          range.endDate,
+          new Date(),
+          unidadeId,
+        );
+
+        return reply.status(200).send({
+          range: serializeRange(range),
+          ...buildChannelSplit(rows),
+        });
+      } catch (error) {
+        console.error("Erro sales-by-channel:", error);
+        return reply
+          .status(500)
+          .send({ error: "Erro ao buscar formas de venda" });
       }
     },
   );
