@@ -93,6 +93,10 @@ class MaskPostprocessConfig:
     # Saturacao aproximada (max(RGB)-min(RGB), 0-255) maxima de "sombra cinza".
     shadow_max_saturation: int = 60
     shadow_suppress_factor: float = 0.15
+    # Raio (px) de protecao em volta de pixels FORTES (alpha > alpha_hi): o
+    # anel anti-alias da propria peca cinza cai na faixa suprimivel — sem esta
+    # protecao a borda inferior de peca metalica/preta seria esmagada.
+    shadow_protect_px: int = 3
 
     @classmethod
     def from_env(cls) -> "MaskPostprocessConfig":
@@ -112,6 +116,7 @@ class MaskPostprocessConfig:
             shadow_suppress_factor=_env_float(
                 "REMBG_MASK_SHADOW_SUPPRESS_FACTOR", 0.15
             ),
+            shadow_protect_px=_env_int("REMBG_MASK_SHADOW_PROTECT_PX", 3),
         )
 
 
@@ -141,46 +146,76 @@ def postprocess_mask(
     largest = int(areas.max())
     keep_thr = max(cfg.keep_ratio * largest, float(cfg.min_area_px))
     keep_ids = np.flatnonzero(areas >= keep_thr) + 1  # +1: pula o fundo
-    keep = np.isin(labels, keep_ids).astype(np.uint8)
+    # GUARD (achado da revisao adversarial): se NENHUM componente passa o piso
+    # (inferencia degenerada — so specks, peca minuscula), zerar tudo entregaria
+    # um PNG 100% transparente silenciosamente. Filosofia do modulo: sem ancora
+    # confiavel => NAO MEXE.
+    if keep_ids.size == 0:
+        return rgba
+    keep_solid = np.isin(labels, keep_ids).astype(np.uint8)
 
     # (opcional) abertura morfologica na mascara mantida.
     if cfg.open_px > 0:
         k = 2 * cfg.open_px + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        keep = cv2.morphologyEx(keep, cv2.MORPH_OPEN, kernel)
+        keep_solid = cv2.morphologyEx(keep_solid, cv2.MORPH_OPEN, kernel)
+        # Mesmo guard: o open pode erodir o unico componente (haste fina).
+        if not keep_solid.any():
+            return rgba
 
-    # 2) dilata a keep-mask para nao decapitar o anel suave da borda.
+    # 2) a dilatacao existe SO para preservar o anel SUAVE (alpha abaixo do
+    # bin_thresh) na vizinhanca dos componentes mantidos — pixels SOLIDOS de
+    # componentes descartados morrem mesmo dentro da area dilatada (um speck
+    # a 8px da peca, ou DENTRO de um furo dela, nao pode ressuscitar).
+    allowed = keep_solid
     if cfg.keep_dilate_px > 0:
         k = 2 * cfg.keep_dilate_px + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        keep = cv2.dilate(keep, kernel)
+        allowed = cv2.dilate(keep_solid, kernel)
 
     out_alpha = alpha.copy()
-    out_alpha[keep == 0] = 0
+    out_alpha[allowed == 0] = 0
+    out_alpha[solid.astype(bool) & (keep_solid == 0)] = 0
 
     # 3) preenchimento de furos-ruido (furo real de parafuso e' preservado).
+    # VETORIZADO (achado da revisao): a versao por-furo pagava um scan de
+    # quadro inteiro POR componente inverso — grade de radiador/chapa perfurada
+    # tem centenas/milhares de furos legitimos e viraria segundos de CPU no
+    # worker unico. Com bincount, o custo e' O(H*W) total, independente do
+    # numero de furos.
     solid_after = (out_alpha >= cfg.bin_thresh).astype(np.uint8)
     inv = (1 - solid_after).astype(np.uint8)
     n_inv, inv_labels, inv_stats, _ = cv2.connectedComponentsWithStats(
         inv, connectivity=4
     )
-    hole_area_max = max(1.0, cfg.hole_max_ratio * largest)
-    for i in range(1, n_inv):
-        x = inv_stats[i, cv2.CC_STAT_LEFT]
-        y = inv_stats[i, cv2.CC_STAT_TOP]
-        cw = inv_stats[i, cv2.CC_STAT_WIDTH]
-        ch = inv_stats[i, cv2.CC_STAT_HEIGHT]
-        area = inv_stats[i, cv2.CC_STAT_AREA]
+    if n_inv > 1:
+        hole_area_max = max(1.0, cfg.hole_max_ratio * largest)
+        lefts = inv_stats[1:, cv2.CC_STAT_LEFT]
+        tops = inv_stats[1:, cv2.CC_STAT_TOP]
+        rights = lefts + inv_stats[1:, cv2.CC_STAT_WIDTH]
+        bottoms = tops + inv_stats[1:, cv2.CC_STAT_HEIGHT]
+        inv_areas = inv_stats[1:, cv2.CC_STAT_AREA]
         # Toca a borda do quadro = fundo externo/abertura, nunca furo interno.
-        if x == 0 or y == 0 or x + cw >= w or y + ch >= h:
-            continue
-        if area >= hole_area_max:
-            continue
-        region = inv_labels == i
-        # Furo REAL (parafuso/vazado): o modelo cravou alpha ~0 — preservar.
-        if float(alpha[region].mean()) < cfg.hole_min_alpha:
-            continue
-        out_alpha[region] = 255
+        interior = (lefts > 0) & (tops > 0) & (rights < w) & (bottoms < h)
+        candidate = interior & (inv_areas < hole_area_max)
+        if candidate.any():
+            # Alpha medio por componente em UMA passada. A media e' sobre o
+            # OUT_alpha (pos-descarte): um speck parasita culled DENTRO de um
+            # furo real de parafuso ja esta zerado e nao infla a media — senao
+            # ele "selaria" o furo como opaco e ressuscitaria o speck.
+            flat_labels = inv_labels.ravel()
+            sums = np.bincount(
+                flat_labels,
+                weights=out_alpha.ravel().astype(np.float64),
+                minlength=n_inv,
+            )
+            counts = np.bincount(flat_labels, minlength=n_inv)
+            means = sums[1:] / np.maximum(counts[1:], 1)
+            fill_ids = (
+                np.flatnonzero(candidate & (means >= cfg.hole_min_alpha)) + 1
+            )
+            if fill_ids.size:
+                out_alpha[np.isin(inv_labels, fill_ids)] = 255
 
     # 4) supressao de sombra projetada real (opt-in experimental).
     if cfg.shadow_suppress:
@@ -221,6 +256,18 @@ def _suppress_projected_shadow(
         & (saturation <= cfg.shadow_max_saturation)
     )
     candidate[:centroid_y, :] = False  # so abaixo do centroide
+
+    # Protecao da borda anti-alias da PROPRIA peca (achado da revisao): o anel
+    # suave de uma peca cinza/preta cai na faixa suprimivel. Pixels a ate
+    # protect_px de um pixel FORTE (alpha > alpha_hi = corpo da peca) ficam
+    # de fora; a sombra densa conectada segue suprimida a partir dessa faixa.
+    if cfg.shadow_protect_px > 0:
+        strong = (out_alpha > cfg.shadow_alpha_hi).astype(np.uint8)
+        if strong.any():
+            k = 2 * cfg.shadow_protect_px + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            near_strong = cv2.dilate(strong, kernel).astype(bool)
+            candidate &= ~near_strong
 
     out_alpha[candidate] = (
         out_alpha[candidate].astype(np.float32) * cfg.shadow_suppress_factor

@@ -71,6 +71,25 @@ class TestComponentes(unittest.TestCase):
         out = postprocess_mask(rgba, CFG_ON)
         self.assertEqual(int(out[80, 240, 3]), 255)  # parte 2 preservada
 
+    def test_mascara_degenerada_e_intocada(self):
+        # NENHUM componente passa o piso (so specks): zerar tudo entregaria um
+        # PNG 100% transparente silencioso — o contrato e' NAO MEXER.
+        rgba = make_rgba()
+        add_rect(rgba, 10, 14, 20, 24, alpha=255)  # speck 4x4
+        add_rect(rgba, 100, 105, 200, 205, alpha=255)  # speck 5x5
+        add_rect(rgba, 50, 150, 50, 150, alpha=80)  # nevoa suave
+        out = postprocess_mask(rgba, CFG_ON)
+        self.assertIs(out, rgba)
+
+    def test_open_que_erode_tudo_e_intocado(self):
+        # Haste fina legitima: MORPH_OPEN com open_px=2 a erodiria por inteiro;
+        # o guard pos-open devolve a imagem intocada em vez de apagar tudo.
+        cfg = MaskPostprocessConfig(enabled=True, open_px=2)
+        rgba = make_rgba()
+        add_rect(rgba, 50, 53, 20, 280, alpha=255)  # barra 3px de altura
+        out = postprocess_mask(rgba, cfg)
+        self.assertIs(out, rgba)
+
     def test_borda_suave_do_blob_e_preservada(self):
         # Anel de alpha suave (60) de 3px em volta do solido: fica DENTRO da
         # keep-mask dilatada (8px) e nao pode ser zerado.
@@ -107,6 +126,33 @@ class TestFuros(unittest.TestCase):
         out = postprocess_mask(rgba, CFG_ON)
         self.assertEqual(int(out[96, 96, 3]), 0)
 
+    def test_furo_de_parafuso_com_speck_dentro_nao_e_selado(self):
+        # Speck parasita ISOLADO (gap de 1px — senao seria 8-conectado ao blob
+        # e legitimamente parte dele) DENTRO do furo real. Pina DUAS regras:
+        # (a) o speck morre mesmo estando na area dilatada da keep-mask;
+        # (b) a media do furo e' sobre o alpha POS-descarte — com a media
+        #     ORIGINAL, 9px de speck em 25px de furo (media ~92 >= 40)
+        #     "selariam" o furo como opaco e ressuscitariam o speck.
+        rgba = make_rgba(300, 300)
+        add_rect(rgba, 20, 260, 20, 260, alpha=255)  # blob 240x240
+        add_rect(rgba, 95, 100, 95, 100, alpha=0)  # furo real 5x5 (25px < 57)
+        add_rect(rgba, 96, 99, 96, 99, alpha=255)  # speck 3x3 isolado
+        out = postprocess_mask(rgba, CFG_ON)
+        self.assertEqual(int(out[97, 97, 3]), 0)  # speck morto
+        self.assertEqual(int(out[95, 95, 3]), 0)  # furo NAO selado
+
+    def test_grade_perfurada_todos_os_furos_ruido_preenchidos(self):
+        # Caminho vetorizado: muitos furos-ruido de uma vez (grade/chapa).
+        rgba = make_rgba(300, 300)
+        add_rect(rgba, 20, 280, 20, 280, alpha=255)
+        centers = [(60, 60), (60, 150), (60, 240), (150, 60), (150, 150),
+                   (150, 240), (240, 60), (240, 150), (240, 240)]
+        for cy, cx in centers:
+            add_rect(rgba, cy, cy + 3, cx, cx + 3, alpha=90)
+        out = postprocess_mask(rgba, CFG_ON)
+        for cy, cx in centers:
+            self.assertEqual(int(out[cy + 1, cx + 1, 3]), 255)
+
     def test_furo_grande_nunca_e_preenchido(self):
         # Furo 60x60 (3600px) >> 0.1% da maior componente => fora do limiar de
         # PREENCHIMENTO. A nevoa de alpha intermediario dentro dele vira
@@ -140,6 +186,16 @@ class TestSombra(unittest.TestCase):
     def test_sombra_NAO_atenuada_sem_a_flag_propria(self):
         out = postprocess_mask(self._cena(), CFG_ON)  # so master ON
         self.assertEqual(int(out[140, 150, 3]), 160)
+
+    def test_borda_anti_alias_de_peca_cinza_e_protegida(self):
+        # O anel suave da PROPRIA peca cinza cai na faixa suprimivel; pixels a
+        # ate protect_px do corpo forte (alpha > alpha_hi) ficam protegidos.
+        cfg = MaskPostprocessConfig(enabled=True, shadow_suppress=True)
+        rgba = make_rgba(200, 300)
+        add_rect(rgba, 20, 100, 100, 200, alpha=255, rgb=100)  # peca cinza
+        add_rect(rgba, 100, 102, 100, 200, alpha=120, rgb=100)  # anel 2px
+        out = postprocess_mask(rgba, cfg)
+        self.assertEqual(int(out[101, 150, 3]), 120)  # anel intacto
 
     def test_regiao_colorida_nao_e_tratada_como_sombra(self):
         cfg = MaskPostprocessConfig(enabled=True, shadow_suppress=True)
