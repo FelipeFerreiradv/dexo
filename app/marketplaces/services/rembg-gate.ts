@@ -115,6 +115,23 @@ class RembgGate {
     }
   }
 
+  /** Snapshot para diagnóstico (GET /internal/rembg/status). Só leitura. */
+  stats(): {
+    inFlight: number;
+    publicInFlight: number;
+    waiting: number;
+    capacity: number;
+    publicCapacity: number;
+  } {
+    return {
+      inFlight: this.inFlight,
+      publicInFlight: this.publicInFlight,
+      waiting: this.waiters.length,
+      capacity: this.capacity,
+      publicCapacity: this.publicCapacity,
+    };
+  }
+
   acquire(lane: RembgLane, maxWaitMs: number): Promise<RembgGateSlot | null> {
     if (this.canAdmit(lane)) {
       return Promise.resolve(this.take(lane));
@@ -191,4 +208,21 @@ export async function acquireRembgSlot(
 ): Promise<RembgGateSlot | null> {
   if (isGateDisabled()) return NOOP_SLOT;
   return getGate().acquire(lane, maxWaitMs);
+}
+
+export interface RembgGateStats {
+  disabled: boolean;
+  inFlight: number;
+  publicInFlight: number;
+  waiting: number;
+  capacity: number;
+  publicCapacity: number;
+}
+
+/**
+ * Snapshot do gate para o endpoint de diagnóstico. Aditivo e só-leitura;
+ * instancia o singleton se ainda não existir (inócuo — contadores zerados).
+ */
+export function getRembgGateStats(): RembgGateStats {
+  return { disabled: isGateDisabled(), ...getGate().stats() };
 }

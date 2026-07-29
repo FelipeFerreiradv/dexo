@@ -98,6 +98,21 @@ export async function ensureMLMinImageSize(buf: Buffer): Promise<Buffer> {
 
 export type ProcessedImageFormat = "webp" | "png" | "jpeg";
 
+/**
+ * POR QUE a degradação virou o warning que veio parar no usuário. As três
+ * causas produzem a MESMA mensagem mas exigem correções diferentes (fila ≠
+ * sidecar morto ≠ killswitch); sem este campo só dava para separá-las
+ * garimpando o pm2 log. Aditivo: ausente = não degradou.
+ */
+export type RembgDegradeReason =
+  | "killswitch" // REMBG_ENABLED=false ou REMBG_SIDECAR_URL ausente
+  | "budget_gate" // orçamento/fila esgotados ANTES de chamar o sidecar
+  | "budget_after_wait" // slot saiu, mas a sobra não pagava uma inferência
+  | "timeout" // axios ECONNABORTED — inferência não coube no orçamento
+  | "conn_error" // falha de rede/conexão sem resposta (refused/reset/DNS/rota)
+  | "http_error" // sidecar respondeu 4xx/5xx
+  | "processing_error"; // erro não-axios (ex.: resposta ilegível pós-fetch)
+
 export interface ProcessUploadedImageOptions {
   removeBackground: boolean;
   /** Sombra de contato. Exige recorte — ignorada se removeBackground=false. */
@@ -119,7 +134,13 @@ export interface ProcessUploadedImageOptions {
   /** Override para testes — injeta um fetcher do sidecar. */
   rembgFetcher?: (
     buf: Buffer,
-    opts?: { addShadow?: boolean; timeoutMs?: number },
+    opts?: {
+      addShadow?: boolean;
+      timeoutMs?: number;
+      /** Metadados do round-trip (ex.: X-Rembg-Timing). Best-effort — só o
+       *  fetcher default preenche; overrides de teste podem ignorar. */
+      onMeta?: (meta: { timing?: string }) => void;
+    },
   ) => Promise<Buffer>;
 }
 
@@ -131,6 +152,13 @@ export interface ProcessUploadedImageResult {
   warning?: string;
   width?: number;
   height?: number;
+  /** Por que degradou (ausente quando o recorte saiu ou não foi pedido). */
+  degradeReason?: RembgDegradeReason;
+  /** Valor cru do header X-Rembg-Timing (só quando o sidecar respondeu com
+   *  REMBG_PROFILE ligado). Persistível pela telemetria. */
+  sidecarTiming?: string;
+  /** Round-trip Node→sidecar em ms (só quando o fetcher foi chamado). */
+  sidecarMs?: number;
 }
 
 /**
@@ -193,6 +221,13 @@ export async function processUploadedImage(
 
   // 3) Caminho com remoção de fundo: tenta o sidecar; em falha, degrada.
   if (opts.removeBackground) {
+    // Telemetria aditiva (PR de observabilidade): por que degradou + timing do
+    // sidecar. Não muda nenhuma decisão do pipeline — só enriquece o retorno.
+    let degradeReason: RembgDegradeReason | undefined;
+    let sidecarTiming: string | undefined;
+    let sidecarMs: number | undefined;
+    let fetchStartedAt: number | undefined;
+
     // Orçamento e gate ficam AQUI, no ramo do sidecar — nunca no topo da função.
     // O caminho `removeBackground=false` (sharp puro, ~1s) não pode ser
     // estrangulado por fila de recorte: é o fluxo mais rápido do produto.
@@ -208,7 +243,15 @@ export async function processUploadedImage(
         ? await acquireRembgSlot(lane, budgetMs - SIDECAR_MIN_USEFUL_MS)
         : null;
 
-    if (sidecarAvailable && slot === null) {
+    if (!sidecarAvailable) {
+      // Antes este caminho degradava em silêncio absoluto — impossível separar
+      // "killswitch ligado" de "nunca configurado" no diagnóstico de prod.
+      degradeReason = "killswitch";
+      console.warn(
+        "[processUploadedImage] sidecar desabilitado (REMBG_ENABLED=false ou REMBG_SIDECAR_URL ausente); degradando para imagem otimizada sem remoção",
+      );
+    } else if (slot === null) {
+      degradeReason = "budget_gate";
       console.warn(
         "[processUploadedImage] orçamento/fila do sidecar esgotados; degradando para imagem otimizada sem remoção:",
         { lane, budgetMs },
@@ -228,13 +271,17 @@ export async function processUploadedImage(
         // A espera no gate é limitada, mas jitter pode comer a sobra: se o que
         // restou não dá nem para uma inferência, desiste sem abrir a conexão.
         if (!isWorthCallingSidecar(timeoutMs)) {
-          throw new Error(
+          throw new BudgetAfterWaitError(
             `orçamento esgotado após espera na fila (restavam ${timeoutMs}ms)`,
           );
         }
+        const onMeta = (meta: { timing?: string }) => {
+          if (meta.timing) sidecarTiming = meta.timing;
+        };
         let cutout: Buffer;
+        fetchStartedAt = Date.now();
         try {
-          cutout = await fetcher(normalized, { addShadow, timeoutMs });
+          cutout = await fetcher(normalized, { addShadow, timeoutMs, onMeta });
         } catch (err) {
           // Retry ÚNICO, apenas para erro de CONEXÃO (sidecar morto/reiniciando
           // pós OOM-kill): a conexão recusada falha em milissegundos, então uma
@@ -273,8 +320,10 @@ export async function processUploadedImage(
           cutout = await fetcher(normalized, {
             addShadow,
             timeoutMs: retryTimeoutMs,
+            onMeta,
           });
         }
+        sidecarMs = Date.now() - fetchStartedAt;
         const tFetch = profNow();
 
         // A2: passthrough. O sidecar já devolve PNG RGBA pronto; re-encodar no
@@ -304,6 +353,8 @@ export async function processUploadedImage(
             shadowApplied: addShadow,
             width: cutMeta.width,
             height: cutMeta.height,
+            ...(sidecarTiming ? { sidecarTiming } : {}),
+            ...(sidecarMs !== undefined ? { sidecarMs } : {}),
           };
         }
 
@@ -323,8 +374,14 @@ export async function processUploadedImage(
           shadowApplied: addShadow,
           width: outMeta.width,
           height: outMeta.height,
+          ...(sidecarTiming ? { sidecarTiming } : {}),
+          ...(sidecarMs !== undefined ? { sidecarMs } : {}),
         };
       } catch (err) {
+        degradeReason = classifyDegradeReason(err);
+        if (fetchStartedAt !== undefined) {
+          sidecarMs = Date.now() - fetchStartedAt;
+        }
         // Log diagnóstico expandido: inclui status HTTP + corpo da resposta
         // do sidecar quando disponível, para acelerar troubleshooting em prod.
         const extra: Record<string, unknown> = {};
@@ -368,6 +425,9 @@ export async function processUploadedImage(
         "Remoção de fundo indisponível; usamos a imagem otimizada original.",
       width: outMeta.width,
       height: outMeta.height,
+      ...(degradeReason ? { degradeReason } : {}),
+      ...(sidecarTiming ? { sidecarTiming } : {}),
+      ...(sidecarMs !== undefined ? { sidecarMs } : {}),
     };
   }
 
@@ -395,6 +455,26 @@ function isRembgEnabled(): boolean {
  *  voltando de um restart, sem segurar o slot do gate por tempo relevante. */
 const REMBG_RETRY_BACKOFF_MS = 500;
 
+/** Sentinela para "slot saiu do gate mas a sobra do orçamento não paga uma
+ *  inferência". Só existe para a telemetria classificar sem casar mensagem. */
+class BudgetAfterWaitError extends Error {}
+
+/** Mapeia o erro do caminho de recorte para a causa da degradação. Não muda
+ *  NENHUMA decisão do pipeline — é rótulo de telemetria puro. */
+function classifyDegradeReason(err: unknown): RembgDegradeReason {
+  if (err instanceof BudgetAfterWaitError) return "budget_after_wait";
+  if (axios.isAxiosError(err)) {
+    if (err.response) return "http_error";
+    if (err.code === "ECONNABORTED") return "timeout";
+    // Qualquer outro erro axios SEM resposta é falha de rede/conexão
+    // (ENOTFOUND por typo na URL, EHOSTUNREACH, ETIMEDOUT de connect TCP...)
+    // — mais amplo que a lista RETRYÁVEL de isRetryableConnectionError, de
+    // propósito: o rótulo descreve a causa; o retry continua conservador.
+    return "conn_error";
+  }
+  return "processing_error";
+}
+
 /** Kill-switch do retry (mesma convenção do REMBG_GATE_DISABLED). Lido por
  *  chamada para funcionar com edição de .env + restart, sem rebuild. */
 function isRembgRetryDisabled(): boolean {
@@ -420,7 +500,11 @@ function isRetryableConnectionError(err: unknown): boolean {
 
 async function defaultRembgFetcher(
   buf: Buffer,
-  opts?: { addShadow?: boolean; timeoutMs?: number },
+  opts?: {
+    addShadow?: boolean;
+    timeoutMs?: number;
+    onMeta?: (meta: { timing?: string }) => void;
+  },
 ): Promise<Buffer> {
   const url = process.env.REMBG_SIDECAR_URL;
   if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
@@ -454,9 +538,16 @@ async function defaultRembgFetcher(
     maxBodyLength: 50 * 1024 * 1024,
   });
 
-  if (REMBG_PROFILE) {
-    const timing = response.headers?.["x-rembg-timing"];
-    if (timing) console.log(`[sidecar-profile] ${timing}`);
+  const timing = response.headers?.["x-rembg-timing"];
+  if (REMBG_PROFILE && timing) {
+    console.log(`[sidecar-profile] ${timing}`);
+  }
+  if (timing && typeof timing === "string") {
+    try {
+      opts?.onMeta?.({ timing });
+    } catch {
+      // metadados são best-effort — nunca derrubam o caminho do recorte.
+    }
   }
 
   return Buffer.from(response.data);
