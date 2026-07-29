@@ -53,6 +53,12 @@ export type LogAction =
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
   | "ML_REACTIVATION_RISK"
+  // Listing que apontava para a conta errada e foi reapontado para a conta
+  // correta do mesmo tenant. Já era emitido por
+  // SystemLogService.logListingOwnershipRepaired, mas faltava no union — o
+  // próprio helper não compilava. Ver listing-ownership-repair.service (ML) e
+  // o resgate cross-account do import Shopee.
+  | "LISTING_OWNERSHIP_REPAIRED"
   // Cancelamento de pedido marketplace: estorno de estoque + reabertura de
   // anúncios (ver OrderUseCase.processOrderCancellation).
   | "ORDER_CANCEL_RESTORE"
@@ -65,6 +71,15 @@ export type LogAction =
   // Job de importação de dados legados (Superadmin). O registro carrega o
   // estado/relatório do job em `details` (ver app/usecases/import/).
   | "IMPORT_JOB"
+  // Quarentena de ingestão de pedido: a API do marketplace devolveu um pedido
+  // que não pôde ser totalmente ingerido (item sem vínculo, baixa que falhou,
+  // busca que falhou). Antes isso era um `continue` mudo e a venda sumia sem
+  // deixar rastro. Ver OrderIngestionIssueService.
+  | "ORDER_INGESTION_ISSUE"
+  | "ORDER_INGESTION_ISSUE_RESOLVED"
+  // O reconciliador esgotou as tentativas e a pendência continua aberta —
+  // precisa de ação humana (normalmente vincular o anúncio a um produto).
+  | "ORDER_INGESTION_ISSUE_STUCK"
   // Pipeline de remoção de fundo (rembg). Gravados apenas com
   // IMAGE_PIPELINE_METRICS=1 (ver rembg-telemetry.ts). A taxa de fallback —
   // a métrica nº 1 do pipeline — é count(IMAGE_BG_FALLBACK) /

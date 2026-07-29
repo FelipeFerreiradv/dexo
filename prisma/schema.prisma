@@ -281,6 +281,13 @@ model MarketplaceAccount {
   appClientSecret             String?
   autoImportListingsSince     DateTime?
   shopeeListingsSyncedThrough DateTime?
+  // Marca d'água do poll de PEDIDOS da Shopee: até quando a janela por
+  // `update_time` já foi varrida com sucesso. Espelha o campo acima, que faz o
+  // mesmo para anúncios. NULL = nunca varrido; cai na janela por dias, que é o
+  // comportamento anterior. Só avança quando o ciclo termina sem erro — assim
+  // um ciclo que falhou no meio é refeito em vez de pular pedidos.
+  // Migração: ALTER TABLE "MarketplaceAccount" ADD COLUMN IF NOT EXISTS "shopeeOrdersSyncedThrough" TIMESTAMP(3);
+  shopeeOrdersSyncedThrough   DateTime?
   // Multi-CNPJ: CNPJ emissor vinculado a esta conta (CompanyFiscalConfig.id,
   // scalar sem FK — padrão do módulo fiscal). NULL = usa o CNPJ padrão do tenant.
   companyFiscalConfigId       String?
@@ -289,11 +296,60 @@ model MarketplaceAccount {
   listings                    ProductListing[]
   syncLogs                    SyncLog[]
   questions                   MarketplaceQuestion[]
+  ingestionIssues             OrderIngestionIssue[]
 
   @@unique([platform, externalUserId])
   @@unique([platform, shopId])
   @@index([userId])
   @@index([companyFiscalConfigId])
+}
+
+/// Quarentena de pedido de marketplace que NÃO pôde ser totalmente ingerido.
+///
+/// Antes deste modelo, um pedido cujos itens não casassem com nenhum produto
+/// morria num `continue` mudo (order.usercase): não virava Order, não gerava
+/// SystemLog, não aparecia em /pedidos, e o SyncLog do ciclo era gravado como
+/// SUCCESS. O cliente só descobria contando o estoque físico. Os logs de
+/// produção de 29/07/2026 mostram isso acontecendo agora ("Produto com SKU
+/// TRL-296 (Shopee) não encontrado", e mais oito casos no mesmo ciclo).
+///
+/// A regra que este modelo materializa: para todo pedido que a API do
+/// marketplace devolveu, ao fim da ingestão existe um `Order` OU um
+/// `OrderIngestionIssue` aberto. Nunca nenhum dos dois.
+///
+/// Migração:
+///   CREATE TABLE IF NOT EXISTS "OrderIngestionIssue" (...);
+///   CREATE UNIQUE INDEX IF NOT EXISTS "OrderIngestionIssue_marketplaceAccountId_externalOrderId_key" ...;
+/// (SQL completo em prisma/migrations/20260729130000_add_order_ingestion_issue/)
+model OrderIngestionIssue {
+  id                   String   @id @default(cuid())
+  marketplaceAccountId String
+  platform             Platform
+  externalOrderId      String
+  /// Detalhe do pedido vindo da API, PODADO: só os campos que a reingestão
+  /// precisa. Nunca guarda token, e nenhum dado do comprador além do que o
+  /// Order já persiste hoje (buyer_username / nome).
+  payload              Json?
+  /// NO_LINKED_ITEMS | PARTIAL_LINK | PRODUCT_NOT_FOUND | ITEM_WITHOUT_SKU
+  /// | STOCK_DEDUCTION_FAILED | FETCH_FAILED | UNKNOWN_STATUS | INGEST_FAILED
+  reason               String
+  detail               String?
+  /// OPEN | RESOLVED | IGNORED. Nunca existe estado terminal de falha: um
+  /// problema que o reconciliador não resolve continua OPEN (e escala o
+  /// SystemLog para ERROR), em vez de virar FAILED e sumir de vista.
+  status               String   @default("OPEN")
+  attempts             Int      @default(0)
+  nextRetryAt          DateTime @default(now())
+  resolvedOrderId      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  marketplaceAccount MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
+
+  /// Reentrega/re-poll ATUALIZA o registro, não duplica.
+  @@unique([marketplaceAccountId, externalOrderId])
+  @@index([status, nextRetryAt])
+  @@index([marketplaceAccountId, status])
 }
 
 model ProductListing {
@@ -428,6 +484,17 @@ model Order {
   // Cliente do CRM vinculado à venda (auto-cadastro best-effort no import).
   // SetNull preserva o delete de Customer para clientes com pedido vinculado.
   customerId           String?
+  // Quando a baixa de estoque deste pedido foi efetivada, gravado DENTRO da
+  // mesma transação da baixa. Existe para tornar trivial a pergunta "quais
+  // pedidos estão sem baixa?" — antes só dava para responder cruzando StockLog
+  // por `reason`, que é texto livre.
+  //
+  // NÃO é a fonte de verdade da idempotência: quem garante que nada baixa duas
+  // vezes continua sendo o NET do StockLog por `reason` determinística (ver
+  // processOrderCancellation). Esta coluna é marca de auditoria. Pedidos
+  // anteriores à migração ficam NULL — o backfill é script separado.
+  // Migração: ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "stockDeductedAt" TIMESTAMP(3);
+  stockDeductedAt      DateTime?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])

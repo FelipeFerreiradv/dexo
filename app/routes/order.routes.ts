@@ -11,6 +11,7 @@ import { orderRepository } from "../repositories/order.repository";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { SystemLogService } from "../services/system-log.service";
 import { ShippingLabelUseCase } from "../marketplaces/usecases/shipping-label.usecase";
+import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
 import {
   ShippingLabelError,
   type LabelSize,
@@ -33,6 +34,33 @@ function shippingErrorStatus(code?: string): number {
       return 502;
     default:
       return 500;
+  }
+}
+
+/**
+ * Texto em português claro para o cliente. O `reason` é vocabulário interno;
+ * quem lê a tela precisa saber O QUE fazer, não o nome do enum.
+ */
+function descreveMotivo(reason: string): string {
+  switch (reason) {
+    case "NO_LINKED_ITEMS":
+      return "O anúncio vendido não está vinculado a nenhum produto do seu estoque.";
+    case "PARTIAL_LINK":
+      return "Parte dos itens deste pedido não está vinculada a produtos do seu estoque — esses itens não baixaram estoque.";
+    case "PRODUCT_NOT_FOUND":
+      return "O SKU do anúncio vendido não corresponde a nenhum produto do seu estoque.";
+    case "ITEM_WITHOUT_SKU":
+      return "O anúncio vendido está sem SKU no marketplace e não está vinculado a um produto.";
+    case "STOCK_DEDUCTION_FAILED":
+      return "O pedido entrou, mas a baixa de estoque falhou. Estamos tentando novamente.";
+    case "FETCH_FAILED":
+      return "Não conseguimos buscar este pedido no marketplace.";
+    case "UNKNOWN_STATUS":
+      return "Este pedido está num status que ainda não sabemos tratar.";
+    case "INGEST_FAILED":
+      return "Houve uma falha inesperada ao importar este pedido. Estamos tentando novamente.";
+    default:
+      return "Este pedido não pôde ser importado por completo.";
   }
 }
 
@@ -320,6 +348,112 @@ export async function orderRoutes(app: FastifyInstance) {
         console.error("[Orders] List error:", error);
         return reply.status(500).send({
           error: "Erro ao listar pedidos",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /orders/ingestion-issues
+   * Pendências de importação ABERTAS do tenant.
+   *
+   * Existe porque um pedido que o Dexo não conseguiu ingerir por completo
+   * precisa ser visível para quem pode resolver — antes ele sumia sem deixar
+   * rastro na tela. Declarada antes de `/:id` por legibilidade (o roteador do
+   * Fastify já prioriza segmento estático sobre parâmetro).
+   */
+  app.get(
+    "/ingestion-issues",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+
+        const issues = await (prisma as any).orderIngestionIssue.findMany({
+          where: {
+            status: "OPEN",
+            marketplaceAccount: { userId },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+          select: {
+            id: true,
+            platform: true,
+            externalOrderId: true,
+            reason: true,
+            detail: true,
+            attempts: true,
+            nextRetryAt: true,
+            createdAt: true,
+            marketplaceAccount: { select: { accountName: true } },
+          },
+        });
+
+        return reply.status(200).send({
+          success: true,
+          issues: issues.map((i: any) => ({
+            id: i.id,
+            platform: i.platform,
+            externalOrderId: i.externalOrderId,
+            reason: i.reason,
+            motivo: descreveMotivo(i.reason),
+            detail: i.detail,
+            attempts: i.attempts,
+            nextRetryAt: i.nextRetryAt,
+            createdAt: i.createdAt,
+            accountName: i.marketplaceAccount?.accountName ?? null,
+          })),
+          total: issues.length,
+        });
+      } catch (error) {
+        console.error("[Orders] Ingestion issues error:", error);
+        return reply.status(500).send({
+          error: "Erro ao buscar pendências de importação",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /orders/ingestion-issues/:id/retry
+   * Re-tenta AGORA uma pendência específica, sem esperar o worker.
+   */
+  app.post<{ Params: { id: string } }>(
+    "/ingestion-issues/:id/retry",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const userId = request.user!.dataOwnerId;
+
+        // Escopo por tenant ANTES de agir: nunca re-tentar pendência alheia.
+        const issue = await (prisma as any).orderIngestionIssue.findFirst({
+          where: { id, marketplaceAccount: { userId } },
+          select: { id: true },
+        });
+
+        if (!issue) {
+          return reply.status(404).send({
+            error: "Pendência não encontrada",
+            message: `Pendência com ID ${id} não existe`,
+          });
+        }
+
+        const { resolved } = await OrderIngestionReconcilerService.retryOne(id);
+
+        return reply.status(200).send({
+          success: true,
+          resolved,
+          message: resolved
+            ? "Pedido importado com sucesso."
+            : "Ainda não foi possível importar este pedido. Continuaremos tentando.",
+        });
+      } catch (error) {
+        console.error("[Orders] Ingestion issue retry error:", error);
+        return reply.status(500).send({
+          error: "Erro ao re-tentar a importação",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
@@ -742,9 +876,7 @@ export async function orderRoutes(app: FastifyInstance) {
           ? body.orderIds.filter((id) => typeof id === "string")
           : [];
         if (orderIds.length === 0) {
-          return reply
-            .status(400)
-            .send({ error: "Nenhum pedido selecionado" });
+          return reply.status(400).send({ error: "Nenhum pedido selecionado" });
         }
         const size: LabelSize = body?.size === "THERMAL" ? "THERMAL" : "A4";
 

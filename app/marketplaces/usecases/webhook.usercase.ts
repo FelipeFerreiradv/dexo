@@ -199,138 +199,153 @@ export class WebhookUseCase {
         };
       }
 
-      const accounts = await MarketplaceRepository.findAllByExternalUserId(
-        payload.user_id.toString(),
-        Platform.MERCADO_LIVRE,
-        true,
-      );
+      // A partir daqui o evento está reivindicado. `processedOk` só vira true
+      // no caminho de sucesso; o `finally` libera o claim em qualquer outro,
+      // para que a reentrega do ML volte a ser processável em vez de cair em
+      // `duplicate_ignored` para sempre.
+      let processedOk = false;
+      try {
+        const accounts = await MarketplaceRepository.findAllByExternalUserId(
+          payload.user_id.toString(),
+          Platform.MERCADO_LIVRE,
+          true,
+        );
 
-      if (accounts.length === 0) {
-        void SystemLogService.logWarning(
-          "WEBHOOK_ACCOUNT_NOT_FOUND",
-          `Webhook ML ignorado: conta não encontrada para user_id=${payload.user_id}. Pedidos podem estar sendo perdidos.`,
-          {
-            resource: "MarketplaceAccount",
-            details: {
-              externalUserId: payload.user_id.toString(),
-              platform: "MERCADO_LIVRE",
-              mlOrderId,
+        if (accounts.length === 0) {
+          void SystemLogService.logWarning(
+            "WEBHOOK_ACCOUNT_NOT_FOUND",
+            `Webhook ML ignorado: conta não encontrada para user_id=${payload.user_id}. Pedidos podem estar sendo perdidos.`,
+            {
+              resource: "MarketplaceAccount",
+              details: {
+                externalUserId: payload.user_id.toString(),
+                platform: "MERCADO_LIVRE",
+                mlOrderId,
+              },
             },
-          },
-        ).catch(() => {});
-        return {
-          success: false,
-          error: `Conta do Mercado Livre não encontrada para user_id: ${payload.user_id}`,
-        };
-      }
+          ).catch(() => {});
+          return {
+            success: false,
+            error: `Conta do Mercado Livre não encontrada para user_id: ${payload.user_id}`,
+          };
+        }
 
-      if (accounts.length > 1) {
-        return {
-          success: false,
-          error: `Múltiplas contas ativas do Mercado Livre encontradas para user_id: ${payload.user_id}. Resolva a duplicidade antes de processar webhooks.`,
-        };
-      }
+        if (accounts.length > 1) {
+          return {
+            success: false,
+            error: `Múltiplas contas ativas do Mercado Livre encontradas para user_id: ${payload.user_id}. Resolva a duplicidade antes de processar webhooks.`,
+          };
+        }
 
-      const [account] = accounts;
+        const [account] = accounts;
 
-      if (account.status !== "ACTIVE") {
-        return {
-          success: false,
-          error: `Conta do Mercado Livre não está ativa (status: ${account.status})`,
-        };
-      }
+        if (account.status !== "ACTIVE") {
+          return {
+            success: false,
+            error: `Conta do Mercado Livre não está ativa (status: ${account.status})`,
+          };
+        }
 
-      const importResult = await OrderUseCase.importRecentOrdersForAccount(
-        account.id,
-        1,
-        true,
-      );
+        const importResult = await OrderUseCase.importRecentOrdersForAccount(
+          account.id,
+          1,
+          true,
+        );
 
-      // ADITIVO (cancelamento): o payload ML não traz status (só o resource);
-      // a verdade é o fetch da API. Best-effort em try/catch próprio — falha
-      // aqui não altera o retorno do webhook. Gates de custo: pedido recém-
-      // importado NESTE re-poll acabou de vir da API como paid ⇒ não está
-      // cancelado, pula o fetch; pedido inexistente ou já CANCELLED idem.
-      // O poll ML filtra status=paid, então cancelamento nunca chega pelo
-      // re-poll acima — este fetch pontual é o único detector ML.
-      if (process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1") {
-        try {
-          const justImported = importResult.results.some(
-            (r) => r.externalOrderId === mlOrderId && r.status === "imported",
-          );
-          const localOrder = justImported
-            ? null
-            : await prisma.order.findFirst({
-                where: {
+        // ADITIVO (cancelamento): o payload ML não traz status (só o resource);
+        // a verdade é o fetch da API. Best-effort em try/catch próprio — falha
+        // aqui não altera o retorno do webhook. Gates de custo: pedido recém-
+        // importado NESTE re-poll acabou de vir da API como paid ⇒ não está
+        // cancelado, pula o fetch; pedido inexistente ou já CANCELLED idem.
+        // O poll ML filtra status=paid, então cancelamento nunca chega pelo
+        // re-poll acima — este fetch pontual é o único detector ML.
+        if (process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1") {
+          try {
+            const justImported = importResult.results.some(
+              (r) => r.externalOrderId === mlOrderId && r.status === "imported",
+            );
+            const localOrder = justImported
+              ? null
+              : await prisma.order.findFirst({
+                  where: {
+                    marketplaceAccountId: account.id,
+                    externalOrderId: mlOrderId,
+                  },
+                  select: { id: true, status: true },
+                });
+            if (localOrder && localOrder.status !== "CANCELLED") {
+              // Reler a conta: o re-poll acima pode ter refrescado e ROTACIONADO
+              // os tokens (refresh token ML é single-use). Usar o snapshot stale
+              // dispararia um segundo refresh com token já consumido →
+              // invalid_grant → circuit breaker marcaria a conta como ERROR e a
+              // importação de pedidos PARARIA até reconexão manual.
+              // EGRESS: select mínimo — só os campos que o refresh precisa.
+              const freshAccount = await prisma.marketplaceAccount.findUnique({
+                where: { id: account.id },
+                select: {
+                  id: true,
+                  accessToken: true,
+                  refreshToken: true,
+                  expiresAt: true,
+                },
+              });
+              const accessToken = await ensureFreshMLToken(
+                freshAccount ?? account,
+              );
+              const mlOrder = await MLApiService.getOrderDetails(
+                accessToken,
+                mlOrderId,
+              );
+              if (mlOrder.status === "cancelled") {
+                await OrderUseCase.processOrderCancellation({
                   marketplaceAccountId: account.id,
                   externalOrderId: mlOrderId,
-                },
-                select: { id: true, status: true },
-              });
-          if (localOrder && localOrder.status !== "CANCELLED") {
-            // Reler a conta: o re-poll acima pode ter refrescado e ROTACIONADO
-            // os tokens (refresh token ML é single-use). Usar o snapshot stale
-            // dispararia um segundo refresh com token já consumido →
-            // invalid_grant → circuit breaker marcaria a conta como ERROR e a
-            // importação de pedidos PARARIA até reconexão manual.
-            // EGRESS: select mínimo — só os campos que o refresh precisa.
-            const freshAccount = await prisma.marketplaceAccount.findUnique({
-              where: { id: account.id },
-              select: {
-                id: true,
-                accessToken: true,
-                refreshToken: true,
-                expiresAt: true,
-              },
-            });
-            const accessToken = await ensureFreshMLToken(
-              freshAccount ?? account,
-            );
-            const mlOrder = await MLApiService.getOrderDetails(
-              accessToken,
-              mlOrderId,
-            );
-            if (mlOrder.status === "cancelled") {
-              await OrderUseCase.processOrderCancellation({
-                marketplaceAccountId: account.id,
-                externalOrderId: mlOrderId,
-                platformLabel: "ML",
-                logPrefix: "[WebhookUseCase]",
-              });
+                  platformLabel: "ML",
+                  logPrefix: "[WebhookUseCase]",
+                });
+              }
             }
+          } catch (err) {
+            console.error(
+              "[WebhookUseCase] Falha na checagem de cancelamento ML (best-effort):",
+              err,
+            );
           }
-        } catch (err) {
-          console.error(
-            "[WebhookUseCase] Falha na checagem de cancelamento ML (best-effort):",
-            err,
-          );
         }
-      }
 
-      if (importResult.errors > 0) {
-        return {
-          success: false,
-          userId: account.userId,
-          orderId: mlOrderId,
-          error: `Erro ao importar pedidos: ${importResult.errors} erros`,
-        };
-      }
+        if (importResult.errors > 0) {
+          return {
+            success: false,
+            userId: account.userId,
+            orderId: mlOrderId,
+            error: `Erro ao importar pedidos: ${importResult.errors} erros`,
+          };
+        }
 
-      if (importResult.imported === 0) {
+        if (importResult.imported === 0) {
+          // Nada novo importado é resultado LEGÍTIMO (o pedido já estava lá, ou
+          // o re-poll cobriu). Mantém o claim: reprocessar não traria nada.
+          processedOk = true;
+          return {
+            success: true,
+            userId: account.userId,
+            orderId: mlOrderId,
+            action: "no_new_orders",
+          };
+        }
+
+        processedOk = true;
         return {
           success: true,
           userId: account.userId,
           orderId: mlOrderId,
-          action: "no_new_orders",
+          action: `imported_${importResult.imported}_orders`,
         };
+      } finally {
+        if (!processedOk) {
+          await releaseWebhookEvent("ML", dedupKey);
+        }
       }
-
-      return {
-        success: true,
-        userId: account.userId,
-        orderId: mlOrderId,
-        action: `imported_${importResult.imported}_orders`,
-      };
     } catch (error) {
       return {
         success: false,
@@ -366,130 +381,180 @@ export class WebhookUseCase {
         return { success: true, action: "duplicate_ignored" };
       }
 
-      const accounts = await MarketplaceRepository.findAllShopeeByShopId(
-        payload.shop_id,
-        true,
-      );
-
-      if (accounts.length === 0) {
-        void SystemLogService.logWarning(
-          "WEBHOOK_ACCOUNT_NOT_FOUND",
-          `Webhook Shopee ignorado: conta não encontrada para shop_id=${payload.shop_id}. Pedidos podem estar sendo perdidos.`,
-          {
-            resource: "MarketplaceAccount",
-            details: {
-              shopId: payload.shop_id,
-              platform: "SHOPEE",
-              ordersn: payload.data?.ordersn,
-            },
-          },
-        ).catch(() => {});
-        return {
-          success: false,
-          error: `Conta Shopee não encontrada para shop_id: ${payload.shop_id}`,
-        };
-      }
-
-      if (accounts.length > 1) {
-        return {
-          success: false,
-          error: `Múltiplas contas Shopee ativas encontradas para shop_id: ${payload.shop_id}. Resolva a duplicidade antes de processar webhooks.`,
-        };
-      }
-
-      const [account] = accounts;
-
-      if (account.status !== "ACTIVE") {
-        return {
-          success: false,
-          error: `Conta Shopee não está ativa (status: ${account.status})`,
-        };
-      }
-
-      const importResult =
-        await OrderUseCase.importRecentShopeeOrdersForAccount(
-          account.id,
-          1,
+      // A partir daqui o evento está reivindicado. `processedOk` só vira true
+      // no caminho de sucesso; o `finally` libera o claim em qualquer outro,
+      // para que a reentrega da Shopee volte a ser processável em vez de cair
+      // em `duplicate_ignored` para sempre. Flag + finally (em vez de um
+      // release por `return`) para não depender de lembrar de cada saída.
+      let processedOk = false;
+      try {
+        const accounts = await MarketplaceRepository.findAllShopeeByShopId(
+          payload.shop_id,
           true,
         );
 
-      // ADITIVO (cancelamento): o push traz data.status como HINT — a verdade
-      // é o fetch da API. Estorna SOMENTE se order_status raw === "CANCELLED"
-      // (IN_CANCEL é cancelamento em andamento, o vendedor pode rejeitar —
-      // não tocar o pedido). O fetch Shopee do re-poll filtra pós-venda,
-      // então cancelamento nunca chega pelo importador. Best-effort.
-      const pushStatus = payload.data?.status ?? "";
-      if (
-        process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1" &&
-        ordersn &&
-        (pushStatus === "CANCELLED" || pushStatus === "IN_CANCEL")
-      ) {
-        try {
-          const localOrder = await prisma.order.findFirst({
-            where: {
-              marketplaceAccountId: account.id,
-              externalOrderId: ordersn,
-            },
-            select: { id: true, status: true },
-          });
-          if (localOrder && localOrder.status !== "CANCELLED") {
-            // Reler a conta: o re-poll acima pode ter refrescado e rotacionado
-            // os tokens Shopee — o snapshot stale faria um refresh fadado a
-            // falhar (refresh token consumido) e a checagem seria pulada.
-            // EGRESS: select mínimo — só os campos que o refresh precisa.
-            const freshAccount = await prisma.marketplaceAccount.findUnique({
-              where: { id: account.id },
-              select: {
-                id: true,
-                shopId: true,
-                accessToken: true,
-                refreshToken: true,
-                expiresAt: true,
+        if (accounts.length === 0) {
+          void SystemLogService.logWarning(
+            "WEBHOOK_ACCOUNT_NOT_FOUND",
+            `Webhook Shopee ignorado: conta não encontrada para shop_id=${payload.shop_id}. Pedidos podem estar sendo perdidos.`,
+            {
+              resource: "MarketplaceAccount",
+              details: {
+                shopId: payload.shop_id,
+                platform: "SHOPEE",
+                ordersn: payload.data?.ordersn,
               },
-            });
-            const accessToken = await ensureFreshShopeeToken(
-              freshAccount ?? account,
+            },
+          ).catch(() => {});
+          return {
+            success: false,
+            error: `Conta Shopee não encontrada para shop_id: ${payload.shop_id}`,
+          };
+        }
+
+        if (accounts.length > 1) {
+          return {
+            success: false,
+            error: `Múltiplas contas Shopee ativas encontradas para shop_id: ${payload.shop_id}. Resolva a duplicidade antes de processar webhooks.`,
+          };
+        }
+
+        const [account] = accounts;
+
+        if (account.status !== "ACTIVE") {
+          return {
+            success: false,
+            error: `Conta Shopee não está ativa (status: ${account.status})`,
+          };
+        }
+
+        // Janela curta (1 dia) MAIS o pedido exato do push, buscado por
+        // `order_sn`. O re-poll sozinho não bastava: a janela é por data e o
+        // pedido do evento podia estar fora dela (criado dias antes, mudou de
+        // estado hoje) — a Shopee dizia exatamente qual pedido mudou e nós
+        // varríamos a janela torcendo para ele estar lá. A duplicidade segue
+        // protegida pelo unique (marketplaceAccountId, externalOrderId).
+        // KILL-SWITCH: SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED=1 volta ao
+        // re-poll cego de 1 dia.
+        const buscaDirigida =
+          process.env.SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED !== "1" &&
+          Boolean(ordersn);
+
+        // Com o kill-switch ligado a chamada fica com os mesmos 3 argumentos
+        // de antes — é o que mantém o caminho anterior byte-a-byte.
+        const importResult = buscaDirigida
+          ? await OrderUseCase.importRecentShopeeOrdersForAccount(
+              account.id,
+              1,
+              true,
+              { orderSns: [ordersn] },
+            )
+          : await OrderUseCase.importRecentShopeeOrdersForAccount(
+              account.id,
+              1,
+              true,
             );
-            if (accessToken && account.shopId) {
-              const [detail] = await ShopeeApiService.getOrderDetails(
-                accessToken,
-                account.shopId,
-                [ordersn],
-              );
-              if (detail?.order_status === "CANCELLED") {
-                await OrderUseCase.processOrderCancellation({
-                  marketplaceAccountId: account.id,
-                  externalOrderId: ordersn,
-                  platformLabel: "Shopee",
-                  logPrefix: "[WebhookUseCase]",
-                });
-              }
-            }
-          }
-        } catch (err) {
-          console.error(
-            "[WebhookUseCase] Falha na checagem de cancelamento Shopee (best-effort):",
-            err,
+
+        if (
+          buscaDirigida &&
+          !importResult.results.some((r) => r.externalOrderId === ordersn)
+        ) {
+          // A Shopee avisou de um pedido que a busca dirigida não devolveu.
+          // Não é erro do import (pode ser status sem venda), mas precisa de
+          // rastro — é o sinal de que um push ficou sem pedido correspondente.
+          console.log(
+            JSON.stringify({
+              event: "shopee.webhook.order_not_resolved",
+              accountId: account.id,
+              ordersn,
+              pushStatus: payload.data?.status ?? null,
+            }),
           );
         }
-      }
 
-      if (importResult.errors > 0) {
+        // ADITIVO (cancelamento): o push traz data.status como HINT — a verdade
+        // é o fetch da API. Estorna SOMENTE se order_status raw === "CANCELLED"
+        // (IN_CANCEL é cancelamento em andamento, o vendedor pode rejeitar —
+        // não tocar o pedido). O fetch Shopee do re-poll filtra pós-venda,
+        // então cancelamento nunca chega pelo importador. Best-effort.
+        const pushStatus = payload.data?.status ?? "";
+        if (
+          process.env.ORDER_CANCEL_RESTORE_DISABLED !== "1" &&
+          ordersn &&
+          (pushStatus === "CANCELLED" || pushStatus === "IN_CANCEL")
+        ) {
+          try {
+            const localOrder = await prisma.order.findFirst({
+              where: {
+                marketplaceAccountId: account.id,
+                externalOrderId: ordersn,
+              },
+              select: { id: true, status: true },
+            });
+            if (localOrder && localOrder.status !== "CANCELLED") {
+              // Reler a conta: o re-poll acima pode ter refrescado e rotacionado
+              // os tokens Shopee — o snapshot stale faria um refresh fadado a
+              // falhar (refresh token consumido) e a checagem seria pulada.
+              // EGRESS: select mínimo — só os campos que o refresh precisa.
+              const freshAccount = await prisma.marketplaceAccount.findUnique({
+                where: { id: account.id },
+                select: {
+                  id: true,
+                  shopId: true,
+                  accessToken: true,
+                  refreshToken: true,
+                  expiresAt: true,
+                },
+              });
+              const accessToken = await ensureFreshShopeeToken(
+                freshAccount ?? account,
+              );
+              if (accessToken && account.shopId) {
+                const [detail] = await ShopeeApiService.getOrderDetails(
+                  accessToken,
+                  account.shopId,
+                  [ordersn],
+                );
+                if (detail?.order_status === "CANCELLED") {
+                  await OrderUseCase.processOrderCancellation({
+                    marketplaceAccountId: account.id,
+                    externalOrderId: ordersn,
+                    platformLabel: "Shopee",
+                    logPrefix: "[WebhookUseCase]",
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            console.error(
+              "[WebhookUseCase] Falha na checagem de cancelamento Shopee (best-effort):",
+              err,
+            );
+          }
+        }
+
+        if (importResult.errors > 0) {
+          return {
+            success: false,
+            accountId: account.id,
+            error: `Erro ao importar pedidos Shopee: ${importResult.errors} erros`,
+          };
+        }
+
+        processedOk = true;
         return {
-          success: false,
+          success: true,
           accountId: account.id,
-          error: `Erro ao importar pedidos Shopee: ${importResult.errors} erros`,
+          action:
+            importResult.imported > 0
+              ? `imported_${importResult.imported}_orders`
+              : "no_new_orders",
         };
+      } finally {
+        if (!processedOk) {
+          await releaseWebhookEvent("SHOPEE", dedupKey);
+        }
       }
-
-      return {
-        success: true,
-        accountId: account.id,
-        action:
-          importResult.imported > 0
-            ? `imported_${importResult.imported}_orders`
-            : "no_new_orders",
-      };
     } catch (error) {
       return {
         success: false,

@@ -238,9 +238,48 @@ export class ShopeeOAuthService {
   }
 
   /**
-   * Renova token de acesso usando refresh token
+   * Refreshes em voo por shopId, para serializar chamadas concorrentes.
+   *
+   * O refresh token da Shopee ROTACIONA a cada uso. O loop de pedidos e o
+   * webhook podem tocar a mesma conta no mesmo instante (é o caso normal: o
+   * push chega enquanto o poll está rodando); sem esta serialização os dois
+   * consomem o mesmo refresh token e o segundo recebe erro — a conta cai e
+   * para de importar pedidos até reconexão manual. Espelha o mutex que o ML
+   * já tem em MLOAuthService.refreshAccessTokenForAccount.
+   */
+  private static refreshesInFlight = new Map<
+    number,
+    Promise<ShopeeRefreshToken>
+  >();
+
+  /**
+   * Renova token de acesso usando refresh token.
+   *
+   * Serializado por shopId. Kill-switch: SHOPEE_REFRESH_MUTEX_DISABLED=1 volta
+   * ao comportamento anterior (cada chamador refresca por conta própria).
    */
   static async refreshAccessToken(
+    refreshToken: string,
+    shopId: number,
+  ): Promise<ShopeeRefreshToken> {
+    if (process.env.SHOPEE_REFRESH_MUTEX_DISABLED === "1") {
+      return this.doRefreshAccessToken(refreshToken, shopId);
+    }
+
+    const existing = this.refreshesInFlight.get(shopId);
+    if (existing) return existing;
+
+    const promise = this.doRefreshAccessToken(refreshToken, shopId).finally(
+      () => {
+        this.refreshesInFlight.delete(shopId);
+      },
+    );
+
+    this.refreshesInFlight.set(shopId, promise);
+    return promise;
+  }
+
+  private static async doRefreshAccessToken(
     refreshToken: string,
     shopId: number,
   ): Promise<ShopeeRefreshToken> {

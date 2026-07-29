@@ -20,6 +20,9 @@ import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { MLApiService } from "../marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../marketplaces/services/ml-oauth.service";
 import { MagaluWebhookSignatureService } from "../marketplaces/services/magalu-webhook-signature.service";
+import { ShopeeWebhookSignatureService } from "../marketplaces/services/shopee-webhook-signature.service";
+import { SHOPEE_CONSTANTS } from "../marketplaces/shopee/shopee-constants";
+import { Readable } from "stream";
 import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
 import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
@@ -137,7 +140,7 @@ export async function marketplaceRoutes(app: FastifyInstance) {
 <style>body{font-family:monospace;padding:24px;max-width:900px;margin:0 auto}
 h2{color:#333}pre{background:#f4f4f4;padding:12px;border-radius:6px;word-break:break-all;white-space:pre-wrap}
 .ok{color:#080}.err{color:#c00}</style></head><body>
-<h2>${error ? "<span class=\"err\">Erro retornado pelo ML</span>" : "<span class=\"ok\">Autorização recebida</span>"}</h2>
+<h2>${error ? '<span class="err">Erro retornado pelo ML</span>' : '<span class="ok">Autorização recebida</span>'}</h2>
 ${error ? `<p><b>error:</b> ${error}</p>` : ""}
 <p>Cole esta URL completa no terminal do helper CLI:</p>
 <pre>${request.protocol}://${request.hostname}${request.url}</pre>
@@ -311,16 +314,13 @@ small{color:#666}</style></head><body>
               body.topic === "questions" &&
               WebhookUseCase.validateQuestionWebhookPayload(body)
             ) {
-              const result =
-                await WebhookUseCase.processQuestionWebhook(body);
+              const result = await WebhookUseCase.processQuestionWebhook(body);
               if (result.success) {
                 console.log(
                   `[ML Webhook] Pergunta processada: ${result.action} (question: ${result.questionId ?? "?"})`,
                 );
               } else {
-                console.warn(
-                  `[ML Webhook] Falha em pergunta: ${result.error}`,
-                );
+                console.warn(`[ML Webhook] Falha em pergunta: ${result.error}`);
               }
             } else if (
               body.topic === "items" &&
@@ -335,8 +335,7 @@ small{color:#666}</style></head><body>
                 console.warn(`[ML Webhook] Falha em item: ${result.error}`);
               }
             } else if (WebhookUseCase.validateWebhookPayload(body)) {
-              const result =
-                await WebhookUseCase.processOrderWebhook(body);
+              const result = await WebhookUseCase.processOrderWebhook(body);
               if (result.success) {
                 console.log(
                   `[ML Webhook] Processado com sucesso: ${result.action} (order: ${result.orderId})`,
@@ -577,8 +576,7 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       const q = (request.query as any)?.q as string | undefined;
       const categoryId = (request.query as any)?.category_id as
-        | string
-        | undefined;
+        string | undefined;
       const limitRaw = (request.query as any)?.limit as string | undefined;
       const limit = limitRaw ? Number(limitRaw) : undefined;
 
@@ -1224,9 +1222,13 @@ small{color:#666}</style></head><body>
           "SHP",
         );
         if (suggestions.suggestions.length > 0) {
-          console.log(`[SHP suggest] "${title}" → ${suggestions.suggestions.length} results, top: ${suggestions.suggestions[0].categoryId} conf=${suggestions.suggestions[0].confidence?.toFixed(3)} path="${suggestions.suggestions[0].fullPath?.substring(0, 80)}"`);
+          console.log(
+            `[SHP suggest] "${title}" → ${suggestions.suggestions.length} results, top: ${suggestions.suggestions[0].categoryId} conf=${suggestions.suggestions[0].confidence?.toFixed(3)} path="${suggestions.suggestions[0].fullPath?.substring(0, 80)}"`,
+          );
         } else {
-          console.log(`[SHP suggest] "${title}" → 0 results (tokens: ${suggestions.tokens.join(",")})`);
+          console.log(
+            `[SHP suggest] "${title}" → 0 results (tokens: ${suggestions.tokens.join(",")})`,
+          );
         }
         return reply.send(suggestions);
       } catch (error) {
@@ -1356,7 +1358,9 @@ small{color:#666}</style></head><body>
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erro desconhecido";
-        const statusCode = /não encontrada|not found/i.test(message) ? 404 : 500;
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
         return reply.status(statusCode).send({
           error: "Erro ao consultar importação Shopee",
           message,
@@ -1615,15 +1619,93 @@ small{color:#666}</style></head><body>
   );
 
   /**
+   * Captura o corpo CRU do push da Shopee antes do parse de JSON.
+   *
+   * A assinatura da Shopee é sobre os bytes originais; re-serializar o objeto
+   * já parseado muda ordem de chaves e espaçamento e nunca conferiria. O hook
+   * é no-op para qualquer outra rota deste plugin — devolve o `payload`
+   * intacto, sem ler o stream.
+   */
+  app.addHook("preParsing", async (request, _reply, payload) => {
+    if (!request.url.split("?")[0].endsWith("/shopee/webhook")) {
+      return payload;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload as AsyncIterable<Buffer | string>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const raw = Buffer.concat(chunks);
+    (request as any).shopeeRawBody = raw.toString("utf8");
+    return Readable.from(raw);
+  });
+
+  /**
    * POST /marketplace/shopee/webhook
    * Recebe push notifications da Shopee (configurado no Partner Portal)
-   * Sem auth middleware - Shopee envia diretamente
+   * Sem auth middleware - a Shopee envia diretamente, autenticada pelo HMAC
+   * do header Authorization.
    * Códigos: 4 = order status update, 3 = order tracking update
    */
   app.post(
     "/shopee/webhook",
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = (request.body || {}) as Record<string, any>;
+
+      // Assinatura HMAC-SHA256 sobre "<url do callback>|<corpo cru>".
+      //
+      // Antes desta checagem a rota era completamente aberta: qualquer POST com
+      // {shop_id, code:4} de uma loja conhecida disparava importação com baixa
+      // de estoque e consumia a chave de idempotência do evento.
+      //
+      // Só bloqueia quando dá para verificar de verdade (partner key + URL de
+      // callback conhecidas). Sem isso, apenas avisa — recusar sem poder
+      // verificar perderia venda, que é justamente o que estamos consertando.
+      // KILL-SWITCH: SHOPEE_WEBHOOK_SIGNATURE_DISABLED=1 desliga a checagem.
+      if (process.env.SHOPEE_WEBHOOK_SIGNATURE_DISABLED !== "1") {
+        const partnerKey = SHOPEE_CONSTANTS.PARTNER_KEY;
+        const callbackUrl = ShopeeWebhookSignatureService.callbackUrl();
+        const podeVerificar = Boolean(partnerKey && callbackUrl);
+
+        if (!podeVerificar) {
+          console.warn(
+            "[Shopee Webhook] Assinatura NAO verificada (falta SHOPEE_PARTNER_KEY ou APP_BACKEND_URL/SHOPEE_WEBHOOK_URL). Rota segue aberta.",
+          );
+        } else {
+          const ok = ShopeeWebhookSignatureService.verify(
+            callbackUrl,
+            (request as any).shopeeRawBody,
+            request.headers["authorization"] as string | undefined,
+            partnerKey,
+          );
+          if (!ok) {
+            console.warn(
+              JSON.stringify({
+                event: "shopee.webhook.invalid_signature",
+                shopId: body?.shop_id ?? null,
+                code: body?.code ?? null,
+                hasAuthorization: Boolean(request.headers["authorization"]),
+                callbackUrl,
+              }),
+            );
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              "Webhook Shopee rejeitado: assinatura HMAC nao confere.",
+              {
+                resource: "MarketplaceAccount",
+                details: {
+                  platform: "SHOPEE",
+                  shopId: body?.shop_id ?? null,
+                  code: body?.code ?? null,
+                  // Se a URL cadastrada no Partner Portal diferir desta, TODO
+                  // push cai aqui — conferir antes de suspeitar de ataque.
+                  callbackUrl,
+                },
+              },
+            ).catch(() => {});
+            return reply.status(401).send({ error: "assinatura invalida" });
+          }
+        }
+      }
 
       // Retornar 200 imediatamente (Shopee espera resposta rápida)
       reply.status(200).send({ received: true });
@@ -1653,8 +1735,9 @@ small{color:#666}</style></head><body>
             `[Shopee Webhook] Recebido code=${code}, shop_id=${shopId}, order=${body.data?.ordersn || "N/A"}`,
           );
 
-          const result =
-            await WebhookUseCase.processShopeeOrderWebhook(body as any);
+          const result = await WebhookUseCase.processShopeeOrderWebhook(
+            body as any,
+          );
 
           if (result.success) {
             console.log(
@@ -1664,6 +1747,25 @@ small{color:#666}</style></head><body>
             console.warn(
               `[Shopee Webhook] Falha no processamento: ${result.error}`,
             );
+            // Já respondemos 200: a Shopee considera o evento entregue. Sem
+            // este registro, uma venda perdida aqui não deixa rastro nenhum em
+            // banco — só uma linha no log do processo. O claim é liberado pelo
+            // use case, então a reentrega ainda pode salvar. Espelha o que a
+            // rota da Magalu já fazia.
+            void SystemLogService.logError(
+              "SYNC_ORDERS",
+              `Webhook Shopee falhou no processamento: ${result.error ?? "erro desconhecido"}`,
+              {
+                resource: "Order",
+                details: {
+                  platform: "SHOPEE",
+                  shopId,
+                  code,
+                  ordersn: body?.data?.ordersn ?? null,
+                  accountId: result.accountId ?? null,
+                },
+              },
+            ).catch(() => {});
           }
         } catch (err) {
           console.error(
@@ -1729,7 +1831,9 @@ small{color:#666}</style></head><body>
     "/shopee/callback",
     async (request: FastifyRequest, reply: FastifyReply) => {
       // Detectar se é um redirect do browser (vindo do Shopee) ou chamada da API (fetch)
-      const acceptHeader = ((request.headers.accept as string) || "").toString();
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
       const isBrowserRedirect = acceptHeader.includes("text/html");
       const frontendUrl =
         process.env.NEXTAUTH_URL ||
@@ -1909,8 +2013,7 @@ small{color:#666}</style></head><body>
       try {
         const userId = request.user!.dataOwnerId;
         const accountId = (request.query as any)?.accountId as
-          | string
-          | undefined;
+          string | undefined;
         const resolved = await resolveMlAccountForCompat(userId, accountId);
         if (!resolved) {
           return reply.status(412).send({
@@ -2112,67 +2215,72 @@ small{color:#666}</style></head><body>
    */
   app.get<{
     Querystring: { code?: string; state?: string };
-  }>("/magalu/callback", async (request: FastifyRequest, reply: FastifyReply) => {
-    const acceptHeader = ((request.headers.accept as string) || "").toString();
-    const isBrowserRedirect = acceptHeader.includes("text/html");
-    const frontendUrl =
-      process.env.NEXTAUTH_URL ||
-      process.env.CORS_ORIGIN ||
-      "http://localhost:3000";
+  }>(
+    "/magalu/callback",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const acceptHeader = (
+        (request.headers.accept as string) || ""
+      ).toString();
+      const isBrowserRedirect = acceptHeader.includes("text/html");
+      const frontendUrl =
+        process.env.NEXTAUTH_URL ||
+        process.env.CORS_ORIGIN ||
+        "http://localhost:3000";
 
-    try {
-      const code = (request.query as any).code as string | undefined;
-      const state = (request.query as any).state as string | undefined;
+      try {
+        const code = (request.query as any).code as string | undefined;
+        const state = (request.query as any).state as string | undefined;
 
-      if (!code || !state) {
+        if (!code || !state) {
+          if (isBrowserRedirect) {
+            return reply.redirect(
+              `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            );
+          }
+          return reply.status(400).send({
+            error: "Parâmetros inválidos",
+            message: "code e state são obrigatórios",
+          });
+        }
+
+        const userId = request.user?.dataOwnerId;
+        const account = await MarketplaceUseCase.handleMagaluOAuthCallback({
+          code,
+          state,
+          userId,
+        });
+
         if (isBrowserRedirect) {
           return reply.redirect(
-            `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent("code e state são obrigatórios")}`,
+            `${frontendUrl}/integracoes/magalu/callback?result=success`,
           );
         }
-        return reply.status(400).send({
-          error: "Parâmetros inválidos",
-          message: "code e state são obrigatórios",
+
+        return reply.send({
+          success: true,
+          message: "Conta conectada com sucesso",
+          account: {
+            id: account.id,
+            platform: account.platform,
+            status: account.status,
+            createdAt: account.createdAt,
+          },
+        });
+      } catch (error) {
+        if (isBrowserRedirect) {
+          const errorMsg =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return reply.redirect(
+            `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
+          );
+        }
+        return reply.status(500).send({
+          error: "Erro ao processar callback",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
-
-      const userId = request.user?.dataOwnerId;
-      const account = await MarketplaceUseCase.handleMagaluOAuthCallback({
-        code,
-        state,
-        userId,
-      });
-
-      if (isBrowserRedirect) {
-        return reply.redirect(
-          `${frontendUrl}/integracoes/magalu/callback?result=success`,
-        );
-      }
-
-      return reply.send({
-        success: true,
-        message: "Conta conectada com sucesso",
-        account: {
-          id: account.id,
-          platform: account.platform,
-          status: account.status,
-          createdAt: account.createdAt,
-        },
-      });
-    } catch (error) {
-      if (isBrowserRedirect) {
-        const errorMsg =
-          error instanceof Error ? error.message : "Erro desconhecido";
-        return reply.redirect(
-          `${frontendUrl}/integracoes/magalu/callback?result=error&message=${encodeURIComponent(errorMsg)}`,
-        );
-      }
-      return reply.status(500).send({
-        error: "Erro ao processar callback",
-        message: error instanceof Error ? error.message : "Erro desconhecido",
-      });
-    }
-  });
+    },
+  );
 
   /**
    * POST /marketplace/magalu/webhook — recebe eventos nativos v1 da Magalu
@@ -2192,8 +2300,7 @@ small{color:#666}</style></head><body>
       const secret = MAGALU_CONSTANTS.WEBHOOK_SECRET;
       if (secret) {
         const sigHeader = request.headers["x-signature-256"] as
-          | string
-          | undefined;
+          string | undefined;
         const ts = request.headers["x-timestamp"] as string | undefined;
         const rawApprox = JSON.stringify(body ?? {});
         const ok = MagaluWebhookSignatureService.verify(
@@ -2271,7 +2378,8 @@ small{color:#666}</style></head><body>
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const userId = request.user!.dataOwnerId;
-        const statusData = await MarketplaceUseCase.getMagaluAccountStatus(userId);
+        const statusData =
+          await MarketplaceUseCase.getMagaluAccountStatus(userId);
         return reply.send({
           connected: statusData.connected,
           platform: Platform.MAGALU,

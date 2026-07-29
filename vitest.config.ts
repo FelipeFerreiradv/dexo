@@ -17,6 +17,26 @@ process.env.ORDER_AUTO_CUSTOMER_DISABLED ??= "1";
 // byte-idênticos. Os specs da feature reabilitam explicitamente por caso.
 process.env.LISTING_STATUS_SYNC_DISABLED ??= "1";
 
+// Janela do poll Shopee por `update_time` + marca d'água + lista de exclusão
+// de status: desligados por default na suíte para os specs de import
+// existentes continuarem byte-idênticos (o caminho novo grava a marca d'água
+// em MarketplaceAccount, que eles não mockam). O spec da feature
+// (shopee-order-import-status-window) reabilita explicitamente por caso.
+process.env.SHOPEE_ORDER_SYNC_BY_UPDATE_TIME_DISABLED ??= "1";
+
+// Busca dirigida pelo `order_sn` do push Shopee: desligada por default na
+// suíte, senão os specs que afirmam a assinatura exata do re-poll
+// (webhook-cancellation) veriam o 4o argumento novo. O spec da feature
+// (webhook-shopee-targeted-ingestion) reabilita explicitamente por caso.
+process.env.SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED ??= "1";
+
+// Marca de auditoria Order.stockDeductedAt (gravada dentro da transação da
+// baixa): desligada por default na suíte porque os specs de estoque montam um
+// `tx` mockado à mão (buildMockTx) que só tem os delegates que o caminho
+// anterior usava. O spec da feature (order-stock-deduction-guarantee)
+// reabilita explicitamente por caso.
+process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

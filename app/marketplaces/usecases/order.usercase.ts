@@ -32,10 +32,7 @@ import type {
   ShopeeOrderDetail,
   ShopeeOrderItem,
 } from "../types/shopee-api.types";
-import type {
-  MagaluOrder,
-  MagaluOrderItem,
-} from "../types/magalu-order.types";
+import type { MagaluOrder, MagaluOrderItem } from "../types/magalu-order.types";
 import {
   extractMagaluOrderItems,
   magaluMoneyToNumber,
@@ -47,6 +44,7 @@ import type {
   OrderStatus,
 } from "@/app/interfaces/order.interface";
 import { SystemLogService } from "@/app/services/system-log.service";
+import { OrderIngestionIssueService } from "../services/order-ingestion-issue.service";
 
 // ====================================================================
 // TIPOS PARA RESULTADOS
@@ -440,12 +438,16 @@ export class OrderUseCase {
   }
 
   /**
-   * Importa pedidos recentes do Shopee para uma conta específica
+   * Importa pedidos recentes do Shopee para uma conta específica.
+   *
+   * `options.orderSns` busca pedidos específicos ALÉM da janela — é o que o
+   * webhook usa, já que a Shopee informa no push qual pedido mudou.
    */
   static async importRecentShopeeOrdersForAccount(
     marketplaceAccountId: string,
     days: number = 3,
     deductStock: boolean = true,
+    options?: { orderSns?: string[] },
   ): Promise<ImportOrdersResult> {
     const account = await MarketplaceRepository.findById(marketplaceAccountId);
     if (!account || !account.accessToken || !account.shopId) {
@@ -462,6 +464,55 @@ export class OrderUseCase {
       results: [],
     };
 
+    // Kill-switch: com "1", volta à janela por `create_time` e à whitelist
+    // fechada de status — comportamento anterior, byte-idêntico.
+    const byUpdateTime =
+      process.env.SHOPEE_ORDER_SYNC_BY_UPDATE_TIME_DISABLED !== "1";
+
+    const windowEnd = new Date();
+    const watermark = (account as { shopeeOrdersSyncedThrough?: Date | null })
+      .shopeeOrdersSyncedThrough;
+    // Sobreposição de 6 h sobre a marca d'água: cobre desvio de relógio entre
+    // nós e a Shopee e o atraso de indexação dela.
+    //
+    // É `min` (e não `max`) de propósito: a marca d'água aqui serve para
+    // ALARGAR a janela, nunca para estreitá-la. A janela por dias segue sendo
+    // o piso, então este caminho jamais varre MENOS do que o anterior. O ganho
+    // real aparece quando o processo fica fora do ar por mais tempo que
+    // `days` — aí a marca d'água puxa a busca para trás e recupera o atraso
+    // (o serviço clampa em 15 dias, que é o teto da API).
+    const OVERLAP_SEC = 6 * 60 * 60;
+    const windowFloorSec =
+      Math.floor(windowEnd.getTime() / 1000) - days * 24 * 60 * 60;
+    const timeFrom =
+      byUpdateTime && watermark
+        ? Math.min(
+            Math.floor(watermark.getTime() / 1000) - OVERLAP_SEC,
+            windowFloorSec,
+          )
+        : undefined;
+
+    const skippedStatuses = new Set<string>();
+    let skippedByStatus = 0;
+
+    // Com o kill-switch ligado E sem busca dirigida, nenhuma opção é passada:
+    // a chamada a getRecentOrders fica com os mesmos 3 argumentos de antes.
+    const fetchOptions =
+      byUpdateTime || options?.orderSns?.length
+        ? {
+            timeFrom,
+            timeRangeField: byUpdateTime ? ("update_time" as const) : undefined,
+            statusFilter: byUpdateTime
+              ? ("exclude_non_sale" as const)
+              : ("legacy_whitelist" as const),
+            onStatusSkipped: (orderSn: string, status: string) => {
+              skippedByStatus++;
+              if (status) skippedStatuses.add(status);
+            },
+            orderSns: options?.orderSns,
+          }
+        : undefined;
+
     const shopeeOrders = await this.getRecentShopeeOrdersWithRefresh(
       {
         id: account.id,
@@ -470,9 +521,14 @@ export class OrderUseCase {
         shopId: account.shopId,
       },
       days,
+      fetchOptions,
     );
 
     result.totalOrders = shopeeOrders.length;
+    if (skippedByStatus > 0) {
+      result.skippedByStatus = skippedByStatus;
+      result.skippedStatuses = [...skippedStatuses];
+    }
 
     // Batch check + prefetch (same optimization as ML imports).
     // Escopado por marketplaceAccountId — o unique é composto, não global.
@@ -515,160 +571,407 @@ export class OrderUseCase {
     }
 
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
-      const externalOrderId = shopeeOrder.order_sn;
-      try {
-        if (existingSet.has(externalOrderId)) {
-          result.results.push({
-            success: true,
-            orderId: null,
-            externalOrderId,
-            status: "already_exists",
-            message: "Pedido já importado anteriormente",
-            stockDeducted: false,
-            itemsLinked: 0,
-            itemsTotal: shopeeOrder.item_list.length,
-          });
-          result.alreadyExists++;
-          continue;
-        }
-
-        const { items, linkedCount } = await this.mapShopeeOrderItems(
-          shopeeOrder.item_list,
-          account.userId,
-          marketplaceAccountId,
+      const entry = await this.ingestShopeeOrder(
+        marketplaceAccountId,
+        shopeeOrder,
+        {
+          userId: account.userId,
+          deductStock,
+          alreadyExists: existingSet.has(shopeeOrder.order_sn),
           listingMap,
-        );
+        },
+      );
 
-        if (items.length === 0) {
-          result.results.push({
-            success: false,
-            orderId: null,
-            externalOrderId,
-            status: "no_products",
-            message: "Nenhum item do pedido Shopee pôde ser vinculado",
-            stockDeducted: false,
-            itemsLinked: 0,
-            itemsTotal: shopeeOrder.item_list.length,
-          });
-          result.noProducts++;
-          continue;
-        }
-
-        const totalAmount =
-          typeof shopeeOrder.total_amount === "number"
-            ? Number(shopeeOrder.total_amount)
-            : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
-
-        const orderData: OrderCreate = {
-          marketplaceAccountId,
-          externalOrderId,
-          status: this.mapShopeeStatus(shopeeOrder.order_status),
-          totalAmount,
-          customerName: shopeeOrder.buyer_username ?? undefined,
-          items,
-        };
-
-        const created = await orderRepository.create(orderData);
-
-        let stockDeducted = false;
-        // getRecentOrders() já retorna apenas pedidos em estados pós-venda.
-        // Não repetir a decisão de baixa com base no status local mapeado.
-        if (deductStock) {
-          try {
-            await this.deductStockForOrder(
-              created,
-              `Venda Shopee #${externalOrderId}`,
-            );
-            stockDeducted = true;
-          } catch (err) {
-            console.error(
-              `[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
-              err,
-            );
-          }
-        }
-
-        result.imported++;
-        result.stockDeductions += stockDeducted ? 1 : 0;
-        result.results.push({
-          success: true,
-          orderId: created.id,
-          externalOrderId,
-          status: "imported",
-          message: "Pedido Shopee importado com sucesso",
-          stockDeducted,
-          itemsLinked: linkedCount,
-          itemsTotal: shopeeOrder.item_list.length,
-        });
-
-        // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
-        // Kill-switch ORDER_AUTO_CUSTOMER_DISABLED=1 restaura o caminho atual
-        // byte-idêntico. Try/catch próprio: um throw vazado cairia no catch
-        // externo e empurraria um segundo result para o mesmo pedido.
-        try {
-          await OrderCustomerService.ensureCustomerForOrder({
-            platform: "SHOPEE",
-            marketplaceAccountId,
-            orderId: created.id,
-            externalOrderId,
-            fallbackName: shopeeOrder.buyer_username ?? null,
-          });
-        } catch {
-          /* nunca propaga */
-        }
-      } catch (error) {
-        // Handle concurrent duplicate (P2002) gracefully as "already_exists"
-        const isPrismaUniqueError =
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          (error as any).code === "P2002";
-        if (isPrismaUniqueError) {
+      result.results.push(entry);
+      switch (entry.status) {
+        case "already_exists":
           result.alreadyExists++;
-          result.results.push({
-            success: true,
-            orderId: null,
-            externalOrderId,
-            status: "already_exists",
-            message: "Pedido já importado (concurrent)",
-            stockDeducted: false,
-            itemsLinked: 0,
-            itemsTotal: shopeeOrder.item_list.length,
-          });
-          continue;
-        }
-        console.error("[OrderUseCase] Erro ao importar pedido Shopee:", error);
-        result.errors++;
-        result.results.push({
-          success: false,
-          orderId: null,
-          externalOrderId,
-          status: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Erro desconhecido ao importar pedido Shopee",
-          stockDeducted: false,
-          itemsLinked: 0,
-          itemsTotal: shopeeOrder.item_list.length,
-        });
+          break;
+        case "no_products":
+          result.noProducts++;
+          break;
+        case "imported":
+          result.imported++;
+          result.stockDeductions += entry.stockDeducted ? 1 : 0;
+          break;
+        case "error":
+          result.errors++;
+          break;
       }
     }
+
+    // Marca d'água só avança em ciclo limpo: se um pedido deu erro, refazer a
+    // janela na próxima volta é mais barato do que pular a venda dele.
+    if (byUpdateTime && result.errors === 0) {
+      try {
+        await prisma.marketplaceAccount.update({
+          where: { id: marketplaceAccountId },
+          data: { shopeeOrdersSyncedThrough: windowEnd },
+        });
+      } catch (err) {
+        // Perder a marca d'água só custa uma janela maior no próximo ciclo.
+        console.warn(
+          `[OrderUseCase] Falha ao gravar marca d'agua de pedidos Shopee (conta ${marketplaceAccountId}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // SyncLog honesto. Antes o status vinha SÓ de `errors`: um ciclo em que
+    // 100% dos pedidos foram descartados por falta de vínculo gravava SUCCESS
+    // com "Importados 0 de 37 pedidos do Shopee", e `noProducts` não ia nem
+    // para o payload — o número de pedidos perdidos não ficava em lugar nenhum.
+    // "Sucesso" agora só quando de fato não se perdeu nada.
+    const partialLinks = result.results.filter(
+      (r) => r.status === "imported" && r.itemsLinked < r.itemsTotal,
+    ).length;
+    const stockDeductionFailures = result.results.filter(
+      (r) => r.status === "imported" && !r.stockDeducted,
+    ).length;
+    const perdeuAlgo =
+      result.errors > 0 ||
+      result.noProducts > 0 ||
+      partialLinks > 0 ||
+      stockDeductionFailures > 0;
 
     await this.logSync(
       marketplaceAccountId,
       SyncType.ORDER_IMPORT,
-      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      perdeuAlgo ? SyncStatus.WARNING : SyncStatus.SUCCESS,
       `Importados ${result.imported} de ${result.totalOrders} pedidos do Shopee`,
       {
         totalOrders: result.totalOrders,
         imported: result.imported,
         alreadyExists: result.alreadyExists,
         errors: result.errors,
+        noProducts: result.noProducts,
+        partialLinks,
+        stockDeductionFailures,
+        ...(result.skippedByStatus
+          ? {
+              skippedByStatus: result.skippedByStatus,
+              skippedStatuses: result.skippedStatuses,
+            }
+          : {}),
       },
     );
 
     return result;
+  }
+
+  /**
+   * Ingere UM pedido Shopee. Extraído do laço de
+   * `importRecentShopeeOrdersForAccount` sem mudar comportamento: mesma ordem
+   * de operações, mesmos textos, mesmo tratamento de P2002.
+   *
+   * Existe para haver um ÚNICO ponto de ingestão por plataforma — usado pelo
+   * poll, pela busca dirigida do webhook e pelo script de recuperação. Retorna
+   * a entrada de resultado; quem chama contabiliza.
+   */
+  static async ingestShopeeOrder(
+    marketplaceAccountId: string,
+    shopeeOrder: ShopeeOrderDetail,
+    ctx: {
+      userId: string;
+      deductStock: boolean;
+      alreadyExists: boolean;
+      listingMap?: Map<string, any>;
+    },
+  ): Promise<ImportOrderResult> {
+    const externalOrderId = shopeeOrder.order_sn;
+    const itemsTotal = shopeeOrder.item_list?.length ?? 0;
+
+    try {
+      if (ctx.alreadyExists) {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          status: "already_exists",
+          message: "Pedido já importado anteriormente",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal,
+        };
+      }
+
+      const { items, linkedCount, unlinked } = await this.mapShopeeOrderItems(
+        shopeeOrder.item_list,
+        ctx.userId,
+        marketplaceAccountId,
+        ctx.listingMap,
+      );
+
+      if (items.length === 0) {
+        // NUNCA descartar em silêncio: sem isto o pedido some — não vira Order,
+        // não aparece em /pedidos e o SyncLog do ciclo fica SUCCESS.
+        await OrderIngestionIssueService.open({
+          marketplaceAccountId,
+          platform: "SHOPEE",
+          externalOrderId,
+          reason: "NO_LINKED_ITEMS",
+          detail: this.describeUnlinked(unlinked),
+          payload: shopeeOrder,
+        });
+
+        return {
+          success: false,
+          orderId: null,
+          externalOrderId,
+          status: "no_products",
+          message: "Nenhum item do pedido Shopee pôde ser vinculado",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal,
+        };
+      }
+
+      const totalAmount =
+        typeof shopeeOrder.total_amount === "number"
+          ? Number(shopeeOrder.total_amount)
+          : items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+
+      const orderData: OrderCreate = {
+        marketplaceAccountId,
+        externalOrderId,
+        status: this.mapShopeeStatus(shopeeOrder.order_status),
+        totalAmount,
+        customerName: shopeeOrder.buyer_username ?? undefined,
+        items,
+      };
+
+      const created = await orderRepository.create(orderData);
+
+      let stockDeducted = false;
+      // getRecentOrders() já retorna apenas pedidos em estados pós-venda.
+      // Não repetir a decisão de baixa com base no status local mapeado.
+      if (ctx.deductStock) {
+        try {
+          await this.deductStockForOrder(
+            created,
+            `Venda Shopee #${externalOrderId}`,
+          );
+          stockDeducted = true;
+        } catch (err) {
+          console.error(
+            `[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
+            err,
+          );
+          // Antes parava aqui: o Order ficava visível na tela com o estoque
+          // intacto e ninguém tentava de novo — na passada seguinte o pedido
+          // caía em `already_exists`. Agora o reconciliador re-tenta só a
+          // baixa, usando o net do StockLog para não baixar duas vezes.
+          await OrderIngestionIssueService.open({
+            marketplaceAccountId,
+            platform: "SHOPEE",
+            externalOrderId,
+            reason: "STOCK_DEDUCTION_FAILED",
+            detail: err instanceof Error ? err.message : String(err),
+            payload: shopeeOrder,
+            orderId: created.id,
+          });
+        }
+      }
+
+      if (stockDeducted && linkedCount >= itemsTotal) {
+        // Pedido completo e com baixa: se havia pendência dele, fecha.
+        await OrderIngestionIssueService.resolve(
+          marketplaceAccountId,
+          externalOrderId,
+          created.id,
+        );
+      } else if (linkedCount < itemsTotal) {
+        // Pedido PARCIAL: o Order é criado com o que deu (comportamento
+        // preservado), mas os itens que ficaram de fora nunca dariam baixa e
+        // até agora isso não deixava rastro nenhum.
+        await OrderIngestionIssueService.open({
+          marketplaceAccountId,
+          platform: "SHOPEE",
+          externalOrderId,
+          reason: "PARTIAL_LINK",
+          detail: this.describeUnlinked(unlinked),
+          payload: shopeeOrder,
+          orderId: created.id,
+        });
+      }
+
+      // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
+      // Kill-switch ORDER_AUTO_CUSTOMER_DISABLED=1 restaura o caminho atual
+      // byte-idêntico. Try/catch próprio: um throw vazado cairia no catch
+      // externo e empurraria um segundo result para o mesmo pedido.
+      try {
+        await OrderCustomerService.ensureCustomerForOrder({
+          platform: "SHOPEE",
+          marketplaceAccountId,
+          orderId: created.id,
+          externalOrderId,
+          fallbackName: shopeeOrder.buyer_username ?? null,
+        });
+      } catch {
+        /* nunca propaga */
+      }
+
+      return {
+        success: true,
+        orderId: created.id,
+        externalOrderId,
+        status: "imported",
+        message: "Pedido Shopee importado com sucesso",
+        stockDeducted,
+        itemsLinked: linkedCount,
+        itemsTotal,
+      };
+    } catch (error) {
+      // Handle concurrent duplicate (P2002) gracefully as "already_exists"
+      const isPrismaUniqueError =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as any).code === "P2002";
+      if (isPrismaUniqueError) {
+        return {
+          success: true,
+          orderId: null,
+          externalOrderId,
+          status: "already_exists",
+          message: "Pedido já importado (concurrent)",
+          stockDeducted: false,
+          itemsLinked: 0,
+          itemsTotal,
+        };
+      }
+      console.error("[OrderUseCase] Erro ao importar pedido Shopee:", error);
+      await OrderIngestionIssueService.open({
+        marketplaceAccountId,
+        platform: "SHOPEE",
+        externalOrderId,
+        reason: "INGEST_FAILED",
+        detail: error instanceof Error ? error.message : String(error),
+        payload: shopeeOrder,
+      });
+      return {
+        success: false,
+        orderId: null,
+        externalOrderId,
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro desconhecido ao importar pedido Shopee",
+        stockDeducted: false,
+        itemsLinked: 0,
+        itemsTotal,
+      };
+    }
+  }
+
+  /**
+   * Re-tenta APENAS a baixa de um pedido que já existe (usado pelo
+   * OrderIngestionReconcilerService quando a quarentena é
+   * STOCK_DEDUCTION_FAILED).
+   *
+   * A segurança contra baixa dupla vem do NET do `StockLog` por `reason`
+   * determinística — o mesmo mecanismo que o `processOrderCancellation` usa:
+   * se a baixa original já aconteceu (mesmo parcialmente, por clamp de
+   * oversell), o net já cobre a quantidade e não há o que descontar.
+   *
+   * Retorna true quando, ao fim, o pedido está com a baixa efetivada.
+   */
+  static async retryStockDeduction(
+    orderId: string,
+    platformLabel: string,
+    externalOrderId: string,
+  ): Promise<boolean> {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) return false;
+
+    // Pedido cancelado não baixa — e a pendência deixa de fazer sentido.
+    if (order.status === "CANCELLED") return true;
+
+    const reason = `Venda ${platformLabel === "SHOPEE" ? "Shopee" : platformLabel} #${externalOrderId}`;
+
+    // Já baixado? O net por `reason` responde sem depender de flag.
+    const grouped = await prisma.stockLog.groupBy({
+      by: ["productId"],
+      where: {
+        productId: { in: order.items.map((i) => i.productId) },
+        reason,
+      },
+      _sum: { change: true },
+    });
+    const netByProduct = new Map(
+      grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+    );
+
+    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
+    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
+    // linha a linha diria "ja baixado" com metade da quantidade descontada.
+    const pedidoPorProduto = new Map<string, number>();
+    for (const i of order.items) {
+      pedidoPorProduto.set(
+        i.productId,
+        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
+      );
+    }
+
+    // So o que FALTA. Passar a lista completa para deductStockForOrder
+    // descontaria de novo o que ja foi descontado — o net protege contra
+    // repetir o pedido inteiro, mas nao contra um pedido parcialmente baixado.
+    const faltando: Array<{ productId: string; quantity: number }> = [];
+    for (const [productId, pedido] of pedidoPorProduto) {
+      const jaBaixado = -(netByProduct.get(productId) ?? 0);
+      const falta = pedido - jaBaixado;
+      if (falta > 0) faltando.push({ productId, quantity: falta });
+    }
+
+    if (faltando.length === 0) {
+      // A baixa tinha acontecido; só a marca de auditoria pode estar faltando.
+      if (
+        !(order as any).stockDeductedAt &&
+        process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1"
+      ) {
+        await prisma.order
+          .update({
+            where: { id: order.id },
+            data: { stockDeductedAt: new Date() },
+          })
+          .catch(() => {});
+      }
+      return true;
+    }
+
+    try {
+      // Passa SO os itens que faltam. Com a lista completa, um pedido
+      // parcialmente baixado (clamp de oversell, ou produto ausente pulado
+      // dentro da tx) seria descontado de novo no item que ja saiu.
+      await this.deductStockForOrder(
+        { ...(order as unknown as Order), items: faltando as any },
+        reason,
+      );
+      return true;
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Re-tentativa de baixa do pedido ${orderId} falhou:`,
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  }
+
+  /** Texto curto e legível dos itens que não vincularam, para o `detail`. */
+  private static describeUnlinked(
+    unlinked: Array<{ itemId: string; sku: string | null; reason: string }>,
+  ): string {
+    if (!unlinked.length) return "Nenhum item vinculado.";
+    return unlinked
+      .map(
+        (u) =>
+          `item ${u.itemId}${u.sku ? ` (SKU "${u.sku}")` : " (sem SKU)"}: ${u.reason}`,
+      )
+      .join("; ");
   }
 
   /**
@@ -1728,9 +2031,42 @@ export class OrderUseCase {
     userId: string | undefined,
     marketplaceAccountId: string,
     listingMap?: Map<string, any>,
-  ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
+  ): Promise<{
+    items: OrderItemCreate[];
+    linkedCount: number;
+    /**
+     * Itens que NÃO puderam ser vinculados, com o motivo. Antes cada um destes
+     * era só um `console.log` + `continue`: não havia como responder "o que
+     * exatamente não vinculou neste pedido?" sem ler o log do processo. É o que
+     * alimenta o detalhe da quarentena (OrderIngestionIssue).
+     */
+    unlinked: Array<{
+      itemId: string;
+      sku: string | null;
+      reason: "ITEM_WITHOUT_SKU" | "PRODUCT_NOT_FOUND";
+    }>;
+  }> {
     const result: OrderItemCreate[] = [];
+    const unlinked: Array<{
+      itemId: string;
+      sku: string | null;
+      reason: "ITEM_WITHOUT_SKU" | "PRODUCT_NOT_FOUND";
+    }> = [];
     let linkedCount = 0;
+
+    // KILL-SWITCH: com "1", a cadeia volta a ser só (listing da conta → SKU
+    // escopado por account.userId), byte-idêntica ao comportamento anterior.
+    const matchFallbackAtivo =
+      process.env.SHOPEE_ORDER_MATCH_FALLBACK_DISABLED !== "1";
+
+    // Resolvido no máximo uma vez por pedido, e só quando algum item precisa
+    // de fallback — o caminho feliz (listing da própria conta) não paga nada.
+    let ownerIdCache: string | undefined | null = null;
+    const ownerId = async (): Promise<string | undefined> => {
+      if (ownerIdCache !== null) return ownerIdCache;
+      ownerIdCache = await this.resolveDataOwnerId(userId);
+      return ownerIdCache;
+    };
 
     for (const item of items) {
       const externalListingId = item.item_id.toString();
@@ -1760,20 +2096,82 @@ export class OrderUseCase {
         continue;
       }
 
+      // 2) O MESMO item_id, mas num listing pendurado em OUTRA conta do mesmo
+      // tenant. Acontece quando o cliente desconecta e reconecta a Shopee: a
+      // desconexão é "soft" quando há pedidos (zera tokens, marca a conta
+      // INACTIVE) e os ProductListing continuam apontando para a conta antiga.
+      // O listingMap é chaveado por `${marketplaceAccountId}_${externalListingId}`,
+      // então nesse cenário a etapa 1 erra 100% das vezes. O ML já tinha
+      // conserto para essa classe de bug (listing-ownership-repair); a Shopee
+      // não tinha nenhum.
+      if (matchFallbackAtivo) {
+        const doTenant = await this.findShopeeListingInTenant(
+          externalListingId,
+          marketplaceAccountId,
+          await ownerId(),
+        );
+        if (doTenant) {
+          result.push({
+            productId: doTenant.productId,
+            listingId: doTenant.id,
+            quantity: item.model_quantity_purchased,
+            unitPrice: Number(item.model_original_price ?? 0),
+          });
+          linkedCount++;
+          // Reaponta o listing para a conta ativa: idempotente e logado, para
+          // que a próxima venda resolva já na etapa 1.
+          await this.repointShopeeListing(
+            doTenant.id,
+            doTenant.marketplaceAccountId,
+            marketplaceAccountId,
+            externalListingId,
+            doTenant.product?.userId ?? null,
+          );
+          continue;
+        }
+      }
+
       const sku = this.extractSkuFromShopee(item);
       if (!sku) {
         console.log(
           `[OrderUseCase] Item Shopee ${externalListingId} sem SKU e sem listing vinculado, pulando`,
         );
+        unlinked.push({
+          itemId: externalListingId,
+          sku: null,
+          reason: "ITEM_WITHOUT_SKU",
+        });
         continue;
       }
 
-      const product = await this.findProductByFallbackSku(sku, userId);
+      // 3) SKU do item contra Product.skuNormalized, escopado pelo DONO DOS
+      // DADOS. Antes usava `account.userId` cru: se a conta Shopee tivesse sido
+      // conectada por um colaborador, o produto existia e mesmo assim não era
+      // encontrado — a venda não baixava estoque.
+      let product = await this.findProductByFallbackSku(
+        sku,
+        matchFallbackAtivo ? await ownerId() : userId,
+      );
+
+      // 4) Último recurso: o mesmo texto contra o part number, e SOMENTE se o
+      // resultado for único. Mais de um candidato ⇒ não vincula: baixar no
+      // produto errado é pior do que não baixar.
+      if (!product && matchFallbackAtivo) {
+        product = await this.findProductByPartNumberUnique(
+          sku,
+          await ownerId(),
+        );
+      }
 
       if (!product) {
         console.log(
           `[OrderUseCase] Produto com SKU "${sku}" (Shopee) não encontrado`,
         );
+        unlinked.push({
+          itemId: externalListingId,
+          sku,
+          reason: "PRODUCT_NOT_FOUND",
+        });
         continue;
       }
 
@@ -1793,7 +2191,155 @@ export class OrderUseCase {
       linkedCount++;
     }
 
-    return { items: result, linkedCount };
+    return { items: result, linkedCount, unlinked };
+  }
+
+  /**
+   * Dono dos dados do tenant. Colaborador herda do admin — mesma regra do
+   * `authMiddleware` (`user.parentUserId ?? user.id`).
+   *
+   * Existe porque o escopo do fallback por SKU usava `MarketplaceAccount.userId`
+   * cru: numa conta conectada por colaborador, o produto existia e não era
+   * encontrado, e a venda não baixava estoque.
+   */
+  private static async resolveDataOwnerId(
+    userId?: string | null,
+  ): Promise<string | undefined> {
+    if (!userId) return undefined;
+    try {
+      const u = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { parentUserId: true },
+      });
+      return u?.parentUserId ?? userId;
+    } catch {
+      // Nunca degradar para escopo mais amplo: na dúvida, o userId original.
+      return userId;
+    }
+  }
+
+  /**
+   * Listing com este `externalListingId` em QUALQUER conta Shopee do mesmo
+   * tenant, fora a conta atual. Cobre o listing pendurado em conta antiga
+   * depois de desconectar/reconectar a Shopee.
+   *
+   * O `item_id` da Shopee é único por loja, então um listing com o mesmo id em
+   * outra conta do mesmo dono é o MESMO anúncio com o vínculo desatualizado —
+   * não é adivinhação.
+   */
+  private static async findShopeeListingInTenant(
+    externalListingId: string,
+    currentAccountId: string,
+    ownerId?: string,
+  ): Promise<any | null> {
+    if (!ownerId) return null;
+    try {
+      return await prisma.productListing.findFirst({
+        where: {
+          externalListingId,
+          marketplaceAccountId: { not: currentAccountId },
+          marketplaceAccount: { platform: "SHOPEE", userId: ownerId },
+          product: { is: {} },
+        },
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          product: { select: { id: true, userId: true } },
+        },
+      });
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao procurar listing Shopee ${externalListingId} nas demais contas do tenant:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Reaponta o listing para a conta ativa. Best-effort: se falhar, a venda já
+   * foi vinculada de qualquer forma — só a próxima vai precisar do fallback
+   * de novo. Mesmo padrão do conserto de posse do ML.
+   */
+  private static async repointShopeeListing(
+    listingId: string,
+    fromAccountId: string,
+    toAccountId: string,
+    externalListingId: string,
+    productUserId: string | null,
+  ): Promise<void> {
+    try {
+      await ListingRepository.reassignAccount(listingId, toAccountId);
+      console.log(
+        JSON.stringify({
+          event: "shopee.order_import.listing_repointed",
+          listingId,
+          externalListingId,
+          fromAccountId,
+          toAccountId,
+        }),
+      );
+      if (productUserId) {
+        // Este log LEVA userId de propósito: é uma correção no catálogo do
+        // cliente, que ele tem direito de ver na tela dele.
+        void SystemLogService.logListingOwnershipRepaired(
+          productUserId,
+          listingId,
+          {
+            externalListingId,
+            oldAccountId: fromAccountId,
+            newAccountId: toAccountId,
+          },
+        ).catch(() => {});
+      }
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao reapontar listing ${listingId} para a conta ${toAccountId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Produto pelo part number, e SOMENTE quando houver exatamente um candidato.
+   * Dois ou mais ⇒ devolve null: vincular o produto errado gera baixa no item
+   * errado, que é pior do que não vincular.
+   */
+  private static async findProductByPartNumberUnique(
+    sku: string,
+    ownerId?: string,
+  ): Promise<{ id: string } | null> {
+    if (!ownerId) return null;
+    const normalizado = normalizeSku(sku);
+    if (!normalizado) return null;
+
+    try {
+      const candidatos = await prisma.product.findMany({
+        where: { userId: ownerId, partNumberNormalized: normalizado },
+        select: { id: true },
+        take: 2,
+      });
+      if (candidatos.length !== 1) {
+        if (candidatos.length > 1) {
+          console.log(
+            JSON.stringify({
+              event: "shopee.order_import.part_number_ambiguous",
+              sku: normalizado,
+              candidatos: candidatos.length,
+            }),
+          );
+        }
+        return null;
+      }
+      return candidatos[0];
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha no fallback por part number ("${sku}"):`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   private static extractSkuFromShopee(item: ShopeeOrderItem): string | null {
@@ -1803,18 +2349,59 @@ export class OrderUseCase {
   }
 
   private static mapShopeeStatus(status: string): OrderStatus {
+    // Kill-switch: restaura o switch anterior byte-a-byte. Relevante porque
+    // TO_CONFIRM_RECEIVE já era importado e virava PENDING local — corrigir
+    // isso muda o rótulo exibido em /pedidos para pedidos existentes.
+    if (process.env.SHOPEE_ORDER_SYNC_BY_UPDATE_TIME_DISABLED === "1") {
+      switch (status) {
+        case "COMPLETED":
+          return "DELIVERED";
+        case "READY_TO_SHIP":
+        case "PROCESSED":
+        case "SHIPPED":
+          return "SHIPPED";
+        case "CANCELLED":
+        case "IN_CANCEL":
+          return "CANCELLED";
+        case "UNPAID":
+        default:
+          return "PENDING";
+      }
+    }
+
     switch (status) {
       case "COMPLETED":
         return "DELIVERED";
+      // TO_CONFIRM_RECEIVE já estava na lista de importação mas faltava aqui:
+      // caía no `default` e virava PENDING local, com o estoque já baixado.
+      case "TO_CONFIRM_RECEIVE":
       case "READY_TO_SHIP":
       case "PROCESSED":
       case "SHIPPED":
+      // RETRY_SHIP = nova tentativa de coleta/envio; TO_RETURN = devolução
+      // pedida sobre um pedido entregue. Nos dois a venda aconteceu e a peça
+      // saiu do estoque — o estado local correto é SHIPPED, não PENDING.
+      case "RETRY_SHIP":
+      case "TO_RETURN":
         return "SHIPPED";
+      // Pago, aguardando a NF-e do vendedor. É venda concretizada.
+      case "INVOICE_PENDING":
+        return "PAID";
       case "CANCELLED":
       case "IN_CANCEL":
         return "CANCELLED";
       case "UNPAID":
+        return "PENDING";
       default:
+        // Vocabulário novo da Shopee. Antes sumia calado em PENDING; agora
+        // deixa rastro para sabermos que precisa entrar no switch.
+        console.log(
+          JSON.stringify({
+            event: "shopee.order_import.status_unknown",
+            status,
+            mappedTo: "PENDING",
+          }),
+        );
         return "PENDING";
     }
   }
@@ -1871,13 +2458,53 @@ export class OrderUseCase {
       shopId: number;
     },
     days: number,
+    options?: {
+      timeFrom?: number;
+      timeRangeField?: "create_time" | "update_time";
+      statusFilter?: "legacy_whitelist" | "exclude_non_sale";
+      onStatusSkipped?: (orderSn: string, status: string) => void;
+      /**
+       * Pedidos buscados por `order_sn` ADEMAIS da janela. É o que o webhook
+       * usa: a Shopee já disse qual pedido mudou, então não faz sentido varrer
+       * a janela e torcer para ele estar lá.
+       */
+      orderSns?: string[];
+    },
   ): Promise<ShopeeOrderDetail[]> {
-    try {
-      return await ShopeeApiService.getRecentOrders(
-        account.accessToken,
-        account.shopId,
-        days,
+    const fetchAll = async (token: string): Promise<ShopeeOrderDetail[]> => {
+      // Sem `options` a chamada fica idêntica à anterior (3 argumentos) — é o
+      // que o kill-switch precisa para ser byte-a-byte.
+      const fromWindow = options
+        ? await ShopeeApiService.getRecentOrders(
+            token,
+            account.shopId,
+            days,
+            options,
+          )
+        : await ShopeeApiService.getRecentOrders(token, account.shopId, days);
+
+      if (!options?.orderSns?.length) return fromWindow;
+
+      // Busca dirigida: mesmo critério de status da janela, para que um pedido
+      // sem venda concretizada (UNPAID/cancelado) não entre por aqui.
+      const targeted = ShopeeApiService.filterSaleOrders(
+        await ShopeeApiService.getOrderDetails(
+          token,
+          account.shopId,
+          options.orderSns,
+        ),
+        options,
       );
+
+      const byOrderSn = new Map<string, ShopeeOrderDetail>();
+      for (const o of [...fromWindow, ...targeted] as ShopeeOrderDetail[]) {
+        byOrderSn.set(o.order_sn, o);
+      }
+      return [...byOrderSn.values()];
+    };
+
+    try {
+      return await fetchAll(account.accessToken);
     } catch (error) {
       if (!this.isMarketplaceAuthError(error) || !account.refreshToken) {
         throw error;
@@ -1894,11 +2521,7 @@ export class OrderUseCase {
         expiresAt: ShopeeOAuthService.calculateExpiryDate(refreshed.expire_in),
       });
 
-      return ShopeeApiService.getRecentOrders(
-        refreshed.access_token,
-        account.shopId,
-        days,
-      );
+      return fetchAll(refreshed.access_token);
     }
   }
 
@@ -1914,7 +2537,13 @@ export class OrderUseCase {
     if (status === 401 || status === 403) {
       return true;
     }
-    return /unauthorized|invalid access token|token expired|forbidden/i.test(
+    // `access[ _]token` cobre as duas grafias: o ML escreve "invalid access
+    // token" e a Shopee "Invalid access_token, please have a check." — sondado
+    // na API real em 29/07/2026. Hoje o erro da Shopee chega com status 403 e
+    // já casaria pela linha acima, mas o regex era a única rede se ela passar
+    // a devolver HTTP 200 com o erro no corpo (que é o formato dela em outras
+    // chamadas, e nesse caminho o Error nem carrega `.status`).
+    return /unauthorized|invalid access[ _]token|token expired|forbidden/i.test(
       message,
     );
   }
@@ -1978,6 +2607,19 @@ export class OrderUseCase {
           });
           deductions = result.deductions;
           oversellAlerts = result.oversellAlerts;
+
+          // Marca de auditoria da baixa, na MESMA transação: ou as duas coisas
+          // acontecem, ou nenhuma. Torna trivial a pergunta "quais pedidos
+          // estão sem baixa?" (status <> CANCELLED AND stockDeductedAt IS NULL),
+          // que antes exigia cruzar StockLog por `reason`, que é texto livre.
+          // NÃO é a fonte de verdade da idempotência — essa continua sendo o
+          // net do StockLog. Kill-switch restaura o caminho anterior.
+          if (process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1") {
+            await tx.order.update({
+              where: { id: order.id },
+              data: { stockDeductedAt: new Date() },
+            });
+          }
         },
         { timeout: 60_000, maxWait: 20_000 },
       );

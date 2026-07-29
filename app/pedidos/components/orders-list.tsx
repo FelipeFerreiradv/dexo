@@ -32,6 +32,10 @@ import {
 const isEtiquetasEnabled =
   process.env.NEXT_PUBLIC_ETIQUETAS_MODULE_ENABLED === "true";
 
+// Aviso de pendências de importação. Build-time, como as demais flags de UI.
+const isIngestionIssuesEnabled =
+  process.env.NEXT_PUBLIC_ORDER_INGESTION_ISSUES_ENABLED === "true";
+
 import type { Order } from "@/app/interfaces/order.interface";
 import { OrderSkeleton } from "./order-skeleton";
 import { OrderDetailSheet } from "./order-detail-sheet";
@@ -43,6 +47,10 @@ import {
   OrdersTableSkeleton,
 } from "./orders-gallery-skeleton";
 import { useOrdersView, type OrdersView } from "../hooks/use-orders-view";
+import {
+  IngestionIssuesBanner,
+  type IngestionIssue,
+} from "./ingestion-issues-banner";
 import {
   DEFAULT_ORDER_FILTERS,
   countActiveOrderFilters,
@@ -100,6 +108,10 @@ export function OrdersList() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkSize, setBulkSize] = useState<"A4" | "THERMAL">("A4");
+  // Pendências de importação: vendas que não viraram pedido. Enquanto a lista
+  // estiver vazia (o caso normal) nada é renderizado e a tela fica idêntica.
+  const [ingestionIssues, setIngestionIssues] = useState<IngestionIssue[]>([]);
+  const [retryingIssueId, setRetryingIssueId] = useState<string | null>(null);
 
   // Debounce da busca → filtros (mesma cadência de hoje, 250ms).
   useEffect(() => {
@@ -319,6 +331,70 @@ export function OrdersList() {
     }
   }, [session?.user?.email, filters.marketplace]);
 
+  const fetchIngestionIssues = useCallback(async () => {
+    if (!isIngestionIssuesEnabled || !session?.user?.email) return;
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/orders/ingestion-issues`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
+        },
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      setIngestionIssues(data.issues ?? []);
+    } catch (error) {
+      // Silencioso de propósito: a lista de pendências é informação ADICIONAL.
+      // Se ela falhar, a tela de pedidos continua funcionando como sempre.
+      console.error("Erro ao buscar pendências de importação:", error);
+    }
+  }, [session?.user?.email]);
+
+  const handleRetryIssue = useCallback(
+    async (issueId: string) => {
+      if (!session?.user?.email) return;
+      try {
+        setRetryingIssueId(issueId);
+        const response = await fetch(
+          `${getApiBaseUrl()}/orders/ingestion-issues/${issueId}/retry`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              email: session.user.email,
+            },
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.message ?? "Erro");
+
+        // O toast tem só success/error nesta tela; "ainda não resolveu" não é
+        // sucesso, então vai como error para não dar falsa sensação de pronto.
+        showToast(data.message, data.resolved ? "success" : "error");
+        await fetchIngestionIssues();
+        if (data.resolved) {
+          await fetchOrders();
+          await fetchStats();
+        }
+      } catch (error) {
+        console.error("Erro ao re-tentar importação:", error);
+        showToast("Não foi possível re-tentar agora", "error");
+      } finally {
+        setRetryingIssueId(null);
+      }
+    },
+    [
+      session?.user?.email,
+      showToast,
+      fetchIngestionIssues,
+      fetchOrders,
+      fetchStats,
+    ],
+  );
+
   const handleImportOrders = async () => {
     if (!session?.user?.email) {
       showToast("Usuário não autenticado", "error");
@@ -384,6 +460,12 @@ export function OrdersList() {
       fetchOrders();
     }
   }, [fetchOrders, session, status]);
+
+  useEffect(() => {
+    if (status === "authenticated" && session?.user?.email) {
+      fetchIngestionIssues();
+    }
+  }, [fetchIngestionIssues, session, status]);
 
   if (status === "loading") {
     return <OrderSkeleton />;
@@ -492,6 +574,16 @@ export function OrdersList() {
         isFetching={isLoading}
         activeCount={countActiveOrderFilters(filters)}
       />
+
+      {/* Pendências de importação. Sem pendência o componente devolve null e
+          a tela fica exatamente como era — sem badge, sem aba, sem layout novo. */}
+      {isIngestionIssuesEnabled ? (
+        <IngestionIssuesBanner
+          issues={ingestionIssues}
+          onRetry={handleRetryIssue}
+          retryingId={retryingIssueId}
+        />
+      ) : null}
 
       {/* Toolbar: contagem + importar + alternância de visão */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
