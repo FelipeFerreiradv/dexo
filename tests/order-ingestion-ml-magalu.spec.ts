@@ -55,8 +55,10 @@ const registrar = (params: any) =>
   (OrderUseCase as any).registrarDesfechoIngestao(params);
 
 let flagAnterior: string | undefined;
-let abrir: ReturnType<typeof vi.spyOn>;
-let resolver: ReturnType<typeof vi.spyOn>;
+// `any` de proposito: o tipo devolvido por vi.spyOn carrega a assinatura exata
+// do metodo e nao casa com a anotacao generica de MockInstance.
+let abrir: any;
+let resolver: any;
 
 beforeEach(() => {
   flagAnterior = process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED;
@@ -212,7 +214,7 @@ describe("quarentena do ML", () => {
 
     // A reingestão de ML/Magalu não é dirigida por id, então o payload nunca
     // seria lido — guardá-lo seria dado de comprador persistido sem prazo.
-    expect(abrir.mock.calls[0][0].payload).toBeNull();
+    expect((abrir.mock.calls[0][0] as any).payload).toBeNull();
   });
 });
 

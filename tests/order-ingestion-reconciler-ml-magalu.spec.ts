@@ -69,7 +69,8 @@ const issueML = (over: Record<string, any> = {}) => ({
   ...over,
 });
 
-let resolver: ReturnType<typeof vi.spyOn>;
+// `any` de proposito: ver nota no spec order-ingestion-ml-magalu.
+let resolver: any;
 
 beforeEach(() => {
   vi.clearAllMocks();
