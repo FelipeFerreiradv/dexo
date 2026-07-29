@@ -147,9 +147,9 @@ describe("escopo por dataOwnerId", () => {
   });
 
   it("produto de OUTRO tenant nunca casa", async () => {
-    vi.spyOn(prisma.product, "findFirst").mockImplementation(
+    vi.spyOn(prisma.product as any, "findFirst").mockImplementation(
       async ({ where }: any) =>
-        where.userId === "dono-1" ? ({ id: "prod-1" } as any) : null,
+        where.userId === "dono-1" ? { id: "prod-1" } : null,
     );
     vi.spyOn(prisma.user, "findUnique").mockResolvedValue({
       parentUserId: "outro-dono",

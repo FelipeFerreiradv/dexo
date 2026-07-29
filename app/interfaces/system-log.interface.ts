@@ -53,6 +53,12 @@ export type LogAction =
   | "WEBHOOK_ACCOUNT_NOT_FOUND"
   | "TOKEN_EXPIRED_REPEATED"
   | "ML_REACTIVATION_RISK"
+  // Listing que apontava para a conta errada e foi reapontado para a conta
+  // correta do mesmo tenant. Já era emitido por
+  // SystemLogService.logListingOwnershipRepaired, mas faltava no union — o
+  // próprio helper não compilava. Ver listing-ownership-repair.service (ML) e
+  // o resgate cross-account do import Shopee.
+  | "LISTING_OWNERSHIP_REPAIRED"
   // Cancelamento de pedido marketplace: estorno de estoque + reabertura de
   // anúncios (ver OrderUseCase.processOrderCancellation).
   | "ORDER_CANCEL_RESTORE"
