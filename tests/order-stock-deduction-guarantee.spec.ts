@@ -166,12 +166,19 @@ describe("retryStockDeduction — não baixa duas vezes", () => {
     );
 
     expect(ok).toBe(true);
-    expect(deduct).toHaveBeenCalledWith(ORDER, "Venda Shopee #SN-1");
+    // Nada baixado ainda => o delta e a quantidade cheia do pedido.
+    expect(deduct).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "order-1",
+        items: [{ productId: "p1", quantity: 2 }],
+      }),
+      "Venda Shopee #SN-1",
+    );
   });
 
-  it("baixa PARCIAL (clamp de oversell) completa só o que falta", async () => {
+  it("baixa PARCIAL desconta SO o que falta, nunca o item inteiro de novo", async () => {
     vi.spyOn(prisma.order, "findUnique").mockResolvedValue(ORDER as any);
-    // Baixou 1 de 2 — o clamp de oversell deixou faltando 1.
+    // Pedido de 2 unidades de p1; 1 ja saiu (clamp de oversell) => falta 1.
     vi.spyOn(prisma.stockLog as any, "groupBy").mockResolvedValue([
       { productId: "p1", _sum: { change: -1 } },
     ] as any);
@@ -181,7 +188,35 @@ describe("retryStockDeduction — não baixa duas vezes", () => {
 
     await OrderUseCase.retryStockDeduction("order-1", "SHOPEE", "SN-1");
 
-    expect(deduct).toHaveBeenCalled();
+    expect(deduct).toHaveBeenCalledTimes(1);
+    const [orderPassado] = deduct.mock.calls[0] as any[];
+    // Se passasse `order.items` cru, viria quantity: 2 e o item baixaria 2x.
+    expect(orderPassado.items).toEqual([{ productId: "p1", quantity: 1 }]);
+  });
+
+  it("agrega por PRODUTO, nao por linha de OrderItem", async () => {
+    // Duas linhas do mesmo produto, 1 cada = 2 no total. Net -1 => falta 1.
+    vi.spyOn(prisma.order, "findUnique").mockResolvedValue({
+      ...ORDER,
+      items: [
+        { productId: "p1", quantity: 1, unitPrice: 10, listingId: null },
+        { productId: "p1", quantity: 1, unitPrice: 10, listingId: null },
+      ],
+    } as any);
+    vi.spyOn(prisma.stockLog as any, "groupBy").mockResolvedValue([
+      { productId: "p1", _sum: { change: -1 } },
+    ] as any);
+    const deduct = vi
+      .spyOn(OrderUseCase as any, "deductStockForOrder")
+      .mockResolvedValue([]);
+
+    await OrderUseCase.retryStockDeduction("order-1", "SHOPEE", "SN-1");
+
+    // Comparando linha a linha, ambas as linhas pareceriam quitadas (1 >= 1) e
+    // a unidade que falta ficaria sem baixa para sempre.
+    expect(deduct).toHaveBeenCalledTimes(1);
+    const [orderPassado] = deduct.mock.calls[0] as any[];
+    expect(orderPassado.items).toEqual([{ productId: "p1", quantity: 1 }]);
   });
 
   it("pedido CANCELLED não baixa e encerra a pendência", async () => {

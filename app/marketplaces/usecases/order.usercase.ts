@@ -905,10 +905,27 @@ export class OrderUseCase {
     const netByProduct = new Map(
       grouped.map((g) => [g.productId, g._sum.change ?? 0]),
     );
-    const faltando = order.items.filter((i) => {
-      const jaBaixado = -(netByProduct.get(i.productId) ?? 0);
-      return jaBaixado < i.quantity;
-    });
+
+    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
+    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
+    // linha a linha diria "ja baixado" com metade da quantidade descontada.
+    const pedidoPorProduto = new Map<string, number>();
+    for (const i of order.items) {
+      pedidoPorProduto.set(
+        i.productId,
+        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
+      );
+    }
+
+    // So o que FALTA. Passar a lista completa para deductStockForOrder
+    // descontaria de novo o que ja foi descontado — o net protege contra
+    // repetir o pedido inteiro, mas nao contra um pedido parcialmente baixado.
+    const faltando: Array<{ productId: string; quantity: number }> = [];
+    for (const [productId, pedido] of pedidoPorProduto) {
+      const jaBaixado = -(netByProduct.get(productId) ?? 0);
+      const falta = pedido - jaBaixado;
+      if (falta > 0) faltando.push({ productId, quantity: falta });
+    }
 
     if (faltando.length === 0) {
       // A baixa tinha acontecido; só a marca de auditoria pode estar faltando.
@@ -927,7 +944,13 @@ export class OrderUseCase {
     }
 
     try {
-      await this.deductStockForOrder(order as unknown as Order, reason);
+      // Passa SO os itens que faltam. Com a lista completa, um pedido
+      // parcialmente baixado (clamp de oversell, ou produto ausente pulado
+      // dentro da tx) seria descontado de novo no item que ja saiu.
+      await this.deductStockForOrder(
+        { ...(order as unknown as Order), items: faltando as any },
+        reason,
+      );
       return true;
     } catch (err) {
       console.warn(
