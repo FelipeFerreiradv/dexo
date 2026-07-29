@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dexo — Gráficos do Dashboard e Revisão de Desempenho · 29/07/2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --pergaminho:#f2ede2; --petroleo:#0e1f2a; --creme:#fbf7ee;
+    --amarelo:#f2c419; --bege:#e8dfca; --aco:#3f4a52; --areia:#ddd3bd;
+    --verde:#1f6f4a; --vermelho:#9b2c2c;
+    --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+    --display:'Bricolage Grotesque','Inter',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--pergaminho); color:var(--petroleo);
+    font-family:var(--sans); font-size:10.5pt; line-height:1.62;
+  }
+  .pagina{
+    max-width:190mm; margin:0 auto; padding:14mm 0 18mm;
+  }
+  /* ---------- Capa ---------- */
+  .capa{
+    min-height:247mm; display:flex; flex-direction:column; justify-content:space-between;
+    padding:22mm 16mm; background:var(--petroleo); color:var(--pergaminho);
+    border-radius:14px; page-break-after:always;
+  }
+  .marca{display:flex; align-items:center; gap:12px}
+  .marca .logo{
+    width:38px;height:38px;border-radius:10px;background:var(--amarelo);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--display); font-weight:700; font-size:20px; color:var(--petroleo);
+  }
+  .marca .nome{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em}
+  .capa h1{
+    font-family:var(--display); font-weight:700; font-size:34pt; line-height:1.1;
+    letter-spacing:-.025em; margin:0 0 10px;
+  }
+  .capa .sub{font-size:13pt;color:#c9c0ad;max-width:135mm;margin:0}
+  .capa .faixa{height:5px;width:96px;background:var(--amarelo);border-radius:3px;margin:22px 0}
+  .capa .meta{display:flex;gap:34px;flex-wrap:wrap;font-size:9.5pt;color:#c9c0ad}
+  .capa .meta b{display:block;color:var(--pergaminho);font-size:10.5pt;font-weight:600;margin-top:3px}
+  /* ---------- Tipografia ---------- */
+  h2{
+    font-family:var(--display); font-size:19pt; font-weight:700; letter-spacing:-.02em;
+    margin:30px 0 4px; padding-top:14px; border-top:2px solid var(--petroleo);
+    page-break-after:avoid;
+  }
+  h2 .num{color:var(--aco); font-size:12pt; font-weight:600; margin-right:9px}
+  h3{font-family:var(--display);font-size:12.5pt;font-weight:600;margin:20px 0 6px;page-break-after:avoid}
+  h4{font-size:10.5pt;font-weight:600;margin:14px 0 4px;page-break-after:avoid}
+  p{margin:7px 0}
+  ul,ol{margin:7px 0;padding-left:19px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:9pt;background:var(--bege);padding:1px 5px;border-radius:4px}
+  strong{font-weight:600}
+  a{color:var(--petroleo)}
+  /* ---------- Blocos ---------- */
+  .card{background:var(--creme);border:1px solid var(--areia);border-radius:10px;padding:14px 16px;margin:12px 0;page-break-inside:avoid}
+  .destaque{background:var(--creme);border-left:5px solid var(--amarelo);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .atencao{background:#fdf6f6;border-left:5px solid var(--vermelho);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .ok{background:#f2f8f4;border-left:5px solid var(--verde);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .destaque p:first-child,.atencao p:first-child,.ok p:first-child,.card p:first-child{margin-top:0}
+  .destaque p:last-child,.atencao p:last-child,.ok p:last-child,.card p:last-child{margin-bottom:0}
+  /* ---------- Tabelas ---------- */
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:9.5pt;page-break-inside:avoid}
+  th{background:var(--petroleo);color:var(--pergaminho);text-align:left;padding:8px 10px;font-weight:600;font-size:9pt}
+  td{padding:7px 10px;border-bottom:1px solid var(--areia);vertical-align:top}
+  tr:nth-child(even) td{background:var(--creme)}
+  th:first-child{border-radius:7px 0 0 0} th:last-child{border-radius:0 7px 0 0}
+  /* ---------- Sumário ---------- */
+  .sumario{background:var(--creme);border:1px solid var(--areia);border-radius:12px;padding:18px 22px;page-break-after:always}
+  .sumario h2{border:0;margin:0 0 10px;padding:0}
+  .sumario ol{list-style:none;padding:0;counter-reset:s}
+  .sumario li{counter-increment:s;padding:7px 0;border-bottom:1px dashed var(--areia);display:flex;gap:10px;align-items:baseline}
+  .sumario li:last-child{border:0}
+  .sumario li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--aco);font-size:9pt;min-width:22px}
+  .sumario li b{font-weight:600}
+  .sumario li span{color:var(--aco);font-size:9pt}
+  /* ---------- Etiquetas ---------- */
+  .tag{display:inline-block;font-size:8pt;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--bege);color:var(--aco);vertical-align:middle;margin-left:7px}
+  .tag.novo{background:var(--amarelo);color:var(--petroleo)}
+  .tag.corr{background:#e3efe8;color:var(--verde)}
+  .tag.flag{background:#efe6f3;color:#5b3a72}
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:26px;position:relative;margin:6px 0}
+  .check li::before{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border:2px solid var(--aco);border-radius:4px}
+  .faq dt{font-weight:600;margin-top:13px}
+  .faq dd{margin:3px 0 0;padding-left:0;color:var(--aco)}
+  .rodape{margin-top:26px;padding-top:11px;border-top:1px solid var(--areia);font-size:8.5pt;color:var(--aco);display:flex;justify-content:space-between}
+  /* ---------- Impressão ---------- */
+  @page{size:A4;margin:14mm 12mm 16mm}
+  @media print{
+    body{background:#fff}
+    .pagina{max-width:none;padding:0}
+    .capa{border-radius:0;min-height:250mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    .quebra{page-break-before:always}
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+
+  <!-- ============ CAPA ============ -->
+  <section class="capa">
+    <div class="marca">
+      <div class="logo">D</div>
+      <div class="nome">Dexo</div>
+    </div>
+    <div>
+      <div class="faixa"></div>
+      <h1>Gráficos do Dashboard</h1>
+      <p class="sub">Quatro visões novas de desempenho — e uma revisão que deixou o sistema inteiro mais leve. O que mudou, para quem, e como orientar.</p>
+    </div>
+    <div class="meta">
+      <div>Data<b>29 de julho de 2026</b></div>
+      <div>Público<b>Suporte · Implantação · CS</b></div>
+      <div>Referência<b>PR #210</b></div>
+      <div>Classificação<b>Uso interno</b></div>
+    </div>
+  </section>
+
+  <!-- ============ SUMÁRIO ============ -->
+  <section class="sumario">
+    <h2>Sumário</h2>
+    <ol>
+      <li><b>Resumo executivo</b> <span>— o que foi entregue e por quê</span></li>
+      <li><b>Objetivo das otimizações</b> <span>— o problema que motivou a revisão</span></li>
+      <li><b>Funcionalidades analisadas</b> <span>— o que foi olhado</span></li>
+      <li><b>Alterações realizadas</b> <span>— uma seção por assunto</span></li>
+      <li><b>Ganhos de desempenho</b> <span>— o que ficou mais rápido</span></li>
+      <li><b>Consumo de recursos e tráfego</b> <span>— o que deixou de ser gasto</span></li>
+      <li><b>Ausência de regressões</b> <span>— como sabemos que nada quebrou</span></li>
+      <li><b>Impacto para o cliente</b> <span>— o que muda na tela dele</span></li>
+      <li><b>O que o Suporte precisa saber</b> <span>— antes de atender</span></li>
+      <li><b>Como orientar os clientes</b> <span>— passo a passo</span></li>
+      <li><b>Perguntas frequentes</b> <span>— respostas prontas</span></li>
+      <li><b>Observações importantes</b> <span>— limites conhecidos</span></li>
+      <li><b>Checklist do Suporte</b> <span>— validação pós-atualização</span></li>
+      <li><b>Resumo técnico</b> <span>— para a equipe de Engenharia</span></li>
+    </ol>
+  </section>
+
+  <!-- ============ 1 ============ -->
+  <h2><span class="num">01</span>Resumo executivo</h2>
+
+  <p>Esta entrega adiciona <strong>quatro gráficos novos ao Dashboard</strong>, cada um com o seu próprio filtro de período. Eles respondem perguntas que hoje o cliente só consegue responder abrindo relatório ou exportando planilha: quanto cada marketplace vendeu, quais categorias de peça puxam a receita, como o dinheiro entra e quanto da venda é de balcão.</p>
+
+  <p>Durante a revisão de desempenho da própria entrega, encontramos e corrigimos <strong>três desperdícios de tráfego que já existiam no sistema</strong> — dois deles afetavam todas as telas, não só o Dashboard.</p>
+
+  <div class="destaque">
+    <p><strong>O achado mais relevante:</strong> o sino de notificações estava sendo consultado <strong>duas vezes seguidas</strong> a cada carregamento de página, em todo o sistema. Cada consulta dessas faz cinco buscas no banco ao mesmo tempo. Metade desse trabalho era jogada fora.</p>
+  </div>
+
+  <h3>O que foi entregue</h3>
+  <table>
+    <tr><th style="width:30%">Assunto</th><th>Situação anterior</th><th style="width:28%">Depois</th></tr>
+    <tr><td><b>Receita por marketplace</b></td><td>Só existia o total geral e a lista por conta, sem recorte de período.</td><td>Gráfico comparando Mercado Livre, Shopee e Magalu no período escolhido.</td></tr>
+    <tr><td><b>Receita por categoria</b></td><td>Não existia. Não dava para saber qual tipo de peça vende mais.</td><td>Gráfico por categoria, com filtro de marketplace.</td></tr>
+    <tr><td><b>Forma de pagamento</b></td><td>Só no relatório financeiro em PDF.</td><td>Gráfico direto no Dashboard.</td></tr>
+    <tr><td><b>Balcão × avulso</b></td><td>Só no relatório financeiro em PDF.</td><td>Divisão percentual no Dashboard.</td></tr>
+    <tr><td><b>Tráfego do sistema</b></td><td>Chamadas duplicadas e repetidas em todas as telas.</td><td>Três fontes de desperdício eliminadas.</td></tr>
+  </table>
+
+  <h3>Resultado esperado</h3>
+  <ul>
+    <li>O cliente enxerga onde está vendendo mais sem sair do Dashboard.</li>
+    <li>Todas as telas do sistema ficam um pouco mais rápidas, pela redução de chamadas.</li>
+    <li>Nenhuma tela existente muda de comportamento.</li>
+  </ul>
+
+  <!-- ============ 2 ============ -->
+  <h2 class="quebra"><span class="num">02</span>Objetivo das otimizações</h2>
+
+  <p>O Dexo teve, no passado, um problema de consumo de tráfego externo (o chamado <i>egress</i>): o sistema baixava do banco muito mais dados do que precisava, e isso pesava na conta e na velocidade. Foi criada então uma regra interna: <strong>toda conta deve ser feita dentro do banco de dados</strong>, e não trazendo as linhas para somar depois.</p>
+
+  <p>Esta entrega tinha duas obrigações:</p>
+  <ol>
+    <li>Nascer já respeitando essa regra — nenhum gráfico novo pode reintroduzir o problema antigo.</li>
+    <li>Verificar se algo, em algum ponto, voltou ao comportamento antigo.</li>
+  </ol>
+
+  <p>A segunda obrigação é a que rendeu as correções descritas na seção 4: encontramos desperdícios que <strong>não vieram desta entrega</strong>, mas que estavam ali.</p>
+
+  <!-- ============ 3 ============ -->
+  <h2><span class="num">03</span>Funcionalidades analisadas</h2>
+
+  <p>A revisão cobriu tanto o que foi criado quanto o que já estava em produção e compartilha código com a novidade.</p>
+
+  <table>
+    <tr><th style="width:34%">Área</th><th>O que foi verificado</th></tr>
+    <tr><td><b>Dashboard</b></td><td>Todos os números do painel: receita total, pedidos, anúncios, vendas por conta e o relatório em PDF.</td></tr>
+    <tr><td><b>Financeiro</b></td><td>Contas a receber, formas de pagamento, venda de balcão e o relatório financeiro em PDF.</td></tr>
+    <tr><td><b>Produtos</b></td><td>Cadastro, edição, exclusão e sincronização com os marketplaces.</td></tr>
+    <tr><td><b>Pedidos</b></td><td>Importação automática, baixa de estoque e atualização de quantidade.</td></tr>
+    <tr><td><b>Integrações</b></td><td>Mercado Livre, Shopee e Magalu.</td></tr>
+    <tr><td><b>Rotinas automáticas</b></td><td>Tarefas agendadas, filas, avisos automáticos dos marketplaces e processos em segundo plano.</td></tr>
+    <tr><td><b>Acesso</b></td><td>Login, permissões por página e bloqueio de colaborador.</td></tr>
+  </table>
+
+  <!-- ============ 4 ============ -->
+  <h2 class="quebra"><span class="num">04</span>Alterações realizadas</h2>
+
+  <h3>4.1 Quatro gráficos novos no Dashboard <span class="tag novo">Novidade</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> Dashboard.</p>
+    <p><b>O que existia:</b> o painel mostrava o total faturado, o total de pedidos e uma lista de vendas por conta — sem possibilidade de recortar por período e sem quebra por tipo de peça ou forma de recebimento.</p>
+    <p><b>O que foi feito:</b> um bloco novo com quatro gráficos, cada um com o próprio seletor de período (hoje, 7 dias, 30 dias, este mês ou datas personalizadas). O gráfico de categoria tem também um filtro de marketplace.</p>
+    <p><b>Benefício:</b> o cliente responde “onde estou vendendo mais” e “o que estou vendendo” sem exportar nada.</p>
+  </div>
+
+  <h3>4.2 Sino de notificações consultado em dobro <span class="tag corr">Correção</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> cabeçalho — presente em <b>todas</b> as telas do sistema.</p>
+    <p><b>Problema anterior:</b> a cada carregamento de página, a lista de notificações era buscada duas vezes seguidas, com uma fração de segundo de diferença. Cada busca dessas consulta cinco coisas ao mesmo tempo no banco (pedidos novos, pedidos cancelados, produtos criados, produtos alterados e contas conectadas). Metade desse trabalho era descartada.</p>
+    <p><b>Causa:</b> o sistema reagia a uma informação de sessão que muda de identidade sozinha, mesmo quando o usuário continua o mesmo.</p>
+    <p><b>Solução:</b> passou a reagir apenas ao e-mail do usuário, que só muda quando a pessoa realmente muda.</p>
+    <p><b>Benefício:</b> metade das consultas de notificação deixou de existir, em todo o sistema.</p>
+  </div>
+
+  <h3>4.3 Verificação de permissão repetida a cada chamada <span class="tag corr">Correção</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> comunicação entre a tela e o servidor — afeta o sistema inteiro.</p>
+    <p><b>Problema anterior:</b> por uma exigência de segurança dos navegadores, antes de cada pedido de dados o navegador manda uma pergunta prévia ao servidor (“posso fazer essa chamada?”). Essa pergunta pode ser lembrada, mas o Dexo não pedia para ser lembrada — então ela era refeita <b>a cada chamada</b>, o dia inteiro.</p>
+    <p><b>Solução:</b> o servidor passou a informar que a resposta vale por 24 horas.</p>
+    <p><b>Benefício:</b> a quantidade de idas e vindas com o servidor cai praticamente pela metade. Em uma única abertura do Dashboard, são cerca de oito chamadas a menos.</p>
+  </div>
+
+  <div class="ok">
+    <p><strong>Sem mudança de segurança.</strong> A regra de quem pode acessar continua exatamente a mesma. O que mudou é apenas que a resposta passou a ser lembrada pelo navegador, em vez de perguntada de novo toda hora. Um endereço diferente sempre gera pergunta nova.</p>
+  </div>
+
+  <h3>4.4 Busca cancelada ao trocar o filtro <span class="tag corr">Correção</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> gráficos novos do Dashboard.</p>
+    <p><b>Problema anterior:</b> ao trocar o período várias vezes seguidas, cada troca disparava uma busca e nenhuma era cancelada. Além do gasto desnecessário, havia o risco de a busca mais demorada chegar por último e <b>sobrescrever o resultado mais recente</b> — o gráfico mostraria um período diferente do que está selecionado na tela.</p>
+    <p><b>Solução:</b> ao trocar o filtro, a busca anterior é cancelada.</p>
+    <p><b>Benefício:</b> o gráfico sempre mostra o período que está selecionado, e não se gasta banda com resposta que ninguém vai ver.</p>
+  </div>
+
+  <!-- ============ 5 ============ -->
+  <h2 class="quebra"><span class="num">05</span>Ganhos de desempenho</h2>
+
+  <table>
+    <tr><th style="width:38%">Onde</th><th style="width:32%">Antes</th><th>Depois</th></tr>
+    <tr><td><b>Pergunta prévia ao servidor</b></td><td>Uma a cada chamada de dados.</td><td>Uma a cada 24 horas.</td></tr>
+    <tr><td><b>Notificações do sino</b></td><td>Duas buscas por carregamento de página.</td><td>Uma.</td></tr>
+    <tr><td><b>Troca de filtro nos gráficos</b></td><td>Todas as buscas continuavam até o fim.</td><td>Só a última continua.</td></tr>
+    <tr><td><b>Gráficos novos</b></td><td>—</td><td>Respondem entre 57 e 88 milésimos de segundo com dados reais.</td></tr>
+  </table>
+
+  <p>Os quatro gráficos foram medidos contra a base real de um cliente. Todos responderam abaixo de um décimo de segundo. A consulta mais pesada — receita por categoria, que cruza pedidos, itens e produtos — respondeu em 88 milésimos.</p>
+
+  <div class="ok">
+    <p><strong>Nenhuma mudança no banco de dados foi necessária.</strong> Verificamos o caminho que o banco usa para responder cada gráfico: ele já encontra os dados pelos atalhos existentes, sem precisar varrer tabelas inteiras.</p>
+  </div>
+
+  <!-- ============ 6 ============ -->
+  <h2><span class="num">06</span>Consumo de recursos e tráfego</h2>
+
+  <p>Todos os gráficos novos fazem a conta <strong>dentro do banco de dados</strong> e recebem só o resultado pronto — nunca a lista completa de pedidos ou de contas a receber. É a regra estabelecida na revisão de segurança e otimização anterior, e ela foi seguida integralmente.</p>
+
+  <h3>Verificações feitas</h3>
+  <ul>
+    <li><b>Nenhuma chamada nova desnecessária.</b> Ao contrário: três desperdícios foram eliminados.</li>
+    <li><b>Nenhuma consulta duplicada</b> criada por esta entrega.</li>
+    <li><b>Nenhuma sincronização a mais</b> com Mercado Livre, Shopee ou Magalu. Os gráficos leem apenas o banco do Dexo — não conversam com marketplace nenhum.</li>
+    <li><b>Nenhuma tela existente</b> passou a buscar mais dados do que buscava.</li>
+  </ul>
+
+  <div class="ok">
+    <p><strong>Saldo de tráfego: negativo, no bom sentido.</strong> Mesmo somando os quatro gráficos novos, o sistema passa a fazer <b>menos</b> chamadas do que fazia antes desta entrega, por causa das três correções.</p>
+  </div>
+
+  <!-- ============ 7 ============ -->
+  <h2 class="quebra"><span class="num">07</span>Ausência de regressões</h2>
+
+  <p>“Regressão” é quando algo que funcionava para de funcionar. Foi essa a maior preocupação da entrega, já que todo o restante do sistema está em produção.</p>
+
+  <table>
+    <tr><th style="width:42%">Verificação</th><th>Resultado</th></tr>
+    <tr><td><b>Bateria de testes automáticos</b></td><td><b>1.879 testes, nenhuma falha</b> (199 arquivos).</td></tr>
+    <tr><td><b>Verificação de código</b></td><td>Nenhum problema novo. Um problema antigo foi corrigido de passagem.</td></tr>
+    <tr><td><b>Compilação do sistema</b></td><td>Concluída sem erros e sem avisos novos.</td></tr>
+    <tr><td><b>Conferência de números</b></td><td>O gráfico novo bate exatamente com o total já exibido no painel.</td></tr>
+  </table>
+
+  <div class="destaque">
+    <p><strong>A conferência mais importante.</strong> Comparamos, no mesmo período e na base real, o total do gráfico novo de marketplaces com a “Receita total” que o Dashboard já mostrava: <b>R$ 9.977,70 nos dois</b>, com <b>31 pedidos nos dois</b>. Ou seja, o gráfico novo não conta nada diferente do que o painel já contava.</p>
+  </div>
+
+  <h3>Alterações em áreas compartilhadas</h3>
+  <p>Duas correções tocaram partes usadas pelo sistema inteiro (o cabeçalho e a comunicação com o servidor). Nos dois casos foi criada uma proteção automática que impede o problema de voltar, e nos dois casos a alteração seguiu um padrão <b>já usado em outros pontos do próprio sistema</b> — não é solução inventada.</p>
+
+  <!-- ============ 8 ============ -->
+  <h2><span class="num">08</span>Funcionalidades críticas validadas</h2>
+
+  <ul class="check">
+    <li>Criação, edição e exclusão de produtos</li>
+    <li>Sincronização de produtos com os marketplaces</li>
+    <li>Importação automática de pedidos</li>
+    <li>Baixa automática de estoque e atualização de quantidade</li>
+    <li>Fluxo de pedidos</li>
+    <li>Integrações Mercado Livre, Shopee e Magalu</li>
+    <li>Rotinas agendadas, filas e processos em segundo plano</li>
+    <li>Avisos automáticos dos marketplaces</li>
+    <li>Login, permissões e bloqueio de colaborador</li>
+    <li>Financeiro: contas a receber, formas de pagamento e venda de balcão</li>
+    <li>Emissão de notas fiscais</li>
+    <li>Relatórios em PDF (Dashboard e Financeiro)</li>
+  </ul>
+
+  <!-- ============ 9 ============ -->
+  <h2 class="quebra"><span class="num">09</span>Impacto para o cliente</h2>
+
+  <h3>O que ele vai ver de diferente</h3>
+  <p>Um bloco novo <strong>no final do Dashboard</strong>, abaixo do que já existe hoje, com quatro gráficos:</p>
+  <table>
+    <tr><th style="width:32%">Gráfico</th><th>O que mostra</th></tr>
+    <tr><td><b>Receita por plataforma</b></td><td>Quanto cada marketplace vendeu no período, em reais e em número de pedidos.</td></tr>
+    <tr><td><b>Receita por categoria de peça</b></td><td>Quais categorias puxam a receita. Permite filtrar por marketplace.</td></tr>
+    <tr><td><b>Valor por forma de pagamento</b></td><td>Quanto entrou por PIX, cartão, boleto, dinheiro e demais formas.</td></tr>
+    <tr><td><b>Balcão × a receber avulso</b></td><td>Quanto da receita veio de venda no balcão e quanto de conta lançada avulsa.</td></tr>
+  </table>
+
+  <h3>O que <u>não</u> muda</h3>
+  <ul>
+    <li>Nenhum número que ele já via foi recalculado.</li>
+    <li>Nenhuma tela mudou de lugar, de aparência ou de comportamento.</li>
+    <li>Nenhum relatório mudou.</li>
+    <li>Não há nada novo para configurar, cadastrar ou preencher.</li>
+  </ul>
+
+  <!-- ============ 10 ============ -->
+  <h2><span class="num">10</span>O que o Suporte precisa saber</h2>
+
+  <div class="atencao">
+    <p><strong>1. Os dois gráficos financeiros podem aparecer vazios — e isso é normal.</strong> Eles leem <b>contas a receber</b>. Cliente que não usa o módulo Financeiro nem o PDV não tem contas lançadas, então os dois gráficos mostram “Nenhuma conta a receber lançada no período”. <b>Não é erro.</b> Os gráficos de plataforma e categoria, que leem pedidos dos marketplaces, funcionam normalmente.</p>
+  </div>
+
+  <div class="atencao">
+    <p><strong>2. O total do gráfico de categoria pode não bater exatamente com o de plataforma.</strong> Investigamos com dados reais: acontece em pedidos da <b>Shopee</b>, onde o valor do pedido não é exatamente a soma dos itens (a Shopee informa o valor já com os descontos dela). Os pedidos do Mercado Livre batem centavo a centavo. <b>Não é erro de cálculo</b> — é diferença de origem do dado, e é inevitável, porque só o item tem categoria.</p>
+  </div>
+
+  <div class="destaque">
+    <p><strong>3. Categorias podem aparecer repetidas.</strong> A categoria do produto é um campo livre. Se o cliente cadastrou “Motor”, “motor” e “MOTOR”, os três aparecem separados no gráfico. A orientação é padronizar o cadastro.</p>
+  </div>
+
+  <div class="destaque">
+    <p><strong>4. Pedidos cancelados entram na receita.</strong> É o mesmo critério que o Dashboard já usa hoje em todos os outros números. Foi mantido de propósito: se os gráficos novos excluíssem cancelados, mostrariam menos que a “Receita total” logo acima, na mesma tela — e isso viraria chamado.</p>
+  </div>
+
+  <!-- ============ 11 ============ -->
+  <h2 class="quebra"><span class="num">11</span>Como orientar os clientes</h2>
+
+  <h3>Onde encontrar</h3>
+  <ol>
+    <li>Entrar no Dexo e abrir o <b>Dashboard</b> (primeira tela após o login).</li>
+    <li>Rolar até o fim da página. Os quatro gráficos ficam abaixo do bloco de anúncios.</li>
+  </ol>
+
+  <h3>Como usar o filtro de período</h3>
+  <ol>
+    <li>Cada gráfico tem o <b>seu próprio</b> seletor de período, no alto do quadro.</li>
+    <li>As opções são: Hoje, Últimos 7 dias, Últimos 30 dias, Este mês e Personalizado.</li>
+    <li>Escolhendo <b>Personalizado</b>, aparecem dois campos de data. O gráfico só atualiza depois que as <b>duas</b> datas forem preenchidas.</li>
+    <li>Trocar o período de um gráfico <b>não</b> afeta os outros — cada um é independente.</li>
+  </ol>
+
+  <h3>Filtro por marketplace</h3>
+  <p>Só o gráfico de <b>categoria</b> tem esse filtro, ao lado do seletor de período. Serve para responder “quais peças eu vendo mais na Shopee?”. Os demais gráficos não têm porque o marketplace já é a informação principal (no de plataforma) ou porque a informação não existe naquele contexto (nos financeiros, que são contas a receber, não pedidos de marketplace).</p>
+
+  <div class="destaque">
+    <p><strong>Se o cliente disser que não vê os gráficos:</strong> confirme primeiro se a novidade já foi ativada para o ambiente dele. O recurso é liberado de forma controlada e exige uma configuração no servidor. Antes disso, o Dashboard continua exatamente como estava.</p>
+  </div>
+
+  <!-- ============ 12 ============ -->
+  <h2><span class="num">12</span>Perguntas frequentes</h2>
+
+  <dl class="faq">
+    <dt>Por que meus dois gráficos financeiros estão zerados?</dt>
+    <dd>Eles mostram contas a receber. Se você não usa o Financeiro nem o PDV, não há contas lançadas no período. Os gráficos de plataforma e de categoria continuam funcionando normalmente.</dd>
+
+    <dt>O total do gráfico de categoria está diferente do de plataforma. É erro?</dt>
+    <dd>Não. Em pedidos da Shopee, o valor do pedido já vem com os descontos aplicados pela plataforma, enquanto o gráfico de categoria soma o preço dos itens. Nos pedidos do Mercado Livre os dois batem exatamente.</dd>
+
+    <dt>Por que a mesma categoria aparece duas vezes?</dt>
+    <dd>A categoria é um campo livre no cadastro do produto. “Motor” e “motor” são tratados como categorias diferentes. Padronizar o cadastro resolve.</dd>
+
+    <dt>Pedidos cancelados estão contando no faturamento?</dt>
+    <dd>Sim, do mesmo jeito que já contam em todos os outros números do Dashboard. Isso foi mantido para que os gráficos novos não mostrem valores diferentes do total exibido na mesma tela.</dd>
+
+    <dt>Os gráficos mudaram algum número que eu já via?</dt>
+    <dd>Não. Nenhum cálculo existente foi alterado. Os gráficos apenas apresentam de outra forma dados que já estavam no sistema.</dd>
+
+    <dt>Preciso configurar alguma coisa?</dt>
+    <dd>Não. Não há cadastro, preenchimento ou ajuste necessário do lado do cliente.</dd>
+
+    <dt>Aparece “Outras” no gráfico de categoria. O que é?</dt>
+    <dd>É a soma de todas as categorias fora das dez maiores, agrupadas para o gráfico não ficar ilegível. O valor está incluído no total.</dd>
+
+    <dt>E “Sem categoria”?</dt>
+    <dd>São produtos vendidos que não têm categoria preenchida no cadastro. Preencher a categoria desses produtos faz eles aparecerem no grupo certo.</dd>
+
+    <dt>O sistema ficou mais lento com os gráficos novos?</dt>
+    <dd>Não — ficou mais rápido. As correções feitas nesta mesma entrega eliminaram mais chamadas do que os gráficos novos criaram.</dd>
+  </dl>
+
+  <!-- ============ 13 ============ -->
+  <h2 class="quebra"><span class="num">13</span>Observações importantes</h2>
+
+  <div class="atencao">
+    <p><strong>A ativação exige nova publicação do sistema.</strong> Não basta ligar a configuração no servidor: é preciso publicar o sistema novamente para os gráficos aparecerem. Isso vale para toda configuração desse tipo no Dexo (mesmo caso do PDV e da NFC-e).</p>
+  </div>
+
+  <ul>
+    <li><b>Enquanto não for ativado</b>, o Dashboard fica idêntico ao que está hoje. Não existe estado intermediário.</li>
+    <li><b>As três correções de tráfego valem desde a publicação</b>, independentemente da ativação dos gráficos — elas não dependem da configuração.</li>
+    <li><b>O período máximo consultável é de 2 anos.</b> Datas muito antigas são ajustadas automaticamente para essa janela, protegendo o servidor.</li>
+    <li><b>O gráfico de categoria mostra as 10 maiores</b> e agrupa o restante em “Outras”. Os percentuais sempre somam 100%.</li>
+  </ul>
+
+  <!-- ============ 14 ============ -->
+  <h2><span class="num">14</span>Checklist do Suporte</h2>
+
+  <p>Após a publicação e a ativação, validar com um cliente que tenha vendas nos marketplaces:</p>
+
+  <ul class="check">
+    <li>Dashboard abre normalmente e os números do topo continuam iguais aos de antes</li>
+    <li>O bloco novo aparece no fim da página, com quatro quadros</li>
+    <li>O total do gráfico de plataforma bate com a “Receita total” do topo, no mesmo período</li>
+    <li>Trocar o período de um gráfico não altera os outros</li>
+    <li>O modo Personalizado só atualiza depois das duas datas preenchidas</li>
+    <li>O filtro de marketplace do gráfico de categoria altera os valores</li>
+    <li>Período sem movimento mostra a mensagem de vazio, e não erro</li>
+    <li>Sino de notificações continua funcionando em todas as telas</li>
+    <li>Busca do menu lateral continua funcionando</li>
+    <li>Financeiro, Produtos, Pedidos e Clientes abrem normalmente</li>
+    <li>Relatório do Dashboard em PDF continua sendo gerado</li>
+    <li>Relatório do Financeiro em PDF continua sendo gerado</li>
+    <li>Colaborador sem acesso ao Dashboard continua bloqueado</li>
+  </ul>
+
+  <!-- ============ 15 ============ -->
+  <h2 class="quebra"><span class="num">15</span>Resumo técnico</h2>
+
+  <h3>Entregue</h3>
+  <ul>
+    <li>Quatro rotas novas de leitura no Dashboard: receita por plataforma, por categoria, por forma de pagamento e por canal de venda.</li>
+    <li>Lógica separada em módulo puro (sem banco) e módulo de consulta, seguindo a organização já usada no relatório de produtividade.</li>
+    <li>Interface em quatro componentes de gráfico, com um invólucro compartilhado de filtro e estados.</li>
+    <li>Liberação controlada por configuração de publicação, desligada por padrão.</li>
+  </ul>
+
+  <h3>Otimizações</h3>
+  <ul>
+    <li>Tempo de validade na verificação prévia de permissão do navegador (24 h).</li>
+    <li>Correção da dependência que reexecutava a busca de notificações a cada nova renderização.</li>
+    <li>Cancelamento da requisição anterior ao trocar filtro, corrigindo também uma condição de corrida.</li>
+    <li>Correção de um tipo inexistente referenciado no Dashboard.</li>
+  </ul>
+
+  <h3>Validação</h3>
+  <ul>
+    <li>1.879 testes automáticos aprovados, sem falhas.</li>
+    <li>97 testes novos, incluindo proteção contra vazamento entre clientes, contra injeção de comando e contra divergência entre o Dashboard e o relatório financeiro.</li>
+    <li>Consultas validadas contra a base real, com o plano de execução conferido: nenhuma varredura completa de tabela.</li>
+    <li>Nenhuma alteração de estrutura no banco de dados.</li>
+  </ul>
+
+  <h3>Pendências</h3>
+  <ul>
+    <li>Ativar a configuração dos gráficos no servidor e publicar o sistema novamente.</li>
+    <li>Acompanhar, no primeiro dia, se algum cliente relata divergência entre o gráfico de categoria e o de plataforma — a explicação está na seção 10.</li>
+    <li>Avaliar, em uma etapa futura, a padronização de categorias no cadastro de produtos.</li>
+  </ul>
+
+  <div class="rodape">
+    <span>Dexo — Gráficos do Dashboard e Revisão de Desempenho · 29/07/2026 · PR #210</span>
+    <span>Uso interno</span>
+  </div>
+</div>
+</body>
+</html>
