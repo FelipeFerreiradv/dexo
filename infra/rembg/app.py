@@ -42,6 +42,8 @@ from fastapi.responses import Response
 from PIL import Image
 from rembg import new_session, remove
 
+from mask_postprocess import MaskPostprocessConfig, postprocess_mask
+
 # Limites de tamanho:
 # - 10 MB de input cobre folgadamente o limite do app (5 MB) e ainda
 #   protege o sidecar de payloads patologicos.
@@ -124,6 +126,15 @@ EDGE_FEATHER_PX = float(os.getenv("REMBG_EDGE_FEATHER_PX", "0.6"))
 # post_process_mask do rembg (morfologia interna). Off por default p/ BiRefNet
 # (o alpha ja vem fino); util no caminho fallback u2net/isnet.
 POST_PROCESS_MASK = os.getenv("REMBG_POST_PROCESS_MASK", "false").lower() == "true"
+
+# --- Pos-processamento topologico da mascara (opt-in) ----------------------
+# Mata componentes parasitas (bancada/musgo/pe do fotografo), preenche
+# furos-RUIDO (furo real de parafuso e' preservado) e, de quebra, colapsa o
+# bbox da silhueta — que e' o que dimensiona o custo da sombra (cauda de
+# 17-48s medida em prod POS-sigma-cap vinha de alpha espalhado pelo quadro).
+# Killswitch master REMBG_MASK_POSTPROCESS=false (default) => estagio nem
+# roda. Tunables e heuristicas: ver mask_postprocess.py.
+MASK_POSTPROCESS_CFG = MaskPostprocessConfig.from_env()
 
 # --- Sombra de contato (opt-in via form 'add_shadow') ----------------------
 # Killswitch global: REMBG_SHADOW_ENABLED=false ignora add_shadow sem rebuild.
@@ -264,6 +275,9 @@ def health():
         "skip_disconnected": SKIP_DISCONNECTED,
         "max_input_mp": MAX_INPUT_MP,
         "shadow_sigma_cap": SHADOW_SIGMA_CAP,
+        # Aditivos (pos-processamento topologico da mascara).
+        "mask_postprocess": MASK_POSTPROCESS_CFG.enabled,
+        "mask_shadow_suppress": MASK_POSTPROCESS_CFG.shadow_suppress,
     }
 
 
@@ -453,6 +467,18 @@ def _process_sync(
     if prof:
         timings["to_rgba"] = perf_counter() - t0
         t0 = perf_counter()
+    # Pos-processamento topologico ANTES do refine (specks morrem antes do
+    # despill trabalhar neles) e ANTES da sombra (bbox ja colapsado). Com a
+    # flag OFF (default) o bloco inteiro e' pulado — inclusive a chave de
+    # timing, para o X-Rembg-Timing ficar identico ao de hoje.
+    if MASK_POSTPROCESS_CFG.enabled:
+        try:
+            rgba = postprocess_mask(rgba, MASK_POSTPROCESS_CFG)
+        except Exception:  # noqa: BLE001 — best-effort, nunca derruba o recorte
+            pass
+        if prof:
+            timings["postprocess"] = perf_counter() - t0
+            t0 = perf_counter()
     if REFINE_ENABLED:
         rgba = _refine_edges(rgba)
     if prof:

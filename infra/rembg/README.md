@@ -74,6 +74,24 @@ Refino de borda ajustavel por env (defaults calibrados). Killswitch:
 Outros: `REMBG_DESPILL_ITERS`, `REMBG_EDGE_ALPHA_LO`/`_HI`,
 `REMBG_EDGE_FEATHER_PX`, `REMBG_EDGE_ERODE_PX`, `REMBG_POST_PROCESS_MASK`.
 
+**Pos-processamento topologico da mascara** (`mask_postprocess.py`; roda entre
+`to_rgba` e `refine`; exige REBUILD ao mudar o codigo, mas as flags sao env):
+mata componentes parasitas (limiar RELATIVO — multi-parte legitima sobrevive),
+preenche furos-RUIDO (furo real de parafuso, alpha ~0, e' preservado) e
+colapsa o bbox que dimensiona o custo da sombra (a cauda de 17-48s medida em
+prod POS-sigma-cap vinha de alpha espalhado). Custo medido: ~25-40 ms.
+Killswitch master: `REMBG_MASK_POSTPROCESS=false` (default) — estagio nem
+roda, saida byte-identica (provado por md5 na Fase 0). Tunables:
+`REMBG_MASK_BIN_THRESH` (128), `REMBG_MASK_KEEP_RATIO` (0.05),
+`REMBG_MASK_MIN_AREA_PX` (64), `REMBG_MASK_KEEP_DILATE_PX` (8),
+`REMBG_MASK_HOLE_MAX_RATIO` (0.001), `REMBG_MASK_HOLE_MIN_ALPHA` (40),
+`REMBG_MASK_OPEN_PX` (0). A supressao de sombra projetada REAL e' flag
+SEPARADA e experimental (`REMBG_MASK_SHADOW_SUPPRESS=false` +
+`REMBG_MASK_SHADOW_ALPHA_LO/_HI`, `_MAX_SAT`, `_SUPPRESS_FACTOR`) — nunca
+entra no gate golden. Testes: `python -m unittest discover infra/rembg/tests`
+(numpy+cv2 apenas; roda na imagem sem carregar o modelo). LIGAR SOMENTE apos
+`golden.py compare` verde em `/golden/core` com a flag ON.
+
 Sombra projetada ajustavel por env (sem rebuild — basta restart). Killswitch
 global: `REMBG_SHADOW_ENABLED=false` ignora `add_shadow`. Direcao/forma:
 `REMBG_SHADOW_OFFSET_X`/`_Y` (deslocamento, sinais invertem a direcao),
