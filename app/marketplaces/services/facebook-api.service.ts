@@ -9,6 +9,8 @@ import type {
   FacebookBatchStatusEntry,
   FacebookBatchStatusResponse,
   FacebookCatalogItemData,
+  FacebookCatalogProduct,
+  FacebookCatalogProductsResponse,
   FacebookItemsBatchRequest,
   FacebookItemsBatchResponse,
 } from "../types/facebook-api.types";
@@ -139,6 +141,20 @@ export class FacebookApiService {
     );
   }
 
+  /** UPDATE de um item existente via items_batch (endereçado por retailer_id). */
+  static async updateItem(
+    accessToken: string,
+    retailerId: string,
+    data: FacebookCatalogItemData,
+    opts?: { catalogId?: string },
+  ): Promise<FacebookItemsBatchResponse> {
+    return this.submitItemsBatch(
+      accessToken,
+      [{ method: "UPDATE", retailer_id: retailerId, data }],
+      { catalogId: opts?.catalogId },
+    );
+  }
+
   /**
    * Atualiza SÓ a disponibilidade de um item (UPDATE availability). Usado na
    * baixa de estoque: 0 → 'out of stock'; refill → 'in stock'. O item continua
@@ -175,6 +191,50 @@ export class FacebookApiService {
       [{ method: "DELETE", retailer_id: retailerId }],
       { catalogId: opts?.catalogId },
     );
+  }
+
+  /**
+   * Lê os itens do catálogo (GET /{catalog_id}/products) para o vínculo por SKU
+   * do "Importar anúncios". Pagina pelo cursor `after` até esgotar (ou trava de
+   * segurança). Retorna a lista crua; `normalizeFacebookItem` casa por
+   * `retailer_id` (= SKU). Espelha MagaluApiService.listSkus, mas com cursor.
+   */
+  static async listCatalogItems(
+    accessToken: string,
+    opts?: { catalogId?: string; limit?: number; maxPages?: number },
+  ): Promise<FacebookCatalogProduct[]> {
+    const limit = opts?.limit ?? 100;
+    const maxPages = opts?.maxPages ?? 200; // trava (até 20k itens) contra loop
+    const fields = "id,retailer_id,name,availability,url,price,image_url";
+    const items: FacebookCatalogProduct[] = [];
+    let after: string | undefined;
+    try {
+      for (let page = 0; page < maxPages; page++) {
+        const url = new URL(
+          `${facebookGraphBase()}/${this.catalogId(opts?.catalogId)}/products`,
+        );
+        url.searchParams.set("fields", fields);
+        url.searchParams.set("limit", String(limit));
+        if (after) url.searchParams.set("after", after);
+        const response = await axios.get<FacebookCatalogProductsResponse>(
+          url.toString(),
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            timeout: FACEBOOK_CONSTANTS.REQUEST_TIMEOUT,
+          },
+        );
+        const pageItems = response.data?.data ?? [];
+        items.push(...pageItems);
+        after = response.data?.paging?.cursors?.after;
+        if (!after || pageItems.length === 0) break;
+      }
+      return items;
+    } catch (error) {
+      throw this.formatError(
+        "Erro ao listar itens do catálogo Facebook",
+        error,
+      );
+    }
   }
 
   /**

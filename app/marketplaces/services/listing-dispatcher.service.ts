@@ -377,6 +377,16 @@ export class ListingDispatcher {
             productId,
             "OLX",
           );
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -407,6 +417,16 @@ export class ListingDispatcher {
             productId,
             "FACEBOOK",
           );
+          if (overrideTemplate && (result as any).listingId) {
+            await this.applyOverridesAfterCreate({
+              userId,
+              productId,
+              listingId: (result as any).listingId as string,
+              req,
+              overrideTemplate,
+              productRules,
+            });
+          }
         }
         return;
       }
@@ -547,7 +567,13 @@ export class ListingDispatcher {
             ? ov?.disabledMlAccountIds?.includes(r.accountId)
             : r.platform === "SHOPEE"
               ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-              : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+              : r.platform === "MAGALU"
+                ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                : r.platform === "OLX"
+                  ? ov?.disabledOlxAccountIds?.includes(r.accountId)
+                  : r.platform === "FACEBOOK"
+                    ? ov?.disabledFacebookAccountIds?.includes(r.accountId)
+                    : false;
         if (skipped) continue;
         pairs.push({
           productId: pid,
@@ -688,10 +714,11 @@ export class ListingDispatcher {
           req.accountId,
         );
       } else if (req.platform === "FACEBOOK") {
+        const categoryId = ov?.facebook?.categoryId ?? req.categoryId;
         createResult = await ListingUseCase.createFacebookListing(
           userId,
           productId,
-          req.categoryId,
+          categoryId,
           req.accountId,
         );
       } else {
@@ -817,7 +844,11 @@ export class ListingDispatcher {
                 ? ca.shopeeIndexByAccountId
                 : req.platform === "MAGALU"
                   ? ca.magaluIndexByAccountId
-                  : undefined;
+                  : req.platform === "OLX"
+                    ? ca.olxIndexByAccountId
+                    : req.platform === "FACEBOOK"
+                      ? ca.fbIndexByAccountId
+                      : undefined;
         const idx = staggerMap?.[req.accountId] ?? 0;
         if (idx > 0) {
           const base =
@@ -949,7 +980,9 @@ export class ListingDispatcher {
     const staggerOthers = !crossMarketplaceStaggerDisabled();
     const shopee = staggerOthers ? mapFor("SHOPEE") : null;
     const magalu = staggerOthers ? mapFor("MAGALU") : null;
-    if (!ml && !shopee && !magalu) return null;
+    const olx = staggerOthers ? mapFor("OLX") : null;
+    const facebook = staggerOthers ? mapFor("FACEBOOK") : null;
+    if (!ml && !shopee && !magalu && !olx && !facebook) return null;
     return {
       crossAccountIncrease: {
         enabled: true,
@@ -957,6 +990,8 @@ export class ListingDispatcher {
         ...(ml ? { indexByAccountId: ml } : {}),
         ...(shopee ? { shopeeIndexByAccountId: shopee } : {}),
         ...(magalu ? { magaluIndexByAccountId: magalu } : {}),
+        ...(olx ? { olxIndexByAccountId: olx } : {}),
+        ...(facebook ? { fbIndexByAccountId: facebook } : {}),
       },
     };
   }

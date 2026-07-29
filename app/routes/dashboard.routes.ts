@@ -38,10 +38,14 @@ function fmtDateTimeBR(d: Date): string {
   )}:${p(d.getMinutes())}`;
 }
 
-function canonFromPlatform(p: Platform): "ML" | "SHOPEE" | "MAGALU" | "OUTRO" {
+function canonFromPlatform(
+  p: Platform,
+): "ML" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK" | "OUTRO" {
   if (p === "MERCADO_LIVRE") return "ML";
   if (p === "SHOPEE") return "SHOPEE";
   if (p === "MAGALU") return "MAGALU";
+  if (p === "OLX") return "OLX";
+  if (p === "FACEBOOK") return "FACEBOOK";
   return "OUTRO";
 }
 

@@ -226,8 +226,8 @@ export function MarketplaceBadges({
       ) {
         current.anyOpenable = true;
       }
-      // Status "publicado" (active/normal) — usado só para a OPACIDADE da Magalu,
-      // que não tem link público derivável (publicação assíncrona).
+      // Status "publicado" (active/normal) — usado para a OPACIDADE de canais
+      // sem link público derivável (Magalu/OLX/Facebook: publicação assíncrona).
       const st = (listing as { status?: string | null }).status
         ?.toString()
         .toLowerCase();
@@ -264,10 +264,15 @@ export function MarketplaceBadges({
             : `Anúncio publicado no ${icon.label}`;
 
         // Opacidade = "publicado". ML/Shopee: têm link quando publicados
-        // (anyOpenable). Magalu: publicação é assíncrona e a URL pública não é
-        // derivável do SKU, então o sinal é o STATUS active/normal. ML/Shopee
-        // ficam idênticos (não entram no ramo MAGALU).
-        const isPublished = anyOpenable || (platform === "MAGALU" && anyActive);
+        // (anyOpenable). Magalu/OLX/Facebook: publicação é assíncrona e a URL
+        // pública não é derivável do SKU, então o sinal é o STATUS active/normal.
+        // ML/Shopee ficam idênticos (não entram nesse ramo).
+        const isPublished =
+          anyOpenable ||
+          ((platform === "MAGALU" ||
+            platform === "OLX" ||
+            platform === "FACEBOOK") &&
+            anyActive);
 
         return (
           <button

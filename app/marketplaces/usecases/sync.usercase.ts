@@ -849,6 +849,255 @@ export class SyncUseCase {
   }
 
   /**
+   * Importa itens do Catálogo Meta (GET /{catalog_id}/products) e vincula por
+   * SKU. Espelha importMagaluItems: o `retailer_id` do item É o SKU (=
+   * externalListingId gravado no create), então o núcleo idempotente reusa o
+   * vínculo existente e nunca duplica. Itens do catálogo criados à mão só casam
+   * se o vendedor tiver usado o SKU do Dexo como retailer_id (limite da API).
+   */
+  static async importFacebookItems(
+    userId: string,
+    accountId?: string,
+    options?: {
+      skipFinalLog?: boolean;
+      onProgress?: (progress: {
+        processedItems: number;
+        totalItems: number;
+        linkedItems: number;
+        createdProducts: number;
+      }) => Promise<void> | void;
+    },
+  ): Promise<ImportResult> {
+    const result: ImportResult = {
+      totalItems: 0,
+      linkedItems: 0,
+      unlinkedItems: 0,
+      createdProducts: 0,
+      alreadyLinked: 0,
+      skippedDuplicates: 0,
+      errors: [],
+      items: [],
+    };
+
+    const account = accountId
+      ? await MarketplaceRepository.findByIdAndUser(accountId, userId)
+      : await MarketplaceRepository.findFirstActiveByUserAndPlatform(
+          userId,
+          Platform.FACEBOOK,
+        );
+
+    if (!account || !account.accessToken) {
+      throw new Error("Conta do Facebook não conectada ou sem credenciais");
+    }
+
+    // A paginação (cursor `after`) é resolvida dentro de listCatalogItems: aqui
+    // já chega o portfólio inteiro. Usa o catálogo da conta (fallback env).
+    const catalogId = account.fbCatalogId ?? undefined;
+    const items = await FacebookApiService.listCatalogItems(
+      account.accessToken,
+      { catalogId },
+    );
+    if (items.length === 0) {
+      return result;
+    }
+
+    result.totalItems = items.length;
+
+    const extractSku = (i: (typeof items)[number]): string | null =>
+      typeof i.retailer_id === "string" && i.retailer_id.trim().length > 0
+        ? i.retailer_id
+        : null;
+    // A identidade no Catálogo Meta é o retailer_id (= SKU). Por isso vem ANTES
+    // do id numérico do item — create/import gravam a MESMA chave (sem duplicar).
+    const extractExternalId = (i: (typeof items)[number]): string =>
+      String(extractSku(i) ?? i.id ?? "");
+
+    const externalItemIds = items
+      .map((i) => extractExternalId(i))
+      .filter(Boolean);
+    const rawSkus = Array.from(
+      new Set(
+        items
+          .map((i) => extractSku(i))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+    const normalizedSkus = Array.from(
+      new Set(
+        items
+          .map((i) => normalizeSku(extractSku(i)))
+          .filter((sku): sku is string => Boolean(sku)),
+      ),
+    );
+
+    const listingSelect = {
+      id: true,
+      externalListingId: true,
+      externalSku: true,
+      status: true,
+      permalink: true,
+      productId: true,
+    } as const;
+    const existingListings = [
+      ...new Map(
+        [
+          ...(await findManyInChunks(externalItemIds, (ids) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalListingId: { in: ids },
+              },
+              select: listingSelect,
+            }),
+          )),
+          ...(await findManyInChunks(rawSkus, (skus) =>
+            prisma.productListing.findMany({
+              where: {
+                marketplaceAccountId: account.id,
+                externalSku: { in: skus },
+              },
+              select: listingSelect,
+            }),
+          )),
+        ].map((l) => [l.id, l] as const),
+      ).values(),
+    ];
+    const existingListingsMap = new Map(
+      existingListings.map((l) => [l.externalListingId, l]),
+    );
+    const existingBySku = new Map(
+      existingListings
+        .filter((l) => l.externalSku)
+        .map((l) => [l.externalSku as string, l] as const),
+    );
+
+    const products = await findManyInChunks(normalizedSkus, (skus) =>
+      prisma.product.findMany({
+        where: { skuNormalized: { in: skus }, userId: account.userId },
+        select: { id: true, skuNormalized: true, name: true },
+      }),
+    );
+    const productsMap = new Map(
+      products
+        .map((p) => [p.skuNormalized, p] as const)
+        .filter((e): e is readonly [string, (typeof products)[number]] =>
+          Boolean(e[0]),
+        ),
+    );
+
+    const matchedProductIds = products.map((p) => p.id);
+    const withListing = new Set<string>(
+      (
+        await findManyInChunks(matchedProductIds, (productIds) =>
+          prisma.productListing.findMany({
+            where: {
+              marketplaceAccountId: account.id,
+              productId: { in: productIds },
+            },
+            select: { productId: true },
+            distinct: ["productId"],
+          }),
+        )
+      ).map((l) => l.productId),
+    );
+
+    const importCache: AutodetectImportCache = {
+      productsBySku: new Map(
+        [...productsMap].map(([k, p]) => [k, { id: p.id, name: p.name }]),
+      ),
+      productIdsWithListing: withListing,
+      knownExternalListingIds: new Set(
+        existingListings.map((l) => l.externalListingId),
+      ),
+    };
+
+    const PREVIEW_CAP = 50;
+    for (const item of items) {
+      const externalListingId = extractExternalId(item);
+      try {
+        const sku = extractSku(item);
+        const existingListing =
+          existingListingsMap.get(externalListingId) ||
+          (sku ? existingBySku.get(sku) : undefined);
+        const availability = (item.availability as string) || "in stock";
+        const status = /out.?of.?stock|discontinued/i.test(availability)
+          ? "paused"
+          : "active";
+        const permalink = (item.url as string) || null;
+
+        let linkedProductId: string | null = null;
+
+        if (existingListing) {
+          linkedProductId = existingListing.productId;
+          const needsIdUpgrade =
+            !!externalListingId &&
+            existingListing.externalListingId !== externalListingId;
+          const needsStatusUpdate = existingListing.status !== status;
+          const needsPermalinkUpdate =
+            !!permalink && existingListing.permalink !== permalink;
+          if (needsIdUpgrade || needsStatusUpdate || needsPermalinkUpdate) {
+            await ListingRepository.updateListing(existingListing.id, {
+              externalListingId: needsIdUpgrade ? externalListingId : undefined,
+              status: needsStatusUpdate ? status : undefined,
+              permalink: needsPermalinkUpdate ? permalink : undefined,
+            });
+          }
+        } else {
+          const outcome =
+            await ListingAutodetectUseCase.upsertProductFromMarketplaceItem(
+              ListingAutodetectUseCase.normalizeFacebookItem(
+                { id: account.id, userId: account.userId },
+                item,
+              ),
+              importCache,
+            );
+          this.tallyAutodetect(result, outcome.action);
+          linkedProductId = outcome.productId;
+        }
+
+        if (result.items.length < PREVIEW_CAP) {
+          result.items.push({
+            externalListingId,
+            title: (item.name as string) || externalListingId,
+            sku,
+            linkedProductId,
+            status: linkedProductId ? "linked" : "unlinked",
+          });
+        }
+        if (linkedProductId) result.linkedItems++;
+        else result.unlinkedItems++;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        result.errors.push(`Item ${externalListingId}: ${errorMessage}`);
+      }
+    }
+
+    if (options?.onProgress) {
+      await options.onProgress({
+        processedItems: result.totalItems,
+        totalItems: result.totalItems,
+        linkedItems: result.linkedItems,
+        createdProducts: result.createdProducts ?? 0,
+      });
+    }
+
+    if (options?.skipFinalLog) {
+      return result;
+    }
+
+    await this.logSync(
+      account.id,
+      SyncType.PRODUCT_SYNC,
+      result.linkedItems > 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      `Importados ${result.totalItems} itens do Facebook, ${result.linkedItems} vinculados`,
+      { totalItems: result.totalItems, linkedItems: result.linkedItems },
+    );
+
+    return result;
+  }
+
+  /**
    * Importa todos os itens do Shopee e tenta vincular automaticamente por SKU
    */
   static async importShopeeItems(
@@ -1871,12 +2120,26 @@ export class SyncUseCase {
     for (let i = 0; i < accounts.length; i++) {
       const acc = accounts[i];
       try {
-        const r =
-          platform === Platform.MERCADO_LIVRE
-            ? await this.importMLItems(userId, acc.id, { skipFinalLog: true })
-            : await this.importMagaluItems(userId, acc.id, {
-                skipFinalLog: true,
-              });
+        // Roteamento EXPLÍCITO por plataforma. Antes o `else` mandava QUALQUER
+        // plataforma não-ML para importMagaluItems — o que enviaria o token de
+        // OLX/Facebook para a API da Magalu. Plataformas sem import (OLX/Shopee
+        // aqui) lançam em vez de cair no ramo errado.
+        let r: ImportResult;
+        if (platform === Platform.MERCADO_LIVRE) {
+          r = await this.importMLItems(userId, acc.id, { skipFinalLog: true });
+        } else if (platform === Platform.MAGALU) {
+          r = await this.importMagaluItems(userId, acc.id, {
+            skipFinalLog: true,
+          });
+        } else if (platform === Platform.FACEBOOK) {
+          r = await this.importFacebookItems(userId, acc.id, {
+            skipFinalLog: true,
+          });
+        } else {
+          throw new Error(
+            `Importação de anúncios não suportada para ${platform}`,
+          );
+        }
         aggregate.totalItems += r.totalItems;
         aggregate.linkedItems += r.linkedItems;
         aggregate.unlinkedItems += r.unlinkedItems;
@@ -1956,7 +2219,9 @@ export class SyncUseCase {
       throw new Error(
         platform === Platform.MERCADO_LIVRE
           ? "Nenhuma conta do Mercado Livre conectada"
-          : "Nenhuma conta da Magalu conectada",
+          : platform === Platform.FACEBOOK
+            ? "Nenhuma conta do Facebook conectada"
+            : "Nenhuma conta da Magalu conectada",
       );
     }
 
@@ -1982,7 +2247,11 @@ export class SyncUseCase {
     });
 
     const label =
-      platform === Platform.MERCADO_LIVRE ? "MercadoLivre" : "Magalu";
+      platform === Platform.MERCADO_LIVRE
+        ? "MercadoLivre"
+        : platform === Platform.FACEBOOK
+          ? "Facebook"
+          : "Magalu";
 
     setImmediate(async () => {
       const writePayload = async (
@@ -2078,6 +2347,10 @@ export class SyncUseCase {
 
   static startMagaluImportJob(userId: string, accountId?: string) {
     return this.startGenericImportJob(userId, Platform.MAGALU, accountId);
+  }
+
+  static startFacebookImportJob(userId: string, accountId?: string) {
+    return this.startGenericImportJob(userId, Platform.FACEBOOK, accountId);
   }
 
   static async getGenericImportJobStatus(
@@ -3009,7 +3282,7 @@ export class SyncUseCase {
    */
   private static async mirrorListingStatusBestEffort(
     listing: any,
-    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU",
+    platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "FACEBOOK",
     rawRemoteStatus: string | null | undefined,
   ): Promise<void> {
     if (process.env.LISTING_STATUS_SYNC_DISABLED === "1") return;
@@ -3443,22 +3716,112 @@ export class SyncUseCase {
           throw this.olxRespError(resp);
         }
         await ListingRepository.updateStatus(listing.id, "paused");
+      } else if (listing.status === "active") {
+        // No-op: a OLX não tem API de estoque per-SKU e republicar reenviaria o
+        // anúncio inteiro (podendo zerar preço/foto). Só republica se saiu do ar.
+        await this.logSync(
+          account.id,
+          SyncType.STOCK_UPDATE,
+          SyncStatus.SUCCESS,
+          `Estoque do produto ${product.name} já disponível na OLX (anúncio ativo, sem republicar)`,
+          {
+            productId: product.id,
+            externalListingId: listing.externalListingId,
+            newStock: targetStock,
+            skipReason: "olx_listing_already_active",
+          },
+        );
+        return {
+          success: true,
+          productId: product.id,
+          externalListingId: listing.externalListingId,
+          newStock: targetStock,
+          skipped: true,
+          skipReason: "olx_listing_already_active",
+        };
       } else {
-        // Estoque > 0 → (re)publica com o MESMO id (edição/insert).
-        const category =
-          OlxCategoryResolutionService.resolveCategoryId(product);
-        const phone = OLX_CONSTANTS.SELLER_PHONE;
-        const zipcode = OLX_CONSTANTS.SELLER_ZIPCODE;
-        if (category == null || !phone || !zipcode) {
+        // Anúncio saiu do ar: republica com o mesmo id. Recarrega o produto se
+        // vier parcial (sem os campos que o build lê).
+        let fullProduct: any = product;
+        const productLacksBuildFields =
+          product.price === undefined || product.imageUrls === undefined;
+        if (productLacksBuildFields) {
+          const reloaded = await prisma.product.findUnique({
+            where: { id: product.id },
+          });
+          if (!reloaded) {
+            throw new Error(
+              `Produto ${product.id} não encontrado ao republicar na OLX.`,
+            );
+          }
+          fullProduct = reloaded;
+        }
+
+        // Aplica os overrides do listing antes do build; recarrega o listing se
+        // ele não trouxer as colunas *Override.
+        let listingForOverrides: any = listing;
+        if (!("titleOverride" in listing)) {
+          try {
+            listingForOverrides =
+              (await prisma.productListing.findUnique({
+                where: { id: listing.id },
+              })) ?? listing;
+          } catch {
+            listingForOverrides = listing;
+          }
+        }
+        const { applyOverridesToProduct } = await import(
+          "../services/listing-overrides.service"
+        );
+        const effectiveProduct = applyOverridesToProduct(
+          fullProduct,
+          listingForOverrides,
+        ) as any;
+
+        // Guarda antes do build: preço <= 0 ou sem imagem lança, p/ nunca
+        // republicar um anúncio zerado.
+        const effImages: string[] = [];
+        if (effectiveProduct?.imageUrl) {
+          effImages.push(String(effectiveProduct.imageUrl));
+        }
+        if (Array.isArray(effectiveProduct?.imageUrls)) {
+          for (const u of effectiveProduct.imageUrls) {
+            if (u) effImages.push(String(u));
+          }
+        }
+        const effPrice = Number(
+          typeof effectiveProduct?.price?.toNumber === "function"
+            ? effectiveProduct.price.toNumber()
+            : effectiveProduct?.price,
+        );
+        if (!Number.isFinite(effPrice) || effPrice <= 0) {
           throw new Error(
-            "Publicação OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",
+            "Republicação OLX abortada: produto sem preço válido (> 0).",
           );
         }
-        const ad = OlxPayloadBuilderService.build(product, {
+        if (effImages.length === 0) {
+          throw new Error("Republicação OLX abortada: produto sem imagem.");
+        }
+
+        // Contato do vendedor por conta (env só fallback) p/ não vazar entre tenants.
+        const category =
+          OlxCategoryResolutionService.resolveCategoryId(effectiveProduct);
+        const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
+        const zipcode =
+          account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
+        if (category == null || !phone || !zipcode) {
+          throw new Error(
+            "Publicação OLX requer categoria resolvida + telefone/CEP do vendedor (conta ou OLX_SELLER_PHONE/ZIPCODE).",
+          );
+        }
+        const ad = OlxPayloadBuilderService.build(effectiveProduct, {
           categoryId: category,
           phone,
           zipcode,
-          params: OlxCategoryResolutionService.buildAdParams(product, category),
+          params: OlxCategoryResolutionService.buildAdParams(
+            effectiveProduct,
+            category,
+          ),
         });
         ad.id = olxId; // preserva o id do anúncio (idempotência da edição)
         const resp = await OlxApiService.submitImport(account.accessToken, [
@@ -3466,6 +3829,22 @@ export class SyncUseCase {
         ]);
         if (resp.statusCode !== 0) {
           throw this.olxRespError(resp);
+        }
+        // A OLX processa o import de forma assíncrona (200 + token): só marca
+        // "active" quando o poll confirma.
+        if (resp.token) {
+          const status = await OlxApiService.pollImportUntilDone(
+            account.accessToken,
+            resp.token,
+          );
+          const entry = status?.ads?.[ad.id];
+          if (entry?.status === "refused") {
+            const msg = (entry.message || []).join("; ") || "REFUSED_GENERIC";
+            throw this.olxRespError({
+              statusCode: -1,
+              statusMessage: `OLX recusou o anúncio ao republicar: ${msg}`,
+            });
+          }
         }
         await ListingRepository.updateStatus(listing.id, "active");
       }
@@ -3590,6 +3969,32 @@ export class SyncUseCase {
   }
 
   /**
+   * A Meta devolve 200 + handles mesmo quando rejeita o item (async): faz o
+   * poll do handle e lança em erro explícito antes de gravar SUCCESS.
+   */
+  private static async confirmFacebookBatchOrThrow(
+    accessToken: string,
+    resp: { handles?: string[] } | null | undefined,
+  ): Promise<void> {
+    const handle = resp?.handles?.[0];
+    if (!handle) return;
+    const entry = await FacebookApiService.pollBatchUntilDone(
+      accessToken,
+      handle,
+    );
+    if (
+      entry &&
+      (entry.status === "error" ||
+        (Array.isArray(entry.errors) && entry.errors.length > 0))
+    ) {
+      const detail = Array.isArray(entry.errors)
+        ? JSON.stringify(entry.errors)
+        : entry.status;
+      throw new Error(`Facebook rejeitou o item: ${detail}`);
+    }
+  }
+
+  /**
    * Sincroniza estoque para o Facebook/Meta — path DURÁVEL (stockSyncJob →
    * syncProductStock).
    *
@@ -3635,20 +4040,22 @@ export class SyncUseCase {
 
     try {
       if (targetStock <= 0) {
-        await FacebookApiService.setAvailability(
+        const resp = await FacebookApiService.setAvailability(
           account.accessToken,
           retailerId,
           "out of stock",
           { quantity: 0 },
         );
+        await this.confirmFacebookBatchOrThrow(account.accessToken, resp);
         await ListingRepository.updateStatus(listing.id, "paused");
       } else {
-        await FacebookApiService.setAvailability(
+        const resp = await FacebookApiService.setAvailability(
           account.accessToken,
           retailerId,
           "in stock",
           { quantity: targetStock },
         );
+        await this.confirmFacebookBatchOrThrow(account.accessToken, resp);
         await ListingRepository.updateStatus(listing.id, "active");
       }
 
@@ -4075,7 +4482,26 @@ export class SyncUseCase {
         select: {
           id: true,
           externalListingId: true,
-          product: { select: { id: true, sku: true, stock: true, name: true } },
+          // `status` decide o no-op da OLX (estoque > 0 + já ativo não republica).
+          status: true,
+          // A republicação da OLX reenvia o anúncio inteiro, então o select da
+          // OLX precisa dos campos que o build lê (preço/descrição/imagens/quality).
+          product: {
+            select:
+              platform === Platform.OLX
+                ? {
+                    id: true,
+                    sku: true,
+                    stock: true,
+                    name: true,
+                    description: true,
+                    price: true,
+                    imageUrl: true,
+                    imageUrls: true,
+                    quality: true,
+                  }
+                : { id: true, sku: true, stock: true, name: true },
+          },
           marketplaceAccount: true,
         },
       });

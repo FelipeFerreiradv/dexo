@@ -121,6 +121,16 @@ export async function orderRoutes(app: FastifyInstance) {
           `[Orders] Importing orders for user ${userId}, platform: ${platform}, last ${days} days, deductStock: ${deductStock}`,
         );
 
+        // OLX and FACEBOOK have no order/checkout API in Brazil — reject explicit requests.
+        if (platform === "OLX" || platform === "FACEBOOK") {
+          return reply.status(400).send({
+            success: false,
+            error: "Plataforma sem API de pedidos",
+            message: `${platform} não possui API de pedidos no Brasil. Pedidos dessas plataformas não podem ser importados.`,
+            platform,
+          });
+        }
+
         const importML = platform === "ALL" || platform === "MERCADO_LIVRE";
         const importShopee = platform === "ALL" || platform === "SHOPEE";
         const importMagalu = platform === "ALL" || platform === "MAGALU";
@@ -602,7 +612,11 @@ export async function orderRoutes(app: FastifyInstance) {
                 ? ("Shopee" as const)
                 : owned.marketplaceAccount.platform === "MAGALU"
                   ? ("Magalu" as const)
-                  : ("ML" as const);
+                  : owned.marketplaceAccount.platform === "OLX"
+                    ? ("OLX" as const)
+                    : owned.marketplaceAccount.platform === "FACEBOOK"
+                      ? ("FACEBOOK" as const)
+                      : ("ML" as const);
 
             if (status === "CANCELLED") {
               const cancel = await OrderUseCase.processOrderCancellation({

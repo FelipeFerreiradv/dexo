@@ -26,6 +26,10 @@ import { Readable } from "stream";
 import { MAGALU_CONSTANTS } from "../marketplaces/magalu/magalu-constants";
 import type { MagaluOrderWebhookPayload } from "../marketplaces/types/magalu-order.types";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import { OlxCategoryResolutionService } from "../marketplaces/services/olx-category-resolution.service";
+import { FacebookCategoryResolutionService } from "../marketplaces/services/facebook-category-resolution.service";
+import { OLX_CATEGORY_MAP } from "../marketplaces/olx/olx-category-map";
+import { FACEBOOK_CATEGORY_MAP } from "../marketplaces/facebook/facebook-category-map";
 import { getVehicleRootSet } from "../marketplaces/services/category-resolution.service";
 import {
   ML_BLOCKED_BRANCHES,
@@ -3098,6 +3102,40 @@ small{color:#666}</style></head><body>
     },
   );
 
+  /** PATCH /marketplace/olx/accounts/:id — dados do vendedor (telefone/CEP). */
+  app.patch<{ Params: { id: string } }>(
+    "/olx/accounts/:id",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as {
+          olxSellerPhone?: string | null;
+          olxSellerZipcode?: string | null;
+        };
+        const count = await MarketplaceRepository.updateSellerFields(
+          id,
+          userId,
+          Platform.OLX,
+          {
+            olxSellerPhone: body.olxSellerPhone ?? null,
+            olxSellerZipcode: body.olxSellerZipcode ?? null,
+          },
+        );
+        if (count === 0) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        return reply.send({ success: true });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao salvar dados do vendedor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
   /** DELETE /marketplace/olx — desconecta conta (aceita accountId). */
   app.delete<{ Reply: { success: boolean; message: string } }>(
     "/olx",
@@ -3256,6 +3294,88 @@ small{color:#666}</style></head><body>
     },
   );
 
+  /**
+   * GET /marketplace/olx/categories?search=<termo>
+   * Lista as (sub)categorias de autopeças OLX (tipo de veículo). Offline — o
+   * de-para é curado no código (OLX_CATEGORY_MAP). `search` filtra por rótulo.
+   */
+  app.get(
+    "/olx/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const search = (
+          ((request.query as any)?.search as string | undefined) ?? ""
+        )
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .trim();
+        const seen = new Set<number>();
+        const labelById = new Map<number, string>();
+        for (const [rawKey, id] of Object.entries(OLX_CATEGORY_MAP)) {
+          if (!labelById.has(id)) labelById.set(id, rawKey);
+        }
+        const categories = Object.values(OLX_CATEGORY_MAP)
+          .filter((id) => {
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          })
+          .map((id) => ({
+            id: String(id),
+            value: labelById.get(id) ?? String(id),
+          }))
+          .filter((c) => {
+            if (!search) return true;
+            const v = c.value
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "");
+            return v.includes(search) || c.id.includes(search);
+          });
+        reply.header("Cache-Control", "private, max-age=600");
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/olx/category-suggest?name=<nome do produto>
+   * Sugere a categoria OLX (mesma resolução do create) — id inteiro do veículo.
+   */
+  app.get(
+    "/olx/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const name = (request.query as any)?.name as string | undefined;
+      if (!name || !name.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'name' é obrigatório" });
+      }
+      try {
+        const categoryId = OlxCategoryResolutionService.resolveCategoryId({
+          name,
+        });
+        return reply.send({
+          categoryId: categoryId != null ? String(categoryId) : null,
+          path: null,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categoria OLX",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
   // ====================================================================
   // ROTAS FACEBOOK/META (espelham o padrão /olx/*). Aditivas, atrás da flag
   // NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED. SEM webhook e SEM import de
@@ -3400,6 +3520,40 @@ small{color:#666}</style></head><body>
     },
   );
 
+  /** PATCH /marketplace/facebook/accounts/:id — catálogo/URL base do produto. */
+  app.patch<{ Params: { id: string } }>(
+    "/facebook/accounts/:id",
+    { preHandler: [authMiddleware, blockCollaborator] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as {
+          fbCatalogId?: string | null;
+          fbProductUrlBase?: string | null;
+        };
+        const count = await MarketplaceRepository.updateSellerFields(
+          id,
+          userId,
+          Platform.FACEBOOK,
+          {
+            fbCatalogId: body.fbCatalogId ?? null,
+            fbProductUrlBase: body.fbProductUrlBase ?? null,
+          },
+        );
+        if (count === 0) {
+          return reply.status(404).send({ error: "Conta não encontrada" });
+        }
+        return reply.send({ success: true });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao salvar dados do catálogo",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
   /** DELETE /marketplace/facebook — desconecta conta (aceita accountId). */
   app.delete<{ Reply: { success: boolean; message: string } }>(
     "/facebook",
@@ -3500,6 +3654,78 @@ small{color:#666}</style></head><body>
     },
   );
 
+  /**
+   * POST /marketplace/facebook/import — importa itens do Catálogo Meta de TODAS
+   * as contas ACTIVE do dono e cria+vincula os produtos (dedup por SKU via
+   * núcleo). Responde 202 com importId; a aba faz polling em
+   * GET /facebook/import/:importId. `accountIds`/`accountId` opcional restringe.
+   */
+  app.post(
+    "/facebook/import",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const accountIds =
+          ((request.body as any)?.accountIds as string[] | undefined) ??
+          ((request.query as any)?.accountId
+            ? [(request.query as any).accountId as string]
+            : undefined);
+        const accountId =
+          accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
+
+        const job = await SyncUseCase.startFacebookImportJob(userId, accountId);
+
+        return reply.status(202).send({
+          success: true,
+          importId: job.importId,
+          status: job.status,
+          message: job.message,
+        });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao iniciar importação do Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/import/:importId — status/resultado do job.
+   */
+  app.get<{ Params: { importId: string } }>(
+    "/facebook/import/:importId",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = request.user!.dataOwnerId;
+        const { importId } = request.params as { importId: string };
+        const status = await SyncUseCase.getGenericImportJobStatus(
+          userId,
+          importId,
+        );
+        return reply.send({
+          success: true,
+          importId: status.importId,
+          status: status.status,
+          progress: status.progress,
+          result: status.result,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        const statusCode = /não encontrada|not found/i.test(message)
+          ? 404
+          : 500;
+        return reply.status(statusCode).send({
+          error: "Erro ao consultar importação do Facebook",
+          message,
+        });
+      }
+    },
+  );
+
   /** POST /marketplace/facebook/sync — sincroniza estoque de todos os itens. */
   app.post(
     "/facebook/sync",
@@ -3560,6 +3786,78 @@ small{color:#666}</style></head><body>
       } catch (error) {
         return reply.status(500).send({
           error: "Erro ao sincronizar estoque do produto no Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/categories?search=<termo>
+   * Lista os google_product_category de autopeças do catálogo Meta. Offline — o
+   * de-para é curado no código (FACEBOOK_CATEGORY_MAP). `search` filtra por path.
+   */
+  app.get(
+    "/facebook/categories",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const search = (
+          ((request.query as any)?.search as string | undefined) ?? ""
+        )
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .trim();
+        const seen = new Set<string>();
+        const categories = Object.values(FACEBOOK_CATEGORY_MAP)
+          .filter((path) => {
+            if (seen.has(path)) return false;
+            seen.add(path);
+            return true;
+          })
+          .map((path) => ({ id: path, value: path }))
+          .filter((c) => {
+            if (!search) return true;
+            const v = c.value
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "");
+            return v.includes(search);
+          });
+        reply.header("Cache-Control", "private, max-age=600");
+        return reply.send({ categories });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao listar categorias Facebook",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /marketplace/facebook/category-suggest?name=<nome do produto>
+   * Sugere o google_product_category (mesma resolução offline do create).
+   */
+  app.get(
+    "/facebook/category-suggest",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const name = (request.query as any)?.name as string | undefined;
+      if (!name || !name.trim()) {
+        return reply
+          .status(400)
+          .send({ error: "Parâmetro 'name' é obrigatório" });
+      }
+      try {
+        const categoryId = FacebookCategoryResolutionService.resolveCategory({
+          name,
+        });
+        return reply.send({ categoryId: categoryId ?? null, path: categoryId });
+      } catch (error) {
+        return reply.status(500).send({
+          error: "Erro ao sugerir categoria Facebook",
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }

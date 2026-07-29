@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
@@ -46,12 +48,23 @@ export function OlxConnectionTab() {
   const isCollaborator = Boolean((session?.user as any)?.parentUserId);
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [accounts, setAccounts] = useState<
-    Array<{ id: string; accountName: string; status?: string }>
+    Array<{
+      id: string;
+      accountName: string;
+      status?: string;
+      olxSellerPhone?: string | null;
+      olxSellerZipcode?: string | null;
+    }>
   >([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Rascunho editável dos dados do vendedor por conta (phone/zipcode).
+  const [sellerDrafts, setSellerDrafts] = useState<
+    Record<string, { phone: string; zipcode: string }>
+  >({});
+  const [savingSellerId, setSavingSellerId] = useState<string | null>(null);
   // Guard contra chamadas simultâneas de fetchStatus (type-safe via ref,
   // em vez de anexar propriedade à função como em ML/Shopee).
   const isFetchingRef = useRef(false);
@@ -92,6 +105,17 @@ export function OlxConnectionTab() {
             ? accData.accounts
             : [];
           setAccounts(accountsList);
+          setSellerDrafts(
+            Object.fromEntries(
+              accountsList.map((acc: { id: string; olxSellerPhone?: string | null; olxSellerZipcode?: string | null }) => [
+                acc.id,
+                {
+                  phone: acc.olxSellerPhone ?? "",
+                  zipcode: acc.olxSellerZipcode ?? "",
+                },
+              ]),
+            ),
+          );
         } else {
           setAccounts([]);
         }
@@ -204,6 +228,55 @@ export function OlxConnectionTab() {
     }
   };
 
+  // Salva os dados do vendedor (telefone/CEP) da conta. Depende do endpoint
+  // PATCH /marketplace/olx/accounts/:id (ver relatório) — ainda inexistente.
+  const handleSaveSeller = async (accountId: string) => {
+    if (!session?.user?.email) return;
+    const draft = sellerDrafts[accountId];
+    if (!draft) return;
+
+    setSavingSellerId(accountId);
+    setError(null);
+
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/marketplace/olx/accounts/${accountId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            email: session.user.email,
+          },
+          body: JSON.stringify({
+            olxSellerPhone: draft.phone || null,
+            olxSellerZipcode: draft.zipcode || null,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || "Erro ao salvar dados do vendedor");
+      }
+
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === accountId
+            ? {
+                ...a,
+                olxSellerPhone: draft.phone || null,
+                olxSellerZipcode: draft.zipcode || null,
+              }
+            : a,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao salvar");
+    } finally {
+      setSavingSellerId(null);
+    }
+  };
+
   useEffect(() => {
     if (session?.user?.email) {
       fetchStatus();
@@ -292,33 +365,93 @@ export function OlxConnectionTab() {
               {accounts.map((acc) => (
                 <div
                   key={acc.id}
-                  className="relative flex items-center justify-between gap-3 overflow-hidden rounded-lg border border-border/60 bg-card p-3"
+                  className="relative overflow-hidden rounded-lg border border-border/60 bg-card p-3"
                 >
                   <span
                     className="absolute inset-y-0 left-0 w-1 bg-emerald-500"
                     aria-hidden
                   />
-                  <div className="min-w-0 space-y-1.5 pl-1.5">
-                    <div className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                      <span className="truncate font-semibold [font-family:var(--font-bricolage)]">
-                        {acc.accountName || "Conta OLX"}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 space-y-1.5 pl-1.5">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span className="truncate font-semibold [font-family:var(--font-bricolage)]">
+                          {acc.accountName || "Conta OLX"}
+                        </span>
+                      </div>
+                      <span className="inline-flex items-center rounded-full bg-emerald-500/12 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                        {acc.status || status.status || "Ativo"}
                       </span>
                     </div>
-                    <span className="inline-flex items-center rounded-full bg-emerald-500/12 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                      {acc.status || status.status || "Ativo"}
-                    </span>
+                    {!isCollaborator && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDisconnect(acc.id)}
+                        disabled={isDisconnecting}
+                      >
+                        <Unplug className="mr-2 h-4 w-4" />
+                        Desconectar
+                      </Button>
+                    )}
                   </div>
                   {!isCollaborator && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDisconnect(acc.id)}
-                      disabled={isDisconnecting}
-                    >
-                      <Unplug className="mr-2 h-4 w-4" />
-                      Desconectar
-                    </Button>
+                    <div className="mt-3 space-y-3 border-t border-border/60 pl-1.5 pt-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label htmlFor={`olx-phone-${acc.id}`}>
+                            Telefone do vendedor
+                          </Label>
+                          <Input
+                            id={`olx-phone-${acc.id}`}
+                            value={sellerDrafts[acc.id]?.phone ?? ""}
+                            onChange={(e) =>
+                              setSellerDrafts((prev) => ({
+                                ...prev,
+                                [acc.id]: {
+                                  phone: e.target.value,
+                                  zipcode: prev[acc.id]?.zipcode ?? "",
+                                },
+                              }))
+                            }
+                            placeholder="11999998888"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor={`olx-zipcode-${acc.id}`}>
+                            CEP do vendedor
+                          </Label>
+                          <Input
+                            id={`olx-zipcode-${acc.id}`}
+                            value={sellerDrafts[acc.id]?.zipcode ?? ""}
+                            onChange={(e) =>
+                              setSellerDrafts((prev) => ({
+                                ...prev,
+                                [acc.id]: {
+                                  phone: prev[acc.id]?.phone ?? "",
+                                  zipcode: e.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="01001000"
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveSeller(acc.id)}
+                        disabled={savingSellerId === acc.id}
+                      >
+                        {savingSellerId === acc.id ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Salvando...
+                          </>
+                        ) : (
+                          "Salvar dados do vendedor"
+                        )}
+                      </Button>
+                    </div>
                   )}
                 </div>
               ))}

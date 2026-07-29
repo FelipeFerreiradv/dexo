@@ -65,7 +65,7 @@ import {
   type ReviewCategoryOption,
 } from "./bulk-review/per-product-types";
 
-type Platform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+type Platform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
 
 type WizardMode = "quick" | "review";
 
@@ -74,6 +74,9 @@ type WizardMode = "quick" | "review";
 // emitido). Espelha o gate do modal create-product-dialog.tsx.
 const MAGALU_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+const OLX_ENABLED = process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+const FACEBOOK_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
 
 interface MarketplaceAccountLite {
   id: string;
@@ -195,12 +198,20 @@ export function BulkListingWizard({
   const [magaluAccounts, setMagaluAccounts] = useState<
     MarketplaceAccountLite[]
   >([]);
+  const [olxAccounts, setOlxAccounts] = useState<MarketplaceAccountLite[]>([]);
+  const [facebookAccounts, setFacebookAccounts] = useState<
+    MarketplaceAccountLite[]
+  >([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedMlIds, setSelectedMlIds] = useState<Set<string>>(new Set());
   const [selectedShopeeIds, setSelectedShopeeIds] = useState<Set<string>>(
     new Set(),
   );
   const [selectedMagaluIds, setSelectedMagaluIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [selectedOlxIds, setSelectedOlxIds] = useState<Set<string>>(new Set());
+  const [selectedFacebookIds, setSelectedFacebookIds] = useState<Set<string>>(
     new Set(),
   );
   const [rules, setRules] = useState<RulesForm>(DEFAULT_RULES);
@@ -246,6 +257,14 @@ export function BulkListingWizard({
     () => Array.from(selectedMagaluIds),
     [selectedMagaluIds],
   );
+  const globalOlxIdsArr = useMemo(
+    () => Array.from(selectedOlxIds),
+    [selectedOlxIds],
+  );
+  const globalFacebookIdsArr = useMemo(
+    () => Array.from(selectedFacebookIds),
+    [selectedFacebookIds],
+  );
   const reviewProducts = useMemo(
     () =>
       selectedProducts.map((p) => ({
@@ -280,6 +299,8 @@ export function BulkListingWizard({
     globalMlIds: globalMlIdsArr,
     globalShopeeIds: globalShopeeIdsArr,
     globalMagaluIds: globalMagaluIdsArr,
+    globalOlxIds: globalOlxIdsArr,
+    globalFacebookIds: globalFacebookIdsArr,
     mlOptions,
     email,
   });
@@ -300,6 +321,8 @@ export function BulkListingWizard({
       setSelectedMlIds(new Set());
       setSelectedShopeeIds(new Set());
       setSelectedMagaluIds(new Set());
+      setSelectedOlxIds(new Set());
+      setSelectedFacebookIds(new Set());
       setSubmitError(null);
       setJobId(null);
       setParentJobIdForRetry(null);
@@ -374,8 +397,18 @@ export function BulkListingWizard({
       "|" +
       [...globalShopeeIdsArr].sort().join(",") +
       "|" +
-      [...globalMagaluIdsArr].sort().join(","),
-    [globalMlIdsArr, globalShopeeIdsArr, globalMagaluIdsArr],
+      [...globalMagaluIdsArr].sort().join(",") +
+      "|" +
+      [...globalOlxIdsArr].sort().join(",") +
+      "|" +
+      [...globalFacebookIdsArr].sort().join(","),
+    [
+      globalMlIdsArr,
+      globalShopeeIdsArr,
+      globalMagaluIdsArr,
+      globalOlxIdsArr,
+      globalFacebookIdsArr,
+    ],
   );
   useEffect(() => {
     ppResetAll();
@@ -405,8 +438,22 @@ export function BulkListingWizard({
             .then((r) => r.json())
             .catch(() => ({ accounts: [] }))
         : Promise.resolve({ accounts: [] }),
+      OLX_ENABLED
+        ? fetch(`${getApiBaseUrl()}/marketplace/olx/accounts`, {
+            headers: { email },
+          })
+            .then((r) => r.json())
+            .catch(() => ({ accounts: [] }))
+        : Promise.resolve({ accounts: [] }),
+      FACEBOOK_ENABLED
+        ? fetch(`${getApiBaseUrl()}/marketplace/facebook/accounts`, {
+            headers: { email },
+          })
+            .then((r) => r.json())
+            .catch(() => ({ accounts: [] }))
+        : Promise.resolve({ accounts: [] }),
     ])
-      .then(([ml, sh, mg]) => {
+      .then(([ml, sh, mg, ox, fb]) => {
         if (cancelled) return;
         const mlAccs = Array.isArray(ml?.accounts)
           ? (ml.accounts as MarketplaceAccountLite[])
@@ -417,9 +464,17 @@ export function BulkListingWizard({
         const mgAccs = Array.isArray(mg?.accounts)
           ? (mg.accounts as MarketplaceAccountLite[])
           : [];
+        const oxAccs = Array.isArray(ox?.accounts)
+          ? (ox.accounts as MarketplaceAccountLite[])
+          : [];
+        const fbAccs = Array.isArray(fb?.accounts)
+          ? (fb.accounts as MarketplaceAccountLite[])
+          : [];
         setMlAccounts(mlAccs.filter((a) => a.status !== "INACTIVE"));
         setShopeeAccounts(shAccs.filter((a) => a.status !== "INACTIVE"));
         setMagaluAccounts(mgAccs.filter((a) => a.status !== "INACTIVE"));
+        setOlxAccounts(oxAccs.filter((a) => a.status !== "INACTIVE"));
+        setFacebookAccounts(fbAccs.filter((a) => a.status !== "INACTIVE"));
       })
       .finally(() => {
         if (!cancelled) setAccountsLoading(false);
@@ -451,7 +506,11 @@ export function BulkListingWizard({
   }, [open, email]);
 
   const totalAccountsSelected =
-    selectedMlIds.size + selectedShopeeIds.size + selectedMagaluIds.size;
+    selectedMlIds.size +
+    selectedShopeeIds.size +
+    selectedMagaluIds.size +
+    selectedOlxIds.size +
+    selectedFacebookIds.size;
   const totalListings =
     selectedProducts.length * Math.max(1, totalAccountsSelected);
 
@@ -483,6 +542,12 @@ export function BulkListingWizard({
     // Shopee). No modo Revisão, a categoria por produto vai em perProductOverrides.
     for (const id of selectedMagaluIds) {
       out.push({ platform: "MAGALU", accountId: id });
+    }
+    for (const id of selectedOlxIds) {
+      out.push({ platform: "OLX", accountId: id });
+    }
+    for (const id of selectedFacebookIds) {
+      out.push({ platform: "FACEBOOK", accountId: id });
     }
     return out;
   };
@@ -600,7 +665,9 @@ export function BulkListingWizard({
         preflightIssues.length > 0 &&
         preflightIssues.length === selectedProducts.length &&
         selectedMlIds.size === 0 &&
-        selectedMagaluIds.size === 0;
+        selectedMagaluIds.size === 0 &&
+        selectedOlxIds.size === 0 &&
+        selectedFacebookIds.size === 0;
       if (allShopeeBlocked) {
         setSubmitError(
           MAGALU_ENABLED
@@ -704,7 +771,9 @@ export function BulkListingWizard({
         blockingIssues.length ===
           selectedProducts.length - excludedFromShopee.size &&
         selectedMlIds.size === 0 &&
-        selectedMagaluIds.size === 0;
+        selectedMagaluIds.size === 0 &&
+        selectedOlxIds.size === 0 &&
+        selectedFacebookIds.size === 0;
       if (allShopeeBlocked) {
         setSubmitError(
           MAGALU_ENABLED
@@ -751,6 +820,8 @@ export function BulkListingWizard({
           globalMlIdsArr,
           globalShopeeIdsArr,
           globalMagaluIdsArr,
+          globalOlxIdsArr,
+          globalFacebookIdsArr,
         );
         if (Object.keys(ppo).length > 0) {
           overrideTemplate = {
@@ -902,6 +973,22 @@ export function BulkListingWizard({
     [selectedMagaluIds, magaluAccounts],
   );
 
+  const selectedOlxAccountsSel = useMemo(
+    () =>
+      Array.from(selectedOlxIds)
+        .map((id) => olxAccounts.find((a) => a.id === id))
+        .filter((a): a is MarketplaceAccountLite => !!a),
+    [selectedOlxIds, olxAccounts],
+  );
+
+  const selectedFacebookAccountsSel = useMemo(
+    () =>
+      Array.from(selectedFacebookIds)
+        .map((id) => facebookAccounts.find((a) => a.id === id))
+        .filter((a): a is MarketplaceAccountLite => !!a),
+    [selectedFacebookIds, facebookAccounts],
+  );
+
   // Pendência de preflight do produto atualmente em revisão (badge no painel).
   const currentReviewProductId = pp.current?.id;
   const preflightIssueForCurrent = useMemo(() => {
@@ -966,9 +1053,13 @@ export function BulkListingWizard({
                 mlAccounts={mlAccounts}
                 shopeeAccounts={shopeeAccounts}
                 magaluAccounts={magaluAccounts}
+                olxAccounts={olxAccounts}
+                facebookAccounts={facebookAccounts}
                 selectedMlIds={selectedMlIds}
                 selectedShopeeIds={selectedShopeeIds}
                 selectedMagaluIds={selectedMagaluIds}
+                selectedOlxIds={selectedOlxIds}
+                selectedFacebookIds={selectedFacebookIds}
                 onToggleMl={(id, checked) => {
                   setSelectedMlIds((prev) => {
                     const next = new Set(prev);
@@ -993,6 +1084,22 @@ export function BulkListingWizard({
                     return next;
                   });
                 }}
+                onToggleOlx={(id, checked) => {
+                  setSelectedOlxIds((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
+                onToggleFacebook={(id, checked) => {
+                  setSelectedFacebookIds((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(id);
+                    else next.delete(id);
+                    return next;
+                  });
+                }}
               />
             )}
 
@@ -1003,6 +1110,8 @@ export function BulkListingWizard({
                 mlSelectedCount={selectedMlIds.size}
                 shopeeSelectedCount={selectedShopeeIds.size}
                 magaluSelectedCount={selectedMagaluIds.size}
+                olxSelectedCount={selectedOlxIds.size}
+                facebookSelectedCount={selectedFacebookIds.size}
               />
             )}
 
@@ -1019,6 +1128,8 @@ export function BulkListingWizard({
                 crossAccountMlAccounts={selectedMlAccountsOrdered}
                 crossAccountShopeeAccounts={selectedShopeeAccountsSel}
                 crossAccountMagaluAccounts={selectedMagaluAccountsSel}
+                crossAccountOlxAccounts={selectedOlxAccountsSel}
+                crossAccountFacebookAccounts={selectedFacebookAccountsSel}
               />
             )}
 
@@ -1028,6 +1139,8 @@ export function BulkListingWizard({
                 globalMlAccounts={selectedMlAccountsOrdered}
                 globalShopeeAccounts={selectedShopeeAccountsSel}
                 globalMagaluAccounts={selectedMagaluAccountsSel}
+                globalOlxAccounts={selectedOlxAccountsSel}
+                globalFacebookAccounts={selectedFacebookAccountsSel}
                 mlOptions={mlOptions}
                 shopeeOptions={shopeeOptions}
                 magaluOptions={[]}
@@ -1183,23 +1296,35 @@ function StepAccounts({
   mlAccounts,
   shopeeAccounts,
   magaluAccounts,
+  olxAccounts,
+  facebookAccounts,
   selectedMlIds,
   selectedShopeeIds,
   selectedMagaluIds,
+  selectedOlxIds,
+  selectedFacebookIds,
   onToggleMl,
   onToggleShopee,
   onToggleMagalu,
+  onToggleOlx,
+  onToggleFacebook,
 }: {
   loading: boolean;
   mlAccounts: MarketplaceAccountLite[];
   shopeeAccounts: MarketplaceAccountLite[];
   magaluAccounts: MarketplaceAccountLite[];
+  olxAccounts: MarketplaceAccountLite[];
+  facebookAccounts: MarketplaceAccountLite[];
   selectedMlIds: Set<string>;
   selectedShopeeIds: Set<string>;
   selectedMagaluIds: Set<string>;
+  selectedOlxIds: Set<string>;
+  selectedFacebookIds: Set<string>;
   onToggleMl: (id: string, checked: boolean) => void;
   onToggleShopee: (id: string, checked: boolean) => void;
   onToggleMagalu: (id: string, checked: boolean) => void;
+  onToggleOlx: (id: string, checked: boolean) => void;
+  onToggleFacebook: (id: string, checked: boolean) => void;
 }) {
   if (loading) {
     return (
@@ -1237,6 +1362,30 @@ function StepAccounts({
             selected={selectedMagaluIds}
             onToggle={onToggleMagalu}
             emptyHint="Nenhuma conta Magalu conectada. Conecte em Integrações."
+          />
+        </>
+      )}
+      {OLX_ENABLED && (
+        <>
+          <Separator />
+          <AccountSection
+            title="OLX"
+            accounts={olxAccounts}
+            selected={selectedOlxIds}
+            onToggle={onToggleOlx}
+            emptyHint="Nenhuma conta OLX conectada. Conecte em Integrações."
+          />
+        </>
+      )}
+      {FACEBOOK_ENABLED && (
+        <>
+          <Separator />
+          <AccountSection
+            title="Facebook"
+            accounts={facebookAccounts}
+            selected={selectedFacebookIds}
+            onToggle={onToggleFacebook}
+            emptyHint="Nenhuma conta Facebook conectada. Conecte em Integrações."
           />
         </>
       )}
@@ -1296,12 +1445,16 @@ function StepRules({
   mlSelectedCount,
   shopeeSelectedCount,
   magaluSelectedCount,
+  olxSelectedCount,
+  facebookSelectedCount,
 }: {
   rules: RulesForm;
   setRules: React.Dispatch<React.SetStateAction<RulesForm>>;
   mlSelectedCount: number;
   shopeeSelectedCount: number;
   magaluSelectedCount: number;
+  olxSelectedCount: number;
+  facebookSelectedCount: number;
 }) {
   return (
     <div className="grid gap-5 sm:grid-cols-2">
@@ -1496,13 +1649,19 @@ function StepRules({
             </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               Aplicado em cascata e por marketplace: em cada marketplace
-              (Mercado Livre, Shopee, Magalu), a 1ª conta selecionada mantém o
-              preço base e cada conta seguinte recebe este % sobre o preço da
-              anterior — as escadas são independentes entre marketplaces.
-              Confira o preview por conta na etapa de revisão.
+              (Mercado Livre, Shopee, Magalu, OLX, Facebook), a 1ª conta
+              selecionada mantém o preço base e cada conta seguinte recebe
+              este % sobre o preço da anterior — as escadas são independentes
+              entre marketplaces. Confira o preview por conta na etapa de
+              revisão.
             </p>
-            {Math.max(mlSelectedCount, shopeeSelectedCount, magaluSelectedCount) <
-              2 && (
+            {Math.max(
+              mlSelectedCount,
+              shopeeSelectedCount,
+              magaluSelectedCount,
+              olxSelectedCount,
+              facebookSelectedCount,
+            ) < 2 && (
               <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="inline size-3 mr-1" />
                 Selecione 2 ou mais contas de um mesmo marketplace para o
@@ -1529,6 +1688,8 @@ function StepReview({
   crossAccountMlAccounts,
   crossAccountShopeeAccounts,
   crossAccountMagaluAccounts,
+  crossAccountOlxAccounts,
+  crossAccountFacebookAccounts,
 }: {
   products: BulkListingProduct[];
   rules: RulesForm;
@@ -1545,6 +1706,8 @@ function StepReview({
   crossAccountMlAccounts: MarketplaceAccountLite[];
   crossAccountShopeeAccounts: MarketplaceAccountLite[];
   crossAccountMagaluAccounts: MarketplaceAccountLite[];
+  crossAccountOlxAccounts: MarketplaceAccountLite[];
+  crossAccountFacebookAccounts: MarketplaceAccountLite[];
 }) {
   const issueByProduct = new Map(preflightIssues.map((i) => [i.productId, i]));
   const template = {
@@ -1573,6 +1736,8 @@ function StepReview({
             { key: "ML", label: "Mercado Livre", accounts: crossAccountMlAccounts },
             { key: "SH", label: "Shopee", accounts: crossAccountShopeeAccounts },
             { key: "MG", label: "Magalu", accounts: crossAccountMagaluAccounts },
+            { key: "OX", label: "OLX", accounts: crossAccountOlxAccounts },
+            { key: "FB", label: "Facebook", accounts: crossAccountFacebookAccounts },
           ] as const
         ).filter((l) => l.accounts.length >= 2)
       : [];
@@ -1869,7 +2034,11 @@ function StepProgress({
                         ? "ML"
                         : r.platform === "SHOPEE"
                           ? "Shopee"
-                          : "Magalu"}
+                          : r.platform === "MAGALU"
+                            ? "Magalu"
+                            : r.platform === "OLX"
+                              ? "OLX"
+                              : "Facebook"}
                     </Badge>
                   </td>
                   <td className="px-3 py-2">

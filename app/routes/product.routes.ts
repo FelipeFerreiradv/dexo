@@ -881,6 +881,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                   categoryId: lst.categoryId,
                 });
               }
+            } else if (lst.platform === "OLX") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "OLX",
+                  accountId: accId,
+                  categoryId: lst.categoryId,
+                });
+              }
+            } else if (lst.platform === "FACEBOOK") {
+              for (const accId of accounts) {
+                dispatchRequests.push({
+                  platform: "FACEBOOK",
+                  accountId: accId,
+                  categoryId: lst.categoryId,
+                });
+              }
             }
           }
 

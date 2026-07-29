@@ -59,14 +59,37 @@ export class OlxPayloadBuilderService {
   /**
    * `id` do ad_list: 1-19 chars [A-Za-z0-9_{}-]. Usa o SKU do produto,
    * sanitizado (chars inválidos viram "_"), truncado a 19. É a chave estável
-   * para insert/delete/edição (idempotência).
+   * para insert/delete/edição (idempotência). SKU vazio ou > 19 chars ganha um
+   * sufixo hash determinístico p/ evitar colisão de prefixo.
    */
   static buildId(product: any): string {
     const raw = String(product?.sku ?? product?.id ?? "").trim();
-    const safe = raw
-      .replace(/[^A-Za-z0-9_{}-]/g, "_")
-      .slice(0, OLX_CONSTANTS.ID_MAX_LENGTH);
-    return safe || "sku";
+    const sanitized = raw.replace(/[^A-Za-z0-9_{}-]/g, "_");
+
+    if (sanitized.length > 0 && sanitized.length <= OLX_CONSTANTS.ID_MAX_LENGTH) {
+      return sanitized;
+    }
+
+    const hashSuffix = OlxPayloadBuilderService.djb2Base36(raw, 4);
+
+    if (sanitized.length === 0) {
+      return `sku_${hashSuffix}`;
+    }
+
+    const PREFIX_LEN = OLX_CONSTANTS.ID_MAX_LENGTH - 1 - 4; // 14
+    return `${sanitized.slice(0, PREFIX_LEN)}_${hashSuffix}`;
+  }
+
+  /**
+   * Hash djb2 do texto (32 bits não-sinalizado), expresso em base36,
+   * zero-padded à esquerda até `len` chars.
+   */
+  private static djb2Base36(text: string, len: number): string {
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) {
+      h = (Math.imul(h, 33) ^ text.charCodeAt(i)) >>> 0;
+    }
+    return h.toString(36).padStart(len, "0").slice(-len);
   }
 
   /** Preço em INTEIRO (a OLX não aceita decimais). Arredonda p/ o real. */

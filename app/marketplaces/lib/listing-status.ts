@@ -1,4 +1,9 @@
-export type MirrorPlatform = "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+export type MirrorPlatform =
+  | "MERCADO_LIVRE"
+  | "SHOPEE"
+  | "MAGALU"
+  | "OLX"
+  | "FACEBOOK";
 
 // Vocabulário FECHADO do espelhamento: apenas valores que os read-sites já
 // entendem (PUBLICATION_STATUS_VALUES em app/repositories/product.repository.ts,
@@ -28,6 +33,22 @@ const SHOPEE_STATUS_MAP: Record<string, string> = {
   SHOPEE_DELETE: "deleted",
 };
 
+// Facebook/Meta Commerce Catalog: o item expõe `availability` (in/out of stock,
+// available for order, discontinued) e `review_status` (approved/rejected/
+// pending). Mapeamos ambos para o vocabulário canônico fechado. "rejected" cai
+// em "closed" (item barrado); "pending" em "reviewing"; disponibilidade → active
+// vs. paused (a baixa de estoque grava "out of stock", que já vira paused).
+const FACEBOOK_STATUS_MAP: Record<string, string> = {
+  "in stock": "active",
+  "available for order": "active",
+  "out of stock": "paused",
+  discontinued: "closed",
+  approved: "active",
+  active: "active",
+  pending: "reviewing",
+  rejected: "closed",
+};
+
 /**
  * Normaliza o status remoto de um anúncio para o vocabulário canônico da Dexo
  * (lowercase). USO EXCLUSIVO do espelhamento marketplace→Dexo (webhook, sync,
@@ -48,6 +69,10 @@ export function normalizeListingStatus(
     return SHOPEE_STATUS_MAP[trimmed.toUpperCase()] ?? null;
   }
 
-  // MERCADO_LIVRE e MAGALU falam o mesmo vocabulário base.
+  if (platform === "FACEBOOK") {
+    return FACEBOOK_STATUS_MAP[trimmed.toLowerCase()] ?? null;
+  }
+
+  // MERCADO_LIVRE, MAGALU e OLX falam o mesmo vocabulário base.
   return ML_STATUS_MAP[trimmed.toLowerCase()] ?? null;
 }

@@ -48,6 +48,8 @@ const PUBLISHED_MARKETPLACE_PLATFORMS = [
   "MERCADO_LIVRE",
   "SHOPEE",
   "MAGALU",
+  "OLX",
+  "FACEBOOK",
 ] as const;
 type PublishedMarketplacePlatform =
   (typeof PUBLISHED_MARKETPLACE_PLATFORMS)[number];
@@ -56,6 +58,8 @@ const MARKETPLACE_LABELS: Record<PublishedMarketplacePlatform, string> = {
   MERCADO_LIVRE: "Mercado Livre",
   SHOPEE: "Shopee",
   MAGALU: "Magalu",
+  OLX: "OLX",
+  FACEBOOK: "Facebook",
 };
 const PUBLICATION_STATUS_VALUES: Record<
   Exclude<ProductPublicationStatus, "NO_LISTING">,
@@ -74,7 +78,9 @@ function isPublishedMarketplacePlatform(
   return (
     platform === "MERCADO_LIVRE" ||
     platform === "SHOPEE" ||
-    platform === "MAGALU"
+    platform === "MAGALU" ||
+    platform === "OLX" ||
+    platform === "FACEBOOK"
   );
 }
 
@@ -618,6 +624,30 @@ class ProductRepositoryPrisma implements ProductRepository {
             },
           },
         };
+      case "OLX":
+        return {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "OLX",
+                },
+              },
+            },
+          },
+        };
+      case "FACEBOOK":
+        return {
+          listings: {
+            some: {
+              marketplaceAccount: {
+                is: {
+                  platform: "FACEBOOK",
+                },
+              },
+            },
+          },
+        };
       case "BOTH":
         return combineWhereClauses(
           {
@@ -685,6 +715,10 @@ class ProductRepositoryPrisma implements ProductRepository {
       case "MAGALU":
         // Canal único: ao menos 1 anúncio Magalu (sem excluir ML/Shopee).
         return [existsInPlatform("MAGALU")];
+      case "OLX":
+        return [existsInPlatform("OLX")];
+      case "FACEBOOK":
+        return [existsInPlatform("FACEBOOK")];
       case "BOTH":
         return [existsInPlatform("MERCADO_LIVRE"), existsInPlatform("SHOPEE")];
       default:
@@ -873,7 +907,9 @@ class ProductRepositoryPrisma implements ProductRepository {
     const scopedMarketplace =
       parsedListingCategory?.platform ??
       (filters?.marketplace === "MERCADO_LIVRE" ||
-      filters?.marketplace === "SHOPEE"
+      filters?.marketplace === "SHOPEE" ||
+      filters?.marketplace === "OLX" ||
+      filters?.marketplace === "FACEBOOK"
         ? filters.marketplace
         : undefined);
 

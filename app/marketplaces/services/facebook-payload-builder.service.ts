@@ -24,6 +24,8 @@ export interface FacebookBuildItemOptions {
   availability?: FacebookAvailability;
   /** Quantidade a vender no Facebook (espelha o estoque). */
   quantity?: number;
+  /** Base da URL da página do vendedor; per-conta evita vazar o link entre tenants. */
+  productUrlBase?: string | null;
 }
 
 export class FacebookPayloadBuilderService {
@@ -48,7 +50,7 @@ export class FacebookPayloadBuilderService {
       condition: this.mapCondition(product),
       price: this.buildPrice(product?.price),
       currency: FACEBOOK_CONSTANTS.CURRENCY,
-      link: this.buildLink(product),
+      link: this.buildLink(product, opts.productUrlBase),
       google_product_category: opts.googleProductCategory,
     };
 
@@ -86,17 +88,16 @@ export class FacebookPayloadBuilderService {
    * vendedor (FB_PRODUCT_URL_BASE), sem sufixo /sku. Sem a base configurada,
    * lança erro claro (bloqueio conhecido).
    */
-  static buildLink(_product?: any): string {
-    // Lê o env em call-time (não do const capturado no import) p/ permitir setar
-    // sem redeploy.
+  static buildLink(_product?: any, productUrlBase?: string | null): string {
     const base = (
+      productUrlBase ||
       process.env.FB_PRODUCT_URL_BASE ||
       FACEBOOK_CONSTANTS.PRODUCT_URL_BASE ||
       ""
     ).replace(/\/+$/, "");
     if (!base) {
       throw new Error(
-        "FB_PRODUCT_URL_BASE não configurada — o item de catálogo Meta exige `link` (URL da página do produto).",
+        "URL da página do vendedor Facebook não configurada — o item de catálogo Meta exige `link`. Configure na conta ou em FB_PRODUCT_URL_BASE.",
       );
     }
     return base;

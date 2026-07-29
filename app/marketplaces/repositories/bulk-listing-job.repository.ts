@@ -64,15 +64,21 @@ export interface PerProductOlxOverride {
   categoryId?: string;
 }
 
+export interface PerProductFacebookOverride {
+  categoryId?: string;
+}
+
 export interface PerProductOverrideEntry {
   ml?: PerProductMlOverride;
   shopee?: PerProductShopeeOverride;
   magalu?: PerProductMagaluOverride;
   olx?: PerProductOlxOverride;
+  facebook?: PerProductFacebookOverride;
   disabledMlAccountIds?: string[];
   disabledShopeeAccountIds?: string[];
   disabledMagaluAccountIds?: string[];
   disabledOlxAccountIds?: string[];
+  disabledFacebookAccountIds?: string[];
 }
 
 export interface BulkOverrideTemplate {
@@ -101,6 +107,8 @@ export interface BulkOverrideTemplate {
     indexByAccountId?: Record<string, number>;
     shopeeIndexByAccountId?: Record<string, number>;
     magaluIndexByAccountId?: Record<string, number>;
+    olxIndexByAccountId?: Record<string, number>;
+    fbIndexByAccountId?: Record<string, number>;
   };
 
   // Config por produto (modo Revisão individual). Opcional/aditivo: ausente ⇒

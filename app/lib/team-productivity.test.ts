@@ -45,6 +45,8 @@ describe("aggregateTeamProductivity (grupos agregados no banco)", () => {
       ml: 2,
       shopee: 2,
       magalu: 1,
+      olx: 0,
+      facebook: 0,
       outro: 1,
     });
     const { ml, shopee, magalu, outro, total } = res.totals.anuncios;

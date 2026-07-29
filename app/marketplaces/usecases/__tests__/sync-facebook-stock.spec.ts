@@ -12,6 +12,8 @@ vi.mock("../../services/facebook-api.service", () => ({
   FacebookApiService: {
     setAvailability: vi.fn().mockResolvedValue({ handles: ["h1"] }),
     upsertItem: vi.fn().mockResolvedValue({ handles: ["h1"] }),
+    // null = sem erro no lote → o confirm não lança.
+    pollBatchUntilDone: vi.fn().mockResolvedValue(null),
   },
 }));
 
@@ -53,6 +55,7 @@ describe("SyncUseCase.syncProductStock — plataforma FACEBOOK", () => {
     (FacebookApiService.setAvailability as any).mockResolvedValue({
       handles: ["h1"],
     });
+    (FacebookApiService.pollBatchUntilDone as any).mockResolvedValue(null);
     (ListingRepository.updateStatus as any).mockResolvedValue({});
     (prisma as any).syncLog.create.mockResolvedValue({});
   });

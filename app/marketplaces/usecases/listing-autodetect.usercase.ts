@@ -11,6 +11,7 @@ import { SyncUseCase } from "./sync.usercase";
 import { MLItemDetails } from "../types/ml-api.types";
 import { ShopeeItem } from "../types/shopee-api.types";
 import { MagaluSku } from "../types/magalu-api.types";
+import { FacebookCatalogProduct } from "../types/facebook-api.types";
 
 /**
  * Formato comum para o qual ML e Shopee normalizam um anúncio antes de chamar o
@@ -473,6 +474,48 @@ export class ListingAutodetectUseCase {
       createdAt: this.parseDate(
         (sku as { created_at?: string }).created_at,
       ),
+    };
+  }
+
+  /**
+   * Normaliza um item do Catálogo Meta (GET /{catalog_id}/products) para o
+   * núcleo de auto-detecção. Espelha normalizeMagaluItem: a identidade do item
+   * é o `retailer_id`, que o Dexo grava = SKU (buildRetailerId) — por isso ele é
+   * a chave de vínculo (externalListingId/externalSku), sem divergir do create.
+   * `availability` "out of stock" ⇒ status "paused"; qualquer outro ⇒ "active".
+   * A borda /products não expõe created_at confiável ⇒ createdAt = agora
+   * (informativo; o vínculo é por SKU, não por data).
+   */
+  static normalizeFacebookItem(
+    account: { id: string; userId: string },
+    item: FacebookCatalogProduct,
+  ): NormalizedMarketplaceItem {
+    const rawSku =
+      typeof item.retailer_id === "string" && item.retailer_id.trim().length > 0
+        ? item.retailer_id
+        : null;
+    const externalListingId = String(rawSku ?? item.id ?? "");
+    const imageUrl =
+      typeof item.image_url === "string" && item.image_url.trim().length > 0
+        ? item.image_url
+        : null;
+    const availability = (item.availability as string) || "in stock";
+    const status = /out.?of.?stock|discontinued/i.test(availability)
+      ? "paused"
+      : "active";
+    return {
+      platform: Platform.FACEBOOK,
+      account,
+      externalListingId,
+      rawSku,
+      title: (item.name as string) || rawSku || externalListingId,
+      price: this.coercePrice(item.price),
+      stock: status === "paused" ? 0 : 1,
+      status,
+      permalink: (item.url as string) || null,
+      imageUrl,
+      imageUrls: imageUrl ? [imageUrl] : [],
+      createdAt: new Date(),
     };
   }
 

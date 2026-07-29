@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import {
   Upload,
+  Download,
   RefreshCw,
   CheckCircle2,
   XCircle,
@@ -14,6 +15,8 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { getApiBaseUrl } from "@/lib/api";
 import {
   Card,
@@ -47,15 +50,140 @@ interface SyncResponse {
   message?: string;
 }
 
+interface ImportItem {
+  externalListingId: string;
+  title: string;
+  sku: string | null;
+  linkedProductId: string | null;
+  status: string;
+}
+
+interface ImportResult {
+  totalItems: number;
+  linkedItems: number;
+  unlinkedItems: number;
+  createdProducts?: number;
+  items: ImportItem[];
+  errors: string[];
+  message?: string;
+}
+
+interface ImportProgress {
+  state: "running" | "completed" | "failed";
+  accountsTotal: number;
+  accountsDone: number;
+  processedItems: number;
+  startedAt: string;
+  finishedAt?: string;
+  message?: string;
+}
+
+interface ImportJobStartResponse {
+  success: boolean;
+  importId: string;
+  status: "running" | "completed" | "failed";
+  message: string;
+}
+
+interface ImportJobStatusResponse {
+  success: boolean;
+  importId: string;
+  status: "running" | "completed" | "failed";
+  progress: ImportProgress;
+  result?: ImportResult;
+}
+
 export function FacebookSyncTab() {
   const { data: session } = useSession();
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(
+    null,
+  );
   const [syncResult, setSyncResult] = useState<SyncResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<
     Array<{ id: string; accountName: string }>
   >([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+
+  // Consulta o status do job de importação (cria+vincula) e atualiza a UI.
+  const pollImportStatus = useCallback(
+    async (jobId: string) => {
+      if (!session?.user?.email) return;
+
+      const response = await fetch(
+        `${getApiBaseUrl()}/marketplace/facebook/import/${jobId}`,
+        { headers: { email: session.user.email } },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || "Erro ao consultar importação");
+      }
+
+      const statusData = data as ImportJobStatusResponse;
+      setImportProgress(statusData.progress);
+      if (statusData.result) setImportResult(statusData.result);
+
+      if (statusData.status === "completed") {
+        setIsImporting(false);
+        setImportJobId(null);
+        return;
+      }
+      if (statusData.status === "failed") {
+        setIsImporting(false);
+        setImportJobId(null);
+        setError(
+          statusData.progress?.message ||
+            statusData.result?.errors?.[0] ||
+            "Erro ao importar itens do Facebook",
+        );
+      }
+    },
+    [session?.user?.email],
+  );
+
+  const handleImport = useCallback(async () => {
+    if (!session?.user?.email) return;
+
+    setIsImporting(true);
+    setError(null);
+    setImportResult(null);
+    setImportJobId(null);
+    setImportProgress(null);
+
+    try {
+      const url = new URL(`${getApiBaseUrl()}/marketplace/facebook/import`);
+      if (selectedAccountId)
+        url.searchParams.set("accountId", selectedAccountId);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: { email: session.user.email },
+      });
+
+      const data = (await response.json()) as ImportJobStartResponse;
+      if (!response.ok && response.status !== 202) {
+        throw new Error(data.message || "Erro ao importar itens");
+      }
+
+      setImportJobId(data.importId);
+      setImportProgress({
+        state: data.status,
+        accountsTotal: 0,
+        accountsDone: 0,
+        processedItems: 0,
+        startedAt: new Date().toISOString(),
+        message: data.message,
+      });
+    } catch (err) {
+      setImportJobId(null);
+      setError(err instanceof Error ? err.message : "Erro ao importar");
+      setIsImporting(false);
+    }
+  }, [session?.user?.email, selectedAccountId]);
 
   const handleSync = useCallback(async () => {
     if (!session?.user?.email) return;
@@ -121,6 +249,36 @@ export function FacebookSyncTab() {
     loadAccounts();
   }, [session?.user?.email]);
 
+  // Polling do job de importação (a cada 2s enquanto estiver rodando).
+  useEffect(() => {
+    if (!importJobId || !isImporting) return;
+
+    let cancelled = false;
+    const runPoll = async () => {
+      if (cancelled) return;
+      try {
+        await pollImportStatus(importJobId);
+      } catch (err) {
+        if (cancelled) return;
+        setImportJobId(null);
+        setIsImporting(false);
+        setError(
+          err instanceof Error ? err.message : "Erro ao consultar importação",
+        );
+      }
+    };
+
+    void runPoll();
+    const intervalId = window.setInterval(() => {
+      void runPoll();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [importJobId, isImporting, pollImportStatus]);
+
   return (
     <div className="space-y-4">
       {error && (
@@ -128,6 +286,173 @@ export function FacebookSyncTab() {
           {error}
         </div>
       )}
+
+      {/* Card de Importação — vínculo por SKU dos itens já no catálogo Meta. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Download className="h-5 w-5" />
+            Importar Anúncios
+          </CardTitle>
+          <CardDescription>
+            Busca os itens do seu catálogo no Facebook e tenta vinculá-los
+            automaticamente aos produtos do seu estoque pelo SKU (retailer_id).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded border px-2 py-1 text-sm"
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+            >
+              <option value="">Todas as contas</option>
+              {accounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.accountName || acc.id}
+                </option>
+              ))}
+            </select>
+
+            <Button onClick={handleImport} disabled={isImporting}>
+              {isImporting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Importando...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Importar anúncios
+                </>
+              )}
+            </Button>
+          </div>
+
+          {isImporting && (
+            <div className="flex items-center gap-2 rounded-md border p-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>
+                {importProgress?.message ||
+                  "Importando anúncios em segundo plano…"}
+                {importProgress && importProgress.accountsTotal > 1
+                  ? ` (conta ${importProgress.accountsDone}/${importProgress.accountsTotal})`
+                  : ""}
+              </span>
+            </div>
+          )}
+
+          {importResult && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-green-500" />
+                <span className="font-medium">
+                  {importResult.message ||
+                    `Importação concluída: ${importResult.createdProducts ?? 0} produto(s) criado(s), ${importResult.linkedItems} vinculado(s)`}
+                </span>
+              </div>
+
+              {!importResult.message && (
+                <div className="grid grid-cols-2 gap-4 text-center sm:grid-cols-4">
+                  <div className="rounded-md bg-muted p-3">
+                    <div className="text-2xl font-bold">
+                      {importResult.totalItems}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Total de itens
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-blue-100 p-3 dark:bg-blue-900/20">
+                    <div className="text-2xl font-bold text-blue-700 dark:text-blue-400">
+                      {importResult.createdProducts ?? 0}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Produtos criados
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-green-100 p-3 dark:bg-green-900/20">
+                    <div className="text-2xl font-bold text-green-700 dark:text-green-400">
+                      {importResult.linkedItems}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Vinculados
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-yellow-100 p-3 dark:bg-yellow-900/20">
+                    <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-400">
+                      {importResult.unlinkedItems}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Não vinculados
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!importResult.message && importResult.items.length > 0 && (
+                <Accordion type="single" collapsible className="w-full">
+                  <AccordionItem value="items">
+                    <AccordionTrigger className="text-sm">
+                      Ver detalhes ({importResult.items.length} itens)
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="max-h-60 space-y-2 overflow-y-auto">
+                        {importResult.items.map((item) => (
+                          <div
+                            key={item.externalListingId}
+                            className="flex items-center justify-between rounded-md border p-2 text-sm"
+                          >
+                            <div className="flex-1 truncate">
+                              <div className="truncate font-medium">
+                                {item.title}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                SKU: {item.sku || "Sem SKU"} | ID:{" "}
+                                {item.externalListingId}
+                              </div>
+                            </div>
+                            {item.linkedProductId ? (
+                              <Badge
+                                variant="default"
+                                className="ml-2 shrink-0"
+                              >
+                                Vinculado
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="secondary"
+                                className="ml-2 shrink-0"
+                              >
+                                Sem vínculo
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              )}
+
+              {importResult.errors.length > 0 && (
+                <div className="rounded-md bg-destructive/10 p-3">
+                  <div className="flex items-center gap-2 text-sm font-medium text-destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    {importResult.errors.length} erro(s) durante importação
+                  </div>
+                  <ul className="mt-2 list-inside list-disc text-xs text-destructive">
+                    {importResult.errors.map((err, i) => (
+                      <li key={i}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Separator />
 
       {/* Nota: Facebook é unidirecional (ERP→Meta) e sem importação de pedidos. */}
       <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">

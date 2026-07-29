@@ -9,6 +9,7 @@ vi.hoisted(() => {
 vi.mock("@/app/lib/prisma", () => ({
   default: {
     product: { findUnique: vi.fn() },
+    productListing: { findUnique: vi.fn().mockResolvedValue(null) },
     syncLog: { create: vi.fn().mockResolvedValue({}) },
   },
 }));
@@ -17,6 +18,8 @@ vi.mock("../../services/olx-api.service", () => ({
   OlxApiService: {
     deleteAd: vi.fn().mockResolvedValue({ statusCode: 0 }),
     submitImport: vi.fn().mockResolvedValue({ statusCode: 0, token: "tk" }),
+    // null = sem recusa no import assíncrono.
+    pollImportUntilDone: vi.fn().mockResolvedValue(null),
   },
 }));
 
@@ -29,7 +32,7 @@ import { OlxApiService } from "../../services/olx-api.service";
 import { ListingRepository } from "../../repositories/listing.repository";
 import { SyncUseCase } from "../sync.usercase";
 
-function productWith(stock: number) {
+function productWith(stock: number, listingStatus?: string) {
   return {
     id: "prod-1",
     name: "Farol Direito Gol 2012",
@@ -40,12 +43,16 @@ function productWith(stock: number) {
     model: "Gol",
     year: "2012",
     quality: "SUCATA",
+    // Produto precisa de imagem p/ republicar (guarda no build).
+    imageUrl: "https://img.example/1.jpg",
+    imageUrls: ["https://img.example/1.jpg"],
     olxCategoryId: 555, // categoria explícita → resolve offline
     listings: [
       {
         id: "listing-1",
         externalListingId: "SKU1",
         externalSku: "SKU1",
+        status: listingStatus,
         marketplaceAccount: {
           id: "acc-olx",
           platform: Platform.OLX,
@@ -64,6 +71,7 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
       statusCode: 0,
       token: "tk",
     });
+    (OlxApiService.pollImportUntilDone as any).mockResolvedValue(null);
     (ListingRepository.updateStatus as any).mockResolvedValue({});
     (prisma as any).syncLog.create.mockResolvedValue({});
   });
@@ -82,7 +90,8 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     expect(results[0].success).toBe(true);
   });
 
-  it("estoque > 0 → submitImport insert (re-publica) e marca active", async () => {
+  it("estoque > 0 e anúncio FORA do ar → republica (insert mesmo id) e marca active", async () => {
+    // listing sem status (= saiu do ar) → deve republicar.
     (prisma as any).product.findUnique.mockResolvedValue(productWith(5));
 
     const results = await SyncUseCase.syncProductStock("prod-1");
@@ -98,6 +107,21 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
       "active",
     );
     expect(results[0].success).toBe(true);
+  });
+
+  it("estoque > 0 e anúncio JÁ ativo → NO-OP (não republica, não destrói o anúncio)", async () => {
+    // O bug original: republicava o anúncio inteiro no sync de estoque, zerando
+    // preço/foto/qualidade. Agora estoque>0 + ativo = nada a fazer.
+    (prisma as any).product.findUnique.mockResolvedValue(
+      productWith(5, "active"),
+    );
+
+    const results = await SyncUseCase.syncProductStock("prod-1");
+
+    expect(OlxApiService.submitImport).not.toHaveBeenCalled();
+    expect(OlxApiService.deleteAd).not.toHaveBeenCalled();
+    expect(results[0].success).toBe(true);
+    expect((results[0] as any).skipped).toBe(true);
   });
 
   it("NÃO cai no default 'plataforma não suportada' (o case OLX existe)", async () => {

@@ -75,3 +75,24 @@ export interface FacebookBatchStatusEntry {
 export interface FacebookBatchStatusResponse {
   data: FacebookBatchStatusEntry[];
 }
+
+/**
+ * Item lido em GET /{catalog_id}/products (usado no vínculo por SKU do
+ * "Importar anúncios"). `retailer_id` é a chave estável que o Dexo grava = SKU
+ * (buildRetailerId); `id` é o id numérico do produto no catálogo Meta.
+ */
+export interface FacebookCatalogProduct {
+  id?: string;
+  retailer_id?: string;
+  name?: string;
+  availability?: string;
+  url?: string;
+  price?: string | number;
+  image_url?: string;
+}
+
+/** Resposta paginada do GET /{catalog_id}/products (cursor `after`). */
+export interface FacebookCatalogProductsResponse {
+  data?: FacebookCatalogProduct[];
+  paging?: { cursors?: { after?: string }; next?: string };
+}

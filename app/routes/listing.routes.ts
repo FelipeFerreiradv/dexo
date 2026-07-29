@@ -911,7 +911,9 @@ export async function listingRoutes(app: FastifyInstance) {
           if (
             req.platform !== "MERCADO_LIVRE" &&
             req.platform !== "SHOPEE" &&
-            req.platform !== "MAGALU"
+            req.platform !== "MAGALU" &&
+            req.platform !== "OLX" &&
+            req.platform !== "FACEBOOK"
           ) {
             return reply.status(400).send({
               error: "Dados inválidos",
@@ -1136,7 +1138,9 @@ export async function listingRoutes(app: FastifyInstance) {
               !r ||
               (r.platform !== "MERCADO_LIVRE" &&
                 r.platform !== "SHOPEE" &&
-                r.platform !== "MAGALU") ||
+                r.platform !== "MAGALU" &&
+                r.platform !== "OLX" &&
+                r.platform !== "FACEBOOK") ||
               typeof r.accountId !== "string" ||
               !r.accountId,
           )
@@ -1180,7 +1184,9 @@ export async function listingRoutes(app: FastifyInstance) {
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
                   : r.platform === "SHOPEE"
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+                    : r.platform === "MAGALU"
+                      ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                      : false;
               if (!skipped) effectiveTotal++;
             }
           }
@@ -1394,7 +1400,9 @@ export async function listingRoutes(app: FastifyInstance) {
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
                   : r.platform === "SHOPEE"
                     ? ov?.disabledShopeeAccountIds?.includes(r.accountId)
-                    : ov?.disabledMagaluAccountIds?.includes(r.accountId);
+                    : r.platform === "MAGALU"
+                      ? ov?.disabledMagaluAccountIds?.includes(r.accountId)
+                      : false;
               if (!skipped) retryTotal++;
             }
           }

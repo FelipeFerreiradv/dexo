@@ -113,6 +113,8 @@ const productEditSchema = z.object({
   mlCategory: z.string().optional().nullable(),
   shopeeCategory: z.string().optional().nullable(),
   magaluCategory: z.string().optional().nullable(),
+  olxCategory: z.string().optional().nullable(),
+  facebookCategory: z.string().optional().nullable(),
   location: z.string().max(100).optional().nullable(),
   locationId: z.string().optional().nullable(),
   partNumber: z.string().max(100).optional().nullable(),
@@ -188,6 +190,8 @@ interface Product {
   mlCategoryId?: string | null;
   shopeeCategory?: string | null;
   shopeeCategoryId?: string | null;
+  olxCategoryId?: string | null;
+  fbCategory?: string | null;
   location?: string | null;
   locationId?: string | null;
   partNumber?: string | null;
@@ -290,6 +294,24 @@ const mlSuggestCache = new Map<string, CatOption[]>();
 // Magalu (3º marketplace) só aparece com a flag. Módulo (não é dep de hook).
 const MAGALU_ENABLED =
   process.env.NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED === "true";
+// OLX e Facebook (novas plataformas) atrás das próprias flags.
+const OLX_ENABLED = process.env.NEXT_PUBLIC_OLX_INTEGRATION_ENABLED === "true";
+const FACEBOOK_ENABLED =
+  process.env.NEXT_PUBLIC_FACEBOOK_INTEGRATION_ENABLED === "true";
+
+const PLATFORM_LABELS: Record<
+  EditProductDialogListingContext["platform"],
+  string
+> = {
+  MERCADO_LIVRE: "Mercado Livre",
+  SHOPEE: "Shopee",
+  MAGALU: "Magalu",
+  OLX: "OLX",
+  FACEBOOK: "Facebook",
+};
+function platformLabel(platform: EditProductDialogListingContext["platform"]) {
+  return PLATFORM_LABELS[platform] ?? platform;
+}
 
 export function EditProductDialog({
   product,
@@ -364,6 +386,38 @@ export function EditProductDialog({
   const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
   const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
   const magaluSuggestedRef = useRef(false);
+  // OLX e Facebook (atrás das flags) — espelham Magalu (toggle + contas +
+  // categoria opcional). Sugestão 1x no toggle + busca server-side debounced;
+  // vazia = o backend resolve automaticamente.
+  const [olxAccounts, setOlxAccounts] = useState<
+    Array<{ id: string; accountName?: string }>
+  >([]);
+  const [selectedOlxAccounts, setSelectedOlxAccounts] = useState<string[]>([]);
+  const [createOlxListing, setCreateOlxListing] = useState(false);
+  const [olxOptions, setOlxOptions] = useState<{ id: string; value: string }[]>(
+    [],
+  );
+  const [olxCategorySearch, setOlxCategorySearch] = useState("");
+  const [olxCategoryDropdownOpen, setOlxCategoryDropdownOpen] = useState(false);
+  const [olxCategoryLoading, setOlxCategoryLoading] = useState(false);
+  const [olxSelectedLabel, setOlxSelectedLabel] = useState("");
+  const olxSuggestedRef = useRef(false);
+  const [facebookAccounts, setFacebookAccounts] = useState<
+    Array<{ id: string; accountName?: string }>
+  >([]);
+  const [selectedFacebookAccounts, setSelectedFacebookAccounts] = useState<
+    string[]
+  >([]);
+  const [createFacebookListing, setCreateFacebookListing] = useState(false);
+  const [facebookOptions, setFacebookOptions] = useState<
+    { id: string; value: string }[]
+  >([]);
+  const [facebookCategorySearch, setFacebookCategorySearch] = useState("");
+  const [facebookCategoryDropdownOpen, setFacebookCategoryDropdownOpen] =
+    useState(false);
+  const [facebookCategoryLoading, setFacebookCategoryLoading] = useState(false);
+  const [facebookSelectedLabel, setFacebookSelectedLabel] = useState("");
+  const facebookSuggestedRef = useRef(false);
 
   // ML listing settings (loaded from user defaults)
   const [mlListingType, setMlListingType] = useState("bronze");
@@ -469,6 +523,8 @@ export function EditProductDialog({
       mlCategory: product.mlCategory || "",
       shopeeCategory: product.shopeeCategoryId || "",
       magaluCategory: "",
+      olxCategory: product.olxCategoryId || "",
+      facebookCategory: product.fbCategory || "",
       location: product.location || "",
       partNumber: product.partNumber || "",
       quality: product.quality || null,
@@ -793,6 +849,30 @@ export function EditProductDialog({
     });
   }, [createMagaluListing, magaluAccounts]);
 
+  useEffect(() => {
+    if (!createOlxListing) return;
+    if (olxAccounts.length === 0) return;
+    setSelectedOlxAccounts((prev) => {
+      const allIds = olxAccounts.map((acc) => acc.id);
+      const hasAll =
+        prev.length === allIds.length &&
+        allIds.every((id) => prev.includes(id));
+      return hasAll ? prev : allIds;
+    });
+  }, [createOlxListing, olxAccounts]);
+
+  useEffect(() => {
+    if (!createFacebookListing) return;
+    if (facebookAccounts.length === 0) return;
+    setSelectedFacebookAccounts((prev) => {
+      const allIds = facebookAccounts.map((acc) => acc.id);
+      const hasAll =
+        prev.length === allIds.length &&
+        allIds.every((id) => prev.includes(id));
+      return hasAll ? prev : allIds;
+    });
+  }, [createFacebookListing, facebookAccounts]);
+
   // Sugere a categoria Magalu 1x quando o toggle liga (ref-guard = 1 fetch, não
   // por tecla). Usa o nome atual do produto. Espelha o modal de criação.
   useEffect(() => {
@@ -861,6 +941,130 @@ export function EditProductDialog({
     }, 400);
     return () => clearTimeout(handle);
   }, [magaluCategorySearch, createMagaluListing, session?.user?.email]);
+
+  // Sugere a categoria OLX 1x quando o toggle liga. Espelha o fluxo Magalu.
+  useEffect(() => {
+    if (!OLX_ENABLED || !createOlxListing) {
+      olxSuggestedRef.current = false;
+      return;
+    }
+    if (olxSuggestedRef.current) return;
+    const name = (watchName || product.name || "").trim();
+    if (!name) return;
+    olxSuggestedRef.current = true;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/olx/category-suggest?name=${encodeURIComponent(
+            name,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data?.categoryId) {
+          const label = data.path || data.categoryId;
+          setValue("olxCategory", data.categoryId, { shouldDirty: true });
+          setOlxSelectedLabel(label);
+          setOlxOptions([{ id: data.categoryId, value: label }]);
+        }
+      } catch (err) {
+        console.error("Erro ao sugerir categoria OLX:", err);
+      }
+    })();
+  }, [createOlxListing, watchName, setValue, session?.user?.email, product.name]);
+
+  useEffect(() => {
+    if (!OLX_ENABLED || !createOlxListing) return;
+    const term = olxCategorySearch.trim();
+    if (term.length < 2) return;
+    const handle = setTimeout(async () => {
+      setOlxCategoryLoading(true);
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/olx/categories?search=${encodeURIComponent(
+            term,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setOlxOptions(Array.isArray(data?.categories) ? data.categories : []);
+        }
+      } catch (err) {
+        console.error("Erro ao buscar categorias OLX:", err);
+      } finally {
+        setOlxCategoryLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [olxCategorySearch, createOlxListing, session?.user?.email]);
+
+  // Sugere a categoria Facebook 1x quando o toggle liga. Espelha o fluxo Magalu.
+  useEffect(() => {
+    if (!FACEBOOK_ENABLED || !createFacebookListing) {
+      facebookSuggestedRef.current = false;
+      return;
+    }
+    if (facebookSuggestedRef.current) return;
+    const name = (watchName || product.name || "").trim();
+    if (!name) return;
+    facebookSuggestedRef.current = true;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/facebook/category-suggest?name=${encodeURIComponent(
+            name,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data?.categoryId) {
+          const label = data.path || data.categoryId;
+          setValue("facebookCategory", data.categoryId, { shouldDirty: true });
+          setFacebookSelectedLabel(label);
+          setFacebookOptions([{ id: data.categoryId, value: label }]);
+        }
+      } catch (err) {
+        console.error("Erro ao sugerir categoria Facebook:", err);
+      }
+    })();
+  }, [
+    createFacebookListing,
+    watchName,
+    setValue,
+    session?.user?.email,
+    product.name,
+  ]);
+
+  useEffect(() => {
+    if (!FACEBOOK_ENABLED || !createFacebookListing) return;
+    const term = facebookCategorySearch.trim();
+    if (term.length < 2) return;
+    const handle = setTimeout(async () => {
+      setFacebookCategoryLoading(true);
+      try {
+        const resp = await fetch(
+          `${getApiBaseUrl()}/marketplace/facebook/categories?search=${encodeURIComponent(
+            term,
+          )}`,
+          { headers: { email: session?.user?.email || "" } },
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          setFacebookOptions(
+            Array.isArray(data?.categories) ? data.categories : [],
+          );
+        }
+      } catch (err) {
+        console.error("Erro ao buscar categorias Facebook:", err);
+      } finally {
+        setFacebookCategoryLoading(false);
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [facebookCategorySearch, createFacebookListing, session?.user?.email]);
 
   // Busca descrição padrão do usuário (para pré‑preencher quando produto não tiver descrição)
   // e padrões de anúncio ML. Em seguida, sobrepõe com settings já persistidos
@@ -1066,14 +1270,28 @@ export function EditProductDialog({
       setCreateMlListing(false);
       setCreateShopeeListing(false);
       setCreateMagaluListing(false);
+      setCreateOlxListing(false);
+      setCreateFacebookListing(false);
       setSelectedMlAccounts([]);
       setSelectedShopeeAccounts([]);
       setSelectedMagaluAccounts([]);
+      setSelectedOlxAccounts([]);
+      setSelectedFacebookAccounts([]);
       magaluSuggestedRef.current = false;
       setMagaluSelectedLabel("");
       setMagaluOptions([]);
       setMagaluCategorySearch("");
       setMagaluCategoryDropdownOpen(false);
+      olxSuggestedRef.current = false;
+      setOlxSelectedLabel("");
+      setOlxOptions([]);
+      setOlxCategorySearch("");
+      setOlxCategoryDropdownOpen(false);
+      facebookSuggestedRef.current = false;
+      setFacebookSelectedLabel("");
+      setFacebookOptions([]);
+      setFacebookCategorySearch("");
+      setFacebookCategoryDropdownOpen(false);
 
       setMlCategoryWarning(null);
 
@@ -1122,6 +1340,18 @@ export function EditProductDialog({
               (r) => (r.ok ? r.json() : null),
             )
           : null,
+        // 3c. Contas OLX (atrás da flag)
+        email && OLX_ENABLED
+          ? fetch(`${base}/marketplace/olx/accounts`, { headers }).then((r) =>
+              r.ok ? r.json() : null,
+            )
+          : null,
+        // 3d. Contas Facebook (atrás da flag)
+        email && FACEBOOK_ENABLED
+          ? fetch(`${base}/marketplace/facebook/accounts`, { headers }).then(
+              (r) => (r.ok ? r.json() : null),
+            )
+          : null,
         // 4. Compatibilidades
         email && product.id
           ? fetch(`${base}/products/${product.id}/compatibilities`, {
@@ -1131,7 +1361,16 @@ export function EditProductDialog({
         // 5. Descrição padrão do usuário
         fetchDefaultDescriptionRef.current(),
       ])
-        .then(([locJson, mlJson, shJson, magaluJson, compatJson]) => {
+        .then(
+          ([
+            locJson,
+            mlJson,
+            shJson,
+            magaluJson,
+            olxJson,
+            facebookJson,
+            compatJson,
+          ]) => {
           if (locJson)
             setLocationOptions(
               Array.isArray(locJson.locations) ? locJson.locations : [],
@@ -1147,6 +1386,16 @@ export function EditProductDialog({
           if (magaluJson)
             setMagaluAccounts(
               Array.isArray(magaluJson.accounts) ? magaluJson.accounts : [],
+            );
+          if (olxJson)
+            setOlxAccounts(
+              Array.isArray(olxJson.accounts) ? olxJson.accounts : [],
+            );
+          if (facebookJson)
+            setFacebookAccounts(
+              Array.isArray(facebookJson.accounts)
+                ? facebookJson.accounts
+                : [],
             );
           if (compatJson) {
             const items: CompatibilityEntry[] = (
@@ -1814,6 +2063,24 @@ export function EditProductDialog({
         return;
       }
 
+      if (createOlxListing && selectedOlxAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta da OLX para criar o anúncio.",
+          "error",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (createFacebookListing && selectedFacebookAccounts.length === 0) {
+        onToast(
+          "Selecione ao menos uma conta do Facebook para criar o anúncio.",
+          "error",
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       const mlCategorySourceToSend = data.mlCategory
         ? autoDetectedRef.current?.mlCategory === data.mlCategory
           ? "auto"
@@ -2122,7 +2389,7 @@ export function EditProductDialog({
       // de 60s por conta. O status final aparece na aba Anúncios conforme os
       // jobs terminam em background.
       const dispatchRequests: Array<{
-        platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
+        platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU" | "OLX" | "FACEBOOK";
         accountId?: string;
         categoryId?: string;
         mlSettings?: Record<string, unknown>;
@@ -2174,6 +2441,32 @@ export function EditProductDialog({
             platform: "MAGALU",
             accountId,
             categoryId: magaluCategoryId,
+          });
+        }
+      }
+
+      // OLX/Facebook: mesma semântica do Magalu — categoria opcional, vazia →
+      // resolvida no backend no momento do envio.
+      if (createOlxListing && selectedOlxAccounts.length > 0) {
+        const olxCategoryId =
+          data.olxCategory || product.olxCategoryId || undefined;
+        for (const accountId of selectedOlxAccounts) {
+          dispatchRequests.push({
+            platform: "OLX",
+            accountId,
+            categoryId: olxCategoryId,
+          });
+        }
+      }
+
+      if (createFacebookListing && selectedFacebookAccounts.length > 0) {
+        const facebookCategoryId =
+          data.facebookCategory || product.fbCategory || undefined;
+        for (const accountId of selectedFacebookAccounts) {
+          dispatchRequests.push({
+            platform: "FACEBOOK",
+            accountId,
+            categoryId: facebookCategoryId,
           });
         }
       }
@@ -2282,11 +2575,7 @@ export function EditProductDialog({
         <DialogHeader>
           <DialogTitle>
             {listingContext
-              ? `Editar anúncio · ${
-                  listingContext.platform === "MERCADO_LIVRE"
-                    ? "Mercado Livre"
-                    : "Shopee"
-                }`
+              ? `Editar anúncio · ${platformLabel(listingContext.platform)}`
               : "Editar Produto"}
           </DialogTitle>
           <DialogDescription>
@@ -2919,10 +3208,10 @@ export function EditProductDialog({
               </p>
               <p className="text-xs text-muted-foreground">
                 {listingContext
-                  ? listingContext.platform === "MERCADO_LIVRE"
-                    ? "Os ajustes abaixo serão aplicados apenas neste anúncio do Mercado Livre."
-                    : "Os ajustes abaixo serão aplicados apenas neste anúncio da Shopee."
-                  : "Crie anúncios nas contas selecionadas (Mercado Livre e Shopee)."}
+                  ? `Os ajustes abaixo serão aplicados apenas neste anúncio · ${platformLabel(
+                      listingContext.platform,
+                    )}.`
+                  : "Crie anúncios nas contas selecionadas."}
               </p>
             </div>
 
@@ -2977,7 +3266,9 @@ export function EditProductDialog({
                       controle quando QUALQUER marketplace tem 2+ contas. */}
                   {(mlAccounts.length > 1 ||
                     shopeeAccounts.length > 1 ||
-                    magaluAccounts.length > 1) && (
+                    magaluAccounts.length > 1 ||
+                    olxAccounts.length > 1 ||
+                    facebookAccounts.length > 1) && (
                     <div className="mt-2 space-y-2 rounded-md border p-3">
                       <label className="flex items-center justify-between gap-2 text-sm font-medium">
                         <span>
@@ -3724,6 +4015,313 @@ export function EditProductDialog({
                       <p className="text-xs text-muted-foreground">
                         Opcional — se vazio, a categoria é resolvida
                         automaticamente no Magalu.
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {!listingContext && OLX_ENABLED && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    id="edit-create-olx-listing"
+                    checked={createOlxListing}
+                    onCheckedChange={setCreateOlxListing}
+                  />
+                  <Label
+                    htmlFor="edit-create-olx-listing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio na OLX
+                  </Label>
+                </div>
+                {createOlxListing && (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {olxAccounts.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Conecte ao menos uma conta da OLX.
+                        </p>
+                      ) : (
+                        olxAccounts.map((acc) => (
+                          <label
+                            key={acc.id}
+                            className="flex items-center justify-between rounded-md border p-2 text-sm"
+                          >
+                            <span>{acc.accountName || acc.id}</span>
+                            <Switch
+                              checked={selectedOlxAccounts.includes(acc.id)}
+                              onCheckedChange={(checked) =>
+                                setSelectedOlxAccounts((prev) =>
+                                  checked
+                                    ? [...prev, acc.id]
+                                    : prev.filter((id) => id !== acc.id),
+                                )
+                              }
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <Label htmlFor="olxCategory">Categoria na OLX</Label>
+                      <Controller
+                        name="olxCategory"
+                        control={control}
+                        render={({ field }) => {
+                          const fmt = (v: string) =>
+                            v
+                              .split("/")
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(" > ");
+                          const rawLabel =
+                            olxSelectedLabel ||
+                            olxOptions.find((o) => o.id === field.value)
+                              ?.value ||
+                            "";
+                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                          const term = olxCategorySearch.trim();
+                          return (
+                            <div className="relative">
+                              {selectedLabel && !olxCategoryDropdownOpen && (
+                                <div
+                                  className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                                  onClick={() => {
+                                    setOlxCategoryDropdownOpen(true);
+                                    setOlxCategorySearch("");
+                                  }}
+                                >
+                                  <span className="truncate">
+                                    {selectedLabel}
+                                  </span>
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    Alterar
+                                  </span>
+                                </div>
+                              )}
+                              {(olxCategoryDropdownOpen || !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria da OLX..."
+                                    value={olxCategorySearch}
+                                    onChange={(e) =>
+                                      setOlxCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      setTimeout(
+                                        () => setOlxCategoryDropdownOpen(false),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={olxCategoryDropdownOpen}
+                                  />
+                                  {term && olxOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
+                                      {olxOptions.map((o) => (
+                                        <button
+                                          type="button"
+                                          key={o.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            o.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(o.id);
+                                            setOlxSelectedLabel(o.value);
+                                            setOlxCategorySearch("");
+                                            setOlxCategoryDropdownOpen(false);
+                                          }}
+                                        >
+                                          {fmt(o.value)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {term &&
+                                    !olxCategoryLoading &&
+                                    olxOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                  {olxCategoryLoading && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                      Buscando…
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Opcional — se vazio, a categoria é resolvida
+                        automaticamente na OLX.
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {!listingContext && FACEBOOK_ENABLED && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    id="edit-create-facebook-listing"
+                    checked={createFacebookListing}
+                    onCheckedChange={setCreateFacebookListing}
+                  />
+                  <Label
+                    htmlFor="edit-create-facebook-listing"
+                    className="cursor-pointer"
+                  >
+                    Criar anúncio no Facebook
+                  </Label>
+                </div>
+                {createFacebookListing && (
+                  <>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {facebookAccounts.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Conecte ao menos uma conta do Facebook.
+                        </p>
+                      ) : (
+                        facebookAccounts.map((acc) => (
+                          <label
+                            key={acc.id}
+                            className="flex items-center justify-between rounded-md border p-2 text-sm"
+                          >
+                            <span>{acc.accountName || acc.id}</span>
+                            <Switch
+                              checked={selectedFacebookAccounts.includes(
+                                acc.id,
+                              )}
+                              onCheckedChange={(checked) =>
+                                setSelectedFacebookAccounts((prev) =>
+                                  checked
+                                    ? [...prev, acc.id]
+                                    : prev.filter((id) => id !== acc.id),
+                                )
+                              }
+                            />
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <Label htmlFor="facebookCategory">
+                        Categoria no Facebook
+                      </Label>
+                      <Controller
+                        name="facebookCategory"
+                        control={control}
+                        render={({ field }) => {
+                          const fmt = (v: string) =>
+                            v
+                              .split("/")
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(" > ");
+                          const rawLabel =
+                            facebookSelectedLabel ||
+                            facebookOptions.find((o) => o.id === field.value)
+                              ?.value ||
+                            "";
+                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                          const term = facebookCategorySearch.trim();
+                          return (
+                            <div className="relative">
+                              {selectedLabel &&
+                                !facebookCategoryDropdownOpen && (
+                                  <div
+                                    className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-accent"
+                                    onClick={() => {
+                                      setFacebookCategoryDropdownOpen(true);
+                                      setFacebookCategorySearch("");
+                                    }}
+                                  >
+                                    <span className="truncate">
+                                      {selectedLabel}
+                                    </span>
+                                    <span className="ml-2 text-xs text-muted-foreground">
+                                      Alterar
+                                    </span>
+                                  </div>
+                                )}
+                              {(facebookCategoryDropdownOpen ||
+                                !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria do Facebook..."
+                                    value={facebookCategorySearch}
+                                    onChange={(e) =>
+                                      setFacebookCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      setTimeout(
+                                        () =>
+                                          setFacebookCategoryDropdownOpen(
+                                            false,
+                                          ),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={facebookCategoryDropdownOpen}
+                                  />
+                                  {term && facebookOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-background shadow-md">
+                                      {facebookOptions.map((o) => (
+                                        <button
+                                          type="button"
+                                          key={o.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            o.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(o.id);
+                                            setFacebookSelectedLabel(o.value);
+                                            setFacebookCategorySearch("");
+                                            setFacebookCategoryDropdownOpen(
+                                              false,
+                                            );
+                                          }}
+                                        >
+                                          {fmt(o.value)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {term &&
+                                    !facebookCategoryLoading &&
+                                    facebookOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                  {facebookCategoryLoading && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground shadow-md">
+                                      Buscando…
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Opcional — se vazio, a categoria é resolvida
+                        automaticamente no Facebook.
                       </p>
                     </div>
                   </>

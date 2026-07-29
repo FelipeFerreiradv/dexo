@@ -43,15 +43,19 @@ export function DonutSplit({
   shopee,
   outro,
   magalu = 0,
+  olx = 0,
+  facebook = 0,
   size = 132,
 }: {
   ml: number;
   shopee: number;
   outro: number;
   magalu?: number;
+  olx?: number;
+  facebook?: number;
   size?: number;
 }) {
-  const total = ml + shopee + outro + magalu;
+  const total = ml + shopee + outro + magalu + olx + facebook;
   const cx = size / 2;
   const cy = size / 2;
   const rOuter = size / 2 - 4;
@@ -60,6 +64,8 @@ export function DonutSplit({
     { value: ml, color: PLATFORM_COLOR.ML },
     { value: shopee, color: PLATFORM_COLOR.SHOPEE },
     { value: magalu, color: PLATFORM_COLOR.MAGALU },
+    { value: olx, color: PLATFORM_COLOR.OLX },
+    { value: facebook, color: PLATFORM_COLOR.FACEBOOK },
     { value: outro, color: PLATFORM_COLOR.OUTRO },
   ];
   let angle = 0;

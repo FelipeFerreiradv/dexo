@@ -1,14 +1,28 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Link2, RefreshCw, BarChart3 } from "lucide-react";
+import { Link2, RefreshCw, BarChart3, Info } from "lucide-react";
 import { OlxConnectionTab } from "./olx-connection-tab";
 import { OlxListingsTab } from "./olx-listings-tab";
 import { OlxSyncTab } from "./olx-sync-tab";
 
 export function OlxDashboard() {
   return (
-    <Tabs defaultValue="connection" className="space-y-4">
+    <div className="space-y-4">
+      {/* A integração OLX é unidirecional (Dexo → OLX). Deixar isso explícito no
+          topo evita que o usuário espere pedido/mensagem/etiqueta automáticos. */}
+      <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>
+          A OLX permite publicar, editar e remover anúncios e baixar o estoque
+          (Dexo → OLX). Ela <strong>não</strong> devolve pedido, cliente,
+          mensagem nem etiqueta de envio: a plataforma não tem API de checkout no
+          Brasil. Vendas feitas na OLX devem ser registradas manualmente como
+          venda de balcão — o anúncio sai do ar sozinho quando o estoque zera.
+        </span>
+      </div>
+
+      <Tabs defaultValue="connection" className="space-y-4">
       <TabsList className="grid w-full grid-cols-3 rounded-full border border-border/60 bg-muted/20 p-1 lg:w-[480px]">
         <TabsTrigger
           value="connection"
@@ -44,6 +58,7 @@ export function OlxDashboard() {
       <TabsContent value="sync" className="space-y-4">
         <OlxSyncTab />
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </div>
   );
 }

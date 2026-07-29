@@ -1,14 +1,31 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Link2, RefreshCw, BarChart3 } from "lucide-react";
+import { Link2, RefreshCw, BarChart3, Info } from "lucide-react";
 import { FacebookConnectionTab } from "./facebook-connection-tab";
 import { FacebookListingsTab } from "./facebook-listings-tab";
 import { FacebookSyncTab } from "./facebook-sync-tab";
 
 export function FacebookDashboard() {
   return (
-    <Tabs defaultValue="connection" className="space-y-4">
+    <div className="space-y-4">
+      {/* Catálogo Meta é unidirecional (Dexo → Facebook). Estoque 0 marca "out of
+          stock" (item continua no catálogo, não some), e não há checkout no
+          Brasil ⇒ sem pedido/mensagem/etiqueta. Deixar explícito no topo. */}
+      <div className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>
+          O Catálogo Meta permite publicar, editar e remover itens e baixar o
+          estoque (Dexo → Facebook). Estoque zerado marca o item como{" "}
+          <strong>indisponível</strong> (ele continua visível no catálogo, não é
+          removido). A Meta <strong>não</strong> tem checkout no Brasil: não há
+          pedido, cliente, mensagem nem etiqueta de envio automáticos. Vendas
+          feitas pelo Facebook devem ser registradas manualmente como venda de
+          balcão.
+        </span>
+      </div>
+
+      <Tabs defaultValue="connection" className="space-y-4">
       <TabsList className="grid w-full grid-cols-3 rounded-full border border-border/60 bg-muted/20 p-1 lg:w-[480px]">
         <TabsTrigger
           value="connection"
@@ -44,6 +61,7 @@ export function FacebookDashboard() {
       <TabsContent value="sync" className="space-y-4">
         <FacebookSyncTab />
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </div>
   );
 }

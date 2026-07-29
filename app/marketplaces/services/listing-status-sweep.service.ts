@@ -14,7 +14,7 @@ const PAGE_SIZE = 100;
  * (ML) e o live=1 do dialog cobrem o "agora"; esta varredura cura o resto:
  * badges/listas desatualizados, eventos de webhook perdidos e a Shopee (que
  * não tem webhook de item). A cada rodada processa uma página de listings
- * por conta ativa (ML/Shopee) e delega ao ListingStatusRefreshService.
+ * por conta ativa (ML/Shopee/Facebook) e delega ao ListingStatusRefreshService.
  *
  * Cursor keyset em memória por conta: rodadas sucessivas percorrem todo o
  * catálogo; página incompleta reinicia a rotação. Restart do processo só
@@ -34,7 +34,7 @@ export class ListingStatusSweepService {
     const accounts = await (prisma as any).marketplaceAccount.findMany({
       where: {
         status: "ACTIVE",
-        platform: { in: ["MERCADO_LIVRE", "SHOPEE"] },
+        platform: { in: ["MERCADO_LIVRE", "SHOPEE", "FACEBOOK"] },
       },
       select: {
         id: true,

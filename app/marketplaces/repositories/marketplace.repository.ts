@@ -63,6 +63,28 @@ export class MarketplaceRepository {
   }
 
   /**
+   * Atualiza dados de vendedor/catálogo por conta (OLX: telefone/CEP; Facebook:
+   * catálogo/URL base). Escopo por userId+platform garante ownership.
+   */
+  static async updateSellerFields(
+    accountId: string,
+    userId: string,
+    platform: Platform,
+    data: {
+      olxSellerPhone?: string | null;
+      olxSellerZipcode?: string | null;
+      fbCatalogId?: string | null;
+      fbProductUrlBase?: string | null;
+    },
+  ): Promise<number> {
+    const res = await prisma.marketplaceAccount.updateMany({
+      where: { id: accountId, userId, platform },
+      data,
+    });
+    return res.count;
+  }
+
+  /**
    * Avança (monotonicamente) o watermark do polling de itens novos da Shopee.
    * Nunca regride: só persiste quando `when` é mais recente que o valor atual —
    * assim reexecuções/atrasos não fazem o polling reprocessar tudo de novo.
