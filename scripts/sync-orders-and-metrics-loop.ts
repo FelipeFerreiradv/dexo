@@ -6,8 +6,9 @@ import { MessagesUseCase } from "../app/marketplaces/usecases/messages.usecase";
 import { SystemLogService } from "../app/services/system-log.service";
 import { syncAllListingsMetrics } from "./sync-listing-metrics";
 
-const intervalMinutes = parseInt(process.env.SYNC_FULL_INTERVAL_MINUTES ?? "15", 10);
-const syncDays = parseInt(process.env.SYNC_LOOP_DAYS ?? "7", 10);
+// Declarados depois de envInt (hoisting de function permite usá-la aqui).
+const intervalMinutes = envInt("SYNC_FULL_INTERVAL_MINUTES", 15, 1);
+const syncDays = envInt("SYNC_LOOP_DAYS", 7, 1);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Por que este arquivo tem DUAS passadas em vez de um ciclo só.
@@ -35,17 +36,34 @@ const syncDays = parseInt(process.env.SYNC_LOOP_DAYS ?? "7", 10);
 // mesma ordem.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * parseInt de env com piso e fallback à prova de NaN.
+ *
+ * `Math.max(1, parseInt("abc"))` devolve NaN, não 1 — e um NaN aqui é
+ * catastrófico e SILENCIOSO: em `ordersConcurrency` faz o runPool criar ZERO
+ * workers (nenhum pedido importado, sem erro nenhum); em um intervalo faz
+ * `setTimeout(fn, NaN)` disparar imediatamente, virando laço quente sobre o
+ * banco. É exatamente a classe de falha muda que este PR existe para eliminar,
+ * então a leitura de env também precisa ser à prova dela.
+ */
+function envInt(nome: string, padrao: number, minimo: number): number {
+  const cru = process.env[nome];
+  if (cru === undefined || cru.trim() === "") return padrao;
+  const n = Number.parseInt(cru, 10);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[sync-loop] ${nome}="${cru}" nao e numero — usando o default ${padrao}.`,
+    );
+    return padrao;
+  }
+  return Math.max(minimo, n);
+}
+
 const splitDisabled = process.env.SYNC_LOOP_SPLIT_DISABLED === "1";
-const catalogIntervalMinutes = parseInt(
-  process.env.SYNC_CATALOG_INTERVAL_MINUTES ?? "360",
-  10,
-);
+const catalogIntervalMinutes = envInt("SYNC_CATALOG_INTERVAL_MINUTES", 360, 1);
 // Conservador de propósito: o pooler do Supabase já derrubou a produção uma vez
 // (504 em api/frontend). 1 = serial, idêntico ao comportamento anterior.
-const ordersConcurrency = Math.max(
-  1,
-  parseInt(process.env.SYNC_ORDERS_CONCURRENCY ?? "4", 10),
-);
+const ordersConcurrency = envInt("SYNC_ORDERS_CONCURRENCY", 4, 1);
 
 type LoopAccount = { id: string; platform: Platform };
 
@@ -70,7 +88,9 @@ async function runPool<T>(
   limit: number,
   worker: (item: T) => Promise<void>,
 ): Promise<void> {
-  if (limit <= 1) {
+  // Defesa em profundidade contra NaN/0: degradar para serial é sempre
+  // preferível a criar zero workers e devolver sem processar nada.
+  if (!Number.isFinite(limit) || limit <= 1) {
     for (const item of items) {
       await worker(item);
     }
@@ -79,7 +99,7 @@ async function runPool<T>(
 
   let next = 0;
   const runners = Array.from(
-    { length: Math.min(limit, items.length) },
+    { length: Math.max(1, Math.min(limit, items.length)) },
     async () => {
       for (;;) {
         const index = next++;

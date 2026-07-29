@@ -38,6 +38,10 @@ export class OrderIngestionReconcilerService {
 
   static async runOnce(): Promise<void> {
     if (process.env.ORDER_INGESTION_RECONCILER_DISABLED === "1") return;
+    // Com a quarentena desligada, `resolve()` vira no-op — o reconciliador
+    // nunca conseguiria fechar nada e ficaria re-tentando as pendências
+    // antigas para sempre. Os dois andam juntos.
+    if (process.env.ORDER_INGESTION_ISSUES_DISABLED === "1") return;
     // Guarda de reentrância: um tick não pode começar com o anterior em voo,
     // senão dois workers pegam a mesma pendência.
     if (this.runInProgress) return;
@@ -169,25 +173,95 @@ export class OrderIngestionReconcilerService {
       (x: any) => x.externalOrderId === issue.externalOrderId,
     );
 
-    const entrouCompleto =
-      entry &&
-      (entry.status === "imported" || entry.status === "already_exists") &&
-      entry.itemsLinked >= entry.itemsTotal;
+    if (!entry) {
+      await this.registerFailure(
+        issue,
+        "Pedido nao voltou da API do marketplace.",
+      );
+      return;
+    }
 
-    if (entrouCompleto) {
+    // Importado agora, completo e com baixa: resolvido pelo caminho normal.
+    if (
+      entry.status === "imported" &&
+      entry.itemsLinked >= entry.itemsTotal &&
+      entry.stockDeducted
+    ) {
       await OrderIngestionIssueService.resolve(
         issue.marketplaceAccountId,
         issue.externalOrderId,
-        entry?.orderId ?? issue.resolvedOrderId ?? null,
+        entry.orderId ?? null,
+      );
+      return;
+    }
+
+    // O Order JA existia. Nao dá para julgar pelo resultado do import: o ramo
+    // `already_exists` devolve itemsLinked=0 por construcao, entao qualquer
+    // comparacao com itemsTotal daria "incompleto" para sempre. O veredito tem
+    // que vir do estado REAL do pedido no banco.
+    const local = await (prisma as any).order.findFirst({
+      where: {
+        marketplaceAccountId: issue.marketplaceAccountId,
+        externalOrderId: issue.externalOrderId,
+      },
+      select: { id: true, status: true, items: { select: { id: true } } },
+    });
+
+    if (!local) {
+      await this.registerFailure(
+        issue,
+        `Reingestao devolveu "${entry.status}" e o pedido nao existe localmente.`,
+      );
+      return;
+    }
+
+    // Pedido cancelado: nao ha venda a completar nem estoque a baixar.
+    if (local.status === "CANCELLED") {
+      await OrderIngestionIssueService.resolve(
+        issue.marketplaceAccountId,
+        issue.externalOrderId,
+        local.id,
+      );
+      return;
+    }
+
+    const { OrderUseCase: UC } = await import("../usecases/order.usercase");
+
+    // Se o cliente vinculou o produto que faltava, acrescenta o item agora —
+    // re-importar sozinho nunca faria isso.
+    let acrescentados = 0;
+    const detalhe = issue.payload;
+    if (detalhe?.item_list?.length && issue.marketplaceAccount?.userId) {
+      acrescentados = await UC.completePartialShopeeOrder(
+        issue.marketplaceAccountId,
+        detalhe,
+        local.id,
+        issue.marketplaceAccount.userId,
+      );
+    }
+
+    const itensEsperados = detalhe?.item_list?.length ?? 0;
+    const itensAgora = local.items.length + acrescentados;
+
+    // Baixa idempotente do que faltar (ancorada no net do StockLog).
+    const baixou = await UC.retryStockDeduction(
+      local.id,
+      issue.platform,
+      issue.externalOrderId,
+    );
+
+    if (baixou && itensEsperados > 0 && itensAgora >= itensEsperados) {
+      await OrderIngestionIssueService.resolve(
+        issue.marketplaceAccountId,
+        issue.externalOrderId,
+        local.id,
       );
       return;
     }
 
     await this.registerFailure(
       issue,
-      entry
-        ? `Reingestao devolveu "${entry.status}" (${entry.itemsLinked}/${entry.itemsTotal} itens vinculados).`
-        : "Pedido nao voltou da API do marketplace.",
+      `Pedido existe com ${itensAgora}/${itensEsperados} itens vinculados; baixa=${baixou ? "ok" : "pendente"}.`,
     );
   }
 

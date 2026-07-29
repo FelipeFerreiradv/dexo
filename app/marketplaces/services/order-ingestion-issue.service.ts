@@ -63,9 +63,10 @@ export class OrderIngestionIssueService {
   /**
    * Poda o detalhe cru do pedido para o que a reingestão precisa.
    *
-   * Nunca guarda token. Não amplia a PII já persistida: `buyer_username` é o
-   * mesmo dado que vira `Order.customerName` hoje; endereço do comprador não
-   * entra (o `getOrderDetails` do import nem o pede).
+   * Nunca guarda token nem dado do comprador. `buyer_username` foi
+   * deliberadamente REMOVIDO: a reingestão re-busca o pedido na API, então o
+   * payload nunca é lido para isso — guardá-lo seria PII persistida sem
+   * finalidade, e sem prazo para sair.
    */
   static prunePayload(detail: any): any {
     if (!detail || typeof detail !== "object") return null;
@@ -75,7 +76,6 @@ export class OrderIngestionIssueService {
       create_time: detail.create_time ?? null,
       update_time: detail.update_time ?? null,
       total_amount: detail.total_amount ?? null,
-      buyer_username: detail.buyer_username ?? null,
       item_list: Array.isArray(detail.item_list)
         ? detail.item_list.map((i: any) => ({
             item_id: i?.item_id ?? null,
