@@ -37,6 +37,14 @@ process.env.SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED ??= "1";
 // reabilita explicitamente por caso.
 process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED ??= "1";
 
+// Net-dentro-da-transação na RE-TENTATIVA de baixa (auditoria 29/07/2026):
+// desligado por default na suíte porque os specs existentes de
+// `retryStockDeduction` afirmam o caminho ANTERIOR (net lido fora da transação,
+// `deductStockForOrder` recebendo a lista já filtrada). Em produção o default é
+// o oposto — ligado —, porque o caminho antigo pode baixar duas vezes. O spec da
+// correção (order-stock-retry-race) reabilita explicitamente por caso.
+process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

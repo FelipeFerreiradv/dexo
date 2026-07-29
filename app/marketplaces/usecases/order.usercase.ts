@@ -901,23 +901,40 @@ export class OrderUseCase {
     );
     if (!items.length) return 0;
 
-    const atuais = await prisma.orderItem.findMany({
-      where: { orderId },
-      select: { productId: true },
-    });
-    const jaTem = new Set(atuais.map((i) => i.productId));
-    const novos = items.filter((i) => !jaTem.has(i.productId));
-    if (!novos.length) return 0;
+    // "Ler os itens atuais e inserir o que falta" precisa ser ATÔMICO. Não
+    // existe unique em (orderId, productId), então duas execuções concorrentes
+    // — o tick do reconciliador e um clique em "Tentar novamente", que rodam em
+    // processos diferentes — liam as duas o conjunto vazio e inseriam as duas o
+    // mesmo item. O pedido ficava com a quantidade DOBRADA, e a baixa seguinte
+    // descontava o dobro do estoque.
+    //
+    // O lock é na linha do Order (mesma ordem de lock do resto: Order antes de
+    // Product) e o `mapShopeeOrderItems` fica FORA da transação de propósito,
+    // para a janela do lock ser só o read+insert.
+    const novos = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
 
-    await prisma.orderItem.createMany({
-      data: novos.map((i) => ({
-        orderId,
-        productId: i.productId,
-        quantity: i.quantity,
-        unitPrice: i.unitPrice,
-        listingId: i.listingId ?? null,
-      })),
+      const atuais = await tx.orderItem.findMany({
+        where: { orderId },
+        select: { productId: true },
+      });
+      const jaTem = new Set(atuais.map((i) => i.productId));
+      const aInserir = items.filter((i) => !jaTem.has(i.productId));
+      if (!aInserir.length) return [];
+
+      await tx.orderItem.createMany({
+        data: aInserir.map((i) => ({
+          orderId,
+          productId: i.productId,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          listingId: i.listingId ?? null,
+        })),
+      });
+      return aInserir;
     });
+
+    if (!novos.length) return 0;
 
     console.log(
       JSON.stringify({
@@ -959,6 +976,49 @@ export class OrderUseCase {
 
     const reason = `Venda ${platformLabel === "SHOPEE" ? "Shopee" : platformLabel} #${externalOrderId}`;
 
+    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
+    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
+    // linha a linha diria "ja baixado" com metade da quantidade descontada.
+    const pedidoPorProduto = new Map<string, number>();
+    for (const i of order.items) {
+      pedidoPorProduto.set(
+        i.productId,
+        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
+      );
+    }
+
+    // Caminho padrão (auditoria 29/07/2026): quem decide QUANTO falta é a
+    // própria transação da baixa, depois dos locks — ver `netGuard` em
+    // `deductStockForOrder`. Ler o net aqui, fora de transação, e só depois
+    // abrir a transação da baixa era decremento DUPLO quando duas execuções se
+    // cruzavam: o poll (`dexo-sync-orders`) e o reconciliador (`dexo-api`) são
+    // processos pm2 distintos, e o botão "Tentar novamente" é um terceiro
+    // caminho.
+    //
+    // ORDER_STOCK_RETRY_TX_NET_DISABLED=1 restaura a leitura fora da transação.
+    // NÃO é o default de propósito: o caminho antigo destrói estoque de forma
+    // silenciosa e irreversível — dois `-1` sob a MESMA `reason` fazem o net
+    // valer `-2`, e daí em diante toda checagem (inclusive o estorno de
+    // cancelamento, que clampa na quantidade do pedido) considera o estado
+    // correto.
+    if (process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED !== "1") {
+      try {
+        await this.deductStockForOrder(order as unknown as Order, reason, {
+          pedidoPorProduto,
+        });
+        // Sucesso cobre os dois casos: baixou o que faltava, ou não faltava
+        // nada. A única falha possível é exceção.
+        return true;
+      } catch (err) {
+        console.warn(
+          `[OrderUseCase] Re-tentativa de baixa do pedido ${orderId} falhou:`,
+          err instanceof Error ? err.message : err,
+        );
+        return false;
+      }
+    }
+
+    // ── Caminho anterior, preservado sob kill-switch ─────────────────────────
     // Já baixado? O net por `reason` responde sem depender de flag.
     const grouped = await prisma.stockLog.groupBy({
       by: ["productId"],
@@ -971,17 +1031,6 @@ export class OrderUseCase {
     const netByProduct = new Map(
       grouped.map((g) => [g.productId, g._sum.change ?? 0]),
     );
-
-    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
-    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
-    // linha a linha diria "ja baixado" com metade da quantidade descontada.
-    const pedidoPorProduto = new Map<string, number>();
-    for (const i of order.items) {
-      pedidoPorProduto.set(
-        i.productId,
-        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
-      );
-    }
 
     // So o que FALTA. Passar a lista completa para deductStockForOrder
     // descontaria de novo o que ja foi descontado — o net protege contra
@@ -2631,6 +2680,25 @@ export class OrderUseCase {
   private static async deductStockForOrder(
     order: Order,
     reason: string,
+    /**
+     * ADITIVO (auditoria 29/07/2026). Presente APENAS no caminho de re-tentativa
+     * (`retryStockDeduction`): faz a quantidade a baixar de cada produto ser
+     * decidida DENTRO desta transação, depois dos locks, a partir do net do
+     * `StockLog`.
+     *
+     * Por que precisa ser aqui e não no chamador: ler o net numa conexão
+     * própria, fora de transação, e só depois abrir a transação da baixa é uma
+     * corrida com decremento DUPLO — e o `SELECT ... FOR UPDATE` do Order abaixo
+     * transforma a corrida em duplicação determinística, porque a segunda
+     * execução espera a primeira commitar e então aplica o delta que calculou
+     * com o net VELHO. O `processOrderCancellation` já fazia certo (ver
+     * "Lock dos produtos ... ANTES do net"); a re-tentativa era o único caminho
+     * de baixa fora desse padrão.
+     *
+     * Sem este parâmetro nada muda: `order.items` é baixado como vem, que é o
+     * caminho do importador, byte-idêntico ao anterior.
+     */
+    netGuard?: { pedidoPorProduto: Map<string, number> },
   ): Promise<OrderStockDeduction[]> {
     const orderItems = order.items;
     if (!orderItems || orderItems.length === 0) return [];
@@ -2662,17 +2730,51 @@ export class OrderUseCase {
               return;
             }
           }
-          const result = await StockDeductionService.deductWithinTx(tx, {
-            items: orderItems.map((i) => ({
-              productId: i.productId,
-              quantity: i.quantity,
-            })),
-            reason,
-            orderId: order.id,
-            logPrefix: "[OrderUseCase]",
-          });
-          deductions = result.deductions;
-          oversellAlerts = result.oversellAlerts;
+          let itemsParaBaixar = orderItems.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          }));
+
+          if (netGuard) {
+            // Ordem de lock idêntica à do motor de estoque (que trava na ordem
+            // de `input.items`) e à do cancelamento ⇒ sem deadlock.
+            const productIds = [...netGuard.pedidoPorProduto.keys()];
+            for (const productId of productIds) {
+              await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+            }
+
+            // Com as linhas travadas, qualquer baixa concorrente já commitou:
+            // agora o net é confiável.
+            const grouped = await tx.stockLog.groupBy({
+              by: ["productId"],
+              where: { productId: { in: productIds }, reason },
+              _sum: { change: true },
+            });
+            const netByProduct = new Map(
+              grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+            );
+
+            itemsParaBaixar = [];
+            for (const productId of productIds) {
+              const pedido = netGuard.pedidoPorProduto.get(productId) ?? 0;
+              const jaBaixado = -(netByProduct.get(productId) ?? 0);
+              const falta = pedido - jaBaixado;
+              if (falta > 0) itemsParaBaixar.push({ productId, quantity: falta });
+            }
+          }
+
+          // Sem netGuard a lista nunca é vazia (garantido acima) ⇒ o caminho do
+          // importador segue chamando o motor exatamente como antes.
+          if (itemsParaBaixar.length > 0) {
+            const result = await StockDeductionService.deductWithinTx(tx, {
+              items: itemsParaBaixar,
+              reason,
+              orderId: order.id,
+              logPrefix: "[OrderUseCase]",
+            });
+            deductions = result.deductions;
+            oversellAlerts = result.oversellAlerts;
+          }
 
           // Marca de auditoria da baixa, na MESMA transação: ou as duas coisas
           // acontecem, ou nenhuma. Torna trivial a pergunta "quais pedidos
@@ -2680,7 +2782,14 @@ export class OrderUseCase {
           // que antes exigia cruzar StockLog por `reason`, que é texto livre.
           // NÃO é a fonte de verdade da idempotência — essa continua sendo o
           // net do StockLog. Kill-switch restaura o caminho anterior.
-          if (process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1") {
+          // Sem netGuard a condição é só a da env ⇒ caminho do importador
+          // byte-idêntico. Com netGuard, não sobrescreve um carimbo que já
+          // existe: perderia a hora da baixa original.
+          const jaCarimbado = Boolean((order as { stockDeductedAt?: Date | null }).stockDeductedAt);
+          if (
+            process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1" &&
+            !(netGuard && jaCarimbado)
+          ) {
             await tx.order.update({
               where: { id: order.id },
               data: { stockDeductedAt: new Date() },
