@@ -281,6 +281,13 @@ model MarketplaceAccount {
   appClientSecret             String?
   autoImportListingsSince     DateTime?
   shopeeListingsSyncedThrough DateTime?
+  // Marca d'água do poll de PEDIDOS da Shopee: até quando a janela por
+  // `update_time` já foi varrida com sucesso. Espelha o campo acima, que faz o
+  // mesmo para anúncios. NULL = nunca varrido; cai na janela por dias, que é o
+  // comportamento anterior. Só avança quando o ciclo termina sem erro — assim
+  // um ciclo que falhou no meio é refeito em vez de pular pedidos.
+  // Migração: ALTER TABLE "MarketplaceAccount" ADD COLUMN IF NOT EXISTS "shopeeOrdersSyncedThrough" TIMESTAMP(3);
+  shopeeOrdersSyncedThrough   DateTime?
   // Multi-CNPJ: CNPJ emissor vinculado a esta conta (CompanyFiscalConfig.id,
   // scalar sem FK — padrão do módulo fiscal). NULL = usa o CNPJ padrão do tenant.
   companyFiscalConfigId       String?

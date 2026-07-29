@@ -80,7 +80,13 @@ export class ShopeeApiService {
 
   private static categoryCache = new Map<
     string,
-    { map: Map<number, { hasChildren: boolean; parentId: number; name: string }>; fetchedAt: number }
+    {
+      map: Map<
+        number,
+        { hasChildren: boolean; parentId: number; name: string }
+      >;
+      fetchedAt: number;
+    }
   >();
   private static readonly CATEGORY_CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -99,7 +105,10 @@ export class ShopeeApiService {
     const cacheKey = `${shopId}:${language}`;
     const cached = this.categoryCache.get(cacheKey);
     let map = cached?.map;
-    if (!map || Date.now() - (cached?.fetchedAt ?? 0) > this.CATEGORY_CACHE_TTL_MS) {
+    if (
+      !map ||
+      Date.now() - (cached?.fetchedAt ?? 0) > this.CATEGORY_CACHE_TTL_MS
+    ) {
       const resp = await this.getCategories(accessToken, shopId, language);
       map = new Map();
       for (const c of resp.category_list ?? []) {
@@ -240,7 +249,8 @@ export class ShopeeApiService {
 
     // Garantir que recebemos o item_sku (não vem por padrão na API)
     const optionalFields =
-      params.response_optional_fields && params.response_optional_fields.length > 0
+      params.response_optional_fields &&
+      params.response_optional_fields.length > 0
         ? params.response_optional_fields
         : ["item_sku"];
     queryParams.set("response_optional_fields", optionalFields.join(","));
@@ -297,24 +307,18 @@ export class ShopeeApiService {
 
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<{ item_list: ShopeeItem[] }>
-    >(
-      "GET",
-      fullApiPath,
-      accessToken,
-      shopId,
-      {
-        item_id_list: itemIds,
-        need_model: true,
-        // Pedir SKU do item e das variações; sem isso a API costuma não retornar
-        response_optional_fields: [
-          "item_sku",
-          "model_list",
-          "price_info",
-          "stock_info",
-          "item_status",
-        ],
-      },
-    );
+    >("GET", fullApiPath, accessToken, shopId, {
+      item_id_list: itemIds,
+      need_model: true,
+      // Pedir SKU do item e das variações; sem isso a API costuma não retornar
+      response_optional_fields: [
+        "item_sku",
+        "model_list",
+        "price_info",
+        "stock_info",
+        "item_status",
+      ],
+    });
 
     if (response.error) {
       throw new Error(`Erro ao buscar itens base: ${response.message}`);
@@ -626,9 +630,7 @@ export class ShopeeApiService {
       contentType.includes("png");
     if (!isSupported) {
       try {
-        imageBuffer = await sharp(imageBuffer)
-          .jpeg({ quality: 90 })
-          .toBuffer();
+        imageBuffer = await sharp(imageBuffer).jpeg({ quality: 90 }).toBuffer();
         contentType = "image/jpeg";
       } catch (transcodeErr) {
         throw new Error(
@@ -937,15 +939,71 @@ export class ShopeeApiService {
   }
 
   /**
-   * Busca pedidos recentes (em dias) já com detalhes
+   * Whitelist FECHADA de status usada até 29/07/2026. Preservada para o
+   * kill-switch: qualquer status fora dela some sem log nenhum.
+   */
+  private static readonly LEGACY_ALLOWED_STATUSES = new Set([
+    "COMPLETED",
+    "READY_TO_SHIP",
+    "SHIPPED",
+    "PROCESSED",
+    "TO_CONFIRM_RECEIVE",
+  ]);
+
+  /**
+   * Status que NÃO representam venda concretizada — os únicos descartados.
+   *
+   * A whitelist anterior deixava de fora estados brasileiros perfeitamente
+   * válidos. `INVOICE_PENDING` (pedido pago, aguardando a NF-e do vendedor) não
+   * existia em NENHUM lugar do repositório: um pedido pago parado nesse estado
+   * simplesmente não era importado. `RETRY_SHIP` e `TO_RETURN` idem — a venda
+   * aconteceu, o estoque saiu.
+   *
+   * `UNPAID` fica de fora porque não há venda a baixar. `CANCELLED`/`IN_CANCEL`
+   * ficam com `processOrderCancellation`, que é quem estorna — importá-los aqui
+   * baixaria estoque de venda cancelada.
+   */
+  static readonly NON_SALE_STATUSES = new Set([
+    "UNPAID",
+    "CANCELLED",
+    "IN_CANCEL",
+  ]);
+
+  /** Teto de intervalo por chamada do get_order_list (limite da API Shopee). */
+  static readonly ORDER_LIST_MAX_WINDOW_DAYS = 15;
+
+  /**
+   * Busca pedidos recentes (em dias) já com detalhes.
+   *
+   * Sem `options`, o comportamento é o de sempre: janela por `create_time` e
+   * whitelist fechada de status. É o que o kill-switch restaura.
    */
   static async getRecentOrders(
     accessToken: string,
     shopId: number,
     days: number = 3,
+    options?: {
+      /** Epoch em segundos. Vence o cálculo por `days` (marca d'água). */
+      timeFrom?: number;
+      /**
+       * `create_time` (default, legado) lista por data de CRIAÇÃO: um pedido
+       * criado há 20 dias que só ficou pronto para envio hoje nunca aparece.
+       * `update_time` lista por última ATUALIZAÇÃO e pega esse caso.
+       */
+      timeRangeField?: "create_time" | "update_time";
+      statusFilter?: "legacy_whitelist" | "exclude_non_sale";
+      /** Chamado para cada pedido descartado por status. */
+      onStatusSkipped?: (orderSn: string, status: string) => void;
+    },
   ) {
     const nowSec = Math.floor(Date.now() / 1000);
-    const fromSec = nowSec - days * 24 * 60 * 60;
+    const requestedFrom = options?.timeFrom ?? nowSec - days * 24 * 60 * 60;
+    // A API rejeita intervalos maiores que 15 dias. A marca d'água pode estar
+    // mais velha que isso (conta parada, processo fora do ar) — clampar aqui
+    // evita trocar um pedido atrasado por um erro que descarta a conta inteira.
+    const oldestAllowed =
+      nowSec - this.ORDER_LIST_MAX_WINDOW_DAYS * 24 * 60 * 60;
+    const fromSec = Math.max(requestedFrom, oldestAllowed);
 
     let cursor: string | undefined;
     const orderSns: string[] = [];
@@ -956,6 +1014,7 @@ export class ShopeeApiService {
         time_to: nowSec,
         cursor,
         page_size: 50,
+        time_range_field: options?.timeRangeField,
       });
 
       orderSns.push(...(listResp.order_list?.map((o) => o.order_sn) ?? []));
@@ -977,15 +1036,33 @@ export class ShopeeApiService {
       }
     }
 
-    const allowedStatuses = new Set([
-      "COMPLETED",
-      "READY_TO_SHIP",
-      "SHIPPED",
-      "PROCESSED",
-      "TO_CONFIRM_RECEIVE",
-    ]);
+    return this.filterSaleOrders(details, options);
+  }
 
-    return details.filter((order) => allowedStatuses.has(order.order_status));
+  /**
+   * Aplica a regra de status a uma lista de detalhes já buscados. Extraído para
+   * que a busca dirigida por `order_sn` (webhook) use exatamente o mesmo
+   * critério do poll.
+   */
+  static filterSaleOrders(
+    details: any[],
+    options?: {
+      statusFilter?: "legacy_whitelist" | "exclude_non_sale";
+      onStatusSkipped?: (orderSn: string, status: string) => void;
+    },
+  ): any[] {
+    const mode = options?.statusFilter ?? "legacy_whitelist";
+
+    return details.filter((order) => {
+      const status = order?.order_status;
+      const keep =
+        mode === "exclude_non_sale"
+          ? !this.NON_SALE_STATUSES.has(status)
+          : this.LEGACY_ALLOWED_STATUSES.has(status);
+
+      if (!keep) options?.onStatusSkipped?.(order?.order_sn, status);
+      return keep;
+    });
   }
 
   /**
@@ -1167,7 +1244,9 @@ export class ShopeeApiService {
         const message =
           (error.response?.data as { message?: string })?.message ||
           error.message;
-        const err = new Error(`Shopee upload_invoice_doc ${status ?? ""}: ${message}`);
+        const err = new Error(
+          `Shopee upload_invoice_doc ${status ?? ""}: ${message}`,
+        );
         (err as { status?: number }).status = status;
         throw err;
       }
@@ -1224,7 +1303,8 @@ export class ShopeeApiService {
       const err = new Error(
         `Erro ao arranjar envio Shopee: ${response.message ?? response.error}`,
       );
-      (err as { shopeeError?: string }).shopeeError = response.error ?? undefined;
+      (err as { shopeeError?: string }).shopeeError =
+        response.error ?? undefined;
       (err as { shopeeMessage?: string }).shopeeMessage =
         response.message ?? undefined;
       throw err;
@@ -1266,12 +1346,18 @@ export class ShopeeApiService {
           fail_message?: string;
         }>;
       }>
-    >("POST", "/api/v2/logistics/create_shipping_document", accessToken, shopId, {
-      order_list: orderList.map((o) => ({
-        order_sn: o.order_sn,
-        shipping_document_type: docType,
-      })),
-    });
+    >(
+      "POST",
+      "/api/v2/logistics/create_shipping_document",
+      accessToken,
+      shopId,
+      {
+        order_list: orderList.map((o) => ({
+          order_sn: o.order_sn,
+          shipping_document_type: docType,
+        })),
+      },
+    );
     if (response.error) {
       throw new Error(
         `Erro ao criar documento de envio Shopee: ${response.message ?? response.error}`,
