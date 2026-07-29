@@ -94,6 +94,11 @@ export interface OrderCreate {
   totalAmount: number;
   customerName?: string;
   customerEmail?: string;
+  /**
+   * Data da venda no marketplace. Sem isto, `createdAt` (hora do import) era a
+   * unica data do pedido — e e por ela que Dashboard e Financeiro filtram.
+   */
+  soldAt?: Date | null;
   items: OrderItemCreate[];
 }
 

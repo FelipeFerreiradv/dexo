@@ -249,6 +249,17 @@ export class NfeDraftUseCase {
           pais: "BRASIL",
         });
 
+    // Pedido sem item: acontece com venda de marketplace cujo produto não está
+    // cadastrado no Dexo — o Order existe para a venda ficar visível e o
+    // faturamento fechar, mas não há item para faturar. Sem esta guarda a NF-e
+    // sairia com zero itens e a rejeição só apareceria na SEFAZ.
+    if (!order.items || order.items.length === 0) {
+      throw new Error(
+        "Este pedido não tem itens vinculados a produtos do estoque. " +
+          "Cadastre o produto e vincule-o ao pedido antes de emitir a nota.",
+      );
+    }
+
     const itens: NfeDraftItem[] = order.items.map((it, idx) => {
       const valorUnitario = it.unitPrice;
       return {

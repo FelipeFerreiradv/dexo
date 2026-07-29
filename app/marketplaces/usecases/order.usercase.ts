@@ -780,6 +780,69 @@ export class OrderUseCase {
       if (items.length === 0) {
         // NUNCA descartar em silêncio: sem isto o pedido some — não vira Order,
         // não aparece em /pedidos e o SyncLog do ciclo fica SUCCESS.
+        //
+        // Mas registrar a pendência não bastava. Medição em produção
+        // (29/07/2026): 89 vendas concretizadas de 3 tenants presas aqui, sendo
+        // 26 de um só cliente em 12 dias. Nenhuma existia como Order, logo
+        // nenhuma aparecia em /pedidos, no Financeiro nem no Dashboard: a venda
+        // acontecia e o faturamento do cliente ficava incompleto. O produto
+        // realmente não existe no Dexo (conferido contra o banco: item_id, SKU
+        // exato, skuNormalized e partNumber, todos zero), então não há estoque a
+        // baixar — mas a VENDA existe, e o invariante manda ela virar Order.
+        //
+        // Order com ZERO itens, portanto: carrega o valor da venda e fica
+        // visível. A pendência continua aberta para a parte do estoque, e quando
+        // o cliente cadastrar o produto o reconciliador acrescenta o item
+        // (completePartialShopeeOrder) e baixa (retryStockDeduction) sozinho —
+        // é a máquina que já existe, sem caminho novo.
+        //
+        // Continua contando como `no_products`: o ciclo rebaixa para WARNING,
+        // porque estoque nenhum foi baixado. Nada de "sincronizado sem erro".
+        const criaSemItens =
+          process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED !== "1";
+
+        let orderSemItens: string | null = null;
+        if (criaSemItens) {
+          try {
+            const criado = await orderRepository.create({
+              marketplaceAccountId,
+              externalOrderId,
+              status: this.mapShopeeStatus(shopeeOrder.order_status),
+              totalAmount:
+                typeof shopeeOrder.total_amount === "number"
+                  ? Number(shopeeOrder.total_amount)
+                  : 0,
+              customerName: shopeeOrder.buyer_username ?? undefined,
+              soldAt: this.resolveSoldAt(shopeeOrder.create_time),
+              items: [],
+            });
+            orderSemItens = criado.id;
+            console.log(
+              JSON.stringify({
+                event: "shopee.order_import.created_without_items",
+                marketplaceAccountId,
+                externalOrderId,
+                orderId: criado.id,
+                itemsTotal,
+              }),
+            );
+          } catch (err) {
+            // P2002 = outro caminho criou o mesmo pedido no meio. Não é erro:
+            // o `@@unique(marketplaceAccountId, externalOrderId)` fez o trabalho.
+            const duplicado =
+              err &&
+              typeof err === "object" &&
+              "code" in err &&
+              (err as { code?: string }).code === "P2002";
+            if (!duplicado) {
+              console.warn(
+                `[OrderUseCase] Falha ao criar Order sem itens para Shopee #${externalOrderId}:`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+        }
+
         await OrderIngestionIssueService.open({
           marketplaceAccountId,
           platform: "SHOPEE",
@@ -787,14 +850,17 @@ export class OrderUseCase {
           reason: "NO_LINKED_ITEMS",
           detail: this.describeUnlinked(unlinked),
           payload: shopeeOrder,
+          orderId: orderSemItens,
         });
 
         return {
           success: false,
-          orderId: null,
+          orderId: orderSemItens,
           externalOrderId,
           status: "no_products",
-          message: "Nenhum item do pedido Shopee pôde ser vinculado",
+          message: criaSemItens
+            ? "Nenhum item do pedido Shopee pôde ser vinculado; venda registrada sem itens e sem baixa"
+            : "Nenhum item do pedido Shopee pôde ser vinculado",
           stockDeducted: false,
           itemsLinked: 0,
           itemsTotal,
@@ -812,6 +878,7 @@ export class OrderUseCase {
         status: this.mapShopeeStatus(shopeeOrder.order_status),
         totalAmount,
         customerName: shopeeOrder.buyer_username ?? undefined,
+        soldAt: this.resolveSoldAt(shopeeOrder.create_time),
         items,
       };
 
@@ -1161,6 +1228,39 @@ export class OrderUseCase {
   }
 
   /**
+   * Data da VENDA no marketplace, para gravar em `Order.soldAt`.
+   *
+   * Cada plataforma expoe num formato diferente: ML `date_created` (ISO),
+   * Shopee `create_time` (epoch em segundos), Magalu `purchased_at` (ISO).
+   * Devolve null quando o valor nao da para interpretar — e ai o COALESCE cai
+   * para `createdAt` e nada muda.
+   *
+   * Kill-switch ORDER_SOLD_AT_DISABLED=1 devolve sempre null, deixando a coluna
+   * NULL como antes da migracao.
+   */
+  private static resolveSoldAt(
+    valor: string | number | null | undefined,
+  ): Date | null {
+    if (process.env.ORDER_SOLD_AT_DISABLED === "1") return null;
+    if (valor === null || valor === undefined || valor === "") return null;
+
+    // Shopee: epoch em SEGUNDOS. Numero pequeno tratado como ms daria 1970.
+    if (typeof valor === "number") {
+      if (!Number.isFinite(valor) || valor <= 0) return null;
+      const d = new Date(valor * 1000);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    const d = new Date(valor);
+    if (Number.isNaN(d.getTime())) return null;
+    // Data absurda (ano < 2000 ou no futuro distante) e mais provavel bug de
+    // parsing do que venda real: melhor null e cair no createdAt.
+    const ano = d.getUTCFullYear();
+    if (ano < 2000 || ano > 2100) return null;
+    return d;
+  }
+
+  /**
    * Abre ou fecha a quarentena a partir do desfecho de UM pedido do ML ou da
    * Magalu.
    *
@@ -1327,6 +1427,9 @@ export class OrderUseCase {
         totalAmount: mlOrder.total_amount,
         customerName: this.extractCustomerName(mlOrder),
         customerEmail: undefined, // ML não fornece email diretamente
+        soldAt: this.resolveSoldAt(
+          (mlOrder as { date_created?: string }).date_created,
+        ),
         items,
       };
 
@@ -1977,6 +2080,7 @@ export class OrderUseCase {
             magaluOrder.customer_name ??
             magaluOrder.buyer?.name ??
             undefined,
+          soldAt: this.resolveSoldAt(magaluOrder.purchased_at),
           items,
         };
 

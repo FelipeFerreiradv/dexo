@@ -339,13 +339,13 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         const grouped = await prisma.$queryRaw<
           Array<{ day: string; orders: number; total: string | null }>
         >(Prisma.sql`
-          SELECT to_char(o."createdAt", 'YYYY-MM-DD') AS "day",
+          SELECT to_char(COALESCE(o."soldAt", o."createdAt"), 'YYYY-MM-DD') AS "day",
                  COUNT(*)::int AS "orders",
                  COALESCE(SUM(o."totalAmount"), 0)::text AS "total"
           FROM "Order" o
           JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
-          WHERE o."createdAt" >= ${startDate} AND ma."userId" = ${userId}
-          GROUP BY to_char(o."createdAt", 'YYYY-MM-DD')
+          WHERE COALESCE(o."soldAt", o."createdAt") >= ${startDate} AND ma."userId" = ${userId}
+          GROUP BY to_char(COALESCE(o."soldAt", o."createdAt"), 'YYYY-MM-DD')
         `);
 
         // Inicializar mapa de dias
@@ -1037,14 +1037,14 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
           prisma.$queryRaw<
             Array<{ day: string; orders: number; total: string | null }>
           >(Prisma.sql`
-            SELECT to_char(o."createdAt", 'YYYY-MM-DD') AS "day",
+            SELECT to_char(COALESCE(o."soldAt", o."createdAt"), 'YYYY-MM-DD') AS "day",
                    COUNT(*)::int AS "orders",
                    COALESCE(SUM(o."totalAmount"), 0)::text AS "total"
             FROM "Order" o
             JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
-            WHERE o."createdAt" >= ${range.startDate} AND o."createdAt" <= ${range.endDate}
+            WHERE COALESCE(o."soldAt", o."createdAt") >= ${range.startDate} AND COALESCE(o."soldAt", o."createdAt") <= ${range.endDate}
               AND ma."userId" = ${ownerId}
-            GROUP BY to_char(o."createdAt", 'YYYY-MM-DD')
+            GROUP BY to_char(COALESCE(o."soldAt", o."createdAt"), 'YYYY-MM-DD')
           `),
           prisma.marketplaceAccount.findMany({
             where: { userId: ownerId },
