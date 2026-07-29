@@ -239,6 +239,7 @@ import { ListingRetryService } from "../marketplaces/services/listing-retry.serv
 import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry.service";
 import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
 import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
+import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
 
 // -----------------------------------------------------------------
 // Health e readiness
@@ -362,6 +363,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (StockSyncRetryService as any).stop?.();
     (StockReconciliationService as any).stop?.();
     (ListingStatusSweepService as any).stop?.();
+    (OrderIngestionReconcilerService as any).stop?.();
   } catch (err) {
     api.log.error({ err }, "error stopping background services");
   }
@@ -399,6 +401,12 @@ try {
       // start hourly marketplace→Dexo listing status sweep (mirror phase)
       if (process.env.LISTING_STATUS_SYNC_DISABLED !== "1") {
         ListingStatusSweepService.start();
+      }
+      // re-tenta as pendências de ingestão de pedido (OrderIngestionIssue):
+      // é o que faz um pedido quarentenado entrar sozinho assim que o cliente
+      // vincula o anúncio ao produto, sem ninguém rodar script
+      if (process.env.ORDER_INGESTION_RECONCILER_DISABLED !== "1") {
+        OrderIngestionReconcilerService.start();
       }
       backgroundServicesStarted = true;
     });

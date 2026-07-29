@@ -44,6 +44,7 @@ import type {
   OrderStatus,
 } from "@/app/interfaces/order.interface";
 import { SystemLogService } from "@/app/services/system-log.service";
+import { OrderIngestionIssueService } from "../services/order-ingestion-issue.service";
 
 // ====================================================================
 // TIPOS PARA RESULTADOS
@@ -616,16 +617,42 @@ export class OrderUseCase {
       }
     }
 
+    // SyncLog honesto. Antes o status vinha SÓ de `errors`: um ciclo em que
+    // 100% dos pedidos foram descartados por falta de vínculo gravava SUCCESS
+    // com "Importados 0 de 37 pedidos do Shopee", e `noProducts` não ia nem
+    // para o payload — o número de pedidos perdidos não ficava em lugar nenhum.
+    // "Sucesso" agora só quando de fato não se perdeu nada.
+    const partialLinks = result.results.filter(
+      (r) => r.status === "imported" && r.itemsLinked < r.itemsTotal,
+    ).length;
+    const stockDeductionFailures = result.results.filter(
+      (r) => r.status === "imported" && !r.stockDeducted,
+    ).length;
+    const perdeuAlgo =
+      result.errors > 0 ||
+      result.noProducts > 0 ||
+      partialLinks > 0 ||
+      stockDeductionFailures > 0;
+
     await this.logSync(
       marketplaceAccountId,
       SyncType.ORDER_IMPORT,
-      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
+      perdeuAlgo ? SyncStatus.WARNING : SyncStatus.SUCCESS,
       `Importados ${result.imported} de ${result.totalOrders} pedidos do Shopee`,
       {
         totalOrders: result.totalOrders,
         imported: result.imported,
         alreadyExists: result.alreadyExists,
         errors: result.errors,
+        noProducts: result.noProducts,
+        partialLinks,
+        stockDeductionFailures,
+        ...(result.skippedByStatus
+          ? {
+              skippedByStatus: result.skippedByStatus,
+              skippedStatuses: result.skippedStatuses,
+            }
+          : {}),
       },
     );
 
@@ -668,7 +695,7 @@ export class OrderUseCase {
         };
       }
 
-      const { items, linkedCount } = await this.mapShopeeOrderItems(
+      const { items, linkedCount, unlinked } = await this.mapShopeeOrderItems(
         shopeeOrder.item_list,
         ctx.userId,
         marketplaceAccountId,
@@ -676,6 +703,17 @@ export class OrderUseCase {
       );
 
       if (items.length === 0) {
+        // NUNCA descartar em silêncio: sem isto o pedido some — não vira Order,
+        // não aparece em /pedidos e o SyncLog do ciclo fica SUCCESS.
+        await OrderIngestionIssueService.open({
+          marketplaceAccountId,
+          platform: "SHOPEE",
+          externalOrderId,
+          reason: "NO_LINKED_ITEMS",
+          detail: this.describeUnlinked(unlinked),
+          payload: shopeeOrder,
+        });
+
         return {
           success: false,
           orderId: null,
@@ -719,7 +757,42 @@ export class OrderUseCase {
             `[OrderUseCase] Falha ao descontar estoque para pedido Shopee #${externalOrderId} (order=${created.id}). Estoque NÃO foi descontado.`,
             err,
           );
+          // Antes parava aqui: o Order ficava visível na tela com o estoque
+          // intacto e ninguém tentava de novo — na passada seguinte o pedido
+          // caía em `already_exists`. Agora o reconciliador re-tenta só a
+          // baixa, usando o net do StockLog para não baixar duas vezes.
+          await OrderIngestionIssueService.open({
+            marketplaceAccountId,
+            platform: "SHOPEE",
+            externalOrderId,
+            reason: "STOCK_DEDUCTION_FAILED",
+            detail: err instanceof Error ? err.message : String(err),
+            payload: shopeeOrder,
+            orderId: created.id,
+          });
         }
+      }
+
+      if (stockDeducted && linkedCount >= itemsTotal) {
+        // Pedido completo e com baixa: se havia pendência dele, fecha.
+        await OrderIngestionIssueService.resolve(
+          marketplaceAccountId,
+          externalOrderId,
+          created.id,
+        );
+      } else if (linkedCount < itemsTotal) {
+        // Pedido PARCIAL: o Order é criado com o que deu (comportamento
+        // preservado), mas os itens que ficaram de fora nunca dariam baixa e
+        // até agora isso não deixava rastro nenhum.
+        await OrderIngestionIssueService.open({
+          marketplaceAccountId,
+          platform: "SHOPEE",
+          externalOrderId,
+          reason: "PARTIAL_LINK",
+          detail: this.describeUnlinked(unlinked),
+          payload: shopeeOrder,
+          orderId: created.id,
+        });
       }
 
       // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
@@ -768,6 +841,14 @@ export class OrderUseCase {
         };
       }
       console.error("[OrderUseCase] Erro ao importar pedido Shopee:", error);
+      await OrderIngestionIssueService.open({
+        marketplaceAccountId,
+        platform: "SHOPEE",
+        externalOrderId,
+        reason: "INGEST_FAILED",
+        detail: error instanceof Error ? error.message : String(error),
+        payload: shopeeOrder,
+      });
       return {
         success: false,
         orderId: null,
@@ -782,6 +863,92 @@ export class OrderUseCase {
         itemsTotal,
       };
     }
+  }
+
+  /**
+   * Re-tenta APENAS a baixa de um pedido que já existe (usado pelo
+   * OrderIngestionReconcilerService quando a quarentena é
+   * STOCK_DEDUCTION_FAILED).
+   *
+   * A segurança contra baixa dupla vem do NET do `StockLog` por `reason`
+   * determinística — o mesmo mecanismo que o `processOrderCancellation` usa:
+   * se a baixa original já aconteceu (mesmo parcialmente, por clamp de
+   * oversell), o net já cobre a quantidade e não há o que descontar.
+   *
+   * Retorna true quando, ao fim, o pedido está com a baixa efetivada.
+   */
+  static async retryStockDeduction(
+    orderId: string,
+    platformLabel: string,
+    externalOrderId: string,
+  ): Promise<boolean> {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) return false;
+
+    // Pedido cancelado não baixa — e a pendência deixa de fazer sentido.
+    if (order.status === "CANCELLED") return true;
+
+    const reason = `Venda ${platformLabel === "SHOPEE" ? "Shopee" : platformLabel} #${externalOrderId}`;
+
+    // Já baixado? O net por `reason` responde sem depender de flag.
+    const grouped = await prisma.stockLog.groupBy({
+      by: ["productId"],
+      where: {
+        productId: { in: order.items.map((i) => i.productId) },
+        reason,
+      },
+      _sum: { change: true },
+    });
+    const netByProduct = new Map(
+      grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+    );
+    const faltando = order.items.filter((i) => {
+      const jaBaixado = -(netByProduct.get(i.productId) ?? 0);
+      return jaBaixado < i.quantity;
+    });
+
+    if (faltando.length === 0) {
+      // A baixa tinha acontecido; só a marca de auditoria pode estar faltando.
+      if (
+        !(order as any).stockDeductedAt &&
+        process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1"
+      ) {
+        await prisma.order
+          .update({
+            where: { id: order.id },
+            data: { stockDeductedAt: new Date() },
+          })
+          .catch(() => {});
+      }
+      return true;
+    }
+
+    try {
+      await this.deductStockForOrder(order as unknown as Order, reason);
+      return true;
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Re-tentativa de baixa do pedido ${orderId} falhou:`,
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  }
+
+  /** Texto curto e legível dos itens que não vincularam, para o `detail`. */
+  private static describeUnlinked(
+    unlinked: Array<{ itemId: string; sku: string | null; reason: string }>,
+  ): string {
+    if (!unlinked.length) return "Nenhum item vinculado.";
+    return unlinked
+      .map(
+        (u) =>
+          `item ${u.itemId}${u.sku ? ` (SKU "${u.sku}")` : " (sem SKU)"}: ${u.reason}`,
+      )
+      .join("; ");
   }
 
   /**
@@ -1841,8 +2008,27 @@ export class OrderUseCase {
     userId: string | undefined,
     marketplaceAccountId: string,
     listingMap?: Map<string, any>,
-  ): Promise<{ items: OrderItemCreate[]; linkedCount: number }> {
+  ): Promise<{
+    items: OrderItemCreate[];
+    linkedCount: number;
+    /**
+     * Itens que NÃO puderam ser vinculados, com o motivo. Antes cada um destes
+     * era só um `console.log` + `continue`: não havia como responder "o que
+     * exatamente não vinculou neste pedido?" sem ler o log do processo. É o que
+     * alimenta o detalhe da quarentena (OrderIngestionIssue).
+     */
+    unlinked: Array<{
+      itemId: string;
+      sku: string | null;
+      reason: "ITEM_WITHOUT_SKU" | "PRODUCT_NOT_FOUND";
+    }>;
+  }> {
     const result: OrderItemCreate[] = [];
+    const unlinked: Array<{
+      itemId: string;
+      sku: string | null;
+      reason: "ITEM_WITHOUT_SKU" | "PRODUCT_NOT_FOUND";
+    }> = [];
     let linkedCount = 0;
 
     for (const item of items) {
@@ -1878,6 +2064,11 @@ export class OrderUseCase {
         console.log(
           `[OrderUseCase] Item Shopee ${externalListingId} sem SKU e sem listing vinculado, pulando`,
         );
+        unlinked.push({
+          itemId: externalListingId,
+          sku: null,
+          reason: "ITEM_WITHOUT_SKU",
+        });
         continue;
       }
 
@@ -1887,6 +2078,11 @@ export class OrderUseCase {
         console.log(
           `[OrderUseCase] Produto com SKU "${sku}" (Shopee) não encontrado`,
         );
+        unlinked.push({
+          itemId: externalListingId,
+          sku,
+          reason: "PRODUCT_NOT_FOUND",
+        });
         continue;
       }
 
@@ -1906,7 +2102,7 @@ export class OrderUseCase {
       linkedCount++;
     }
 
-    return { items: result, linkedCount };
+    return { items: result, linkedCount, unlinked };
   }
 
   private static extractSkuFromShopee(item: ShopeeOrderItem): string | null {
@@ -2168,6 +2364,19 @@ export class OrderUseCase {
           });
           deductions = result.deductions;
           oversellAlerts = result.oversellAlerts;
+
+          // Marca de auditoria da baixa, na MESMA transação: ou as duas coisas
+          // acontecem, ou nenhuma. Torna trivial a pergunta "quais pedidos
+          // estão sem baixa?" (status <> CANCELLED AND stockDeductedAt IS NULL),
+          // que antes exigia cruzar StockLog por `reason`, que é texto livre.
+          // NÃO é a fonte de verdade da idempotência — essa continua sendo o
+          // net do StockLog. Kill-switch restaura o caminho anterior.
+          if (process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1") {
+            await tx.order.update({
+              where: { id: order.id },
+              data: { stockDeductedAt: new Date() },
+            });
+          }
         },
         { timeout: 60_000, maxWait: 20_000 },
       );

@@ -64,7 +64,16 @@ export type LogAction =
   | "ORDER_AUTO_CUSTOMER"
   // Job de importação de dados legados (Superadmin). O registro carrega o
   // estado/relatório do job em `details` (ver app/usecases/import/).
-  | "IMPORT_JOB";
+  | "IMPORT_JOB"
+  // Quarentena de ingestão de pedido: a API do marketplace devolveu um pedido
+  // que não pôde ser totalmente ingerido (item sem vínculo, baixa que falhou,
+  // busca que falhou). Antes isso era um `continue` mudo e a venda sumia sem
+  // deixar rastro. Ver OrderIngestionIssueService.
+  | "ORDER_INGESTION_ISSUE"
+  | "ORDER_INGESTION_ISSUE_RESOLVED"
+  // O reconciliador esgotou as tentativas e a pendência continua aberta —
+  // precisa de ação humana (normalmente vincular o anúncio a um produto).
+  | "ORDER_INGESTION_ISSUE_STUCK";
 
 export interface SystemLog {
   id: string;

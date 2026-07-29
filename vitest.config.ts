@@ -30,6 +30,13 @@ process.env.SHOPEE_ORDER_SYNC_BY_UPDATE_TIME_DISABLED ??= "1";
 // (webhook-shopee-targeted-ingestion) reabilita explicitamente por caso.
 process.env.SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED ??= "1";
 
+// Marca de auditoria Order.stockDeductedAt (gravada dentro da transação da
+// baixa): desligada por default na suíte porque os specs de estoque montam um
+// `tx` mockado à mão (buildMockTx) que só tem os delegates que o caminho
+// anterior usava. O spec da feature (order-stock-deduction-guarantee)
+// reabilita explicitamente por caso.
+process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
