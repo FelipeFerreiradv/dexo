@@ -77,6 +77,38 @@ export class OrderIngestionReconcilerService {
     }
   }
 
+  /**
+   * Re-tenta UMA pendência agora, sob demanda (botão "Tentar novamente" na tela
+   * de Pedidos). Já vem escopada pelo tenant na rota. Devolve o estado da
+   * pendência depois da tentativa, para a tela dizer se resolveu.
+   */
+  static async retryOne(issueId: string): Promise<{ resolved: boolean }> {
+    const issue = await (prisma as any).orderIngestionIssue.findUnique({
+      where: { id: issueId },
+      include: {
+        marketplaceAccount: {
+          select: { id: true, platform: true, status: true, userId: true },
+        },
+      },
+    });
+    if (!issue) return { resolved: false };
+
+    try {
+      await this.retryIssue(issue);
+    } catch (err) {
+      await this.registerFailure(
+        issue,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    const depois = await (prisma as any).orderIngestionIssue.findUnique({
+      where: { id: issueId },
+      select: { status: true },
+    });
+    return { resolved: depois?.status === "RESOLVED" };
+  }
+
   private static async retryIssue(issue: any): Promise<void> {
     // Conta desconectada/quebrada: não adianta bater na API. Mantém OPEN (a
     // pendência continua visível) e adia.
