@@ -103,6 +103,13 @@ api.register(fastifyCors, {
   origin: corsOrigin || "http://localhost:3000",
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  // EGRESS/latência: sem `maxAge` o browser refaz o preflight OPTIONS a CADA
+  // requisição cross-origin — o app inteiro paga uma ida e volta extra por
+  // chamada (visível nos logs: um OPTIONS antes de cada GET). Com o cache de
+  // 24h o preflight passa a ser um por origem/método/headers. Não altera
+  // política de CORS nenhuma: a origem permitida continua exatamente a mesma,
+  // e uma origem nova sempre gera preflight próprio.
+  maxAge: 86400,
   // Permite que clientes browser cross-origin leiam os metadados do
   // POST /v1/images/process (a resposta é a imagem; os dados vão em headers).
   // Consumidores server-side (ex.: Desmont Hub) já leem qualquer header.

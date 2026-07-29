@@ -124,7 +124,13 @@ export function AppHeader({ session }: AppHeaderProps) {
       active = false;
       clearInterval(id);
     };
-  }, [session, apiBase]);
+    // EGRESS: a dependência é o EMAIL, não o objeto `session`. O next-auth troca
+    // a identidade de `session` a cada refresh/re-render, o que reexecutava este
+    // efeito e disparava um GET /dashboard/notifications extra (5 findMany em
+    // paralelo) além de recriar o intervalo. Com o email, só refaz quando o
+    // usuário realmente muda. Mesmo critério de finance-overview.tsx:60.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.email, apiBase]);
 
   const loadUserProfile = useCallback(async () => {
     if (!session?.user?.email) return;
