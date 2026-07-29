@@ -27,6 +27,14 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
   authMiddleware: async () => {},
 }));
 
+// Telemetria mockada para provar a FIAÇÃO da rota (chamada com source/lane
+// certos e só quando removeBackground=true) — sem isso, remover o guard num
+// refactor envenenaria a taxa de fallback com a suíte 100% verde.
+const recordImageOutcomeMock = vi.fn();
+vi.mock("../app/marketplaces/services/rembg-telemetry", () => ({
+  recordImageOutcome: (...args: any[]) => recordImageOutcomeMock(...args),
+}));
+
 import { uploadRoutes } from "../app/routes/upload.routes";
 
 async function makeImage(
@@ -86,6 +94,7 @@ describe("POST /upload/image", () => {
     writeFileMock.mockClear();
     mkdirMock.mockClear();
     processUploadedImageMock.mockReset();
+    recordImageOutcomeMock.mockReset();
 
     app = fastify();
     await app.register(multipart, {
@@ -421,5 +430,55 @@ describe("POST /upload/image", () => {
     const { deadlineAt } = processUploadedImageMock.mock.calls.at(-1)![1];
     expect(typeof deadlineAt).toBe("number");
     expect(deadlineAt).toBeGreaterThan(before);
+  });
+
+  it("telemetria: registra o outcome com source/lane do modal quando removeBackground=true", async () => {
+    const file = await makeImage();
+    processUploadedImageMock.mockResolvedValue({
+      processed: Buffer.from("png-bytes"),
+      format: "png",
+      removedBackground: true,
+      shadowApplied: false,
+      width: 800,
+      height: 600,
+    });
+
+    const { headers, body } = buildForm({ file, removeBackground: "true" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(recordImageOutcomeMock).toHaveBeenCalledTimes(1);
+    const arg = recordImageOutcomeMock.mock.calls[0][0];
+    expect(arg.source).toBe("upload");
+    expect(arg.lane).toBe("internal");
+    expect(arg.result.removedBackground).toBe(true);
+    expect(typeof arg.durationMs).toBe("number");
+  });
+
+  it("telemetria: NÃO registra quando removeBackground=false (taxa é sobre quem pediu recorte)", async () => {
+    const file = await makeImage();
+    processUploadedImageMock.mockResolvedValue({
+      processed: Buffer.from("webp-bytes"),
+      format: "webp",
+      removedBackground: false,
+      width: 800,
+      height: 600,
+    });
+
+    const { headers, body } = buildForm({ file, removeBackground: "false" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(recordImageOutcomeMock).not.toHaveBeenCalled();
   });
 });

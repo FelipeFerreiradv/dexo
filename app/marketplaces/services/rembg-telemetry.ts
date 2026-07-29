@@ -107,9 +107,16 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
 
     if (!isImageMetricsEnabled()) return;
 
+    // O userId vai em `details`, NÃO na coluna userId: a tela /logs do
+    // cliente é escopada por `userId IN (tenant)`, então linha com a coluna
+    // preenchida apareceria na auditoria do próprio cliente. Esta métrica é
+    // observabilidade INTERNA (mesma audiência do /internal/rembg/status);
+    // com a coluna nula, a linha fica fora da listagem por tenant mas segue
+    // contável globalmente e atribuível via details.tenantUserId.
     const details = {
       source: input.source,
       lane: input.lane,
+      ...(input.userId ? { tenantUserId: input.userId } : {}),
       durationMs: input.durationMs,
       ...(input.result.degradeReason
         ? { reason: input.result.degradeReason }
@@ -128,7 +135,6 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
     // nada disso entra no caminho da resposta.
     if (ok) {
       void SystemLogService.logInfo("IMAGE_BG_REMOVED", "Fundo removido", {
-        userId: input.userId,
         resource: "ImagePipeline",
         details,
       });
@@ -137,7 +143,6 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
         "IMAGE_BG_FALLBACK",
         `Remoção de fundo degradou (${input.result.degradeReason ?? "sem-motivo"})`,
         {
-          userId: input.userId,
           resource: "ImagePipeline",
           details,
         },

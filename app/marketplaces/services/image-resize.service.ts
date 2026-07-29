@@ -109,9 +109,9 @@ export type RembgDegradeReason =
   | "budget_gate" // orçamento/fila esgotados ANTES de chamar o sidecar
   | "budget_after_wait" // slot saiu, mas a sobra não pagava uma inferência
   | "timeout" // axios ECONNABORTED — inferência não coube no orçamento
-  | "conn_error" // ECONNREFUSED/ECONNRESET/EPIPE — container morto/reiniciando
+  | "conn_error" // falha de rede/conexão sem resposta (refused/reset/DNS/rota)
   | "http_error" // sidecar respondeu 4xx/5xx
-  | "processing_error"; // resposta ilegível/erro inesperado pós-fetch
+  | "processing_error"; // erro não-axios (ex.: resposta ilegível pós-fetch)
 
 export interface ProcessUploadedImageOptions {
   removeBackground: boolean;
@@ -466,7 +466,11 @@ function classifyDegradeReason(err: unknown): RembgDegradeReason {
   if (axios.isAxiosError(err)) {
     if (err.response) return "http_error";
     if (err.code === "ECONNABORTED") return "timeout";
-    if (isRetryableConnectionError(err)) return "conn_error";
+    // Qualquer outro erro axios SEM resposta é falha de rede/conexão
+    // (ENOTFOUND por typo na URL, EHOSTUNREACH, ETIMEDOUT de connect TCP...)
+    // — mais amplo que a lista RETRYÁVEL de isRetryableConnectionError, de
+    // propósito: o rótulo descreve a causa; o retry continua conservador.
+    return "conn_error";
   }
   return "processing_error";
 }

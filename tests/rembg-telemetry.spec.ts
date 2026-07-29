@@ -96,10 +96,13 @@ describe("rembg-telemetry", () => {
     expect(logInfo).toHaveBeenCalledTimes(1);
     expect(logInfo.mock.calls[0][0]).toBe("IMAGE_BG_REMOVED");
     const infoOpts = logInfo.mock.calls[0][2] as any;
-    expect(infoOpts.userId).toBe("u1");
+    // userId NÃO vai na coluna (a tela /logs do cliente é escopada por ela e
+    // esta métrica é interna); a atribuição fica em details.tenantUserId.
+    expect(infoOpts.userId).toBeUndefined();
     expect(infoOpts.details).toMatchObject({
       source: "upload",
       lane: "internal",
+      tenantUserId: "u1",
       durationMs: 9500,
       sidecarMs: 9100,
       sidecarTiming: "remove=9000.0",

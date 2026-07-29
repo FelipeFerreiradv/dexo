@@ -23,6 +23,7 @@ describe("RembgAlertService", () => {
 
   afterEach(() => {
     RembgAlertService.stop();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -63,6 +64,43 @@ describe("RembgAlertService", () => {
     expect(logError).toHaveBeenCalledTimes(1);
     expect(logError.mock.calls[0][0]).toBe("IMAGE_FALLBACK_RATE_HIGH");
     expect(logError.mock.calls[0][1]).toContain("50%");
+  });
+
+  it("dedup EXPIRA: alerta de novo após mais de 1h", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T12:00:00Z"));
+    statsMock.mockResolvedValue({ total: 10, fallback: 5, ratePct: 50 });
+    const logError = vi
+      .spyOn(SystemLogService, "logError")
+      .mockResolvedValue(undefined as any);
+
+    await RembgAlertService.runOnce();
+    expect(logError).toHaveBeenCalledTimes(1);
+
+    // 61 minutos depois: a janela de dedup venceu — alerta de novo.
+    vi.setSystemTime(new Date("2026-07-29T13:01:00Z"));
+    await RembgAlertService.runOnce();
+    expect(logError).toHaveBeenCalledTimes(2);
+  });
+
+  it("fronteira: ratePct exatamente no limiar ALERTA (skip é < limiar)", async () => {
+    statsMock.mockResolvedValue({ total: 10, fallback: 3, ratePct: 30 });
+    const logError = vi
+      .spyOn(SystemLogService, "logError")
+      .mockResolvedValue(undefined as any);
+    await RembgAlertService.runOnce();
+    expect(logError).toHaveBeenCalledTimes(1);
+  });
+
+  it("sem REMBG_ALERT_WEBHOOK_URL: nenhum fetch é disparado", async () => {
+    statsMock.mockResolvedValue({ total: 10, fallback: 6, ratePct: 60 });
+    vi.spyOn(SystemLogService, "logError").mockResolvedValue(undefined as any);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await RembgAlertService.runOnce();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("limiar configurável via REMBG_ALERT_FALLBACK_PCT", async () => {

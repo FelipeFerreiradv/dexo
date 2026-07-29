@@ -31,6 +31,13 @@ vi.mock("../app/middlewares/auth.middleware", () => ({
   authMiddleware: async () => {},
 }));
 
+// Telemetria mockada para provar a FIAÇÃO da rota (source/lane públicos e
+// só quando removeBackground=true).
+const recordImageOutcomeMock = vi.fn();
+vi.mock("../app/marketplaces/services/rembg-telemetry", () => ({
+  recordImageOutcome: (...args: any[]) => recordImageOutcomeMock(...args),
+}));
+
 import { imageRoutes } from "../app/routes/image.routes";
 
 async function makeImage(
@@ -89,6 +96,7 @@ describe("POST /v1/images/process", () => {
     writeFileMock.mockClear();
     mkdirMock.mockClear();
     processUploadedImageMock.mockReset();
+    recordImageOutcomeMock.mockReset();
 
     app = fastify();
     // Limite igual ao de produção (api.ts): 20 MB exatos. Assim o teste de
@@ -366,5 +374,54 @@ describe("POST /v1/images/process", () => {
       expect.any(Buffer),
       expect.objectContaining({ lane: "public" }),
     );
+  });
+
+  it("telemetria: registra o outcome com source/lane públicos quando removeBackground=true", async () => {
+    const file = await makeImage();
+    processUploadedImageMock.mockResolvedValue({
+      processed: Buffer.from("png-bytes"),
+      format: "png",
+      removedBackground: true,
+      shadowApplied: false,
+      width: 800,
+      height: 600,
+    });
+
+    const { headers, body } = buildForm({ file, removeBackground: "true" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/images/process",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(recordImageOutcomeMock).toHaveBeenCalledTimes(1);
+    const arg = recordImageOutcomeMock.mock.calls[0][0];
+    expect(arg.source).toBe("public");
+    expect(arg.lane).toBe("public");
+    expect(arg.result.removedBackground).toBe(true);
+  });
+
+  it("telemetria: NÃO registra quando removeBackground=false", async () => {
+    const file = await makeImage();
+    processUploadedImageMock.mockResolvedValue({
+      processed: Buffer.from("webp-bytes"),
+      format: "webp",
+      removedBackground: false,
+      width: 800,
+      height: 600,
+    });
+
+    const { headers, body } = buildForm({ file, removeBackground: "false" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/images/process",
+      headers,
+      payload: body,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(recordImageOutcomeMock).not.toHaveBeenCalled();
   });
 });
