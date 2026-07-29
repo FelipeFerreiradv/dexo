@@ -284,3 +284,69 @@ describe("pushPartnerKey — a chave do PUSH nao e a de API", () => {
     ).toBe(false);
   });
 });
+
+describe("verifyAny — tenta as duas chaves legitimas do app", () => {
+  const PUSH = "chave-do-push";
+  const API = "chave-de-api";
+  const cands = [
+    { nome: "push", valor: PUSH },
+    { nome: "api", valor: API },
+  ];
+
+  it("assinatura feita com a chave do PUSH confere e diz qual foi", () => {
+    const a = hmacManual(URL_CB, CORPO, PUSH);
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, a, cands),
+    ).toEqual({ ok: true, chave: "push" });
+  });
+
+  it("assinatura feita com a chave de API tambem confere e diz qual foi", () => {
+    // E o caso observado em producao: nao da para escolher no escuro.
+    const a = hmacManual(URL_CB, CORPO, API);
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, a, cands),
+    ).toEqual({ ok: true, chave: "api" });
+  });
+
+  it("assinatura de chave ALHEIA nao confere com nenhuma", () => {
+    const a = hmacManual(URL_CB, CORPO, "chave-de-atacante");
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, a, cands),
+    ).toEqual({ ok: false });
+  });
+
+  it("corpo adulterado nao confere com nenhuma", () => {
+    const a = hmacManual(URL_CB, CORPO, PUSH);
+    const adulterado = CORPO.replace("SN-1", "SN-2");
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, adulterado, a, cands).ok,
+    ).toBe(false);
+  });
+
+  it("candidatas repetidas sao testadas uma vez (app com chave unica)", () => {
+    const iguais = [
+      { nome: "push", valor: API },
+      { nome: "api", valor: API },
+    ];
+    const a = hmacManual(URL_CB, CORPO, API);
+    // A primeira da lista vence, entao o nome reportado e "push".
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, a, iguais),
+    ).toEqual({ ok: true, chave: "push" });
+  });
+
+  it("nenhuma candidata com valor devolve false", () => {
+    expect(
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, "assin", [
+        { nome: "push", valor: undefined },
+        { nome: "api", valor: "" },
+      ]),
+    ).toEqual({ ok: false });
+  });
+
+  it("lista vazia devolve false sem lancar", () => {
+    expect(() =>
+      ShopeeWebhookSignatureService.verifyAny(URL_CB, CORPO, "assin", []),
+    ).not.toThrow();
+  });
+});

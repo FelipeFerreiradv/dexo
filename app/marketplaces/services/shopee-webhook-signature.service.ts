@@ -50,6 +50,40 @@ export class ShopeeWebhookSignatureService {
   }
 
   /**
+   * Verifica contra VÁRIAS chaves candidatas e diz qual conferiu.
+   *
+   * Por que não uma só: o console tem duas chaves legítimas do mesmo app — a
+   * "Live API Partner Key" (tela do app) e a "Live Push Partner Key" (tela Push
+   * Mechanism) — e a documentação não deixa claro qual assina o push. Escolher
+   * errado rejeita 100% dos pushes com 401, e em silêncio: push recusado não
+   * deixa pedido para ninguém estranhar.
+   *
+   * Observado em produção em 30/07/2026: quatro pushes caíram em
+   * `invalid_signature` e depois passaram a conferir, sem mudança de código no
+   * meio. Tentar as duas remove a adivinhação, e o nome da que conferiu vai para
+   * o log — assim a resposta fica registrada em vez de inferida.
+   *
+   * Não enfraquece nada: ambas são segredo do mesmo app, e uma assinatura que
+   * não confere com NENHUMA continua sendo 401.
+   */
+  static verifyAny(
+    url: string | undefined,
+    rawBody: string | undefined,
+    authorization: string | undefined,
+    candidatas: Array<{ nome: string; valor: string | undefined }>,
+  ): { ok: boolean; chave?: string } {
+    const vistas = new Set<string>();
+    for (const c of candidatas) {
+      if (!c.valor || vistas.has(c.valor)) continue;
+      vistas.add(c.valor);
+      if (this.verify(url, rawBody, authorization, c.valor)) {
+        return { ok: true, chave: c.nome };
+      }
+    }
+    return { ok: false };
+  }
+
+  /**
    * Chave que assina o PUSH, que não é necessariamente a mesma que assina as
    * chamadas de API.
    *
