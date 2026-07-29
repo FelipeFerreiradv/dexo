@@ -79,7 +79,17 @@ export type LogAction =
   | "ORDER_INGESTION_ISSUE_RESOLVED"
   // O reconciliador esgotou as tentativas e a pendência continua aberta —
   // precisa de ação humana (normalmente vincular o anúncio a um produto).
-  | "ORDER_INGESTION_ISSUE_STUCK";
+  | "ORDER_INGESTION_ISSUE_STUCK"
+  // Pipeline de remoção de fundo (rembg). Gravados apenas com
+  // IMAGE_PIPELINE_METRICS=1 (ver rembg-telemetry.ts). A taxa de fallback —
+  // a métrica nº 1 do pipeline — é count(IMAGE_BG_FALLBACK) /
+  // (count(IMAGE_BG_FALLBACK)+count(IMAGE_BG_REMOVED)) numa janela.
+  | "IMAGE_BG_REMOVED"
+  | "IMAGE_BG_FALLBACK"
+  // Falha TERMINAL de um job assíncrono de recorte (worker — fase futura).
+  | "IMAGE_BG_JOB_FAILED"
+  // Alerta: taxa de fallback da última 1h acima do limiar (rembg-alert.service).
+  | "IMAGE_FALLBACK_RATE_HIGH";
 
 export interface SystemLog {
   id: string;

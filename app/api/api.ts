@@ -40,6 +40,7 @@ import { teamRoutes } from "../routes/team.routes";
 import { whatsappRoutes } from "../routes/whatsapp.routes";
 import { superadminRoutes } from "../routes/superadmin.routes";
 import { superadminImportRoutes } from "../routes/superadmin-import.routes";
+import { internalRoutes } from "../routes/internal.routes";
 import { loggingMiddleware } from "../middlewares/logging.middleware";
 
 // trustProxy: roda atrás do reverse proxy do CloudPanel (nginx). Necessário
@@ -235,11 +236,17 @@ api.register(superadminImportRoutes, {
   prefix: "/superadmin",
 });
 
+// Diagnóstico operacional (equipe Dexo) — ex.: GET /internal/rembg/status.
+api.register(internalRoutes, {
+  prefix: "/internal",
+});
+
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
 import { StockSyncRetryService } from "../marketplaces/services/stock-sync-retry.service";
 import { StockReconciliationService } from "../marketplaces/services/stock-reconciliation.service";
 import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
 import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
+import { RembgAlertService } from "../marketplaces/services/rembg-alert.service";
 
 // -----------------------------------------------------------------
 // Health e readiness
@@ -364,6 +371,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (StockReconciliationService as any).stop?.();
     (ListingStatusSweepService as any).stop?.();
     (OrderIngestionReconcilerService as any).stop?.();
+    (RembgAlertService as any).stop?.();
   } catch (err) {
     api.log.error({ err }, "error stopping background services");
   }
@@ -408,6 +416,9 @@ try {
       if (process.env.ORDER_INGESTION_RECONCILER_DISABLED !== "1") {
         OrderIngestionReconcilerService.start();
       }
+      // alerta de taxa de fallback do recorte — o tick é no-op enquanto
+      // IMAGE_PIPELINE_METRICS estiver desligado (lê o env a cada execução).
+      RembgAlertService.start();
       backgroundServicesStarted = true;
     });
 } catch (err) {

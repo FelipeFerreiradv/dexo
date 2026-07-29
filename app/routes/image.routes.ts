@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { processUploadedImage } from "../marketplaces/services/image-resize.service";
 import { readHandlerBudgetMs } from "../marketplaces/services/rembg-budget";
+import { recordImageOutcome } from "../marketplaces/services/rembg-telemetry";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 // Mesmas validações do POST /upload/image, REPLICADAS aqui de propósito.
@@ -70,7 +71,8 @@ export async function imageRoutes(app: FastifyInstance) {
       ],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const deadlineAt = Date.now() + readHandlerBudgetMs();
+      const startedAt = Date.now();
+      const deadlineAt = startedAt + readHandlerBudgetMs();
       try {
         let buffer: Buffer | null = null;
         let mimetype = "";
@@ -162,6 +164,18 @@ export async function imageRoutes(app: FastifyInstance) {
           lane: "public",
           deadlineAt,
         });
+
+        // Telemetria (aditiva, nunca no caminho da resposta): a taxa de
+        // fallback é sobre quem PEDIU recorte — só registra nesse caso.
+        if (removeBackground) {
+          recordImageOutcome({
+            source: "public",
+            lane: "public",
+            result,
+            durationMs: Date.now() - startedAt,
+            userId: (request as any).user?.id,
+          });
+        }
 
         // Content-Type DEVE ser setado ANTES do send(): é o que faz o
         // @fastify/compress pular a compressão de imagens já comprimidas

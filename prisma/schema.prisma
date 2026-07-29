@@ -675,6 +675,12 @@ model SystemLog {
 
   @@index([userId])
   @@index([createdAt])
+  // Taxa de fallback do pipeline de imagem (rembg-telemetry): 2 COUNTs por
+  // action+janela — sem este índice viraria seq scan na tabela inteira.
+  // DDL manual em produção; este @@index é o espelho. Migração:
+  // CREATE INDEX IF NOT EXISTS "SystemLog_action_createdAt_idx"
+  //   ON "SystemLog"("action", "createdAt");
+  @@index([action, createdAt])
 }
 
 enum Role {
