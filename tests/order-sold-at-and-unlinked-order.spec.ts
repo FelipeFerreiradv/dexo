@@ -350,3 +350,151 @@ describe("filtro de período usa COALESCE(soldAt, createdAt)", () => {
     expect(where.createdAt).toBeUndefined();
   });
 });
+
+describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () => {
+  const base = {
+    marketplaceAccountId: "acc-1",
+    externalOrderId: "EXT-1",
+    status: "PAID" as any,
+    totalAmount: 99.5,
+    customerName: "cliente",
+    soldAt: new Date("2026-07-15T10:00:00Z"),
+    itemsTotal: 2,
+  };
+  const criar = (over: any = {}) =>
+    (OrderUseCase as any).criarOrderSemItens({ ...base, ...over });
+
+  it.each(["SHOPEE", "MERCADO_LIVRE", "MAGALU"] as const)(
+    "%s cria o Order com items vazio e devolve o id",
+    async (plataforma) => {
+      const create = vi
+        .spyOn(orderRepository, "create")
+        .mockResolvedValue({ id: "order-x" } as any);
+
+      const id = await criar({ plataforma });
+
+      expect(id).toBe("order-x");
+      const dados = create.mock.calls[0][0] as any;
+      expect(dados.items).toEqual([]);
+      expect(dados.totalAmount).toBe(99.5);
+      expect(dados.soldAt).toEqual(base.soldAt);
+    },
+  );
+
+  it("kill-switch=1 não chega a chamar o repositório", async () => {
+    process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED = "1";
+    const create = vi.spyOn(orderRepository, "create");
+
+    expect(await criar({ plataforma: "MERCADO_LIVRE" })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("P2002 devolve null sem lançar (o @@unique fez o trabalho)", async () => {
+    vi.spyOn(orderRepository, "create").mockRejectedValue(
+      Object.assign(new Error("dup"), { code: "P2002" }),
+    );
+
+    await expect(criar({ plataforma: "MAGALU" })).resolves.toBeNull();
+  });
+
+  it("erro qualquer devolve null sem lançar", async () => {
+    // Perder o Order é ruim; derrubar o laço de import e perder os OUTROS
+    // pedidos do ciclo seria pior.
+    vi.spyOn(orderRepository, "create").mockRejectedValue(
+      new Error("banco fora"),
+    );
+
+    await expect(criar({ plataforma: "SHOPEE" })).resolves.toBeNull();
+  });
+});
+
+describe("ML: venda sem produto cadastrado também vira Order", () => {
+  const ML_ORDER = {
+    id: 2000000123,
+    status: "paid",
+    total_amount: 250.4,
+    date_created: "2026-07-10T09:30:00.000-03:00",
+    order_items: [
+      { item: { id: "MLB1", seller_sku: "ABC" }, quantity: 1, unit_price: 250.4 },
+    ],
+    buyer: { nickname: "comprador" },
+  };
+
+  beforeEach(() => {
+    vi.spyOn(orderRepository, "exists").mockResolvedValue(false as any);
+    vi.spyOn(OrderUseCase as any, "mapOrderItems").mockResolvedValue({
+      items: [],
+      linkedCount: 0,
+    });
+  });
+
+  it("cria o Order com zero itens, valor e soldAt do ML", async () => {
+    const create = vi
+      .spyOn(orderRepository, "create")
+      .mockResolvedValue({ id: "order-ml" } as any);
+
+    const r = await (OrderUseCase as any).processOrder(
+      ML_ORDER,
+      "acc-ml",
+      true,
+      undefined,
+      "dono-1",
+    );
+
+    expect(r.status).toBe("no_products");
+    expect(r.orderId).toBe("order-ml");
+    expect(r.stockDeducted).toBe(false);
+    const dados = create.mock.calls[0][0] as any;
+    expect(dados.items).toEqual([]);
+    expect(dados.totalAmount).toBe(250.4);
+    expect(dados.soldAt.toISOString()).toBe("2026-07-10T12:30:00.000Z");
+  });
+
+  it("kill-switch=1 volta a não criar Order no ML", async () => {
+    process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED = "1";
+    const create = vi.spyOn(orderRepository, "create");
+
+    const r = await (OrderUseCase as any).processOrder(
+      ML_ORDER,
+      "acc-ml",
+      true,
+      undefined,
+      "dono-1",
+    );
+
+    expect(create).not.toHaveBeenCalled();
+    expect(r.orderId).toBeNull();
+    expect(r.status).toBe("no_products");
+  });
+});
+
+describe("quarentena NO_LINKED_ITEMS leva o orderId", () => {
+  it("sem o orderId o reconciliador não acha o pedido para completar", async () => {
+    delete process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED;
+    const abrir = vi
+      .spyOn(OrderIngestionIssueService, "open")
+      .mockResolvedValue(undefined as any);
+
+    await (OrderUseCase as any).registrarDesfechoIngestao({
+      platform: "MERCADO_LIVRE",
+      marketplaceAccountId: "acc-ml",
+      resultado: {
+        success: false,
+        orderId: "order-ml",
+        externalOrderId: "ML-1",
+        status: "no_products",
+        message: "",
+        stockDeducted: false,
+        itemsLinked: 0,
+        itemsTotal: 1,
+      },
+      esperavaBaixa: true,
+    });
+
+    expect(abrir.mock.calls[0][0]).toMatchObject({
+      reason: "NO_LINKED_ITEMS",
+      orderId: "order-ml",
+    });
+    process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED = "1";
+  });
+});

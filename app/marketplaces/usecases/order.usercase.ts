@@ -798,50 +798,19 @@ export class OrderUseCase {
         //
         // Continua contando como `no_products`: o ciclo rebaixa para WARNING,
         // porque estoque nenhum foi baixado. Nada de "sincronizado sem erro".
-        const criaSemItens =
-          process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED !== "1";
-
-        let orderSemItens: string | null = null;
-        if (criaSemItens) {
-          try {
-            const criado = await orderRepository.create({
-              marketplaceAccountId,
-              externalOrderId,
-              status: this.mapShopeeStatus(shopeeOrder.order_status),
-              totalAmount:
-                typeof shopeeOrder.total_amount === "number"
-                  ? Number(shopeeOrder.total_amount)
-                  : 0,
-              customerName: shopeeOrder.buyer_username ?? undefined,
-              soldAt: this.resolveSoldAt(shopeeOrder.create_time),
-              items: [],
-            });
-            orderSemItens = criado.id;
-            console.log(
-              JSON.stringify({
-                event: "shopee.order_import.created_without_items",
-                marketplaceAccountId,
-                externalOrderId,
-                orderId: criado.id,
-                itemsTotal,
-              }),
-            );
-          } catch (err) {
-            // P2002 = outro caminho criou o mesmo pedido no meio. Não é erro:
-            // o `@@unique(marketplaceAccountId, externalOrderId)` fez o trabalho.
-            const duplicado =
-              err &&
-              typeof err === "object" &&
-              "code" in err &&
-              (err as { code?: string }).code === "P2002";
-            if (!duplicado) {
-              console.warn(
-                `[OrderUseCase] Falha ao criar Order sem itens para Shopee #${externalOrderId}:`,
-                err instanceof Error ? err.message : err,
-              );
-            }
-          }
-        }
+        const orderSemItens = await this.criarOrderSemItens({
+          marketplaceAccountId,
+          externalOrderId,
+          status: this.mapShopeeStatus(shopeeOrder.order_status),
+          totalAmount:
+            typeof shopeeOrder.total_amount === "number"
+              ? Number(shopeeOrder.total_amount)
+              : 0,
+          customerName: shopeeOrder.buyer_username ?? undefined,
+          soldAt: this.resolveSoldAt(shopeeOrder.create_time),
+          plataforma: "SHOPEE",
+          itemsTotal,
+        });
 
         await OrderIngestionIssueService.open({
           marketplaceAccountId,
@@ -858,7 +827,7 @@ export class OrderUseCase {
           orderId: orderSemItens,
           externalOrderId,
           status: "no_products",
-          message: criaSemItens
+          message: orderSemItens
             ? "Nenhum item do pedido Shopee pôde ser vinculado; venda registrada sem itens e sem baixa"
             : "Nenhum item do pedido Shopee pôde ser vinculado",
           stockDeducted: false,
@@ -1228,6 +1197,80 @@ export class OrderUseCase {
   }
 
   /**
+   * Cria o Order de uma venda cujos itens NAO puderam ser vinculados a produto.
+   *
+   * Order com ZERO itens: carrega o valor da venda e a data, e fica visivel em
+   * /pedidos, no Financeiro e no Dashboard. Sem isto a venda existia no
+   * marketplace e nao existia no Dexo — medido em producao em 29/07/2026: 89
+   * vendas de 3 tenants presas assim, 26 de um so cliente em 12 dias, com o
+   * faturamento dele incompleto.
+   *
+   * NAO baixa estoque, de proposito: o produto nao esta cadastrado, entao nao
+   * existe estoque a descontar. A pendencia da quarentena continua aberta e,
+   * quando o cliente cadastrar o produto, o reconciliador acrescenta o item e
+   * baixa sozinho.
+   *
+   * `OrderItem.productId` e NOT NULL com FK obrigatoria, por isso zero itens em
+   * vez de item sem produto: tornar a coluna nulavel mexeria no modelo mais
+   * usado da plataforma.
+   *
+   * Devolve o id criado, ou null quando a criacao nao aconteceu (kill-switch
+   * ORDER_CREATE_WITHOUT_ITEMS_DISABLED=1, corrida de P2002 ou falha). Nunca
+   * lanca: perder o Order e ruim, perder o RASTRO e o que o invariante proibe.
+   */
+  private static async criarOrderSemItens(params: {
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    status: OrderStatus;
+    totalAmount: number;
+    customerName?: string;
+    soldAt: Date | null;
+    plataforma: "SHOPEE" | "MERCADO_LIVRE" | "MAGALU";
+    itemsTotal: number;
+  }): Promise<string | null> {
+    if (process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED === "1") return null;
+
+    try {
+      const criado = await orderRepository.create({
+        marketplaceAccountId: params.marketplaceAccountId,
+        externalOrderId: params.externalOrderId,
+        status: params.status,
+        totalAmount: params.totalAmount,
+        customerName: params.customerName,
+        soldAt: params.soldAt,
+        items: [],
+      });
+
+      console.log(
+        JSON.stringify({
+          event: "order_import.created_without_items",
+          platform: params.plataforma,
+          marketplaceAccountId: params.marketplaceAccountId,
+          externalOrderId: params.externalOrderId,
+          orderId: criado.id,
+          itemsTotal: params.itemsTotal,
+        }),
+      );
+      return criado.id;
+    } catch (err) {
+      // P2002 = outro caminho criou o mesmo pedido no meio. Nao e erro: o
+      // @@unique(marketplaceAccountId, externalOrderId) fez o trabalho.
+      const duplicado =
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code?: string }).code === "P2002";
+      if (!duplicado) {
+        console.warn(
+          `[OrderUseCase] Falha ao criar Order sem itens para ${params.plataforma} #${params.externalOrderId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return null;
+    }
+  }
+
+  /**
    * Data da VENDA no marketplace, para gravar em `Order.soldAt`.
    *
    * Cada plataforma expoe num formato diferente: ML `date_created` (ISO),
@@ -1314,6 +1357,9 @@ export class OrderUseCase {
         await OrderIngestionIssueService.open({
           ...base,
           reason: "NO_LINKED_ITEMS",
+          // Com o Order criado sem itens, o reconciliador precisa do id para
+          // achar o pedido e acrescentar o item quando o produto aparecer.
+          orderId: resultado.orderId,
           detail: `Nenhum dos ${resultado.itemsTotal} item(ns) do pedido casou com produto do tenant.`,
         });
         return;
@@ -1405,14 +1451,35 @@ export class OrderUseCase {
         listingMap,
       );
 
-      // Se nenhum item foi vinculado, não importar
       if (items.length === 0) {
+        // A venda existe no ML. Antes o pedido simplesmente nao entrava: sem
+        // Order, sem rastro, e o ciclo gravado como SUCCESS. Agora entra sem
+        // itens (a quarentena e aberta pelo chamador) e o estoque fica pendente.
+        const orderSemItens = await this.criarOrderSemItens({
+          marketplaceAccountId,
+          externalOrderId,
+          status: this.mapMLStatusToLocal(mlOrder.status),
+          totalAmount:
+            typeof mlOrder.total_amount === "number" &&
+            Number.isFinite(mlOrder.total_amount)
+              ? Number(mlOrder.total_amount)
+              : 0,
+          customerName: this.extractCustomerName(mlOrder),
+          soldAt: this.resolveSoldAt(
+            (mlOrder as { date_created?: string }).date_created,
+          ),
+          plataforma: "MERCADO_LIVRE",
+          itemsTotal: mlOrder.order_items.length,
+        });
+
         return {
           success: false,
-          orderId: null,
+          orderId: orderSemItens,
           externalOrderId,
           status: "no_products",
-          message: "Nenhum item do pedido pôde ser vinculado a produtos locais",
+          message: orderSemItens
+            ? "Nenhum item do pedido pôde ser vinculado a produtos locais; venda registrada sem itens e sem baixa"
+            : "Nenhum item do pedido pôde ser vinculado a produtos locais",
           stockDeducted: false,
           itemsLinked: 0,
           itemsTotal: mlOrder.order_items.length,
@@ -2019,6 +2086,34 @@ export class OrderUseCase {
               },
             ).catch(() => {});
           }
+          // A venda existe na Magalu. Antes o pedido nao entrava de forma alguma.
+          // `mappedStatus` só é calculado mais abaixo no laço, então o status é
+          // resolvido aqui mesmo — mesmo mapeamento, mesma função.
+          const totalMagalu = (() => {
+            const doPedido = magaluMoneyToNumber(magaluOrder.amounts);
+            if (doPedido > 0) return doPedido;
+            const cru =
+              magaluOrder.total ?? magaluOrder.total_amount ?? magaluOrder.amount;
+            return typeof cru === "number" && Number.isFinite(cru)
+              ? Number(cru)
+              : 0;
+          })();
+
+          const orderSemItens = await this.criarOrderSemItens({
+            marketplaceAccountId,
+            externalOrderId,
+            status: this.mapMagaluStatus(magaluOrder.status),
+            totalAmount: totalMagalu,
+            customerName:
+              magaluOrder.customer?.name ??
+              magaluOrder.customer_name ??
+              magaluOrder.buyer?.name ??
+              undefined,
+            soldAt: this.resolveSoldAt(magaluOrder.purchased_at),
+            plataforma: "MAGALU",
+            itemsTotal: itemList.length,
+          });
+
           // Quarentena (auditoria 29/07/2026): o SystemLog acima nao tem userId,
           // logo NAO aparece na tela /logs do cliente — o filtro dela e
           // `userId IN (...)` e NULL nunca casa. A pendencia e o unico registro
@@ -2029,7 +2124,7 @@ export class OrderUseCase {
             marketplaceAccountId,
             resultado: {
               success: false,
-              orderId: null,
+              orderId: orderSemItens,
               externalOrderId,
               status: "no_products",
               message: "Nenhum item do pedido Magalu pode ser vinculado",
