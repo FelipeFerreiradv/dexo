@@ -352,18 +352,37 @@ export class OrderUseCase {
           result.errors++;
           break;
       }
+
+      // Quarentena do ML. Antes deste ponto, um pedido do ML que não vinculasse
+      // ou que não baixasse estoque não deixava rastro nenhum.
+      await this.registrarDesfechoIngestao({
+        platform: "MERCADO_LIVRE",
+        marketplaceAccountId: account.id,
+        resultado: importResult,
+        esperavaBaixa: deductStock && mlOrder.status === "paid",
+      });
     }
 
+    // Veredito honesto (auditoria 29/07/2026): antes só `errors` rebaixava o
+    // ciclo, então uma passada que perdeu pedidos por falta de vínculo era
+    // gravada como SUCCESS — e "sincronizado sem erro" é exatamente o que o
+    // cliente não podia ler nesse caso. `noProducts` conta como perda: são
+    // vendas que não viraram Order.
+    const perdeuAlgo = result.errors > 0 || result.noProducts > 0;
     await this.logSync(
       account.id,
       SyncType.ORDER_IMPORT,
-      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Importados ${result.imported} de ${result.totalOrders} pedidos do ML (account import)`,
+      perdeuAlgo ? SyncStatus.WARNING : SyncStatus.SUCCESS,
+      `Importados ${result.imported} de ${result.totalOrders} pedidos do ML (account import)` +
+        (result.noProducts > 0
+          ? `; ${result.noProducts} sem vinculo de produto (em quarentena)`
+          : ""),
       {
         totalOrders: result.totalOrders,
         imported: result.imported,
         alreadyExists: result.alreadyExists,
         errors: result.errors,
+        noProducts: result.noProducts,
       },
     );
 
@@ -1142,6 +1161,112 @@ export class OrderUseCase {
   }
 
   /**
+   * Abre ou fecha a quarentena a partir do desfecho de UM pedido do ML ou da
+   * Magalu.
+   *
+   * Por que existe (auditoria 29/07/2026): a quarentena cobria SÓ a Shopee. No
+   * ML, um pedido cujos itens não casassem devolvia `no_products` e o ciclo
+   * seguia — sem Order, sem SystemLog, sem aparecer em /pedidos, e com o SyncLog
+   * gravado como SUCCESS. Uma falha de baixa era só um `console.error` e nunca
+   * era re-tentada. Na Magalu, idem. O invariante do cliente ("toda venda vira
+   * Order E baixa estoque, sempre; nenhum descarte silencioso") valia para um
+   * marketplace de três.
+   *
+   * Best-effort de propósito: um erro aqui nunca pode derrubar a importação —
+   * trocaria um pedido incompleto por nenhum pedido.
+   *
+   * Kill-switch ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED=1 volta ao
+   * comportamento anterior (só a Shopee registra). O
+   * ORDER_INGESTION_ISSUES_DISABLED continua desligando a quarentena inteira.
+   */
+  private static async registrarDesfechoIngestao(params: {
+    platform: "MERCADO_LIVRE" | "MAGALU";
+    marketplaceAccountId: string;
+    resultado: ImportOrderResult;
+    /** true quando este pedido deveria ter baixado estoque. */
+    esperavaBaixa: boolean;
+  }): Promise<void> {
+    if (process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED === "1") return;
+
+    const { platform, marketplaceAccountId, resultado, esperavaBaixa } = params;
+    const rotulo = platform === "MERCADO_LIVRE" ? "ML" : "Magalu";
+
+    try {
+      const base = {
+        marketplaceAccountId,
+        platform,
+        externalOrderId: resultado.externalOrderId,
+        // Payload NÃO é guardado: a reingestão de ML/Magalu não é dirigida por
+        // id, então ele nunca seria lido — e guardar dado de pedido sem
+        // finalidade é PII persistida sem prazo para sair.
+        payload: null,
+      };
+
+      if (resultado.status === "no_products") {
+        console.log(
+          JSON.stringify({
+            event: `${rotulo.toLowerCase()}.order_import.no_linked_items`,
+            marketplaceAccountId,
+            externalOrderId: resultado.externalOrderId,
+            itemsTotal: resultado.itemsTotal,
+          }),
+        );
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "NO_LINKED_ITEMS",
+          detail: `Nenhum dos ${resultado.itemsTotal} item(ns) do pedido casou com produto do tenant.`,
+        });
+        return;
+      }
+
+      if (resultado.status === "error") {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "INGEST_FAILED",
+          detail: resultado.message?.slice(0, 500) ?? null,
+        });
+        return;
+      }
+
+      if (resultado.status !== "imported") return;
+
+      // Importado: a baixa é o motivo mais grave, porque o pedido JÁ aparece na
+      // tela e o estoque continua vendável nos outros canais (oversell).
+      if (esperavaBaixa && !resultado.stockDeducted) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "STOCK_DEDUCTION_FAILED",
+          orderId: resultado.orderId,
+          detail: `Pedido ${rotulo} importado, baixa de estoque NAO efetivada.`,
+        });
+        return;
+      }
+
+      if (resultado.itemsLinked < resultado.itemsTotal) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "PARTIAL_LINK",
+          orderId: resultado.orderId,
+          detail: `${resultado.itemsLinked} de ${resultado.itemsTotal} item(ns) vinculados.`,
+        });
+        return;
+      }
+
+      // Completo e com baixa: se havia pendência antiga deste pedido, fecha.
+      await OrderIngestionIssueService.resolve(
+        marketplaceAccountId,
+        resultado.externalOrderId,
+        resultado.orderId ?? null,
+      );
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao registrar desfecho de ingestao ${rotulo} #${resultado.externalOrderId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Processa um único pedido do ML
    */
   private static async processOrder(
@@ -1791,6 +1916,26 @@ export class OrderUseCase {
               },
             ).catch(() => {});
           }
+          // Quarentena (auditoria 29/07/2026): o SystemLog acima nao tem userId,
+          // logo NAO aparece na tela /logs do cliente — o filtro dela e
+          // `userId IN (...)` e NULL nunca casa. A pendencia e o unico registro
+          // que o dono dos dados ve, e a unica coisa que se resolve sozinha
+          // quando ele cadastrar o produto.
+          await this.registrarDesfechoIngestao({
+            platform: "MAGALU",
+            marketplaceAccountId,
+            resultado: {
+              success: false,
+              orderId: null,
+              externalOrderId,
+              status: "no_products",
+              message: "Nenhum item do pedido Magalu pode ser vinculado",
+              stockDeducted: false,
+              itemsLinked: 0,
+              itemsTotal: itemList.length,
+            },
+            esperavaBaixa: deductStock,
+          });
           continue;
         }
 
@@ -1876,7 +2021,7 @@ export class OrderUseCase {
 
         result.imported++;
         result.stockDeductions += stockDeducted ? 1 : 0;
-        result.results.push({
+        const desfechoMagalu: ImportOrderResult = {
           success: true,
           orderId: created.id,
           externalOrderId,
@@ -1885,6 +2030,18 @@ export class OrderUseCase {
           stockDeducted,
           itemsLinked: linkedCount,
           itemsTotal: itemList.length,
+        };
+        result.results.push(desfechoMagalu);
+
+        // Baixa que falhou ou vinculo parcial abrem pendencia; completo e com
+        // baixa fecha a que existir. Antes, o pedido Magalu importado sem baixa
+        // ficava "estufado para sempre e sem rastro" — o proprio comentario
+        // acima dizia isso, e nada re-tentava.
+        await this.registrarDesfechoIngestao({
+          platform: "MAGALU",
+          marketplaceAccountId,
+          resultado: desfechoMagalu,
+          esperavaBaixa: deductStock,
         });
 
         // ADITIVO (auto-cliente): best-effort, nunca afeta o import.

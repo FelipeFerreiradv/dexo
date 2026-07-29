@@ -45,6 +45,14 @@ process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED ??= "1";
 // correção (order-stock-retry-race) reabilita explicitamente por caso.
 process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED ??= "1";
 
+// Quarentena de ingestão para ML e Magalu (auditoria 29/07/2026): desligada por
+// default na suíte porque os specs de import de ML e Magalu não mockam a tabela
+// nova, e o registro é best-effort (o erro é engolido, mas gera ruído). Em
+// produção o default é o oposto — ligado —, senão o invariante "nenhum descarte
+// silencioso" valeria para um marketplace de três. O spec da correção
+// (order-ingestion-ml-magalu) reabilita explicitamente por caso.
+process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

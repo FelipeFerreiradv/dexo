@@ -188,11 +188,58 @@ export class OrderIngestionReconcilerService {
     // Caso 2 — reingerir o pedido pelo caminho canônico. Idempotente: se o
     // Order já existir, a importação devolve `already_exists`.
     if (issue.platform !== "SHOPEE") {
-      // ML e Magalu ainda não têm ingestão dirigida por id nesta etapa —
-      // a pendência fica OPEN e visível, sem re-tentativa cega.
+      // ML e Magalu não têm ingestão dirigida por `order_sn`, então não há como
+      // re-buscar UM pedido. Mas quem resolve esses casos é o próprio poll: o
+      // pedido não existe localmente, logo ele reaparece na janela a cada ciclo
+      // e entra sozinho no momento em que o cliente cadastrar/vincular o
+      // produto. O que falta é FECHAR a pendência quando isso acontece — e
+      // fazer isso sem bater na API (auditoria 29/07/2026).
+      const local = await (prisma as any).order.findFirst({
+        where: {
+          marketplaceAccountId: issue.marketplaceAccountId,
+          externalOrderId: issue.externalOrderId,
+        },
+        select: { id: true, status: true, stockDeductedAt: true },
+      });
+
+      if (!local) {
+        await this.registerFailure(
+          issue,
+          `Pedido ${issue.platform} ainda nao entrou; o poll tenta de novo a cada ciclo.`,
+        );
+        return;
+      }
+
+      if (local.status === "CANCELLED") {
+        await OrderIngestionIssueService.resolve(
+          issue.marketplaceAccountId,
+          issue.externalOrderId,
+          local.id,
+        );
+        return;
+      }
+
+      // Existe: falta garantir a baixa. Idempotente pelo net do StockLog, agora
+      // lido dentro da transação.
+      const { OrderUseCase: UC } = await import("../usecases/order.usercase");
+      const baixou = await UC.retryStockDeduction(
+        local.id,
+        issue.platform,
+        issue.externalOrderId,
+      );
+
+      if (baixou) {
+        await OrderIngestionIssueService.resolve(
+          issue.marketplaceAccountId,
+          issue.externalOrderId,
+          local.id,
+        );
+        return;
+      }
+
       await this.registerFailure(
         issue,
-        `Reingestao automatica ainda nao suportada para ${issue.platform}.`,
+        `Pedido ${issue.platform} existe (${local.id}) e a baixa segue pendente.`,
       );
       return;
     }
