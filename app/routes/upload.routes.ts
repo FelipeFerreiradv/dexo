@@ -7,6 +7,7 @@ import {
   type ProcessedImageFormat,
 } from "../marketplaces/services/image-resize.service";
 import { readHandlerBudgetMs } from "../marketplaces/services/rembg-budget";
+import { recordImageOutcome } from "../marketplaces/services/rembg-telemetry";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 const ALLOWED_MIME = new Set([
@@ -84,7 +85,8 @@ export async function uploadRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       // Carimba o início do handler: o nginx começa a contar antes disso, então
       // quanto mais cedo, mais conservador o orçamento. Ver `rembg-budget`.
-      const deadlineAt = Date.now() + readHandlerBudgetMs();
+      const startedAt = Date.now();
+      const deadlineAt = startedAt + readHandlerBudgetMs();
       try {
         let buffer: Buffer | null = null;
         let mimetype = "";
@@ -175,6 +177,18 @@ export async function uploadRoutes(app: FastifyInstance) {
           lane: "internal",
           deadlineAt,
         });
+
+        // Telemetria (aditiva, nunca no caminho da resposta): a taxa de
+        // fallback é sobre quem PEDIU recorte — só registra nesse caso.
+        if (removeBackground) {
+          recordImageOutcome({
+            source: "upload",
+            lane: "internal",
+            result,
+            durationMs: Date.now() - startedAt,
+            userId: (request as any).user?.id,
+          });
+        }
 
         const processedFileName = `${uuid}${FORMAT_EXTENSION[result.format]}`;
         const processedPath = join(uploadDir, processedFileName);
