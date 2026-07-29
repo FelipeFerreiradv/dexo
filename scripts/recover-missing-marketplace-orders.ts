@@ -31,6 +31,13 @@ import { normalizeSku } from "../app/lib/sku";
  * ATENCAO: a Shopee exige IP na whitelist — este script so funciona da VPS.
  */
 
+/**
+ * Status sem venda concretizada — espelha ShopeeApiService.NON_SALE_STATUSES.
+ * Duplicado aqui (e nao importado) para que o script rode tambem contra uma
+ * instalacao que ainda nao subiu o service novo.
+ */
+const NON_SALE_STATUSES = new Set(["UNPAID", "CANCELLED", "IN_CANCEL"]);
+
 interface Flags {
   userId: string | null;
   platform: string;
@@ -293,13 +300,16 @@ async function main(): Promise<void> {
       );
     }
 
-    // Mesmo criterio de status do import: nao recuperar venda nao concretizada.
-    const vendas = ShopeeApiService.filterSaleOrders(detalhes, {
-      statusFilter: "exclude_non_sale",
-      onStatusSkipped: (sn, st) =>
-        console.log(
-          `  - ${sn}: status ${st} (sem venda concretizada) — ignorado`,
-        ),
+    // Mesmo criterio de status do import. Aplicado LOCALMENTE de proposito:
+    // assim o script tambem roda contra uma instalacao que ainda nao subiu o
+    // ShopeeApiService novo — que e exatamente a situacao enquanto o PR nao foi
+    // deployado. A lista espelha ShopeeApiService.NON_SALE_STATUSES.
+    const vendas = detalhes.filter((o: any) => {
+      if (!NON_SALE_STATUSES.has(o?.order_status)) return true;
+      console.log(
+        `  - ${o?.order_sn}: status ${o?.order_status} (sem venda concretizada) — ignorado`,
+      );
+      return false;
     });
 
     const locais = await prisma.order.findMany({
