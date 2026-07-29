@@ -971,6 +971,13 @@ export class ShopeeApiService {
 
   /** Teto de intervalo por chamada do get_order_list (limite da API Shopee). */
   static readonly ORDER_LIST_MAX_WINDOW_DAYS = 15;
+  /**
+   * Teto de blocos de 15 dias por varredura (90 dias). Existe para uma marca
+   * d'água corrompida não virar uma varredura infinita; ao bater no teto, o
+   * período que ficou de fora é informado por `onWindowTruncated` — nunca
+   * truncado em silêncio.
+   */
+  static readonly ORDER_LIST_MAX_BLOCKS = 6;
 
   /**
    * Busca pedidos recentes (em dias) já com detalhes.
@@ -994,36 +1001,81 @@ export class ShopeeApiService {
       statusFilter?: "legacy_whitelist" | "exclude_non_sale";
       /** Chamado para cada pedido descartado por status. */
       onStatusSkipped?: (orderSn: string, status: string) => void;
+      /**
+       * Chamado com os `order_sn` que a listagem devolveu mas cujo DETALHE não
+       * voltou. Sem isto o pedido desaparecia sem contador e sem afetar o
+       * veredito do ciclo — exatamente o "descarte silencioso" que o invariante
+       * proíbe (auditoria 29/07/2026).
+       */
+      onDetailMissing?: (orderSns: string[]) => void;
+      /**
+       * Chamado quando a janela pedida é mais antiga do que os blocos varridos
+       * conseguem cobrir. O período informado NÃO foi lido — quem chama não
+       * pode declarar o intervalo como sincronizado.
+       */
+      onWindowTruncated?: (info: { desdeSec: number; ateSec: number }) => void;
     },
   ) {
     const nowSec = Math.floor(Date.now() / 1000);
     const requestedFrom = options?.timeFrom ?? nowSec - days * 24 * 60 * 60;
-    // A API rejeita intervalos maiores que 15 dias. A marca d'água pode estar
-    // mais velha que isso (conta parada, processo fora do ar) — clampar aqui
-    // evita trocar um pedido atrasado por um erro que descarta a conta inteira.
-    const oldestAllowed =
-      nowSec - this.ORDER_LIST_MAX_WINDOW_DAYS * 24 * 60 * 60;
-    const fromSec = Math.max(requestedFrom, oldestAllowed);
 
-    let cursor: string | undefined;
-    const orderSns: string[] = [];
-
-    do {
-      const listResp = await this.getOrderList(accessToken, shopId, {
-        time_from: fromSec,
-        time_to: nowSec,
-        cursor,
-        page_size: 50,
-        time_range_field: options?.timeRangeField,
+    // A API rejeita INTERVALOS maiores que 15 dias, mas aceita `time_to` no
+    // passado. Clampar o início em `now - 15d` (como antes) descartava em
+    // silêncio tudo que fosse mais antigo: a marca d'água podia estar 30 dias
+    // atrás depois de uma parada longa, e as vendas desse intervalo nunca eram
+    // lidas — e o chamador ainda gravava a marca d'água como "agora", tornando
+    // a perda permanente.
+    //
+    // Agora a janela é varrida em BLOCOS contíguos de até 15 dias, de trás para
+    // frente, como o script de recuperação já fazia.
+    const MAX_BLOCO_SEC = this.ORDER_LIST_MAX_WINDOW_DAYS * 24 * 60 * 60;
+    const blocos: Array<{ from: number; to: number }> = [];
+    let ate = nowSec;
+    while (ate > requestedFrom && blocos.length < this.ORDER_LIST_MAX_BLOCKS) {
+      const de = Math.max(requestedFrom, ate - MAX_BLOCO_SEC);
+      blocos.push({ from: de, to: ate });
+      if (de <= requestedFrom) break;
+      ate = de;
+    }
+    // Teto de blocos: nunca truncar em silêncio.
+    const maisAntigoVarrido = blocos.length
+      ? blocos[blocos.length - 1].from
+      : nowSec;
+    if (maisAntigoVarrido > requestedFrom) {
+      options?.onWindowTruncated?.({
+        desdeSec: requestedFrom,
+        ateSec: maisAntigoVarrido,
       });
+    }
 
-      orderSns.push(...(listResp.order_list?.map((o) => o.order_sn) ?? []));
-      cursor = listResp.more ? listResp.next_cursor : undefined;
+    const orderSns: string[] = [];
+    const vistos = new Set<string>();
 
-      if (listResp.more && cursor) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
-      }
-    } while (cursor);
+    for (const bloco of blocos) {
+      let cursor: string | undefined;
+      do {
+        const listResp = await this.getOrderList(accessToken, shopId, {
+          time_from: bloco.from,
+          time_to: bloco.to,
+          cursor,
+          page_size: 50,
+          time_range_field: options?.timeRangeField,
+        });
+
+        for (const o of listResp.order_list ?? []) {
+          // Blocos são contíguos nas bordas: o mesmo pedido pode voltar duas
+          // vezes.
+          if (vistos.has(o.order_sn)) continue;
+          vistos.add(o.order_sn);
+          orderSns.push(o.order_sn);
+        }
+        cursor = listResp.more ? listResp.next_cursor : undefined;
+
+        if (listResp.more && cursor) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      } while (cursor);
+    }
 
     // Buscar detalhes em lotes de até 50 order_sn
     const details: any[] = [];
@@ -1034,6 +1086,15 @@ export class ShopeeApiService {
       if (i + 50 < orderSns.length) {
         await new Promise((resolve) => setTimeout(resolve, 120));
       }
+    }
+
+    // Listado mas sem detalhe: é venda que a plataforma conhece e nós não.
+    if (options?.onDetailMissing) {
+      const comDetalhe = new Set(
+        details.map((d) => d?.order_sn).filter(Boolean),
+      );
+      const semDetalhe = orderSns.filter((sn) => !comDetalhe.has(sn));
+      if (semDetalhe.length) options.onDetailMissing(semDetalhe);
     }
 
     return this.filterSaleOrders(details, options);

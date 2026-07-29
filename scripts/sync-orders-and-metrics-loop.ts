@@ -1,3 +1,19 @@
+// PRIMEIRA linha de propósito: imports são hoisted e avaliados em ordem, então
+// isto precisa vir antes de `../app/lib/prisma`, que lê DATABASE_URL na carga.
+//
+// Este arquivo era o ÚNICO entrypoint do projeto que não carregava o .env — a
+// própria doc do ecosystem.config.cjs afirmava que "os scripts importam
+// dotenv/config", e este não importava. Funcionava por acidente: o pm2 gravou no
+// dump o ambiente do shell que tinha feito `source .env`, e o `@reboot pm2
+// resurrect` o restaura. A consequência é que variável NOVA no .env nunca chegava
+// ao dexo-sync-orders num `pm2 restart` (e `--update-env` é proibido aqui, por
+// causa do incidente de 23/07 que subiu o frontend na porta da API).
+//
+// Ou seja: TODOS os kill-switches deste trabalho eram inoperantes no processo do
+// loop — inclusive SYNC_LOOP_SPLIT_DISABLED, que é o botão de reverter a mudança
+// de cadência. `dotenv.config()` não sobrescreve variável já definida, então o
+// que vem do dump continua vencendo: a correção é puramente aditiva.
+import "dotenv/config";
 import { Platform } from "@prisma/client";
 import prisma from "../app/lib/prisma";
 import { OrderUseCase } from "../app/marketplaces/usecases/order.usercase";
@@ -65,7 +81,9 @@ const catalogIntervalMinutes = envInt("SYNC_CATALOG_INTERVAL_MINUTES", 360, 1);
 // (504 em api/frontend). 1 = serial, idêntico ao comportamento anterior.
 const ordersConcurrency = envInt("SYNC_ORDERS_CONCURRENCY", 4, 1);
 
-type LoopAccount = { id: string; platform: Platform };
+// `userId` entrou para a falha de import poder virar SystemLog do tenant (o
+// dono dos dados precisa ver que as vendas da conta nao estao entrando).
+type LoopAccount = { id: string; platform: Platform; userId: string | null };
 
 async function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,7 +91,7 @@ async function wait(ms: number) {
 
 async function listActiveAccounts(): Promise<LoopAccount[]> {
   return prisma.marketplaceAccount.findMany({
-    select: { id: true, platform: true },
+    select: { id: true, platform: true, userId: true },
     where: { status: "ACTIVE" },
   });
 }
@@ -127,7 +145,33 @@ async function importOrdersForAccount(account: LoopAccount): Promise<void> {
       await OrderUseCase.importRecentMagaluOrdersForAccount(account.id, syncDays, true);
     }
   } catch (err) {
+    // Um throw aqui derruba o import da conta INTEIRA neste ciclo: nenhuma venda
+    // dela entra, e a marca d'agua nao avanca. Antes a unica evidencia era um
+    // console.error no log do pm2 — invisivel para o dono dos dados e invisivel
+    // para qualquer consulta. Agora vira SystemLog do tenant, que e onde o
+    // cliente ve, e log estruturado para grep (auditoria 29/07/2026).
+    const mensagem = err instanceof Error ? err.message : String(err);
     console.error(`[sync-loop] Falha ao importar pedidos para conta ${account.id}:`, err);
+    console.log(
+      JSON.stringify({
+        event: "sync_loop.order_import_failed",
+        marketplaceAccountId: account.id,
+        platform: account.platform,
+        erro: mensagem.slice(0, 300),
+      }),
+    );
+    void SystemLogService.logError(
+      "SYNC_ORDERS",
+      `Falha ao importar pedidos da conta ${account.platform}: ${mensagem.slice(0, 200)}`,
+      {
+        // O dono dos dados precisa ver: durante essa falha as vendas da conta
+        // nao entram no Dexo.
+        userId: account.userId ?? undefined,
+        resource: "MarketplaceAccount",
+        resourceId: account.id,
+        details: { platform: account.platform, erro: mensagem.slice(0, 500) },
+      },
+    ).catch(() => {});
   }
 }
 
@@ -386,8 +430,19 @@ async function runLegacyLoop(): Promise<never> {
   }
 }
 
+/**
+ * Modo do loop, derivado do kill-switch SYNC_LOOP_SPLIT_DISABLED.
+ *
+ * Existe como funcao exportavel porque o spec da cadencia chamava `runOnce`
+ * direto e nunca provava que a env ESCOLHE esse caminho — o kill-switch de
+ * reverter a mudanca de cadencia nao tinha teste nenhum (auditoria 29/07/2026).
+ */
+function modoDoLoop(): "legado" | "separado" {
+  return splitDisabled ? "legado" : "separado";
+}
+
 async function main() {
-  if (splitDisabled) {
+  if (modoDoLoop() === "legado") {
     console.log(
       `[sync-loop] Iniciando loop completo (pedidos + métricas). Intervalo ${intervalMinutes} min, janela ${syncDays} dias`,
     );
@@ -427,4 +482,6 @@ export const __testing = {
   runOrdersPass,
   runCatalogPass,
   runOnce,
+  modoDoLoop,
+  envInt,
 };

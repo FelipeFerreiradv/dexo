@@ -494,6 +494,14 @@ export class OrderUseCase {
 
     const skippedStatuses = new Set<string>();
     let skippedByStatus = 0;
+    /**
+     * Vira true quando a varredura NÃO cobriu todo o período pedido (marca
+     * d'água velha além do teto de blocos). A marca d'água não pode avançar
+     * nesse caso: declararia como sincronizado um intervalo que ninguém leu.
+     */
+    let janelaTruncada = false;
+    /** `order_sn` listados pela Shopee cujo detalhe não voltou. */
+    const semDetalhe: string[] = [];
 
     // Com o kill-switch ligado E sem busca dirigida, nenhuma opção é passada:
     // a chamada a getRecentOrders fica com os mesmos 3 argumentos de antes.
@@ -508,6 +516,20 @@ export class OrderUseCase {
             onStatusSkipped: (orderSn: string, status: string) => {
               skippedByStatus++;
               if (status) skippedStatuses.add(status);
+            },
+            onDetailMissing: (sns: string[]) => {
+              semDetalhe.push(...sns);
+            },
+            onWindowTruncated: (info: { desdeSec: number; ateSec: number }) => {
+              janelaTruncada = true;
+              console.log(
+                JSON.stringify({
+                  event: "shopee.order_import.window_truncated",
+                  marketplaceAccountId,
+                  desde: new Date(info.desdeSec * 1000).toISOString(),
+                  ate: new Date(info.ateSec * 1000).toISOString(),
+                }),
+              );
             },
             orderSns: options?.orderSns,
           }
@@ -600,9 +622,39 @@ export class OrderUseCase {
       }
     }
 
+    // Pedido que a Shopee listou e cujo detalhe não voltou é venda que ela
+    // conhece e nós não. Antes desaparecia sem contador e sem afetar o veredito
+    // do ciclo. Conta como erro: a marca d'água não avança e a próxima passada
+    // tenta de novo.
+    if (semDetalhe.length) {
+      result.errors += semDetalhe.length;
+      console.log(
+        JSON.stringify({
+          event: "shopee.order_import.detail_missing",
+          marketplaceAccountId,
+          orderSns: semDetalhe.slice(0, 50),
+          total: semDetalhe.length,
+        }),
+      );
+    }
+
     // Marca d'água só avança em ciclo limpo: se um pedido deu erro, refazer a
     // janela na próxima volta é mais barato do que pular a venda dele.
-    if (byUpdateTime && result.errors === 0) {
+    //
+    // Três condições a mais, todas da auditoria de 29/07/2026:
+    //  - `!options?.orderSns?.length`: a busca dirigida NÃO varre a janela, então
+    //    não pode declarar a janela sincronizada. Era o caso do reconciliador e
+    //    do webhook, que avançavam a marca d'água sem ter lido o período.
+    //  - `!janelaTruncada`: se a varredura não alcançou o início pedido, existe
+    //    um intervalo não lido. Avançar aqui tornava a perda permanente.
+    //  - `!result.noProducts`/`partialLinks` seguem fora de propósito: esses
+    //    pedidos JÁ estão na quarentena, que é quem os re-tenta.
+    if (
+      byUpdateTime &&
+      result.errors === 0 &&
+      !options?.orderSns?.length &&
+      !janelaTruncada
+    ) {
       try {
         await prisma.marketplaceAccount.update({
           where: { id: marketplaceAccountId },
@@ -2587,35 +2639,44 @@ export class OrderUseCase {
     },
   ): Promise<ShopeeOrderDetail[]> {
     const fetchAll = async (token: string): Promise<ShopeeOrderDetail[]> => {
+      // Busca DIRIGIDA: só os pedidos pedidos, SEM varrer a janela.
+      //
+      // Antes os dois caminhos eram somados. Custava caro: cada re-tentativa de
+      // pendência fazia um `get_order_list` paginado, os `get_order_detail` de
+      // tudo que caísse na janela e a releitura de TODOS os ProductListing da
+      // conta (11.670 numa das contas de produção, porque `hasNewOrders` é
+      // verdadeiro justamente quando o pedido pendente ainda não existe). Com 89
+      // pendências abertas em produção, ~22x o tráfego de import de pedidos, de
+      // hora em hora, para sempre.
+      //
+      // Varrer a janela aqui também nunca foi necessário: quem cobre a janela é
+      // o poll, a cada 15 min. Mesmo critério de status do poll, para que um
+      // pedido sem venda concretizada (UNPAID/cancelado) não entre por aqui.
+      if (options?.orderSns?.length) {
+        return ShopeeApiService.filterSaleOrders(
+          await ShopeeApiService.getOrderDetails(
+            token,
+            account.shopId,
+            options.orderSns,
+          ),
+          options,
+        ) as ShopeeOrderDetail[];
+      }
+
       // Sem `options` a chamada fica idêntica à anterior (3 argumentos) — é o
       // que o kill-switch precisa para ser byte-a-byte.
-      const fromWindow = options
-        ? await ShopeeApiService.getRecentOrders(
+      return options
+        ? ((await ShopeeApiService.getRecentOrders(
             token,
             account.shopId,
             days,
             options,
-          )
-        : await ShopeeApiService.getRecentOrders(token, account.shopId, days);
-
-      if (!options?.orderSns?.length) return fromWindow;
-
-      // Busca dirigida: mesmo critério de status da janela, para que um pedido
-      // sem venda concretizada (UNPAID/cancelado) não entre por aqui.
-      const targeted = ShopeeApiService.filterSaleOrders(
-        await ShopeeApiService.getOrderDetails(
-          token,
-          account.shopId,
-          options.orderSns,
-        ),
-        options,
-      );
-
-      const byOrderSn = new Map<string, ShopeeOrderDetail>();
-      for (const o of [...fromWindow, ...targeted] as ShopeeOrderDetail[]) {
-        byOrderSn.set(o.order_sn, o);
-      }
-      return [...byOrderSn.values()];
+          )) as ShopeeOrderDetail[])
+        : ((await ShopeeApiService.getRecentOrders(
+            token,
+            account.shopId,
+            days,
+          )) as ShopeeOrderDetail[]);
     };
 
     try {
