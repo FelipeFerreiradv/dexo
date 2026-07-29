@@ -18,6 +18,8 @@ da segmentação sem pressão de tempo).
 
 ## 0. Preparar diretórios e fotos
 
+Na VPS (via SSH):
+
 ```bash
 mkdir -p /srv/dexo-bench/images/easy /srv/dexo-bench/images/hard \
          /srv/dexo-bench/images/synthetic \
@@ -25,18 +27,25 @@ mkdir -p /srv/dexo-bench/images/easy /srv/dexo-bench/images/hard \
          /srv/dexo-bench/h5
 ```
 
-Da sua máquina (onde estão as fotos), enviar:
+Da **máquina do Felipe** (Windows — PowerShell ou Git Bash), enviar:
 
-1. **As 2 fotos difíceis** (as mesmas anexadas na conversa — versão original de
-   ~1600px que você tem no celular/WhatsApp):
+1. **As 2 fotos difíceis** — caminhos locais confirmados em 29/07
+   (`foto1peca.jpg` = coxim 1200×1600 = caso A; `Untitled.jpg` = barra de
+   para-choque 1600×1200 = caso B; ambas 1,92 MP / <1 MB — dentro dos limites).
+   Substituir apenas `SEU_HOST` pelo IP/host SSH da VPS:
 
 ```bash
-scp foto_coxim_bancada.jpg  root@SEU_HOST:/srv/dexo-bench/images/hard/hard_A_coxim_bancada_preta.jpg
-scp foto_barra_concreto.jpg root@SEU_HOST:/srv/dexo-bench/images/hard/hard_B_barra_concreto_sol.jpg
+scp "C:\Users\Casa\Downloads\foto1peca.jpg" root@SEU_HOST:/srv/dexo-bench/images/hard/hard_A_coxim_bancada_preta.jpg
+scp "C:\Users\Casa\Downloads\Untitled.jpg" root@SEU_HOST:/srv/dexo-bench/images/hard/hard_B_barra_concreto_sol.jpg
 ```
 
 2. **4 a 8 fotos reais FÁCEIS** (fundo sólido que hoje sai perfeito — você
-   escolhe as "padrão-ouro" do fluxo atual) para `/srv/dexo-bench/images/easy/`.
+   escolhe as "padrão-ouro" do fluxo atual) para `/srv/dexo-bench/images/easy/`:
+
+```bash
+scp "C:\caminho\da\foto_facil_1.jpg" root@SEU_HOST:/srv/dexo-bench/images/easy/
+```
+
    São elas que definem a não-regressão dali pra frente.
 
 ⚠️ Restrições das fontes (senão o bench/golden aborta ou distorce):
@@ -44,6 +53,8 @@ scp foto_barra_concreto.jpg root@SEU_HOST:/srv/dexo-bench/images/hard/hard_B_bar
 - cada imagem **< 6 MP** (o cap `REMBG_MAX_INPUT_MP=6` faria downscale e o
   golden compararia coisas diferentes). Foto de celular ~1600px ≈ 2 MP = ok;
   **não** usar os `.orig` full-res do servidor.
+- As 2 difíceis acima já foram conferidas (dimensão/peso ok); o passo 1
+  re-checa tudo dentro do container.
 
 ## 1. Subir o container de bench com PARIDADE DE ENV DA PROD
 
