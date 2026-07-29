@@ -53,6 +53,14 @@ process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED ??= "1";
 // (order-ingestion-ml-magalu) reabilita explicitamente por caso.
 process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED ??= "1";
 
+// Data da venda (Order.soldAt) e o filtro por COALESCE(soldAt, createdAt):
+// desligados por default na suíte porque `order-repository-list` afirma o
+// mapeamento ANTERIOR ("dateFrom/dateTo mapeiam createdAt { gte, lte }"), que é
+// exatamente o que muda. Em produção o default é o oposto — ligado —, senão o
+// faturamento continua datado pela hora do import. O spec da correção
+// (order-sold-at-and-unlinked-order) reabilita explicitamente por caso.
+process.env.ORDER_SOLD_AT_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
