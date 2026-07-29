@@ -1630,12 +1630,41 @@ small{color:#666}</style></head><body>
     if (!request.url.split("?")[0].endsWith("/shopee/webhook")) {
       return payload;
     }
+    // Com a checagem desligada não há por que bufferizar nada: devolver o
+    // stream intacto é o que torna o kill-switch byte-idêntico ao anterior.
+    if (process.env.SHOPEE_WEBHOOK_SIGNATURE_DISABLED === "1") {
+      return payload;
+    }
+
+    // TETO DE MEMÓRIA. A rota é pública e não autenticada, e este hook roda
+    // ANTES do parser — ou seja, antes do `bodyLimit` do Fastify. Sem o teto,
+    // qualquer um empurra bytes indefinidamente para dentro da memória do
+    // dexo-api. Passou do teto, para de acumular: a assinatura não vai conferir
+    // e a requisição é recusada, que é o desfecho correto de um corpo desses.
+    const TETO_BYTES = 1024 * 1024;
     const chunks: Buffer[] = [];
+    let total = 0;
+    let estourou = false;
     for await (const chunk of payload as AsyncIterable<Buffer | string>) {
-      chunks.push(Buffer.from(chunk));
+      const b = Buffer.from(chunk);
+      total += b.length;
+      if (total > TETO_BYTES) {
+        estourou = true;
+        break;
+      }
+      chunks.push(b);
     }
     const raw = Buffer.concat(chunks);
-    (request as any).shopeeRawBody = raw.toString("utf8");
+    (request as any).shopeeRawBody = estourou ? undefined : raw.toString("utf8");
+    if (estourou) {
+      console.warn(
+        JSON.stringify({
+          event: "shopee.webhook.body_too_large",
+          bytesLidos: total,
+          tetoBytes: TETO_BYTES,
+        }),
+      );
+    }
     return Readable.from(raw);
   });
 

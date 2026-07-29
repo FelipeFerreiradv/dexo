@@ -625,9 +625,13 @@ export class OrderUseCase {
     const partialLinks = result.results.filter(
       (r) => r.status === "imported" && r.itemsLinked < r.itemsTotal,
     ).length;
-    const stockDeductionFailures = result.results.filter(
-      (r) => r.status === "imported" && !r.stockDeducted,
-    ).length;
+    // Só conta como falha de baixa quando a baixa foi PEDIDA. Com
+    // deductStock=false (opção da rota /orders/import) nenhum pedido baixa por
+    // definição, e contar isso como falha marcaria WARNING em toda importação.
+    const stockDeductionFailures = deductStock
+      ? result.results.filter((r) => r.status === "imported" && !r.stockDeducted)
+          .length
+      : 0;
     const perdeuAlgo =
       result.errors > 0 ||
       result.noProducts > 0 ||
@@ -780,6 +784,11 @@ export class OrderUseCase {
           externalOrderId,
           created.id,
         );
+      } else if (!stockDeducted) {
+        // A pendência da baixa já foi aberta acima com o motivo certo
+        // (STOCK_DEDUCTION_FAILED). Abrir PARTIAL_LINK aqui sobrescreveria esse
+        // motivo e mandaria o reconciliador pelo caminho errado — ele decide o
+        // que fazer a partir do `reason`.
       } else if (linkedCount < itemsTotal) {
         // Pedido PARCIAL: o Order é criado com o que deu (comportamento
         // preservado), mas os itens que ficaram de fora nunca dariam baixa e
@@ -863,6 +872,63 @@ export class OrderUseCase {
         itemsTotal,
       };
     }
+  }
+
+  /**
+   * Completa um pedido Shopee que entrou PARCIAL: acrescenta ao `Order` que já
+   * existe os itens que agora vinculam, e baixa só eles.
+   *
+   * Sem isto a pendência `PARTIAL_LINK` era insolúvel por construção — re-impor
+   * um pedido existente devolve `already_exists` e nunca acrescenta item algum,
+   * então o item que faltava jamais daria baixa, mesmo depois de o cliente
+   * vincular o anúncio ao produto. A pendência ficaria para sempre na tela.
+   *
+   * Idempotente: só acrescenta produto que ainda não está no pedido, e a baixa
+   * vai por `retryStockDeduction`, ancorada no net do StockLog.
+   *
+   * Retorna quantos itens foram acrescentados.
+   */
+  static async completePartialShopeeOrder(
+    marketplaceAccountId: string,
+    shopeeOrder: ShopeeOrderDetail,
+    orderId: string,
+    userId: string,
+  ): Promise<number> {
+    const { items } = await this.mapShopeeOrderItems(
+      shopeeOrder.item_list,
+      userId,
+      marketplaceAccountId,
+    );
+    if (!items.length) return 0;
+
+    const atuais = await prisma.orderItem.findMany({
+      where: { orderId },
+      select: { productId: true },
+    });
+    const jaTem = new Set(atuais.map((i) => i.productId));
+    const novos = items.filter((i) => !jaTem.has(i.productId));
+    if (!novos.length) return 0;
+
+    await prisma.orderItem.createMany({
+      data: novos.map((i) => ({
+        orderId,
+        productId: i.productId,
+        quantity: i.quantity,
+        unitPrice: i.unitPrice,
+        listingId: i.listingId ?? null,
+      })),
+    });
+
+    console.log(
+      JSON.stringify({
+        event: "shopee.order_import.partial_completed",
+        orderId,
+        externalOrderId: shopeeOrder.order_sn,
+        itensAcrescentados: novos.length,
+      }),
+    );
+
+    return novos.length;
   }
 
   /**

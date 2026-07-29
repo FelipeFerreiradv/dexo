@@ -20,6 +20,10 @@ vi.mock("@/app/lib/prisma", () => ({
       updateMany: vi.fn(),
       upsert: vi.fn(),
     },
+    // O reconciliador consulta o Order REAL para decidir se a pendencia se
+    // resolveu — nao dá para julgar pelo retorno do import, porque o ramo
+    // `already_exists` devolve itemsLinked=0 por construcao.
+    order: { findFirst: vi.fn() },
   },
 }));
 
@@ -35,6 +39,7 @@ vi.mock("@/app/marketplaces/usecases/order.usercase", () => ({
   OrderUseCase: {
     importRecentShopeeOrdersForAccount: vi.fn(),
     retryStockDeduction: vi.fn(),
+    completePartialShopeeOrder: vi.fn(),
   },
 }));
 
@@ -53,7 +58,14 @@ const issue = (over: Record<string, any> = {}) => ({
   status: "OPEN",
   attempts: 0,
   resolvedOrderId: null,
-  marketplaceAccount: { id: "acc-1", platform: "SHOPEE", status: "ACTIVE" },
+  // `userId` faz parte do select do reconciliador e e obrigatorio para
+  // completar um pedido parcial (a remontagem dos itens precisa do dono).
+  marketplaceAccount: {
+    id: "acc-1",
+    platform: "SHOPEE",
+    status: "ACTIVE",
+    userId: "dono-1",
+  },
   ...over,
 });
 
@@ -72,6 +84,11 @@ beforeEach(() => {
   vi.mocked((prisma as any).orderIngestionIssue.updateMany).mockResolvedValue({
     count: 1,
   });
+  // Default: nenhum Order local. Cada caso que precisa sobrescreve.
+  vi.mocked((prisma as any).order.findFirst).mockResolvedValue(null);
+  vi.mocked(OrderUseCase.completePartialShopeeOrder).mockResolvedValue(
+    0 as any,
+  );
   OrderIngestionReconcilerService.stop();
 });
 
@@ -118,10 +135,26 @@ describe("OrderIngestionReconcilerService", () => {
     );
   });
 
-  it("pedido que volta ainda PARCIAL não resolve — continua OPEN", async () => {
+  it("PARCIAL que continua parcial nao resolve — e o veredito vem do BANCO, nao do import", async () => {
+    // O pedido tem 2 itens no marketplace e so 1 vinculado localmente; o
+    // produto que falta continua sem vinculo, entao nada e acrescentado.
     vi.mocked((prisma as any).orderIngestionIssue.findMany).mockResolvedValue([
-      issue({ reason: "PARTIAL_LINK", attempts: 1 }),
+      issue({
+        reason: "PARTIAL_LINK",
+        attempts: 1,
+        resolvedOrderId: "order-1",
+        payload: { item_list: [{ item_id: 1 }, { item_id: 2 }] },
+      }),
     ]);
+    vi.mocked((prisma as any).order.findFirst).mockResolvedValue({
+      id: "order-1",
+      status: "SHIPPED",
+      items: [{ id: "oi-1" }],
+    });
+    vi.mocked(OrderUseCase.completePartialShopeeOrder).mockResolvedValue(
+      0 as any,
+    );
+    vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(true as any);
     vi.mocked(
       OrderUseCase.importRecentShopeeOrdersForAccount,
     ).mockResolvedValue(
@@ -130,10 +163,12 @@ describe("OrderIngestionReconcilerService", () => {
         orderId: "order-1",
         externalOrderId: "SN-1",
         status: "already_exists",
+        // O ramo already_exists SEMPRE devolve 0 aqui. Julgar por este numero
+        // faria a pendencia nunca fechar, nem depois de resolvida.
+        itemsLinked: 0,
+        itemsTotal: 2,
         message: "ok",
         stockDeducted: false,
-        itemsLinked: 1,
-        itemsTotal: 2,
       }) as any,
     );
 
@@ -143,9 +178,56 @@ describe("OrderIngestionReconcilerService", () => {
       .calls[0][0];
     expect(update.data.status).toBe("OPEN");
     expect(update.data.attempts).toBe(2);
+    expect(update.data.detail).toContain("1/2");
     expect(
       (prisma as any).orderIngestionIssue.updateMany,
     ).not.toHaveBeenCalled();
+  });
+
+  it("PARCIAL RESOLVE quando o cliente vincula o produto que faltava", async () => {
+    vi.mocked((prisma as any).orderIngestionIssue.findMany).mockResolvedValue([
+      issue({
+        reason: "PARTIAL_LINK",
+        attempts: 2,
+        resolvedOrderId: "order-1",
+        payload: { item_list: [{ item_id: 1 }, { item_id: 2 }] },
+      }),
+    ]);
+    vi.mocked((prisma as any).order.findFirst).mockResolvedValue({
+      id: "order-1",
+      status: "SHIPPED",
+      items: [{ id: "oi-1" }],
+    });
+    // Agora o item que faltava vincula e e acrescentado ao Order existente.
+    vi.mocked(OrderUseCase.completePartialShopeeOrder).mockResolvedValue(
+      1 as any,
+    );
+    vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(true as any);
+    vi.mocked(
+      OrderUseCase.importRecentShopeeOrdersForAccount,
+    ).mockResolvedValue(
+      importResult({
+        success: true,
+        orderId: "order-1",
+        externalOrderId: "SN-1",
+        status: "already_exists",
+        itemsLinked: 0,
+        itemsTotal: 2,
+        message: "ok",
+        stockDeducted: false,
+      }) as any,
+    );
+
+    await OrderIngestionReconcilerService.runOnce();
+
+    expect(OrderUseCase.completePartialShopeeOrder).toHaveBeenCalled();
+    expect(
+      (prisma as any).orderIngestionIssue.updateMany,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "RESOLVED" }),
+      }),
+    );
   });
 
   it("respeita o backoff: nextRetryAt cresce com o número de tentativas", async () => {
