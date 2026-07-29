@@ -222,3 +222,65 @@ describe("callbackUrl", () => {
     expect(ShopeeWebhookSignatureService.callbackUrl()).toBeUndefined();
   });
 });
+
+describe("pushPartnerKey — a chave do PUSH nao e a de API", () => {
+  const guarda: Record<string, string | undefined> = {};
+  const nomes = ["SHOPEE_PUSH_PARTNER_KEY", "SHOPEE_PARTNER_KEY"];
+
+  beforeEach(() => {
+    for (const n of nomes) {
+      guarda[n] = process.env[n];
+      delete process.env[n];
+    }
+  });
+
+  afterEach(() => {
+    for (const n of nomes) {
+      if (guarda[n] === undefined) delete process.env[n];
+      else process.env[n] = guarda[n]!;
+    }
+  });
+
+  it("usa a chave dedicada do push quando existe", () => {
+    // O console tem "Live Push Partner Key" com botao Generate na tela Push
+    // Mechanism, separada das API Partner Key da tela do app. Verificar com a
+    // chave de API rejeitaria 100% dos pushes.
+    process.env.SHOPEE_PARTNER_KEY = "chave-de-api";
+    process.env.SHOPEE_PUSH_PARTNER_KEY = "chave-do-push";
+
+    expect(ShopeeWebhookSignatureService.pushPartnerKey()).toBe("chave-do-push");
+  });
+
+  it("sem a dedicada cai na de API (comportamento anterior)", () => {
+    process.env.SHOPEE_PARTNER_KEY = "chave-de-api";
+
+    expect(ShopeeWebhookSignatureService.pushPartnerKey()).toBe("chave-de-api");
+  });
+
+  it("dedicada vazia nao mascara a de API", () => {
+    process.env.SHOPEE_PARTNER_KEY = "chave-de-api";
+    process.env.SHOPEE_PUSH_PARTNER_KEY = "   ";
+
+    expect(ShopeeWebhookSignatureService.pushPartnerKey()).toBe("chave-de-api");
+  });
+
+  it("nenhuma das duas devolve undefined (a rota entao nao bloqueia)", () => {
+    expect(ShopeeWebhookSignatureService.pushPartnerKey()).toBeUndefined();
+  });
+
+  it("assinatura feita com a chave do push confere; com a de API, nao", () => {
+    process.env.SHOPEE_PARTNER_KEY = "chave-de-api";
+    process.env.SHOPEE_PUSH_PARTNER_KEY = "chave-do-push";
+    const chave = ShopeeWebhookSignatureService.pushPartnerKey()!;
+
+    const assinadoComPush = hmacManual(URL_CB, CORPO, "chave-do-push");
+    const assinadoComApi = hmacManual(URL_CB, CORPO, "chave-de-api");
+
+    expect(
+      ShopeeWebhookSignatureService.verify(URL_CB, CORPO, assinadoComPush, chave),
+    ).toBe(true);
+    expect(
+      ShopeeWebhookSignatureService.verify(URL_CB, CORPO, assinadoComApi, chave),
+    ).toBe(false);
+  });
+});

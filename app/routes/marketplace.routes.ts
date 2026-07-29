@@ -1673,7 +1673,8 @@ small{color:#666}</style></head><body>
    * Recebe push notifications da Shopee (configurado no Partner Portal)
    * Sem auth middleware - a Shopee envia diretamente, autenticada pelo HMAC
    * do header Authorization.
-   * Códigos: 4 = order status update, 3 = order tracking update
+   * Codigos de pedido: 3 = order_status_push, 4 = order_trackingno_push
+   * (conferido no console em 30/07/2026 — o comentario anterior invertia os dois).
    */
   app.post(
     "/shopee/webhook",
@@ -1691,7 +1692,10 @@ small{color:#666}</style></head><body>
       // verificar perderia venda, que é justamente o que estamos consertando.
       // KILL-SWITCH: SHOPEE_WEBHOOK_SIGNATURE_DISABLED=1 desliga a checagem.
       if (process.env.SHOPEE_WEBHOOK_SIGNATURE_DISABLED !== "1") {
-        const partnerKey = SHOPEE_CONSTANTS.PARTNER_KEY;
+        // Chave do PUSH, nao a de API: o console tem uma "Live Push Partner
+        // Key" propria na tela Push Mechanism. Sem chave dedicada, cai na de
+        // API, que e o comportamento anterior.
+        const partnerKey = ShopeeWebhookSignatureService.pushPartnerKey();
         const callbackUrl = ShopeeWebhookSignatureService.callbackUrl();
         const podeVerificar = Boolean(partnerKey && callbackUrl);
 
@@ -1752,7 +1756,8 @@ small{color:#666}</style></head><body>
             return;
           }
 
-          // Códigos de pedido: 3 = order tracking, 4 = order status
+          // 3 = order_status_push, 4 = order_trackingno_push. Os DOIS entram:
+          // o de status traz a mudanca de estado e o de rastreio confirma envio.
           if (code !== 3 && code !== 4) {
             console.log(
               `[Shopee Webhook] Código ${code} ignorado (não é pedido)`,

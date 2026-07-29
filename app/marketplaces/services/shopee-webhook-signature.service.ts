@@ -50,6 +50,25 @@ export class ShopeeWebhookSignatureService {
   }
 
   /**
+   * Chave que assina o PUSH, que não é necessariamente a mesma que assina as
+   * chamadas de API.
+   *
+   * O console do Shopee Open Platform tem, na tela Push Mechanism, um campo
+   * "Live Push Partner Key" próprio, com botão Generate — separado das "Test/Live
+   * API Partner Key" da tela do app. Quando esse campo é preenchido, é ELE que
+   * assina o push, e verificar com a chave de API rejeitaria 100% dos pushes.
+   *
+   * `SHOPEE_PUSH_PARTNER_KEY` ausente cai em `SHOPEE_PARTNER_KEY`, que é o
+   * comportamento anterior byte-a-byte (apps antigos usam a mesma chave para as
+   * duas coisas).
+   */
+  static pushPartnerKey(): string | undefined {
+    const dedicada = process.env.SHOPEE_PUSH_PARTNER_KEY?.trim();
+    if (dedicada) return dedicada;
+    return process.env.SHOPEE_PARTNER_KEY?.trim() || undefined;
+  }
+
+  /**
    * URL de callback usada na assinatura. `SHOPEE_WEBHOOK_URL` tem precedência
    * para o caso de a URL cadastrada na Shopee diferir do `APP_BACKEND_URL`
    * (proxy, domínio próprio). Retorna undefined quando não dá para saber — aí
