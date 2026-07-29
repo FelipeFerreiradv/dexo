@@ -108,10 +108,10 @@ export function SalesByChannelView({ data }: { data: SalesByChannelResponse }) {
                 {item.label}
               </span>
             </div>
-            <p className="mt-1 text-lg font-semibold text-foreground">
+            <p className="mt-1 text-lg font-semibold tabular-nums text-foreground">
               {fmtPct(item.share)}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="truncate text-[11px] tabular-nums text-muted-foreground">
               {fmtBRL(item.total)} · {fmtInt(item.count)} contas
             </p>
           </li>

@@ -93,7 +93,7 @@ export function SalesByPaymentMethodView({
               />
               <span className="truncate text-foreground">{item.label}</span>
             </span>
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 tabular-nums text-muted-foreground">
               {fmtBRL(item.total)} · {fmtPct(item.share)}
             </span>
           </li>

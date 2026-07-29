@@ -107,11 +107,11 @@ export function SalesByPlatformView({
         </ResponsiveContainer>
       </div>
 
-      <ul className="grid gap-2 sm:grid-cols-3">
+      <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((item) => (
           <li
             key={item.platform}
-            className="rounded-xl border border-border/60 bg-background/40 px-3 py-2"
+            className="min-w-0 rounded-xl border border-border/60 bg-background/40 px-3 py-2"
           >
             <div className="flex items-center gap-2">
               <span
@@ -119,14 +119,14 @@ export function SalesByPlatformView({
                 style={{ backgroundColor: platformColor(item.platform) }}
                 aria-hidden
               />
-              <span className="text-xs font-semibold text-foreground">
+              <span className="truncate text-xs font-semibold text-foreground">
                 {item.label}
               </span>
             </div>
-            <p className="mt-1 text-sm font-semibold text-foreground">
+            <p className="mt-1 truncate text-sm font-semibold tabular-nums text-foreground">
               {fmtBRL(item.revenue)}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[11px] tabular-nums text-muted-foreground">
               {fmtInt(item.orders)} pedidos · {fmtPct(item.share)}
             </p>
           </li>

@@ -62,30 +62,37 @@ export function InsightCard({
   children,
 }: InsightCardProps) {
   return (
-    <Card className="h-full rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
+    <Card className="h-full w-full min-w-0 overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_18px_60px_color-mix(in_srgb,var(--color-shadow-color)_10%,transparent)]">
       <CardHeader className="gap-3 px-5 pb-3 pt-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
               {eyebrow}
             </p>
             <p className="text-sm font-semibold text-foreground">{title}</p>
             {description ? (
-              <p className="text-xs text-muted-foreground">{description}</p>
+              <p className="text-xs leading-snug text-muted-foreground">
+                {description}
+              </p>
             ) : null}
           </div>
           {chips ? (
-            <div className="flex flex-wrap gap-2 text-xs">{chips}</div>
+            <div className="flex shrink-0 flex-wrap gap-2 text-xs">{chips}</div>
           ) : null}
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+        {/*
+          Os controles se acomodam lado a lado enquanto couber e quebram linha
+          sozinhos quando não couber — sem depender de breakpoint fixo, porque
+          o card muda de largura conforme a coluna do grid, não só a tela.
+        */}
+        <div className="flex flex-wrap items-center gap-2">
           <Select
             value={preset}
             onValueChange={(v) => onPresetChange(v as ReportPresetId)}
           >
             <SelectTrigger
-              className="h-8 w-full text-xs sm:w-[150px]"
+              className="h-8 min-w-0 flex-1 basis-[140px] text-xs sm:flex-none sm:basis-auto sm:w-[150px]"
               aria-label="Período"
             >
               <SelectValue />
@@ -99,15 +106,17 @@ export function InsightCard({
             </SelectContent>
           </Select>
 
+          {filters}
+
           {preset === "custom" ? (
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+            <>
               <Input
                 type="date"
                 aria-label="Data inicial"
                 value={customStart}
                 max={customEnd || undefined}
                 onChange={(e) => onCustomStartChange(e.target.value)}
-                className="h-8 text-xs sm:w-[140px]"
+                className="h-8 min-w-0 flex-1 basis-[130px] text-xs sm:flex-none sm:basis-auto sm:w-[140px]"
               />
               <Input
                 type="date"
@@ -115,12 +124,10 @@ export function InsightCard({
                 value={customEnd}
                 min={customStart || undefined}
                 onChange={(e) => onCustomEndChange(e.target.value)}
-                className="h-8 text-xs sm:w-[140px]"
+                className="h-8 min-w-0 flex-1 basis-[130px] text-xs sm:flex-none sm:basis-auto sm:w-[140px]"
               />
-            </div>
+            </>
           ) : null}
-
-          {filters}
         </div>
       </CardHeader>
 

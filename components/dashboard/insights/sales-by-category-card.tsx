@@ -26,13 +26,15 @@ import { InsightCard, InsightChip } from "./insight-card";
 import {
   AXIS_TICK,
   GRID_STROKE,
+  NEUTRAL_BAR,
   TOOLTIP_STYLE,
-  chartColor,
+  categoryLeaf,
+  categoryParent,
   fmtBRL,
   fmtBRLCompact,
   fmtInt,
   fmtPct,
-  paletteColor,
+  rankColor,
   truncateLabel,
 } from "./insight-theme";
 import { useInsightQuery } from "./use-insight-query";
@@ -66,17 +68,35 @@ export function SalesByCategoryView({
   data: SalesByCategoryResponse;
 }) {
   const items = data.items ?? [];
-  // Barras horizontais: nome de categoria é longo e ilegível no eixo X.
-  const altura = Math.max(200, items.length * 34 + 24);
+
+  // O eixo recebe a FOLHA da hierarquia. Quando duas folhas coincidem (ex.:
+  // "Faróis" em dois ramos), o nível de cima entra como desempate.
+  const dados = items.map((item, i) => {
+    const folha = categoryLeaf(item.category);
+    const homonima = items.some(
+      (outro, j) => j !== i && categoryLeaf(outro.category) === folha,
+    );
+    const pai = categoryParent(item.category);
+    return {
+      ...item,
+      rotulo: homonima && pai ? `${pai} › ${folha}` : folha,
+      caminho: item.category,
+    };
+  });
+
+  // Barra + respiro. Altura por item em vez de fixa: com 3 categorias o card
+  // não fica com metade vazia, com 11 as barras não se espremem.
+  const altura = Math.max(180, dados.length * 38 + 16);
 
   return (
     <div className="space-y-3">
       <div style={{ height: altura }}>
         <ResponsiveContainer>
           <BarChart
-            data={items}
+            data={dados}
             layout="vertical"
-            margin={{ top: 4, right: 16, left: 0, bottom: 4 }}
+            margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
+            barCategoryGap="22%"
           >
             <CartesianGrid
               stroke={GRID_STROKE}
@@ -92,34 +112,40 @@ export function SalesByCategoryView({
             />
             <YAxis
               type="category"
-              dataKey="category"
+              dataKey="rotulo"
               tick={AXIS_TICK}
               axisLine={false}
               tickLine={false}
-              width={132}
-              tickFormatter={(v: string) => truncateLabel(String(v))}
+              // Estreito no celular, confortável a partir do tablet.
+              width={116}
+              tickFormatter={(v: string) => truncateLabel(String(v), 18)}
             />
             <Tooltip
               {...TOOLTIP_STYLE}
               cursor={{
                 fill: "color-mix(in srgb, var(--color-muted) 40%, transparent)",
               }}
-              formatter={(value: unknown) => [
-                fmtBRL(Number(value) || 0),
+              // O caminho completo aparece aqui — é onde ele cabe sem estourar
+              // o eixo, e é o que responde "qual categoria exatamente é essa?".
+              labelFormatter={(_rotulo: unknown, payload: any) =>
+                payload?.[0]?.payload?.caminho ?? String(_rotulo)
+              }
+              formatter={(value: unknown, _n: unknown, item: any) => [
+                `${fmtBRL(Number(value) || 0)} · ${fmtInt(
+                  item?.payload?.units ?? 0,
+                )} un · ${fmtPct(item?.payload?.share ?? 0)}`,
                 "Receita",
               ]}
             />
-            <Bar dataKey="revenue" radius={[0, 6, 6, 0]} maxBarSize={26}>
-              {items.map((item, i) => (
+            <Bar dataKey="revenue" radius={[0, 6, 6, 0]} maxBarSize={24}>
+              {dados.map((item, i) => (
                 <Cell
                   key={item.category}
                   fill="currentColor"
                   style={{
-                    // "Outras" é uma soma, não uma categoria: fica em cinza
-                    // para não competir com as fatias reais.
-                    color: item.isOther
-                      ? chartColor("--color-muted-foreground", 45)
-                      : paletteColor(i),
+                    // "Outras" é uma soma, não uma categoria: sai da escala de
+                    // ranking e fica neutra para não competir com as reais.
+                    color: item.isOther ? NEUTRAL_BAR : rankColor(i, dados.length),
                   }}
                 />
               ))}
@@ -128,11 +154,16 @@ export function SalesByCategoryView({
         </ResponsiveContainer>
       </div>
 
-      <ul className="space-y-1 text-xs text-muted-foreground">
-        {items.slice(0, 3).map((item) => (
-          <li key={item.category} className="flex justify-between gap-3">
-            <span className="truncate text-foreground">{item.category}</span>
-            <span className="shrink-0">
+      <ul className="space-y-1.5 border-t border-border/60 pt-3 text-xs">
+        {dados.slice(0, 3).map((item) => (
+          <li key={item.category} className="flex items-baseline gap-3">
+            <span
+              className="min-w-0 flex-1 truncate text-foreground"
+              title={item.caminho}
+            >
+              {item.rotulo}
+            </span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
               {fmtInt(item.units)} un · {fmtPct(item.share)}
             </span>
           </li>

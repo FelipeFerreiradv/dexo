@@ -94,6 +94,48 @@ export function truncateLabel(label: string, max = 22): string {
   return label.length > max ? `${label.slice(0, max - 1)}…` : label;
 }
 
+/**
+ * Categorias de marketplace vêm como caminho hierárquico:
+ *   "Acessórios para Veículos > Peças de Carros e Caminhonetes > Faróis"
+ * Truncar isso pelo começo é inútil — TODAS as categorias do Mercado Livre
+ * partem do mesmo prefixo e virariam "Acessórios para Veícu…", indistinguíveis
+ * no eixo. O que identifica a categoria é a FOLHA, então é ela que vai no
+ * rótulo; o caminho completo fica no tooltip e no `title` da lista.
+ */
+export function categoryLeaf(path: string): string {
+  const partes = String(path)
+    .split(">")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return partes.length ? partes[partes.length - 1] : String(path);
+}
+
+/** Nível imediatamente acima da folha — desempata folhas homônimas. */
+export function categoryParent(path: string): string | null {
+  const partes = String(path)
+    .split(">")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return partes.length > 1 ? partes[partes.length - 2] : null;
+}
+
+/**
+ * Cor de barra em RANKING: uma única cor da marca com intensidade decrescente,
+ * em vez de N cores diferentes. Dez cores categóricas numa lista ordenada
+ * poluem e sugerem uma diferença de natureza que não existe — todas as barras
+ * medem a mesma coisa, só que menos.
+ */
+export function rankColor(index: number, total: number): string {
+  const passo = total > 1 ? index / (total - 1) : 0;
+  const mix = Math.round(88 - passo * 46); // 88% → 42%
+  return `color-mix(in srgb, var(--color-chart-2) ${mix}%, var(--color-card) ${
+    100 - mix
+  }%)`;
+}
+
+/** Cinza neutro — para a linha "Outras", que é uma soma e não uma categoria. */
+export const NEUTRAL_BAR = chartColor("--color-chart-4", 38);
+
 /** Estilo do tooltip do recharts — mesmo visual dos gráficos já em produção. */
 export const TOOLTIP_STYLE = {
   contentStyle: {

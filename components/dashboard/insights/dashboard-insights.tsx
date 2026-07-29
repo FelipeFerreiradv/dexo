@@ -19,15 +19,26 @@ const DASHBOARD_INSIGHTS_ENABLED =
 export function DashboardInsights() {
   if (!DASHBOARD_INSIGHTS_ENABLED) return null;
 
+  // `min-w-0` em cada célula: item de grid tem `min-width: auto` por padrão e
+  // se recusa a encolher abaixo do conteúdo — é o que faz um gráfico ou um
+  // rótulo longo empurrar a coluna e criar rolagem horizontal na página.
   return (
-    <div className="flex flex-col gap-4">
-      <section className="grid gap-4 xl:grid-cols-2">
-        <SalesByPlatformCard />
-        <SalesByCategoryCard />
+    <div className="flex w-full min-w-0 flex-col gap-4">
+      <section className="grid min-w-0 gap-4 xl:grid-cols-2">
+        <div className="min-w-0">
+          <SalesByPlatformCard />
+        </div>
+        <div className="min-w-0">
+          <SalesByCategoryCard />
+        </div>
       </section>
-      <section className="grid gap-4 xl:grid-cols-2">
-        <SalesByPaymentMethodCard />
-        <SalesByChannelCard />
+      <section className="grid min-w-0 gap-4 xl:grid-cols-2">
+        <div className="min-w-0">
+          <SalesByPaymentMethodCard />
+        </div>
+        <div className="min-w-0">
+          <SalesByChannelCard />
+        </div>
       </section>
     </div>
   );

@@ -41,9 +41,12 @@ import {
   type SalesByChannelResponse,
 } from "../components/dashboard/insights/sales-by-channel-card";
 import {
+  categoryLeaf,
+  categoryParent,
   fmtBRL,
   fmtPct,
   platformColor,
+  rankColor,
   truncateLabel,
 } from "../components/dashboard/insights/insight-theme";
 
@@ -75,6 +78,38 @@ describe("insight-theme", () => {
   it("truncateLabel encurta nome longo de categoria", () => {
     expect(truncateLabel("Motor", 22)).toBe("Motor");
     expect(truncateLabel("A".repeat(40), 22)).toHaveLength(22);
+  });
+
+  it("categoryLeaf extrai a folha da hierarquia do marketplace", () => {
+    // Sem isso, TODA categoria do ML vira "Acessórios para Veícu…" no eixo,
+    // porque todas partem do mesmo prefixo.
+    expect(
+      categoryLeaf(
+        "Acessórios para Veículos > Peças de Carros e Caminhonetes > Iluminação > Faróis",
+      ),
+    ).toBe("Faróis");
+    expect(categoryLeaf("Motor e Peças > Motor")).toBe("Motor");
+  });
+
+  it("categoryLeaf tolera categoria simples, vazia e com espaços", () => {
+    expect(categoryLeaf("Sem categoria")).toBe("Sem categoria");
+    expect(categoryLeaf("A >  B  > ")).toBe("B");
+    expect(categoryLeaf("")).toBe("");
+  });
+
+  it("categoryParent dá o nível acima, para desempatar folhas homônimas", () => {
+    expect(categoryParent("A > B > Faróis")).toBe("B");
+    expect(categoryParent("Motor")).toBeNull();
+  });
+
+  it("rankColor escurece do primeiro ao último e nunca sai da paleta", () => {
+    const primeiro = rankColor(0, 5);
+    const ultimo = rankColor(4, 5);
+    expect(primeiro).not.toBe(ultimo);
+    expect(primeiro).toContain("--color-chart-2");
+    expect(ultimo).toContain("--color-chart-2");
+    // Lista de um item não pode gerar divisão por zero.
+    expect(rankColor(0, 1)).toContain("--color-chart-2");
   });
 
   it("formatadores não devolvem NaN", () => {
@@ -192,6 +227,66 @@ describe("SalesByCategoryView", () => {
       <SalesByCategoryView data={{ ...data, items: [] }} />,
     );
     expect(html).toBeTruthy();
+  });
+
+  it("categoria hierárquica aparece pela folha, com o caminho no title", () => {
+    // Caso real do Mercado Livre: sem o tratamento de folha, as duas linhas
+    // ficariam idênticas no resumo ("Acessórios para Veícu…").
+    const hierarquico: SalesByCategoryResponse = {
+      ...data,
+      items: [
+        {
+          category:
+            "Acessórios para Veículos > Peças de Carros e Caminhonetes > Iluminação > Faróis",
+          revenue: 5000,
+          units: 20,
+          share: 60,
+          isOther: false,
+        },
+        {
+          category:
+            "Acessórios para Veículos > Aces. de Carros e Caminhonetes > Exterior > Alargadores de Pára-lama",
+          revenue: 3000,
+          units: 12,
+          share: 40,
+          isOther: false,
+        },
+      ],
+    };
+
+    const html = normalize(renderToString(<SalesByCategoryView data={hierarquico} />));
+    expect(html).toContain("Faróis");
+    expect(html).toContain("Alargadores de Pára-lama");
+    // O caminho completo continua acessível no atributo title.
+    expect(html).toContain("Iluminação");
+    // E o prefixo repetido NÃO é o que rotula a barra.
+    expect(html).not.toContain(">Acessórios para Veículos<");
+  });
+
+  it("folhas homônimas ganham o nível de cima como desempate", () => {
+    const homonimas: SalesByCategoryResponse = {
+      ...data,
+      items: [
+        {
+          category: "Iluminação > Faróis",
+          revenue: 100,
+          units: 1,
+          share: 50,
+          isOther: false,
+        },
+        {
+          category: "Sucata > Faróis",
+          revenue: 100,
+          units: 1,
+          share: 50,
+          isOther: false,
+        },
+      ],
+    };
+
+    const html = normalize(renderToString(<SalesByCategoryView data={homonimas} />));
+    expect(html).toContain("Iluminação › Faróis");
+    expect(html).toContain("Sucata › Faróis");
   });
 });
 

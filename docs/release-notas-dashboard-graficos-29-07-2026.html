@@ -237,7 +237,15 @@
     <p><strong>Sem mudança de segurança.</strong> A regra de quem pode acessar continua exatamente a mesma. O que mudou é apenas que a resposta passou a ser lembrada pelo navegador, em vez de perguntada de novo toda hora. Um endereço diferente sempre gera pergunta nova.</p>
   </div>
 
-  <h3>4.4 Busca cancelada ao trocar o filtro <span class="tag corr">Correção</span></h3>
+  <h3>4.4 Ajustes de leitura e identidade visual <span class="tag corr">Melhoria</span></h3>
+  <div class="card">
+    <p><b>Componente:</b> Dashboard — gráfico de categorias e quadro de anúncios.</p>
+    <p><b>Problema anterior:</b> as categorias dos marketplaces vêm como caminho completo e quase todas começam com o mesmo texto. Na primeira versão do gráfico, todas as barras apareciam rotuladas como “Acessórios para Veícu…”, indistinguíveis. No quadro de anúncios, as linhas do gráfico usavam cores geradas automaticamente — vermelho, roxo e azul — fora da paleta da Dexo, e o nome da conta aparecia como um código interno.</p>
+    <p><b>Solução:</b> o rótulo passou a mostrar a parte final da categoria, com o caminho completo no toque do mouse; categorias com final igual ganham o nível de cima como desempate. As barras usam uma única cor da marca em intensidade decrescente, e “Outras” fica em cinza. No quadro de anúncios, as cores passaram para a paleta da Dexo, o nome da conta substituiu o código e foi acrescentada legenda.</p>
+    <p><b>Benefício:</b> o gráfico passa a ser legível e o painel fica visualmente coerente com o resto do sistema.</p>
+  </div>
+
+  <h3>4.5 Busca cancelada ao trocar o filtro <span class="tag corr">Correção</span></h3>
   <div class="card">
     <p><b>Componente:</b> gráficos novos do Dashboard.</p>
     <p><b>Problema anterior:</b> ao trocar o período várias vezes seguidas, cada troca disparava uma busca e nenhuma era cancelada. Além do gasto desnecessário, havia o risco de a busca mais demorada chegar por último e <b>sobrescrever o resultado mais recente</b> — o gráfico mostraria um período diferente do que está selecionado na tela.</p>
@@ -403,8 +411,14 @@
     <dt>Preciso configurar alguma coisa?</dt>
     <dd>Não. Não há cadastro, preenchimento ou ajuste necessário do lado do cliente.</dd>
 
+    <dt>O gráfico mostra só o final da categoria (“Faróis”), e não o caminho todo. Por quê?</dt>
+    <dd>As categorias dos marketplaces vêm como um caminho completo — por exemplo “Acessórios para Veículos &gt; Peças de Carros e Caminhonetes &gt; Iluminação &gt; Faróis”. Como praticamente todas começam igual, mostrar o começo faria todas as barras parecerem idênticas. Por isso o gráfico exibe a parte final, que é o que identifica a peça. <b>Passando o mouse sobre a barra, o caminho completo aparece.</b></dd>
+
+    <dt>Duas categorias com o mesmo nome final. Como diferenciar?</dt>
+    <dd>Quando duas categorias terminam igual, o sistema acrescenta o nível de cima automaticamente — por exemplo “Iluminação › Faróis” e “Sucata › Faróis”.</dd>
+
     <dt>Aparece “Outras” no gráfico de categoria. O que é?</dt>
-    <dd>É a soma de todas as categorias fora das dez maiores, agrupadas para o gráfico não ficar ilegível. O valor está incluído no total.</dd>
+    <dd>É a soma de todas as categorias fora das dez maiores, agrupadas para o gráfico não ficar ilegível. O valor está incluído no total. Ela aparece em cinza, para não ser confundida com uma categoria real.</dd>
 
     <dt>E “Sem categoria”?</dt>
     <dd>São produtos vendidos que não têm categoria preenchida no cadastro. Preencher a categoria desses produtos faz eles aparecerem no grupo certo.</dd>
