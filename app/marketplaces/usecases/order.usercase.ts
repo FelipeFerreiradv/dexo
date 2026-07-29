@@ -2031,6 +2031,20 @@ export class OrderUseCase {
     }> = [];
     let linkedCount = 0;
 
+    // KILL-SWITCH: com "1", a cadeia volta a ser só (listing da conta → SKU
+    // escopado por account.userId), byte-idêntica ao comportamento anterior.
+    const matchFallbackAtivo =
+      process.env.SHOPEE_ORDER_MATCH_FALLBACK_DISABLED !== "1";
+
+    // Resolvido no máximo uma vez por pedido, e só quando algum item precisa
+    // de fallback — o caminho feliz (listing da própria conta) não paga nada.
+    let ownerIdCache: string | undefined | null = null;
+    const ownerId = async (): Promise<string | undefined> => {
+      if (ownerIdCache !== null) return ownerIdCache;
+      ownerIdCache = await this.resolveDataOwnerId(userId);
+      return ownerIdCache;
+    };
+
     for (const item of items) {
       const externalListingId = item.item_id.toString();
       const cacheKey = `${marketplaceAccountId}_${externalListingId}`;
@@ -2059,6 +2073,41 @@ export class OrderUseCase {
         continue;
       }
 
+      // 2) O MESMO item_id, mas num listing pendurado em OUTRA conta do mesmo
+      // tenant. Acontece quando o cliente desconecta e reconecta a Shopee: a
+      // desconexão é "soft" quando há pedidos (zera tokens, marca a conta
+      // INACTIVE) e os ProductListing continuam apontando para a conta antiga.
+      // O listingMap é chaveado por `${marketplaceAccountId}_${externalListingId}`,
+      // então nesse cenário a etapa 1 erra 100% das vezes. O ML já tinha
+      // conserto para essa classe de bug (listing-ownership-repair); a Shopee
+      // não tinha nenhum.
+      if (matchFallbackAtivo) {
+        const doTenant = await this.findShopeeListingInTenant(
+          externalListingId,
+          marketplaceAccountId,
+          await ownerId(),
+        );
+        if (doTenant) {
+          result.push({
+            productId: doTenant.productId,
+            listingId: doTenant.id,
+            quantity: item.model_quantity_purchased,
+            unitPrice: Number(item.model_original_price ?? 0),
+          });
+          linkedCount++;
+          // Reaponta o listing para a conta ativa: idempotente e logado, para
+          // que a próxima venda resolva já na etapa 1.
+          await this.repointShopeeListing(
+            doTenant.id,
+            doTenant.marketplaceAccountId,
+            marketplaceAccountId,
+            externalListingId,
+            doTenant.product?.userId ?? null,
+          );
+          continue;
+        }
+      }
+
       const sku = this.extractSkuFromShopee(item);
       if (!sku) {
         console.log(
@@ -2072,7 +2121,24 @@ export class OrderUseCase {
         continue;
       }
 
-      const product = await this.findProductByFallbackSku(sku, userId);
+      // 3) SKU do item contra Product.skuNormalized, escopado pelo DONO DOS
+      // DADOS. Antes usava `account.userId` cru: se a conta Shopee tivesse sido
+      // conectada por um colaborador, o produto existia e mesmo assim não era
+      // encontrado — a venda não baixava estoque.
+      let product = await this.findProductByFallbackSku(
+        sku,
+        matchFallbackAtivo ? await ownerId() : userId,
+      );
+
+      // 4) Último recurso: o mesmo texto contra o part number, e SOMENTE se o
+      // resultado for único. Mais de um candidato ⇒ não vincula: baixar no
+      // produto errado é pior do que não baixar.
+      if (!product && matchFallbackAtivo) {
+        product = await this.findProductByPartNumberUnique(
+          sku,
+          await ownerId(),
+        );
+      }
 
       if (!product) {
         console.log(
@@ -2103,6 +2169,154 @@ export class OrderUseCase {
     }
 
     return { items: result, linkedCount, unlinked };
+  }
+
+  /**
+   * Dono dos dados do tenant. Colaborador herda do admin — mesma regra do
+   * `authMiddleware` (`user.parentUserId ?? user.id`).
+   *
+   * Existe porque o escopo do fallback por SKU usava `MarketplaceAccount.userId`
+   * cru: numa conta conectada por colaborador, o produto existia e não era
+   * encontrado, e a venda não baixava estoque.
+   */
+  private static async resolveDataOwnerId(
+    userId?: string | null,
+  ): Promise<string | undefined> {
+    if (!userId) return undefined;
+    try {
+      const u = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { parentUserId: true },
+      });
+      return u?.parentUserId ?? userId;
+    } catch {
+      // Nunca degradar para escopo mais amplo: na dúvida, o userId original.
+      return userId;
+    }
+  }
+
+  /**
+   * Listing com este `externalListingId` em QUALQUER conta Shopee do mesmo
+   * tenant, fora a conta atual. Cobre o listing pendurado em conta antiga
+   * depois de desconectar/reconectar a Shopee.
+   *
+   * O `item_id` da Shopee é único por loja, então um listing com o mesmo id em
+   * outra conta do mesmo dono é o MESMO anúncio com o vínculo desatualizado —
+   * não é adivinhação.
+   */
+  private static async findShopeeListingInTenant(
+    externalListingId: string,
+    currentAccountId: string,
+    ownerId?: string,
+  ): Promise<any | null> {
+    if (!ownerId) return null;
+    try {
+      return await prisma.productListing.findFirst({
+        where: {
+          externalListingId,
+          marketplaceAccountId: { not: currentAccountId },
+          marketplaceAccount: { platform: "SHOPEE", userId: ownerId },
+          product: { is: {} },
+        },
+        select: {
+          id: true,
+          productId: true,
+          marketplaceAccountId: true,
+          product: { select: { id: true, userId: true } },
+        },
+      });
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao procurar listing Shopee ${externalListingId} nas demais contas do tenant:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Reaponta o listing para a conta ativa. Best-effort: se falhar, a venda já
+   * foi vinculada de qualquer forma — só a próxima vai precisar do fallback
+   * de novo. Mesmo padrão do conserto de posse do ML.
+   */
+  private static async repointShopeeListing(
+    listingId: string,
+    fromAccountId: string,
+    toAccountId: string,
+    externalListingId: string,
+    productUserId: string | null,
+  ): Promise<void> {
+    try {
+      await ListingRepository.reassignAccount(listingId, toAccountId);
+      console.log(
+        JSON.stringify({
+          event: "shopee.order_import.listing_repointed",
+          listingId,
+          externalListingId,
+          fromAccountId,
+          toAccountId,
+        }),
+      );
+      if (productUserId) {
+        // Este log LEVA userId de propósito: é uma correção no catálogo do
+        // cliente, que ele tem direito de ver na tela dele.
+        void SystemLogService.logListingOwnershipRepaired(
+          productUserId,
+          listingId,
+          {
+            externalListingId,
+            oldAccountId: fromAccountId,
+            newAccountId: toAccountId,
+          },
+        ).catch(() => {});
+      }
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao reapontar listing ${listingId} para a conta ${toAccountId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Produto pelo part number, e SOMENTE quando houver exatamente um candidato.
+   * Dois ou mais ⇒ devolve null: vincular o produto errado gera baixa no item
+   * errado, que é pior do que não vincular.
+   */
+  private static async findProductByPartNumberUnique(
+    sku: string,
+    ownerId?: string,
+  ): Promise<{ id: string } | null> {
+    if (!ownerId) return null;
+    const normalizado = normalizeSku(sku);
+    if (!normalizado) return null;
+
+    try {
+      const candidatos = await prisma.product.findMany({
+        where: { userId: ownerId, partNumberNormalized: normalizado },
+        select: { id: true },
+        take: 2,
+      });
+      if (candidatos.length !== 1) {
+        if (candidatos.length > 1) {
+          console.log(
+            JSON.stringify({
+              event: "shopee.order_import.part_number_ambiguous",
+              sku: normalizado,
+              candidatos: candidatos.length,
+            }),
+          );
+        }
+        return null;
+      }
+      return candidatos[0];
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha no fallback por part number ("${sku}"):`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
   }
 
   private static extractSkuFromShopee(item: ShopeeOrderItem): string | null {
@@ -2300,7 +2514,13 @@ export class OrderUseCase {
     if (status === 401 || status === 403) {
       return true;
     }
-    return /unauthorized|invalid access token|token expired|forbidden/i.test(
+    // `access[ _]token` cobre as duas grafias: o ML escreve "invalid access
+    // token" e a Shopee "Invalid access_token, please have a check." — sondado
+    // na API real em 29/07/2026. Hoje o erro da Shopee chega com status 403 e
+    // já casaria pela linha acima, mas o regex era a única rede se ela passar
+    // a devolver HTTP 200 com o erro no corpo (que é o formato dela em outras
+    // chamadas, e nesse caminho o Error nem carrega `.status`).
+    return /unauthorized|invalid access[ _]token|token expired|forbidden/i.test(
       message,
     );
   }
