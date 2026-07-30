@@ -1740,6 +1740,23 @@ small{color:#666}</style></head><body>
           }
 
           if (!veredito.ok) {
+            // Diagnostico opt-in: com SHOPEE_WEBHOOK_SIGNATURE_DEBUG=1 sai o
+            // header que a Shopee mandou e o que cada chave/base produziria.
+            // Sem isso, "chave errada" e "base errada" dao o mesmo 401.
+            const diag = ShopeeWebhookSignatureService.diagnose(
+              callbackUrl,
+              (request as any).shopeeRawBody,
+              request.headers["authorization"] as string | undefined,
+              candidatas,
+            );
+            if (diag) {
+              console.warn(
+                JSON.stringify({
+                  event: "shopee.webhook.signature_debug",
+                  ...diag,
+                }),
+              );
+            }
             console.warn(
               JSON.stringify({
                 event: "shopee.webhook.invalid_signature",

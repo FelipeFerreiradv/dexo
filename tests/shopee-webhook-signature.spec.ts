@@ -350,3 +350,86 @@ describe("verifyAny — tenta as duas chaves legitimas do app", () => {
     ).not.toThrow();
   });
 });
+
+describe("diagnose — descobre POR QUE a assinatura nao conferiu", () => {
+  const PUSH = "chave-do-push";
+  const API = "chave-de-api";
+  const cands = [
+    { nome: "push", valor: PUSH },
+    { nome: "api", valor: API },
+  ];
+  // Corpo real do push que tomou 401 em producao (30/07/2026).
+  const CORPO_REAL =
+    '{"msg_id":"64ca21a157c8a72d9251e8101a14bf00","data":{"ordersn":"260722ABQH1CYK","status":"COMPLETED"},"shop_id":690138776,"code":3}';
+
+  let anterior: string | undefined;
+  beforeEach(() => {
+    anterior = process.env.SHOPEE_WEBHOOK_SIGNATURE_DEBUG;
+    process.env.SHOPEE_WEBHOOK_SIGNATURE_DEBUG = "1";
+  });
+  afterEach(() => {
+    if (anterior === undefined) delete process.env.SHOPEE_WEBHOOK_SIGNATURE_DEBUG;
+    else process.env.SHOPEE_WEBHOOK_SIGNATURE_DEBUG = anterior;
+  });
+
+  it("desligado (default) nao devolve nada", () => {
+    delete process.env.SHOPEE_WEBHOOK_SIGNATURE_DEBUG;
+    expect(
+      ShopeeWebhookSignatureService.diagnose(URL_CB, CORPO_REAL, "x", cands),
+    ).toBeNull();
+  });
+
+  it("identifica quando a divergencia e a CHAVE", () => {
+    // Assinado com a chave de push, base correta.
+    const a = hmacManual(URL_CB, CORPO_REAL, PUSH);
+    const d = ShopeeWebhookSignatureService.diagnose(
+      URL_CB,
+      CORPO_REAL,
+      a,
+      cands,
+    )!;
+    expect(d.combinacaoQueBate).toBe("push");
+  });
+
+  it("identifica quando a divergencia e a BASE (so o corpo)", () => {
+    const a = crypto
+      .createHmac("sha256", API)
+      .update(CORPO_REAL)
+      .digest("hex");
+    const d = ShopeeWebhookSignatureService.diagnose(
+      URL_CB,
+      CORPO_REAL,
+      a,
+      cands,
+    )!;
+    // Sem isso, base errada e chave errada seriam indistinguiveis.
+    expect(d.combinacaoQueBate).toBe("api:soCorpo");
+  });
+
+  it("identifica base sem o separador", () => {
+    const a = crypto
+      .createHmac("sha256", PUSH)
+      .update(`${URL_CB}${CORPO_REAL}`)
+      .digest("hex");
+    const d = ShopeeWebhookSignatureService.diagnose(
+      URL_CB,
+      CORPO_REAL,
+      a,
+      cands,
+    )!;
+    expect(d.combinacaoQueBate).toBe("push:semBarra");
+  });
+
+  it("nenhuma combinacao conhecida bate => null, e ainda reporta o recebido", () => {
+    const d = ShopeeWebhookSignatureService.diagnose(
+      URL_CB,
+      CORPO_REAL,
+      "0".repeat(64),
+      cands,
+    )!;
+    expect(d.combinacaoQueBate).toBeNull();
+    expect(d.authorizationRecebido).toBe("0".repeat(64));
+    expect(d.authorizationTamanho).toBe(64);
+    expect(d.corpoCruTamanho).toBe(CORPO_REAL.length);
+  });
+});
