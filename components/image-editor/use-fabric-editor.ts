@@ -75,6 +75,8 @@ export interface FabricEditorApi {
   readBaseTransform: () => EditRecipeBaseTransform | null;
   /** Export nas dimensões lógicas, ignorando o zoom de visualização. */
   exportImage: (format: "png" | "jpeg", quality?: number) => string | null;
+  /** Canvas fabric cru (PR 7: o módulo de anotações opera direto nele). */
+  getCanvas: () => Canvas | null;
 }
 
 const bgColorOf = (bg: EditorBackground): string | undefined => {
@@ -193,7 +195,11 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
           selectable: true,
           centeredScaling: true,
         });
+        // Tag para o módulo de anotações (PR 7): a base nunca entra nas
+        // camadas e fica SEMPRE atrás delas.
+        (img as unknown as { dexoKind?: string }).dexoKind = "base";
         canvas.add(img);
+        canvas.sendObjectToBack(img);
         canvas.setActiveObject(img);
         baseImageRef.current = img;
         canvas.requestRenderAll();
@@ -481,12 +487,15 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
     [canvasWidth, canvasHeight],
   );
 
+  const getCanvas = useCallback(() => canvasRef.current, []);
+
   return {
     canvasElRef,
     wrapperRef,
     ready,
     loadError,
     zoom,
+    getCanvas,
     zoomIn,
     zoomOut,
     zoomToFit,
