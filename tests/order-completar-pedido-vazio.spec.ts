@@ -592,6 +592,167 @@ describe("laço do ML: pedido existente SEM itens é completado, não pulado", (
   });
 });
 
+// O encanamento por plataforma é onde um erro DESLIGA a correção em silêncio: o
+// método central pode estar perfeito e o laço nunca chamá-lo. O laço do ML está
+// coberto acima; estes dois cobrem os outros dois.
+describe("laço da Shopee: pedido existente SEM itens é completado", () => {
+  const SN = "260724FS9NEKAE";
+  const PEDIDO = {
+    order_sn: SN,
+    order_status: "COMPLETED",
+    total_amount: 87.99,
+    create_time: 1783000000,
+    buyer_username: "comprador",
+    item_list: [{ item_id: 123, item_sku: "SKU-1" }],
+  };
+
+  beforeEach(() => {
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-sh",
+      userId: "dono-1",
+      accessToken: "tok",
+      refreshToken: "ref",
+      shopId: 1506346277,
+    } as never);
+    vi.spyOn(UC, "getRecentShopeeOrdersWithRefresh").mockResolvedValue([PEDIDO]);
+    vi.spyOn(UC, "logSync").mockResolvedValue(undefined);
+    vi.spyOn(OrderIngestionIssueService, "resolve").mockResolvedValue(
+      undefined as never,
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(prisma.order, "findMany").mockResolvedValue([
+      { id: "o-vazio", externalOrderId: SN, status: "PAID" },
+    ] as never);
+    vi.spyOn(prisma.orderItem, "findMany").mockResolvedValue([] as never);
+  });
+
+  it("chama a completude em vez de ingestShopeeOrder, e fecha a pendência", async () => {
+    const ingest = vi.spyOn(UC, "ingestShopeeOrder");
+    vi.spyOn(UC, "mapShopeeOrderItems").mockResolvedValue({
+      items: [{ productId: "p1", listingId: "l1", quantity: 1, unitPrice: 87.99 }],
+      linkedCount: 1,
+      unlinked: [],
+    });
+    vi.spyOn(UC, "acrescentarItensAoPedido").mockResolvedValue(1);
+    const baixa = vi.spyOn(UC, "retryStockDeduction").mockResolvedValue(true);
+
+    const r = await OrderUseCase.importRecentShopeeOrdersForAccount(
+      "acc-sh",
+      3,
+      true,
+    );
+
+    // O pedido já existe: reimportar devolveria `already_exists` e não faria nada.
+    expect(ingest).not.toHaveBeenCalled();
+    expect(baixa).toHaveBeenCalledWith("o-vazio", "SHOPEE", SN);
+    expect(OrderIngestionIssueService.resolve).toHaveBeenCalledWith(
+      "acc-sh",
+      SN,
+      "o-vazio",
+    );
+    expect(r.imported).toBe(1);
+    expect(r.stockDeductions).toBe(1);
+  });
+
+  it("exceção na completude conta como erro e o ciclo chega ao SyncLog", async () => {
+    vi.spyOn(UC, "mapShopeeOrderItems").mockRejectedValue(
+      new Error("pooler fora"),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const r = await OrderUseCase.importRecentShopeeOrdersForAccount(
+      "acc-sh",
+      3,
+      true,
+    );
+
+    expect(r.errors).toBe(1);
+    expect(r.results[0].status).toBe("error");
+    // O SyncLog é o veredito do ciclo: sem ele, ninguém sabe que houve falha.
+    expect(UC.logSync).toHaveBeenCalled();
+  });
+});
+
+describe("laço da Magalu: pedido existente SEM itens é completado", () => {
+  const COD = "998877";
+  const PEDIDO = {
+    id: COD,
+    code: COD,
+    status: "paid",
+    deliveries: [
+      {
+        items: [
+          {
+            info: { sku: "SKU-M1" },
+            quantity: 1,
+            unit_price: { value: 4990, normalizer: 100 },
+          },
+        ],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue({
+      id: "acc-mg",
+      userId: "dono-1",
+      accessToken: "tok",
+      refreshToken: "ref",
+      externalUserId: "seller-1",
+    } as never);
+    vi.spyOn(UC, "getRecentMagaluOrdersWithRefresh").mockResolvedValue([PEDIDO]);
+    vi.spyOn(UC, "mapMagaluStatus").mockReturnValue("PAID");
+    vi.spyOn(UC, "logSync").mockResolvedValue(undefined);
+    vi.spyOn(UC, "registrarDesfechoIngestao").mockResolvedValue(undefined);
+    vi.spyOn(UC, "processOrderCancellation").mockResolvedValue({
+      action: "not_cancelled",
+    } as never);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(prisma.order, "findMany").mockResolvedValue([
+      { id: "o-mag-vazio", externalOrderId: COD, status: "PAID" },
+    ] as never);
+    vi.spyOn(prisma.orderItem, "findMany").mockResolvedValue([] as never);
+  });
+
+  it("completa, baixa com o ENUM MAGALU e não passa pelo handler de cancelamento", async () => {
+    vi.spyOn(UC, "mapMagaluOrderItems").mockResolvedValue({
+      items: [{ productId: "p1", listingId: "l1", quantity: 1, unitPrice: 49.9 }],
+      linkedCount: 1,
+    });
+    vi.spyOn(UC, "acrescentarItensAoPedido").mockResolvedValue(1);
+    const baixa = vi.spyOn(UC, "retryStockDeduction").mockResolvedValue(true);
+
+    const r = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      7,
+      true,
+    );
+
+    expect(baixa).toHaveBeenCalledWith("o-mag-vazio", "MAGALU", COD);
+    // Pedido não cancelado: o handler de estorno não pode ser acionado.
+    expect(UC.processOrderCancellation).not.toHaveBeenCalled();
+    expect(r.imported).toBe(1);
+    expect(r.stockDeductions).toBe(1);
+    expect(r.alreadyExists).toBe(0);
+  });
+
+  it("produto ainda fora do Dexo: conta como perda, não como já importado", async () => {
+    vi.spyOn(UC, "mapMagaluOrderItems").mockResolvedValue({
+      items: [],
+      linkedCount: 0,
+    });
+
+    const r = await OrderUseCase.importRecentMagaluOrdersForAccount(
+      "acc-mg",
+      7,
+      true,
+    );
+
+    expect(r.noProducts).toBe(1);
+    expect(r.alreadyExists).toBe(0);
+  });
+});
+
 describe("criarOrderSemItens vale para as três plataformas", () => {
   const NOME_FLAG = "ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED";
 
