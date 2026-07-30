@@ -32,6 +32,7 @@ import {
   recordImageOutcome,
 } from "../app/marketplaces/services/rembg-telemetry";
 import { __resetRembgGate } from "../app/marketplaces/services/rembg-gate";
+import { __resetRembgBreakers } from "../app/marketplaces/services/rembg-breaker";
 
 describe("GET /internal/rembg/status", () => {
   let app: FastifyInstance;
@@ -49,6 +50,7 @@ describe("GET /internal/rembg/status", () => {
     axiosGetMock.mockReset();
     __resetImageTelemetry();
     __resetRembgGate();
+    __resetRembgBreakers();
 
     app = fastify();
     await app.register(internalRoutes, { prefix: "/internal" });
@@ -84,8 +86,16 @@ describe("GET /internal/rembg/status", () => {
     // Métricas off => taxas nem são consultadas (zero toque no banco).
     expect(body.rates).toBeNull();
     expect(countMock).not.toHaveBeenCalled();
-    // Placeholders dos PRs seguintes.
-    expect(body.breaker).toBeNull();
+    // PR 5 preencheu os placeholders: breaker sempre presente (CLOSED em
+    // repouso), provedor externo null sem env, e asyncJobs null aqui porque
+    // o prisma mockado não tem imageBgJob — o endpoint NÃO pode derrubar por
+    // isso (try/catch defensivo).
+    expect(body.breaker).toMatchObject({
+      disabled: false,
+      local: { state: "CLOSED", consecutiveFailures: 0 },
+      external: { state: "CLOSED", consecutiveFailures: 0 },
+    });
+    expect(body.externalProvider).toBeNull();
     expect(body.asyncJobs).toBeNull();
     // Gate: snapshot com defaults (2/1) e nada em voo.
     expect(body.gate).toMatchObject({

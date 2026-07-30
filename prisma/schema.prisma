@@ -641,6 +641,19 @@ model ImageBgJob {
   @@index([userId, createdAt])
 }
 
+// Teto financeiro DIÁRIO dos provedores externos de recorte (PR 5). Uma linha
+// por (provedor, dia UTC "YYYY-MM-DD"); a reserva é increment condicional
+// (count < teto) — atômica, sobrevive a restart e vale entre processos.
+model ProviderDailyUsage {
+  id        String   @id @default(cuid())
+  provider  String
+  day       String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, day])
+}
+
 model BulkListingJob {
   id               String        @id @default(cuid())
   userId           String

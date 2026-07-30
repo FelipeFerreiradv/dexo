@@ -31,6 +31,9 @@ vi.mock("../app/marketplaces/services/image-resize.service", () => ({
 const recordOutcomeMock = vi.fn();
 vi.mock("../app/marketplaces/services/rembg-telemetry", () => ({
   recordImageOutcome: (...a: any[]) => recordOutcomeMock(...a),
+  // Importado pelo rembg-providers (grafo do worker via PR 5) — sem ele no
+  // mock, qualquer acesso futuro quebraria com erro confuso de export.
+  recordImageSentExternal: vi.fn(),
 }));
 
 const swapMock = vi.fn();
