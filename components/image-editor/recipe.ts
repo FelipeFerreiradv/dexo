@@ -24,6 +24,121 @@ export interface EditRecipeBaseTransform {
   flipY?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Camadas de anotação (PR 7). Todas as coordenadas em PX DO CANVAS DE EXPORT
+// (mesmo espaço do `base`), para o restore reconstruir 1:1.
+// ---------------------------------------------------------------------------
+
+export interface TextLayerV1 {
+  kind: "text";
+  text: string;
+  left: number;
+  top: number;
+  angle: number;
+  scaleX: number;
+  scaleY: number;
+  fontFamily: string;
+  fontSize: number;
+  fill: string;
+  fontWeight?: "bold" | "normal";
+  textAlign?: "left" | "center" | "right";
+  /** Contorno (stroke + paintFirst:"stroke" no fabric). */
+  stroke?: string;
+  strokeWidth?: number;
+  /** Espelhamento: o fabric converte scale negativa em flip no transform. */
+  flipX?: boolean;
+  flipY?: boolean;
+}
+
+export interface ArrowLayerV1 {
+  kind: "arrow";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  stroke: string;
+  strokeWidth: number;
+}
+
+export interface EllipseLayerV1 {
+  kind: "ellipse";
+  /** Centro da elipse. */
+  left: number;
+  top: number;
+  rx: number;
+  ry: number;
+  angle: number;
+  stroke: string;
+  strokeWidth: number;
+}
+
+export interface ImageLayerV1 {
+  kind: "image";
+  /** Basename em public/uploads (veículo da biblioteca ou upload avulso). */
+  fileName: string;
+  /** Centro da imagem no canvas. */
+  left: number;
+  top: number;
+  scaleX: number;
+  scaleY: number;
+  angle: number;
+  flipX?: boolean;
+  flipY?: boolean;
+}
+
+export type AnnotationLayerV1 =
+  | TextLayerV1
+  | ArrowLayerV1
+  | EllipseLayerV1
+  | ImageLayerV1;
+
+export function isAnnotationLayerV1(value: unknown): value is AnnotationLayerV1 {
+  if (!value || typeof value !== "object") return false;
+  const l = value as { kind?: unknown };
+  if (l.kind === "text") {
+    const t = value as Partial<TextLayerV1>;
+    return typeof t.text === "string" && typeof t.left === "number";
+  }
+  if (l.kind === "arrow") {
+    const a = value as Partial<ArrowLayerV1>;
+    return (
+      typeof a.x1 === "number" &&
+      typeof a.y1 === "number" &&
+      typeof a.x2 === "number" &&
+      typeof a.y2 === "number"
+    );
+  }
+  if (l.kind === "ellipse") {
+    const e = value as Partial<EllipseLayerV1>;
+    return typeof e.rx === "number" && typeof e.ry === "number";
+  }
+  if (l.kind === "image") {
+    const i = value as Partial<ImageLayerV1>;
+    return (
+      typeof i.fileName === "string" &&
+      i.fileName.length > 0 &&
+      typeof i.left === "number" &&
+      typeof i.scaleX === "number"
+    );
+  }
+  return false;
+}
+
+/** Filtra camadas legíveis de uma receita (lixo/versões futuras são
+ *  descartados em silêncio — restore parcial > restore nenhum). */
+export function readAnnotationLayers(layers: unknown[]): AnnotationLayerV1[] {
+  return (Array.isArray(layers) ? layers : []).filter(isAnnotationLayerV1);
+}
+
+/** Warning ML (não-bloqueante): a política do Mercado Livre proíbe textos,
+ *  logos e promoções SOBRE a foto principal do anúncio. */
+export function shouldWarnMlAnnotations(
+  presetId: string,
+  annotationCount: number,
+): boolean {
+  return presetId === "ml-1200" && annotationCount > 0;
+}
+
 export interface EditRecipeV1 {
   version: 1;
   presetId: string;
@@ -36,7 +151,7 @@ export interface EditRecipeV1 {
   /** Margem: % do lado menor do canvas que a peça ocupa no auto-ajuste. */
   paddingPct: number;
   base: EditRecipeBaseTransform;
-  /** Camadas de anotação (texto/seta/elipse) — vazio no PR 6; o PR 7 gera. */
+  /** Camadas de anotação (texto/seta/elipse) — ver AnnotationLayerV1. */
   layers: unknown[];
 }
 

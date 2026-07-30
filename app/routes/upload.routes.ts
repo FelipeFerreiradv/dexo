@@ -669,6 +669,115 @@ export async function uploadRoutes(app: FastifyInstance) {
       });
     },
   );
+  /**
+   * Biblioteca de imagens do Editor (PR 7 — veículos p/ anúncio).
+   * O ARQUIVO nasce do POST /upload/image normal (pipeline otimizado de
+   * sempre: resize ≤1600px + recorte opcional); estes endpoints só gerenciam
+   * o REGISTRO reutilizável, escopado por tenant (dataOwnerId).
+   */
+  app.post(
+    "/image/assets",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
+      if (!userId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const body = (request.body ?? {}) as {
+        fileName?: string;
+        label?: string;
+        kind?: string;
+      };
+      const fileName = (body.fileName ?? "").trim();
+      if (!fileName || !isSafeUploadBasename(fileName)) {
+        return reply.status(400).send({
+          error: "Parâmetro inválido",
+          message: "fileName ausente ou inválido",
+        });
+      }
+      const label = (body.label ?? "").trim().slice(0, 60) || null;
+      const kind = body.kind === "vehicle" || !body.kind ? "vehicle" : null;
+      if (!kind) {
+        return reply.status(400).send({
+          error: "Parâmetro inválido",
+          message: "kind não suportado",
+        });
+      }
+      const asset = await (prisma as any).editorAsset.create({
+        data: { userId, fileName, label, kind },
+      });
+      const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+      return reply.status(200).send({
+        success: true,
+        asset: {
+          id: asset.id,
+          fileName: asset.fileName,
+          label: asset.label,
+          url: `${baseUrl}/uploads/${asset.fileName}`,
+        },
+      });
+    },
+  );
+
+  app.get(
+    "/image/assets",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
+      if (!userId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      let rows: Array<{
+        id: string;
+        fileName: string;
+        label: string | null;
+      }> = [];
+      try {
+        rows = await (prisma as any).editorAsset.findMany({
+          where: { userId, kind: "vehicle" },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+          select: { id: true, fileName: true, label: true },
+        });
+      } catch {
+        // Tabela ausente (DDL pendente) não pode derrubar o editor — a
+        // galeria só aparece vazia.
+      }
+      const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+      return reply.status(200).send({
+        assets: rows.map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          label: a.label,
+          url: `${baseUrl}/uploads/${a.fileName}`,
+        })),
+      });
+    },
+  );
+
+  /** Remove da biblioteca (SÓ a linha — receitas antigas que referenciam o
+   *  arquivo continuam restauráveis; o arquivo sai da proteção do GC). */
+  app.delete(
+    "/image/assets/:id",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
+      if (!userId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const { id } = request.params as { id: string };
+      const removed = await (prisma as any).editorAsset.deleteMany({
+        where: { id, userId },
+      });
+      if (removed.count === 0) {
+        return reply.status(404).send({ error: "Item não encontrado" });
+      }
+      return reply.status(200).send({ success: true });
+    },
+  );
 }
 
 /** Basename seguro de public/uploads: sem separadores, sem "..", só o shape

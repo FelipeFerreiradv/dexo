@@ -13,17 +13,28 @@
  * Anotações (texto/seta/elipse) chegam no PR 7; apagar/restaurar no PR 8.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowUpRight,
+  Car,
   Check,
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  Copy,
   Loader2,
   Maximize2,
+  Move,
   RotateCcw,
   RotateCw,
+  Trash2,
+  Type,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import type { IText } from "fabric";
 
 import {
   Dialog,
@@ -53,8 +64,14 @@ import {
 } from "@/components/ui/select";
 import {
   classifyUploadError,
+  deleteEditorAsset,
+  type EditorAssetRef,
   fetchImageEditMeta,
+  listEditorAssets,
+  registerEditorAsset,
   uploadEditedImage,
+  uploadProductImage,
+  validateImageFile,
 } from "@/lib/upload-image";
 
 import {
@@ -65,7 +82,30 @@ import {
   presetExportSize,
   resolvePreset,
 } from "./presets";
-import { buildRecipeV1, isEditRecipeV1 } from "./recipe";
+import {
+  buildRecipeV1,
+  isEditRecipeV1,
+  shouldWarnMlAnnotations,
+} from "./recipe";
+import {
+  ANNOTATION_PALETTE,
+  addArrow,
+  addEllipse,
+  addImageLayer,
+  addText,
+  annotationLabel,
+  applyTextStyle,
+  duplicateAnnotation,
+  kindOf,
+  listAnnotations,
+  moveAnnotation,
+  remapAnnotations,
+  removeAnnotation,
+  restoreAnnotations,
+  serializeAnnotations,
+  setBaseInteractive,
+} from "./annotations";
+import { EDITOR_FONTS, ensureEditorFontsLoaded } from "./fonts";
 import { useFabricEditor } from "./use-fabric-editor";
 
 export interface ImageEditorDialogProps {
@@ -103,6 +143,23 @@ export default function ImageEditorDialog({
   const [dirty, setDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [saving, setSaving] = useState(false);
+  // PR 7 — anotações: modo "move" (peça editável, comportamento do PR 6) vs
+  // "annotate" (peça travada; textos/setas/círculos por cima).
+  const [mode, setMode] = useState<"move" | "annotate">("move");
+  // Re-render quando o canvas muda (seleção/adição/remoção) — os controles
+  // de estilo e o painel de camadas leem o fabric direto no render.
+  const [, setCanvasTick] = useState(0);
+  // Camadas de uma receita reaberta, aplicadas UMA vez quando o canvas fica
+  // pronto (restore parcial tolerante; não marca dirty).
+  const pendingLayersRef = useRef<unknown[] | null>(null);
+  // Biblioteca de veículos (padrão "peça + carro compatível"): carregada
+  // LAZY na primeira abertura do painel — zero custo p/ quem não usa.
+  const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
+  const [vehicleAssets, setVehicleAssets] = useState<EditorAssetRef[]>([]);
+  const [vehicleAssetsLoaded, setVehicleAssetsLoaded] = useState(false);
+  const [vehicleUploading, setVehicleUploading] = useState(false);
+  const [vehicleRemoveBg, setVehicleRemoveBg] = useState(true);
+  const vehicleInputRef = useRef<HTMLInputElement>(null);
   // Fonte REAL da edição: se a imagem veio de um save anterior, editamos a
   // partir da fonte da receita (não do bitmap achatado).
   const [source, setSource] = useState<{
@@ -127,6 +184,8 @@ export default function ImageEditorDialog({
     setDirty(false);
     setSource(null);
     setInitialBase(null);
+    setMode("move");
+    pendingLayersRef.current = null;
     fetchImageEditMeta(fileName)
       .catch(() => null)
       .then((meta) => {
@@ -137,6 +196,7 @@ export default function ImageEditorDialog({
           setBackground(r.background);
           setPaddingPct(r.paddingPct);
           setInitialBase(r.base as never);
+          pendingLayersRef.current = Array.isArray(r.layers) ? r.layers : null;
           setSourceSize({
             width: r.source.width || 1200,
             height: r.source.height || 1200,
@@ -173,6 +233,19 @@ export default function ImageEditorDialog({
 
   const markDirty = useCallback(() => setDirty(true), []);
 
+  /** URLs de /uploads derivadas da fonte atual (mesmo origin da API). */
+  const resolveUploadUrl = useCallback(
+    (fileName: string) => {
+      const base = source?.url ?? imageUrl ?? "";
+      const idx = base.lastIndexOf("/");
+      return idx >= 0 ? `${base.slice(0, idx + 1)}${fileName}` : fileName;
+    },
+    [source, imageUrl],
+  );
+  // obj.set() do fabric NÃO emite evento — sem este bump os controles de
+  // estilo/camadas congelam (setDirty(true) com dirty já true é bail-out).
+  const bumpTick = useCallback(() => setCanvasTick((t) => t + 1), []);
+
   const editor = useFabricEditor({
     imageUrl: open ? (source?.url ?? null) : null,
     canvasWidth: exportSize.width,
@@ -195,6 +268,140 @@ export default function ImageEditorDialog({
     onBaseModified: markDirty,
   });
 
+  // Eventos do canvas → re-render (controles de estilo/painel de camadas
+  // leem o fabric direto). `editor.ready` garante canvas vivo.
+  useEffect(() => {
+    const c = editor.getCanvas();
+    if (!c || !editor.ready) return;
+    const bump = () => setCanvasTick((t) => t + 1);
+    const events = [
+      "selection:created",
+      "selection:updated",
+      "selection:cleared",
+      "object:added",
+      "object:removed",
+      "object:modified",
+    ] as const;
+    for (const ev of events) c.on(ev as never, bump as never);
+    return () => {
+      for (const ev of events) c.off(ev as never, bump as never);
+    };
+  }, [editor, editor.ready]);
+
+  // Base travada fora do modo "Mover peça" — reaplicado também quando a
+  // imagem recarrega (troca de preset re-adiciona a base destravada).
+  useEffect(() => {
+    const c = editor.getCanvas();
+    if (!c || !editor.ready) return;
+    setBaseInteractive(c, mode === "move");
+  });
+
+  // Restore das camadas de uma receita reaberta (uma vez, sem marcar dirty).
+  useEffect(() => {
+    const c = editor.getCanvas();
+    if (!c || !editor.ready) return;
+    const pending = pendingLayersRef.current;
+    if (!pending) return;
+    pendingLayersRef.current = null;
+    void restoreAnnotations(c, pending, { resolveUploadUrl });
+  }, [editor, editor.ready, resolveUploadUrl]);
+
+  const canvas = editor.ready ? editor.getCanvas() : null;
+  const annotationObjects = canvas ? listAnnotations(canvas) : [];
+  const activeObject = canvas?.getActiveObject() ?? null;
+  const activeText =
+    activeObject && kindOf(activeObject) === "text"
+      ? (activeObject as IText)
+      : null;
+
+  const enterAnnotate = useCallback(() => setMode("annotate"), []);
+
+  const handleAddText = useCallback(() => {
+    const c = editor.getCanvas();
+    if (!c) return;
+    enterAnnotate();
+    markDirty();
+    void addText(c);
+  }, [editor, enterAnnotate, markDirty]);
+
+  const handleAddArrow = useCallback(() => {
+    const c = editor.getCanvas();
+    if (!c) return;
+    enterAnnotate();
+    markDirty();
+    addArrow(c);
+  }, [editor, enterAnnotate, markDirty]);
+
+  const handleAddEllipse = useCallback(() => {
+    const c = editor.getCanvas();
+    if (!c) return;
+    enterAnnotate();
+    markDirty();
+    addEllipse(c);
+  }, [editor, enterAnnotate, markDirty]);
+
+
+  const openVehiclePanel = useCallback(() => {
+    setVehiclePanelOpen((prev) => !prev);
+    if (!vehicleAssetsLoaded) {
+      setVehicleAssetsLoaded(true);
+      void listEditorAssets().then(setVehicleAssets);
+    }
+  }, [vehicleAssetsLoaded]);
+
+  const handleInsertVehicle = useCallback(
+    (asset: EditorAssetRef) => {
+      const c = editor.getCanvas();
+      if (!c) return;
+      enterAnnotate();
+      markDirty();
+      setVehiclePanelOpen(false);
+      void addImageLayer(c, asset.url, asset.fileName).catch(() =>
+        onError?.("Não foi possível carregar o veículo. Tente novamente."),
+      );
+    },
+    [editor, enterAnnotate, markDirty, onError],
+  );
+
+  const handleVehicleUpload = useCallback(
+    async (file: File) => {
+      const invalid = validateImageFile(file);
+      if (invalid) {
+        onError?.(invalid);
+        return;
+      }
+      setVehicleUploading(true);
+      try {
+        // Pipeline NORMAL de upload (resize ≤1600px + recorte opcional) —
+        // o veículo entra na biblioteca já otimizado, nada pesado.
+        const result = await uploadProductImage(file, {
+          removeBackground: vehicleRemoveBg,
+          addShadow: false,
+        });
+        // Degradação do recorte não trava a inserção: o arquivo otimizado
+        // sempre volta e o usuário VÊ o resultado no canvas.
+        const fileName =
+          result.fileName ?? result.url.slice(result.url.lastIndexOf("/") + 1);
+        const registered = await registerEditorAsset({
+          fileName,
+          label: file.name.slice(0, 60),
+        });
+        const asset: EditorAssetRef =
+          registered ?? { id: "", fileName, label: file.name, url: result.url };
+        if (registered) {
+          setVehicleAssets((prev) => [registered, ...prev]);
+        }
+        handleInsertVehicle(asset);
+      } catch (err) {
+        onError?.(classifyUploadError(err).message);
+      } finally {
+        setVehicleUploading(false);
+      }
+    },
+    [vehicleRemoveBg, handleInsertVehicle, onError],
+  );
+
+
   const requestClose = useCallback(
     (next: boolean) => {
       if (!next && dirty && !saving) {
@@ -210,6 +417,9 @@ export default function ImageEditorDialog({
     if (!source) return;
     const base = editor.readBaseTransform();
     if (!base) return;
+    // Fontes ANTES do export: texto desenhado com fallback sairia "pulado"
+    // nos pixels finais (PR 7).
+    await ensureEditorFontsLoaded();
     // Fundo transparente => PNG; opaco => JPEG q0.9 (menor, padrão de anúncio).
     const format = background.mode === "transparent" ? "png" : "jpeg";
     const dataUrl = editor.exportImage(format, 0.9);
@@ -217,6 +427,7 @@ export default function ImageEditorDialog({
     setSaving(true);
     try {
       const blob = await dataUrlToBlob(dataUrl);
+      const c = editor.getCanvas();
       const recipe = buildRecipeV1({
         presetId,
         canvas: exportSize,
@@ -229,6 +440,8 @@ export default function ImageEditorDialog({
         background,
         paddingPct,
         base,
+        // Camadas de anotação (PR 7): o restore reconstrói 1:1 na reabertura.
+        layers: c ? serializeAnnotations(c) : [],
       });
       const saved = await uploadEditedImage({
         blob,
@@ -287,6 +500,372 @@ export default function ImageEditorDialog({
               )}
             </div>
 
+            {/* Warning ML não-bloqueante (política: foto principal sem
+                textos/logos/promoções sobre a imagem) */}
+            {shouldWarnMlAnnotations(presetId, annotationObjects.length) && (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                O Mercado Livre não permite textos, setas ou logos na foto
+                PRINCIPAL do anúncio — use esta imagem como secundária ou
+                troque o tamanho.
+              </div>
+            )}
+
+            {/* Anotações (PR 7) */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mode === "move" ? "default" : "outline"}
+                  className="h-7 px-2 text-xs"
+                  title="Mover/escalar/girar a peça"
+                  onClick={() => {
+                    const a = editor.getCanvas()?.getActiveObject() as
+                      | (IText & { isEditing?: boolean; exitEditing?: () => void })
+                      | undefined;
+                    if (a?.isEditing) a.exitEditing?.();
+                    setMode("move");
+                  }}
+                >
+                  <Move className="mr-1 h-3.5 w-3.5" />
+                  Mover peça
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mode === "annotate" ? "default" : "outline"}
+                  className="h-7 px-2 text-xs"
+                  title="Peça travada; edite as anotações"
+                  onClick={enterAnnotate}
+                >
+                  Anotar
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={handleAddText}
+                  disabled={!editor.ready}
+                >
+                  <Type className="mr-1 h-3.5 w-3.5" />
+                  Texto
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={handleAddArrow}
+                  disabled={!editor.ready}
+                >
+                  <ArrowUpRight className="mr-1 h-3.5 w-3.5" />
+                  Seta
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={handleAddEllipse}
+                  disabled={!editor.ready}
+                >
+                  <Circle className="mr-1 h-3.5 w-3.5" />
+                  Círculo
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={vehiclePanelOpen ? "default" : "outline"}
+                  className="h-7 px-2 text-xs"
+                  onClick={openVehiclePanel}
+                  disabled={!editor.ready}
+                  title="Inserir um veículo da sua biblioteca (padrão peça + carro compatível)"
+                >
+                  <Car className="mr-1 h-3.5 w-3.5" />
+                  Veículo
+                </Button>
+              </div>
+
+              {/* Camadas: chips clicáveis (última = mais acima) + ações da
+                  camada selecionada */}
+              {annotationObjects.length > 0 && canvas && (
+                <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+                  {annotationObjects.map((obj, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        enterAnnotate();
+                        canvas.setActiveObject(obj);
+                        canvas.requestRenderAll();
+                        setCanvasTick((t) => t + 1);
+                      }}
+                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                        activeObject === obj
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "bg-muted/40 text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      {annotationLabel(obj)}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {activeObject && canvas && kindOf(activeObject) !== "base" && (
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    title="Trazer para frente"
+                    onClick={() => {
+                      moveAnnotation(canvas, activeObject, "up");
+                      markDirty();
+                      bumpTick();
+                    }}
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    title="Enviar para trás"
+                    onClick={() => {
+                      moveAnnotation(canvas, activeObject, "down");
+                      markDirty();
+                      bumpTick();
+                    }}
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    title="Duplicar"
+                    onClick={() => {
+                      duplicateAnnotation(canvas, activeObject);
+                      markDirty();
+                    }}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="destructive"
+                    className="h-7 w-7"
+                    title="Excluir camada"
+                    onClick={() => {
+                      removeAnnotation(canvas, activeObject);
+                      markDirty();
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Biblioteca de veículos (lazy; miniaturas otimizadas) */}
+            {vehiclePanelOpen && (
+              <div className="rounded-md border bg-muted/20 p-2">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <input
+                    ref={vehicleInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleVehicleUpload(f);
+                      if (vehicleInputRef.current)
+                        vehicleInputRef.current.value = "";
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    disabled={vehicleUploading}
+                    onClick={() => vehicleInputRef.current?.click()}
+                  >
+                    {vehicleUploading ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Car className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Enviar veículo do computador
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={vehicleRemoveBg ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                    title="Remover o fundo do veículo ao enviar (recomendado)"
+                    onClick={() => setVehicleRemoveBg((v) => !v)}
+                  >
+                    Remover fundo
+                  </Button>
+                  {vehicleUploading && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Otimizando{vehicleRemoveBg ? " e recortando" : ""} o
+                      veículo…
+                    </span>
+                  )}
+                </div>
+                {vehicleAssets.length === 0 ? (
+                  <p className="px-1 text-xs text-muted-foreground">
+                    Sua biblioteca está vazia — envie a foto de um veículo uma
+                    vez e reuse em quantos anúncios quiser.
+                  </p>
+                ) : (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {vehicleAssets.map((asset) => (
+                      <div key={asset.id || asset.fileName} className="group relative shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleInsertVehicle(asset)}
+                          title={asset.label ?? "Inserir veículo"}
+                          className="block h-16 w-24 overflow-hidden rounded border bg-background hover:ring-2 hover:ring-primary"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={asset.url}
+                            alt={asset.label ?? "Veículo"}
+                            loading="lazy"
+                            decoding="async"
+                            className="h-full w-full object-contain"
+                          />
+                        </button>
+                        {asset.id && (
+                          <button
+                            type="button"
+                            title="Remover da biblioteca"
+                            onClick={() => {
+                              void deleteEditorAsset(asset.id);
+                              setVehicleAssets((prev) =>
+                                prev.filter((a) => a.id !== asset.id),
+                              );
+                            }}
+                            className="absolute -top-1 -right-1 hidden h-4 w-4 items-center justify-center rounded-full bg-destructive text-destructive-foreground group-hover:flex"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Estilo do TEXTO selecionado */}
+            {activeText && canvas && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border bg-muted/20 px-2 py-1.5">
+                <Select
+                  value={(activeText.fontFamily as string) ?? EDITOR_FONTS[0].family}
+                  onValueChange={(v) => {
+                    applyTextStyle(canvas, activeText, { fontFamily: v });
+                    markDirty();
+                    bumpTick();
+                  }}
+                >
+                  <SelectTrigger className="h-7 w-[180px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EDITOR_FONTS.map((f) => (
+                      <SelectItem key={f.family} value={f.family} className="text-xs">
+                        {f.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs">Tamanho</Label>
+                  <Slider
+                    value={[activeText.fontSize ?? 64]}
+                    min={24}
+                    max={200}
+                    step={2}
+                    className="w-[110px]"
+                    onValueChange={([v]) => {
+                      applyTextStyle(canvas, activeText, { fontSize: v });
+                      markDirty();
+                      bumpTick();
+                    }}
+                  />
+                </div>
+
+                <div className="flex items-center gap-1">
+                  {ANNOTATION_PALETTE.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      title={color}
+                      onClick={() => {
+                        applyTextStyle(canvas, activeText, { fill: color });
+                        markDirty();
+                        bumpTick();
+                      }}
+                      className={`h-5 w-5 shrink-0 rounded-full border-2 ${
+                        activeText.fill === color
+                          ? "border-primary"
+                          : "border-muted-foreground/30"
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeText.fontWeight === "bold" ? "default" : "outline"}
+                  className="h-7 w-7 px-0 text-xs font-bold"
+                  title="Negrito"
+                  onClick={() => {
+                    applyTextStyle(canvas, activeText, {
+                      bold: activeText.fontWeight !== "bold",
+                    });
+                    markDirty();
+                    bumpTick();
+                  }}
+                >
+                  B
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeText.stroke ? "default" : "outline"}
+                  className="h-7 px-2 text-xs"
+                  title="Contorno de contraste atrás das letras"
+                  onClick={() => {
+                    applyTextStyle(canvas, activeText, {
+                      outline: !activeText.stroke,
+                    });
+                    markDirty();
+                    bumpTick();
+                  }}
+                >
+                  Contorno
+                </Button>
+              </div>
+            )}
+
             {/* Toolbar — embaixo (polegar no celular) */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
               <div className="flex items-center gap-2">
@@ -294,6 +873,16 @@ export default function ImageEditorDialog({
                 <Select
                   value={presetId}
                   onValueChange={(v) => {
+                    // Sem o remap, as camadas ficariam nas coordenadas do
+                    // canvas ANTIGO — fora do export e inalcançáveis.
+                    const c = editor.getCanvas();
+                    if (c) {
+                      remapAnnotations(
+                        c,
+                        exportSize,
+                        presetExportSize(resolvePreset(v), sourceSize),
+                      );
+                    }
                     setPresetId(v);
                     markDirty();
                   }}

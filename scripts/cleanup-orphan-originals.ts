@@ -168,6 +168,26 @@ async function collectInUseUuids(): Promise<InUseRefs> {
     );
   }
 
+  // Biblioteca do Editor (PR 7): veículos reutilizáveis são protegidos
+  // ENQUANTO a linha existir (gestão explícita do usuário — remover da
+  // biblioteca tira a proteção). Mesmo try/catch defensivo dos demais.
+  try {
+    const assets: Array<{ fileName: string }> = await (
+      prisma as any
+    ).editorAsset.findMany({ select: { fileName: true } });
+    for (const a of assets) {
+      if (!a.fileName) continue;
+      filenames.add(a.fileName);
+      const uuid = String(a.fileName).split(".")[0];
+      if (uuid) inUse.add(uuid);
+    }
+  } catch (err) {
+    console.warn(
+      "[cleanup] EditorAsset indisponível (tabela/client ausente?) — seguindo sem a proteção da biblioteca:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   return { uuids: inUse, filenames };
 }
 
