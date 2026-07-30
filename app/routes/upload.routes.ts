@@ -247,6 +247,9 @@ export async function uploadRoutes(app: FastifyInstance) {
           // para que a degradação graceful rode ANTES do 504 do nginx.
           lane: "internal",
           deadlineAt,
+          // Rastro LGPD caso o recorte saia pelo provedor externo (PR 5).
+          tenantUserId:
+            (request as any).user?.dataOwnerId ?? (request as any).user?.id,
         });
 
         // Telemetria (aditiva, nunca no caminho da resposta): a taxa de

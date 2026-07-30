@@ -72,6 +72,7 @@ export interface RecordImageOutcomeInput {
     | "sidecarTiming"
     | "sidecarMs"
     | "sidecarConfidence"
+    | "usedFallbackProvider"
     | "format"
     | "width"
     | "height"
@@ -131,6 +132,9 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
       ...(input.result.sidecarConfidence !== undefined
         ? { sidecarConfidence: input.result.sidecarConfidence }
         : {}),
+      ...(input.result.usedFallbackProvider
+        ? { usedFallbackProvider: true }
+        : {}),
       format: input.result.format,
       widthPx: input.result.width,
       heightPx: input.result.height,
@@ -155,6 +159,50 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
   } catch (err) {
     // Telemetria jamais derruba um upload.
     console.error("[rembg-telemetry] falha ao registrar evento:", err);
+  }
+}
+
+export interface RecordImageSentExternalInput {
+  provider: string;
+  ok: boolean;
+  ms: number;
+  requestBytes: number;
+  responseBytes?: number;
+  /** Dono do dado — em details.tenantUserId, NUNCA na coluna (ver acima). */
+  tenantUserId?: string;
+  error?: string;
+}
+
+/**
+ * Rastro LGPD do PR 5: UMA linha por imagem enviada a provedor EXTERNO de
+ * recorte. Diferente das métricas, NÃO fica atrás de IMAGE_PIPELINE_METRICS —
+ * é registro de compliance (dado pessoal potencialmente saindo para um
+ * terceiro), não observabilidade opcional. Fire-and-forget, nunca lança.
+ */
+export function recordImageSentExternal(
+  input: RecordImageSentExternalInput,
+): void {
+  try {
+    void SystemLogService.logInfo(
+      "IMAGE_SENT_EXTERNAL",
+      `Imagem enviada ao provedor externo ${input.provider} (${input.ok ? "ok" : "falha"})`,
+      {
+        resource: "ImagePipeline",
+        details: {
+          provider: input.provider,
+          ok: input.ok,
+          ms: input.ms,
+          requestBytes: input.requestBytes,
+          ...(input.responseBytes !== undefined
+            ? { responseBytes: input.responseBytes }
+            : {}),
+          ...(input.tenantUserId ? { tenantUserId: input.tenantUserId } : {}),
+          ...(input.error ? { error: input.error.slice(0, 300) } : {}),
+        },
+      },
+    );
+  } catch (err) {
+    console.error("[rembg-telemetry] falha no rastro IMAGE_SENT_EXTERNAL:", err);
   }
 }
 

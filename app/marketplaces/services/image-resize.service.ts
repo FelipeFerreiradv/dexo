@@ -15,15 +15,19 @@
  * de dynamic import a cada chamada.
  */
 
-import FormData from "form-data";
 import axios from "axios";
 import {
   SIDECAR_MIN_USEFUL_MS,
   computeSidecarTimeoutMs,
   isWorthCallingSidecar,
-  readRembgTimeoutMs,
 } from "./rembg-budget";
 import { acquireRembgSlot, type RembgLane } from "./rembg-gate";
+import { localRembgBreaker } from "./rembg-breaker";
+import {
+  isLocalSidecarConfigured,
+  localSidecarFetch,
+  tryExternalProviderCutout,
+} from "./rembg-providers";
 
 const ML_MIN_IMAGE_PX = 800;
 
@@ -111,7 +115,8 @@ export type RembgDegradeReason =
   | "timeout" // axios ECONNABORTED — inferência não coube no orçamento
   | "conn_error" // falha de rede/conexão sem resposta (refused/reset/DNS/rota)
   | "http_error" // sidecar respondeu 4xx/5xx
-  | "processing_error"; // erro não-axios (ex.: resposta ilegível pós-fetch)
+  | "processing_error" // erro não-axios (ex.: resposta ilegível pós-fetch)
+  | "breaker_open"; // PR 5: 5+ falhas de infra seguidas — pulamos o sidecar por 60s
 
 export interface ProcessUploadedImageOptions {
   removeBackground: boolean;
@@ -140,6 +145,12 @@ export interface ProcessUploadedImageOptions {
    * caber no proxy).
    */
   rembgTimeoutMs?: number;
+  /**
+   * Dono do dado (tenant) — usado APENAS no rastro LGPD quando a imagem sai
+   * para o provedor externo de fallback (PR 5), em details de SystemLog,
+   * nunca em coluna. Opcional e sem efeito quando o fallback está OFF.
+   */
+  tenantUserId?: string;
   /** Override para testes — injeta um fetcher do sidecar. */
   rembgFetcher?: (
     buf: Buffer,
@@ -176,6 +187,9 @@ export interface ProcessUploadedImageResult {
   /** Score de confiança da máscara [0,1] (só com REMBG_CONFIDENCE=true no
    *  sidecar). MODO OBSERVAÇÃO: informativo, nunca muda decisão. */
   sidecarConfidence?: number;
+  /** PR 5: o recorte veio do provedor EXTERNO de fallback (sem a sombra de
+   *  contato do sidecar). Ausente = caminho local de sempre. */
+  usedFallbackProvider?: boolean;
 }
 
 /**
@@ -259,8 +273,18 @@ export async function processUploadedImage(
     // caso NÃO chamamos o sidecar: uma inferência de ~9s que ninguém vai
     // esperar só rouba o worker de quem ainda pode ganhar.
     const sidecarAvailable = isRembgEnabled() || Boolean(opts.rembgFetcher);
+    // PR 5: o breaker governa SÓ o fetcher default (injetado = teste = passa
+    // reto, senão specs antigos abririam o breaker uns pros outros). Consultado
+    // ANTES do gate: com o sidecar caído, esperar fila só atrasa o próximo elo
+    // da cadeia. Quem recebe `true` de beginAttempt TEM que settle (success/
+    // failure/abort) — ver os pontos marcados abaixo.
+    const breakerGoverned = !opts.rembgFetcher;
+    const breakerAllows =
+      sidecarAvailable &&
+      (!breakerGoverned || localRembgBreaker.beginAttempt());
+    let breakerSettled = !breakerGoverned;
     const slot =
-      sidecarAvailable && isWorthCallingSidecar(budgetMs)
+      breakerAllows && isWorthCallingSidecar(budgetMs)
         ? await acquireRembgSlot(lane, budgetMs - SIDECAR_MIN_USEFUL_MS)
         : null;
 
@@ -271,8 +295,18 @@ export async function processUploadedImage(
       console.warn(
         "[processUploadedImage] sidecar desabilitado (REMBG_ENABLED=false ou REMBG_SIDECAR_URL ausente); degradando para imagem otimizada sem remoção",
       );
+    } else if (!breakerAllows) {
+      degradeReason = "breaker_open";
+      console.warn(
+        "[processUploadedImage] breaker do sidecar ABERTO (falhas de infra em série); pulando direto para o próximo elo da cadeia",
+      );
     } else if (slot === null) {
       degradeReason = "budget_gate";
+      if (breakerGoverned && !breakerSettled) {
+        // Desistimos sem despachar — devolve a eventual sonda HALF_OPEN.
+        localRembgBreaker.abortAttempt();
+        breakerSettled = true;
+      }
       console.warn(
         "[processUploadedImage] orçamento/fila do sidecar esgotados; degradando para imagem otimizada sem remoção:",
         { lane, budgetMs },
@@ -281,7 +315,7 @@ export async function processUploadedImage(
 
     if (slot !== null) {
       try {
-        const fetcher = opts.rembgFetcher ?? defaultRembgFetcher;
+        const fetcher = opts.rembgFetcher ?? localSidecarFetch;
         const addShadow = opts.addShadow === true;
         // Recalculado APÓS a espera no gate: o que sobrou do orçamento é o que
         // o round-trip ainda pode consumir. Sem `deadlineAt` devolve o
@@ -357,6 +391,13 @@ export async function processUploadedImage(
             onMeta,
           });
         }
+        // O fetch entregou => o PROVEDOR está saudável (settle do breaker).
+        // Erros de pós-processamento daqui pra baixo (sharp) não são culpa
+        // do sidecar e não podem contar como falha de infra.
+        if (breakerGoverned && !breakerSettled) {
+          localRembgBreaker.recordSuccess();
+          breakerSettled = true;
+        }
         sidecarMs = Date.now() - fetchStartedAt;
         const tFetch = profNow();
 
@@ -415,6 +456,25 @@ export async function processUploadedImage(
         };
       } catch (err) {
         degradeReason = classifyDegradeReason(err);
+        // Settle do breaker: só falha de INFRA conta (conexão/timeout/5xx);
+        // budget_after_wait e 4xx devolvem a sonda sem punir o provedor.
+        if (breakerGoverned && !breakerSettled) {
+          const status = axios.isAxiosError(err)
+            ? err.response?.status
+            : undefined;
+          const infraFailure =
+            degradeReason === "timeout" ||
+            degradeReason === "conn_error" ||
+            (degradeReason === "http_error" && (status ?? 0) >= 500);
+          if (infraFailure) {
+            localRembgBreaker.recordFailure(
+              err instanceof Error ? err.message : String(err),
+            );
+          } else {
+            localRembgBreaker.abortAttempt();
+          }
+          breakerSettled = true;
+        }
         if (fetchStartedAt !== undefined) {
           sidecarMs = Date.now() - fetchStartedAt;
         }
@@ -446,6 +506,57 @@ export async function processUploadedImage(
         // Sempre devolve o slot — inclusive nos `return` do caminho feliz acima.
         slot.release();
       }
+    }
+
+    // PR 5 — elo EXTERNO da cadeia: entra APENAS quando o local não entregou
+    // (qualquer causa acima) e o fallback pago está explicitamente ligado
+    // (URL + teto diário > 0; default OFF => este bloco é um no-op). O
+    // provedor devolve recorte SEM a sombra de contato do sidecar — melhor
+    // recorte sem sombra do que WebP sem recorte. Nunca lança: qualquer erro
+    // cai na degradação graceful de sempre.
+    try {
+      const external = await tryExternalProviderCutout({
+        buf: normalized,
+        deadlineAt: opts.deadlineAt,
+        tenantUserId: opts.tenantUserId,
+      });
+      if (external) {
+        const extMeta = await sharp(external.cutout).metadata();
+        if (extMeta.format === "png" && extMeta.width && extMeta.height) {
+          return {
+            processed: external.cutout,
+            format: "png",
+            removedBackground: true,
+            shadowApplied: false,
+            width: extMeta.width,
+            height: extMeta.height,
+            usedFallbackProvider: true,
+          };
+        }
+        // Provedor devolveu imagem válida mas não-PNG (config de formato):
+        // re-encoda para manter o contrato format:"png" com transparência.
+        const encoded = await sharp(external.cutout)
+          .png({
+            compressionLevel: UPLOAD_PNG_COMPRESSION,
+            adaptiveFiltering: true,
+          })
+          .toBuffer();
+        const encMeta = await sharp(encoded).metadata();
+        return {
+          processed: encoded,
+          format: "png",
+          removedBackground: true,
+          shadowApplied: false,
+          width: encMeta.width,
+          height: encMeta.height,
+          usedFallbackProvider: true,
+        };
+      }
+    } catch (err) {
+      console.warn(
+        "[processUploadedImage] pós-processamento do provedor externo falhou; degradando:",
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     // Killswitch, orçamento esgotado ou falha do sidecar → fallback graceful.
@@ -482,11 +593,10 @@ export async function processUploadedImage(
   };
 }
 
-function isRembgEnabled(): boolean {
-  const url = process.env.REMBG_SIDECAR_URL;
-  const enabled = (process.env.REMBG_ENABLED ?? "true").toLowerCase();
-  return Boolean(url) && enabled !== "false";
-}
+// PR 5: a regra "sidecar configurado e sem killswitch" mudou para
+// `isLocalSidecarConfigured` em ./rembg-providers (o guard do worker também
+// precisa dela). Alias local para não tocar nos call sites.
+const isRembgEnabled = isLocalSidecarConfigured;
 
 /** Backoff antes do retry de conexão: cobre o gap accept→listen do sidecar
  *  voltando de um restart, sem segurar o slot do gate por tempo relevante. */
@@ -561,73 +671,5 @@ function isRetryableConnectionError(err: unknown): boolean {
   return /socket hang up/i.test(err.message ?? "");
 }
 
-async function defaultRembgFetcher(
-  buf: Buffer,
-  opts?: {
-    addShadow?: boolean;
-    timeoutMs?: number;
-    onMeta?: (meta: {
-      timing?: string;
-      confidence?: number;
-      signals?: string;
-    }) => void;
-  },
-): Promise<Buffer> {
-  const url = process.env.REMBG_SIDECAR_URL;
-  if (!url) throw new Error("REMBG_SIDECAR_URL não configurado");
-  // `timeoutMs` já vem clampado pelo orçamento da requisição (ver rembg-budget).
-  // O fallback para o env preserva o comportamento de quem chama o fetcher
-  // direto, sem deadline.
-  const timeoutMs =
-    typeof opts?.timeoutMs === "number" && opts.timeoutMs > 0
-      ? opts.timeoutMs
-      : readRembgTimeoutMs();
-
-  // O sidecar valida que content_type comece com "image/" — manter
-  // consistente com o filename `input.png` e evitar 400 do FastAPI.
-  const form = new FormData();
-  form.append("file", buf, {
-    filename: "input.png",
-    contentType: "image/png",
-  });
-  // Campo retrocompatível: só enviamos add_shadow quando solicitado, pra
-  // manter requests sem sombra idênticos ao comportamento de hoje.
-  if (opts?.addShadow) {
-    form.append("add_shadow", "true");
-  }
-
-  const endpoint = url.replace(/\/+$/, "") + "/remove-bg";
-  const response = await axios.post(endpoint, form, {
-    headers: form.getHeaders(),
-    responseType: "arraybuffer",
-    timeout: timeoutMs,
-    maxContentLength: 50 * 1024 * 1024,
-    maxBodyLength: 50 * 1024 * 1024,
-  });
-
-  const timing = response.headers?.["x-rembg-timing"];
-  if (REMBG_PROFILE && timing) {
-    console.log(`[sidecar-profile] ${timing}`);
-  }
-  const meta: { timing?: string; confidence?: number; signals?: string } = {};
-  if (timing && typeof timing === "string") {
-    meta.timing = timing;
-  }
-  const confRaw = response.headers?.["x-rembg-confidence"];
-  const confidence =
-    typeof confRaw === "string" ? Number.parseFloat(confRaw) : NaN;
-  if (Number.isFinite(confidence)) {
-    meta.confidence = confidence;
-    const signals = response.headers?.["x-rembg-signals"];
-    if (typeof signals === "string") meta.signals = signals;
-  }
-  if (Object.keys(meta).length > 0) {
-    try {
-      opts?.onMeta?.(meta);
-    } catch {
-      // metadados são best-effort — nunca derrubam o caminho do recorte.
-    }
-  }
-
-  return Buffer.from(response.data);
-}
+// O antigo `defaultRembgFetcher` virou `localSidecarFetch` em
+// ./rembg-providers (PR 5) — corpo idêntico, agora um elo nomeado da cadeia.

@@ -89,7 +89,10 @@ export type LogAction =
   // Falha TERMINAL de um job assíncrono de recorte (worker — fase futura).
   | "IMAGE_BG_JOB_FAILED"
   // Alerta: taxa de fallback da última 1h acima do limiar (rembg-alert.service).
-  | "IMAGE_FALLBACK_RATE_HIGH";
+  | "IMAGE_FALLBACK_RATE_HIGH"
+  // Rastro LGPD (PR 5): imagem do cliente saiu para o provedor EXTERNO de
+  // recorte. SEMPRE gravado (não fica atrás de IMAGE_PIPELINE_METRICS).
+  | "IMAGE_SENT_EXTERNAL";
 
 export interface SystemLog {
   id: string;
