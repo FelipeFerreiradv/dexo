@@ -200,15 +200,59 @@ Para ajustar o orçamento do app sem redeploy, use `UPLOAD_HANDLER_BUDGET_MS` no
 "Remover fundo" + "Adicionar sombra" ligados.
 **Rollback:** remover as duas linhas e `nginx -t && systemctl reload nginx`.
 
-#### 8.3 — Conferir o limite de corpo (provavelmente já OK)
+#### 8.3 — Conferir o limite de corpo
 
 ```bash
 nginx -T 2>/dev/null | grep -n client_max_body_size
 ```
 
 Verificado em 2026-07-08: é **global** em `/etc/nginx/nginx.conf` = `64M`, sem
-override por vhost — folgado para os 20 MB que o app aceita. **Só confirme.** Se
-algum dia aparecer um valor `< 20M`, suba para `64M`.
+override por vhost. Se algum dia aparecer um valor `< 20M`, suba para `64M`.
+
+##### 8.3.1 — Migração de bases grandes (Superadmin → Importar)
+
+**Só é necessário quando um cliente estourar 64 MB no TOTAL de uma request.**
+
+Desde 2026-07-30 a rota `/superadmin/import/*` aceita **100 MB por arquivo** e
+**200 MB no total** (`lib/import-limits.ts`; o teto global de 20 MB do
+`api.ts` continua valendo para as rotas de imagem). O caso que motivou a
+mudança — Emp595, planilha de fotos com 36,1 MB — soma ~42 MB e **passa sem
+tocar no nginx**.
+
+Se um cliente futuro passar de 64 MB, o nginx corta com **413 antes de o
+Fastify ver qualquer byte**, e como o 413 dele não leva header de CORS o modal
+mostra um erro opaco. O modal já traduz esse caso ("O servidor recusou o envio
+por tamanho (413)…"), mas quem resolve é isto:
+
+```nginx
+# No server block de api.usedexo.com.br, ESCOPADO à rota de importação —
+# não eleve o limite global, senão TODAS as rotas passam a aceitar 256 MB.
+location /superadmin/import/ {
+    client_max_body_size 256M;
+    proxy_read_timeout   180s;   # o parse de planilha grande é síncrono
+    proxy_send_timeout   180s;
+    proxy_pass http://backend;
+}
+```
+
+**Verificar:** `nginx -t && systemctl reload nginx`, depois gerar uma prévia
+com o pacote completo do cliente.
+**Rollback:** remover o `location` inteiro e recarregar.
+
+> ⚠️ O `proxy_read_timeout` do vhost da API **não existe** (item 8.1), então
+> vale o default de 60 s. O parse do arquivo de 36,1 MB leva ~16 s de CPU e o
+> `/apply` refaz esse trabalho antes de devolver o `202`. Um pacote com duas
+> planilhas desse porte chega perto dos 60 s — é o próximo muro depois do
+> tamanho, e o `location` acima já o remove para a rota de importação.
+
+> ⚠️ **Durante uma migração grande a API fica travada.** `XLSX.read` é
+> síncrono e bloqueia o event loop do processo `dexo-api` por ~16 s por
+> planilha grande — todos os tenants param nesse intervalo. Não há leitura em
+> streaming no SheetJS 0.18.5 (`XLSX.stream` só tem `to_json`/`to_csv`/
+> `to_html`, ou seja apenas SAÍDA). Enquanto isso não mudar, **rode migrações
+> grandes fora do horário de pico.** Pico de memória medido: ~2,1 GB de RSS
+> para a planilha de 36,1 MB, contra o heap padrão do Node (~4 GB) e ~16 GiB
+> livres no host — cabe, mas não rode duas ao mesmo tempo.
 
 #### 8.4 — CORS **apenas** nas respostas de erro geradas pelo nginx
 

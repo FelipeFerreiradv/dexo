@@ -31,6 +31,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { authHeaders, getApiBaseUrl } from "@/lib/api";
+import {
+  checkImportFiles,
+  formatBytes,
+  IMPORT_MAX_FILE_BYTES,
+} from "@/lib/import-limits";
 
 /* ------------------------------- Tipos --------------------------------- */
 
@@ -93,6 +98,42 @@ interface JobStatus {
 interface AvailableEntity {
   system: ImportSystem;
   entity: ImportEntity;
+}
+
+/* ------------------------------ Utilitários ------------------------------ */
+
+/**
+ * Lê a resposta da API tolerando corpo NÃO-JSON.
+ *
+ * `res.json()` cru quebrava com upload grande: quando o nginx corta a request
+ * (413 por `client_max_body_size`, 502/504 por timeout) o corpo é uma página
+ * HTML, o `.json()` lança SyntaxError e o catch mostrava "Unexpected token <"
+ * — ou, pior, a mensagem genérica, escondendo QUAL foi o problema. Aqui o
+ * status vira uma explicação em português.
+ */
+async function readApiJson(
+  res: Response,
+  fallback: string,
+): Promise<{ message?: string; [k: string]: unknown }> {
+  const texto = await res.text().catch(() => "");
+  try {
+    return JSON.parse(texto) as { message?: string };
+  } catch {
+    if (res.ok) return {};
+    if (res.status === 413) {
+      return {
+        message:
+          "O servidor recusou o envio por tamanho (413). O limite do proxy (nginx) é menor que o do aplicativo — peça para ajustar o `client_max_body_size` do domínio da API.",
+      };
+    }
+    if (res.status === 502 || res.status === 504) {
+      return {
+        message:
+          "O servidor demorou demais para responder (proxy encerrou a conexão). Planilhas muito grandes podem estourar o tempo limite do proxy — tente enviar menos arquivos por vez.",
+      };
+    }
+    return { message: `${fallback} (HTTP ${res.status}).` };
+  }
 }
 
 /* ------------------------------- Rótulos -------------------------------- */
@@ -274,6 +315,24 @@ export function ImportDataDialog({
     resetFlow();
   };
 
+  /**
+   * Checagem LOCAL do tamanho, antes de qualquer upload. Mesma função que a
+   * rota usa (`lib/import-limits.ts`), então a mensagem exibida aqui é
+   * LITERALMENTE a que o servidor devolveria. Isto só evita que o operador
+   * espere dezenas de MB subirem por um link de escritório para receber a
+   * recusa no fim — o servidor continua sendo a autoridade. `null` = pode
+   * enviar.
+   */
+  const sizeError = useMemo(
+    () => checkImportFiles(files.map((f) => ({ name: f.name, size: f.size }))),
+    [files],
+  );
+
+  const totalBytes = useMemo(
+    () => files.reduce((sum, f) => sum + f.size, 0),
+    [files],
+  );
+
   const buildFormData = useCallback(() => {
     const fd = new FormData();
     fd.append("targetUserId", targetUserId);
@@ -293,9 +352,13 @@ export function ImportDataDialog({
         headers: authHeaders(session),
         body: buildFormData(),
       });
-      const data = await res.json();
+      const data = await readApiJson(res, "Erro ao gerar a prévia");
       if (!res.ok) throw new Error(data.message || "Erro ao gerar a prévia");
-      setPreview(data as PreviewResult);
+      // 200 sem corpo JSON válido não pode virar uma prévia vazia na tela.
+      if (typeof data.previewHash !== "string") {
+        throw new Error("Resposta inesperada do servidor ao gerar a prévia.");
+      }
+      setPreview(data as unknown as PreviewResult);
       setStep("preview");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao gerar a prévia");
@@ -316,10 +379,12 @@ export function ImportDataDialog({
         headers: authHeaders(session),
         body: fd,
       });
-      const data = await res.json();
+      const data = await readApiJson(res, "Erro ao aplicar a importação");
       if (!res.ok) throw new Error(data.message || "Erro ao aplicar a importação");
+      const jobId = typeof data.jobId === "string" ? data.jobId : "";
+      if (!jobId) throw new Error("Erro ao aplicar a importação");
       setJob({
-        jobId: data.jobId,
+        jobId,
         status: "RUNNING",
         progress: { fase: "iniciando", processadas: 0, total: 0 },
       });
@@ -373,7 +438,8 @@ export function ImportDataDialog({
   };
 
   const fileHint = system && entity ? FILE_HINTS[`${system}/${entity}`] : null;
-  const canPreview = !!system && !!entity && files.length > 0 && !busy;
+  const canPreview =
+    !!system && !!entity && files.length > 0 && !busy && !sizeError;
   const pct =
     job && job.progress.total > 0
       ? Math.min(
@@ -452,7 +518,8 @@ export function ImportDataDialog({
 
               <div className="space-y-1.5">
                 <Label htmlFor="import-files">
-                  Arquivo(s) — .csv, .xlsx ou .xls (até 20MB cada)
+                  Arquivo(s) — .csv, .xlsx ou .xls (até{" "}
+                  {formatBytes(IMPORT_MAX_FILE_BYTES)} cada)
                 </Label>
                 <Input
                   id="import-files"
@@ -462,6 +529,20 @@ export function ImportDataDialog({
                   accept=".csv,.xlsx,.xls"
                   onChange={(e) => onFilesChange(e.target.files)}
                 />
+                {sizeError && (
+                  <p className="text-xs font-medium text-destructive">
+                    {sizeError}
+                  </p>
+                )}
+                {!sizeError && files.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {files.length} arquivo(s) · {formatBytes(totalBytes)} no
+                    total.
+                    {totalBytes > 10 * 1024 * 1024
+                      ? " Planilhas grandes levam alguns minutos entre o envio e a prévia — mantenha esta janela aberta."
+                      : ""}
+                  </p>
+                )}
                 {fileHint && (
                   <p className="text-xs text-muted-foreground">{fileHint}</p>
                 )}

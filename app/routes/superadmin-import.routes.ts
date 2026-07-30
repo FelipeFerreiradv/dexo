@@ -1,4 +1,12 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  IMPORT_FILE_TOO_LARGE_MESSAGE,
+  IMPORT_MAX_FILE_BYTES,
+  IMPORT_MAX_FILES,
+  IMPORT_MAX_TOTAL_BYTES,
+  IMPORT_TOO_MANY_FILES_MESSAGE,
+  IMPORT_TOTAL_TOO_LARGE_MESSAGE,
+} from "../../lib/import-limits";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { requireSuperadmin } from "../middlewares/require-superadmin.middleware";
 import type {
@@ -44,38 +52,82 @@ interface MultipartPayload {
  * O @fastify/multipart põe o código do erro em `err.code` (a mensagem é só
  * "request file too large") — casar por message nunca acerta (mesmo bug já
  * corrigido em image.routes.ts). Testa code E message por robustez.
+ *
+ * Os dois códigos ficam SEPARADOS porque agora podem acontecer os dois e
+ * querem mensagens diferentes: antes o limite de quantidade não era
+ * configurado (busboy default = Infinity), então `FST_FILES_LIMIT` era
+ * inalcançável e a checagem podia lumpar tudo em "arquivo muito grande".
  */
-function isFileTooLargeError(e: unknown): boolean {
+function multipartLimitKind(e: unknown): "size" | "count" | null {
   const code = (e as { code?: string } | null)?.code ?? "";
   const msg = e instanceof Error ? e.message : String(e);
-  return /(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(`${code} ${msg}`);
+  const hay = `${code} ${msg}`;
+  if (/FST_REQ_FILE_TOO_LARGE|request file too large/.test(hay)) return "size";
+  if (/FST_FILES_LIMIT|FST_PARTS_LIMIT|reach (files|parts) limit/.test(hay)) {
+    return "count";
+  }
+  return null;
 }
 
 /**
- * Lê o multipart inteiro em memória (limite global de 20MB por arquivo,
- * registrado em api.ts). O erro de tamanho pode estourar tanto no
- * toBuffer() quanto no próprio iterador parts() — o catch cobre os dois.
+ * Lê o multipart inteiro em memória.
+ *
+ * ⚠️ O limite aqui é DESTA ROTA, não o global. O @fastify/multipart faz
+ * `deepmergeAll({headers}, opçõesDoRegistro, opçõesDaRequest)` (index.js:261),
+ * então o que é passado em `parts()` vence — e só para esta request. Isso
+ * importa: o limite global de 20MB registrado em api.ts existe para as rotas
+ * de IMAGEM (`/upload/image`, `/v1/images/process`), onde o comentário do
+ * próprio código avisa que sem ele "qualquer autenticado hospedaria blobs
+ * arbitrários". Elevar o global para atender a migração afrouxaria todas elas
+ * de uma vez; elevar por rota não toca em nenhuma.
+ *
+ * O erro de tamanho pode estourar tanto no toBuffer() quanto no próprio
+ * iterador parts() — o catch cobre os dois.
  */
 async function readMultipart(request: FastifyRequest): Promise<MultipartPayload> {
   const fields: Record<string, string> = {};
   const files: ImportFile[] = [];
+  let totalBytes = 0;
   try {
-    for await (const part of request.parts()) {
+    for await (const part of request.parts({
+      limits: {
+        fileSize: IMPORT_MAX_FILE_BYTES,
+        files: IMPORT_MAX_FILES,
+      },
+    })) {
       if (part.type === "file") {
+        const buffer = await part.toBuffer();
+        totalBytes += buffer.length;
+        // Teto do SOMATÓRIO: o limite por arquivo sozinho não impede N
+        // arquivos grandes, e todos os buffers ficam vivos ao mesmo tempo
+        // (o motor precisa deles para o hash da prévia e para o parse).
+        // Aborta na hora, como o próprio busboy faz com o limite por arquivo.
+        //
+        // O tamanho de uma parte só se conhece DEPOIS de lê-la, então o pior
+        // caso retido antes do aborto é TOTAL + ARQUIVO (300 MB) — transiente,
+        // e menor que o pico do parse de uma planilha grande (~2 GB). Na
+        // prática o nginx corta bem antes (client_max_body_size = 64M).
+        if (totalBytes > IMPORT_MAX_TOTAL_BYTES) {
+          throw new ImportValidationError(IMPORT_TOTAL_TOO_LARGE_MESSAGE);
+        }
         files.push({
           fieldname: part.fieldname,
           filename: part.filename ?? part.fieldname,
-          buffer: await part.toBuffer(),
+          buffer,
         });
       } else {
         fields[part.fieldname] = String(part.value ?? "");
       }
     }
   } catch (e: unknown) {
-    if (isFileTooLargeError(e)) {
-      throw new ImportValidationError(
-        "Arquivo muito grande — o tamanho máximo permitido é 20MB.",
-      );
+    // A validação de somatório já é a mensagem final — não reembrulhar.
+    if (e instanceof ImportValidationError) throw e;
+    const kind = multipartLimitKind(e);
+    if (kind === "size") {
+      throw new ImportValidationError(IMPORT_FILE_TOO_LARGE_MESSAGE);
+    }
+    if (kind === "count") {
+      throw new ImportValidationError(IMPORT_TOO_MANY_FILES_MESSAGE);
     }
     throw e;
   }

@@ -178,24 +178,64 @@ function detectKind(header: string[]): DetectedKind {
   return "DESCONHECIDO";
 }
 
+/**
+ * Memo do parse, por OBJETO de arquivo enviado.
+ *
+ * `resolveEffectiveSelection` chama o detector mais de uma vez sobre o MESMO
+ * array de arquivos: se a seleção do operador não bate, ele ainda roda
+ * `inferSystemEntity` e depois um segundo `detectAndValidate` — até 4 parses
+ * completos do mesmo arquivo na mesma request. Com o export de 36 MB isso são
+ * ~16 segundos cada, todos jogados fora.
+ *
+ * WeakMap chaveado pela identidade do `ImportFile`: nada é compartilhado entre
+ * requests (cada upload cria objetos novos) e o registro morre junto com o
+ * arquivo, sem invalidação manual. É seguro porque o parse é uma função pura
+ * do buffer e ninguém muta `rows` nem os objetos de linha — só um dos
+ * resultados chega a ser consumido; os outros são descartados.
+ */
+const parseCache = new WeakMap<
+  ImportFile,
+  { ok: DetectedFile } | { erro: unknown }
+>();
+
 /** Parseia + classifica um arquivo enviado. */
 export function detectFile(file: ImportFile): DetectedFile {
-  const format = sniffFileFormat(file.buffer);
-  if (format === "xml") {
-    throw new ImportValidationError(
-      `"${file.filename}": XML ainda não é suportado nesta importação (a fase de NF-e por XML virá depois). Envie CSV/XLSX/XLS.`,
-    );
+  const cached = parseCache.get(file);
+  if (cached) {
+    // A FALHA também é memoizada: o custo de descobrir que a planilha é
+    // ilegível é o parse inteiro, e `resolveEffectiveSelection` chama o
+    // detector de novo depois de um ImportValidationError. Sem isto, recusar
+    // um arquivo de 36 MB custaria dois parses (~32s de event loop travado)
+    // para dar exatamente a mesma resposta.
+    if ("erro" in cached) throw cached.erro;
+    return cached.ok;
   }
-  const table =
-    format === "csv" ? readCsvBuffer(file.buffer) : readXlsxBuffer(file.buffer);
-  const kind = detectKind(table.header);
-  return {
-    ...file,
-    kind,
-    header: table.header,
-    rows: table.rows,
-    get: table.get,
-  };
+
+  try {
+    const format = sniffFileFormat(file.buffer);
+    if (format === "xml") {
+      throw new ImportValidationError(
+        `"${file.filename}": XML ainda não é suportado nesta importação (a fase de NF-e por XML virá depois). Envie CSV/XLSX/XLS.`,
+      );
+    }
+    const table =
+      format === "csv"
+        ? readCsvBuffer(file.buffer)
+        : readXlsxBuffer(file.buffer);
+    const kind = detectKind(table.header);
+    const detected: DetectedFile = {
+      ...file,
+      kind,
+      header: table.header,
+      rows: table.rows,
+      get: table.get,
+    };
+    parseCache.set(file, { ok: detected });
+    return detected;
+  } catch (erro) {
+    parseCache.set(file, { erro });
+    throw erro;
+  }
 }
 
 /**
