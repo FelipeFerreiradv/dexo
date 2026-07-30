@@ -307,26 +307,53 @@ export class OrderUseCase {
       if (existingSet.has(extId)) {
         const orderVazioId = vaziosPorExtId.get(extId);
         if (orderVazioId) {
-          // `listingMap` fica de fora de proposito: aqui sao um ou dois pedidos,
-          // e o mapper faz o findUnique por item. Passar o mapa deste ciclo seria
-          // pior de duas formas — ele so e montado quando ha pedido NOVO, e um
-          // mapa vazio faz todo `.get()` devolver undefined, tratando como nao
-          // vinculado um item que TEM anuncio no banco.
-          const { items } = await this.mapOrderItems(
-            mlOrder.order_items,
-            account.userId,
-            account.id,
-            undefined,
-          );
-          const desfecho = await this.completarOrderSemItens({
-            plataforma: "MERCADO_LIVRE",
-            marketplaceAccountId: account.id,
-            externalOrderId: extId,
-            orderId: orderVazioId,
-            itens: items,
-            itemsTotal: mlOrder.order_items.length,
-            esperavaBaixa: deductStock && mlOrder.status === "paid",
-          });
+          // try/catch por PEDIDO. Antes deste PR nada no corpo deste laco podia
+          // lancar: `processOrder` tem catch proprio e converte qualquer excecao
+          // em `status: "error"`. O caminho novo faz I/O nu (mapper, transacao do
+          // acrescimo, findUnique da baixa), e sem esta guarda um soluco de banco
+          // num pedido abortaria `importRecentOrdersForAccount` inteiro: os
+          // pedidos seguintes do ciclo — inclusive vendas NOVAS — nao seriam
+          // processados e o `logSync` nunca rodaria, deixando o ciclo sem
+          // veredito. O laco da Magalu ja tinha essa guarda; era assimetria.
+          // Achado da auditoria de 31/07/2026.
+          let desfecho: ImportOrderResult;
+          try {
+            // `listingMap` fica de fora de proposito: aqui sao um ou dois
+            // pedidos, e o mapper faz o findUnique por item. Passar o mapa deste
+            // ciclo seria pior de duas formas — ele so e montado quando ha pedido
+            // NOVO, e um mapa vazio faz todo `.get()` devolver undefined,
+            // tratando como nao vinculado um item que TEM anuncio no banco.
+            const { items } = await this.mapOrderItems(
+              mlOrder.order_items,
+              account.userId,
+              account.id,
+              undefined,
+            );
+            desfecho = await this.completarOrderSemItens({
+              plataforma: "MERCADO_LIVRE",
+              marketplaceAccountId: account.id,
+              externalOrderId: extId,
+              orderId: orderVazioId,
+              itens: items,
+              itemsTotal: mlOrder.order_items.length,
+              esperavaBaixa: deductStock && mlOrder.status === "paid",
+            });
+          } catch (err) {
+            console.warn(
+              `[OrderUseCase] Falha ao completar o pedido ML sem itens #${extId}:`,
+              err instanceof Error ? err.message : err,
+            );
+            desfecho = {
+              success: false,
+              orderId: orderVazioId,
+              externalOrderId: extId,
+              status: "error",
+              message: err instanceof Error ? err.message : String(err),
+              stockDeducted: false,
+              itemsLinked: 0,
+              itemsTotal: mlOrder.order_items.length,
+            };
+          }
           result.results.push(desfecho);
           if (desfecho.status === "imported") {
             result.imported++;
@@ -335,6 +362,8 @@ export class OrderUseCase {
             // Continua sendo perda: a venda esta la e o estoque nao baixou. O
             // ciclo tem de ser rebaixado para WARNING.
             result.noProducts++;
+          } else if (desfecho.status === "error") {
+            result.errors++;
           } else {
             result.alreadyExists++;
           }
@@ -676,15 +705,38 @@ export class OrderUseCase {
 
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const orderVazioId = vaziosPorExtId.get(shopeeOrder.order_sn);
-      const entry = orderVazioId
-        ? await this.completarPedidoVazioShopee(
+      // try/catch por PEDIDO, pelo mesmo motivo do laco do ML:
+      // `ingestShopeeOrder` tem catch proprio, o caminho novo nao tinha, e uma
+      // excecao aqui abortaria o ciclo da conta antes do `logSync` e antes da
+      // contabilizacao de `semDetalhe`.
+      let entry: ImportOrderResult;
+      if (orderVazioId) {
+        try {
+          entry = await this.completarPedidoVazioShopee(
             marketplaceAccountId,
             shopeeOrder,
             orderVazioId,
             account.userId,
             deductStock,
-          )
-        : await this.ingestShopeeOrder(marketplaceAccountId, shopeeOrder, {
+          );
+        } catch (err) {
+          console.warn(
+            `[OrderUseCase] Falha ao completar o pedido Shopee sem itens #${shopeeOrder.order_sn}:`,
+            err instanceof Error ? err.message : err,
+          );
+          entry = {
+            success: false,
+            orderId: orderVazioId,
+            externalOrderId: shopeeOrder.order_sn,
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: shopeeOrder.item_list?.length ?? 0,
+          };
+        }
+      } else {
+        entry = await this.ingestShopeeOrder(marketplaceAccountId, shopeeOrder, {
             userId: account.userId,
             deductStock,
             alreadyExists: existingSet.has(shopeeOrder.order_sn),
@@ -693,6 +745,7 @@ export class OrderUseCase {
             // como NAO vinculado, sem nem tentar o lookup por id.
             listingMap: vaiUsarMapa ? listingMap : undefined,
           });
+      }
 
       result.results.push(entry);
       switch (entry.status) {
@@ -1251,6 +1304,44 @@ export class OrderUseCase {
       esperavaBaixa,
     } = params;
 
+    // Baixa NAO pedida neste ciclo: nao completa nada.
+    //
+    // Achado da auditoria adversarial de 31/07/2026 (confirmado pela lente de
+    // corretude nas tres deteccoes independentes). Acrescentar item com
+    // `esperavaBaixa` false e o pior dos dois mundos: o pedido deixa de ser vazio
+    // e sai do gate de `pedidosVaziosNaJanela` PARA SEMPRE, e a arvore de
+    // pendencia — que e pre-existente e byte-identica — nao encontra baixa a
+    // exigir (`esperavaBaixa && !stockDeducted` e falso) e FECHA a pendencia com
+    // `resolve()`. Desfecho: venda com item, zero StockLog, pendencia fechada,
+    // nada revisita. E a mesma classe de dano das 77 pendencias fechadas em falso.
+    //
+    // Deixar o Order VAZIO preserva o marcador para o ciclo automatico seguinte,
+    // que sempre passa `deductStock: true` (poll, webhook, reconciliador, botao da
+    // tela e todos os scripts de backfill). Os unicos caminhos que passam false
+    // sao um POST /orders/import montado a mao e um script de ops da Magalu.
+    if (!esperavaBaixa) {
+      console.log(
+        JSON.stringify({
+          event: "order_import.pedido_vazio_completude_pulada",
+          platform: plataforma,
+          marketplaceAccountId,
+          externalOrderId,
+          orderId,
+          motivo: "baixa nao pedida neste ciclo (deductStock=false)",
+        }),
+      );
+      return {
+        success: true,
+        orderId,
+        externalOrderId,
+        status: "already_exists",
+        message: "Completude pulada: a baixa nao foi pedida neste ciclo",
+        stockDeducted: false,
+        itemsLinked: 0,
+        itemsTotal,
+      };
+    }
+
     // Nenhum item casou AINDA: o produto continua fora do Dexo. A venda ja esta
     // registrada (o Order existe), a quarentena continua aberta, e a proxima
     // passada tenta de novo. Nunca fecha nada aqui.
@@ -1713,9 +1804,18 @@ export class OrderUseCase {
     // Shopee-apenas. Nesse caso o ML e a Magalu ficam so com a quarentena: a
     // venda continua registrada e visivel na aba de Pendencias (o invariante
     // proibe descarte silencioso, e isso segue garantido), mas nao vira Order.
+    //
+    // ORDER_COMPLETE_EMPTY_ORDER_DISABLED=1 tem o MESMO efeito aqui, de
+    // proposito. As duas flags sao as duas metades do par, e desligar so a da
+    // completude deixaria a metade que DEPENDE dela ligada: o ML e a Magalu
+    // seguiriam criando Order vazio que nada completa — exatamente a armadilha
+    // descrita acima, com o kill-switch acionado PIORANDO a situacao em vez de
+    // restaurar. Acoplado aqui no codigo, e nao no .env, porque o plantao nao tem
+    // de saber que existe um par. Achado da auditoria de 31/07/2026.
     if (
       params.plataforma !== "SHOPEE" &&
-      process.env.ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED === "1"
+      (process.env.ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED === "1" ||
+        process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED === "1")
     ) {
       console.log(
         JSON.stringify({

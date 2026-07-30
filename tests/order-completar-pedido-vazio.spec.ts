@@ -191,9 +191,15 @@ describe("completarOrderSemItens", () => {
     expect(r.orderId).toBe("o-1");
   });
 
-  it("não baixa estoque quando a baixa não era esperada", async () => {
-    vi.spyOn(UC, "acrescentarItensAoPedido").mockResolvedValue(1);
-    const baixa = vi.spyOn(UC, "retryStockDeduction").mockResolvedValue(true);
+  it("baixa não pedida: NÃO acrescenta item e NÃO toca a pendência", async () => {
+    // Achado da auditoria adversarial de 31/07/2026, confirmado nas três
+    // detecções. Acrescentar item com a baixa não pedida tira o pedido do gate
+    // de `pedidosVaziosNaJanela` para sempre (ele deixa de ser vazio) e faz a
+    // árvore de pendência — pré-existente — chamar `resolve()`, porque não há
+    // baixa a exigir. Resultado: venda com item, zero StockLog, pendência
+    // fechada, nada revisita. Mesma classe das 77 fechadas em falso.
+    const acrescenta = vi.spyOn(UC, "acrescentarItensAoPedido");
+    const baixa = vi.spyOn(UC, "retryStockDeduction");
 
     const r = await UC.completarOrderSemItens({
       plataforma: "MERCADO_LIVRE",
@@ -205,8 +211,34 @@ describe("completarOrderSemItens", () => {
       esperavaBaixa: false,
     });
 
+    expect(acrescenta).not.toHaveBeenCalled();
     expect(baixa).not.toHaveBeenCalled();
+    // O Order fica VAZIO de propósito: é o marcador para o ciclo automático
+    // seguinte, que sempre passa deductStock=true.
+    expect(r.status).toBe("already_exists");
     expect(r.stockDeducted).toBe(false);
+    expect(UC.registrarDesfechoIngestao).not.toHaveBeenCalled();
+    expect(OrderIngestionIssueService.resolve).not.toHaveBeenCalled();
+    expect(OrderIngestionIssueService.open).not.toHaveBeenCalled();
+  });
+
+  it("baixa não pedida na Shopee: idem, sem tocar a pendência", async () => {
+    const acrescenta = vi.spyOn(UC, "acrescentarItensAoPedido");
+
+    const r = await UC.completarOrderSemItens({
+      plataforma: "SHOPEE",
+      marketplaceAccountId: "acc-1",
+      externalOrderId: "SN-1",
+      orderId: "o-1",
+      itens: ITENS,
+      itemsTotal: 1,
+      esperavaBaixa: false,
+      payload: { order_sn: "SN-1" },
+    });
+
+    expect(acrescenta).not.toHaveBeenCalled();
+    expect(r.status).toBe("already_exists");
+    expect(OrderIngestionIssueService.resolve).not.toHaveBeenCalled();
   });
 
   it("sem item vinculado devolve no_products e NUNCA fecha a pendência", async () => {
@@ -517,6 +549,31 @@ describe("laço do ML: pedido existente SEM itens é completado, não pulado", (
     expect(r.imported).toBe(0);
   });
 
+  it("exceção ao completar NÃO aborta o ciclo: conta como erro e o laço segue", async () => {
+    // Antes deste PR nada no corpo do laço podia lançar (`processOrder` tem catch
+    // próprio). O caminho novo faz I/O nu, e sem a guarda um soluço de banco num
+    // pedido derrubaria `importRecentOrdersForAccount` inteiro: os pedidos
+    // seguintes — inclusive vendas NOVAS — não seriam processados e o `logSync`
+    // nunca rodaria, deixando o ciclo sem veredito. Achado de 31/07/2026.
+    vi.spyOn(UC, "mapOrderItems").mockRejectedValue(new Error("pooler fora"));
+    const avisa = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const r = await OrderUseCase.importRecentOrdersForAccount(
+      "acc-1",
+      7,
+      true,
+      500,
+    );
+
+    // Não propagou, e o ciclo chegou ao fim para gravar o SyncLog.
+    expect(UC.logSync).toHaveBeenCalled();
+    expect(r.errors).toBe(1);
+    expect(r.results[0].status).toBe("error");
+    // `alreadyExists` aqui seria mentira: o pedido não foi tratado.
+    expect(r.alreadyExists).toBe(0);
+    expect(avisa).toHaveBeenCalled();
+  });
+
   it("com o kill-switch ligado, volta a pular o pedido como já importado", async () => {
     process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED = "1";
     const mapeia = vi.spyOn(UC, "mapOrderItems");
@@ -571,6 +628,59 @@ describe("criarOrderSemItens vale para as três plataformas", () => {
       expect((create.mock.calls[0][0] as any).items).toEqual([]);
     },
   );
+
+  it("desligar SÓ a completude também desliga a criação no ML/Magalu", async () => {
+    // Achado da auditoria de 31/07/2026: as duas flags são as duas metades do
+    // par. Ligar só a da completude deixaria o ML e a Magalu criando Order vazio
+    // que NADA completa — a armadilha que o PR existe para remover, com o
+    // kill-switch piorando em vez de restaurar. O acoplamento é no código, não
+    // no .env, para o plantão não precisar saber que existe um par.
+    process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED = "1";
+    const { orderRepository } = await import(
+      "@/app/repositories/order.repository"
+    );
+    const create = vi.spyOn(orderRepository, "create");
+
+    const idMl = await UC.criarOrderSemItens({
+      marketplaceAccountId: "acc-1",
+      externalOrderId: "EXT-1",
+      status: "PAID",
+      totalAmount: 10,
+      soldAt: null,
+      plataforma: "MERCADO_LIVRE",
+      itemsTotal: 1,
+    });
+
+    expect(idMl).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    delete process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED;
+  });
+
+  it("a Shopee segue criando mesmo com a completude desligada", async () => {
+    // O recorte é sobre ML/Magalu. Na Shopee o reconciliador re-busca o pedido
+    // por order_sn, então o Order vazio nunca ficou sem caminho de completude.
+    process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED = "1";
+    const { orderRepository } = await import(
+      "@/app/repositories/order.repository"
+    );
+    const create = vi
+      .spyOn(orderRepository, "create")
+      .mockResolvedValue({ id: "o-novo" } as never);
+
+    const id = await UC.criarOrderSemItens({
+      marketplaceAccountId: "acc-1",
+      externalOrderId: "SN-1",
+      status: "PAID",
+      totalAmount: 10,
+      soldAt: null,
+      plataforma: "SHOPEE",
+      itemsTotal: 1,
+    });
+
+    expect(id).toBe("o-novo");
+    expect(create).toHaveBeenCalledTimes(1);
+    delete process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED;
+  });
 
   it("kill-switch volta ao recorte de Shopee-apenas", async () => {
     process.env[NOME_FLAG] = "1";
