@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
+  Car,
   Check,
   ChevronDown,
   ChevronUp,
@@ -28,6 +29,7 @@ import {
   RotateCw,
   Trash2,
   Type,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -62,8 +64,14 @@ import {
 } from "@/components/ui/select";
 import {
   classifyUploadError,
+  deleteEditorAsset,
+  type EditorAssetRef,
   fetchImageEditMeta,
+  listEditorAssets,
+  registerEditorAsset,
   uploadEditedImage,
+  uploadProductImage,
+  validateImageFile,
 } from "@/lib/upload-image";
 
 import {
@@ -83,6 +91,7 @@ import {
   ANNOTATION_PALETTE,
   addArrow,
   addEllipse,
+  addImageLayer,
   addText,
   annotationLabel,
   applyTextStyle,
@@ -143,6 +152,14 @@ export default function ImageEditorDialog({
   // Camadas de uma receita reaberta, aplicadas UMA vez quando o canvas fica
   // pronto (restore parcial tolerante; não marca dirty).
   const pendingLayersRef = useRef<unknown[] | null>(null);
+  // Biblioteca de veículos (padrão "peça + carro compatível"): carregada
+  // LAZY na primeira abertura do painel — zero custo p/ quem não usa.
+  const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
+  const [vehicleAssets, setVehicleAssets] = useState<EditorAssetRef[]>([]);
+  const [vehicleAssetsLoaded, setVehicleAssetsLoaded] = useState(false);
+  const [vehicleUploading, setVehicleUploading] = useState(false);
+  const [vehicleRemoveBg, setVehicleRemoveBg] = useState(true);
+  const vehicleInputRef = useRef<HTMLInputElement>(null);
   // Fonte REAL da edição: se a imagem veio de um save anterior, editamos a
   // partir da fonte da receita (não do bitmap achatado).
   const [source, setSource] = useState<{
@@ -215,6 +232,16 @@ export default function ImageEditorDialog({
   );
 
   const markDirty = useCallback(() => setDirty(true), []);
+
+  /** URLs de /uploads derivadas da fonte atual (mesmo origin da API). */
+  const resolveUploadUrl = useCallback(
+    (fileName: string) => {
+      const base = source?.url ?? imageUrl ?? "";
+      const idx = base.lastIndexOf("/");
+      return idx >= 0 ? `${base.slice(0, idx + 1)}${fileName}` : fileName;
+    },
+    [source, imageUrl],
+  );
   // obj.set() do fabric NÃO emite evento — sem este bump os controles de
   // estilo/camadas congelam (setDirty(true) com dirty já true é bail-out).
   const bumpTick = useCallback(() => setCanvasTick((t) => t + 1), []);
@@ -276,8 +303,8 @@ export default function ImageEditorDialog({
     const pending = pendingLayersRef.current;
     if (!pending) return;
     pendingLayersRef.current = null;
-    void restoreAnnotations(c, pending);
-  }, [editor, editor.ready]);
+    void restoreAnnotations(c, pending, { resolveUploadUrl });
+  }, [editor, editor.ready, resolveUploadUrl]);
 
   const canvas = editor.ready ? editor.getCanvas() : null;
   const annotationObjects = canvas ? listAnnotations(canvas) : [];
@@ -312,6 +339,68 @@ export default function ImageEditorDialog({
     markDirty();
     addEllipse(c);
   }, [editor, enterAnnotate, markDirty]);
+
+
+  const openVehiclePanel = useCallback(() => {
+    setVehiclePanelOpen((prev) => !prev);
+    if (!vehicleAssetsLoaded) {
+      setVehicleAssetsLoaded(true);
+      void listEditorAssets().then(setVehicleAssets);
+    }
+  }, [vehicleAssetsLoaded]);
+
+  const handleInsertVehicle = useCallback(
+    (asset: EditorAssetRef) => {
+      const c = editor.getCanvas();
+      if (!c) return;
+      enterAnnotate();
+      markDirty();
+      setVehiclePanelOpen(false);
+      void addImageLayer(c, asset.url, asset.fileName).catch(() =>
+        onError?.("Não foi possível carregar o veículo. Tente novamente."),
+      );
+    },
+    [editor, enterAnnotate, markDirty, onError],
+  );
+
+  const handleVehicleUpload = useCallback(
+    async (file: File) => {
+      const invalid = validateImageFile(file);
+      if (invalid) {
+        onError?.(invalid);
+        return;
+      }
+      setVehicleUploading(true);
+      try {
+        // Pipeline NORMAL de upload (resize ≤1600px + recorte opcional) —
+        // o veículo entra na biblioteca já otimizado, nada pesado.
+        const result = await uploadProductImage(file, {
+          removeBackground: vehicleRemoveBg,
+          addShadow: false,
+        });
+        // Degradação do recorte não trava a inserção: o arquivo otimizado
+        // sempre volta e o usuário VÊ o resultado no canvas.
+        const fileName =
+          result.fileName ?? result.url.slice(result.url.lastIndexOf("/") + 1);
+        const registered = await registerEditorAsset({
+          fileName,
+          label: file.name.slice(0, 60),
+        });
+        const asset: EditorAssetRef =
+          registered ?? { id: "", fileName, label: file.name, url: result.url };
+        if (registered) {
+          setVehicleAssets((prev) => [registered, ...prev]);
+        }
+        handleInsertVehicle(asset);
+      } catch (err) {
+        onError?.(classifyUploadError(err).message);
+      } finally {
+        setVehicleUploading(false);
+      }
+    },
+    [vehicleRemoveBg, handleInsertVehicle, onError],
+  );
+
 
   const requestClose = useCallback(
     (next: boolean) => {
@@ -487,6 +576,18 @@ export default function ImageEditorDialog({
                   <Circle className="mr-1 h-3.5 w-3.5" />
                   Círculo
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={vehiclePanelOpen ? "default" : "outline"}
+                  className="h-7 px-2 text-xs"
+                  onClick={openVehiclePanel}
+                  disabled={!editor.ready}
+                  title="Inserir um veículo da sua biblioteca (padrão peça + carro compatível)"
+                >
+                  <Car className="mr-1 h-3.5 w-3.5" />
+                  Veículo
+                </Button>
               </div>
 
               {/* Camadas: chips clicáveis (última = mais acima) + ações da
@@ -574,6 +675,100 @@ export default function ImageEditorDialog({
                 </div>
               )}
             </div>
+
+            {/* Biblioteca de veículos (lazy; miniaturas otimizadas) */}
+            {vehiclePanelOpen && (
+              <div className="rounded-md border bg-muted/20 p-2">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <input
+                    ref={vehicleInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleVehicleUpload(f);
+                      if (vehicleInputRef.current)
+                        vehicleInputRef.current.value = "";
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    disabled={vehicleUploading}
+                    onClick={() => vehicleInputRef.current?.click()}
+                  >
+                    {vehicleUploading ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Car className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    Enviar veículo do computador
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={vehicleRemoveBg ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                    title="Remover o fundo do veículo ao enviar (recomendado)"
+                    onClick={() => setVehicleRemoveBg((v) => !v)}
+                  >
+                    Remover fundo
+                  </Button>
+                  {vehicleUploading && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Otimizando{vehicleRemoveBg ? " e recortando" : ""} o
+                      veículo…
+                    </span>
+                  )}
+                </div>
+                {vehicleAssets.length === 0 ? (
+                  <p className="px-1 text-xs text-muted-foreground">
+                    Sua biblioteca está vazia — envie a foto de um veículo uma
+                    vez e reuse em quantos anúncios quiser.
+                  </p>
+                ) : (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {vehicleAssets.map((asset) => (
+                      <div key={asset.id || asset.fileName} className="group relative shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleInsertVehicle(asset)}
+                          title={asset.label ?? "Inserir veículo"}
+                          className="block h-16 w-24 overflow-hidden rounded border bg-background hover:ring-2 hover:ring-primary"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={asset.url}
+                            alt={asset.label ?? "Veículo"}
+                            loading="lazy"
+                            decoding="async"
+                            className="h-full w-full object-contain"
+                          />
+                        </button>
+                        {asset.id && (
+                          <button
+                            type="button"
+                            title="Remover da biblioteca"
+                            onClick={() => {
+                              void deleteEditorAsset(asset.id);
+                              setVehicleAssets((prev) =>
+                                prev.filter((a) => a.id !== asset.id),
+                              );
+                            }}
+                            className="absolute -top-1 -right-1 hidden h-4 w-4 items-center justify-center rounded-full bg-destructive text-destructive-foreground group-hover:flex"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Estilo do TEXTO selecionado */}
             {activeText && canvas && (

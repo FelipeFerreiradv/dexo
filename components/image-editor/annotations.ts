@@ -20,6 +20,7 @@ import {
   Canvas,
   Control,
   Ellipse,
+  FabricImage,
   FabricObject,
   IText,
   Path,
@@ -31,6 +32,7 @@ import {
   type AnnotationLayerV1,
   type ArrowLayerV1,
   type EllipseLayerV1,
+  type ImageLayerV1,
   type TextLayerV1,
   readAnnotationLayers,
 } from "./recipe";
@@ -46,11 +48,13 @@ export const ANNOTATION_PALETTE = [
   "#16a34a",
 ] as const;
 
-export type DexoKind = "base" | "text" | "arrow" | "ellipse";
+export type DexoKind = "base" | "text" | "arrow" | "ellipse" | "image";
 
 type Tagged = FabricObject & {
   dexoKind?: DexoKind;
   dexoArrow?: { relX1: number; relY1: number; relX2: number; relY2: number };
+  /** Basename do arquivo da camada de imagem (veículo da biblioteca). */
+  dexoImageFile?: string;
 };
 
 export function kindOf(obj: FabricObject): DexoKind | undefined {
@@ -59,7 +63,7 @@ export function kindOf(obj: FabricObject): DexoKind | undefined {
 
 export function isAnnotation(obj: FabricObject): boolean {
   const k = kindOf(obj);
-  return k === "text" || k === "arrow" || k === "ellipse";
+  return k === "text" || k === "arrow" || k === "ellipse" || k === "image";
 }
 
 export function listAnnotations(canvas: Canvas): Tagged[] {
@@ -198,6 +202,39 @@ export function addEllipse(canvas: Canvas, stroke = "#e11d48"): Ellipse {
 }
 
 // ---------------------------------------------------------------------------
+// Camada de IMAGEM (veículo da biblioteca — padrão "peça + carro compatível")
+// ---------------------------------------------------------------------------
+
+/** Insere uma imagem da biblioteca ocupando ~45% da largura, na metade de
+ *  cima do canvas (o padrão de anúncio deixa a peça embaixo). O arquivo já
+ *  saiu do pipeline otimizado (≤1600px) — nada pesado entra no canvas. */
+export async function addImageLayer(
+  canvas: Canvas,
+  url: string,
+  fileName: string,
+): Promise<FabricImage> {
+  const img = await FabricImage.fromURL(url, { crossOrigin: "anonymous" });
+  const targetW = canvas.getWidth() * 0.45;
+  const scale = targetW / Math.max(1, img.width ?? 1);
+  img.set({
+    originX: "center",
+    originY: "center",
+    left: canvas.getWidth() / 2,
+    top: canvas.getHeight() * 0.3,
+    scaleX: scale,
+    scaleY: scale,
+    centeredScaling: true,
+  });
+  const tagged = img as unknown as Tagged;
+  tagged.dexoKind = "image";
+  tagged.dexoImageFile = fileName;
+  canvas.add(img);
+  canvas.setActiveObject(img);
+  canvas.requestRenderAll();
+  return img;
+}
+
+// ---------------------------------------------------------------------------
 // Seta
 // ---------------------------------------------------------------------------
 
@@ -323,6 +360,7 @@ export function annotationLabel(obj: FabricObject): string {
   }
   if (k === "arrow") return "Seta";
   if (k === "ellipse") return "Círculo";
+  if (k === "image") return "Veículo";
   return "Camada";
 }
 
@@ -413,6 +451,21 @@ function serializeOne(obj: Tagged): AnnotationLayerV1 | null {
     };
     return layer;
   }
+  if (k === "image") {
+    if (!obj.dexoImageFile) return null; // sem arquivo não há como restaurar
+    const layer: ImageLayerV1 = {
+      kind: "image",
+      fileName: obj.dexoImageFile,
+      left: obj.left ?? 0,
+      top: obj.top ?? 0,
+      scaleX: obj.scaleX ?? 1,
+      scaleY: obj.scaleY ?? 1,
+      angle: obj.angle ?? 0,
+      ...(obj.flipX ? { flipX: true } : {}),
+      ...(obj.flipY ? { flipY: true } : {}),
+    };
+    return layer;
+  }
   return null;
 }
 
@@ -427,7 +480,7 @@ export function serializeAnnotations(canvas: Canvas): AnnotationLayerV1[] {
 export async function restoreAnnotations(
   canvas: Canvas,
   rawLayers: unknown[],
-  opts: { select?: boolean } = {},
+  opts: { select?: boolean; resolveUploadUrl?: (fileName: string) => string } = {},
 ): Promise<void> {
   const layers = readAnnotationLayers(rawLayers);
   if (layers.length === 0) return;
@@ -492,6 +545,35 @@ export async function restoreAnnotations(
       obj.controls = { p1: makeEndpointControl(1), p2: makeEndpointControl(2) };
       canvas.add(obj);
       last = obj;
+    } else if (layer.kind === "image") {
+      // Restore tolerante: veículo removido do disco = camada pulada (as
+      // demais sobrevivem), nunca um editor quebrado.
+      if (!opts.resolveUploadUrl) continue;
+      try {
+        const img = await FabricImage.fromURL(
+          opts.resolveUploadUrl(layer.fileName),
+          { crossOrigin: "anonymous" },
+        );
+        img.set({
+          originX: "center",
+          originY: "center",
+          left: layer.left,
+          top: layer.top,
+          scaleX: layer.scaleX,
+          scaleY: layer.scaleY,
+          angle: layer.angle,
+          flipX: layer.flipX ?? false,
+          flipY: layer.flipY ?? false,
+          centeredScaling: true,
+        });
+        const tagged = img as unknown as Tagged;
+        tagged.dexoKind = "image";
+        tagged.dexoImageFile = layer.fileName;
+        canvas.add(img);
+        last = img;
+      } catch {
+        continue;
+      }
     } else {
       const e = new Ellipse({
         left: layer.left,
@@ -554,7 +636,7 @@ export function remapAnnotations(
         ry: (e.ry ?? 10) * fy,
       });
       e.setCoords();
-    } else if (k === "text") {
+    } else if (k === "text" || k === "image") {
       obj.set({
         left: (obj.left ?? 0) * fx,
         top: (obj.top ?? 0) * fy,

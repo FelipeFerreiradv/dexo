@@ -90,6 +90,23 @@ describe("camadas de anotação da receita (V1)", () => {
     expect(isAnnotationLayerV1({ kind: "sticker" })).toBe(false);
     expect(isAnnotationLayerV1({ kind: "arrow", x1: 1 })).toBe(false);
     expect(isAnnotationLayerV1({ kind: "text" })).toBe(false);
+    expect(isAnnotationLayerV1({ kind: "image", fileName: "" })).toBe(false);
+  });
+
+  it("camada de IMAGEM (veículo): aceita e sobrevive a round-trip", () => {
+    const image: AnnotationLayerV1 = {
+      kind: "image",
+      fileName: "veiculo-lifan.png",
+      left: 600,
+      top: 360,
+      scaleX: 0.45,
+      scaleY: 0.45,
+      angle: 0,
+      flipX: true,
+    };
+    expect(isAnnotationLayerV1(image)).toBe(true);
+    expect(isAnnotationLayerV1(JSON.parse(JSON.stringify(image)))).toBe(true);
+    expect(readAnnotationLayers([image, { kind: "image" }])).toHaveLength(1);
   });
 
   it("readAnnotationLayers: restore PARCIAL — descarta só o ilegível", () => {

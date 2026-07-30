@@ -72,7 +72,25 @@ export interface EllipseLayerV1 {
   strokeWidth: number;
 }
 
-export type AnnotationLayerV1 = TextLayerV1 | ArrowLayerV1 | EllipseLayerV1;
+export interface ImageLayerV1 {
+  kind: "image";
+  /** Basename em public/uploads (veículo da biblioteca ou upload avulso). */
+  fileName: string;
+  /** Centro da imagem no canvas. */
+  left: number;
+  top: number;
+  scaleX: number;
+  scaleY: number;
+  angle: number;
+  flipX?: boolean;
+  flipY?: boolean;
+}
+
+export type AnnotationLayerV1 =
+  | TextLayerV1
+  | ArrowLayerV1
+  | EllipseLayerV1
+  | ImageLayerV1;
 
 export function isAnnotationLayerV1(value: unknown): value is AnnotationLayerV1 {
   if (!value || typeof value !== "object") return false;
@@ -93,6 +111,15 @@ export function isAnnotationLayerV1(value: unknown): value is AnnotationLayerV1 
   if (l.kind === "ellipse") {
     const e = value as Partial<EllipseLayerV1>;
     return typeof e.rx === "number" && typeof e.ry === "number";
+  }
+  if (l.kind === "image") {
+    const i = value as Partial<ImageLayerV1>;
+    return (
+      typeof i.fileName === "string" &&
+      i.fileName.length > 0 &&
+      typeof i.left === "number" &&
+      typeof i.scaleX === "number"
+    );
   }
   return false;
 }

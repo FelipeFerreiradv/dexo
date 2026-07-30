@@ -663,6 +663,23 @@ model ProductImageEdit {
   @@index([userId, createdAt])
 }
 
+// Biblioteca de imagens reutilizáveis do Editor (PR 7): veículos que o
+// usuário envia uma vez e insere em quantos anúncios quiser (padrão
+// "peça + carro compatível"). O arquivo referenciado fica protegido do GC
+// enquanto a linha existir; remover da biblioteca apaga SÓ a linha (receitas
+// antigas que usam o arquivo continuam restauráveis).
+model EditorAsset {
+  id        String   @id @default(cuid())
+  userId    String
+  // Basename em public/uploads (saída do pipeline normal de upload).
+  fileName  String
+  label     String?
+  kind      String   @default("vehicle")
+  createdAt DateTime @default(now())
+
+  @@index([userId, kind, createdAt])
+}
+
 // Teto financeiro DIÁRIO dos provedores externos de recorte (PR 5). Uma linha
 // por (provedor, dia UTC "YYYY-MM-DD"); a reserva é increment condicional
 // (count < teto) — atômica, sobrevive a restart e vale entre processos.

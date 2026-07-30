@@ -340,6 +340,55 @@ export interface ImageEditMeta {
   };
 }
 
+export interface EditorAssetRef {
+  id: string;
+  fileName: string;
+  label: string | null;
+  url: string;
+}
+
+/** Biblioteca de veículos do editor (PR 7). Mesmas 3 invariantes de auth. */
+export async function listEditorAssets(): Promise<EditorAssetRef[]> {
+  try {
+    const response = await fetch(`${getApiBaseUrl()}/upload/image/assets`);
+    if (!response.ok) return [];
+    const json = (await response.json()) as { assets?: EditorAssetRef[] };
+    return json.assets ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function registerEditorAsset(input: {
+  fileName: string;
+  label?: string;
+}): Promise<EditorAssetRef | null> {
+  try {
+    const response = await fetch(`${getApiBaseUrl()}/upload/image/assets`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) return null;
+    const json = (await response.json()) as { asset?: EditorAssetRef };
+    return json.asset ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteEditorAsset(id: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${getApiBaseUrl()}/upload/image/assets/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Cliente do `GET /upload/image/meta` — contexto para reabrir no editor.
  *  Timeout de 10s: um hang aqui seguraria a abertura do dialog para sempre
  *  (falha vira null e o editor segue com a própria URL exibida). */
