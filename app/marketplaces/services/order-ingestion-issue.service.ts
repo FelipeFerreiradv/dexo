@@ -23,6 +23,19 @@ export type OrderIngestionIssueReason =
   /** Qualquer exceção inesperada durante a ingestão. */
   | "INGEST_FAILED";
 
+/**
+ * Estados de uma pendencia.
+ *
+ * - `OPEN`: o reconciliador re-tenta automaticamente, com backoff.
+ * - `NEEDS_ACTION`: esgotou as tentativas e SO se resolve com acao do cliente
+ *   (cadastrar o produto que falta). Para de ser re-tentado, mas CONTINUA
+ *   visivel na tela — o invariante proibe estado terminal silencioso, nao
+ *   proibe parar de gastar chamada de API com um problema que a maquina nao
+ *   resolve. O botao "Tentar novamente" segue funcionando.
+ * - `RESOLVED`: o pedido entrou completo e com baixa.
+ */
+export const STATUS_PENDENTES = ["OPEN", "NEEDS_ACTION"] as const;
+
 export interface OpenIssueInput {
   marketplaceAccountId: string;
   platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
@@ -134,7 +147,7 @@ export class OrderIngestionIssueService {
     const novidade =
       !anterior ||
       anterior.reason !== input.reason ||
-      anterior.status !== "OPEN";
+      (anterior.status !== "OPEN" && anterior.status !== "NEEDS_ACTION");
 
     try {
       await (prisma as any).orderIngestionIssue.upsert({
@@ -158,7 +171,11 @@ export class OrderIngestionIssueService {
           reason: input.reason,
           detail: input.detail ?? null,
           ...(payload ? { payload } : {}),
-          status: "OPEN",
+          // NAO rebaixa NEEDS_ACTION para OPEN. Um pedido sem vinculo reaparece
+          // em toda passada do poll; sem esta guarda, a pendencia que ja foi
+          // classificada como "so o cliente resolve" voltaria para a fila
+          // automatica a cada 15 min e o teto de tentativas nunca valeria.
+          ...(anterior?.status === "NEEDS_ACTION" ? {} : { status: "OPEN" }),
           ...(input.orderId ? { resolvedOrderId: input.orderId } : {}),
         },
       });
@@ -216,7 +233,10 @@ export class OrderIngestionIssueService {
         where: {
           marketplaceAccountId,
           externalOrderId,
-          status: "OPEN",
+          // NEEDS_ACTION tambem fecha: o cliente cadastrou o produto que
+          // faltava e o pedido entrou. Sem isto, a pendencia que saiu da fila
+          // automatica nunca sairia da tela.
+          status: { in: [...STATUS_PENDENTES] },
         },
         data: { status: "RESOLVED", resolvedOrderId: orderId, attempts: 0 },
       });

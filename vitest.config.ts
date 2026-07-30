@@ -61,6 +61,14 @@ process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED ??= "1";
 // (order-sold-at-and-unlinked-order) reabilita explicitamente por caso.
 process.env.ORDER_SOLD_AT_DISABLED ??= "1";
 
+// Transicao para NEEDS_ACTION quando a pendencia esgota as tentativas: desligada
+// por default na suite porque `order-ingestion-reconciler` afirma o comportamento
+// ANTERIOR ("apos N tentativas escala o SystemLog mas NAO fecha a pendencia",
+// esperando status OPEN). Em producao o default e o oposto — ligado —, senao 89
+// pendencias irresolviveis seguem batendo na API da Shopee para sempre. O spec da
+// correcao (order-ingestion-needs-action) reabilita explicitamente por caso.
+process.env.ORDER_INGESTION_NEEDS_ACTION_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

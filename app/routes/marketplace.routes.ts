@@ -1632,6 +1632,54 @@ small{color:#666}</style></head><body>
    */
   const chavesJaLogadas = new Set<string>();
 
+  /**
+   * Amortecedor do SystemLog de push rejeitado.
+   *
+   * A rota e PUBLICA e nao autenticada. Sem amortecimento, cada POST com
+   * assinatura invalida gravava uma linha ERROR no banco — ou seja, qualquer um
+   * na internet inflava a tabela `SystemLog` no ritmo que quisesse, e uma
+   * configuracao errada da Shopee produzia a mesma linha centenas de vezes.
+   * Medido em producao 30/07/2026: 10 linhas em 3 horas so de sondagem.
+   *
+   * A informacao que o log precisa dar e "existe push sendo recusado, e quantos",
+   * nao "houve uma recusa agora". Entao: uma linha por janela por origem, com o
+   * total acumulado da janela dentro dela. O log estruturado do PM2 continua
+   * saindo em toda recusa — la o custo e arquivo rotativo, nao linha de banco.
+   */
+  const JANELA_RECUSA_MS = 15 * 60 * 1000;
+  const TETO_CHAVES_RECUSA = 500;
+  const recusasPorOrigem = new Map<
+    string,
+    { janelaAte: number; contados: number; jaLogou: boolean }
+  >();
+
+  /** true quando ESTA recusa deve virar SystemLog. */
+  function deveLogarRecusa(shopId: unknown): {
+    logar: boolean;
+    acumulado: number;
+  } {
+    const chave = shopId === undefined || shopId === null ? "sem-shop" : String(shopId);
+    const agora = Date.now();
+
+    // Teto de memoria: a chave vem de entrada externa, entao o mapa nao pode
+    // crescer sem limite. Estourou, recomeca — perder contador de janela e
+    // preferivel a vazar memoria num processo de vida longa.
+    if (recusasPorOrigem.size > TETO_CHAVES_RECUSA) recusasPorOrigem.clear();
+
+    const atual = recusasPorOrigem.get(chave);
+    if (!atual || agora > atual.janelaAte) {
+      recusasPorOrigem.set(chave, {
+        janelaAte: agora + JANELA_RECUSA_MS,
+        contados: 1,
+        jaLogou: true,
+      });
+      return { logar: true, acumulado: 1 };
+    }
+
+    atual.contados += 1;
+    return { logar: false, acumulado: atual.contados };
+  }
+
   app.addHook("preParsing", async (request, _reply, payload) => {
     if (!request.url.split("?")[0].endsWith("/shopee/webhook")) {
       return payload;
@@ -1757,6 +1805,9 @@ small{color:#666}</style></head><body>
                 }),
               );
             }
+            // Uma linha de banco por janela por origem — ver `deveLogarRecusa`.
+            const amortecido = deveLogarRecusa(body?.shop_id);
+
             console.warn(
               JSON.stringify({
                 event: "shopee.webhook.invalid_signature",
@@ -1764,23 +1815,29 @@ small{color:#666}</style></head><body>
                 code: body?.code ?? null,
                 hasAuthorization: Boolean(request.headers["authorization"]),
                 callbackUrl,
+                recusasNaJanela: amortecido.acumulado,
               }),
             );
-            void SystemLogService.logError(
-              "SYNC_ORDERS",
-              "Webhook Shopee rejeitado: assinatura HMAC nao confere.",
-              {
-                resource: "MarketplaceAccount",
-                details: {
-                  platform: "SHOPEE",
-                  shopId: body?.shop_id ?? null,
-                  code: body?.code ?? null,
-                  // Se a URL cadastrada no Partner Portal diferir desta, TODO
-                  // push cai aqui — conferir antes de suspeitar de ataque.
-                  callbackUrl,
+            if (amortecido.logar) {
+              void SystemLogService.logError(
+                "SYNC_ORDERS",
+                "Webhook Shopee rejeitado: assinatura HMAC nao confere.",
+                {
+                  resource: "MarketplaceAccount",
+                  details: {
+                    platform: "SHOPEE",
+                    shopId: body?.shop_id ?? null,
+                    code: body?.code ?? null,
+                    // Se a URL cadastrada no Partner Portal diferir desta, TODO
+                    // push cai aqui — conferir antes de suspeitar de ataque.
+                    callbackUrl,
+                    janelaMinutos: JANELA_RECUSA_MS / 60000,
+                    observacao:
+                      "Primeira recusa desta origem na janela. As demais sao contadas e saem no log do processo, sem gravar no banco.",
+                  },
                 },
-              },
-            ).catch(() => {});
+              ).catch(() => {});
+            }
             return reply.status(401).send({ error: "assinatura invalida" });
           }
         }

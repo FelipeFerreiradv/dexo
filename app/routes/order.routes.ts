@@ -371,7 +371,10 @@ export async function orderRoutes(app: FastifyInstance) {
         const userId = request.user!.dataOwnerId;
 
         const filtro = {
-          status: "OPEN",
+          // NEEDS_ACTION entra junto: a pendencia saiu da fila de re-tentativa
+          // automatica, mas NAO sai da tela — quem a fecha e o cliente
+          // cadastrando o produto que falta.
+          status: { in: ["OPEN", "NEEDS_ACTION"] },
           marketplaceAccount: { userId },
         };
 
@@ -398,6 +401,7 @@ export async function orderRoutes(app: FastifyInstance) {
             attempts: true,
             nextRetryAt: true,
             createdAt: true,
+            status: true,
             marketplaceAccount: { select: { accountName: true } },
           },
         });
@@ -410,6 +414,10 @@ export async function orderRoutes(app: FastifyInstance) {
             externalOrderId: i.externalOrderId,
             reason: i.reason,
             motivo: descreveMotivo(i.reason),
+            // `true` quando ja nao ha nada que o sistema possa fazer sozinho: a
+            // tela precisa dizer isso, senao o cliente espera por uma
+            // re-tentativa que nao vem mais.
+            precisaAcao: i.status === "NEEDS_ACTION",
             detail: i.detail,
             attempts: i.attempts,
             nextRetryAt: i.nextRetryAt,

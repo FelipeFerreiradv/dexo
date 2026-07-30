@@ -13,6 +13,12 @@ export interface IngestionIssue {
   reason: string;
   /** Motivo em português claro, montado no backend. */
   motivo: string;
+  /**
+   * `true` quando o sistema esgotou as tentativas automaticas e a pendencia so
+   * fecha com acao do cliente (cadastrar o produto). Nao significa ignorada:
+   * segue listada, e o botao de tentar novamente continua valendo.
+   */
+  precisaAcao?: boolean;
   detail: string | null;
   attempts: number;
   accountName: string | null;
@@ -100,6 +106,11 @@ export function IngestionIssuesBanner({ issues, onRetry, retryingId }: Props) {
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {issue.motivo}
+                  {issue.precisaAcao ? (
+                    <span className="ml-1 font-medium">
+                      Precisa da sua ação — não estamos mais tentando sozinhos.
+                    </span>
+                  ) : null}
                 </p>
                 {issue.detail ? (
                   <p className="mt-0.5 break-words text-xs text-muted-foreground/80">

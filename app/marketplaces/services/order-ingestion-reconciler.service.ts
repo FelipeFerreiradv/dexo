@@ -123,7 +123,12 @@ export class OrderIngestionReconcilerService {
         },
       },
     });
+
     if (!issue) return { resolved: false };
+
+    // O botao vale para OPEN e para NEEDS_ACTION — este ultimo e exatamente o
+    // caso de "cadastrei o produto, tenta agora".
+    if (issue.status === "RESOLVED") return { resolved: true };
 
     // Já tem uma tentativa em voo neste processo (o tick do worker pegou a
     // mesma pendência): não duplica o trabalho.
@@ -354,6 +359,26 @@ export class OrderIngestionReconcilerService {
   ): Promise<void> {
     const attempts = (issue.attempts ?? 0) + 1;
 
+    // Esgotou as tentativas num problema que a MAQUINA nao resolve? Sai da fila
+    // automatica, mas NAO sai da tela.
+    //
+    // Medido em producao 30/07/2026: 166 pendencias abertas, 89 delas ja em
+    // attempts>=5, todas NO_LINKED_ITEMS de produto que nao existe no Dexo. O
+    // reconciliador seguia batendo na API da Shopee de hora em hora, para cada
+    // uma, indefinidamente — e o aviso na tela do cliente nunca zerava, virando
+    // ruido que treina a ignorar o banner.
+    //
+    // O invariante proibe estado terminal SILENCIOSO. `NEEDS_ACTION` nao e
+    // silencioso: continua listado, com texto dizendo o que o cliente precisa
+    // fazer, e o botao "Tentar novamente" segue funcionando. O que para e o
+    // gasto de chamada externa com um problema que so acao humana fecha. E se o
+    // cliente cadastrar o produto, o proprio poll importa o item e o `resolve()`
+    // fecha a pendencia — sem depender do reconciliador.
+    const soClienteResolve =
+      process.env.ORDER_INGESTION_NEEDS_ACTION_DISABLED !== "1" &&
+      attempts >= STUCK_AFTER_ATTEMPTS &&
+      issue.reason === "NO_LINKED_ITEMS";
+
     try {
       await (prisma as any).orderIngestionIssue.update({
         where: { id: issue.id },
@@ -361,9 +386,10 @@ export class OrderIngestionReconcilerService {
           attempts,
           detail: detail.slice(0, 500),
           nextRetryAt: OrderIngestionIssueService.nextRetryFrom(attempts),
-          // Continua OPEN de propósito: nunca existe estado terminal de falha
-          // que faça a pendência sumir da tela do cliente.
-          status: "OPEN",
+          // Nunca existe estado terminal de falha que faça a pendência sumir da
+          // tela do cliente: OPEN continua sendo re-tentado, NEEDS_ACTION sai da
+          // fila automática mas segue visível.
+          status: soClienteResolve ? "NEEDS_ACTION" : "OPEN",
         },
       });
     } catch (err) {
