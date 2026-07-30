@@ -75,11 +75,14 @@ export async function swapImageUrlReferences(input: {
     const arr = l.imageUrlsOverride;
     if (!Array.isArray(arr) || !arr.includes(oldUrl)) continue;
     const next = arr.map((u) => (u === oldUrl ? newUrl : u));
-    await db.productListing.update({
-      where: { id: l.id },
+    // CAS pelo valor lido: se o usuário editou o override entre o findMany e
+    // este update (o sweep roda até ~12min depois), NÃO sobrescrevemos a
+    // edição — o próximo sweep relê e tenta de novo se ainda houver a URL.
+    const updated = await db.productListing.updateMany({
+      where: { id: l.id, imageUrlsOverride: { equals: arr } },
       data: { imageUrlsOverride: next },
     });
-    listingOverrides += 1;
+    listingOverrides += updated.count;
   }
 
   return { productImageUrl, productImageUrls, scrapImageUrls, listingOverrides };

@@ -13,7 +13,7 @@ function makeDb(overrides: Partial<Record<string, any>> = {}) {
     $executeRaw: vi.fn().mockResolvedValue(1),
     productListing: {
       findMany: vi.fn().mockResolvedValue([]),
-      update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     ...overrides,
   } as any;
@@ -50,7 +50,7 @@ describe("swapImageUrlReferences", () => {
     expect(tables.some((s: string) => s.includes('"Scrap"'))).toBe(true);
   });
 
-  it("overrides de anúncio: só atualiza listings que contêm a URL antiga", async () => {
+  it("overrides de anúncio: RMW com CAS pelo valor lido (edição concorrente não é sobrescrita)", async () => {
     const db = makeDb({
       productListing: {
         findMany: vi.fn().mockResolvedValue([
@@ -58,7 +58,7 @@ describe("swapImageUrlReferences", () => {
           { id: "l2", imageUrlsOverride: ["nao-tem"] },
           { id: "l3", imageUrlsOverride: "lixo-nao-array" },
         ]),
-        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     });
 
@@ -69,12 +69,33 @@ describe("swapImageUrlReferences", () => {
       db,
     });
 
-    expect(db.productListing.update).toHaveBeenCalledTimes(1);
-    expect(db.productListing.update).toHaveBeenCalledWith({
-      where: { id: "l1" },
+    expect(db.productListing.updateMany).toHaveBeenCalledTimes(1);
+    expect(db.productListing.updateMany).toHaveBeenCalledWith({
+      // O `equals` do valor LIDO é o CAS: se o usuário editou o override no
+      // meio (sweep roda até 12min depois), o update não casa e nada é
+      // sobrescrito.
+      where: { id: "l1", imageUrlsOverride: { equals: [OLD, "outra"] } },
       data: { imageUrlsOverride: [NEW, "outra"] },
     });
     expect(counts.listingOverrides).toBe(1);
+  });
+
+  it("CAS perdido (usuário editou no meio): conta zero e não sobrescreve", async () => {
+    const db = makeDb({
+      productListing: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "l1", imageUrlsOverride: [OLD] }]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+    const counts = await swapImageUrlReferences({
+      userId: "u1",
+      oldUrl: OLD,
+      newUrl: NEW,
+      db,
+    });
+    expect(counts.listingOverrides).toBe(0);
   });
 
   it("idempotente: nada referencia a URL antiga => zero updates de override", async () => {

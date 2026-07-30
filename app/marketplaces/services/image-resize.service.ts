@@ -131,6 +131,15 @@ export interface ProcessUploadedImageOptions {
    * reservada menor para nunca starvar o tráfego interno. Ver `rembg-gate`.
    */
   lane?: RembgLane;
+  /**
+   * Teto do round-trip ao sidecar POR TENTATIVA (override do REMBG_TIMEOUT_MS
+   * do env). Sem ele, o `min()` do orçamento fica preso ao teto de 60s do env
+   * mesmo com `deadlineAt` folgado — o worker assíncrono (que tem 10min por
+   * tentativa e nenhum nginx no caminho) passa o próprio orçamento aqui.
+   * Callers de request síncrono NÃO devem usar (o teto do env existe para
+   * caber no proxy).
+   */
+  rembgTimeoutMs?: number;
   /** Override para testes — injeta um fetcher do sidecar. */
   rembgFetcher?: (
     buf: Buffer,
@@ -231,7 +240,10 @@ export async function processUploadedImage(
     // Orçamento e gate ficam AQUI, no ramo do sidecar — nunca no topo da função.
     // O caminho `removeBackground=false` (sharp puro, ~1s) não pode ser
     // estrangulado por fila de recorte: é o fluxo mais rápido do produto.
-    const budgetMs = computeSidecarTimeoutMs({ deadlineAt: opts.deadlineAt });
+    const budgetMs = computeSidecarTimeoutMs({
+      deadlineAt: opts.deadlineAt,
+      rembgTimeoutMs: opts.rembgTimeoutMs,
+    });
     const lane: RembgLane = opts.lane ?? "internal";
 
     // `slot === null` = não deu para entrar na fila dentro do orçamento. Nesse
@@ -267,6 +279,7 @@ export async function processUploadedImage(
         // REMBG_TIMEOUT_MS de sempre (caminho feliz inalterado).
         const timeoutMs = computeSidecarTimeoutMs({
           deadlineAt: opts.deadlineAt,
+          rembgTimeoutMs: opts.rembgTimeoutMs,
         });
         // A espera no gate é limitada, mas jitter pode comer a sobra: se o que
         // restou não dá nem para uma inferência, desiste sem abrir a conexão.
@@ -296,7 +309,10 @@ export async function processUploadedImage(
             throw err;
           }
           const afterBackoffMs =
-            computeSidecarTimeoutMs({ deadlineAt: opts.deadlineAt }) -
+            computeSidecarTimeoutMs({
+      deadlineAt: opts.deadlineAt,
+      rembgTimeoutMs: opts.rembgTimeoutMs,
+    }) -
             REMBG_RETRY_BACKOFF_MS;
           if (!isWorthCallingSidecar(afterBackoffMs)) {
             throw err;
@@ -313,6 +329,7 @@ export async function processUploadedImage(
           // como "sem deadline" e voltaria ao teto de 60s do env).
           const retryTimeoutMs = computeSidecarTimeoutMs({
             deadlineAt: opts.deadlineAt,
+            rembgTimeoutMs: opts.rembgTimeoutMs,
           });
           if (!isWorthCallingSidecar(retryTimeoutMs)) {
             throw err;

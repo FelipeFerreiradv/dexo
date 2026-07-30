@@ -105,6 +105,16 @@ export function MultiImageUpload({
   valueRef.current = value;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Mapa webp→png de TODOS os swaps já concluídos. É a defesa contra o
+  // onChange progressivo do lote (que reconstrói o array a partir de uma
+  // closure STALE e reverteria um swap feito no meio do lote): qualquer
+  // caminho que monte um array novo aplica o alias antes do onChange.
+  const urlAliasRef = useRef<Map<string, string>>(new Map());
+  const applyAliases = useCallback((urls: string[]): string[] => {
+    const aliases = urlAliasRef.current;
+    if (aliases.size === 0) return urls;
+    return urls.map((u) => aliases.get(u) ?? u);
+  }, []);
 
   // Re-render periódico só para a mensagem ">60s" do overlay evoluir.
   const hasActiveBgJobs = Object.values(bgJobs).some(
@@ -117,30 +127,46 @@ export function MultiImageUpload({
     return () => clearInterval(id);
   }, [hasActiveBgJobs]);
 
-  const handleJobsUpdate = useCallback((jobs: ImageBgJobStatus[]) => {
-    for (const job of jobs) {
-      if (job.status === "COMPLETED" && job.resultUrl) {
+  const handleJobsUpdate = useCallback(
+    (jobs: ImageBgJobStatus[]) => {
+      const completed = jobs.filter(
+        (j) => j.status === "COMPLETED" && j.resultUrl,
+      );
+      if (completed.length > 0) {
+        // Todos os swaps deste poll numa PASSADA ÚNICA: `valueRef.current` só
+        // muda no render, então N chamadas de onChange no mesmo loop leriam o
+        // MESMO array stale e apenas o último swap sobreviveria.
+        for (const j of completed) {
+          urlAliasRef.current.set(j.webpUrl, j.resultUrl!);
+        }
         const current = valueRef.current;
-        if (current.includes(job.webpUrl)) {
-          onChangeRef.current(
-            current.map((u) => (u === job.webpUrl ? job.resultUrl! : u)),
-          );
+        const next = applyAliases(current);
+        if (next.some((u, i) => u !== current[i])) {
+          onChangeRef.current(next);
         }
         setBgJobs((prev) => {
-          if (!prev[job.webpUrl]) return prev;
-          const next = { ...prev };
-          delete next[job.webpUrl];
-          return next;
+          const next2 = { ...prev };
+          let changed = false;
+          for (const j of completed) {
+            if (next2[j.webpUrl]) {
+              delete next2[j.webpUrl];
+              changed = true;
+            }
+          }
+          return changed ? next2 : prev;
         });
-      } else {
+      }
+      for (const job of jobs) {
+        if (job.status === "COMPLETED") continue;
         setBgJobs((prev) => {
           const entry = prev[job.webpUrl];
           if (!entry || entry.status === job.status) return prev;
           return { ...prev, [job.webpUrl]: { ...entry, status: job.status } };
         });
       }
-    }
-  }, []);
+    },
+    [applyAliases],
+  );
 
   const activeJobIds = Object.values(bgJobs)
     .filter((j) => !isImageBgJobTerminal(j.status))
@@ -220,7 +246,10 @@ export function MultiImageUpload({
             if (r.url) {
               slots[index] = r.url;
               const done = slots.filter((u): u is string => u !== null);
-              onChange([...value, ...done]);
+              // `value` aqui é a closure do INÍCIO do lote (comportamento
+              // histórico do progressivo); o applyAliases impede que este
+              // rebuild reverta um swap webp→png concluído no meio do lote.
+              onChangeRef.current(applyAliases([...value, ...done]));
               if (r.bgJob) {
                 const url = r.url;
                 const jobId = r.bgJob.jobId;
@@ -325,16 +354,11 @@ export function MultiImageUpload({
 
   const handleRemove = useCallback(
     (index: number) => {
-      const removedUrl = value[index];
       const updated = value.filter((_, i) => i !== index);
-      // Se a imagem removida tinha recorte em andamento, para de acompanhar
-      // (o job segue no servidor, mas a URL não está mais no formulário).
-      setBgJobs((prev) => {
-        if (!prev[removedUrl]) return prev;
-        const next = { ...prev };
-        delete next[removedUrl];
-        return next;
-      });
+      // NÃO paramos de acompanhar o job da imagem removida: o onChange stale
+      // de um lote em voo pode "ressuscitar" a URL (limitação pré-existente
+      // do progressivo) — mantendo o tracking, o swap ainda a alcança via
+      // alias. Se a remoção for definitiva, o COMPLETED só limpa o estado.
       onChange(updated);
     },
     [value, onChange],

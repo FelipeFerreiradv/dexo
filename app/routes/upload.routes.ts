@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, unlink } from "fs/promises";
 import { join, extname } from "path";
 import { randomUUID } from "crypto";
 import {
@@ -189,17 +189,34 @@ export async function uploadRoutes(app: FastifyInstance) {
             removeBackground: false,
           });
           const processedFileName = `${uuid}${FORMAT_EXTENSION[webpResult.format]}`;
-          await writeFile(join(uploadDir, processedFileName), webpResult.processed);
+          const processedPath = join(uploadDir, processedFileName);
+          await writeFile(processedPath, webpResult.processed);
 
-          const job = await (prisma as any).imageBgJob.create({
-            data: {
-              uploadUuid: uuid,
-              origFileName: originalFileName,
-              webpFileName: processedFileName,
-              addShadow,
-              userId: (request as any).user?.id ?? null,
-            },
-          });
+          // dataOwnerId, NÃO user.id: para COLABORADOR, toda linha de dado do
+          // tenant (Product/Scrap) usa o dono (parentUserId) — com user.id o
+          // swap do worker seria um no-op silencioso e a foto ficaria WebP.
+          const tenantId =
+            (request as any).user?.dataOwnerId ??
+            (request as any).user?.id ??
+            null;
+          let job: { id: string };
+          try {
+            job = await (prisma as any).imageBgJob.create({
+              data: {
+                uploadUuid: uuid,
+                origFileName: originalFileName,
+                webpFileName: processedFileName,
+                addShadow,
+                userId: tenantId,
+              },
+            });
+          } catch (createErr) {
+            // Sem job não há quem processe a WebP provisória: remove-a para
+            // não virar lixo permanente (o GC só varre .orig) e deixa o catch
+            // global responder 500 — o cliente re-tenta com uuid novo.
+            await unlink(processedPath).catch(() => undefined);
+            throw createErr;
+          }
 
           const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
           return reply.status(200).send({
@@ -285,11 +302,16 @@ export async function uploadRoutes(app: FastifyInstance) {
     "/image/jobs",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = (request as any).user?.id as string | undefined;
+      // Escopo por TENANT (dataOwnerId): jobs de colaborador pertencem ao
+      // dono dos dados — o mesmo escopo de Product/Scrap.
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
       if (!userId) {
         return reply.status(401).send({ error: "Não autenticado" });
       }
-      const idsRaw = (request.query as { ids?: string }).ids ?? "";
+      // `?ids=a&ids=b` chega como ARRAY no fastify — normaliza antes do split.
+      const rawParam = (request.query as { ids?: string | string[] }).ids ?? "";
+      const idsRaw = Array.isArray(rawParam) ? rawParam.join(",") : rawParam;
       const ids = idsRaw
         .split(",")
         .map((s) => s.trim())
@@ -334,7 +356,8 @@ export async function uploadRoutes(app: FastifyInstance) {
     "/image/jobs/:id/retry",
     { preHandler: [authMiddleware] },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = (request as any).user?.id as string | undefined;
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
       if (!userId) {
         return reply.status(401).send({ error: "Não autenticado" });
       }

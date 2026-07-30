@@ -112,6 +112,10 @@ describe("ImageBgWorkerService", () => {
     expect(processOpts.addShadow).toBe(true);
     expect(processOpts.lane).toBe("internal");
     expect(processOpts.deadlineAt).toBeGreaterThan(Date.now() + 500_000);
+    // REGRESSÃO (revisão adversarial): sem o override, o min() do orçamento
+    // prendia cada tentativa aos 60s do REMBG_TIMEOUT_MS e o "10min" era
+    // ilusório — foto com round-trip >60s viraria FAILED terminal.
+    expect(processOpts.rembgTimeoutMs).toBe(600_000);
 
     expect(String(writeFileMock.mock.calls[0][0])).toContain(
       `${BASE_JOB.uploadUuid}.png`,
@@ -192,6 +196,45 @@ describe("ImageBgWorkerService", () => {
     expect(failedCall.data.status).toBe("FAILED");
     expect(failedCall.data.lastError).toContain("original ausente");
     expect(processMock).not.toHaveBeenCalled();
+  });
+
+  it("job que derruba o processo não vira loop eterno: teto checado no CLAIM", async () => {
+    // attempts=5 sem desfecho = 5 claims cujo processamento nunca terminou
+    // (crash nativo/OOM) — sem o guard pós-claim, ficaria em
+    // lease-expira→reclaim→claim para sempre.
+    primeEmptyMaintenance();
+    jobFindFirst.mockResolvedValueOnce({ ...BASE_JOB, attempts: 5 });
+    jobUpdateMany.mockResolvedValueOnce({ count: 1 }); // claim (6ª tentativa)
+    jobUpdateMany.mockResolvedValueOnce({ count: 1 }); // FAILED
+
+    await ImageBgWorkerService.runOnce();
+
+    expect(readFileMock).not.toHaveBeenCalled();
+    const failedCall = jobUpdateMany.mock.calls.at(-1)![0];
+    expect(failedCall.data.status).toBe("FAILED");
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sweep com swap FALHO não consome o contador — só re-agenda", async () => {
+    jobUpdateMany.mockResolvedValueOnce({ count: 0 }); // reclaim
+    jobFindMany.mockResolvedValueOnce([
+      {
+        id: "job1",
+        userId: "u1",
+        webpFileName: "a.webp",
+        resultFileName: "a.png",
+        swapSweepsLeft: 2,
+      },
+    ]);
+    swapMock.mockRejectedValueOnce(new Error("pooler fora"));
+    jobUpdate.mockResolvedValueOnce({});
+    jobFindFirst.mockResolvedValueOnce(null);
+
+    await ImageBgWorkerService.runOnce();
+
+    const resched = jobUpdate.mock.calls[0][0];
+    expect(resched.data.swapSweepsLeft).toBeUndefined(); // NÃO decrementou
+    expect(resched.data.nextSweepAt).toBeInstanceOf(Date);
   });
 
   it("claim CAS perdido (outro tick pegou) → não processa nada", async () => {

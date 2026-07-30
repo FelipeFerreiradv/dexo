@@ -36,7 +36,11 @@ import { swapImageUrlReferences } from "./image-bg-swap";
 
 const BACKOFF_SECONDS = [30, 120, 300, 900, 1800];
 const LEASE_MS = 15 * 60 * 1000;
-const SWEEP_DELAYS_MS = [2 * 60 * 1000, 10 * 60 * 1000]; // após concluir
+// Sweeps de swap: 1º aos +2min da conclusão, 2º aos +10min (2min + 8min).
+const SWEEP_DELAYS_MS = [2 * 60 * 1000, 8 * 60 * 1000];
+// Re-tentativa de um sweep cujo SWAP falhou (soluço de pooler): não consome
+// o contador — só re-agenda.
+const SWEEP_RETRY_MS = 2 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 5 * 1000;
 
 const errMsg = (err: unknown) =>
@@ -130,9 +134,16 @@ export class ImageBgWorkerService {
             newUrl: publicUrlFor(job.resultFileName),
           });
         } catch (err) {
+          // Sweep é a rede de segurança da corrida save-depois-do-swap:
+          // falha de banco NÃO consome o contador — só re-agenda.
           console.error(
             `[ImageBgWorker] sweep de swap falhou para ${job.id}: ${errMsg(err)}`,
           );
+          await (prisma as any).imageBgJob.update({
+            where: { id: job.id },
+            data: { nextSweepAt: new Date(Date.now() + SWEEP_RETRY_MS) },
+          });
+          continue;
         }
       }
       const remaining = job.swapSweepsLeft - 1;
@@ -181,6 +192,18 @@ export class ImageBgWorkerService {
     if (claimed.count !== 1) return;
     const attempt = candidate.attempts + 1;
 
+    // Teto TAMBÉM no claim: um job que DERRUBA o processo (crash nativo do
+    // sharp, OOM) nunca chega ao handleFailure — sem este guard ele ficaria
+    // no loop lease-expira→reclaim→claim para sempre.
+    if (attempt > readMaxAttempts()) {
+      await this.markFailed(
+        candidate,
+        `tentativas esgotadas (${candidate.attempts}) sem desfecho — processamento pode ter derrubado o processo`,
+        Date.now(),
+      );
+      return;
+    }
+
     const startedAt = Date.now();
     let buffer: Buffer;
     try {
@@ -196,13 +219,21 @@ export class ImageBgWorkerService {
     }
 
     try {
+      const jobBudgetMs = readJobBudgetMs();
       const result = await processUploadedImage(buffer, {
         removeBackground: true,
         addShadow: candidate.addShadow,
         // Mesma lane do modal: prioridade sobre o tráfego público, e o gate
         // continua limitando o total em voo no sidecar.
         lane: "internal",
-        deadlineAt: Date.now() + readJobBudgetMs(),
+        deadlineAt: Date.now() + jobBudgetMs,
+        // Sem este override, o min() do orçamento prende cada tentativa ao
+        // REMBG_TIMEOUT_MS do env (60s, calibrado para caber no nginx) e o
+        // "orçamento de 10min" vira ilusão: foto com round-trip >60s
+        // queimaria as 5 tentativas e viraria FAILED — a classe de falha
+        // por TEMPO que este worker existe para eliminar. Aqui não há proxy
+        // no caminho; o teto real é o lease (15min > 10min do budget).
+        rembgTimeoutMs: jobBudgetMs,
       });
 
       if (!result.removedBackground) {

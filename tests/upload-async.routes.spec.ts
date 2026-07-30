@@ -7,9 +7,11 @@ import sharp from "sharp";
 // Mocks no molde de tests/upload.routes.spec.ts.
 const writeFileMock = vi.fn().mockResolvedValue(undefined);
 const mkdirMock = vi.fn().mockResolvedValue(undefined);
+const unlinkMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("fs/promises", () => ({
   writeFile: (...args: any[]) => writeFileMock(...args),
   mkdir: (...args: any[]) => mkdirMock(...args),
+  unlink: (...args: any[]) => unlinkMock(...args),
   readFile: vi.fn(),
 }));
 
@@ -18,9 +20,11 @@ vi.mock("../app/marketplaces/services/image-resize.service", () => ({
   processUploadedImage: (...args: any[]) => processUploadedImageMock(...args),
 }));
 
+// Simula um COLABORADOR: dataOwnerId (dono do tenant) difere do user.id —
+// jobs/swap/polling têm que usar o dataOwnerId, como Product/Scrap.
 vi.mock("../app/middlewares/auth.middleware", () => ({
   authMiddleware: async (request: any) => {
-    request.user = { id: "u1", role: "ADMIN" };
+    request.user = { id: "u1", role: "USER", dataOwnerId: "owner1" };
   },
 }));
 
@@ -135,10 +139,27 @@ describe("POST /upload/image — caminho ASSÍNCRONO (duplo opt-in)", () => {
     // Job criado com o que o worker precisa (incl. dono e sombra pedida).
     const created = jobCreateMock.mock.calls[0][0].data;
     expect(created.addShadow).toBe(true);
-    expect(created.userId).toBe("u1");
+    expect(created.userId).toBe("owner1"); // dataOwnerId, nao user.id
     expect(created.origFileName).toContain(".orig.jpg");
     // O desfecho REAL é do worker — upload não registra na taxa de fallback.
     expect(recordImageOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it("falha ao criar o job: remove a WebP provisória (sem lixo) e responde 500", async () => {
+    process.env.UPLOAD_ASYNC_REMBG = "1";
+    processUploadedImageMock.mockResolvedValue(WEBP_RESULT);
+    jobCreateMock.mockRejectedValue(new Error("tabela ausente"));
+
+    const { headers, body } = buildForm(
+      { removeBackground: "true", asyncBg: "true" },
+      await makeImage(),
+    );
+    const res = await app.inject({ method: "POST", url: "/upload/image", headers, payload: body });
+
+    expect(res.statusCode).toBe(500);
+    // Sem job ninguém processaria a WebP — ela não pode virar lixo permanente.
+    expect(unlinkMock).toHaveBeenCalledTimes(1);
+    expect(String(unlinkMock.mock.calls[0][0])).toContain(".webp");
   });
 
   it("env ON sem asyncBg (cliente antigo): caminho síncrono inalterado", async () => {
@@ -225,7 +246,7 @@ describe("GET /upload/image/jobs + retry", () => {
     expect(res.statusCode).toBe(200);
     // Ownership: o WHERE inclui o userId do requisitante.
     expect(jobFindManyMock.mock.calls[0][0].where).toMatchObject({
-      userId: "u1",
+      userId: "owner1", // escopo por TENANT (dataOwnerId)
       id: { in: ["j1", "j2", "j3"] },
     });
     const { jobs } = res.json();
@@ -235,6 +256,16 @@ describe("GET /upload/image/jobs + retry", () => {
     expect(jobs[1].resultUrl).toBe("http://test.local/uploads/b.png");
     expect(jobs[1].webpUrl).toBe("http://test.local/uploads/b.webp");
     expect(jobs[2].error).toContain("timeout");
+  });
+
+  it("polling com ?ids repetido (array do fastify): normaliza em vez de 500", async () => {
+    jobFindManyMock.mockResolvedValue([]);
+    const res = await app.inject({
+      method: "GET",
+      url: "/upload/image/jobs?ids=j1&ids=j2",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(jobFindManyMock.mock.calls[0][0].where.id.in).toEqual(["j1", "j2"]);
   });
 
   it("polling sem ids: 200 com lista vazia (sem query no banco)", async () => {
@@ -253,7 +284,7 @@ describe("GET /upload/image/jobs + retry", () => {
     expect(ok.statusCode).toBe(200);
     expect(jobUpdateManyMock.mock.calls[0][0].where).toMatchObject({
       id: "j3",
-      userId: "u1",
+      userId: "owner1",
       status: "FAILED",
     });
     expect(jobUpdateManyMock.mock.calls[0][0].data.status).toBe("PENDING");
