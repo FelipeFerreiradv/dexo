@@ -143,10 +143,15 @@ describe("tryExternalProviderCutout (elo externo da cadeia)", () => {
     expect(out?.provider).toBe("sdk.photoroom.com");
     expect(Buffer.isBuffer(out?.cutout)).toBe(true);
 
-    expect(reserveMock).toHaveBeenCalledWith({
-      provider: "sdk.photoroom.com",
-      maxPerDay: 50,
-    });
+    // `now` carimbado na reserva: o refund (se houver) devolve o slot ao
+    // MESMO dia UTC — nunca ao dia seguinte na virada da meia-noite.
+    expect(reserveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "sdk.photoroom.com",
+        maxPerDay: 50,
+        now: expect.any(Date),
+      }),
+    );
     // API key vai no header configurável, nunca na URL.
     const [url, , axiosOpts] = postMock.mock.calls[0];
     expect(url).toBe("https://sdk.photoroom.com/v1/segment");

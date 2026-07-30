@@ -20,6 +20,16 @@
  * Singleton POR PROCESSO (mesma limitação consciente do rembg-gate): o estado
  * não é compartilhado entre pm2 apps, o que é aceitável — cada processo
  * descobre a queda em ≤5 chamadas próprias.
+ *
+ * LIMITAÇÃO CONSCIENTE (settle sem token): recordSuccess/recordFailure/
+ * abortAttempt não sabem QUAL tentativa os chama. Uma tentativa longa que
+ * começou em CLOSED e termina depois de o estado ter avançado (worker) pode
+ * limpar a sonda de outra requisição — no pior caso, DUAS sondas convivem no
+ * HALF_OPEN por uma janela, ou o breaker fecha/reabre um ciclo antes da hora.
+ * Auto-corrigível em ≤1 ciclo e sem decisão errada de rota; um token por
+ * tentativa dobraria a API dos 3 call sites para eliminar um estado que se
+ * conserta sozinho. Sucesso/falha "atrasados" continuam sendo evidência
+ * legítima sobre a saúde do provedor — contá-los não é bug.
  */
 
 const FAILURE_THRESHOLD = 5;
@@ -83,12 +93,14 @@ class CircuitBreaker {
   }
 
   recordSuccess(): void {
+    if (isBreakerDisabled()) return; // killswitch: nenhum estado avança
     this.probeInFlight = false;
     this.consecutiveFailures = 0;
     if (this.state !== "CLOSED") this.transition("CLOSED");
   }
 
   recordFailure(message?: string): void {
+    if (isBreakerDisabled()) return; // killswitch: nenhum estado avança
     this.probeInFlight = false;
     this.consecutiveFailures += 1;
     if (message) this.lastFailure = message.slice(0, 300);

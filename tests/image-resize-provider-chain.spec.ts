@@ -150,6 +150,55 @@ describe("processUploadedImage — cadeia local → externo (PR 5)", () => {
     expect(getBreakerSnapshots().local.consecutiveFailures).toBe(0);
   });
 
+  it("KILLSWITCH desliga a cadeia INTEIRA: sem sidecar local ligado, o provedor pago NUNCA é chamado", async () => {
+    // Playbook de incidente: REMBG_ENABLED=false / URL ausente sempre
+    // significou "sem remoção de fundo" — não pode virar "mande tudo para o
+    // provedor pago" (gasto + LGPD disparados por um comando de emergência).
+    delete process.env.REMBG_SIDECAR_URL;
+    tryExternalMock.mockResolvedValue({
+      cutout: await makeCutoutPng(),
+      provider: "photoroom",
+    });
+
+    const result = await processUploadedImage(await makeJpeg(), {
+      removeBackground: true,
+    });
+
+    expect(result.removedBackground).toBe(false);
+    expect(result.degradeReason).toBe("killswitch");
+    expect(tryExternalMock).not.toHaveBeenCalled();
+    expect(localFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("timeout com orçamento CURTO (rajada/regime degradado) não conta para o breaker; com orçamento generoso conta", async () => {
+    const timeoutErr = Object.assign(new Error("timeout of 12000ms exceeded"), {
+      isAxiosError: true,
+      code: "ECONNABORTED",
+    });
+    localFetchMock.mockRejectedValue(timeoutErr);
+    tryExternalMock.mockResolvedValue(null);
+
+    // 5 timeouts despachados com sobra curta (deadline aperta o orçamento a
+    // ~12s < REMBG_TIMEOUT_MS): artefato de orçamento, sidecar pode estar
+    // saudável no meio de uma inferência de ~9s — breaker NÃO abre.
+    for (let i = 0; i < 5; i++) {
+      const result = await processUploadedImage(await makeJpeg(), {
+        removeBackground: true,
+        deadlineAt: Date.now() + 15_000,
+      });
+      expect(result.degradeReason).toBe("timeout");
+    }
+    expect(getBreakerSnapshots().local.state).toBe("CLOSED");
+    expect(getBreakerSnapshots().local.consecutiveFailures).toBe(0);
+
+    // Sem deadline o despacho usa o teto cheio do env (60s): timeout aí é
+    // evidência real de infra — 5 seguidos abrem.
+    for (let i = 0; i < 5; i++) {
+      await processUploadedImage(await makeJpeg(), { removeBackground: true });
+    }
+    expect(getBreakerSnapshots().local.state).toBe("OPEN");
+  });
+
   it("erro 4xx do sidecar NÃO conta para abrir o breaker", async () => {
     localFetchMock.mockRejectedValue(
       Object.assign(new Error("Request failed with status code 400"), {

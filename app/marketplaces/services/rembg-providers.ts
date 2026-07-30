@@ -151,7 +151,9 @@ export function readExternalProviderConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): ExternalProviderConfig | null {
   const url = (env.REMBG_FALLBACK_API_URL ?? "").trim();
-  const maxPerDay = Number(env.REMBG_FALLBACK_MAX_PER_DAY);
+  // floor ANTES da validação: "0.5" não pode passar como config válida com
+  // teto efetivo 0 (elo permanentemente inerte que o guard acharia servível).
+  const maxPerDay = Math.floor(Number(env.REMBG_FALLBACK_MAX_PER_DAY));
   if (!url || !Number.isFinite(maxPerDay) || maxPerDay <= 0) return null;
 
   let name = (env.REMBG_FALLBACK_PROVIDER ?? "").trim();
@@ -185,7 +187,7 @@ export function readExternalProviderConfig(
       Number.isFinite(timeoutRaw) && timeoutRaw > 0
         ? Math.floor(timeoutRaw)
         : EXTERNAL_DEFAULT_TIMEOUT_MS,
-    maxPerDay: Math.floor(maxPerDay),
+    maxPerDay,
   };
 }
 
@@ -255,13 +257,17 @@ export async function tryExternalProviderCutout(
   const cfg = readExternalProviderConfig();
   if (!cfg) return null;
 
-  // Orçamento: reusa a mesma aritmética de deadline do sidecar (min(teto do
-  // provedor, sobra da requisição - reserva)). Sem deadline → teto cheio.
-  const timeoutMs = computeSidecarTimeoutMs({
+  // Piso de utilidade comparado só com a SOBRA da requisição — nunca com o
+  // teto configurado do provedor: um REMBG_FALLBACK_TIMEOUT_MS curto (ex.:
+  // 3500ms para um provedor que responde em ~2s) é escolha explícita do
+  // operador e NÃO pode desligar o elo em silêncio. Sem deadline, a sobra é
+  // infinita e o piso nunca morde.
+  const remainingMs = computeSidecarTimeoutMs({
     deadlineAt: input.deadlineAt,
-    rembgTimeoutMs: cfg.timeoutMs,
+    rembgTimeoutMs: Number.MAX_SAFE_INTEGER,
   });
-  if (timeoutMs < EXTERNAL_MIN_USEFUL_MS) return null;
+  if (remainingMs < EXTERNAL_MIN_USEFUL_MS) return null;
+  const timeoutMs = Math.min(cfg.timeoutMs, remainingMs);
 
   // Peek puro antes de gastar teto — breaker aberto é o caso comum durante
   // uma indisponibilidade paga (ex.: 402 sem créditos vira 4xx e NÃO abre;
@@ -269,10 +275,15 @@ export async function tryExternalProviderCutout(
   if (!externalRembgBreaker.peekAllowed()) return null;
 
   // Teto ANTES da sonda do breaker: a reserva é a operação cara (banco) e o
-  // refund cobre o único caso em que ela não vira chamada.
+  // refund cobre o único caso em que ela não vira chamada. O instante é
+  // carimbado AQUI para o refund devolver o slot ao MESMO dia UTC da reserva
+  // (na virada da meia-noite UTC, decrementar o dia novo devolveria um slot
+  // que outra requisição gastou de verdade).
+  const reservedAt = new Date();
   const reserved = await tryReserveDailySlot({
     provider: cfg.name,
     maxPerDay: cfg.maxPerDay,
+    now: reservedAt,
   }).catch((err) => {
     // Banco indisponível para o CONTADOR = não gasta (fail-closed no gasto).
     console.warn(
@@ -285,8 +296,8 @@ export async function tryExternalProviderCutout(
 
   if (!externalRembgBreaker.beginAttempt()) {
     // Sonda HALF_OPEN tomada por outra requisição no intervalo — devolve o
-    // slot do teto e degrada.
-    await refundDailySlot({ provider: cfg.name });
+    // slot do teto (ao dia UTC da reserva) e degrada.
+    await refundDailySlot({ provider: cfg.name, now: reservedAt });
     return null;
   }
 

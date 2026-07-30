@@ -176,14 +176,15 @@ export class ImageBgWorkerService {
    *  backoff) — inclusive nos specs do worker, que mockam o
    *  processUploadedImage sem configurar env nenhuma. */
   private static anyProviderMightServe(): boolean {
-    const localConfigured = isLocalSidecarConfigured();
-    if (localConfigured && localRembgBreaker.peekAllowed()) return true;
+    // Sem sidecar local ligado a cadeia INTEIRA está fora (o elo externo
+    // exige `sidecarAvailable` no image-resize — killswitch de incidente
+    // nunca vira desvio para o provedor pago). Devolver true preserva o
+    // comportamento do PR 4 (claim → degrada killswitch → backoff).
+    if (!isLocalSidecarConfigured()) return true;
+    if (localRembgBreaker.peekAllowed()) return true;
+    // Breaker local aberto: só vale fazer claim se o elo externo puder cobrir.
     const externalCfg = readExternalProviderConfig();
-    if (externalCfg !== null && externalRembgBreaker.peekAllowed()) return true;
-    const breakerIsTheBlocker =
-      (localConfigured && !localRembgBreaker.peekAllowed()) ||
-      (externalCfg !== null && !externalRembgBreaker.peekAllowed());
-    return !breakerIsTheBlocker;
+    return externalCfg !== null && externalRembgBreaker.peekAllowed();
   }
 
   /** Processa UM job por tick — o sidecar tem 1 worker; paralelizar aqui só

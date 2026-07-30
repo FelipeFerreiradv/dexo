@@ -90,7 +90,7 @@ describe("rembg-breaker (máquina de estados)", () => {
     expect(getBreakerSnapshots().local.state).toBe("HALF_OPEN");
   });
 
-  it("killswitch REMBG_BREAKER_DISABLED: sempre permite e nada avança", () => {
+  it("killswitch REMBG_BREAKER_DISABLED: sempre permite e NADA avança", () => {
     process.env.REMBG_BREAKER_DISABLED = "1";
     for (let i = 0; i < 10; i++) {
       expect(localRembgBreaker.beginAttempt()).toBe(true);
@@ -98,10 +98,12 @@ describe("rembg-breaker (máquina de estados)", () => {
     }
     expect(localRembgBreaker.peekAllowed()).toBe(true);
     expect(getBreakerSnapshots().disabled).toBe(true);
-    // As falhas FORAM contadas (o estado interno anda), mas allow/begin
-    // ignoram o estado enquanto o killswitch estiver ligado.
+    // Estado congelado durante o killswitch: re-habilitar NÃO pode acordar
+    // com falhas velhas acumuladas (o breaker parte de CLOSED limpo).
     delete process.env.REMBG_BREAKER_DISABLED;
-    expect(localRembgBreaker.peekAllowed()).toBe(false);
+    expect(localRembgBreaker.peekAllowed()).toBe(true);
+    expect(getBreakerSnapshots().local.state).toBe("CLOSED");
+    expect(getBreakerSnapshots().local.consecutiveFailures).toBe(0);
   });
 
   it("snapshot expõe estado/contagem/última falha dos DOIS breakers", () => {

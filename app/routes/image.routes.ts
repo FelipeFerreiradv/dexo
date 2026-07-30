@@ -164,7 +164,9 @@ export async function imageRoutes(app: FastifyInstance) {
           lane: "public",
           deadlineAt,
           // Rastro LGPD caso o recorte saia pelo provedor externo (PR 5).
-          tenantUserId: (request as any).user?.id,
+          // dataOwnerId, não id: sessão de COLABORADOR atribui ao tenant.
+          tenantUserId:
+            (request as any).user?.dataOwnerId ?? (request as any).user?.id,
         });
 
         // Telemetria (aditiva, nunca no caminho da resposta): a taxa de

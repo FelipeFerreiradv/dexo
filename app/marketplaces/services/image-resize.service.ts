@@ -20,6 +20,7 @@ import {
   SIDECAR_MIN_USEFUL_MS,
   computeSidecarTimeoutMs,
   isWorthCallingSidecar,
+  readRembgTimeoutMs,
 } from "./rembg-budget";
 import { acquireRembgSlot, type RembgLane } from "./rembg-gate";
 import { localRembgBreaker } from "./rembg-breaker";
@@ -259,6 +260,11 @@ export async function processUploadedImage(
     let sidecarMs: number | undefined;
     let sidecarConfidence: number | undefined;
     let fetchStartedAt: number | undefined;
+    // Com que timeout a última chamada ao sidecar foi DESPACHADA: um timeout
+    // com orçamento curto (rajada/fila, regime degradado de 45s) é artefato
+    // de orçamento — o sidecar pode estar saudável no meio de uma inferência
+    // de ~9s — e NÃO pode contar como falha de infra no breaker.
+    let dispatchedTimeoutMs: number | undefined;
 
     // Orçamento e gate ficam AQUI, no ramo do sidecar — nunca no topo da função.
     // O caminho `removeBackground=false` (sharp puro, ~1s) não pode ser
@@ -279,14 +285,29 @@ export async function processUploadedImage(
     // da cadeia. Quem recebe `true` de beginAttempt TEM que settle (success/
     // failure/abort) — ver os pontos marcados abaixo.
     const breakerGoverned = !opts.rembgFetcher;
+    // Orçamento inviável é decidido ANTES da sonda: um pedido que nem vai
+    // despachar não pode reivindicar a sonda HALF_OPEN e fazer um pedido
+    // concorrente (viável) degradar breaker_open à toa.
+    const budgetViable = isWorthCallingSidecar(budgetMs);
     const breakerAllows =
       sidecarAvailable &&
+      budgetViable &&
       (!breakerGoverned || localRembgBreaker.beginAttempt());
     let breakerSettled = !breakerGoverned;
-    const slot =
-      breakerAllows && isWorthCallingSidecar(budgetMs)
-        ? await acquireRembgSlot(lane, budgetMs - SIDECAR_MIN_USEFUL_MS)
-        : null;
+    // Se esta tentativa É a sonda do HALF_OPEN, o round-trip fica curto por
+    // contrato ("OPEN 60s → sonda"): sem o clamp, o worker assíncrono
+    // (orçamento de 10min por tentativa) seguraria a sonda por até 10min com
+    // TODO o tráfego síncrono preso em breaker_open nesse meio-tempo.
+    const isLocalProbe =
+      breakerGoverned &&
+      breakerAllows &&
+      localRembgBreaker.snapshot().state === "HALF_OPEN";
+    const probeCapMs = isLocalProbe
+      ? LOCAL_PROBE_MAX_MS
+      : Number.POSITIVE_INFINITY;
+    const slot = breakerAllows
+      ? await acquireRembgSlot(lane, budgetMs - SIDECAR_MIN_USEFUL_MS)
+      : null;
 
     if (!sidecarAvailable) {
       // Antes este caminho degradava em silêncio absoluto — impossível separar
@@ -294,6 +315,13 @@ export async function processUploadedImage(
       degradeReason = "killswitch";
       console.warn(
         "[processUploadedImage] sidecar desabilitado (REMBG_ENABLED=false ou REMBG_SIDECAR_URL ausente); degradando para imagem otimizada sem remoção",
+      );
+    } else if (!budgetViable) {
+      // Mesmo rótulo de sempre: orçamento esgotado antes de tentar.
+      degradeReason = "budget_gate";
+      console.warn(
+        "[processUploadedImage] orçamento/fila do sidecar esgotados; degradando para imagem otimizada sem remoção:",
+        { lane, budgetMs },
       );
     } else if (!breakerAllows) {
       degradeReason = "breaker_open";
@@ -320,10 +348,13 @@ export async function processUploadedImage(
         // Recalculado APÓS a espera no gate: o que sobrou do orçamento é o que
         // o round-trip ainda pode consumir. Sem `deadlineAt` devolve o
         // REMBG_TIMEOUT_MS de sempre (caminho feliz inalterado).
-        const timeoutMs = computeSidecarTimeoutMs({
-          deadlineAt: opts.deadlineAt,
-          rembgTimeoutMs: opts.rembgTimeoutMs,
-        });
+        const timeoutMs = Math.min(
+          computeSidecarTimeoutMs({
+            deadlineAt: opts.deadlineAt,
+            rembgTimeoutMs: opts.rembgTimeoutMs,
+          }),
+          probeCapMs,
+        );
         // A espera no gate é limitada, mas jitter pode comer a sobra: se o que
         // restou não dá nem para uma inferência, desiste sem abrir a conexão.
         if (!isWorthCallingSidecar(timeoutMs)) {
@@ -344,6 +375,7 @@ export async function processUploadedImage(
         };
         let cutout: Buffer;
         fetchStartedAt = Date.now();
+        dispatchedTimeoutMs = timeoutMs;
         try {
           cutout = await fetcher(normalized, { addShadow, timeoutMs, onMeta });
         } catch (err) {
@@ -378,13 +410,17 @@ export async function processUploadedImage(
           // Piso re-checado APÓS o backoff: se jitter comeu a sobra, degrada
           // em vez de despachar — e nunca entrega ≤0 ao fetcher (que trataria
           // como "sem deadline" e voltaria ao teto de 60s do env).
-          const retryTimeoutMs = computeSidecarTimeoutMs({
-            deadlineAt: opts.deadlineAt,
-            rembgTimeoutMs: opts.rembgTimeoutMs,
-          });
+          const retryTimeoutMs = Math.min(
+            computeSidecarTimeoutMs({
+              deadlineAt: opts.deadlineAt,
+              rembgTimeoutMs: opts.rembgTimeoutMs,
+            }),
+            probeCapMs,
+          );
           if (!isWorthCallingSidecar(retryTimeoutMs)) {
             throw err;
           }
+          dispatchedTimeoutMs = retryTimeoutMs;
           cutout = await fetcher(normalized, {
             addShadow,
             timeoutMs: retryTimeoutMs,
@@ -462,8 +498,17 @@ export async function processUploadedImage(
           const status = axios.isAxiosError(err)
             ? err.response?.status
             : undefined;
+          // Timeout só é evidência de infra quando o orçamento despachado era
+          // GENEROSO (>= REMBG_TIMEOUT_MS do env). Timeout com sobra curta
+          // (fim de rajada, regime degradado de 45s) é artefato de orçamento
+          // sobre um sidecar possivelmente saudável no meio de uma inferência
+          // — contar abriria o breaker em operação normal e pausaria o worker
+          // de 10min, a classe de recorte que o PR 4 existe para salvar.
+          const generousTimeout =
+            dispatchedTimeoutMs !== undefined &&
+            dispatchedTimeoutMs >= readRembgTimeoutMs();
           const infraFailure =
-            degradeReason === "timeout" ||
+            (degradeReason === "timeout" && generousTimeout) ||
             degradeReason === "conn_error" ||
             (degradeReason === "http_error" && (status ?? 0) >= 500);
           if (infraFailure) {
@@ -508,55 +553,68 @@ export async function processUploadedImage(
       }
     }
 
-    // PR 5 — elo EXTERNO da cadeia: entra APENAS quando o local não entregou
-    // (qualquer causa acima) e o fallback pago está explicitamente ligado
-    // (URL + teto diário > 0; default OFF => este bloco é um no-op). O
-    // provedor devolve recorte SEM a sombra de contato do sidecar — melhor
+    // PR 5 — elo EXTERNO da cadeia: entra APENAS quando o local estava
+    // LIGADO e não entregou (fila, timeout, conexão, 5xx, breaker) e o
+    // fallback pago está explicitamente ligado (URL + teto diário > 0;
+    // default OFF => este bloco é um no-op). KILLSWITCH DESLIGA A CADEIA
+    // INTEIRA: `REMBG_ENABLED=false` é o gesto de playbook de incidente que
+    // sempre significou "sem remoção de fundo" — com fallback configurado
+    // ele NÃO pode virar "mande todo upload para o provedor pago" (gasto +
+    // saída de dado pessoal disparados por um comando de emergência).
+    // O provedor devolve recorte SEM a sombra de contato do sidecar — melhor
     // recorte sem sombra do que WebP sem recorte. Nunca lança: qualquer erro
     // cai na degradação graceful de sempre.
-    try {
-      const external = await tryExternalProviderCutout({
-        buf: normalized,
-        deadlineAt: opts.deadlineAt,
-        tenantUserId: opts.tenantUserId,
-      });
-      if (external) {
-        const extMeta = await sharp(external.cutout).metadata();
-        if (extMeta.format === "png" && extMeta.width && extMeta.height) {
+    if (sidecarAvailable) {
+      try {
+        const external = await tryExternalProviderCutout({
+          buf: normalized,
+          deadlineAt: opts.deadlineAt,
+          tenantUserId: opts.tenantUserId,
+        });
+        if (external) {
+          const extMeta = await sharp(external.cutout).metadata();
+          if (extMeta.format === "png" && extMeta.width && extMeta.height) {
+            return {
+              processed: external.cutout,
+              format: "png",
+              removedBackground: true,
+              shadowApplied: false,
+              width: extMeta.width,
+              height: extMeta.height,
+              usedFallbackProvider: true,
+              // Contexto da tentativa LOCAL falha (diagnóstico): quanto tempo
+              // o sidecar consumiu antes de a cadeia apelar para o externo.
+              ...(sidecarMs !== undefined ? { sidecarMs } : {}),
+              ...(sidecarTiming ? { sidecarTiming } : {}),
+            };
+          }
+          // Provedor devolveu imagem válida mas não-PNG (config de formato):
+          // re-encoda para manter o contrato format:"png" com transparência.
+          const encoded = await sharp(external.cutout)
+            .png({
+              compressionLevel: UPLOAD_PNG_COMPRESSION,
+              adaptiveFiltering: true,
+            })
+            .toBuffer();
+          const encMeta = await sharp(encoded).metadata();
           return {
-            processed: external.cutout,
+            processed: encoded,
             format: "png",
             removedBackground: true,
             shadowApplied: false,
-            width: extMeta.width,
-            height: extMeta.height,
+            width: encMeta.width,
+            height: encMeta.height,
             usedFallbackProvider: true,
+            ...(sidecarMs !== undefined ? { sidecarMs } : {}),
+            ...(sidecarTiming ? { sidecarTiming } : {}),
           };
         }
-        // Provedor devolveu imagem válida mas não-PNG (config de formato):
-        // re-encoda para manter o contrato format:"png" com transparência.
-        const encoded = await sharp(external.cutout)
-          .png({
-            compressionLevel: UPLOAD_PNG_COMPRESSION,
-            adaptiveFiltering: true,
-          })
-          .toBuffer();
-        const encMeta = await sharp(encoded).metadata();
-        return {
-          processed: encoded,
-          format: "png",
-          removedBackground: true,
-          shadowApplied: false,
-          width: encMeta.width,
-          height: encMeta.height,
-          usedFallbackProvider: true,
-        };
+      } catch (err) {
+        console.warn(
+          "[processUploadedImage] pós-processamento do provedor externo falhou; degradando:",
+          err instanceof Error ? err.message : String(err),
+        );
       }
-    } catch (err) {
-      console.warn(
-        "[processUploadedImage] pós-processamento do provedor externo falhou; degradando:",
-        err instanceof Error ? err.message : String(err),
-      );
     }
 
     // Killswitch, orçamento esgotado ou falha do sidecar → fallback graceful.
@@ -601,6 +659,11 @@ const isRembgEnabled = isLocalSidecarConfigured;
 /** Backoff antes do retry de conexão: cobre o gap accept→listen do sidecar
  *  voltando de um restart, sem segurar o slot do gate por tempo relevante. */
 const REMBG_RETRY_BACKOFF_MS = 500;
+
+/** Teto do round-trip quando a tentativa é a SONDA do breaker em HALF_OPEN
+ *  (PR 5): a sonda existe para responder "voltou?" rápido — nunca pode herdar
+ *  o orçamento de 10min do worker e prender o tráfego síncrono junto. */
+const LOCAL_PROBE_MAX_MS = 60_000;
 
 /** Sentinela para "slot saiu do gate mas a sobra do orçamento não paga uma
  *  inferência". Só existe para a telemetria classificar sem casar mensagem. */
