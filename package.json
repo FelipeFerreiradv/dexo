@@ -77,6 +77,7 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
+    "fabric": "^7.4.0",
     "fast-xml-parser": "^5.8.0",
     "fastify": "^5.7.2",
     "form-data": "^4.0.5",

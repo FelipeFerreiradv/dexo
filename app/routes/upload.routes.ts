@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { writeFile, mkdir, unlink } from "fs/promises";
+import { access, writeFile, mkdir, unlink } from "fs/promises";
 import { join, extname } from "path";
 import { randomUUID } from "crypto";
 import {
@@ -383,5 +383,298 @@ export async function uploadRoutes(app: FastifyInstance) {
       }
       return reply.status(200).send({ success: true, status: "PENDING" });
     },
+  );
+
+  /**
+   * POST /upload/image/edited — SAVE do Editor de Imagem (PR 6).
+   *
+   * Multipart: file (PNG/JPEG exportado do canvas, até 20MB) + campos
+   * recipe (JSON EditRecipeV1), sourceFileName e cutoutFileName (opcional).
+   * NÃO roda processUploadedImage: o export do canvas já está na resolução
+   * e formato finais — reprocessar só degradaria. Cada save gera um uuid
+   * NOVO (versionamento — nunca sobrescreve arquivo existente) e grava a
+   * receita em ProductImageEdit atomicamente (create falhou => arquivo
+   * removido, 500, cliente re-tenta).
+   */
+  app.post(
+    "/image/edited",
+    {
+      preHandler: [
+        authMiddleware,
+        async (request, reply) => {
+          if (!request.isMultipart()) {
+            return reply.status(400).send({
+              error: "Tipo de conteúdo inválido",
+              message: "Esperado multipart/form-data",
+            });
+          }
+        },
+      ],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = (request as any).user;
+        const tenantId = (user?.dataOwnerId ?? user?.id ?? null) as
+          | string
+          | null;
+
+        let buffer: Buffer | null = null;
+        let mimetype = "";
+        let recipeRaw = "";
+        let sourceFileName = "";
+        let cutoutFileName = "";
+
+        for await (const part of request.parts()) {
+          if (part.type === "file") {
+            if (part.fieldname !== "file") {
+              await part.toBuffer().catch(() => undefined);
+              continue;
+            }
+            mimetype = part.mimetype;
+            try {
+              buffer = await part.toBuffer();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (/(FST_FILES_LIMIT|FST_REQ_FILE_TOO_LARGE)/.test(msg)) {
+                return reply.status(400).send({
+                  error: "Arquivo muito grande",
+                  message: "O tamanho máximo permitido é 20MB",
+                });
+              }
+              throw e;
+            }
+          } else if (part.type === "field") {
+            const value =
+              typeof part.value === "string" ? part.value : String(part.value);
+            if (part.fieldname === "recipe") recipeRaw = value;
+            else if (part.fieldname === "sourceFileName") sourceFileName = value;
+            else if (part.fieldname === "cutoutFileName") cutoutFileName = value;
+          }
+        }
+
+        if (!buffer) {
+          return reply.status(400).send({
+            error: "Arquivo não encontrado",
+            message: "Nenhum arquivo foi enviado no campo `file`",
+          });
+        }
+        // O export do editor é sempre PNG (transparência) ou JPEG (opaco).
+        const EDITED_EXT: Record<string, string> = {
+          "image/png": ".png",
+          "image/jpeg": ".jpg",
+          "image/jpg": ".jpg",
+        };
+        const ext = EDITED_EXT[mimetype];
+        if (!ext) {
+          return reply.status(400).send({
+            error: "Tipo de arquivo inválido",
+            message: "O export do editor deve ser PNG ou JPEG",
+          });
+        }
+        // MAGIC BYTES: diferente do /upload/image (que re-encoda via sharp e
+        // valida de facto), aqui os bytes vão CRUS para o disco público — o
+        // mimetype do multipart é controlado pelo cliente e não basta. Sem
+        // isto, qualquer autenticado hospedaria blobs arbitrários de 20MB
+        // servidos pelo domínio da API.
+        const isPng =
+          buffer.length >= 4 &&
+          buffer[0] === 0x89 &&
+          buffer[1] === 0x50 &&
+          buffer[2] === 0x4e &&
+          buffer[3] === 0x47;
+        const isJpeg =
+          buffer.length >= 3 &&
+          buffer[0] === 0xff &&
+          buffer[1] === 0xd8 &&
+          buffer[2] === 0xff;
+        if ((ext === ".png" && !isPng) || (ext === ".jpg" && !isJpeg)) {
+          return reply.status(400).send({
+            error: "Arquivo inválido",
+            message: "O conteúdo do arquivo não corresponde a um PNG/JPEG",
+          });
+        }
+        if (buffer.byteLength > MAX_BYTES) {
+          return reply.status(400).send({
+            error: "Arquivo muito grande",
+            message: "O tamanho máximo permitido é 20MB",
+          });
+        }
+        // Nomes de arquivo são BASENAMES de public/uploads — qualquer coisa
+        // com separador/".." é tentativa de traversal, rejeita seco.
+        if (
+          (sourceFileName && !isSafeUploadBasename(sourceFileName)) ||
+          (cutoutFileName && !isSafeUploadBasename(cutoutFileName))
+        ) {
+          return reply.status(400).send({
+            error: "Nome de arquivo inválido",
+            message: "sourceFileName/cutoutFileName inválido",
+          });
+        }
+        if (!sourceFileName) {
+          return reply.status(400).send({
+            error: "Campo obrigatório ausente",
+            message: "sourceFileName é obrigatório",
+          });
+        }
+        if (!recipeRaw || recipeRaw.length > 100_000) {
+          return reply.status(400).send({
+            error: "Receita inválida",
+            message: "recipe ausente ou grande demais (máx. 100KB)",
+          });
+        }
+        let recipe: unknown;
+        try {
+          recipe = JSON.parse(recipeRaw);
+        } catch {
+          return reply.status(400).send({
+            error: "Receita inválida",
+            message: "recipe não é JSON válido",
+          });
+        }
+        if (
+          !recipe ||
+          typeof recipe !== "object" ||
+          (recipe as { version?: unknown }).version !== 1
+        ) {
+          return reply.status(400).send({
+            error: "Receita inválida",
+            message: "recipe.version deve ser 1 (EditRecipeV1)",
+          });
+        }
+
+        const uuid = randomUUID();
+        const fileName = `${uuid}${ext}`;
+        const uploadDir = join(process.cwd(), "public", "uploads");
+        await mkdir(uploadDir, { recursive: true });
+        const filePath = join(uploadDir, fileName);
+        await writeFile(filePath, buffer);
+
+        try {
+          await (prisma as any).productImageEdit.create({
+            data: {
+              fileName,
+              sourceFileName,
+              cutoutFileName: cutoutFileName || null,
+              recipe,
+              userId: tenantId,
+            },
+          });
+        } catch (createErr) {
+          // Sem a receita o arquivo é órfão sem história — remove e falha.
+          await unlink(filePath).catch(() => undefined);
+          throw createErr;
+        }
+
+        const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+        return reply.status(200).send({
+          success: true,
+          message: "Imagem editada salva com sucesso",
+          imageUrl: `${baseUrl}/uploads/${fileName}`,
+          fileName,
+        });
+      } catch (error) {
+        console.error("[Upload] Erro ao salvar imagem editada:", error);
+        return reply.status(500).send({
+          error: "Erro interno do servidor",
+          message: error instanceof Error ? error.message : "Erro desconhecido",
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /upload/image/meta?fileName= — contexto para REABRIR uma imagem no
+   * editor (PR 6): se o arquivo veio de um save do editor, devolve a receita
+   * (escopada pelo tenant); em qualquer caso tenta resolver o ORIGINAL
+   * `<uuid>.orig.<ext>` no disco para reprocessar/editar do zero.
+   */
+  app.get(
+    "/image/meta",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = (request as any).user;
+      const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
+      if (!userId) {
+        // Mesma defesa em profundidade das rotas irmãs (/image/jobs): sem
+        // identidade, o filtro de tenant sumiria e o findFirst viraria global.
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const { fileName } = request.query as { fileName?: string };
+      if (!fileName || !isSafeUploadBasename(fileName)) {
+        return reply.status(400).send({
+          error: "Parâmetro inválido",
+          message: "fileName ausente ou inválido",
+        });
+      }
+
+      const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+      const uploadDir = join(process.cwd(), "public", "uploads");
+
+      // Receita do editor (se este arquivo é um save anterior) — escopo do
+      // tenant: receita de outro usuário simplesmente não volta.
+      let edit: {
+        recipe: unknown;
+        sourceFileName: string;
+        cutoutFileName: string | null;
+      } | null = null;
+      try {
+        const row = await (prisma as any).productImageEdit.findFirst({
+          where: { fileName, userId },
+          select: { recipe: true, sourceFileName: true, cutoutFileName: true },
+        });
+        if (row) edit = row;
+      } catch {
+        // tabela ausente (DDL ainda não aplicado) não pode derrubar a rota
+      }
+
+      // Original no disco: o uuid é o prefixo até o primeiro ponto.
+      const uuid = fileName.split(".")[0] ?? "";
+      let originalFileName: string | null = null;
+      if (uuid) {
+        for (const ext of [".jpg", ".png", ".webp", ".bin"]) {
+          const candidate = `${uuid}.orig${ext}`;
+          try {
+            await access(join(uploadDir, candidate));
+            originalFileName = candidate;
+            break;
+          } catch {
+            // tenta a próxima extensão
+          }
+        }
+      }
+
+      return reply.status(200).send({
+        fileName,
+        ...(originalFileName
+          ? {
+              originalFileName,
+              originalUrl: `${baseUrl}/uploads/${originalFileName}`,
+            }
+          : {}),
+        ...(edit
+          ? {
+              edit: {
+                recipe: edit.recipe,
+                sourceFileName: edit.sourceFileName,
+                sourceUrl: `${baseUrl}/uploads/${edit.sourceFileName}`,
+                ...(edit.cutoutFileName
+                  ? {
+                      cutoutFileName: edit.cutoutFileName,
+                      cutoutUrl: `${baseUrl}/uploads/${edit.cutoutFileName}`,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      });
+    },
+  );
+}
+
+/** Basename seguro de public/uploads: sem separadores, sem "..", só o shape
+ *  que o próprio upload gera (uuid + sufixos com ponto/hífen). */
+function isSafeUploadBasename(name: string): boolean {
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(name) && !name.includes("..")
   );
 }
