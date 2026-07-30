@@ -137,11 +137,36 @@ export async function addText(
       : {}),
   });
   (obj as Tagged).dexoKind = "text";
+  // O textarea INVISÍVEL de edição do IText vai por default no <body> — FORA
+  // do Radix Dialog, cujo focus-trap rouba o foco de volta e a digitação
+  // simplesmente não funciona. Ancorado no wrapper do fabric (dentro do
+  // dialog), o foco fica no escopo e editar volta a funcionar.
+  obj.hiddenTextareaContainer = canvas.wrapperEl ?? null;
   attachEmptyTextCleanup(obj);
   canvas.add(obj);
   canvas.setActiveObject(obj);
   canvas.requestRenderAll();
   return obj;
+}
+
+/** Entra na edição do texto programaticamente (botão "Editar texto" — não
+ *  exige descobrir o duplo clique; no celular é o caminho principal). */
+export function beginTextEditing(canvas: Canvas, obj: IText): void {
+  canvas.setActiveObject(obj);
+  obj.enterEditing();
+  obj.selectAll();
+  canvas.requestRenderAll();
+}
+
+/** Paleta nas FORMAS: mesma troca de cor do texto, para seta e círculo. */
+export function applyShapeStroke(
+  canvas: Canvas,
+  obj: FabricObject,
+  color: string,
+): void {
+  obj.set({ stroke: color });
+  obj.setCoords();
+  canvas.requestRenderAll();
 }
 
 export function applyTextStyle(
@@ -512,6 +537,7 @@ export async function restoreAnnotations(
           : {}),
       });
       t.set({ flipX: layer.flipX ?? false, flipY: layer.flipY ?? false });
+      t.hiddenTextareaContainer = canvas.wrapperEl ?? null;
       (t as Tagged).dexoKind = "text";
       attachEmptyTextCleanup(t);
       canvas.add(t);
