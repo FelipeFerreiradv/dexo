@@ -1,7 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { GripVertical, Image as ImageIcon, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  GripVertical,
+  Image as ImageIcon,
+  Loader2,
+  RotateCcw,
+  Upload,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -9,7 +16,14 @@ import {
   classifyUploadError,
   uploadProductImage,
   validateImageFile,
+  type UploadBgJobRef,
 } from "@/lib/upload-image";
+import {
+  isImageBgJobTerminal,
+  retryImageBgJob,
+  type ImageBgJobStatus,
+} from "@/lib/image-bg-jobs";
+import { useImageBgJobs } from "@/hooks/use-image-bg-jobs";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
 import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
@@ -59,6 +73,14 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+/** Estado local de um recorte assíncrono em andamento, chaveado pela URL
+ *  provisória (WebP) que está no `value`. */
+interface BgJobState {
+  jobId: string;
+  status: string;
+  startedAt: number;
+}
+
 export function MultiImageUpload({
   value = [],
   onChange,
@@ -73,10 +95,107 @@ export function MultiImageUpload({
   const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
   const [addShadow, setAddShadow] = useAddShadowToggle(true);
 
+  // --- Recorte assíncrono (PR 4) ------------------------------------------
+  // O `value` continua sendo `string[]` puro (API intocada para os 4
+  // consumidores); o estado por-thumbnail vive só aqui. Quando o job conclui,
+  // trocamos a WebP provisória pelo PNG NA MESMA POSIÇÃO (preserva a ordem e
+  // o "Principal") — o setValue("imageUrl", urls[0]) dos consumidores reage.
+  const [bgJobs, setBgJobs] = useState<Record<string, BgJobState>>({});
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // Mapa webp→png de TODOS os swaps já concluídos. É a defesa contra o
+  // onChange progressivo do lote (que reconstrói o array a partir de uma
+  // closure STALE e reverteria um swap feito no meio do lote): qualquer
+  // caminho que monte um array novo aplica o alias antes do onChange.
+  const urlAliasRef = useRef<Map<string, string>>(new Map());
+  const applyAliases = useCallback((urls: string[]): string[] => {
+    const aliases = urlAliasRef.current;
+    if (aliases.size === 0) return urls;
+    return urls.map((u) => aliases.get(u) ?? u);
+  }, []);
+
+  // Re-render periódico só para a mensagem ">60s" do overlay evoluir.
+  const hasActiveBgJobs = Object.values(bgJobs).some(
+    (j) => !isImageBgJobTerminal(j.status),
+  );
+  const [, setBgPulse] = useState(0);
+  useEffect(() => {
+    if (!hasActiveBgJobs) return;
+    const id = setInterval(() => setBgPulse((p) => p + 1), 15_000);
+    return () => clearInterval(id);
+  }, [hasActiveBgJobs]);
+
+  const handleJobsUpdate = useCallback(
+    (jobs: ImageBgJobStatus[]) => {
+      const completed = jobs.filter(
+        (j) => j.status === "COMPLETED" && j.resultUrl,
+      );
+      if (completed.length > 0) {
+        // Todos os swaps deste poll numa PASSADA ÚNICA: `valueRef.current` só
+        // muda no render, então N chamadas de onChange no mesmo loop leriam o
+        // MESMO array stale e apenas o último swap sobreviveria.
+        for (const j of completed) {
+          urlAliasRef.current.set(j.webpUrl, j.resultUrl!);
+        }
+        const current = valueRef.current;
+        const next = applyAliases(current);
+        if (next.some((u, i) => u !== current[i])) {
+          onChangeRef.current(next);
+        }
+        setBgJobs((prev) => {
+          const next2 = { ...prev };
+          let changed = false;
+          for (const j of completed) {
+            if (next2[j.webpUrl]) {
+              delete next2[j.webpUrl];
+              changed = true;
+            }
+          }
+          return changed ? next2 : prev;
+        });
+      }
+      for (const job of jobs) {
+        if (job.status === "COMPLETED") continue;
+        setBgJobs((prev) => {
+          const entry = prev[job.webpUrl];
+          if (!entry || entry.status === job.status) return prev;
+          return { ...prev, [job.webpUrl]: { ...entry, status: job.status } };
+        });
+      }
+    },
+    [applyAliases],
+  );
+
+  const activeJobIds = Object.values(bgJobs)
+    .filter((j) => !isImageBgJobTerminal(j.status))
+    .map((j) => j.jobId);
+  useImageBgJobs(activeJobIds, handleJobsUpdate);
+
+  const handleRetryBgJob = useCallback(
+    async (jobId: string, url: string) => {
+      const ok = await retryImageBgJob(jobId).catch(() => false);
+      if (ok) {
+        setBgJobs((prev) =>
+          prev[url]
+            ? {
+                ...prev,
+                [url]: { ...prev[url], status: "PENDING", startedAt: Date.now() },
+              }
+            : prev,
+        );
+      } else {
+        onError?.("Não foi possível reprocessar o recorte. Tente de novo.");
+      }
+    },
+    [onError],
+  );
+
   const uploadFile = useCallback(
     async (
       file: File,
-    ): Promise<{ url: string | null; warning?: string }> => {
+    ): Promise<{ url: string | null; warning?: string; bgJob?: UploadBgJobRef }> => {
       // Arquivo inválido avisa e NÃO conta como falha de upload (igual a antes).
       const invalid = validateImageFile(file);
       if (invalid) {
@@ -87,8 +206,16 @@ export function MultiImageUpload({
       const result = await uploadProductImage(file, {
         removeBackground,
         addShadow,
+        // Opt-in do recorte assíncrono: só tem efeito se UPLOAD_ASYNC_REMBG
+        // estiver ligado no servidor (duplo opt-in). Sem ele, o servidor
+        // ignora o campo e responde como sempre.
+        asyncBg: true,
       });
-      return { url: result.url, warning: result.warning };
+      return {
+        url: result.url,
+        warning: result.warning,
+        bgJob: result.bgJob,
+      };
     },
     [onError, removeBackground, addShadow],
   );
@@ -119,14 +246,30 @@ export function MultiImageUpload({
             if (r.url) {
               slots[index] = r.url;
               const done = slots.filter((u): u is string => u !== null);
-              onChange([...value, ...done]);
+              // `value` aqui é a closure do INÍCIO do lote (comportamento
+              // histórico do progressivo); o applyAliases impede que este
+              // rebuild reverta um swap webp→png concluído no meio do lote.
+              onChangeRef.current(applyAliases([...value, ...done]));
+              if (r.bgJob) {
+                const url = r.url;
+                const jobId = r.bgJob.jobId;
+                setBgJobs((prev) => ({
+                  ...prev,
+                  [url]: { jobId, status: "PENDING", startedAt: Date.now() },
+                }));
+              }
             }
             return r;
           },
         );
         const fulfilled = settled.filter(
-          (r): r is PromiseFulfilledResult<{ url: string | null; warning?: string }> =>
-            r.status === "fulfilled",
+          (
+            r,
+          ): r is PromiseFulfilledResult<{
+            url: string | null;
+            warning?: string;
+            bgJob?: UploadBgJobRef;
+          }> => r.status === "fulfilled",
         );
 
         // Dedup warnings: se múltiplas imagens caíram no mesmo fallback,
@@ -212,6 +355,10 @@ export function MultiImageUpload({
   const handleRemove = useCallback(
     (index: number) => {
       const updated = value.filter((_, i) => i !== index);
+      // NÃO paramos de acompanhar o job da imagem removida: o onChange stale
+      // de um lote em voo pode "ressuscitar" a URL (limitação pré-existente
+      // do progressivo) — mantendo o tracking, o swap ainda a alcança via
+      // alias. Se a remoção for definitiva, o COMPLETED só limpa o estado.
       onChange(updated);
     },
     [value, onChange],
@@ -262,6 +409,39 @@ export function MultiImageUpload({
                 alt={`Imagem ${index + 1}`}
                 className="aspect-square w-full object-cover"
               />
+              {(() => {
+                const job = bgJobs[url];
+                if (!job) return null;
+                if (job.status === "FAILED") {
+                  return (
+                    <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-amber-500/90 px-1.5 py-1">
+                      <span className="truncate text-[10px] font-medium text-white">
+                        Recorte falhou
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon"
+                        className="h-5 w-5 shrink-0"
+                        title="Tentar recortar novamente"
+                        onClick={() => void handleRetryBgJob(job.jobId, url)}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-background/85 px-1.5 py-1 backdrop-blur-[2px]">
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                    <span className="truncate text-[10px] text-muted-foreground">
+                      {Date.now() - job.startedAt > 60_000
+                        ? "Ainda recortando — pode salvar normalmente"
+                        : "Recortando fundo…"}
+                    </span>
+                  </div>
+                );
+              })()}
               {index === 0 && (
                 <span className="absolute top-1 left-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
                   Principal

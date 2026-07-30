@@ -609,6 +609,38 @@ model StockSyncJob {
   @@index([productId])
 }
 
+// Job durável do RECORTE ASSÍNCRONO (PR 4 da remoção universal): o upload
+// responde na hora com a WebP otimizada e cria este job; o worker in-process
+// (ImageBgWorkerService) processa o recorte SEM orçamento de request e, ao
+// concluir, troca as referências (Product/Scrap/Listing) da WebP pelo PNG.
+// DDL manual em produção; ver prisma/migrations/20260730020000_add_image_bg_job.
+model ImageBgJob {
+  id             String    @id @default(cuid())
+  uploadUuid     String    @unique
+  origFileName   String
+  webpFileName   String
+  addShadow      Boolean   @default(false)
+  status         String    @default("PENDING") // PENDING|PROCESSING|COMPLETED|FAILED
+  attempts       Int       @default(0)
+  nextRunAt      DateTime  @default(now())
+  // Lease do claim: PROCESSING com lease vencida volta a PENDING (worker
+  // morreu no meio — pm2 restart). Não há multi-worker hoje; o lease protege
+  // contra o restart, não contra concorrência.
+  leaseExpiresAt DateTime?
+  resultFileName String?
+  // Varreduras extras de swap pós-conclusão: cobrem a corrida "produto salvo
+  // com a WebP DEPOIS do swap principal" (+2min e +10min).
+  swapSweepsLeft Int       @default(2)
+  nextSweepAt    DateTime?
+  lastError      String?
+  userId         String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([userId, createdAt])
+}
+
 model BulkListingJob {
   id               String        @id @default(cuid())
   userId           String
