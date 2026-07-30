@@ -33,6 +33,14 @@ import { SystemLogService } from "@/app/services/system-log.service";
 import { processUploadedImage } from "./image-resize.service";
 import { recordImageOutcome } from "./rembg-telemetry";
 import { swapImageUrlReferences } from "./image-bg-swap";
+import {
+  externalRembgBreaker,
+  localRembgBreaker,
+} from "./rembg-breaker";
+import {
+  isLocalSidecarConfigured,
+  readExternalProviderConfig,
+} from "./rembg-providers";
 
 const BACKOFF_SECONDS = [30, 120, 300, 900, 1800];
 const LEASE_MS = 15 * 60 * 1000;
@@ -160,9 +168,31 @@ export class ImageBgWorkerService {
     }
   }
 
+  /** PR 5: consulta os BREAKERS antes do claim — com falha de infra certa em
+   *  todos os elos, claim só queimaria uma tentativa do backoff. Consulta
+   *  PURA (peek): não reivindica a sonda HALF_OPEN. Importante: só o BREAKER
+   *  segura o claim (estado transitório de ≤60s); "nada configurado"/
+   *  killswitch preserva o comportamento do PR 4 (claim + degradação +
+   *  backoff) — inclusive nos specs do worker, que mockam o
+   *  processUploadedImage sem configurar env nenhuma. */
+  private static anyProviderMightServe(): boolean {
+    // Sem sidecar local ligado a cadeia INTEIRA está fora (o elo externo
+    // exige `sidecarAvailable` no image-resize — killswitch de incidente
+    // nunca vira desvio para o provedor pago). Devolver true preserva o
+    // comportamento do PR 4 (claim → degrada killswitch → backoff).
+    if (!isLocalSidecarConfigured()) return true;
+    if (localRembgBreaker.peekAllowed()) return true;
+    // Breaker local aberto: só vale fazer claim se o elo externo puder cobrir.
+    const externalCfg = readExternalProviderConfig();
+    return externalCfg !== null && externalRembgBreaker.peekAllowed();
+  }
+
   /** Processa UM job por tick — o sidecar tem 1 worker; paralelizar aqui só
    *  criaria fila interna e roubaria os slots do tráfego síncrono. */
   private static async processNextJob(): Promise<void> {
+    if (!this.anyProviderMightServe()) {
+      return; // breaker(s) abertos/killswitch — espera o próximo tick
+    }
     const candidate: ImageBgJobRow | null = await (
       prisma as any
     ).imageBgJob.findFirst({
@@ -234,6 +264,8 @@ export class ImageBgWorkerService {
         // por TEMPO que este worker existe para eliminar. Aqui não há proxy
         // no caminho; o teto real é o lease (15min > 10min do budget).
         rembgTimeoutMs: jobBudgetMs,
+        // Rastro LGPD caso o recorte saia pelo provedor externo (PR 5).
+        tenantUserId: candidate.userId ?? undefined,
       });
 
       if (!result.removedBackground) {

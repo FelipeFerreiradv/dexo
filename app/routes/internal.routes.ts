@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import axios from "axios";
+import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { requireSuperadmin } from "../middlewares/require-superadmin.middleware";
 import { getRembgGateStats } from "../marketplaces/services/rembg-gate";
@@ -8,6 +9,9 @@ import {
   getRecentImageEvents,
   isImageMetricsEnabled,
 } from "../marketplaces/services/rembg-telemetry";
+import { getBreakerSnapshots } from "../marketplaces/services/rembg-breaker";
+import { getTodayProviderUsage } from "../marketplaces/services/rembg-provider-usage";
+import { readExternalProviderConfig } from "../marketplaces/services/rembg-providers";
 
 /**
  * Rotas internas de diagnóstico operacional. Guardadas por requireSuperadmin —
@@ -76,6 +80,31 @@ export async function internalRoutes(app: FastifyInstance) {
         }
       }
 
+      // PR 5: breaker + provedor externo (config sem segredos + uso de hoje).
+      const externalCfg = readExternalProviderConfig();
+      let externalUsage: Awaited<
+        ReturnType<typeof getTodayProviderUsage>
+      > | null = null;
+      try {
+        externalUsage = await getTodayProviderUsage();
+      } catch {
+        // tabela ausente/banco fora — o diagnóstico continua de pé
+      }
+
+      // PR 4/5: fila do recorte assíncrono (contagem por status).
+      let asyncJobs: Record<string, number> | null = null;
+      try {
+        const grouped = await (prisma as any).imageBgJob.groupBy({
+          by: ["status"],
+          _count: { _all: true },
+        });
+        asyncJobs = Object.fromEntries(
+          grouped.map((g: any) => [g.status, g._count._all]),
+        );
+      } catch {
+        // idem — nunca derruba o endpoint
+      }
+
       const events = getRecentImageEvents();
       return {
         now: new Date().toISOString(),
@@ -84,8 +113,16 @@ export async function internalRoutes(app: FastifyInstance) {
         sidecar,
         rates,
         ...(ratesError ? { ratesError } : {}),
-        breaker: null,
-        asyncJobs: null,
+        breaker: getBreakerSnapshots(),
+        externalProvider: externalCfg
+          ? {
+              name: externalCfg.name,
+              maxPerDay: externalCfg.maxPerDay,
+              timeoutMs: externalCfg.timeoutMs,
+              usageToday: externalUsage,
+            }
+          : null,
+        asyncJobs,
         recentEvents: events.slice(-20),
         recentErrors: events.filter((e) => !e.ok).slice(-10),
         process: {
