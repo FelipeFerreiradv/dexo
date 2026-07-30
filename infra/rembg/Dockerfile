@@ -23,6 +23,7 @@ ENV REMBG_MODEL=${REMBG_MODEL}
 # no primeiro request em produção (senão a 1ª chamada baixaria e duraria dezenas de s).
 RUN python -c "from rembg import new_session; new_session('$REMBG_MODEL')"
 
+COPY mask_postprocess.py .
 COPY app.py .
 
 EXPOSE 8000

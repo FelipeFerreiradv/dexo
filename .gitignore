@@ -76,3 +76,4 @@ scripts/_tmp-*
 # runtime cache (shopee category attrs, etc) — populado em prod, não versionado
 .cache/
 
+__pycache__/

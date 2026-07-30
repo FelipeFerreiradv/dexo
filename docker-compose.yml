@@ -82,6 +82,17 @@ services:
       # Cap defensivo de pixels: o app manda <=1600px (~2MP), NUNCA e' afetado.
       # Protege o worker unico de callers diretos full-res (12MP+ = minutos).
       REMBG_MAX_INPUT_MP: "6"
+      # Pos-processamento topologico da mascara (PR 2 da remocao universal):
+      # descarta componentes parasitas (limiar RELATIVO — multi-parte legitima
+      # sobrevive), preenche furos-RUIDO (furo real de parafuso preservado) e
+      # colapsa o bbox que dimensiona o custo da sombra (cauda de 17-48s em
+      # prod POS-sigma-cap vinha de alpha espalhado pelo quadro). LIGAR SOMENTE
+      # apos o gate golden /golden/core passar com a flag ON (exige rebuild:
+      # up -d --build). Tunables REMBG_MASK_* documentados no README e em
+      # mask_postprocess.py. A supressao de sombra projetada REAL e' flag
+      # SEPARADA e experimental — nunca ligar junto com o primeiro rollout.
+      REMBG_MASK_POSTPROCESS: "false"
+      REMBG_MASK_SHADOW_SUPPRESS: "false"
     # ⚠️ PONTE do incidente 2026-07-24 (era 12g): o ratchet de RSS (glibc +
     # arena do ONNX) leva o container a OOM kill sob carga contínua (medido
     # 21/07: 11,9GiB/12g, 4 kills em 53min, CONSTRAINT_MEMCG). 16g compra horas
