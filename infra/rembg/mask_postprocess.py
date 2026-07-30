@@ -356,6 +356,12 @@ def confidence_score(signals: dict) -> float:
     # ha o que os outros sinais "compensarem".
     if signals["cov"] <= 0.001:
         return 0.0
+    # Ha foreground solido mas NENHUM componente relevante (>0.1% do frame):
+    # e' a mascara "so specks" — fragmentos sem ancora, a pior classe (a mesma
+    # que o guard do postprocess_mask deliberadamente nao toca). Sem este
+    # curto-circuito ela escoraria ~0.95 e envenenaria a calibracao.
+    if signals["ncomp"] == 0:
+        return 0.0
 
     p_amb = min(signals["amb"] / 0.20, 1.0)
     p_ncomp = min(max(signals["ncomp"] - 1, 0) / 5.0, 1.0)

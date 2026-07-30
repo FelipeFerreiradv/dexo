@@ -89,6 +89,20 @@ class TestSignals(unittest.TestCase):
         self.assertGreaterEqual(score, 0.0)
         self.assertLessEqual(score, 1.0)
 
+    def test_mascara_so_de_specks_score_zero(self):
+        # Fragmentos sem ancora (cov>0 mas nenhum componente relevante): a
+        # PIOR classe de mascara — sem o curto-circuito, escoraria ~0.95 e
+        # envenenaria a calibracao do modo observacao.
+        a = blank(500, 500)
+        for i in range(10):
+            for j in range(10):
+                y, x = 10 + i * 48, 10 + j * 48
+                a[y : y + 5, x : x + 5] = 255  # 100 specks de 25px
+        s = mask_signals(a)
+        self.assertEqual(s["ncomp"], 0)
+        self.assertGreater(s["cov"], 0.001)
+        self.assertEqual(confidence_score(s), 0.0)
+
     def test_alpha_vazio_nao_quebra(self):
         s = mask_signals(blank())
         self.assertEqual(s["ncomp"], 0)
