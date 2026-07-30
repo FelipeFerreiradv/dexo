@@ -267,3 +267,62 @@ describe("marca d'água só avança quando a janela foi realmente varrida", () =
     expect(prisma.marketplaceAccount.update).not.toHaveBeenCalled();
   });
 });
+
+describe("busca dirigida não relê o catálogo da conta", () => {
+  // Achado ALTA de egress (30/07/2026): a ingestão dirigida de UM pedido montava
+  // o listingMap lendo TODOS os ProductListing da conta. Numa conta de produção
+  // com 11.670 anúncios são ~1,6 MB de egress por chamada, contra 1-2 findUnique
+  // por id no caminho de fallback — que produz o MESMO resultado.
+  beforeEach(() => {
+    vi.spyOn(MarketplaceRepository, "findById").mockResolvedValue(ACC as any);
+  });
+
+  it("com orderSns NÃO lê ProductListing da conta", async () => {
+    const listings = vi
+      .spyOn(prisma.productListing, "findMany")
+      .mockResolvedValue([] as any);
+    vi.spyOn(ShopeeApiService as any, "getOrderDetails").mockResolvedValue([]);
+
+    await OrderUseCase.importRecentShopeeOrdersForAccount("acc-1", 1, false, {
+      orderSns: ["SN-DIRIGIDO"],
+    });
+
+    expect(listings).not.toHaveBeenCalled();
+  });
+
+  it("no poll em lote CONTINUA lendo (o mapa evita N+1 ali)", async () => {
+    const listings = vi
+      .spyOn(prisma.productListing, "findMany")
+      .mockResolvedValue([] as any);
+    vi.spyOn(ShopeeApiService as any, "getOrderList").mockResolvedValue({
+      order_list: [{ order_sn: "SN-NOVO" }],
+      more: false,
+    });
+    vi.spyOn(ShopeeApiService as any, "getOrderDetails").mockResolvedValue([
+      {
+        order_sn: "SN-NOVO",
+        order_status: "COMPLETED",
+        total_amount: 10,
+        create_time: 1783000000,
+        item_list: [{ item_id: 1, item_sku: "X", model_quantity_purchased: 1 }],
+      },
+    ]);
+    // Sem isto a cadeia de vinculo iria ao banco de verdade: o objetivo aqui e
+    // so afirmar que o prefetch continua acontecendo no caminho em lote.
+    vi.spyOn(OrderUseCase as any, "ingestShopeeOrder").mockResolvedValue({
+      success: true,
+      orderId: "o1",
+      externalOrderId: "SN-NOVO",
+      status: "imported",
+      message: "",
+      stockDeducted: false,
+      itemsLinked: 1,
+      itemsTotal: 1,
+    });
+
+    await OrderUseCase.importRecentShopeeOrdersForAccount("acc-1", 7, false);
+
+    // O ganho é só no caminho dirigido: o poll segue prefetchando.
+    expect(listings).toHaveBeenCalled();
+  });
+});

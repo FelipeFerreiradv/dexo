@@ -123,7 +123,12 @@ export class OrderIngestionReconcilerService {
         },
       },
     });
+
     if (!issue) return { resolved: false };
+
+    // O botao vale para OPEN e para NEEDS_ACTION — este ultimo e exatamente o
+    // caso de "cadastrei o produto, tenta agora".
+    if (issue.status === "RESOLVED") return { resolved: true };
 
     // Já tem uma tentativa em voo neste processo (o tick do worker pegou a
     // mesma pendência): não duplica o trabalho.
@@ -199,7 +204,14 @@ export class OrderIngestionReconcilerService {
           marketplaceAccountId: issue.marketplaceAccountId,
           externalOrderId: issue.externalOrderId,
         },
-        select: { id: true, status: true, stockDeductedAt: true },
+        select: {
+          id: true,
+          status: true,
+          stockDeductedAt: true,
+          // Precisa saber se o pedido tem item: um Order de ZERO itens nao pode
+          // fechar a pendencia (ver abaixo).
+          items: { select: { id: true } },
+        },
       });
 
       if (!local) {
@@ -219,8 +231,27 @@ export class OrderIngestionReconcilerService {
         return;
       }
 
-      // Existe: falta garantir a baixa. Idempotente pelo net do StockLog, agora
-      // lido dentro da transação.
+      // Order existe mas SEM ITEM: a venda esta visivel e o estoque nao baixou,
+      // porque o produto nao esta cadastrado. Fechar a pendencia aqui seria
+      // exatamente o estado terminal silencioso que o invariante proibe — a
+      // venda desapareceria da tela de Pendencias sem ter sido resolvida.
+      //
+      // Achado da auditoria de 30/07/2026: `retryStockDeduction` devolvia `true`
+      // para pedido sem itens (nada a baixar, nenhuma excecao), e este ramo
+      // fechava a pendencia na PRIMEIRA volta do worker. Com 173 Order sem itens
+      // em producao, toda pendencia de ML/Magalu sumiria em <= 10 min.
+      // `items?.length` e nao `items.length`: se o select falhar e vier
+      // undefined, a decisao segura e NAO fechar a pendencia.
+      if (!local.items?.length) {
+        await this.registerFailure(
+          issue,
+          `Pedido ${issue.platform} existe (${local.id}) mas sem item vinculado: o produto ainda nao esta cadastrado.`,
+        );
+        return;
+      }
+
+      // Existe e tem item: falta garantir a baixa. Idempotente pelo net do
+      // StockLog, agora lido dentro da transação.
       const { OrderUseCase: UC } = await import("../usecases/order.usercase");
       const baixou = await UC.retryStockDeduction(
         local.id,
@@ -354,6 +385,26 @@ export class OrderIngestionReconcilerService {
   ): Promise<void> {
     const attempts = (issue.attempts ?? 0) + 1;
 
+    // Esgotou as tentativas num problema que a MAQUINA nao resolve? Sai da fila
+    // automatica, mas NAO sai da tela.
+    //
+    // Medido em producao 30/07/2026: 166 pendencias abertas, 89 delas ja em
+    // attempts>=5, todas NO_LINKED_ITEMS de produto que nao existe no Dexo. O
+    // reconciliador seguia batendo na API da Shopee de hora em hora, para cada
+    // uma, indefinidamente — e o aviso na tela do cliente nunca zerava, virando
+    // ruido que treina a ignorar o banner.
+    //
+    // O invariante proibe estado terminal SILENCIOSO. `NEEDS_ACTION` nao e
+    // silencioso: continua listado, com texto dizendo o que o cliente precisa
+    // fazer, e o botao "Tentar novamente" segue funcionando. O que para e o
+    // gasto de chamada externa com um problema que so acao humana fecha. E se o
+    // cliente cadastrar o produto, o proprio poll importa o item e o `resolve()`
+    // fecha a pendencia — sem depender do reconciliador.
+    const soClienteResolve =
+      process.env.ORDER_INGESTION_NEEDS_ACTION_DISABLED !== "1" &&
+      attempts >= STUCK_AFTER_ATTEMPTS &&
+      issue.reason === "NO_LINKED_ITEMS";
+
     try {
       await (prisma as any).orderIngestionIssue.update({
         where: { id: issue.id },
@@ -361,9 +412,10 @@ export class OrderIngestionReconcilerService {
           attempts,
           detail: detail.slice(0, 500),
           nextRetryAt: OrderIngestionIssueService.nextRetryFrom(attempts),
-          // Continua OPEN de propósito: nunca existe estado terminal de falha
-          // que faça a pendência sumir da tela do cliente.
-          status: "OPEN",
+          // Nunca existe estado terminal de falha que faça a pendência sumir da
+          // tela do cliente: OPEN continua sendo re-tentado, NEEDS_ACTION sai da
+          // fila automática mas segue visível.
+          status: soClienteResolve ? "NEEDS_ACTION" : "OPEN",
         },
       });
     } catch (err) {

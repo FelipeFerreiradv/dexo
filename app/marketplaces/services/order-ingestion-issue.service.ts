@@ -23,6 +23,19 @@ export type OrderIngestionIssueReason =
   /** Qualquer exceção inesperada durante a ingestão. */
   | "INGEST_FAILED";
 
+/**
+ * Estados de uma pendencia.
+ *
+ * - `OPEN`: o reconciliador re-tenta automaticamente, com backoff.
+ * - `NEEDS_ACTION`: esgotou as tentativas e SO se resolve com acao do cliente
+ *   (cadastrar o produto que falta). Para de ser re-tentado, mas CONTINUA
+ *   visivel na tela — o invariante proibe estado terminal silencioso, nao
+ *   proibe parar de gastar chamada de API com um problema que a maquina nao
+ *   resolve. O botao "Tentar novamente" segue funcionando.
+ * - `RESOLVED`: o pedido entrou completo e com baixa.
+ */
+export const STATUS_PENDENTES = ["OPEN", "NEEDS_ACTION"] as const;
+
 export interface OpenIssueInput {
   marketplaceAccountId: string;
   platform: "MERCADO_LIVRE" | "SHOPEE" | "MAGALU";
@@ -103,6 +116,39 @@ export class OrderIngestionIssueService {
       ? this.prunePayload(input.payload)
       : undefined;
 
+    // Estado ANTES do upsert, para decidir se este registro é NOVIDADE.
+    //
+    // Por que existe (medido em produção 30/07/2026): `open()` gravava um
+    // SystemLog e uma linha de log a CADA chamada. Um pedido sem vínculo nunca
+    // vira Order completo, então reaparece em toda passada do poll (15 min) e em
+    // toda volta do reconciliador (10 min). Com 166 pendências abertas isso deu
+    // 2.376 SystemLog em 2 horas — cerca de 28 mil por dia, crescendo sem fim,
+    // pelo MESMO problema já registrado. O caminho da Magalu já tinha guarda
+    // contra isso; este não tinha.
+    //
+    // Agora só registra quando muda alguma coisa: pendência nova, motivo
+    // diferente, ou pendência que estava RESOLVED e reabriu. A linha no banco
+    // continua sendo atualizada sempre — o que deixa de repetir é o AVISO.
+    let anterior: { reason: string; status: string } | null = null;
+    try {
+      anterior = await (prisma as any).orderIngestionIssue.findUnique({
+        where: {
+          marketplaceAccountId_externalOrderId: {
+            marketplaceAccountId: input.marketplaceAccountId,
+            externalOrderId: input.externalOrderId,
+          },
+        },
+        select: { reason: true, status: true },
+      });
+    } catch {
+      // Não saber o estado anterior só faz o aviso sair uma vez a mais.
+      anterior = null;
+    }
+    const novidade =
+      !anterior ||
+      anterior.reason !== input.reason ||
+      (anterior.status !== "OPEN" && anterior.status !== "NEEDS_ACTION");
+
     try {
       await (prisma as any).orderIngestionIssue.upsert({
         where: {
@@ -125,7 +171,11 @@ export class OrderIngestionIssueService {
           reason: input.reason,
           detail: input.detail ?? null,
           ...(payload ? { payload } : {}),
-          status: "OPEN",
+          // NAO rebaixa NEEDS_ACTION para OPEN. Um pedido sem vinculo reaparece
+          // em toda passada do poll; sem esta guarda, a pendencia que ja foi
+          // classificada como "so o cliente resolve" voltaria para a fila
+          // automatica a cada 15 min e o teto de tentativas nunca valeria.
+          ...(anterior?.status === "NEEDS_ACTION" ? {} : { status: "OPEN" }),
           ...(input.orderId ? { resolvedOrderId: input.orderId } : {}),
         },
       });
@@ -135,6 +185,9 @@ export class OrderIngestionIssueService {
         err instanceof Error ? err.message : err,
       );
     }
+
+    // Só quando algo mudou: ver a nota sobre as 2.376 linhas em 2 horas.
+    if (!novidade) return;
 
     // Log estruturado para grep no PM2, além do registro em banco.
     console.log(
@@ -180,7 +233,10 @@ export class OrderIngestionIssueService {
         where: {
           marketplaceAccountId,
           externalOrderId,
-          status: "OPEN",
+          // NEEDS_ACTION tambem fecha: o cliente cadastrou o produto que
+          // faltava e o pedido entrou. Sem isto, a pendencia que saiu da fila
+          // automatica nunca sairia da tela.
+          status: { in: [...STATUS_PENDENTES] },
         },
         data: { status: "RESOLVED", resolvedOrderId: orderId, attempts: 0 },
       });

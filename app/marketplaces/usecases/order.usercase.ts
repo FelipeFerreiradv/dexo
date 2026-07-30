@@ -591,7 +591,15 @@ export class OrderUseCase {
       (o) => !existingSet.has(o.order_sn),
     );
     const listingMap = new Map<string, any>();
-    if (hasNewOrders) {
+    // Busca DIRIGIDA (webhook, reconciliador, script) traz 1 ou 2 pedidos. Ler os
+    // anuncios todos da conta para montar o mapa custa mais do que a consulta por
+    // item que o fallback faz: numa conta de producao com 11.670 ProductListing
+    // sao ~1,6 MB de egress por chamada, contra 1-2 findUnique por id. O
+    // resultado e identico — `mapShopeeOrderItems` sem mapa faz o mesmo lookup,
+    // um a um (convencao 9 do repo: nao carregar colecao grande fora do caminho
+    // que precisa dela).
+    const vaiUsarMapa = hasNewOrders && !options?.orderSns?.length;
+    if (vaiUsarMapa) {
       const accountListings = await prisma.productListing.findMany({
         where: { marketplaceAccountId: account.id },
         // EGRESS: select mínimo. mapOrderItems/mapShopeeOrderItems usam APENAS
@@ -619,7 +627,10 @@ export class OrderUseCase {
           userId: account.userId,
           deductStock,
           alreadyExists: existingSet.has(shopeeOrder.order_sn),
-          listingMap,
+          // `undefined` (nao um Map vazio) quando o mapa nao foi montado: o Map
+          // vazio faria todo `.get()` devolver undefined e o item cairia como
+          // NAO vinculado, sem nem tentar o lookup por id.
+          listingMap: vaiUsarMapa ? listingMap : undefined,
         },
       );
 
@@ -1081,7 +1092,40 @@ export class OrderUseCase {
     // Pedido cancelado não baixa — e a pendência deixa de fazer sentido.
     if (order.status === "CANCELLED") return true;
 
-    const reason = `Venda ${platformLabel === "SHOPEE" ? "Shopee" : platformLabel} #${externalOrderId}`;
+    // A `reason` do StockLog e a UNICA ancora de idempotencia da baixa. Ela tem
+    // de ser identica string por string a que a baixa ORIGINAL gravou, senao o
+    // net volta zero e o pedido inteiro e descontado de novo.
+    //
+    // O que estava errado (achado da auditoria de performance, 30/07/2026): o
+    // reconciliador passa `issue.platform`, que e o enum do Prisma
+    // (MERCADO_LIVRE / MAGALU / SHOPEE), e o mapeamento tratava so o SHOPEE. As
+    // baixas originais gravam "Venda ML #", "Venda Magalu #" e "Venda Shopee #"
+    // (linhas 1509, 2189 e 863; o tipo canonico esta em processOrderCancellation:
+    // "ML" | "Shopee" | "Magalu"). Resultado para ML e Magalu: o retry procurava
+    // "Venda MERCADO_LIVRE #id" / "Venda MAGALU #id", nao achava nada, e baixava
+    // o pedido OUTRA VEZ. Deterministico, silencioso e irreversivel — a mesma
+    // classe de defeito que este mesmo metodo acabou de consertar para a Shopee.
+    //
+    // Ficou LIVE quando a quarentena de ML/Magalu entrou (a44a0cc), porque foi ai
+    // que o reconciliador comecou a chamar este caminho com o enum.
+    const reason = `Venda ${this.rotuloDaPlataforma(platformLabel)} #${externalOrderId}`;
+
+    // Pedido SEM item nenhum nao tem baixa a efetivar, e dizer que "baixou"
+    // seria mentira com consequencia: o reconciliador usa este retorno para
+    // FECHAR a pendencia, e a venda sem item viraria estado terminal silencioso
+    // — o que o invariante proibe. Isso passou a acontecer de verdade quando o
+    // Order de zero itens foi criado (7a0e282): 173 pedidos em producao.
+    if (order.items.length === 0) {
+      console.log(
+        JSON.stringify({
+          event: "order.retry_stock_deduction.sem_itens",
+          orderId,
+          externalOrderId,
+          platform: platformLabel,
+        }),
+      );
+      return false;
+    }
 
     // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
     // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
@@ -1230,6 +1274,40 @@ export class OrderUseCase {
   }): Promise<string | null> {
     if (process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED === "1") return null;
 
+    // SÓ Shopee, e por um motivo concreto — não por preferência.
+    //
+    // O Order sem itens é METADE de um par: a outra metade é o caminho que
+    // ACRESCENTA os itens quando o cliente finalmente cadastra o produto. Na
+    // Shopee esse caminho existe (`completePartialShopeeOrder`, chamado pelo
+    // reconciliador com o payload do pedido guardado na pendência).
+    //
+    // No ML e na Magalu ele NÃO existe, e o Order vazio se torna uma armadilha:
+    // `orderRepository.exists()` passa a devolver true, o import seguinte
+    // responde `already_exists` e os itens nunca entram. A venda ficaria
+    // permanentemente incompleta — no faturamento pelo valor, sem baixa de
+    // estoque, para sempre. Achado ALTA da auditoria de performance de
+    // 30/07/2026, confirmado por 3 lentes.
+    //
+    // Enquanto o par não estiver completo, ML e Magalu ficam só com a
+    // QUARENTENA: a venda é registrada e visível na aba de Pendências (o
+    // invariante proíbe descarte silencioso, e isso continua garantido), mas não
+    // se cria um Order que ninguém consegue completar depois. Para habilitar,
+    // basta um `completePartialOrder` equivalente para as duas — e então trocar
+    // esta condição.
+    if (params.plataforma !== "SHOPEE") {
+      console.log(
+        JSON.stringify({
+          event: "order_import.sem_itens_nao_criado",
+          platform: params.plataforma,
+          marketplaceAccountId: params.marketplaceAccountId,
+          externalOrderId: params.externalOrderId,
+          motivo:
+            "sem caminho de completar o pedido depois; a venda fica registrada na quarentena",
+        }),
+      );
+      return null;
+    }
+
     try {
       const criado = await orderRepository.create({
         marketplaceAccountId: params.marketplaceAccountId,
@@ -1267,6 +1345,36 @@ export class OrderUseCase {
         );
       }
       return null;
+    }
+  }
+
+  /**
+   * Rotulo canonico da plataforma nas `reason` de StockLog.
+   *
+   * Aceita tanto o enum do Prisma (MERCADO_LIVRE / SHOPEE / MAGALU) quanto o
+   * rotulo ja pronto ("ML" / "Shopee" / "Magalu"), porque os dois circulam: o
+   * importador usa o rotulo e o reconciliador tem em maos o enum da pendencia.
+   *
+   * Estritamente ADITIVO em relacao ao mapeamento anterior
+   * (`p === "SHOPEE" ? "Shopee" : p`): para "SHOPEE", "ML", "Shopee" e "Magalu" a
+   * saida e exatamente a mesma. O que muda e so o que antes produzia uma `reason`
+   * QUE NAO EXISTIA no banco — MERCADO_LIVRE e MAGALU. Por isso nao precisa de
+   * kill-switch: nao ha comportamento correto anterior a preservar.
+   */
+  private static rotuloDaPlataforma(p: string): string {
+    switch (p) {
+      case "MERCADO_LIVRE":
+      case "ML":
+        return "ML";
+      case "SHOPEE":
+      case "Shopee":
+        return "Shopee";
+      case "MAGALU":
+      case "Magalu":
+        return "Magalu";
+      default:
+        // Plataforma nova: preserva o valor recebido, como antes.
+        return p;
     }
   }
 
@@ -2605,7 +2713,19 @@ export class OrderUseCase {
                 externalListingId,
               },
             },
-            include: { product: true },
+            // EGRESS: `include: { product: true }` puxava a linha inteira do
+            // Product — `mlCatalogSnapshot`, `attributes`, `imageUrls` (3 JSONB
+            // com detoast) e `description` — so para testar se o produto EXISTE.
+            // O consumidor abaixo le apenas `listing.id`, `listing.productId` e a
+            // existencia de `listing.product`. Mesmo select do caminho em lote
+            // (convencao 2 do repo).
+            select: {
+              id: true,
+              productId: true,
+              marketplaceAccountId: true,
+              externalListingId: true,
+              product: { select: { id: true } },
+            },
           });
 
       if (listing && listing.product) {
