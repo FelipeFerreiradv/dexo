@@ -124,6 +124,17 @@ api.register(fastifyCors, {
   ],
 });
 
+// Limite PADRÃO do multipart. Dimensionado para as rotas de IMAGEM
+// (/upload/image, /upload/image/edited, /upload/image/assets, /v1/images/*),
+// que são as únicas abertas a qualquer usuário autenticado — sem este teto,
+// qualquer conta hospedaria blobs arbitrários (ver comentário em
+// upload.routes.ts).
+//
+// ⚠️ Rota que precisa de mais NÃO mexe aqui: o @fastify/multipart aceita
+// limites por-requisição em `request.parts({limits})` e eles VENCEM o registro
+// global (deepmergeAll em index.js:261). É o que a importação de bases legadas
+// faz (superadmin-import.routes.ts, tetos em lib/import-limits.ts) — planilha
+// de migração chega a dezenas de MB e a rota é restrita a superadmin.
 api.register(fastifyMultipart, {
   limits: {
     fileSize: 20 * 1024 * 1024, // 20MB

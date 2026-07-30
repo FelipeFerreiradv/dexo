@@ -94,9 +94,23 @@ export class ImportApplyUseCase {
       });
 
       jobStarted = true;
+      // ⚠️ NENHUM closure que sobrevive a este método pode tocar em `input`.
+      // O V8 aloca o escopo inteiro da função quando qualquer closure
+      // referencia uma variável dele — bastava um `input.targetUserId` dentro
+      // do `setImmediate`/`finally` para manter TODOS os buffers dos arquivos
+      // vivos durante os minutos do job (o de fotos do Emp595 tem 36 MB), em
+      // cima das linhas já materializadas em `detected` — essas sim
+      // necessárias. Por isso o id é copiado para um local antes.
+      const alvoDoJob = input.targetUserId;
       setImmediate(() => {
-        void this.runJob(jobId, input, detected, runner, ignored).finally(() => {
-          applyingTargets.delete(input.targetUserId);
+        void this.runJob(
+          jobId,
+          { targetUserId: alvoDoJob },
+          detected,
+          runner,
+          ignored,
+        ).finally(() => {
+          applyingTargets.delete(alvoDoJob);
         });
       });
 

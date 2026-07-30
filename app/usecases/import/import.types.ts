@@ -41,7 +41,12 @@ export type ImportEntity =
   // produto por SKU (vincula a localização) e cria os produtos faltantes.
   | "ESTOQUE";
 
-/** Arquivo recebido no multipart, já em memória (limite global de 20MB). */
+/**
+ * Arquivo recebido no multipart, já em memória. Os tetos (por arquivo, por
+ * somatório e por quantidade) vivem em `lib/import-limits.ts` e são aplicados
+ * na rota — NÃO são os 20MB globais do api.ts, que valem para as rotas de
+ * imagem.
+ */
 export interface ImportFile {
   fieldname: string;
   filename: string;
