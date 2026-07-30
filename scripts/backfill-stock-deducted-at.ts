@@ -62,7 +62,19 @@ const SELECT_ALVO = `
   FROM "Order" o
   JOIN "MarketplaceAccount" ma ON ma.id = o."marketplaceAccountId"
   JOIN "StockLog" sl
-    ON sl.reason = 'Venda ' || ${CASE_ROTULO} || ' #' || o."externalOrderId"
+    ON (
+         sl.reason = 'Venda ' || ${CASE_ROTULO} || ' #' || o."externalOrderId"
+         -- Formato LEGADO do importador da Shopee, vivo entre 17/04 e 22/05/2026:
+         -- "Importacao Shopee pedido #<sn>". E a MESMA baixa (91 linhas, 70 com
+         -- change negativo, nenhuma positiva), so com outra reason. Sem este ramo
+         -- 75 pedidos que baixaram continuavam aparecendo como "sem baixa" na
+         -- consulta de diagnostico, que e justamente o que o carimbo existe para
+         -- responder. O LIKE evita depender do acento de "Importacao".
+         OR (
+           ma.platform = 'SHOPEE'
+           AND sl.reason LIKE 'Importa%Shopee pedido #' || o."externalOrderId"
+         )
+       )
    AND EXISTS (
      SELECT 1 FROM "OrderItem" oi
      WHERE oi."orderId" = o.id AND oi."productId" = sl."productId"
