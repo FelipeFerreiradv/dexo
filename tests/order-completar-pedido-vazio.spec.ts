@@ -73,51 +73,74 @@ afterEach(() => {
 });
 
 describe("pedidosVaziosNaJanela — quais pedidos existentes estão sem item", () => {
-  it("filtra por ZERO itens e exclui cancelado", async () => {
-    const findMany = vi
-      .spyOn(prisma.order, "findMany")
-      .mockResolvedValue([
-        { id: "o-1", externalOrderId: "EXT-1" },
-      ] as never);
+  const CANDIDATOS = [
+    { id: "o-1", externalOrderId: "EXT-1", status: "PAID" },
+    { id: "o-2", externalOrderId: "EXT-2", status: "PAID" },
+    { id: "o-3", externalOrderId: "EXT-3", status: "CANCELLED" },
+  ];
 
-    const mapa = await UC.pedidosVaziosNaJanela("acc-1", ["EXT-1", "EXT-2"]);
+  it("pergunta quem TEM item, por índice, e não usa anti-join do Prisma", async () => {
+    // MEDIDO em produção (31/07/2026, OrderItem com 6.414 linhas): o
+    // `items: { none: {} }` do Prisma emite `id NOT IN (SELECT "orderId" FROM
+    // "OrderItem" ...)`, um subselect NÃO correlacionado — o plano é Seq Scan da
+    // OrderItem INTEIRA, por conta, por ciclo, e cresce para sempre. 3,496 ms e
+    // 154 buffers, contra 0,333 ms e 26 buffers desta forma (Index Only Scan em
+    // OrderItem_orderId_idx). Este teste existe para a forma não regredir.
+    const itemFind = vi
+      .spyOn(prisma.orderItem, "findMany")
+      .mockResolvedValue([{ orderId: "o-2" }] as never);
+    const orderFind = vi.spyOn(prisma.order, "findMany");
 
+    const mapa = await UC.pedidosVaziosNaJanela(CANDIDATOS);
+
+    // Nenhuma consulta nova em Order: os candidatos vêm do batch check do ciclo.
+    expect(orderFind).not.toHaveBeenCalled();
+    const where = (itemFind.mock.calls[0][0] as any).where;
+    // Só os ids da janela — custo proporcional à janela, não à tabela.
+    expect(where.orderId).toEqual({ in: ["o-1", "o-2"] });
+    // o-2 tem item; o-3 é CANCELLED e nem foi consultado.
+    expect([...mapa.keys()]).toEqual(["EXT-1"]);
     expect(mapa.get("EXT-1")).toBe("o-1");
-    expect(mapa.has("EXT-2")).toBe(false);
-    const where = (findMany.mock.calls[0][0] as any).where;
-    // Sem `items: { none: {} }` a consulta traria TODO pedido da janela e o
-    // caminho de completar rodaria sobre pedido completo.
-    expect(where.items).toEqual({ none: {} });
-    // Pedido cancelado não tem venda a completar nem estoque a baixar.
-    expect(where.status).toEqual({ not: "CANCELLED" });
-    expect(where.marketplaceAccountId).toBe("acc-1");
-    expect(where.externalOrderId).toEqual({ in: ["EXT-1", "EXT-2"] });
+  });
+
+  it("exclui cancelado antes de consultar", async () => {
+    const itemFind = vi
+      .spyOn(prisma.orderItem, "findMany")
+      .mockResolvedValue([] as never);
+
+    await UC.pedidosVaziosNaJanela([
+      { id: "o-3", externalOrderId: "EXT-3", status: "CANCELLED" },
+    ]);
+
+    // Pedido cancelado não tem venda a completar nem estoque a baixar: sem
+    // candidato elegível, não há consulta nenhuma.
+    expect(itemFind).not.toHaveBeenCalled();
   });
 
   it("kill-switch ligado NÃO faz a consulta (caminho byte-idêntico ao anterior)", async () => {
     process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED = "1";
-    const findMany = vi.spyOn(prisma.order, "findMany");
+    const itemFind = vi.spyOn(prisma.orderItem, "findMany");
 
-    const mapa = await UC.pedidosVaziosNaJanela("acc-1", ["EXT-1"]);
+    const mapa = await UC.pedidosVaziosNaJanela(CANDIDATOS);
 
-    expect(findMany).not.toHaveBeenCalled();
+    expect(itemFind).not.toHaveBeenCalled();
     expect(mapa.size).toBe(0);
   });
 
-  it("lista de ids vazia não faz consulta", async () => {
-    const findMany = vi.spyOn(prisma.order, "findMany");
-    const mapa = await UC.pedidosVaziosNaJanela("acc-1", []);
-    expect(findMany).not.toHaveBeenCalled();
+  it("lista vazia não faz consulta", async () => {
+    const itemFind = vi.spyOn(prisma.orderItem, "findMany");
+    const mapa = await UC.pedidosVaziosNaJanela([]);
+    expect(itemFind).not.toHaveBeenCalled();
     expect(mapa.size).toBe(0);
   });
 
   it("falha na consulta devolve mapa vazio e não propaga", async () => {
-    vi.spyOn(prisma.order, "findMany").mockRejectedValue(
+    vi.spyOn(prisma.orderItem, "findMany").mockRejectedValue(
       new Error("banco fora"),
     );
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const mapa = await UC.pedidosVaziosNaJanela("acc-1", ["EXT-1"]);
+    const mapa = await UC.pedidosVaziosNaJanela(CANDIDATOS);
 
     // Falhar aqui só faz o ciclo se comportar como antes da correção.
     expect(mapa.size).toBe(0);
@@ -434,15 +457,16 @@ describe("laço do ML: pedido existente SEM itens é completado, não pulado", (
     vi.spyOn(UC, "logSync").mockResolvedValue(undefined);
     vi.spyOn(UC, "registrarDesfechoIngestao").mockResolvedValue(undefined);
     vi.spyOn(console, "log").mockImplementation(() => {});
-    // findMany é chamado duas vezes: o batch check e a consulta dos vazios.
-    vi.spyOn(prisma.order, "findMany").mockImplementation(((args: any) =>
-      args?.where?.items
-        ? Promise.resolve([
-            { id: "o-vazio", externalOrderId: "2000017658297096" },
-          ])
-        : Promise.resolve([
-            { externalOrderId: "2000017658297096" },
-          ])) as never);
+    // Batch check do ciclo: o pedido existe, com id e status.
+    vi.spyOn(prisma.order, "findMany").mockResolvedValue([
+      {
+        id: "o-vazio",
+        externalOrderId: "2000017658297096",
+        status: "PAID",
+      },
+    ] as never);
+    // Nenhum OrderItem para esse id: o pedido esta vazio.
+    vi.spyOn(prisma.orderItem, "findMany").mockResolvedValue([] as never);
   });
 
   it("completa o pedido, baixa o estoque e conta como importado", async () => {

@@ -259,7 +259,12 @@ export class OrderUseCase {
         marketplaceAccountId: account.id,
         externalOrderId: { in: externalIds },
       },
-      select: { externalOrderId: true },
+      // EGRESS: `id` e `status` no select JA existente (dois textos curtos por
+      // pedido da janela) — e o que permite descobrir os pedidos sem item por
+      // Index Only Scan em OrderItem_orderId_idx, em vez do `Seq Scan` da
+      // OrderItem inteira que o `items: { none: {} }` do Prisma produz. Medido:
+      // 0,333 ms contra 3,496 ms. Ver `pedidosVaziosNaJanela`.
+      select: { id: true, externalOrderId: true, status: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
@@ -295,9 +300,7 @@ export class OrderUseCase {
     // Pedidos que existem localmente com ZERO itens: a venda esta registrada e o
     // estoque nunca baixou. Sem este passo o `already_exists` abaixo os pularia
     // para sempre (ver `completarOrderSemItens`).
-    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
-      ...existingSet,
-    ]);
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(existingOrders);
 
     for (const mlOrder of mlOrders) {
       const extId = mlOrder.id.toString();
@@ -623,7 +626,8 @@ export class OrderUseCase {
         marketplaceAccountId: account.id,
         externalOrderId: { in: externalIds },
       },
-      select: { externalOrderId: true },
+      // EGRESS: `id` e `status` junto — ver a nota em `pedidosVaziosNaJanela`.
+      select: { id: true, externalOrderId: true, status: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
 
@@ -668,9 +672,7 @@ export class OrderUseCase {
     // caia em `already_exists` e o pedido ficava sem baixa para sempre. Aqui o
     // pedido ja veio da API neste ciclo, entao completar nao custa chamada
     // externa nenhuma.
-    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
-      ...existingSet,
-    ]);
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(existingOrders);
 
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
       const orderVazioId = vaziosPorExtId.get(shopeeOrder.order_sn);
@@ -1423,43 +1425,64 @@ export class OrderUseCase {
   /**
    * Dos pedidos que EXISTEM localmente, quais estao com zero itens.
    *
-   * Devolve `externalOrderId -> Order.id`. Vazio significa "nada a completar", que
-   * e o caso normal — em regime estavel a consulta volta zero linhas.
+   * Recebe os pedidos que o batch check do ciclo JA trouxe (id, externalOrderId e
+   * status) e devolve `externalOrderId -> Order.id`. Mapa vazio significa "nada a
+   * completar", que e o caso normal.
    *
-   * EGRESS: e UMA consulta a mais por conta por ciclo, com `NOT EXISTS` sobre a
-   * mesma lista de ids que o batch check ja usa, e devolvendo so dois campos.
-   * Foi preferida a incluir `_count` no batch check existente porque aquele
-   * roda para TODOS os pedidos da janela (contaria itens de todos eles), e esta
-   * volta vazia quando nao ha o que fazer. Com o kill-switch ligado, nem a
-   * consulta acontece — o caminho fica byte-identico ao anterior.
+   * EGRESS — a forma importa, e foi medida contra o banco de producao em
+   * 31/07/2026 (conta com 91 pedidos na janela de 7 dias, `OrderItem` com 6.414
+   * linhas):
+   *
+   *   `order.findMany({ items: { none: {} } })`  ->  3,496 ms | 154 buffers
+   *   `NOT EXISTS` correlacionado em SQL cru     ->  0,850 ms | 281 buffers
+   *   esta forma (findMany em OrderItem)         ->  0,333 ms |  26 buffers
+   *
+   * O `items: { none: {} }` do Prisma NAO gera anti-join: ele emite
+   * `"Order"."id" NOT IN (SELECT "orderId" FROM "OrderItem" WHERE "orderId" IS NOT
+   * NULL)`, um subselect NAO correlacionado — o plano e `Seq Scan on "OrderItem"`
+   * da tabela INTEIRA, a cada conta, a cada ciclo. Custo que cresce para sempre
+   * junto com o numero de itens de pedido de TODOS os tenants, para responder uma
+   * pergunta sobre ~100 pedidos.
+   *
+   * A forma escolhida pergunta o inverso ("quais destes ids TEM item") por
+   * `OrderItem_orderId_idx`: Index Only Scan, custo proporcional a janela e nao ao
+   * tamanho da tabela. Os campos novos no batch check (`id`, `status`) sao dois
+   * textos curtos por pedido da janela — a mesma troca que o caminho da Magalu ja
+   * fazia para o gate de cancelamento.
+   *
+   * Com o kill-switch ligado nao ha consulta nenhuma, e o caminho fica
+   * byte-identico ao anterior.
    *
    * Best-effort: falhar aqui so faz o ciclo se comportar como antes.
    */
   private static async pedidosVaziosNaJanela(
-    marketplaceAccountId: string,
-    externalOrderIds: string[],
+    candidatos: Array<{
+      id: string;
+      externalOrderId: string;
+      status: OrderStatus;
+    }>,
   ): Promise<Map<string, string>> {
     if (process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED === "1") {
       return new Map();
     }
-    if (!externalOrderIds.length) return new Map();
+    // Pedido cancelado nao entra: nao ha venda a completar nem estoque a baixar.
+    const elegiveis = candidatos.filter((o) => o.status !== "CANCELLED");
+    if (!elegiveis.length) return new Map();
 
     try {
-      const vazios = await prisma.order.findMany({
-        where: {
-          marketplaceAccountId,
-          externalOrderId: { in: externalOrderIds },
-          // Zero itens. Pedido cancelado nao entra: nao ha venda a completar
-          // nem estoque a baixar.
-          items: { none: {} },
-          status: { not: "CANCELLED" },
-        },
-        select: { id: true, externalOrderId: true },
+      const comItem = await prisma.orderItem.findMany({
+        where: { orderId: { in: elegiveis.map((o) => o.id) } },
+        select: { orderId: true },
       });
-      return new Map(vazios.map((v) => [v.externalOrderId, v.id]));
+      const temItem = new Set(comItem.map((i) => i.orderId));
+      return new Map(
+        elegiveis
+          .filter((o) => !temItem.has(o.id))
+          .map((o) => [o.externalOrderId, o.id] as [string, string]),
+      );
     } catch (err) {
       console.warn(
-        `[OrderUseCase] Falha ao listar pedidos sem itens da conta ${marketplaceAccountId}:`,
+        "[OrderUseCase] Falha ao listar pedidos sem itens:",
         err instanceof Error ? err.message : err,
       );
       return new Map();
@@ -2414,8 +2437,9 @@ export class OrderUseCase {
       },
       // EGRESS: status junto no select já existente (bytes desprezíveis) —
       // permite o gate de cancelamento abaixo pular o handler para pedidos
-      // já CANCELLED localmente, zerando o custo recorrente por ciclo.
-      select: { externalOrderId: true, status: true },
+      // já CANCELLED localmente, zerando o custo recorrente por ciclo. O `id`
+      // segue a mesma logica, para `pedidosVaziosNaJanela`.
+      select: { id: true, externalOrderId: true, status: true },
     });
     const existingSet = new Set(existingOrders.map((o) => o.externalOrderId));
     const existingStatusByExtId = new Map(
@@ -2445,9 +2469,7 @@ export class OrderUseCase {
 
     // Idem ML: pedidos que existem local com zero itens, para completar em vez
     // de pular.
-    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
-      ...existingSet,
-    ]);
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(existingOrders);
 
     for (const magaluOrder of magaluOrders) {
       const externalOrderId = extractExternalOrderId(magaluOrder);
