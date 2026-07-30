@@ -48,7 +48,6 @@ yarn-error.log*
 !.env.example
 
 #prisma
-prisma/migrations/
 /app/generated/prisma
 
 # vercel

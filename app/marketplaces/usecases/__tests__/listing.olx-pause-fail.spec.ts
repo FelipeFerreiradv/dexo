@@ -74,4 +74,33 @@ describe("ListingUseCase.updateListingStatus — OLX pause", () => {
     expect(result.success).toBe(true);
     expect(updateStatus).toHaveBeenCalledWith(OLX_LISTING_ID, "paused");
   });
+
+  it("kill-switch OLX_INTEGRATION_DISABLED=1 ⇒ no-op: NÃO chama a API nem grava", async () => {
+    const prev = process.env.OLX_INTEGRATION_DISABLED;
+    process.env.OLX_INTEGRATION_DISABLED = "1";
+    try {
+      const listing = baseOlxListing();
+      vi.spyOn(ListingRepository, "findById").mockResolvedValue(listing);
+      const updateStatus = vi
+        .spyOn(ListingRepository, "updateStatus")
+        .mockResolvedValue({} as any);
+      const deleteAd = vi
+        .spyOn(OlxApiService, "deleteAd")
+        .mockResolvedValue({ statusCode: 0 } as any);
+
+      const result = await ListingUseCase.updateListingStatus(
+        OLX_LISTING_ID,
+        USER_ID,
+        "paused",
+      );
+
+      // Integração desativada não toca OLX nem o DB (auto-pause do PDV inclusive).
+      expect(deleteAd).not.toHaveBeenCalled();
+      expect(updateStatus).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.OLX_INTEGRATION_DISABLED;
+      else process.env.OLX_INTEGRATION_DISABLED = prev;
+    }
+  });
 });

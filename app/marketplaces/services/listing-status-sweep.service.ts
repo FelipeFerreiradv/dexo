@@ -3,6 +3,7 @@ import {
   ListingStatusRefreshService,
   type RefreshableListingRow,
 } from "./listing-status-refresh.service";
+import { isFacebookDisabled } from "@/app/lib/integration-flags";
 
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
 const PAGE_SIZE = 100;
@@ -31,10 +32,15 @@ export class ListingStatusSweepService {
   static async runOnce(): Promise<void> {
     if (process.env.LISTING_STATUS_SYNC_DISABLED === "1") return;
 
+    // Kill-switch de runtime: Facebook sai da varredura de espelhamento quando
+    // FACEBOOK_INTEGRATION_DISABLED=1. (OLX não espelha status nesta fase.)
+    const mirrorPlatforms = ["MERCADO_LIVRE", "SHOPEE"];
+    if (!isFacebookDisabled()) mirrorPlatforms.push("FACEBOOK");
+
     const accounts = await (prisma as any).marketplaceAccount.findMany({
       where: {
         status: "ACTIVE",
-        platform: { in: ["MERCADO_LIVRE", "SHOPEE", "FACEBOOK"] },
+        platform: { in: mirrorPlatforms },
       },
       select: {
         id: true,

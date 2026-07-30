@@ -14,6 +14,7 @@ import {
   Quality,
 } from "../interfaces/product.interface";
 import { ListingUseCase } from "../marketplaces/usecases/listing.usercase";
+import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import {
   ListingDispatcher,
   ListingDispatchRequest,
@@ -881,7 +882,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                   categoryId: lst.categoryId,
                 });
               }
-            } else if (lst.platform === "OLX") {
+            } else if (lst.platform === "OLX" && !isOlxDisabled()) {
               for (const accId of accounts) {
                 dispatchRequests.push({
                   platform: "OLX",
@@ -889,7 +890,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                   categoryId: lst.categoryId,
                 });
               }
-            } else if (lst.platform === "FACEBOOK") {
+            } else if (lst.platform === "FACEBOOK" && !isFacebookDisabled()) {
               for (const accId of accounts) {
                 dispatchRequests.push({
                   platform: "FACEBOOK",

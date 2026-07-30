@@ -29,14 +29,37 @@ npx vitest run
 - F3.1–F3.11 + **F1.3.g** (campos de seller na UI + `PATCH` backend + repo `updateSellerFields`).
 - **Decisões:** espelhamento de status só Facebook (Graph lê status); OLX fica fora até a *Consulta de Anúncios Publicados* (Fase 4). `getFacebookItemStatuses` = contrato Graph best-effort, pede smoke-test com token real. `olx.svg` = wordmark aproximado.
 
-**Próximo:** Onda 4 = Fase 4 (vínculo por SKU — Facebook viável; OLX é spike) · Fase 5 (fechar expectativa na UI).
+**Onda 4 (Fase 4 vínculo por SKU + Fase 5 expectativa) — PARCIAL.** `tsc`=104 · specs OLX/FB verdes.
+- **Fase 4 Facebook: CONCLUÍDA.** `listCatalogItems` + `importFacebookItems` + `normalizeFacebookItem` + rotas `POST/GET /facebook/import` + roteado no cron (`importAndBuildAllAccounts`, armadilha F4.6 corrigida) + botão "Importar" na aba de sync FB.
+- **Fase 4 OLX: pendente (F4.8)** — spike da *Consulta de Anúncios Publicados*, precisa doc da OLX.
+- **Fase 5: PARCIAL.** F5.1 (avisos nos dashboards) e F5.3 (`provider-factory` — etiqueta) feitos. **Pendentes:** F5.2 (`orders-list`), F5.4 (`messages.usecase`), F5.5 (`dashboard.routes` `views/reviews` ainda `?? 0`, indistinguível de dado real).
+
+**Onda 5 (kill-switch de runtime) — CONCLUÍDA.** Rec de Rollback da auditoria. `tsc`=104.
+- `app/lib/integration-flags.ts`: `isOlxDisabled`/`isFacebookDisabled`/`isPlatformDisabled` (padrão `*_DISABLED`, lidas por chamada, sem rebuild).
+- Cobertura: hook `onRequest` bloqueia todo `/marketplace/{olx,facebook}/*` (503); `POST /listings/dispatch` e `/bulk` (503); dispatch do modal de novo produto pula OLX/FB; `updateListingStatus` no-op p/ OLX/FB (cobre auto-pause do PDV, pause manual e restore de cancelamento — caminhos fora do prefixo `/marketplace`); `ListingStatusSweepService` tira FB da varredura.
+- **Migrations agora versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas + `prisma/seed.ts`. Fase 0 vira `prisma migrate deploy` (ver nota de risco abaixo).
+
+**Próximo:** F4.8 (spike OLX) · F5.2/F5.4/F5.5 (fechar expectativa restante) · reconciliar checkboxes da Fase 6.
 
 ---
 
-## FASE 0 — Banco de dados (Felipe roda; DDL manual, ANTES do deploy)
+## FASE 0 — Banco de dados (Felipe roda, ANTES do deploy)
 
-Migrations são gitignoradas. DDL manual. `ALTER TYPE ... ADD VALUE` é irreversível
-e não roda dentro de transação.
+> ⚠️ **Atualizado:** as migrations **são versionadas** neste repo (as 16 antigas já
+> estavam trackeadas; a linha `prisma/migrations/` do gitignore não destrackeava nada
+> e foi removida). A Fase 0 agora é `prisma migrate deploy`, não DDL manual — as 3
+> migrations novas (`add_olx_platform`, `add_facebook_platform`,
+> `add_olx_facebook_account_and_category_fields`) cobrem os 8 campos + enum.
+>
+> ⚠️ **Risco de deploy — enum sem `IF NOT EXISTS`:** `add_olx_platform` e
+> `add_facebook_platform` fazem `ALTER TYPE "Platform" ADD VALUE 'OLX'/'FACEBOOK'`
+> **sem** `IF NOT EXISTS`. Se algum ambiente já rodou o DDL manual antigo (a versão
+> anterior desta Fase 0), `migrate deploy` **falha** ("value already exists"). Nesse
+> ambiente: `prisma migrate resolve --applied <migration>` para baselinar, OU trocar
+> por `ADD VALUE IF NOT EXISTS` (PG 10+). Em banco limpo, roda direto. Requer PG 12+
+> (ADD VALUE em transação).
+
+`ALTER TYPE ... ADD VALUE` é irreversível e não roda dentro de transação (PG < 12).
 
 - [ ] **F0.1** `ALTER TYPE "Platform" ADD VALUE IF NOT EXISTS 'OLX'` (item mais urgente)
 - [ ] **F0.2** `ALTER TYPE "Platform" ADD VALUE IF NOT EXISTS 'FACEBOOK'`
@@ -101,7 +124,7 @@ vai em todos os anúncios; `retailer_id`=SKU → dois desmontes com SKU igual se
 - [x] **F1.3.d** `updateListingStatus` ramos OLX e FACEBOOK
 - [x] **F1.3.e** `syncOlxProductStock` (+ `confirmFacebook`/sync FB)
 - [x] **F1.3.f** `catalogId` threaded em `facebook-api.service.ts` + `facebook-payload-builder.service.ts`
-- [ ] **F1.3.g** UI: campos de seller nas abas de conexão OLX/Facebook → **Onda 3 (Fase 3)**
+- [x] **F1.3.g** UI: campos de seller nas abas de conexão OLX/Facebook (feito na Onda 3 — ver F3 abaixo: `PATCH /marketplace/{olx,facebook}/accounts/:id` + `updateSellerFields`)
 - [x] **F1.3.h** Teste: `listing.facebook-tenant-catalog.spec.ts` (2 tenants, mesmo SKU → catálogos distintos)
 
 ### F1.4 ⛔ Pausar falha em silêncio
@@ -214,14 +237,14 @@ Mensagens (`messages-shell.tsx`). **Já corretos, não mexer:** `marketplace-pla
 
 ## FASE 4 — Vínculo por SKU
 
-**Facebook: viável.**
-- [ ] **F4.1** `facebook-api.service.ts:209` — criar `listCatalogItems` (`GET /{catalog_id}/products`)
-- [ ] **F4.2** `sync.usercase.ts` — `importFacebookItems` e `importNewFacebookItemsForAccount` (molde Magalu)
-- [ ] **F4.3** `listing-autodetect.usercase.ts:477` — `normalizeFacebookItem`
-- [ ] **F4.4** `marketplace.routes.ts` — `POST /facebook/import` + `GET /facebook/import/:importId`
-- [ ] **F4.5** `sync-orders-and-metrics-loop.ts:143` — incluir no cron
-- [ ] **F4.6** ⚠️ `sync.usercase.ts:1868` — corrigir armadilha: `importAndBuildAllAccounts` manda qualquer não-ML p/ `importMagaluItems`
-- [ ] **F4.7** UI: botão "Importar anúncios" nas duas abas de sync
+**Facebook: viável. ✅ CONCLUÍDA.**
+- [x] **F4.1** `facebook-api.service.ts:202` — `listCatalogItems` (`GET /{catalog_id}/products`, paginação por cursor)
+- [x] **F4.2** `sync.usercase.ts:849` — `importFacebookItems` (molde Magalu)
+- [x] **F4.3** `listing-autodetect.usercase.ts:489` — `normalizeFacebookItem`
+- [x] **F4.4** `marketplace.routes.ts:3505` — `POST /facebook/import` + `:3539` `GET /facebook/import/:importId`
+- [x] **F4.5** cron via `importAndBuildAllAccounts` (`sync.usercase.ts:2126` roteia FACEBOOK)
+- [x] **F4.6** ✅ armadilha corrigida: `importAndBuildAllAccounts:2125` roteia FACEBOOK p/ `importFacebookItems` (não mais `importMagaluItems`)
+- [x] **F4.7** UI: botão "Importar anúncios" na aba de sync FB (`facebook-sync-tab.tsx`)
 
 **OLX: parcial.**
 - [ ] **F4.8** Spike: implementar *Consulta de Anúncios Publicados* (`published_ads_status.html`) → leitura do estado (resolve espelhamento). NÃO resolve vínculo por SKU (anúncio manual não carrega `id` do vendedor). Consultar doc OLX antes de estimar.
@@ -230,33 +253,34 @@ Mensagens (`messages-shell.tsx`). **Já corretos, não mexer:** `marketplace-pla
 
 ## FASE 5 — Fechar a expectativa na UI
 
-- [ ] **F5.1** `olx-dashboard.tsx` e `facebook-dashboard.tsx` — aviso: baixa unidirecional, venda manual, sem pedido/mensagem/etiqueta
-- [ ] **F5.2** `orders-list.tsx:322-353` — idem na tela de Pedidos
-- [ ] **F5.3** `shipping-label.usecase.ts:81` e `provider-factory.ts:24` — mensagem específica
-- [ ] **F5.4** `messages.usecase.ts:76` — idem
-- [ ] **F5.5** `dashboard.routes.ts:672` — hoje devolve `views:0`/`reviews:0`, indistinguível de dado real
+- [x] **F5.1** `olx-dashboard.tsx` e `facebook-dashboard.tsx` — aviso: baixa unidirecional, venda manual, sem pedido/mensagem/etiqueta
+- [ ] **F5.2** `app/pedidos/components/orders-list.tsx` — idem na tela de Pedidos (pendente)
+- [x] **F5.3** `shipping/provider-factory.ts:24-30` — case OLX/FACEBOOK: "não fornece etiqueta… registre a venda manualmente"
+- [ ] **F5.4** `messages.usecase.ts` — idem (pendente)
+- [ ] **F5.5** `dashboard.routes.ts:704-705` — ainda `views: …?? 0`/`reviews: …?? 0`, indistinguível de dado real (pendente)
 
 ---
 
 ## FASE 6 — Testes
 
 Novos casos:
-- [ ] **F6.1** `syncAllStock` lean → zero `submitImport` (F1.0)
-- [ ] **F6.2** pause OLX `statusCode ≠ 0` → falha, não grava "paused" (F1.4)
-- [ ] **F6.3** pause Facebook com item rejeitado no batch (F1.4)
-- [ ] **F6.4** `updateOlxListingFields` prova que chama a API (F1.2)
-- [ ] **F6.5** dois tenants mesmo SKU no Facebook → catálogos distintos (F1.3)
-- [ ] **F6.6** listing OLX/FB com falha não entra no `ListingRetryService` (F1.5)
-- [ ] **F6.7** `buildId` com dois SKUs que colidem em 19 chars (F1.7)
-- [ ] **F6.8** sync-loop não gasta chamada com conta OLX/FACEBOOK
-- [ ] **F6.9** com flags desligadas, a UI é idêntica
+- [x] **F6.1** `sync-olx-stock-lean.spec.ts` → zero `submitImport` (F1.0)
+- [x] **F6.2** `listing.olx-pause-fail.spec.ts` — `statusCode ≠ 0` → falha, não grava "paused" (F1.4)
+- [x] **F6.3** `listing.facebook-tenant-catalog.spec.ts` — pause FB com item rejeitado (F1.4)
+- [x] **F6.4** `listing.olx-update-fields.spec.ts` — prova chamada à API (F1.2)
+- [x] **F6.5** `listing.facebook-tenant-catalog.spec.ts` — 2 tenants mesmo SKU → catálogos distintos (F1.3)
+- [x] **F6.6** `listing-retry-platform-guard.spec.ts` — OLX/FB não entram no `ListingRetryService` (F1.5)
+- [x] **F6.7** `olx-payload-builder.buildId.spec.ts` — colisão em 19 chars → ids distintos (F1.7)
+- [ ] **F6.8** sync-loop não gasta chamada com conta OLX/FACEBOOK (pendente)
+- [ ] **F6.9** com flags desligadas, a UI é idêntica (pendente) + kill-switch runtime (Onda 5) sem spec dedicado
+- [x] **F6.10** `listing.olx-pause-fail.spec.ts` — no-op de `updateListingStatus` com `OLX_INTEGRATION_DISABLED=1` (kill-switch, Onda 5)
 
 Atualizar os que enumeram plataforma:
-- [ ] **F6.10** `listing.remove.spec.ts`
-- [ ] **F6.11** `listing.update-fields.spec.ts`
-- [ ] **F6.12** `shipping/__tests__/provider-factory.spec.ts`
-- [ ] **F6.13** `marketplace-platform.test.ts`
-- [ ] **F6.14** `team-productivity.test.ts`
+- [ ] **F6.11** `listing.remove.spec.ts` (verificar)
+- [ ] **F6.12** `listing.update-fields.spec.ts` (verificar)
+- [ ] **F6.13** `shipping/__tests__/provider-factory.spec.ts` (verificar)
+- [ ] **F6.14** `marketplace-platform.test.ts` (verificar)
+- [x] **F6.15** `team-productivity.test.ts` + `tests/product.repository.search.spec.ts` (atualizados na Onda 3)
 
 ---
 

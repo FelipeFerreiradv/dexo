@@ -13,6 +13,7 @@ import {
 } from "../marketplaces/repositories/bulk-listing-job.repository";
 import { MarketplaceRepository } from "../marketplaces/repositories/marketplace.repository";
 import { ProductRepositoryPrisma } from "../repositories/product.repository";
+import { isPlatformDisabled } from "../lib/integration-flags";
 import { ShopeeApiService } from "../marketplaces/services/shopee-api.service";
 import { ListingStatusRefreshService } from "../marketplaces/services/listing-status-refresh.service";
 import { authMiddleware } from "../middlewares/auth.middleware";
@@ -920,6 +921,12 @@ export async function listingRoutes(app: FastifyInstance) {
               message: `platform desconhecido: ${req.platform}`,
             });
           }
+          if (isPlatformDisabled(req.platform)) {
+            return reply.status(503).send({
+              error: "Integração desativada",
+              message: `${req.platform} desativado por kill-switch`,
+            });
+          }
         }
 
         // Aumento percentual escalonado entre contas ML (edição de produto):
@@ -1149,6 +1156,15 @@ export async function listingRoutes(app: FastifyInstance) {
             error: "Dados inválidos",
             message:
               "requests deve conter ao menos um par platform+accountId válido",
+          });
+        }
+        const disabledReq = body.requests.find((r) =>
+          isPlatformDisabled(r.platform),
+        );
+        if (disabledReq) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message: `${disabledReq.platform} desativado por kill-switch`,
           });
         }
         if (body.productIds.length * body.requests.length > 2000) {

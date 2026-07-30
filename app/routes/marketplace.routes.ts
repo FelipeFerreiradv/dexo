@@ -8,6 +8,7 @@ import CategoryRepository from "../marketplaces/repositories/category.repository
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { blockCollaborator } from "../middlewares/no-collaborator.middleware";
 import { Platform } from "@prisma/client";
+import { isOlxDisabled, isFacebookDisabled } from "../lib/integration-flags";
 import { SystemLogService } from "../services/system-log.service";
 import prisma from "../lib/prisma";
 import { ListingRetryService } from "../marketplaces/services/listing-retry.service";
@@ -135,6 +136,33 @@ async function resolveMlAccountForCompat(
  * Rotas para gerenciar conexÃµes com marketplaces
  */
 export async function marketplaceRoutes(app: FastifyInstance) {
+  // Kill-switch de runtime: bloqueia todas as rotas /marketplace/olx/* e
+  // /marketplace/facebook/* quando OLX_INTEGRATION_DISABLED / FACEBOOK_INTEGRATION_DISABLED=1.
+  // Encapsulado neste plugin (prefixo /marketplace), então só afeta estas rotas.
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?")[0];
+    if (
+      isOlxDisabled() &&
+      (path === "/marketplace/olx" || path.startsWith("/marketplace/olx/"))
+    ) {
+      return reply.code(503).send({
+        error: "Integração desativada",
+        message: "OLX desativado por kill-switch (OLX_INTEGRATION_DISABLED)",
+      });
+    }
+    if (
+      isFacebookDisabled() &&
+      (path === "/marketplace/facebook" ||
+        path.startsWith("/marketplace/facebook/"))
+    ) {
+      return reply.code(503).send({
+        error: "Integração desativada",
+        message:
+          "Facebook desativado por kill-switch (FACEBOOK_INTEGRATION_DISABLED)",
+      });
+    }
+  });
+
   app.get("/ml/cli-callback", async (request, reply) => {
     const q = (request.query as Record<string, string | undefined>) ?? {};
     const code = q.code ?? "";

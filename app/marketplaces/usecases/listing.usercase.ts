@@ -15,6 +15,7 @@ import { FacebookApiService } from "../services/facebook-api.service";
 import { FacebookPayloadBuilderService } from "../services/facebook-payload-builder.service";
 import { FacebookCategoryResolutionService } from "../services/facebook-category-resolution.service";
 import { FACEBOOK_CONSTANTS } from "../facebook/facebook-constants";
+import { isPlatformDisabled } from "../../lib/integration-flags";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { SystemLogService } from "../../services/system-log.service";
 import { ListingRepository } from "../repositories/listing.repository";
@@ -5772,6 +5773,14 @@ export class ListingUseCase {
 
       // Guard comum a ambas as plataformas: anúncio precisa estar publicado.
       const platform = listing.marketplaceAccount?.platform;
+
+      // Kill-switch de runtime: integração desativada não toca a API do canal.
+      // Cobre os caminhos que NÃO passam pelo prefixo /marketplace (e portanto
+      // escapam do hook de rota): auto-pause por venda no PDV, pause manual em
+      // /products e restore de cancelamento. No-op mantém DB e canal intactos.
+      if (platform && isPlatformDisabled(platform)) {
+        return { success: false, error: `${platform} desativado por kill-switch` };
+      }
 
       // Magalu: a publicação é assíncrona (POST 202) e o `externalListingId` fica
       // PENDING_<sku>; a chave de API é o SKU (externalSku). Considera-se
