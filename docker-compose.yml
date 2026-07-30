@@ -91,7 +91,11 @@ services:
       # up -d --build). Tunables REMBG_MASK_* documentados no README e em
       # mask_postprocess.py. A supressao de sombra projetada REAL e' flag
       # SEPARADA e experimental — nunca ligar junto com o primeiro rollout.
-      REMBG_MASK_POSTPROCESS: "false"
+      # LIGADA em 29/07 apos gate golden pelo criterio VISUAL aprovado pelo
+      # Felipe no PR #212 (38/38: SSIM min 0,9991, MAE max 0,053; com a flag
+      # OFF a saida e' md5 byte-identica — provado na Fase 0). Rollback sem
+      # rebuild: "false" + `docker compose --env-file /dev/null up -d rembg`.
+      REMBG_MASK_POSTPROCESS: "true"
       REMBG_MASK_SHADOW_SUPPRESS: "false"
     # ⚠️ PONTE do incidente 2026-07-24 (era 12g): o ratchet de RSS (glibc +
     # arena do ONNX) leva o container a OOM kill sob carga contínua (medido
