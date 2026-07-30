@@ -101,10 +101,11 @@ services:
       # X-Rembg-Confidence/X-Rembg-Signals (sinais baratos sobre o alpha
       # final; ~10-30ms). NAO muda pixel nem decisao — o app Node so loga a
       # decisao hipotetica ([rembg-confidence] ... WOULD_REROUTE) quando
-      # REMBG_CONFIDENCE_LOG=true no .env. Ligar junto com o rebuild do PR 3;
-      # a distribuicao real de producao calibra o limiar ANTES de qualquer
-      # roteamento existir. Default false = resposta byte-identica.
-      REMBG_CONFIDENCE: "false"
+      # REMBG_CONFIDENCE_LOG=true no .env. Ligado em producao em 30/07 para a
+      # janela de observacao de 48h — a distribuicao real calibra o limiar
+      # ANTES de qualquer roteamento existir. Rollback sem rebuild: "false" +
+      # `docker compose up -d rembg`.
+      REMBG_CONFIDENCE: "true"
     # ⚠️ PONTE do incidente 2026-07-24 (era 12g): o ratchet de RSS (glibc +
     # arena do ONNX) leva o container a OOM kill sob carga contínua (medido
     # 21/07: 11,9GiB/12g, 4 kills em 53min, CONSTRAINT_MEMCG). 16g compra horas
