@@ -292,9 +292,51 @@ export class OrderUseCase {
       }
     }
 
+    // Pedidos que existem localmente com ZERO itens: a venda esta registrada e o
+    // estoque nunca baixou. Sem este passo o `already_exists` abaixo os pularia
+    // para sempre (ver `completarOrderSemItens`).
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
+      ...existingSet,
+    ]);
+
     for (const mlOrder of mlOrders) {
       const extId = mlOrder.id.toString();
       if (existingSet.has(extId)) {
+        const orderVazioId = vaziosPorExtId.get(extId);
+        if (orderVazioId) {
+          // `listingMap` fica de fora de proposito: aqui sao um ou dois pedidos,
+          // e o mapper faz o findUnique por item. Passar o mapa deste ciclo seria
+          // pior de duas formas — ele so e montado quando ha pedido NOVO, e um
+          // mapa vazio faz todo `.get()` devolver undefined, tratando como nao
+          // vinculado um item que TEM anuncio no banco.
+          const { items } = await this.mapOrderItems(
+            mlOrder.order_items,
+            account.userId,
+            account.id,
+            undefined,
+          );
+          const desfecho = await this.completarOrderSemItens({
+            plataforma: "MERCADO_LIVRE",
+            marketplaceAccountId: account.id,
+            externalOrderId: extId,
+            orderId: orderVazioId,
+            itens: items,
+            itemsTotal: mlOrder.order_items.length,
+            esperavaBaixa: deductStock && mlOrder.status === "paid",
+          });
+          result.results.push(desfecho);
+          if (desfecho.status === "imported") {
+            result.imported++;
+            if (desfecho.stockDeducted) result.stockDeductions++;
+          } else if (desfecho.status === "no_products") {
+            // Continua sendo perda: a venda esta la e o estoque nao baixou. O
+            // ciclo tem de ser rebaixado para WARNING.
+            result.noProducts++;
+          } else {
+            result.alreadyExists++;
+          }
+          continue;
+        }
         result.alreadyExists++;
         result.results.push({
           success: true,
@@ -619,20 +661,36 @@ export class OrderUseCase {
       }
     }
 
+    // Pedidos que existem local com ZERO itens. Na Shopee o reconciliador
+    // resolve isso re-buscando o pedido por `order_sn`, mas SO enquanto a
+    // pendencia esta OPEN: ao virar NEEDS_ACTION ela sai da fila automatica, e a
+    // partir dai o cliente cadastrar o produto nao completava mais nada — o poll
+    // caia em `already_exists` e o pedido ficava sem baixa para sempre. Aqui o
+    // pedido ja veio da API neste ciclo, entao completar nao custa chamada
+    // externa nenhuma.
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
+      ...existingSet,
+    ]);
+
     for (const shopeeOrder of shopeeOrders as ShopeeOrderDetail[]) {
-      const entry = await this.ingestShopeeOrder(
-        marketplaceAccountId,
-        shopeeOrder,
-        {
-          userId: account.userId,
-          deductStock,
-          alreadyExists: existingSet.has(shopeeOrder.order_sn),
-          // `undefined` (nao um Map vazio) quando o mapa nao foi montado: o Map
-          // vazio faria todo `.get()` devolver undefined e o item cairia como
-          // NAO vinculado, sem nem tentar o lookup por id.
-          listingMap: vaiUsarMapa ? listingMap : undefined,
-        },
-      );
+      const orderVazioId = vaziosPorExtId.get(shopeeOrder.order_sn);
+      const entry = orderVazioId
+        ? await this.completarPedidoVazioShopee(
+            marketplaceAccountId,
+            shopeeOrder,
+            orderVazioId,
+            account.userId,
+            deductStock,
+          )
+        : await this.ingestShopeeOrder(marketplaceAccountId, shopeeOrder, {
+            userId: account.userId,
+            deductStock,
+            alreadyExists: existingSet.has(shopeeOrder.order_sn),
+            // `undefined` (nao um Map vazio) quando o mapa nao foi montado: o
+            // Map vazio faria todo `.get()` devolver undefined e o item cairia
+            // como NAO vinculado, sem nem tentar o lookup por id.
+            listingMap: vaiUsarMapa ? listingMap : undefined,
+          });
 
       result.results.push(entry);
       switch (entry.status) {
@@ -1019,16 +1077,84 @@ export class OrderUseCase {
     );
     if (!items.length) return 0;
 
-    // "Ler os itens atuais e inserir o que falta" precisa ser ATÔMICO. Não
-    // existe unique em (orderId, productId), então duas execuções concorrentes
-    // — o tick do reconciliador e um clique em "Tentar novamente", que rodam em
-    // processos diferentes — liam as duas o conjunto vazio e inseriam as duas o
-    // mesmo item. O pedido ficava com a quantidade DOBRADA, e a baixa seguinte
-    // descontava o dobro do estoque.
-    //
-    // O lock é na linha do Order (mesma ordem de lock do resto: Order antes de
-    // Product) e o `mapShopeeOrderItems` fica FORA da transação de propósito,
-    // para a janela do lock ser só o read+insert.
+    return this.acrescentarItensAoPedido({
+      orderId,
+      externalOrderId: shopeeOrder.order_sn,
+      itens: items,
+      evento: "shopee.order_import.partial_completed",
+    });
+  }
+
+  /**
+   * Completa um pedido Shopee que existe com ZERO itens, usando o detalhe que o
+   * poll acabou de trazer da API.
+   *
+   * Existe para o caso que o reconciliador nao cobre: pendencia em
+   * `NEEDS_ACTION` (fora da fila automatica) ou pendencia ja fechada. O cliente
+   * cadastra o produto e o proximo ciclo do poll completa o pedido sozinho, sem
+   * uma unica chamada externa a mais — o pedido ja veio na varredura.
+   */
+  private static async completarPedidoVazioShopee(
+    marketplaceAccountId: string,
+    shopeeOrder: ShopeeOrderDetail,
+    orderId: string,
+    userId: string,
+    deductStock: boolean,
+  ): Promise<ImportOrderResult> {
+    const { items, unlinked } = await this.mapShopeeOrderItems(
+      shopeeOrder.item_list,
+      userId,
+      marketplaceAccountId,
+    );
+
+    return this.completarOrderSemItens({
+      plataforma: "SHOPEE",
+      marketplaceAccountId,
+      externalOrderId: shopeeOrder.order_sn,
+      orderId,
+      itens: items,
+      itemsTotal: shopeeOrder.item_list?.length ?? 0,
+      // A listagem da Shopee ja devolve so pedido em estado pos-venda, entao
+      // nao ha decisao de status a repetir aqui (mesma regra do
+      // `ingestShopeeOrder`).
+      esperavaBaixa: deductStock,
+      payload: shopeeOrder,
+      detalheSemVinculo: this.describeUnlinked(unlinked),
+    });
+  }
+
+  /**
+   * Insere no `Order` os itens que ainda nao estao nele, e devolve quantos
+   * entraram.
+   *
+   * Extraido de `completePartialShopeeOrder` sem mudanca de comportamento: a
+   * transacao, a ordem do lock e o log sao os mesmos. Passou a ser compartilhado
+   * porque o ML e a Magalu precisam do mesmo passo (ver
+   * `completarOrderSemItens`).
+   *
+   * "Ler os itens atuais e inserir o que falta" precisa ser ATOMICO. Nao existe
+   * unique em (orderId, productId), entao duas execucoes concorrentes — o tick do
+   * reconciliador e um clique em "Tentar novamente", que rodam em processos
+   * diferentes — liam as duas o conjunto vazio e inseriam as duas o mesmo item. O
+   * pedido ficava com a quantidade DOBRADA, e a baixa seguinte descontava o dobro
+   * do estoque.
+   *
+   * O lock e na linha do Order (mesma ordem de lock do resto: Order antes de
+   * Product) e o mapeamento dos itens fica FORA da transacao de proposito, para a
+   * janela do lock ser so o read+insert.
+   */
+  private static async acrescentarItensAoPedido(params: {
+    orderId: string;
+    externalOrderId: string;
+    itens: OrderItemCreate[];
+    /** Nome do evento no log estruturado. */
+    evento: string;
+    /** Campos extra do log (plataforma, conta). */
+    extra?: Record<string, unknown>;
+  }): Promise<number> {
+    const { orderId, itens } = params;
+    if (!itens.length) return 0;
+
     const novos = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
 
@@ -1037,7 +1163,7 @@ export class OrderUseCase {
         select: { productId: true },
       });
       const jaTem = new Set(atuais.map((i) => i.productId));
-      const aInserir = items.filter((i) => !jaTem.has(i.productId));
+      const aInserir = itens.filter((i) => !jaTem.has(i.productId));
       if (!aInserir.length) return [];
 
       await tx.orderItem.createMany({
@@ -1056,14 +1182,288 @@ export class OrderUseCase {
 
     console.log(
       JSON.stringify({
-        event: "shopee.order_import.partial_completed",
+        event: params.evento,
         orderId,
-        externalOrderId: shopeeOrder.order_sn,
+        externalOrderId: params.externalOrderId,
         itensAcrescentados: novos.length,
+        ...(params.extra ?? {}),
       }),
     );
 
     return novos.length;
+  }
+
+  /**
+   * Completa um `Order` do ML ou da Magalu que existe com ZERO itens.
+   *
+   * A OUTRA METADE do Order sem itens. O pedido de zero itens registra a venda
+   * (valor, data, visibilidade em /pedidos e no Financeiro), mas so faz sentido
+   * se existir um caminho que acrescente os itens e baixe o estoque quando o
+   * cliente finalmente cadastrar o produto. Na Shopee esse caminho e o
+   * reconciliador, que re-busca o pedido por `order_sn`
+   * (`completePartialShopeeOrder`). No ML e na Magalu nao existe busca dirigida
+   * por id no poll, e sem esta funcao o Order vazio era uma ARMADILHA:
+   * `orderRepository.exists()` passava a devolver true, o ciclo seguinte
+   * respondia `already_exists` e os itens nunca entravam — venda no faturamento
+   * pelo valor, sem baixa de estoque, para sempre (achado ALTA da auditoria de
+   * 30/07/2026).
+   *
+   * Quem chama e o proprio poll, com o payload FRESCO que ele ja tem em maos:
+   * nenhuma chamada externa a mais, e nenhum payload de pedido guardado no banco
+   * (o `OrderIngestionIssue` de ML/Magalu segue com `payload: null`, para nao
+   * persistir PII sem finalidade).
+   *
+   * Medido em producao em 30/07/2026: 84 pedidos do ML com zero itens, R$
+   * 27.731,47 de faturamento, de 8 tenants — 77 deles com a pendencia fechada em
+   * falso pela regressao que o `retryStockDeduction` de zero itens causava.
+   *
+   * Idempotente nas duas pontas: o acrescimo ignora produto que ja esta no
+   * pedido, e a baixa vai por `retryStockDeduction`, ancorada no net do StockLog
+   * lido DENTRO da transacao.
+   *
+   * O desfecho e entregue a `registrarDesfechoIngestao`, que ja e quem decide
+   * fechar ou reabrir a quarentena de ML/Magalu — nenhuma regra nova de
+   * pendencia.
+   */
+  private static async completarOrderSemItens(params: {
+    plataforma: "MERCADO_LIVRE" | "MAGALU" | "SHOPEE";
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    orderId: string;
+    itens: OrderItemCreate[];
+    itemsTotal: number;
+    /** true quando este pedido deveria baixar estoque (pago e deductStock). */
+    esperavaBaixa: boolean;
+    /** Shopee: detalhe cru do pedido, para a quarentena poder re-buscar. */
+    payload?: unknown;
+    /** Shopee: descricao dos itens que nao vincularam. */
+    detalheSemVinculo?: string | null;
+  }): Promise<ImportOrderResult> {
+    const {
+      plataforma,
+      marketplaceAccountId,
+      externalOrderId,
+      orderId,
+      itens,
+      itemsTotal,
+      esperavaBaixa,
+    } = params;
+
+    // Nenhum item casou AINDA: o produto continua fora do Dexo. A venda ja esta
+    // registrada (o Order existe), a quarentena continua aberta, e a proxima
+    // passada tenta de novo. Nunca fecha nada aqui.
+    if (!itens.length) {
+      console.log(
+        JSON.stringify({
+          event: "order_import.pedido_vazio_sem_vinculo",
+          platform: plataforma,
+          marketplaceAccountId,
+          externalOrderId,
+          orderId,
+          itemsTotal,
+        }),
+      );
+      const semVinculo: ImportOrderResult = {
+        success: false,
+        orderId,
+        externalOrderId,
+        status: "no_products",
+        message:
+          "Venda registrada sem itens: nenhum item casou com produto do estoque",
+        stockDeducted: false,
+        itemsLinked: 0,
+        itemsTotal,
+      };
+      await this.registrarDesfechoDaCompletude({
+        ...params,
+        resultado: semVinculo,
+      });
+      return semVinculo;
+    }
+
+    const acrescentados = await this.acrescentarItensAoPedido({
+      orderId,
+      externalOrderId,
+      itens,
+      evento: "order_import.pedido_vazio_completado",
+      extra: { platform: plataforma, marketplaceAccountId },
+    });
+
+    // Zero acrescentados com itens mapeados = outra execucao inseriu primeiro
+    // (poll e webhook do ML rodam em processos diferentes). Nao e desfecho novo:
+    // devolve `already_exists` e deixa a pendencia como esta.
+    if (acrescentados === 0) {
+      return {
+        success: true,
+        orderId,
+        externalOrderId,
+        status: "already_exists",
+        message: "Itens do pedido ja tinham sido acrescentados",
+        stockDeducted: false,
+        itemsLinked: 0,
+        itemsTotal,
+      };
+    }
+
+    const baixou = esperavaBaixa
+      ? await this.retryStockDeduction(orderId, plataforma, externalOrderId)
+      : false;
+
+    const resultado: ImportOrderResult = {
+      success: true,
+      orderId,
+      externalOrderId,
+      status: "imported",
+      message: `Pedido ${this.rotuloDaPlataforma(plataforma)} completado com ${acrescentados} item(ns)`,
+      stockDeducted: baixou,
+      itemsLinked: acrescentados,
+      itemsTotal,
+    };
+
+    await this.registrarDesfechoDaCompletude({ ...params, resultado });
+
+    return resultado;
+  }
+
+  /**
+   * Abre ou fecha a quarentena depois de completar um pedido vazio.
+   *
+   * ML e Magalu reusam `registrarDesfechoIngestao`, que ja e a arvore de decisao
+   * das duas. A Shopee tem a sua propria, porque a pendencia dela guarda o
+   * `payload` podado (e o que permite o reconciliador re-buscar o pedido) — e a
+   * arvore aqui e a MESMA de `ingestShopeeOrder`, so aplicada ao pedido que foi
+   * completado em vez de criado.
+   *
+   * Best-effort de ponta a ponta: nada aqui pode derrubar o ciclo.
+   */
+  private static async registrarDesfechoDaCompletude(params: {
+    plataforma: "MERCADO_LIVRE" | "MAGALU" | "SHOPEE";
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    orderId: string;
+    itemsTotal: number;
+    esperavaBaixa: boolean;
+    payload?: unknown;
+    detalheSemVinculo?: string | null;
+    resultado: ImportOrderResult;
+  }): Promise<void> {
+    const {
+      plataforma,
+      marketplaceAccountId,
+      externalOrderId,
+      orderId,
+      itemsTotal,
+      esperavaBaixa,
+      resultado,
+    } = params;
+
+    if (plataforma !== "SHOPEE") {
+      await this.registrarDesfechoIngestao({
+        platform: plataforma,
+        marketplaceAccountId,
+        resultado,
+        esperavaBaixa,
+      });
+      return;
+    }
+
+    try {
+      const base = {
+        marketplaceAccountId,
+        platform: "SHOPEE" as const,
+        externalOrderId,
+        payload: params.payload,
+        orderId,
+      };
+
+      if (resultado.status === "no_products") {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "NO_LINKED_ITEMS",
+          detail:
+            params.detalheSemVinculo ??
+            `Nenhum dos ${itemsTotal} item(ns) do pedido casou com produto do tenant.`,
+        });
+        return;
+      }
+
+      if (esperavaBaixa && !resultado.stockDeducted) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "STOCK_DEDUCTION_FAILED",
+          detail: "Itens acrescentados ao pedido, baixa de estoque NAO efetivada.",
+        });
+        return;
+      }
+
+      if (resultado.itemsLinked < itemsTotal) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "PARTIAL_LINK",
+          detail:
+            params.detalheSemVinculo ??
+            `${resultado.itemsLinked} de ${itemsTotal} item(ns) vinculados.`,
+        });
+        return;
+      }
+
+      await OrderIngestionIssueService.resolve(
+        marketplaceAccountId,
+        externalOrderId,
+        orderId,
+      );
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao registrar desfecho da completude de ${plataforma} #${externalOrderId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Dos pedidos que EXISTEM localmente, quais estao com zero itens.
+   *
+   * Devolve `externalOrderId -> Order.id`. Vazio significa "nada a completar", que
+   * e o caso normal — em regime estavel a consulta volta zero linhas.
+   *
+   * EGRESS: e UMA consulta a mais por conta por ciclo, com `NOT EXISTS` sobre a
+   * mesma lista de ids que o batch check ja usa, e devolvendo so dois campos.
+   * Foi preferida a incluir `_count` no batch check existente porque aquele
+   * roda para TODOS os pedidos da janela (contaria itens de todos eles), e esta
+   * volta vazia quando nao ha o que fazer. Com o kill-switch ligado, nem a
+   * consulta acontece — o caminho fica byte-identico ao anterior.
+   *
+   * Best-effort: falhar aqui so faz o ciclo se comportar como antes.
+   */
+  private static async pedidosVaziosNaJanela(
+    marketplaceAccountId: string,
+    externalOrderIds: string[],
+  ): Promise<Map<string, string>> {
+    if (process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED === "1") {
+      return new Map();
+    }
+    if (!externalOrderIds.length) return new Map();
+
+    try {
+      const vazios = await prisma.order.findMany({
+        where: {
+          marketplaceAccountId,
+          externalOrderId: { in: externalOrderIds },
+          // Zero itens. Pedido cancelado nao entra: nao ha venda a completar
+          // nem estoque a baixar.
+          items: { none: {} },
+          status: { not: "CANCELLED" },
+        },
+        select: { id: true, externalOrderId: true },
+      });
+      return new Map(vazios.map((v) => [v.externalOrderId, v.id]));
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao listar pedidos sem itens da conta ${marketplaceAccountId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return new Map();
+    }
   }
 
   /**
@@ -1274,27 +1674,26 @@ export class OrderUseCase {
   }): Promise<string | null> {
     if (process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED === "1") return null;
 
-    // SÓ Shopee, e por um motivo concreto — não por preferência.
+    // O Order sem itens e METADE de um par: a outra metade e o caminho que
+    // ACRESCENTA os itens quando o cliente finalmente cadastra o produto. Sem
+    // ela, o Order vazio e uma ARMADILHA — `orderRepository.exists()` passa a
+    // devolver true, o import seguinte responde `already_exists` e os itens nunca
+    // entram: venda no faturamento pelo valor, sem baixa de estoque, para sempre
+    // (achado ALTA da auditoria de 30/07/2026).
     //
-    // O Order sem itens é METADE de um par: a outra metade é o caminho que
-    // ACRESCENTA os itens quando o cliente finalmente cadastra o produto. Na
-    // Shopee esse caminho existe (`completePartialShopeeOrder`, chamado pelo
-    // reconciliador com o payload do pedido guardado na pendência).
+    // Por isso, entre 30/07 e agora, isto ficou restrito a Shopee, que era a
+    // unica com a outra metade (`completePartialShopeeOrder`, via reconciliador).
+    // Agora as tres tem: `completarOrderSemItens` completa o pedido vazio no
+    // proprio poll, com o payload do ciclo, sem chamada externa a mais.
     //
-    // No ML e na Magalu ele NÃO existe, e o Order vazio se torna uma armadilha:
-    // `orderRepository.exists()` passa a devolver true, o import seguinte
-    // responde `already_exists` e os itens nunca entram. A venda ficaria
-    // permanentemente incompleta — no faturamento pelo valor, sem baixa de
-    // estoque, para sempre. Achado ALTA da auditoria de performance de
-    // 30/07/2026, confirmado por 3 lentes.
-    //
-    // Enquanto o par não estiver completo, ML e Magalu ficam só com a
-    // QUARENTENA: a venda é registrada e visível na aba de Pendências (o
-    // invariante proíbe descarte silencioso, e isso continua garantido), mas não
-    // se cria um Order que ninguém consegue completar depois. Para habilitar,
-    // basta um `completePartialOrder` equivalente para as duas — e então trocar
-    // esta condição.
-    if (params.plataforma !== "SHOPEE") {
+    // ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED=1 volta ao recorte de
+    // Shopee-apenas. Nesse caso o ML e a Magalu ficam so com a quarentena: a
+    // venda continua registrada e visivel na aba de Pendencias (o invariante
+    // proibe descarte silencioso, e isso segue garantido), mas nao vira Order.
+    if (
+      params.plataforma !== "SHOPEE" &&
+      process.env.ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED === "1"
+    ) {
       console.log(
         JSON.stringify({
           event: "order_import.sem_itens_nao_criado",
@@ -1302,7 +1701,7 @@ export class OrderUseCase {
           marketplaceAccountId: params.marketplaceAccountId,
           externalOrderId: params.externalOrderId,
           motivo:
-            "sem caminho de completar o pedido depois; a venda fica registrada na quarentena",
+            "ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED=1; a venda fica registrada na quarentena",
         }),
       );
       return null;
@@ -1697,7 +2096,17 @@ export class OrderUseCase {
                 externalListingId,
               },
             },
-            include: { product: true },
+            // EGRESS: consumo verificado logo abaixo — so `listing.productId`,
+            // `listing.id` e a EXISTENCIA de `listing.product`. O `include`
+            // anterior trazia a linha inteira do Product, com quatro JSONB
+            // (`attributes`, `imageUrls`, `mlCatalogSnapshot`, `compatibilities`)
+            // e a `description`, por item de pedido. Mesmo select do caminho em
+            // lote, o que tambem deixa as duas pontas com o mesmo shape.
+            select: {
+              id: true,
+              productId: true,
+              product: { select: { id: true } },
+            },
           });
 
       if (listing && listing.product) {
@@ -2034,6 +2443,12 @@ export class OrderUseCase {
       }
     }
 
+    // Idem ML: pedidos que existem local com zero itens, para completar em vez
+    // de pular.
+    const vaziosPorExtId = await this.pedidosVaziosNaJanela(account.id, [
+      ...existingSet,
+    ]);
+
     for (const magaluOrder of magaluOrders) {
       const externalOrderId = extractExternalOrderId(magaluOrder);
       // Os itens vivem em `deliveries[].items[]`, não em `order.items`. Ler o
@@ -2047,17 +2462,6 @@ export class OrderUseCase {
         }
 
         if (existingSet.has(externalOrderId)) {
-          result.results.push({
-            success: true,
-            orderId: null,
-            externalOrderId,
-            status: "already_exists",
-            message: "Pedido já importado anteriormente",
-            stockDeducted: false,
-            itemsLinked: 0,
-            itemsTotal: itemList.length,
-          });
-          result.alreadyExists++;
           // ADITIVO (cancelamento): pedido já importado que aparece cancelado
           // no poll da API Magalu → estorno via handler idempotente (fast-path
           // barato quando já está CANCELLED). Best-effort: o handler nunca
@@ -2110,6 +2514,62 @@ export class OrderUseCase {
               ).catch(() => {});
             }
           }
+
+          // Pedido que existe local com ZERO itens: completa com o payload
+          // FRESCO deste ciclo. Mesma logica do ML — ver
+          // `completarOrderSemItens`. Pedido que a Magalu esta reportando como
+          // cancelado nao entra: quem manda nele e o handler de cancelamento
+          // acima.
+          const orderVazioId = vaziosPorExtId.get(externalOrderId);
+          const constaCancelado =
+            rawMagaluStatus === "cancelled" ||
+            rawMagaluStatus === "canceled" ||
+            rawMagaluStatus === "cancelado";
+          if (orderVazioId && !constaCancelado) {
+            const statusVazio = this.mapMagaluStatus(magaluOrder.status);
+            // `listingMap` de fora de proposito (ver a nota no caminho do ML).
+            const { items } = await this.mapMagaluOrderItems(
+              itemList,
+              account.userId,
+              marketplaceAccountId,
+              undefined,
+            );
+            const desfecho = await this.completarOrderSemItens({
+              plataforma: "MAGALU",
+              marketplaceAccountId: account.id,
+              externalOrderId,
+              orderId: orderVazioId,
+              itens: items,
+              itemsTotal: itemList.length,
+              esperavaBaixa:
+                deductStock &&
+                (statusVazio === "PAID" ||
+                  statusVazio === "SHIPPED" ||
+                  statusVazio === "DELIVERED"),
+            });
+            result.results.push(desfecho);
+            if (desfecho.status === "imported") {
+              result.imported++;
+              if (desfecho.stockDeducted) result.stockDeductions++;
+            } else if (desfecho.status === "no_products") {
+              result.noProducts++;
+            } else {
+              result.alreadyExists++;
+            }
+            continue;
+          }
+
+          result.results.push({
+            success: true,
+            orderId: null,
+            externalOrderId,
+            status: "already_exists",
+            message: "Pedido já importado anteriormente",
+            stockDeducted: false,
+            itemsLinked: 0,
+            itemsTotal: itemList.length,
+          });
+          result.alreadyExists++;
           continue;
         }
 
@@ -2466,7 +2926,13 @@ export class OrderUseCase {
                     externalListingId,
                   },
                 },
-                include: { product: true },
+                // EGRESS: idem ML — o consumo abaixo e so `productId`, `id` e a
+                // existencia de `product`.
+                select: {
+                  id: true,
+                  productId: true,
+                  product: { select: { id: true } },
+                },
               })
             : null;
 
