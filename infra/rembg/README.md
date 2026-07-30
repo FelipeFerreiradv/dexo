@@ -87,10 +87,20 @@ roda, saida byte-identica (provado por md5 na Fase 0). Tunables:
 `REMBG_MASK_HOLE_MAX_RATIO` (0.001), `REMBG_MASK_HOLE_MIN_ALPHA` (40),
 `REMBG_MASK_OPEN_PX` (0). A supressao de sombra projetada REAL e' flag
 SEPARADA e experimental (`REMBG_MASK_SHADOW_SUPPRESS=false` +
-`REMBG_MASK_SHADOW_ALPHA_LO/_HI`, `_MAX_SAT`, `_SUPPRESS_FACTOR`) — nunca
-entra no gate golden. Testes: `python -m unittest discover infra/rembg/tests`
-(numpy+cv2 apenas; roda na imagem sem carregar o modelo). LIGAR SOMENTE apos
-`golden.py compare` verde em `/golden/core` com a flag ON.
+`REMBG_MASK_SHADOW_ALPHA_LO/_HI`, `_MAX_SAT`, `_SUPPRESS_FACTOR`,
+`_PROTECT_PX`) — nunca entra no gate golden. Testes:
+`python -m unittest discover infra/rembg/tests` (numpy+cv2 apenas; roda na
+imagem sem carregar o modelo).
+
+**Criterio do gate golden com esta flag ON** (decisao do Felipe 29/07,
+PR #212): criterio VISUAL — SSIM >= 0.995 e alpha MAE <= 0.5; o Linf e'
+INFORMATIVO, porque o modulo altera por design a dezena de pixels de
+ruido (furos/specks) que a identidade estrita proibiria:
+`golden.py compare --alpha-linf-max 255`. Com a flag OFF o criterio segue
+sendo identidade (Linf <= 2; provado md5 byte-identico na Fase 0).
+Resultado do gate em 29/07 21h: 38/38 verde pelo criterio visual
+(SSIM min 0.9991, MAE max 0.053; 75-520 px alterados por foto real,
+todos furos-ruido/specks — diffs em /srv/dexo-bench/golden/DIFF_*.png).
 
 Sombra projetada ajustavel por env (sem rebuild — basta restart). Killswitch
 global: `REMBG_SHADOW_ENABLED=false` ignora `add_shadow`. Direcao/forma:
