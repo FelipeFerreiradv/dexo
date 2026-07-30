@@ -641,6 +641,28 @@ model ImageBgJob {
   @@index([userId, createdAt])
 }
 
+// Receita de edição do Editor de Imagem (PR 6): cada SAVE gera um arquivo
+// NOVO (`fileName` @unique, nunca sobrescreve — versionamento por uuid) e
+// grava aqui a receita JSON (EditRecipeV1) + os arquivos-fonte, permitindo
+// reabrir a edição do ponto onde parou e o restore não-destrutivo do PR 8.
+// O GC (cleanup-orphan-originals) considera sourceFileName/cutoutFileName
+// referenciados enquanto a linha existir.
+model ProductImageEdit {
+  id             String   @id @default(cuid())
+  // Arquivo de SAÍDA gravado em public/uploads (ex.: "abc.png"/"abc.jpg").
+  fileName       String   @unique
+  // Imagem-base da edição (o que o usuário abriu no editor).
+  sourceFileName String
+  // Recorte PNG usado como camada-base, quando havia (restore do PR 8).
+  cutoutFileName String?
+  recipe         Json
+  userId         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
 model BulkListingJob {
   id               String        @id @default(cuid())
   userId           String

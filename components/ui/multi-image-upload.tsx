@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   GripVertical,
   Image as ImageIcon,
   Loader2,
+  Pencil,
   RotateCcw,
   Upload,
   X,
@@ -50,6 +52,18 @@ interface MultiImageUploadProps {
 // Não subir de volta para 3 sem subir o gate junto.
 const UPLOAD_CONCURRENCY = 2;
 
+// Editor de Imagem (PR 6) — flag BUILD-TIME (precedente PDV/Budget): com a
+// env desligada o botão nem renderiza e o chunk do fabric (~90KB gz) nem
+// entra no bundle da página (dynamic import só é referenciado atrás do if).
+const IMAGE_EDITOR_ENABLED =
+  process.env.NEXT_PUBLIC_IMAGE_EDITOR_ENABLED === "true";
+
+const ImageEditorDialog = IMAGE_EDITOR_ENABLED
+  ? dynamic(() => import("@/components/image-editor/image-editor-dialog"), {
+      ssr: false,
+    })
+  : null;
+
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -91,6 +105,7 @@ export function MultiImageUpload({
   maxImages = 10,
 }: MultiImageUploadProps) {
   const [isUploading, setIsUploading] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
   const [addShadow, setAddShadow] = useAddShadowToggle(true);
@@ -449,6 +464,18 @@ export function MultiImageUpload({
               )}
               {!disabled && (
                 <div className="absolute top-1 right-1 flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                  {IMAGE_EDITOR_ENABLED && !bgJobs[url] && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={() => setEditingIndex(index)}
+                      title="Editar imagem"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                  )}
                   {index > 0 && (
                     <Button
                       type="button"
@@ -546,6 +573,27 @@ export function MultiImageUpload({
             </Button>
           )}
         </div>
+      )}
+
+      {/* Editor de Imagem (PR 6) — montado sob demanda; o save substitui a
+          URL NA MESMA POSIÇÃO (preserva ordem e "Principal"). */}
+      {ImageEditorDialog && editingIndex !== null && (
+        <ImageEditorDialog
+          open
+          onOpenChange={(o: boolean) => {
+            if (!o) setEditingIndex(null);
+          }}
+          imageUrl={value[editingIndex] ?? null}
+          onError={onError}
+          onSaved={(newUrl: string) => {
+            const idx = editingIndex;
+            if (idx === null) return;
+            const updated = [...valueRef.current];
+            if (idx < updated.length) updated[idx] = newUrl;
+            onChangeRef.current(applyAliases(updated));
+            setEditingIndex(null);
+          }}
+        />
       )}
     </div>
   );

@@ -129,6 +129,29 @@ async function collectInUseUuids(): Promise<InUseRefs> {
     );
   }
 
+  // Receitas do Editor (PR 6): source/cutout/saída de uma edição são
+  // referenciados ENQUANTO a linha existir — sem isso, o restore/reabrir
+  // (PR 8) quebraria em silêncio ~30 dias depois do save, quando o GC
+  // varresse o original. Mesmo try/catch defensivo do ImageBgJob.
+  try {
+    const edits = await (prisma as any).productImageEdit.findMany({
+      select: { fileName: true, sourceFileName: true, cutoutFileName: true },
+    });
+    for (const e of edits) {
+      for (const name of [e.fileName, e.sourceFileName, e.cutoutFileName]) {
+        if (!name) continue;
+        filenames.add(name);
+        const uuid = String(name).split(".")[0];
+        if (uuid) inUse.add(uuid);
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[cleanup] ProductImageEdit indisponível (tabela/client ausente?) — seguindo sem a proteção de edições:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   return { uuids: inUse, filenames };
 }
 

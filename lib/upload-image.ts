@@ -107,6 +107,12 @@ export interface UploadImageResult {
   /** Presente quando o recorte ficou para o background (caminho assíncrono):
    *  a `url` é a WebP provisória; o polling troca pelo PNG quando pronto. */
   bgJob?: UploadBgJobRef;
+  /** Campos aditivos (PR 6 — pré-requisito do Editor): o backend sempre os
+   *  envia; ficam opcionais aqui para não obrigar mock nenhum a mudar. */
+  originalUrl?: string;
+  fileName?: string;
+  width?: number;
+  height?: number;
 }
 
 /**
@@ -214,11 +220,19 @@ export async function uploadProductImage(
       imageUrl: string;
       warning?: string;
       bgJob?: UploadBgJobRef;
+      originalUrl?: string;
+      fileName?: string;
+      width?: number;
+      height?: number;
     };
     return {
       url: result.imageUrl,
       warning: result.warning,
       ...(result.bgJob ? { bgJob: result.bgJob } : {}),
+      ...(result.originalUrl ? { originalUrl: result.originalUrl } : {}),
+      ...(result.fileName ? { fileName: result.fileName } : {}),
+      ...(typeof result.width === "number" ? { width: result.width } : {}),
+      ...(typeof result.height === "number" ? { height: result.height } : {}),
     };
   } catch (err) {
     // Distinguir NOSSO deadline de um cancelamento externo: os dois chegam aqui
@@ -234,4 +248,105 @@ export async function uploadProductImage(
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", forwardAbort);
   }
+}
+
+export interface UploadEditedImageInput {
+  /** Blob exportado do canvas (PNG transparente ou JPEG opaco). */
+  blob: Blob;
+  /** Receita EditRecipeV1 serializável (o backend valida version===1). */
+  recipe: unknown;
+  /** Basename da imagem-base aberta no editor (ex.: "abc.png"). */
+  sourceFileName: string;
+  /** Basename do recorte usado como camada, quando havia. */
+  cutoutFileName?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/**
+ * Cliente do `POST /upload/image/edited` (Editor de Imagem, PR 6). Mesmas
+ * TRÊS INVARIANTES de auth do topo do arquivo: fetch nu resolvido na chamada,
+ * URL por concatenação com getApiBaseUrl(), nunca setar authorization.
+ */
+export async function uploadEditedImage(
+  input: UploadEditedImageInput,
+): Promise<{ url: string; fileName: string }> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(
+    () => {
+      timedOut = true;
+      controller.abort();
+    },
+    input.timeoutMs ?? computeUploadTimeoutMs(input.blob.size),
+  );
+  const forwardAbort = () => controller.abort();
+  input.signal?.addEventListener("abort", forwardAbort, { once: true });
+
+  try {
+    const formData = new FormData();
+    const ext = input.blob.type === "image/jpeg" ? "jpg" : "png";
+    formData.append("file", input.blob, `edited.${ext}`);
+    formData.append("recipe", JSON.stringify(input.recipe));
+    formData.append("sourceFileName", input.sourceFileName);
+    if (input.cutoutFileName) {
+      formData.append("cutoutFileName", input.cutoutFileName);
+    }
+
+    const response = await fetch(`${getApiBaseUrl()}/upload/image/edited`, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({}) as { message?: string });
+      throw new UploadImageError(
+        error.message || "Erro ao salvar a imagem editada",
+        "server",
+        response.status,
+      );
+    }
+    const result = (await response.json()) as {
+      imageUrl: string;
+      fileName: string;
+    };
+    return { url: result.imageUrl, fileName: result.fileName };
+  } catch (err) {
+    if (timedOut) {
+      throw new UploadImageError(
+        "O servidor de imagens demorou demais para responder. Tente novamente em instantes.",
+        "timeout",
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    input.signal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+export interface ImageEditMeta {
+  fileName: string;
+  originalFileName?: string;
+  originalUrl?: string;
+  edit?: {
+    recipe: unknown;
+    sourceFileName: string;
+    sourceUrl: string;
+    cutoutFileName?: string;
+    cutoutUrl?: string;
+  };
+}
+
+/** Cliente do `GET /upload/image/meta` — contexto para reabrir no editor. */
+export async function fetchImageEditMeta(
+  fileName: string,
+): Promise<ImageEditMeta | null> {
+  const response = await fetch(
+    `${getApiBaseUrl()}/upload/image/meta?fileName=${encodeURIComponent(fileName)}`,
+  );
+  if (!response.ok) return null;
+  return (await response.json()) as ImageEditMeta;
 }
