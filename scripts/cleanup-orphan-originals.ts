@@ -81,6 +81,25 @@ async function collectInUseUuids(): Promise<Set<string>> {
     for (const url of l.imageUrlsOverride ?? []) extractUuidsFromUrl(url, inUse);
   }
 
+  // Lacuna pré-existente corrigida no PR 4: sucatas também referenciam
+  // uploads (create-scrap-dialog usa o MESMO componente de upload).
+  const scraps = await prisma.scrap.findMany({
+    select: { imageUrls: true },
+  });
+  for (const s of scraps) {
+    for (const url of s.imageUrls ?? []) extractUuidsFromUrl(url, inUse);
+  }
+
+  // Jobs do recorte assíncrono (PR 4): o worker lê o `.orig` do disco para
+  // processar — apagar o original de um job vivo quebraria o recorte. Rows
+  // COMPLETED/FAILED também protegem (o retry manual relê o .orig).
+  const jobs = await (prisma as any).imageBgJob.findMany({
+    select: { uploadUuid: true },
+  });
+  for (const j of jobs) {
+    if (j.uploadUuid) inUse.add(j.uploadUuid);
+  }
+
   return inUse;
 }
 
@@ -134,11 +153,45 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+/** Retenção dos jobs de recorte assíncrono: terminais com mais de 90 dias
+ *  são removidos (execute mode) — senão a proteção de `.orig` deles seria
+ *  eterna e a tabela cresceria sem limite. Jobs vivos nunca são tocados. */
+async function pruneOldImageBgJobs(execute: boolean): Promise<void> {
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  if (!execute) {
+    const count = await (prisma as any).imageBgJob.count({
+      where: {
+        status: { in: ["COMPLETED", "FAILED"] },
+        updatedAt: { lt: cutoff },
+      },
+    });
+    if (count > 0) {
+      console.log(
+        `[cleanup] ${count} ImageBgJob terminal(is) com >90d seriam removidos (execute).`,
+      );
+    }
+    return;
+  }
+  const removed = await (prisma as any).imageBgJob.deleteMany({
+    where: {
+      status: { in: ["COMPLETED", "FAILED"] },
+      updatedAt: { lt: cutoff },
+    },
+  });
+  if (removed.count > 0) {
+    console.log(`[cleanup] ${removed.count} ImageBgJob terminal(is) removido(s).`);
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs();
   console.log(
     `[cleanup] Modo ${opts.execute ? "EXECUTE (vai deletar)" : "DRY-RUN"}; min-age-days=${opts.minAgeDays}`,
   );
+
+  // Poda de jobs ANTES de coletar os in-use: um job terminal recém-podado
+  // libera o `.orig` correspondente já nesta execução.
+  await pruneOldImageBgJobs(opts.execute);
 
   const [inUse, candidates] = await Promise.all([
     collectInUseUuids(),

@@ -1,7 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { GripVertical, Image as ImageIcon, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  GripVertical,
+  Image as ImageIcon,
+  Loader2,
+  RotateCcw,
+  Upload,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -9,7 +16,14 @@ import {
   classifyUploadError,
   uploadProductImage,
   validateImageFile,
+  type UploadBgJobRef,
 } from "@/lib/upload-image";
+import {
+  isImageBgJobTerminal,
+  retryImageBgJob,
+  type ImageBgJobStatus,
+} from "@/lib/image-bg-jobs";
+import { useImageBgJobs } from "@/hooks/use-image-bg-jobs";
 import { useRemoveBackgroundToggle } from "@/hooks/use-remove-background-toggle";
 import { useAddShadowToggle } from "@/hooks/use-add-shadow-toggle";
 
@@ -59,6 +73,14 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+/** Estado local de um recorte assíncrono em andamento, chaveado pela URL
+ *  provisória (WebP) que está no `value`. */
+interface BgJobState {
+  jobId: string;
+  status: string;
+  startedAt: number;
+}
+
 export function MultiImageUpload({
   value = [],
   onChange,
@@ -73,10 +95,81 @@ export function MultiImageUpload({
   const [removeBackground, setRemoveBackground] = useRemoveBackgroundToggle(true);
   const [addShadow, setAddShadow] = useAddShadowToggle(true);
 
+  // --- Recorte assíncrono (PR 4) ------------------------------------------
+  // O `value` continua sendo `string[]` puro (API intocada para os 4
+  // consumidores); o estado por-thumbnail vive só aqui. Quando o job conclui,
+  // trocamos a WebP provisória pelo PNG NA MESMA POSIÇÃO (preserva a ordem e
+  // o "Principal") — o setValue("imageUrl", urls[0]) dos consumidores reage.
+  const [bgJobs, setBgJobs] = useState<Record<string, BgJobState>>({});
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // Re-render periódico só para a mensagem ">60s" do overlay evoluir.
+  const hasActiveBgJobs = Object.values(bgJobs).some(
+    (j) => !isImageBgJobTerminal(j.status),
+  );
+  const [, setBgPulse] = useState(0);
+  useEffect(() => {
+    if (!hasActiveBgJobs) return;
+    const id = setInterval(() => setBgPulse((p) => p + 1), 15_000);
+    return () => clearInterval(id);
+  }, [hasActiveBgJobs]);
+
+  const handleJobsUpdate = useCallback((jobs: ImageBgJobStatus[]) => {
+    for (const job of jobs) {
+      if (job.status === "COMPLETED" && job.resultUrl) {
+        const current = valueRef.current;
+        if (current.includes(job.webpUrl)) {
+          onChangeRef.current(
+            current.map((u) => (u === job.webpUrl ? job.resultUrl! : u)),
+          );
+        }
+        setBgJobs((prev) => {
+          if (!prev[job.webpUrl]) return prev;
+          const next = { ...prev };
+          delete next[job.webpUrl];
+          return next;
+        });
+      } else {
+        setBgJobs((prev) => {
+          const entry = prev[job.webpUrl];
+          if (!entry || entry.status === job.status) return prev;
+          return { ...prev, [job.webpUrl]: { ...entry, status: job.status } };
+        });
+      }
+    }
+  }, []);
+
+  const activeJobIds = Object.values(bgJobs)
+    .filter((j) => !isImageBgJobTerminal(j.status))
+    .map((j) => j.jobId);
+  useImageBgJobs(activeJobIds, handleJobsUpdate);
+
+  const handleRetryBgJob = useCallback(
+    async (jobId: string, url: string) => {
+      const ok = await retryImageBgJob(jobId).catch(() => false);
+      if (ok) {
+        setBgJobs((prev) =>
+          prev[url]
+            ? {
+                ...prev,
+                [url]: { ...prev[url], status: "PENDING", startedAt: Date.now() },
+              }
+            : prev,
+        );
+      } else {
+        onError?.("Não foi possível reprocessar o recorte. Tente de novo.");
+      }
+    },
+    [onError],
+  );
+
   const uploadFile = useCallback(
     async (
       file: File,
-    ): Promise<{ url: string | null; warning?: string }> => {
+    ): Promise<{ url: string | null; warning?: string; bgJob?: UploadBgJobRef }> => {
       // Arquivo inválido avisa e NÃO conta como falha de upload (igual a antes).
       const invalid = validateImageFile(file);
       if (invalid) {
@@ -87,8 +180,16 @@ export function MultiImageUpload({
       const result = await uploadProductImage(file, {
         removeBackground,
         addShadow,
+        // Opt-in do recorte assíncrono: só tem efeito se UPLOAD_ASYNC_REMBG
+        // estiver ligado no servidor (duplo opt-in). Sem ele, o servidor
+        // ignora o campo e responde como sempre.
+        asyncBg: true,
       });
-      return { url: result.url, warning: result.warning };
+      return {
+        url: result.url,
+        warning: result.warning,
+        bgJob: result.bgJob,
+      };
     },
     [onError, removeBackground, addShadow],
   );
@@ -120,13 +221,26 @@ export function MultiImageUpload({
               slots[index] = r.url;
               const done = slots.filter((u): u is string => u !== null);
               onChange([...value, ...done]);
+              if (r.bgJob) {
+                const url = r.url;
+                const jobId = r.bgJob.jobId;
+                setBgJobs((prev) => ({
+                  ...prev,
+                  [url]: { jobId, status: "PENDING", startedAt: Date.now() },
+                }));
+              }
             }
             return r;
           },
         );
         const fulfilled = settled.filter(
-          (r): r is PromiseFulfilledResult<{ url: string | null; warning?: string }> =>
-            r.status === "fulfilled",
+          (
+            r,
+          ): r is PromiseFulfilledResult<{
+            url: string | null;
+            warning?: string;
+            bgJob?: UploadBgJobRef;
+          }> => r.status === "fulfilled",
         );
 
         // Dedup warnings: se múltiplas imagens caíram no mesmo fallback,
@@ -211,7 +325,16 @@ export function MultiImageUpload({
 
   const handleRemove = useCallback(
     (index: number) => {
+      const removedUrl = value[index];
       const updated = value.filter((_, i) => i !== index);
+      // Se a imagem removida tinha recorte em andamento, para de acompanhar
+      // (o job segue no servidor, mas a URL não está mais no formulário).
+      setBgJobs((prev) => {
+        if (!prev[removedUrl]) return prev;
+        const next = { ...prev };
+        delete next[removedUrl];
+        return next;
+      });
       onChange(updated);
     },
     [value, onChange],
@@ -262,6 +385,39 @@ export function MultiImageUpload({
                 alt={`Imagem ${index + 1}`}
                 className="aspect-square w-full object-cover"
               />
+              {(() => {
+                const job = bgJobs[url];
+                if (!job) return null;
+                if (job.status === "FAILED") {
+                  return (
+                    <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-amber-500/90 px-1.5 py-1">
+                      <span className="truncate text-[10px] font-medium text-white">
+                        Recorte falhou
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon"
+                        className="h-5 w-5 shrink-0"
+                        title="Tentar recortar novamente"
+                        onClick={() => void handleRetryBgJob(job.jobId, url)}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-background/85 px-1.5 py-1 backdrop-blur-[2px]">
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                    <span className="truncate text-[10px] text-muted-foreground">
+                      {Date.now() - job.startedAt > 60_000
+                        ? "Ainda recortando — pode salvar normalmente"
+                        : "Recortando fundo…"}
+                    </span>
+                  </div>
+                );
+              })()}
               {index === 0 && (
                 <span className="absolute top-1 left-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
                   Principal

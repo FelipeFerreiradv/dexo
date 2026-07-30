@@ -83,15 +83,30 @@ export class UploadImageError extends Error {
 export interface UploadImageOptions {
   removeBackground: boolean;
   addShadow: boolean;
+  /**
+   * Opt-in do RECORTE ASSÍNCRONO (PR 4): o servidor responde na hora com a
+   * WebP otimizada + `bgJob` e o recorte roda em background (só acontece se
+   * UPLOAD_ASYNC_REMBG também estiver ligado no servidor — duplo opt-in).
+   * Sem efeito quando removeBackground=false.
+   */
+  asyncBg?: boolean;
   /** Cancelamento externo (ex.: fechar o modal). */
   signal?: AbortSignal;
   /** Override do deadline — usado nos testes. */
   timeoutMs?: number;
 }
 
+export interface UploadBgJobRef {
+  jobId: string;
+  status: string;
+}
+
 export interface UploadImageResult {
   url: string;
   warning?: string;
+  /** Presente quando o recorte ficou para o background (caminho assíncrono):
+   *  a `url` é a WebP provisória; o polling troca pelo PNG quando pronto. */
+  bgJob?: UploadBgJobRef;
 }
 
 /**
@@ -171,6 +186,11 @@ export async function uploadProductImage(
       "addShadow",
       opts.removeBackground && opts.addShadow ? "true" : "false",
     );
+    // Campo só enviado quando pedido (clientes/telas sem async não mudam
+    // NADA no corpo da requisição — retrocompatível byte-a-byte).
+    if (opts.asyncBg && opts.removeBackground) {
+      formData.append("asyncBg", "true");
+    }
 
     // Ver invariantes 1 e 2 no topo: `fetch` nu + URL concatenada.
     const response = await fetch(`${getApiBaseUrl()}/upload/image`, {
@@ -193,8 +213,13 @@ export async function uploadProductImage(
     const result = (await response.json()) as {
       imageUrl: string;
       warning?: string;
+      bgJob?: UploadBgJobRef;
     };
-    return { url: result.imageUrl, warning: result.warning };
+    return {
+      url: result.imageUrl,
+      warning: result.warning,
+      ...(result.bgJob ? { bgJob: result.bgJob } : {}),
+    };
   } catch (err) {
     // Distinguir NOSSO deadline de um cancelamento externo: os dois chegam aqui
     // como AbortError, mas só um é falha.

@@ -8,6 +8,8 @@ import {
 } from "../marketplaces/services/image-resize.service";
 import { readHandlerBudgetMs } from "../marketplaces/services/rembg-budget";
 import { recordImageOutcome } from "../marketplaces/services/rembg-telemetry";
+import { isAsyncBgEnabled } from "../marketplaces/services/image-bg-worker.service";
+import prisma from "../lib/prisma";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 const ALLOWED_MIME = new Set([
@@ -93,6 +95,7 @@ export async function uploadRoutes(app: FastifyInstance) {
         let originalFilename = "";
         let removeBackground = true; // default ON
         let addShadow = false; // default OFF server-side (protege clientes antigos)
+        let asyncBg = false; // opt-in do CLIENTE (duplo opt-in com UPLOAD_ASYNC_REMBG)
 
         for await (const part of request.parts()) {
           if (part.type === "file") {
@@ -125,6 +128,13 @@ export async function uploadRoutes(app: FastifyInstance) {
               );
             } else if (part.fieldname === "addShadow") {
               addShadow = parseBoolean(
+                typeof part.value === "string"
+                  ? part.value
+                  : String(part.value),
+                false,
+              );
+            } else if (part.fieldname === "asyncBg") {
+              asyncBg = parseBoolean(
                 typeof part.value === "string"
                   ? part.value
                   : String(part.value),
@@ -165,6 +175,50 @@ export async function uploadRoutes(app: FastifyInstance) {
         const originalFileName = `${uuid}.orig${originalExt}`;
         const originalPath = join(uploadDir, originalFileName);
         await writeFile(originalPath, buffer);
+
+        // CAMINHO ASSÍNCRONO (PR 4) — duplo opt-in: UPLOAD_ASYNC_REMBG no env
+        // E o campo asyncBg do cliente atualizado. Responde JÁ com a WebP
+        // otimizada (~1s, sem sidecar) + jobId; o ImageBgWorkerService faz o
+        // recorte sem orçamento de request e troca as referências ao concluir.
+        // Clientes antigos (sem asyncBg) e o config-modal seguem no síncrono
+        // byte-a-byte. NÃO registra telemetria aqui: o desfecho REAL do
+        // recorte é registrado pelo worker (senão cada upload async contaria
+        // como fallback e envenenaria a taxa).
+        if (removeBackground && asyncBg && isAsyncBgEnabled()) {
+          const webpResult = await processUploadedImage(buffer, {
+            removeBackground: false,
+          });
+          const processedFileName = `${uuid}${FORMAT_EXTENSION[webpResult.format]}`;
+          await writeFile(join(uploadDir, processedFileName), webpResult.processed);
+
+          const job = await (prisma as any).imageBgJob.create({
+            data: {
+              uploadUuid: uuid,
+              origFileName: originalFileName,
+              webpFileName: processedFileName,
+              addShadow,
+              userId: (request as any).user?.id ?? null,
+            },
+          });
+
+          const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+          return reply.status(200).send({
+            success: true,
+            message: "Imagem enviada com sucesso",
+            imageUrl: `${baseUrl}/uploads/${processedFileName}`,
+            originalUrl: `${baseUrl}/uploads/${originalFileName}`,
+            fileName: processedFileName,
+            removedBackground: false,
+            shadowApplied: false,
+            format: webpResult.format,
+            width: webpResult.width,
+            height: webpResult.height,
+            // Aditivo: presença de bgJob = "recorte em processamento" (o
+            // front troca a imagem quando o job concluir). SEM warning — não
+            // é degradação, é o caminho novo.
+            bgJob: { jobId: job.id, status: "PENDING" },
+          });
+        }
 
         // 2) Processa (resize + opcional remoção de fundo + sombra + encode).
         // Sombra exige recorte: o serviço só a aplica no caminho de remoção,
@@ -218,6 +272,90 @@ export async function uploadRoutes(app: FastifyInstance) {
           message: error instanceof Error ? error.message : "Erro desconhecido",
         });
       }
+    },
+  );
+
+  /**
+   * GET /upload/image/jobs?ids=a,b,c — polling do recorte assíncrono.
+   * Escopado pelo DONO do upload (o polling acontece na mesma sessão que fez
+   * o upload). Batch de até 50 ids; ids de outros usuários simplesmente não
+   * voltam (sem vazamento de existência).
+   */
+  app.get(
+    "/image/jobs",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const userId = (request as any).user?.id as string | undefined;
+      if (!userId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const idsRaw = (request.query as { ids?: string }).ids ?? "";
+      const ids = idsRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 50);
+      if (ids.length === 0) {
+        return reply.status(200).send({ jobs: [] });
+      }
+
+      const rows = await (prisma as any).imageBgJob.findMany({
+        where: { id: { in: ids }, userId },
+        select: {
+          id: true,
+          status: true,
+          attempts: true,
+          resultFileName: true,
+          webpFileName: true,
+          lastError: true,
+        },
+      });
+
+      const baseUrl = process.env.APP_BACKEND_URL || "http://localhost:3333";
+      return reply.status(200).send({
+        jobs: rows.map((j: any) => ({
+          id: j.id,
+          status: j.status,
+          attempts: j.attempts,
+          webpUrl: `${baseUrl}/uploads/${j.webpFileName}`,
+          ...(j.resultFileName
+            ? { resultUrl: `${baseUrl}/uploads/${j.resultFileName}` }
+            : {}),
+          ...(j.status === "FAILED" && j.lastError
+            ? { error: j.lastError }
+            : {}),
+        })),
+      });
+    },
+  );
+
+  /** POST /upload/image/jobs/:id/retry — re-enfileira um job FAILED (dono). */
+  app.post(
+    "/image/jobs/:id/retry",
+    { preHandler: [authMiddleware] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const userId = (request as any).user?.id as string | undefined;
+      if (!userId) {
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
+      const { id } = request.params as { id: string };
+      const updated = await (prisma as any).imageBgJob.updateMany({
+        where: { id, userId, status: "FAILED" },
+        data: {
+          status: "PENDING",
+          attempts: 0,
+          nextRunAt: new Date(),
+          leaseExpiresAt: null,
+          lastError: null,
+        },
+      });
+      if (updated.count === 0) {
+        return reply.status(404).send({
+          error: "Job não encontrado",
+          message: "Job inexistente, de outro usuário ou não está FAILED",
+        });
+      }
+      return reply.status(200).send({ success: true, status: "PENDING" });
     },
   );
 }

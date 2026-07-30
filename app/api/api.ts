@@ -247,6 +247,10 @@ import { StockReconciliationService } from "../marketplaces/services/stock-recon
 import { ListingStatusSweepService } from "../marketplaces/services/listing-status-sweep.service";
 import { OrderIngestionReconcilerService } from "../marketplaces/services/order-ingestion-reconciler.service";
 import { RembgAlertService } from "../marketplaces/services/rembg-alert.service";
+import {
+  ImageBgWorkerService,
+  isAsyncBgEnabled,
+} from "../marketplaces/services/image-bg-worker.service";
 
 // -----------------------------------------------------------------
 // Health e readiness
@@ -372,6 +376,7 @@ async function gracefulShutdown(signal: string, exitCode = 0) {
     (ListingStatusSweepService as any).stop?.();
     (OrderIngestionReconcilerService as any).stop?.();
     (RembgAlertService as any).stop?.();
+    (ImageBgWorkerService as any).stop?.();
   } catch (err) {
     api.log.error({ err }, "error stopping background services");
   }
@@ -419,6 +424,11 @@ try {
       // alerta de taxa de fallback do recorte — o tick é no-op enquanto
       // IMAGE_PIPELINE_METRICS estiver desligado (lê o env a cada execução).
       RembgAlertService.start();
+      // worker do recorte assíncrono (PR 4) — só com UPLOAD_ASYNC_REMBG
+      // ligado (o tick também re-checa o env, então .env+restart controla).
+      if (isAsyncBgEnabled()) {
+        ImageBgWorkerService.start();
+      }
       backgroundServicesStarted = true;
     });
 } catch (err) {
