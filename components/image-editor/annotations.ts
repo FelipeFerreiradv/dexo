@@ -98,6 +98,17 @@ export function outlineColorFor(fill: string): string {
   return luminance < 140 ? "#ffffff" : "#111111";
 }
 
+/** Texto apagado por completo vira camada-zumbi (chip "Texto: ", warning ML,
+ *  linha na receita) — remove no fim da edição, padrão de editor. */
+function attachEmptyTextCleanup(obj: IText): void {
+  obj.on("editing:exited", () => {
+    if (!obj.text || !obj.text.trim()) {
+      const c = obj.canvas as Canvas | undefined;
+      if (c) removeAnnotation(c, obj);
+    }
+  });
+}
+
 export async function addText(
   canvas: Canvas,
   style: TextStyle = DEFAULT_TEXT_STYLE,
@@ -122,6 +133,7 @@ export async function addText(
       : {}),
   });
   (obj as Tagged).dexoKind = "text";
+  attachEmptyTextCleanup(obj);
   canvas.add(obj);
   canvas.setActiveObject(obj);
   canvas.requestRenderAll();
@@ -229,6 +241,14 @@ function makeEndpointControl(which: 1 | 2): Control {
   return new Control({
     cursorStyle: "crosshair",
     actionName: "dexoArrowEndpoint",
+    // O canvas lógico (1200+) encolhido via CSS deixa o hit-area default
+    // (~24px de buffer) com ~7px REAIS no celular — e os endpoints são o
+    // ÚNICO jeito de ajustar a seta. touchSize grande só afeta TOQUE
+    // (mouse usa cornerSize); sizeX/Y maior deixa o quadradinho visível.
+    sizeX: 36,
+    sizeY: 36,
+    touchSizeX: 110,
+    touchSizeY: 110,
     positionHandler: (_dim, _finalMatrix, fabricObject) => {
       const obj = fabricObject as Path & Tagged;
       const abs = arrowAbsEndpoints(obj);
@@ -265,6 +285,9 @@ export function addArrow(canvas: Canvas, stroke = "#e11d48"): Path {
     originX: "left",
     originY: "top",
     objectCaching: false,
+    // Seta diagonal tem bbox enorme: sem pixel-find, clicar no "vazio" do
+    // retângulo selecionaria a seta e roubaria o clique de camadas abaixo.
+    perPixelTargetFind: true,
     // Ajuste é SÓ pelos endpoints — escala/rotação distorceriam a ponta.
     lockRotation: true,
     lockScalingX: true,
@@ -361,6 +384,8 @@ function serializeOne(obj: Tagged): AnnotationLayerV1 | null {
       ...(t.stroke
         ? { stroke: t.stroke as string, strokeWidth: t.strokeWidth ?? 2 }
         : {}),
+      ...(t.flipX ? { flipX: true } : {}),
+      ...(t.flipY ? { flipY: true } : {}),
     };
     return layer;
   }
@@ -433,7 +458,9 @@ export async function restoreAnnotations(
             }
           : {}),
       });
+      t.set({ flipX: layer.flipX ?? false, flipY: layer.flipY ?? false });
       (t as Tagged).dexoKind = "text";
+      attachEmptyTextCleanup(t);
       canvas.add(t);
       last = t;
     } else if (layer.kind === "arrow") {
@@ -448,6 +475,7 @@ export async function restoreAnnotations(
           originX: "left",
           originY: "top",
           objectCaching: false,
+          perPixelTargetFind: true,
           lockRotation: true,
           lockScalingX: true,
           lockScalingY: true,
@@ -484,6 +512,58 @@ export async function restoreAnnotations(
     }
   }
   if (opts.select && last) canvas.setActiveObject(last);
+  canvas.requestRenderAll();
+}
+
+/**
+ * Remapeia as anotações quando o CANVAS muda de tamanho (troca de preset):
+ * posições escalam por eixo; tamanhos (fonte/traço/raios em x-y) seguem os
+ * fatores correspondentes. Sem isto, as camadas ficariam nas coordenadas do
+ * canvas ANTIGO — fora do export e impossíveis de arrastar de volta.
+ */
+export function remapAnnotations(
+  canvas: Canvas,
+  oldSize: { width: number; height: number },
+  newSize: { width: number; height: number },
+): void {
+  if (
+    (oldSize.width === newSize.width && oldSize.height === newSize.height) ||
+    oldSize.width <= 0 ||
+    oldSize.height <= 0
+  ) {
+    return;
+  }
+  const fx = newSize.width / oldSize.width;
+  const fy = newSize.height / oldSize.height;
+  const fs = Math.min(fx, fy);
+  for (const obj of listAnnotations(canvas)) {
+    const k = kindOf(obj);
+    if (k === "arrow") {
+      const p = obj as Path & Tagged;
+      const abs = arrowAbsEndpoints(p);
+      p.set({
+        strokeWidth: Math.max(2, Math.round((p.strokeWidth ?? 6) * fs)),
+      });
+      rebuildArrowPath(p, abs.x1 * fx, abs.y1 * fy, abs.x2 * fx, abs.y2 * fy);
+    } else if (k === "ellipse") {
+      const e = obj as unknown as Ellipse;
+      e.set({
+        left: (e.left ?? 0) * fx,
+        top: (e.top ?? 0) * fy,
+        rx: (e.rx ?? 10) * fx,
+        ry: (e.ry ?? 10) * fy,
+      });
+      e.setCoords();
+    } else if (k === "text") {
+      obj.set({
+        left: (obj.left ?? 0) * fx,
+        top: (obj.top ?? 0) * fy,
+        scaleX: (obj.scaleX ?? 1) * fs,
+        scaleY: (obj.scaleY ?? 1) * fs,
+      });
+      obj.setCoords();
+    }
+  }
   canvas.requestRenderAll();
 }
 

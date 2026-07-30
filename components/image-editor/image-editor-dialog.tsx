@@ -90,6 +90,7 @@ import {
   kindOf,
   listAnnotations,
   moveAnnotation,
+  remapAnnotations,
   removeAnnotation,
   restoreAnnotations,
   serializeAnnotations,
@@ -214,6 +215,9 @@ export default function ImageEditorDialog({
   );
 
   const markDirty = useCallback(() => setDirty(true), []);
+  // obj.set() do fabric NÃO emite evento — sem este bump os controles de
+  // estilo/camadas congelam (setDirty(true) com dirty já true é bail-out).
+  const bumpTick = useCallback(() => setCanvasTick((t) => t + 1), []);
 
   const editor = useFabricEditor({
     imageUrl: open ? (source?.url ?? null) : null,
@@ -426,7 +430,13 @@ export default function ImageEditorDialog({
                   variant={mode === "move" ? "default" : "outline"}
                   className="h-7 px-2 text-xs"
                   title="Mover/escalar/girar a peça"
-                  onClick={() => setMode("move")}
+                  onClick={() => {
+                    const a = editor.getCanvas()?.getActiveObject() as
+                      | (IText & { isEditing?: boolean; exitEditing?: () => void })
+                      | undefined;
+                    if (a?.isEditing) a.exitEditing?.();
+                    setMode("move");
+                  }}
                 >
                   <Move className="mr-1 h-3.5 w-3.5" />
                   Mover peça
@@ -516,6 +526,7 @@ export default function ImageEditorDialog({
                     onClick={() => {
                       moveAnnotation(canvas, activeObject, "up");
                       markDirty();
+                      bumpTick();
                     }}
                   >
                     <ChevronUp className="h-3.5 w-3.5" />
@@ -529,6 +540,7 @@ export default function ImageEditorDialog({
                     onClick={() => {
                       moveAnnotation(canvas, activeObject, "down");
                       markDirty();
+                      bumpTick();
                     }}
                   >
                     <ChevronDown className="h-3.5 w-3.5" />
@@ -571,6 +583,7 @@ export default function ImageEditorDialog({
                   onValueChange={(v) => {
                     applyTextStyle(canvas, activeText, { fontFamily: v });
                     markDirty();
+                    bumpTick();
                   }}
                 >
                   <SelectTrigger className="h-7 w-[180px] text-xs">
@@ -596,6 +609,7 @@ export default function ImageEditorDialog({
                     onValueChange={([v]) => {
                       applyTextStyle(canvas, activeText, { fontSize: v });
                       markDirty();
+                      bumpTick();
                     }}
                   />
                 </div>
@@ -609,6 +623,7 @@ export default function ImageEditorDialog({
                       onClick={() => {
                         applyTextStyle(canvas, activeText, { fill: color });
                         markDirty();
+                        bumpTick();
                       }}
                       className={`h-5 w-5 shrink-0 rounded-full border-2 ${
                         activeText.fill === color
@@ -631,6 +646,7 @@ export default function ImageEditorDialog({
                       bold: activeText.fontWeight !== "bold",
                     });
                     markDirty();
+                    bumpTick();
                   }}
                 >
                   B
@@ -647,6 +663,7 @@ export default function ImageEditorDialog({
                       outline: !activeText.stroke,
                     });
                     markDirty();
+                    bumpTick();
                   }}
                 >
                   Contorno
@@ -661,6 +678,16 @@ export default function ImageEditorDialog({
                 <Select
                   value={presetId}
                   onValueChange={(v) => {
+                    // Sem o remap, as camadas ficariam nas coordenadas do
+                    // canvas ANTIGO — fora do export e inalcançáveis.
+                    const c = editor.getCanvas();
+                    if (c) {
+                      remapAnnotations(
+                        c,
+                        exportSize,
+                        presetExportSize(resolvePreset(v), sourceSize),
+                      );
+                    }
                     setPresetId(v);
                     markDirty();
                   }}

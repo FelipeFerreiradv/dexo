@@ -45,6 +45,9 @@ export interface TextLayerV1 {
   /** Contorno (stroke + paintFirst:"stroke" no fabric). */
   stroke?: string;
   strokeWidth?: number;
+  /** Espelhamento: o fabric converte scale negativa em flip no transform. */
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface ArrowLayerV1 {
