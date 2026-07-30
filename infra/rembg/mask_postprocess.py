@@ -272,3 +272,107 @@ def _suppress_projected_shadow(
     out_alpha[candidate] = (
         out_alpha[candidate].astype(np.float32) * cfg.shadow_suppress_factor
     ).astype(np.uint8)
+
+
+# ---------------------------------------------------------------------------
+# Score de confianca da mascara (PR 3 — MODO OBSERVACAO)
+# ---------------------------------------------------------------------------
+# Sinais baratos (O(H*W), ~10-30ms) calculados sobre o alpha FINAL (pos-refine,
+# pre-sombra). O score NAO muda nenhum pixel nem decisao do pipeline: ele e'
+# exposto em headers (X-Rembg-Confidence/X-Rembg-Signals) para o app Node
+# LOGAR a decisao que o roteamento tomaria ("WOULD_REROUTE") e calibrar
+# limiares com distribuicao real de producao antes de qualquer acao.
+#
+# Leitura dos sinais (mascara BOA = score alto):
+#   amb         fracao de pixels de alpha intermediario => mascara "nebulosa"
+#   ncomp       componentes relevantes (>0.1% do frame) => vazamento de fundo
+#   cov         area do foreground / frame; fora de [0.05, 0.85] = suspeito
+#   border_frac fracao da MOLDURA do frame com alpha alto => fundo incluido
+#   holes_frac  area de furos internos / area do foreground => mascara furada
+
+SIGNAL_WEIGHTS = {
+    "amb": 0.35,
+    "ncomp": 0.15,
+    "cov": 0.20,
+    "border": 0.20,
+    "holes": 0.10,
+}
+
+
+def mask_signals(alpha: np.ndarray) -> dict:
+    """Sinais crus do alpha (uint8 HxW). Puro e deterministico."""
+    h, w = alpha.shape
+    total = float(h * w)
+
+    amb = float(np.count_nonzero((alpha > 12) & (alpha < 242))) / total
+
+    solid = (alpha >= 128).astype(np.uint8)
+    fg = float(np.count_nonzero(solid))
+    cov = fg / total
+
+    ncomp = 0
+    holes_frac = 0.0
+    if fg > 0:
+        n_labels, _labels, stats, _ = cv2.connectedComponentsWithStats(
+            solid, connectivity=8
+        )
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        ncomp = int(np.count_nonzero(areas > 0.001 * total))
+
+        inv = (1 - solid).astype(np.uint8)
+        n_inv, _il, inv_stats, _ = cv2.connectedComponentsWithStats(
+            inv, connectivity=4
+        )
+        if n_inv > 1:
+            lefts = inv_stats[1:, cv2.CC_STAT_LEFT]
+            tops = inv_stats[1:, cv2.CC_STAT_TOP]
+            rights = lefts + inv_stats[1:, cv2.CC_STAT_WIDTH]
+            bottoms = tops + inv_stats[1:, cv2.CC_STAT_HEIGHT]
+            interior = (lefts > 0) & (tops > 0) & (rights < w) & (bottoms < h)
+            holes_frac = float(inv_stats[1:, cv2.CC_STAT_AREA][interior].sum()) / fg
+
+    border = np.concatenate(
+        [alpha[0, :], alpha[-1, :], alpha[1:-1, 0], alpha[1:-1, -1]]
+    )
+    border_frac = float(np.count_nonzero(border > 128)) / float(border.size)
+
+    return {
+        "amb": round(amb, 4),
+        "ncomp": ncomp,
+        "cov": round(cov, 4),
+        "border": round(border_frac, 4),
+        "holes": round(holes_frac, 4),
+    }
+
+
+def confidence_score(signals: dict) -> float:
+    """Score em [0,1] a partir dos sinais (1 = mascara confiavel).
+
+    Penalidades saturadas em 1 para nenhum sinal dominar sozinho. Pesos em
+    SIGNAL_WEIGHTS; limiares iniciais calibrados com o golden da Fase 0
+    (bench/signals_offline.py) — o roteamento so sera ligado depois da
+    distribuicao real de producao (modo observacao)."""
+    # Sem foreground solido nenhum, a mascara e' inutil por definicao — nao
+    # ha o que os outros sinais "compensarem".
+    if signals["cov"] <= 0.001:
+        return 0.0
+
+    p_amb = min(signals["amb"] / 0.20, 1.0)
+    p_ncomp = min(max(signals["ncomp"] - 1, 0) / 5.0, 1.0)
+    cov = signals["cov"]
+    if 0.05 <= cov <= 0.85:
+        p_cov = 0.0
+    else:
+        dist = (0.05 - cov) if cov < 0.05 else (cov - 0.85)
+        p_cov = min(dist / 0.15, 1.0)
+    p_border = min(signals["border"] / 0.20, 1.0)
+    p_holes = min(signals["holes"] / 0.05, 1.0)
+
+    penalty = (
+        SIGNAL_WEIGHTS["amb"] * p_amb
+        + SIGNAL_WEIGHTS["ncomp"] * p_ncomp
+        + SIGNAL_WEIGHTS["cov"] * p_cov
+        + SIGNAL_WEIGHTS["border"] * p_border
+        + SIGNAL_WEIGHTS["holes"] * p_holes
+    )
+    return round(max(0.0, min(1.0, 1.0 - penalty)), 4)
