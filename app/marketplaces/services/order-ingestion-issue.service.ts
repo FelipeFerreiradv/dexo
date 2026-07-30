@@ -103,6 +103,39 @@ export class OrderIngestionIssueService {
       ? this.prunePayload(input.payload)
       : undefined;
 
+    // Estado ANTES do upsert, para decidir se este registro é NOVIDADE.
+    //
+    // Por que existe (medido em produção 30/07/2026): `open()` gravava um
+    // SystemLog e uma linha de log a CADA chamada. Um pedido sem vínculo nunca
+    // vira Order completo, então reaparece em toda passada do poll (15 min) e em
+    // toda volta do reconciliador (10 min). Com 166 pendências abertas isso deu
+    // 2.376 SystemLog em 2 horas — cerca de 28 mil por dia, crescendo sem fim,
+    // pelo MESMO problema já registrado. O caminho da Magalu já tinha guarda
+    // contra isso; este não tinha.
+    //
+    // Agora só registra quando muda alguma coisa: pendência nova, motivo
+    // diferente, ou pendência que estava RESOLVED e reabriu. A linha no banco
+    // continua sendo atualizada sempre — o que deixa de repetir é o AVISO.
+    let anterior: { reason: string; status: string } | null = null;
+    try {
+      anterior = await (prisma as any).orderIngestionIssue.findUnique({
+        where: {
+          marketplaceAccountId_externalOrderId: {
+            marketplaceAccountId: input.marketplaceAccountId,
+            externalOrderId: input.externalOrderId,
+          },
+        },
+        select: { reason: true, status: true },
+      });
+    } catch {
+      // Não saber o estado anterior só faz o aviso sair uma vez a mais.
+      anterior = null;
+    }
+    const novidade =
+      !anterior ||
+      anterior.reason !== input.reason ||
+      anterior.status !== "OPEN";
+
     try {
       await (prisma as any).orderIngestionIssue.upsert({
         where: {
@@ -135,6 +168,9 @@ export class OrderIngestionIssueService {
         err instanceof Error ? err.message : err,
       );
     }
+
+    // Só quando algo mudou: ver a nota sobre as 2.376 linhas em 2 horas.
+    if (!novidade) return;
 
     // Log estruturado para grep no PM2, além do registro em banco.
     console.log(
