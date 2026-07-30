@@ -94,7 +94,9 @@ import {
   addImageLayer,
   addText,
   annotationLabel,
+  applyShapeStroke,
   applyTextStyle,
+  beginTextEditing,
   duplicateAnnotation,
   kindOf,
   listAnnotations,
@@ -313,6 +315,11 @@ export default function ImageEditorDialog({
     activeObject && kindOf(activeObject) === "text"
       ? (activeObject as IText)
       : null;
+  const activeShape =
+    activeObject &&
+    (kindOf(activeObject) === "arrow" || kindOf(activeObject) === "ellipse")
+      ? activeObject
+      : null;
 
   const enterAnnotate = useCallback(() => setMode("annotate"), []);
 
@@ -481,7 +488,9 @@ export default function ImageEditorDialog({
           >
             <DialogTitle className="sr-only">Editar imagem</DialogTitle>
 
-            {/* Canvas */}
+            {/* Canvas + camadas (sidebar no desktop usa o espaço vazio à
+                direita — no celular as camadas viram chips abaixo) */}
+            <div className="flex min-h-0 flex-1 gap-3">
             <div
               ref={editor.wrapperRef}
               className="relative flex min-h-[280px] flex-1 items-center justify-center overflow-hidden rounded-md border bg-[repeating-conic-gradient(#e5e5e5_0%_25%,#fafafa_0%_50%)] bg-[length:16px_16px]"
@@ -498,6 +507,58 @@ export default function ImageEditorDialog({
                   Não foi possível carregar a imagem. Feche e tente de novo.
                 </div>
               )}
+            </div>
+
+            {annotationObjects.length > 0 && canvas && (
+              <aside className="hidden w-48 shrink-0 flex-col gap-1 self-stretch overflow-y-auto rounded-md border bg-muted/20 p-1.5 sm:flex">
+                <span className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Camadas
+                </span>
+                {[...annotationObjects].reverse().map((obj, i) => (
+                  <div
+                    key={`layer-${i}`}
+                    className={`rounded-md border px-1.5 py-1 ${
+                      activeObject === obj
+                        ? "border-primary bg-primary/10"
+                        : "border-transparent hover:bg-muted"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        enterAnnotate();
+                        canvas.setActiveObject(obj);
+                        canvas.requestRenderAll();
+                        bumpTick();
+                      }}
+                      className="block w-full truncate text-left text-xs"
+                    >
+                      {annotationLabel(obj)}
+                    </button>
+                    {activeObject === obj && (
+                      <div className="mt-1 flex items-center gap-0.5">
+                        <Button type="button" size="icon" variant="ghost" className="h-5 w-5" title="Trazer para frente"
+                          onClick={() => { moveAnnotation(canvas, obj, "up"); markDirty(); bumpTick(); }}>
+                          <ChevronUp className="h-3 w-3" />
+                        </Button>
+                        <Button type="button" size="icon" variant="ghost" className="h-5 w-5" title="Enviar para trás"
+                          onClick={() => { moveAnnotation(canvas, obj, "down"); markDirty(); bumpTick(); }}>
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                        <Button type="button" size="icon" variant="ghost" className="h-5 w-5" title="Duplicar"
+                          onClick={() => { duplicateAnnotation(canvas, obj); markDirty(); bumpTick(); }}>
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                        <Button type="button" size="icon" variant="ghost" className="h-5 w-5 text-destructive" title="Excluir"
+                          onClick={() => { removeAnnotation(canvas, obj); markDirty(); bumpTick(); }}>
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </aside>
+            )}
             </div>
 
             {/* Warning ML não-bloqueante (política: foto principal sem
@@ -593,7 +654,7 @@ export default function ImageEditorDialog({
               {/* Camadas: chips clicáveis (última = mais acima) + ações da
                   camada selecionada */}
               {annotationObjects.length > 0 && canvas && (
-                <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+                <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto sm:hidden">
                   {annotationObjects.map((obj, i) => (
                     <button
                       key={i}
@@ -617,7 +678,7 @@ export default function ImageEditorDialog({
               )}
 
               {activeObject && canvas && kindOf(activeObject) !== "base" && (
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 sm:hidden">
                   <Button
                     type="button"
                     size="icon"
@@ -773,6 +834,20 @@ export default function ImageEditorDialog({
             {/* Estilo do TEXTO selecionado */}
             {activeText && canvas && (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border bg-muted/20 px-2 py-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  title="Ou dê um duplo clique/toque no texto"
+                  onClick={() => {
+                    beginTextEditing(canvas, activeText);
+                    markDirty();
+                    bumpTick();
+                  }}
+                >
+                  <Type className="mr-1 h-3.5 w-3.5" />
+                  Editar texto
+                </Button>
                 <Select
                   value={(activeText.fontFamily as string) ?? EDITOR_FONTS[0].family}
                   onValueChange={(v) => {
@@ -863,6 +938,35 @@ export default function ImageEditorDialog({
                 >
                   Contorno
                 </Button>
+              </div>
+            )}
+
+            {/* Cor da SETA/CÍRCULO selecionado — mesma paleta do texto */}
+            {activeShape && canvas && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border bg-muted/20 px-2 py-1.5">
+                <Label className="text-xs">
+                  Cor {kindOf(activeShape) === "arrow" ? "da seta" : "do círculo"}
+                </Label>
+                <div className="flex items-center gap-1">
+                  {ANNOTATION_PALETTE.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      title={color}
+                      onClick={() => {
+                        applyShapeStroke(canvas, activeShape, color);
+                        markDirty();
+                        bumpTick();
+                      }}
+                      className={`h-5 w-5 shrink-0 rounded-full border-2 ${
+                        activeShape.stroke === color
+                          ? "border-primary"
+                          : "border-muted-foreground/30"
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
               </div>
             )}
 
