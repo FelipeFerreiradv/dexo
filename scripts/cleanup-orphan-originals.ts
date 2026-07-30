@@ -129,20 +129,36 @@ async function collectInUseUuids(): Promise<InUseRefs> {
     );
   }
 
-  // Receitas do Editor (PR 6): source/cutout/saída de uma edição são
-  // referenciados ENQUANTO a linha existir — sem isso, o restore/reabrir
-  // (PR 8) quebraria em silêncio ~30 dias depois do save, quando o GC
-  // varresse o original. Mesmo try/catch defensivo do ImageBgJob.
+  // Receitas do Editor (PR 6): a proteção é CONDICIONAL — uma edição só
+  // protege seus arquivos (saída + fonte + recorte) enquanto a SAÍDA dela
+  // ainda estiver referenciada por produto/anúncio/sucata, direta ou
+  // transitivamente (cadeia A→B→C de re-edições: se C está no produto, C
+  // protege a fonte B, que protege a fonte A — fixpoint). Proteção
+  // incondicional tornaria TODO arquivo já editado eterno (achado M2 da
+  // revisão do PR 6); a poda de linhas órfãs fica em pruneOrphanImageEdits.
   try {
-    const edits = await (prisma as any).productImageEdit.findMany({
+    const edits: Array<{
+      fileName: string;
+      sourceFileName: string;
+      cutoutFileName: string | null;
+    }> = await (prisma as any).productImageEdit.findMany({
       select: { fileName: true, sourceFileName: true, cutoutFileName: true },
     });
-    for (const e of edits) {
-      for (const name of [e.fileName, e.sourceFileName, e.cutoutFileName]) {
-        if (!name) continue;
-        filenames.add(name);
-        const uuid = String(name).split(".")[0];
-        if (uuid) inUse.add(uuid);
+    const protectedOutputs = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const e of edits) {
+        if (protectedOutputs.has(e.fileName)) continue;
+        if (!filenames.has(e.fileName)) continue;
+        protectedOutputs.add(e.fileName);
+        changed = true;
+        for (const name of [e.fileName, e.sourceFileName, e.cutoutFileName]) {
+          if (!name) continue;
+          filenames.add(name);
+          const uuid = String(name).split(".")[0];
+          if (uuid) inUse.add(uuid);
+        }
       }
     }
   } catch (err) {
@@ -288,6 +304,49 @@ async function listStaleAsyncWebps(
   return out;
 }
 
+/**
+ * Poda das edições do Editor (PR 6): linha cuja SAÍDA não é mais referenciada
+ * (nem por produto/anúncio/sucata, nem como fonte de outra edição protegida —
+ * ver o fixpoint em collectInUseUuids) e com mais de 90 dias é removida, e o
+ * arquivo de saída é apagado junto (ele nunca seria candidato do sweep de
+ * `.orig`). Os `.orig`/fontes liberados caem no sweep normal da PRÓXIMA
+ * execução, igual ao pruneOldImageBgJobs.
+ */
+async function pruneOrphanImageEdits(
+  execute: boolean,
+  protectedFilenames: Set<string>,
+): Promise<void> {
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  try {
+    const rows: Array<{ id: string; fileName: string }> = await (
+      prisma as any
+    ).productImageEdit.findMany({
+      where: { createdAt: { lt: cutoff } },
+      select: { id: true, fileName: true },
+    });
+    const orphans = rows.filter((r) => !protectedFilenames.has(r.fileName));
+    if (orphans.length === 0) return;
+    if (!execute) {
+      console.log(
+        `[cleanup] ${orphans.length} edição(ões) órfã(s) com >90d seriam removidas (execute).`,
+      );
+      return;
+    }
+    for (const r of orphans) {
+      await (prisma as any).productImageEdit.delete({ where: { id: r.id } });
+      await unlink(join(UPLOAD_DIR, r.fileName)).catch(() => undefined);
+    }
+    console.log(
+      `[cleanup] ${orphans.length} edição(ões) órfã(s) removida(s) (linha + arquivo de saída).`,
+    );
+  } catch (err) {
+    console.warn(
+      "[cleanup] poda de ProductImageEdit indisponível (tabela/client ausente?):",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs();
   console.log(
@@ -303,6 +362,10 @@ async function main(): Promise<void> {
     listOrigCandidates(opts.minAgeDays),
   ]);
   const inUse = refs.uuids;
+
+  // Poda das edições DEPOIS do collect: depende do conjunto final de nomes
+  // protegidos (fixpoint das cadeias de edição).
+  await pruneOrphanImageEdits(opts.execute, refs.filenames);
 
   console.log(
     `[cleanup] Encontrados ${candidates.length} arquivo(s) .orig elegíveis (idade >= ${opts.minAgeDays} dias).`,

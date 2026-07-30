@@ -340,13 +340,25 @@ export interface ImageEditMeta {
   };
 }
 
-/** Cliente do `GET /upload/image/meta` — contexto para reabrir no editor. */
+/** Cliente do `GET /upload/image/meta` — contexto para reabrir no editor.
+ *  Timeout de 10s: um hang aqui seguraria a abertura do dialog para sempre
+ *  (falha vira null e o editor segue com a própria URL exibida). */
 export async function fetchImageEditMeta(
   fileName: string,
+  timeoutMs = 10_000,
 ): Promise<ImageEditMeta | null> {
-  const response = await fetch(
-    `${getApiBaseUrl()}/upload/image/meta?fileName=${encodeURIComponent(fileName)}`,
-  );
-  if (!response.ok) return null;
-  return (await response.json()) as ImageEditMeta;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(
+      `${getApiBaseUrl()}/upload/image/meta?fileName=${encodeURIComponent(fileName)}`,
+      { signal: controller.signal },
+    );
+    if (!response.ok) return null;
+    return (await response.json()) as ImageEditMeta;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

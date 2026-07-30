@@ -468,6 +468,28 @@ export async function uploadRoutes(app: FastifyInstance) {
             message: "O export do editor deve ser PNG ou JPEG",
           });
         }
+        // MAGIC BYTES: diferente do /upload/image (que re-encoda via sharp e
+        // valida de facto), aqui os bytes vão CRUS para o disco público — o
+        // mimetype do multipart é controlado pelo cliente e não basta. Sem
+        // isto, qualquer autenticado hospedaria blobs arbitrários de 20MB
+        // servidos pelo domínio da API.
+        const isPng =
+          buffer.length >= 4 &&
+          buffer[0] === 0x89 &&
+          buffer[1] === 0x50 &&
+          buffer[2] === 0x4e &&
+          buffer[3] === 0x47;
+        const isJpeg =
+          buffer.length >= 3 &&
+          buffer[0] === 0xff &&
+          buffer[1] === 0xd8 &&
+          buffer[2] === 0xff;
+        if ((ext === ".png" && !isPng) || (ext === ".jpg" && !isJpeg)) {
+          return reply.status(400).send({
+            error: "Arquivo inválido",
+            message: "O conteúdo do arquivo não corresponde a um PNG/JPEG",
+          });
+        }
         if (buffer.byteLength > MAX_BYTES) {
           return reply.status(400).send({
             error: "Arquivo muito grande",
@@ -569,6 +591,11 @@ export async function uploadRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = (request as any).user;
       const userId = (user?.dataOwnerId ?? user?.id) as string | undefined;
+      if (!userId) {
+        // Mesma defesa em profundidade das rotas irmãs (/image/jobs): sem
+        // identidade, o filtro de tenant sumiria e o findFirst viraria global.
+        return reply.status(401).send({ error: "Não autenticado" });
+      }
       const { fileName } = request.query as { fileName?: string };
       if (!fileName || !isSafeUploadBasename(fileName)) {
         return reply.status(400).send({
@@ -589,7 +616,7 @@ export async function uploadRoutes(app: FastifyInstance) {
       } | null = null;
       try {
         const row = await (prisma as any).productImageEdit.findFirst({
-          where: { fileName, ...(userId ? { userId } : {}) },
+          where: { fileName, userId },
           select: { recipe: true, sourceFileName: true, cutoutFileName: true },
         });
         if (row) edit = row;

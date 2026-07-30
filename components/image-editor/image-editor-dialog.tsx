@@ -171,6 +171,8 @@ export default function ImageEditorDialog({
     [preset, sourceSize],
   );
 
+  const markDirty = useCallback(() => setDirty(true), []);
+
   const editor = useFabricEditor({
     imageUrl: open ? (source?.url ?? null) : null,
     canvasWidth: exportSize.width,
@@ -179,9 +181,19 @@ export default function ImageEditorDialog({
     paddingPct,
     initialBase: initialBase as never,
     onError,
+    // Dimensões REAIS medidas no load: sem isto o preset "Original" exportava
+    // 1200×1200 e a receita persistia source.width/height falsos (BLOCKER da
+    // revisão). O initialBase (receita reaberta) é consumido UMA vez — trocar
+    // de preset depois re-fita em vez de reaplicar o transform antigo.
+    onImageLoaded: (size) => {
+      setSourceSize((prev) =>
+        prev.width === size.width && prev.height === size.height ? prev : size,
+      );
+      setInitialBase(null);
+    },
+    // Dirty REAL de manipulação da peça (transform concluído nos controles).
+    onBaseModified: markDirty,
   });
-
-  const markDirty = useCallback(() => setDirty(true), []);
 
   const requestClose = useCallback(
     (next: boolean) => {
@@ -251,7 +263,6 @@ export default function ImageEditorDialog({
         <DialogPortal>
           <DialogOverlay className="bg-black/80 backdrop-blur-sm" />
           <DialogPrimitive.Content
-            onPointerDownCapture={markDirty}
             onInteractOutside={(e) => e.preventDefault()}
             className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed top-[50%] left-[50%] z-50 flex max-h-[95vh] w-[96vw] max-w-5xl translate-x-[-50%] translate-y-[-50%] flex-col gap-3 rounded-lg border bg-background p-4 shadow-2xl outline-none"
           >
@@ -264,9 +275,14 @@ export default function ImageEditorDialog({
               style={{ touchAction: "none" }}
             >
               <canvas ref={editor.canvasElRef} />
-              {!editor.ready && (
+              {!editor.ready && !editor.loadError && (
                 <div className="absolute inset-0 flex items-center justify-center bg-background/60">
                   <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </div>
+              )}
+              {editor.loadError && (
+                <div className="absolute inset-0 flex items-center justify-center bg-background/80 p-4 text-center text-sm text-muted-foreground">
+                  Não foi possível carregar a imagem. Feche e tente de novo.
                 </div>
               )}
             </div>

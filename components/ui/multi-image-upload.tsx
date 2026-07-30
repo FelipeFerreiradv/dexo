@@ -589,7 +589,14 @@ export function MultiImageUpload({
             const idx = editingIndex;
             if (idx === null) return;
             const updated = [...valueRef.current];
+            const oldUrl = updated[idx];
             if (idx < updated.length) updated[idx] = newUrl;
+            // Alias TAMBÉM para o save do editor: um rebuild progressivo de
+            // lote em voo (closure stale) reverteria a edição em silêncio —
+            // mesma classe de corrida do swap webp→png.
+            if (oldUrl && oldUrl !== newUrl) {
+              urlAliasRef.current.set(oldUrl, newUrl);
+            }
             onChangeRef.current(applyAliases(updated));
             setEditingIndex(null);
           }}

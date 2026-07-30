@@ -48,6 +48,12 @@ export interface FabricEditorOptions {
   /** Transform inicial da base (reabrir edição); null = auto-fit. */
   initialBase?: EditRecipeBaseTransform | null;
   onError?: (message: string) => void;
+  /** Dimensões REAIS da imagem carregada — o dialog usa para o preset
+   *  "Original" e para a receita (senão persistiria 1200×1200 falso). */
+  onImageLoaded?: (size: { width: number; height: number }) => void;
+  /** Usuário moveu/escalou/girou a peça pelos controles do fabric — é o
+   *  gancho de dirty do dialog (capture global marcaria até o Cancelar). */
+  onBaseModified?: () => void;
 }
 
 export interface FabricEditorApi {
@@ -56,6 +62,8 @@ export interface FabricEditorApi {
   /** Ref para o wrapper (gestos + medida do espaço disponível). */
   wrapperRef: React.RefObject<HTMLDivElement | null>;
   ready: boolean;
+  /** Falha ao carregar a imagem (o dialog troca o spinner por aviso). */
+  loadError: boolean;
   zoom: number;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -80,9 +88,14 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
   const baseImageRef = useRef<FabricImage | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [zoom, setZoom] = useState(1);
   const onErrorRef = useRef(opts.onError);
   onErrorRef.current = opts.onError;
+  const onImageLoadedRef = useRef(opts.onImageLoaded);
+  onImageLoadedRef.current = opts.onImageLoaded;
+  const onBaseModifiedRef = useRef(opts.onBaseModified);
+  onBaseModifiedRef.current = opts.onBaseModified;
 
   // Guarda os últimos opts que exigem re-init pesado (tamanho do canvas).
   const { canvasWidth, canvasHeight, imageUrl, paddingPct } = opts;
@@ -123,6 +136,9 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
         // O export usa multiplier explícito; retina no display é só CSS.
         enableRetinaScaling: false,
       });
+      // Dirty REAL: só transform concluído nos controles do fabric — um
+      // capture global de pointerdown marcaria até o clique no Cancelar.
+      canvas.on("object:modified", () => onBaseModifiedRef.current?.());
       canvasRef.current = canvas;
       fitDisplay();
     },
@@ -138,6 +154,7 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
     // Redimensiona o canvas lógico (troca de preset) antes de posicionar.
     canvas.setDimensions({ width: canvasWidth, height: canvasHeight });
     fitDisplay();
+    setLoadError(false);
 
     FabricImage.fromURL(imageUrl, { crossOrigin: "anonymous" })
       .then((img) => {
@@ -150,6 +167,7 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
           width: img.width ?? 1,
           height: img.height ?? 1,
         };
+        onImageLoadedRef.current?.(source);
         const base =
           initialBaseRef.current ??
           initialBaseTransform(
@@ -157,6 +175,10 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
             source,
             paddingPct,
           );
+        // O initialBase (receita reaberta) vale UMA vez: trocar de preset
+        // depois disso re-fita — senão a peça cairia fora do centro num
+        // canvas de outro tamanho com o transform da receita antiga.
+        initialBaseRef.current = null;
         img.set({
           originX: "center",
           originY: "center",
@@ -178,7 +200,9 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
         setReady(true);
       })
       .catch((err) => {
+        if (cancelled) return;
         console.error("[image-editor] falha ao carregar imagem:", err);
+        setLoadError(true);
         onErrorRef.current?.(
           "Não foi possível carregar a imagem no editor. Tente novamente.",
         );
@@ -219,6 +243,27 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
     let pinch: PinchState | null = null;
     let lastMid: { x: number; y: number } | null = null;
 
+    // fabric espera pontos em PIXELS DO BUFFER LÓGICO relativos ao ELEMENTO
+    // canvas (não ao wrapper): com o canvas encolhido via CSS (cssOnly) e
+    // centrado por flex, px de CSS do wrapper erram por offset E por escala
+    // (deriva do ponto fixo do zoom + pan a meia velocidade — achado da
+    // revisão, confirmado no _getPointerImpl do fabric).
+    const toCanvasSpace = (
+      clientX: number,
+      clientY: number,
+    ): { x: number; y: number; scale: number } | null => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getElement().getBoundingClientRect();
+      if (rect.width <= 0) return null;
+      const scale = canvas.getWidth() / rect.width;
+      return {
+        x: (clientX - rect.left) * scale,
+        y: (clientY - rect.top) * scale,
+        scale,
+      };
+    };
+
     const applyZoom = (z: number, originX: number, originY: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -230,12 +275,9 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
       const canvas = canvasRef.current;
       if (!canvas) return;
       e.preventDefault();
-      const rect = wrapper.getBoundingClientRect();
-      applyZoom(
-        wheelZoom(canvas.getZoom(), e.deltaY),
-        e.clientX - rect.left,
-        e.clientY - rect.top,
-      );
+      const p = toCanvasSpace(e.clientX, e.clientY);
+      if (!p) return;
+      applyZoom(wheelZoom(canvas.getZoom(), e.deltaY), p.x, p.y);
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -257,19 +299,16 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
       if (!canvas || pointers.size !== 2 || !pinch) return;
       e.preventDefault();
       const [a, b] = [...pointers.values()];
-      const rect = wrapper.getBoundingClientRect();
       const mid = midpoint(a, b);
-      applyZoom(
-        pinchZoom(pinch, a, b),
-        mid.x - rect.left,
-        mid.y - rect.top,
-      );
-      // Pan: segue o deslocamento do ponto médio.
+      const p = toCanvasSpace(mid.x, mid.y);
+      if (!p) return;
+      applyZoom(pinchZoom(pinch, a, b), p.x, p.y);
+      // Pan: segue o ponto médio, convertendo o delta de CSS→buffer.
       if (lastMid) {
         const vpt = canvas.viewportTransform;
         if (vpt) {
-          vpt[4] += mid.x - lastMid.x;
-          vpt[5] += mid.y - lastMid.y;
+          vpt[4] += (mid.x - lastMid.x) * p.scale;
+          vpt[5] += (mid.y - lastMid.y) * p.scale;
           canvas.setViewportTransform(vpt);
         }
       }
@@ -287,14 +326,21 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
     wrapper.addEventListener("wheel", onWheel, { passive: false });
     wrapper.addEventListener("pointerdown", onPointerDown);
     wrapper.addEventListener("pointermove", onPointerMove);
+    // up/cancel TAMBÉM em window: dedo que solta FORA do wrapper (arrastou a
+    // peça até a borda do dialog) deixaria uma entrada fantasma no Map e todo
+    // toque seguinte viraria "pinch" com um ponto morto — travando o drag.
     wrapper.addEventListener("pointerup", onPointerEnd);
     wrapper.addEventListener("pointercancel", onPointerEnd);
+    window.addEventListener("pointerup", onPointerEnd);
+    window.addEventListener("pointercancel", onPointerEnd);
     return () => {
       wrapper.removeEventListener("wheel", onWheel);
       wrapper.removeEventListener("pointerdown", onPointerDown);
       wrapper.removeEventListener("pointermove", onPointerMove);
       wrapper.removeEventListener("pointerup", onPointerEnd);
       wrapper.removeEventListener("pointercancel", onPointerEnd);
+      window.removeEventListener("pointerup", onPointerEnd);
+      window.removeEventListener("pointercancel", onPointerEnd);
     };
   }, []);
 
@@ -439,6 +485,7 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
     canvasElRef,
     wrapperRef,
     ready,
+    loadError,
     zoom,
     zoomIn,
     zoomOut,

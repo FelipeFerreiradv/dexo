@@ -45,6 +45,12 @@ vi.mock("../app/lib/prisma", () => ({
 
 import { uploadRoutes } from "../app/routes/upload.routes";
 
+// Bytes com os MAGIC NUMBERS reais: a rota valida o conteúdo (não só o
+// mimetype do multipart, que é controlado pelo cliente).
+const PNG_BYTES = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+]);
+
 const RECIPE = {
   version: 1,
   presetId: "ml-1200",
@@ -94,7 +100,7 @@ describe("POST /upload/image/edited (Editor, PR 6)", () => {
         sourceFileName: "abc.png",
         cutoutFileName: "abc.png",
       },
-      { buf: Buffer.from("png-bytes"), contentType: "image/png" },
+      { buf: PNG_BYTES, contentType: "image/png" },
     );
     const res = await app.inject({
       method: "POST",
@@ -123,7 +129,7 @@ describe("POST /upload/image/edited (Editor, PR 6)", () => {
     editCreateMock.mockRejectedValue(new Error("tabela ausente"));
     const { headers, body } = buildForm(
       { recipe: JSON.stringify(RECIPE), sourceFileName: "abc.png" },
-      { buf: Buffer.from("png"), contentType: "image/png" },
+      { buf: PNG_BYTES, contentType: "image/png" },
     );
     const res = await app.inject({
       method: "POST",
@@ -139,7 +145,7 @@ describe("POST /upload/image/edited (Editor, PR 6)", () => {
     for (const recipe of ["nao-json", JSON.stringify({ version: 2 })]) {
       const { headers, body } = buildForm(
         { recipe, sourceFileName: "abc.png" },
-        { buf: Buffer.from("png"), contentType: "image/png" },
+        { buf: PNG_BYTES, contentType: "image/png" },
       );
       const res = await app.inject({
         method: "POST",
@@ -158,7 +164,22 @@ describe("POST /upload/image/edited (Editor, PR 6)", () => {
         recipe: JSON.stringify(RECIPE),
         sourceFileName: "../../etc/passwd",
       },
-      { buf: Buffer.from("png"), contentType: "image/png" },
+      { buf: PNG_BYTES, contentType: "image/png" },
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/upload/image/edited",
+      headers,
+      payload: body,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(writeFileMock).not.toHaveBeenCalled();
+  });
+
+  it("mimetype PNG com CONTEÚDO não-PNG => 400 (magic bytes)", async () => {
+    const { headers, body } = buildForm(
+      { recipe: JSON.stringify(RECIPE), sourceFileName: "abc.png" },
+      { buf: Buffer.from("<html>malware</html>"), contentType: "image/png" },
     );
     const res = await app.inject({
       method: "POST",
