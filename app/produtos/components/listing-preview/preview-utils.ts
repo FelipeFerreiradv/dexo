@@ -33,6 +33,8 @@ export interface PreviewFormValues {
   mlCategory?: string;
   shopeeCategory?: string;
   magaluCategory?: string;
+  olxCategory?: string;
+  facebookCategory?: string;
   category?: string | null;
   brand?: string | null;
   model?: string | null;
@@ -42,6 +44,8 @@ export interface PreviewFormValues {
   createMLListing?: boolean;
   createShopeeListing?: boolean;
   createMagaluListing?: boolean;
+  createOlxListing?: boolean;
+  createFacebookListing?: boolean;
 }
 
 export interface PreviewAccount {
@@ -77,6 +81,13 @@ export interface BuildPreviewArgs {
   magaluAccounts?: PreviewAccount[];
   selectedMagaluAccountIds?: string[];
   magaluOptions?: CategoryOption[];
+  // OLX / Facebook (opcionais — só usados com as flags ligadas).
+  olxAccounts?: PreviewAccount[];
+  selectedOlxAccountIds?: string[];
+  olxOptions?: CategoryOption[];
+  facebookAccounts?: PreviewAccount[];
+  selectedFacebookAccountIds?: string[];
+  facebookOptions?: CategoryOption[];
 }
 
 // ---- Output ---------------------------------------------------------------
@@ -86,6 +97,8 @@ export interface ListingPreviewViewModel {
   showML: boolean;
   showShopee: boolean;
   showMagalu: boolean;
+  showOlx: boolean;
+  showFacebook: boolean;
 
   title: string;
   description: string;
@@ -98,6 +111,9 @@ export interface ListingPreviewViewModel {
   mlPriceFormatted: string;
   shopeePriceFormatted: string;
   magaluPriceFormatted: string;
+  /** OLX/Facebook usam o preço-base do produto (sem "Valor do Anúncio" próprio). */
+  olxPriceFormatted: string;
+  facebookPriceFormatted: string;
 
   /** ML free shipping (from mlFreeShipping). Shopee shipping is static/illustrative. */
   freeShipping: boolean;
@@ -121,6 +137,12 @@ export interface ListingPreviewViewModel {
   mlAccountLabel: string;
   shopeeAccountLabel: string;
   magaluAccountLabel: string;
+  olxAccountLabel: string;
+  facebookAccountLabel: string;
+
+  /** Categoria escolhida (label), ou "" — OLX/Facebook mostram só o leaf. */
+  olxCategoryLabel: string;
+  facebookCategoryLabel: string;
 }
 
 // Generic breadcrumbs used when no category is chosen (graceful degradation).
@@ -170,6 +192,15 @@ function resolveMagaluCategoryPath(
   return (
     magaluOptions.find((o) => o.id === values.magaluCategory)?.value || ""
   );
+}
+
+/** Label da categoria escolhida (OLX/Facebook) por id, ou "". */
+function resolveCategoryLabelById(
+  id: string | undefined,
+  options: CategoryOption[] | undefined,
+): string {
+  if (!id) return "";
+  return options?.find((o) => o.id === id)?.value || "";
 }
 
 /** "Conta A" | "Conta A e mais 2" | fallback when nothing selected. */
@@ -266,6 +297,12 @@ export function buildPreviewViewModel(
     magaluAccounts,
     selectedMagaluAccountIds,
     magaluOptions,
+    olxAccounts,
+    selectedOlxAccountIds,
+    olxOptions,
+    facebookAccounts,
+    selectedFacebookAccountIds,
+    facebookOptions,
   } = args;
 
   const images =
@@ -290,6 +327,8 @@ export function buildPreviewViewModel(
     showML: !!values.createMLListing,
     showShopee: !!values.createShopeeListing,
     showMagalu: !!values.createMagaluListing,
+    showOlx: !!values.createOlxListing,
+    showFacebook: !!values.createFacebookListing,
 
     title: values.name?.trim() || "—",
     description: values.description?.trim() || "",
@@ -304,6 +343,9 @@ export function buildPreviewViewModel(
     magaluPriceFormatted: formatCurrency(
       values.magaluListingPrice ?? values.price,
     ),
+    // OLX/Facebook não têm "Valor do Anúncio" próprio — usam o preço-base.
+    olxPriceFormatted: formatCurrency(values.price),
+    facebookPriceFormatted: formatCurrency(values.price),
 
     freeShipping: !!values.mlFreeShipping,
     warranty: buildWarranty(values),
@@ -336,6 +378,23 @@ export function buildPreviewViewModel(
         selectedMagaluAccountIds ?? [],
       ),
       "Sua loja Magalu",
+    ),
+    olxAccountLabel: joinAccountNames(
+      selectedAccountNames(olxAccounts ?? [], selectedOlxAccountIds ?? []),
+      "Seu perfil OLX",
+    ),
+    facebookAccountLabel: joinAccountNames(
+      selectedAccountNames(
+        facebookAccounts ?? [],
+        selectedFacebookAccountIds ?? [],
+      ),
+      "Sua loja no Facebook",
+    ),
+
+    olxCategoryLabel: resolveCategoryLabelById(values.olxCategory, olxOptions),
+    facebookCategoryLabel: resolveCategoryLabelById(
+      values.facebookCategory,
+      facebookOptions,
     ),
   };
 }

@@ -163,6 +163,45 @@ describe("runCatalogPass — a passada lenta não importa pedidos", () => {
   });
 });
 
+describe("F6.8 — contas OLX/FACEBOOK não gastam chamada de API no loop", () => {
+  // OLX (autoupload) e Facebook (Commerce Catalog) não têm API de pedido nem de
+  // catálogo-por-poll no Brasil. O loop deve percorrê-las sem disparar nenhuma
+  // chamada de import — senão o token OLX/Meta viraria request desperdiçado (ou,
+  // pior, iria para o endpoint errado).
+  const CANAIS_SEM_API = [
+    { id: "olx-1", platform: "OLX" },
+    { id: "fb-1", platform: "FACEBOOK" },
+  ];
+
+  beforeEach(() => {
+    vi.mocked((prisma as any).marketplaceAccount.findMany).mockResolvedValue(
+      CANAIS_SEM_API as any,
+    );
+  });
+
+  it("runOrdersPass não importa pedido de OLX/FACEBOOK", async () => {
+    const r = await __testing.runOrdersPass();
+
+    expect(r.accounts).toBe(2);
+    expect(OrderUseCase.importRecentOrdersForAccount).not.toHaveBeenCalled();
+    expect(
+      OrderUseCase.importRecentShopeeOrdersForAccount,
+    ).not.toHaveBeenCalled();
+    expect(
+      OrderUseCase.importRecentMagaluOrdersForAccount,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("runCatalogPass não faz auto-detect nem polling de mensagens para OLX/FACEBOOK", async () => {
+    await __testing.runCatalogPass();
+
+    expect(SyncUseCase.importNewShopeeItemsForAccount).not.toHaveBeenCalled();
+    expect(SyncUseCase.importNewMagaluItemsForAccount).not.toHaveBeenCalled();
+    expect(MessagesUseCase.syncShopeeCommentsForAccount).not.toHaveBeenCalled();
+    expect(MessagesUseCase.syncMagaluMessagesForAccount).not.toHaveBeenCalled();
+  });
+});
+
 describe("runOnce — caminho do kill-switch SYNC_LOOP_SPLIT_DISABLED=1", () => {
   it("mantém o ciclo único serial: pedidos + catálogo + métricas na mesma volta", async () => {
     await __testing.runOnce();

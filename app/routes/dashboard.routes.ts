@@ -49,6 +49,13 @@ function canonFromPlatform(
   return "OUTRO";
 }
 
+// OLX (autoupload) e Facebook (Commerce Catalog) não expõem views/reviews do
+// anúncio — não há API de métricas de engajamento. Devolver 0 seria
+// indistinguível de "0 views reais"; devolvemos null p/ a UI mostrar "—".
+function platformHasEngagementMetrics(platform: unknown): boolean {
+  return platform !== "OLX" && platform !== "FACEBOOK";
+}
+
 export const dashboardRoutes = async (fastify: FastifyInstance) => {
   /**
    * GET /dashboard/listing-stats
@@ -692,6 +699,9 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
                 : null;
             const listing = (curr as any).listing;
             const product = listing?.product;
+            const hasMetrics = platformHasEngagementMetrics(
+              listing?.marketplaceAccount?.platform,
+            );
             return {
               listingId,
               productId: product?.id ?? null,
@@ -701,8 +711,8 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
               sales: curr.sales,
               revenue: curr.revenue,
               growth,
-              reviews: listing?.reviewsCount ?? 0,
-              views: listing?.viewsCount ?? 0,
+              reviews: hasMetrics ? (listing?.reviewsCount ?? 0) : null,
+              views: hasMetrics ? (listing?.viewsCount ?? 0) : null,
               platform: listing?.marketplaceAccount?.platform ?? null,
               accountName: listing?.marketplaceAccount?.accountName ?? null,
               lastDate: curr.lastDate,
@@ -950,6 +960,10 @@ export const dashboardRoutes = async (fastify: FastifyInstance) => {
         }
 
         for (const l of listings) {
+          // OLX/Facebook não têm views/reviews reais — um evento "Métricas
+          // atualizadas" com 0/0 seria ruído enganoso. Pula.
+          if (!platformHasEngagementMetrics(l.marketplaceAccount?.platform))
+            continue;
           events.push({
             id: `listing-${l.id}-metrics`,
             type: "listing_metrics",

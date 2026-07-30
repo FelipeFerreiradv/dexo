@@ -6078,6 +6078,16 @@ export function CreateProductDialog({
                       (formValues.magaluAccountIds ?? []) as string[]
                     }
                     magaluOptions={magaluOptions}
+                    olxAccounts={olxAccounts}
+                    selectedOlxAccountIds={
+                      (formValues.olxAccountIds ?? []) as string[]
+                    }
+                    olxOptions={olxOptions}
+                    facebookAccounts={facebookAccounts}
+                    selectedFacebookAccountIds={
+                      (formValues.facebookAccountIds ?? []) as string[]
+                    }
+                    facebookOptions={facebookOptions}
                   />
                 </section>
 

@@ -17,6 +17,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MlListingPreview } from "./ml-listing-preview";
 import { ShopeeListingPreview } from "./shopee-listing-preview";
 import { MagaluListingPreview } from "./magalu-listing-preview";
+import { OlxListingPreview } from "./olx-listing-preview";
+import { FacebookListingPreview } from "./facebook-listing-preview";
 import {
   buildPreviewViewModel,
   type PreviewFormValues,
@@ -39,6 +41,13 @@ export interface StepPreviewProps {
   magaluAccounts?: PreviewAccount[];
   selectedMagaluAccountIds?: string[];
   magaluOptions?: CategoryOption[];
+  // OLX / Facebook (opcionais — só usados com as flags ligadas).
+  olxAccounts?: PreviewAccount[];
+  selectedOlxAccountIds?: string[];
+  olxOptions?: CategoryOption[];
+  facebookAccounts?: PreviewAccount[];
+  selectedFacebookAccountIds?: string[];
+  facebookOptions?: CategoryOption[];
 }
 
 export function StepPreview({
@@ -54,6 +63,12 @@ export function StepPreview({
   magaluAccounts = [],
   selectedMagaluAccountIds = [],
   magaluOptions = [],
+  olxAccounts = [],
+  selectedOlxAccountIds = [],
+  olxOptions = [],
+  facebookAccounts = [],
+  selectedFacebookAccountIds = [],
+  facebookOptions = [],
 }: StepPreviewProps) {
   const vm = buildPreviewViewModel({
     values,
@@ -68,6 +83,12 @@ export function StepPreview({
     magaluAccounts,
     selectedMagaluAccountIds,
     magaluOptions,
+    olxAccounts,
+    selectedOlxAccountIds,
+    olxOptions,
+    facebookAccounts,
+    selectedFacebookAccountIds,
+    facebookOptions,
   });
 
   // Marketplaces ativos (na ordem de exibição). Cada um vira aba/preview.
@@ -95,7 +116,22 @@ export function StepPreview({
     previews.push({
       value: "magalu",
       label: "Magalu",
+      iconSrc: "/marketplaces/magalu.svg",
       node: <MagaluListingPreview vm={vm} />,
+    });
+  if (vm.showOlx)
+    previews.push({
+      value: "olx",
+      label: "OLX",
+      iconSrc: "/marketplaces/olx.svg",
+      node: <OlxListingPreview vm={vm} />,
+    });
+  if (vm.showFacebook)
+    previews.push({
+      value: "facebook",
+      label: "Facebook",
+      iconSrc: "/marketplaces/facebook.svg",
+      node: <FacebookListingPreview vm={vm} />,
     });
 
   // Nenhum marketplace marcado → estado vazio amigável.

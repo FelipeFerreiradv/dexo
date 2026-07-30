@@ -23,7 +23,7 @@ npx vitest run
 
 **Onda 2 (Fase 2 — publicação na UI) — CONCLUÍDA.** `tsc`=101 (abaixo do baseline; agentes corrigiram erros pré-existentes) · `vitest`=3000/0.
 - F2.1 novo produto, F2.2 editar produto (bug "Shopee" corrigido), F2.3 editar anúncio, F2.4 massa (bug badge "Magalu" corrigido + **F1.1.f** escada OLX/FB fim-a-fim), F2.5 revisão individual (campos OLX/FB criados e renderizados), F2.6 rotas de categoria (4) + `createFacebookListing` usa categoryId + heurística de veículo estruturada.
-- **Gap restante da Fase 2:** `listing-preview/step-preview.tsx` (LivePreview) não tem aba OLX/FB — só ML/Shopee/Magalu. Preview cosmético; publicação funciona sem ele.
+- **Gap da Fase 2 fechado (F2.1.f):** `step-preview.tsx` ganhou abas OLX e Facebook — novos `olx-listing-preview.tsx`/`facebook-listing-preview.tsx` (molde Magalu) + view-model estendido (`showOlx`/`showFacebook`, preços e labels de conta/categoria). Wired em `create-product-dialog`.
 
 **Onda 3 (Fase 3 — UI/filtros/permissões/relatórios) — CONCLUÍDA.** `tsc`=101 · `vitest`=3000/0 (2 specs de enumeração de plataforma atualizados: `product.repository.search`, `team-productivity`).
 - F3.1–F3.11 + **F1.3.g** (campos de seller na UI + `PATCH` backend + repo `updateSellerFields`).
@@ -32,14 +32,14 @@ npx vitest run
 **Onda 4 (Fase 4 vínculo por SKU + Fase 5 expectativa) — PARCIAL.** `tsc`=104 · specs OLX/FB verdes.
 - **Fase 4 Facebook: CONCLUÍDA.** `listCatalogItems` + `importFacebookItems` + `normalizeFacebookItem` + rotas `POST/GET /facebook/import` + roteado no cron (`importAndBuildAllAccounts`, armadilha F4.6 corrigida) + botão "Importar" na aba de sync FB.
 - **Fase 4 OLX: pendente (F4.8)** — spike da *Consulta de Anúncios Publicados*, precisa doc da OLX.
-- **Fase 5: PARCIAL.** F5.1 (avisos nos dashboards) e F5.3 (`provider-factory` — etiqueta) feitos. **Pendentes:** F5.2 (`orders-list`), F5.4 (`messages.usecase`), F5.5 (`dashboard.routes` `views/reviews` ainda `?? 0`, indistinguível de dado real).
+- **Fase 5: CONCLUÍDA.** F5.1 (dashboards), F5.2 (`orders-list` — aviso de venda manual atrás das flags), F5.3 (`provider-factory`), F5.4 (`messages.usecase` — guard OLX/FB com erro 400 específico, sem cair no ramo ML), F5.5 (`dashboard.routes` — `views/reviews` viram `null` p/ OLX/FB, distinguível de 0 real; evento `listing_metrics` pulado).
 
 **Onda 5 (kill-switch de runtime) — CONCLUÍDA.** Rec de Rollback da auditoria. `tsc`=104.
 - `app/lib/integration-flags.ts`: `isOlxDisabled`/`isFacebookDisabled`/`isPlatformDisabled` (padrão `*_DISABLED`, lidas por chamada, sem rebuild).
 - Cobertura: hook `onRequest` bloqueia todo `/marketplace/{olx,facebook}/*` (503); `POST /listings/dispatch` e `/bulk` (503); dispatch do modal de novo produto pula OLX/FB; `updateListingStatus` no-op p/ OLX/FB (cobre auto-pause do PDV, pause manual e restore de cancelamento — caminhos fora do prefixo `/marketplace`); `ListingStatusSweepService` tira FB da varredura.
 - **Migrations agora versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas + `prisma/seed.ts`. Fase 0 vira `prisma migrate deploy` (ver nota de risco abaixo).
 
-**Próximo:** F4.8 (spike OLX) · F5.2/F5.4/F5.5 (fechar expectativa restante) · reconciliar checkboxes da Fase 6.
+**Próximo:** F4.8 (spike OLX — depende da doc da OLX, externo) · F6.9 (teste de UI com flags-off — adiado, ver nota). Fases 1–3, 5 e o Facebook da 4 estão concluídas; restam só itens que dependem de terceiros ou de verificação visual.
 
 ---
 
@@ -180,7 +180,7 @@ na mesma âncora. `enum Platform` está em `schema.prisma:628`.
 - [x] **F2.1.c** `listingsPayload` OLX/FB
 - [x] **F2.1.d** categoria (state + suggest + search) OLX/FB
 - [x] **F2.1.e** auto-seleção de contas ao ligar o toggle
-- [ ] **F2.1.f** ⚠️ gap: `<StepPreview>` (LivePreview) sem OLX/FB — `listing-preview/step-preview.tsx`
+- [x] **F2.1.f** `<StepPreview>` ganhou abas OLX/FB (`olx-listing-preview.tsx`/`facebook-listing-preview.tsx`, view-model + caller estendidos)
 
 ### F2.2 Modal de edição — `edit-product-dialog.tsx` ✅
 - [x] **F2.2.a** seções "Criar anúncio na OLX" e "no Facebook"
@@ -254,10 +254,10 @@ Mensagens (`messages-shell.tsx`). **Já corretos, não mexer:** `marketplace-pla
 ## FASE 5 — Fechar a expectativa na UI
 
 - [x] **F5.1** `olx-dashboard.tsx` e `facebook-dashboard.tsx` — aviso: baixa unidirecional, venda manual, sem pedido/mensagem/etiqueta
-- [ ] **F5.2** `app/pedidos/components/orders-list.tsx` — idem na tela de Pedidos (pendente)
+- [x] **F5.2** `app/pedidos/components/orders-list.tsx` — aviso "vendas OLX/Facebook não aparecem aqui" atrás das flags `NEXT_PUBLIC_{OLX,FACEBOOK}_INTEGRATION_ENABLED`
 - [x] **F5.3** `shipping/provider-factory.ts:24-30` — case OLX/FACEBOOK: "não fornece etiqueta… registre a venda manualmente"
-- [ ] **F5.4** `messages.usecase.ts` — idem (pendente)
-- [ ] **F5.5** `dashboard.routes.ts:704-705` — ainda `views: …?? 0`/`reviews: …?? 0`, indistinguível de dado real (pendente)
+- [x] **F5.4** `messages.usecase.ts` — `resolveAccountForUser` lança 400 específico p/ OLX/FACEBOOK (antes cairia no ramo ML e mandaria o token p/ api.mercadolibre.com)
+- [x] **F5.5** `dashboard.routes.ts` — `platformHasEngagementMetrics`: `views/reviews` viram `null` (não 0) p/ OLX/FB em `/product-metrics`; evento `listing_metrics` pulado p/ essas plataformas
 
 ---
 
@@ -271,15 +271,15 @@ Novos casos:
 - [x] **F6.5** `listing.facebook-tenant-catalog.spec.ts` — 2 tenants mesmo SKU → catálogos distintos (F1.3)
 - [x] **F6.6** `listing-retry-platform-guard.spec.ts` — OLX/FB não entram no `ListingRetryService` (F1.5)
 - [x] **F6.7** `olx-payload-builder.buildId.spec.ts` — colisão em 19 chars → ids distintos (F1.7)
-- [ ] **F6.8** sync-loop não gasta chamada com conta OLX/FACEBOOK (pendente)
-- [ ] **F6.9** com flags desligadas, a UI é idêntica (pendente) + kill-switch runtime (Onda 5) sem spec dedicado
+- [x] **F6.8** `sync-loop-cadence.spec.ts` — contas OLX/FACEBOOK passam pelo `runOrdersPass`/`runCatalogPass` sem disparar nenhum import
+- [ ] **F6.9** com flags desligadas, a UI é idêntica — **adiado de propósito**: é gating de env `NEXT_PUBLIC_*` em build-time, um snapshot jsdom seria frágil e de baixo valor; o kill-switch de runtime já tem cobertura em F6.10
 - [x] **F6.10** `listing.olx-pause-fail.spec.ts` — no-op de `updateListingStatus` com `OLX_INTEGRATION_DISABLED=1` (kill-switch, Onda 5)
 
 Atualizar os que enumeram plataforma:
-- [ ] **F6.11** `listing.remove.spec.ts` (verificar)
-- [ ] **F6.12** `listing.update-fields.spec.ts` (verificar)
-- [ ] **F6.13** `shipping/__tests__/provider-factory.spec.ts` (verificar)
-- [ ] **F6.14** `marketplace-platform.test.ts` (verificar)
+- [x] **F6.11** `listing.remove.spec.ts` — verificado, verde (26 testes)
+- [x] **F6.12** `listing.update-fields.spec.ts` — verificado, verde (12 testes)
+- [x] **F6.13** `shipping/__tests__/provider-factory.spec.ts` — + assert OLX/FACEBOOK lançam a mensagem de venda manual (não o genérico)
+- [x] **F6.14** `marketplace-platform.test.ts` — verificado, verde (4 testes)
 - [x] **F6.15** `team-productivity.test.ts` + `tests/product.repository.search.spec.ts` (atualizados na Onda 3)
 
 ---
