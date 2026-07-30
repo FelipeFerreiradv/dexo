@@ -1695,7 +1695,17 @@ small{color:#666}</style></head><body>
     // qualquer um empurra bytes indefinidamente para dentro da memória do
     // dexo-api. Passou do teto, para de acumular: a assinatura não vai conferir
     // e a requisição é recusada, que é o desfecho correto de um corpo desses.
-    const TETO_BYTES = 1024 * 1024;
+    // 64 KB, nao 1 MB. O push da Shopee e minusculo — o real medido em producao
+    // tem ~200 bytes ({msg_id, data:{ordersn,status,update_time}, shop_id, code,
+    // timestamp}). O teto existe porque a rota e PUBLICA e este hook roda ANTES
+    // do bodyLimit do Fastify, ou seja qualquer um empurra bytes para a memoria do
+    // dexo-api. Com 1 MB e as ~300 req/min que o rate limit permite, o pior caso
+    // eram centenas de MB de heap no MESMO processo que hospeda o reconciliador
+    // (achado MEDIA/MEMORIA da auditoria de 30/07/2026). 64 KB e 300x o tamanho
+    // real e reduz o pior caso na mesma proporcao, sem tocar em nenhum push
+    // legitimo: corpo acima do teto ja resultava em 401, que segue sendo o
+    // desfecho correto.
+    const TETO_BYTES = 64 * 1024;
     const chunks: Buffer[] = [];
     let total = 0;
     let estourou = false;

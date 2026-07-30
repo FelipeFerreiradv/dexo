@@ -520,6 +520,13 @@ model Order {
   @@index([marketplaceAccountId, createdAt])
   // Migração: CREATE INDEX IF NOT EXISTS "Order_marketplaceAccountId_soldAt_idx" ON "Order"("marketplaceAccountId", "soldAt");
   @@index([marketplaceAccountId, soldAt])
+  // ATENÇÃO: existem DOIS índices de EXPRESSÃO que o Prisma não consegue
+  // declarar aqui, criados em prisma/migrations/20260730020000_add_order_period_expression_idx:
+  //   Order_mktAcc_periodo_idx  ON ("marketplaceAccountId", (COALESCE("soldAt","createdAt")))
+  //   Order_periodo_idx         ON ((COALESCE("soldAt","createdAt")))
+  // Eles servem o filtro de período do Dashboard e do relatório. Sem eles o
+  // predicado fica não-sargável (função sobre coluna indexada) e o planner cai
+  // em scan. NÃO remover ao mexer nos índices acima.
   @@index([status, updatedAt])
   @@index([customerId])
 }
