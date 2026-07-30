@@ -39,7 +39,7 @@ npx vitest run
 - Cobertura: hook `onRequest` bloqueia todo `/marketplace/{olx,facebook}/*` (503); `POST /listings/dispatch` e `/bulk` (503); dispatch do modal de novo produto pula OLX/FB; `updateListingStatus` no-op p/ OLX/FB (cobre auto-pause do PDV, pause manual e restore de cancelamento — caminhos fora do prefixo `/marketplace`); `ListingStatusSweepService` tira FB da varredura.
 - **Migrations agora versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas + `prisma/seed.ts`. Fase 0 vira `prisma migrate deploy` (ver nota de risco abaixo).
 
-**Próximo:** F4.8 (spike OLX — depende da doc da OLX, externo) · F6.9 (teste de UI com flags-off — adiado, ver nota). Fases 1–3, 5 e o Facebook da 4 estão concluídas; restam só itens que dependem de terceiros ou de verificação visual.
+**Próximo:** só resta **F4.8** (vínculo por SKU na OLX — depende da doc da *Consulta de Anúncios Publicados* da OLX, externo, não é nosso). Todo o resto que é nosso está feito: Fases 1–3, 5, 6 e o Facebook da Fase 4 concluídos.
 
 ---
 
@@ -272,7 +272,7 @@ Novos casos:
 - [x] **F6.6** `listing-retry-platform-guard.spec.ts` — OLX/FB não entram no `ListingRetryService` (F1.5)
 - [x] **F6.7** `olx-payload-builder.buildId.spec.ts` — colisão em 19 chars → ids distintos (F1.7)
 - [x] **F6.8** `sync-loop-cadence.spec.ts` — contas OLX/FACEBOOK passam pelo `runOrdersPass`/`runCatalogPass` sem disparar nenhum import
-- [ ] **F6.9** com flags desligadas, a UI é idêntica — **adiado de propósito**: é gating de env `NEXT_PUBLIC_*` em build-time, um snapshot jsdom seria frágil e de baixo valor; o kill-switch de runtime já tem cobertura em F6.10
+- [x] **F6.9** `first-allowed-page.spec.ts` — com as flags OLX/FB off, as páginas não são roteáveis (`isPageRoutable`) e o redirect nunca manda o colaborador para elas; prova o gating de build-time sem jsdom
 - [x] **F6.10** `listing.olx-pause-fail.spec.ts` — no-op de `updateListingStatus` com `OLX_INTEGRATION_DISABLED=1` (kill-switch, Onda 5)
 
 Atualizar os que enumeram plataforma:
