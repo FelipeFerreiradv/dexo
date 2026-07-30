@@ -35,7 +35,7 @@ IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 # "postprocess" so aparece com REMBG_MASK_POSTPROCESS=true (sidecar >= PR 2);
 # o print abaixo lista apenas os estagios presentes no header, entao um
 # sidecar antigo continua funcionando com este bench.
-STAGE_ORDER = ["decode", "remove", "to_rgba", "postprocess", "refine", "shadow", "encode"]
+STAGE_ORDER = ["decode", "remove", "to_rgba", "postprocess", "refine", "signals", "shadow", "encode"]
 
 
 def find_images(path):

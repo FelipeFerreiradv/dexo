@@ -137,9 +137,14 @@ export interface ProcessUploadedImageOptions {
     opts?: {
       addShadow?: boolean;
       timeoutMs?: number;
-      /** Metadados do round-trip (ex.: X-Rembg-Timing). Best-effort — só o
-       *  fetcher default preenche; overrides de teste podem ignorar. */
-      onMeta?: (meta: { timing?: string }) => void;
+      /** Metadados do round-trip (X-Rembg-Timing/-Confidence/-Signals).
+       *  Best-effort — só o fetcher default preenche; overrides de teste
+       *  podem ignorar. */
+      onMeta?: (meta: {
+        timing?: string;
+        confidence?: number;
+        signals?: string;
+      }) => void;
     },
   ) => Promise<Buffer>;
 }
@@ -159,6 +164,9 @@ export interface ProcessUploadedImageResult {
   sidecarTiming?: string;
   /** Round-trip Node→sidecar em ms (só quando o fetcher foi chamado). */
   sidecarMs?: number;
+  /** Score de confiança da máscara [0,1] (só com REMBG_CONFIDENCE=true no
+   *  sidecar). MODO OBSERVAÇÃO: informativo, nunca muda decisão. */
+  sidecarConfidence?: number;
 }
 
 /**
@@ -226,6 +234,7 @@ export async function processUploadedImage(
     let degradeReason: RembgDegradeReason | undefined;
     let sidecarTiming: string | undefined;
     let sidecarMs: number | undefined;
+    let sidecarConfidence: number | undefined;
     let fetchStartedAt: number | undefined;
 
     // Orçamento e gate ficam AQUI, no ramo do sidecar — nunca no topo da função.
@@ -275,8 +284,16 @@ export async function processUploadedImage(
             `orçamento esgotado após espera na fila (restavam ${timeoutMs}ms)`,
           );
         }
-        const onMeta = (meta: { timing?: string }) => {
+        const onMeta = (meta: {
+          timing?: string;
+          confidence?: number;
+          signals?: string;
+        }) => {
           if (meta.timing) sidecarTiming = meta.timing;
+          if (typeof meta.confidence === "number") {
+            sidecarConfidence = meta.confidence;
+            logConfidenceObservation(meta.confidence, meta.signals);
+          }
         };
         let cutout: Buffer;
         fetchStartedAt = Date.now();
@@ -355,6 +372,7 @@ export async function processUploadedImage(
             height: cutMeta.height,
             ...(sidecarTiming ? { sidecarTiming } : {}),
             ...(sidecarMs !== undefined ? { sidecarMs } : {}),
+            ...(sidecarConfidence !== undefined ? { sidecarConfidence } : {}),
           };
         }
 
@@ -376,6 +394,7 @@ export async function processUploadedImage(
           height: outMeta.height,
           ...(sidecarTiming ? { sidecarTiming } : {}),
           ...(sidecarMs !== undefined ? { sidecarMs } : {}),
+          ...(sidecarConfidence !== undefined ? { sidecarConfidence } : {}),
         };
       } catch (err) {
         degradeReason = classifyDegradeReason(err);
@@ -428,6 +447,7 @@ export async function processUploadedImage(
       ...(degradeReason ? { degradeReason } : {}),
       ...(sidecarTiming ? { sidecarTiming } : {}),
       ...(sidecarMs !== undefined ? { sidecarMs } : {}),
+      ...(sidecarConfidence !== undefined ? { sidecarConfidence } : {}),
     };
   }
 
@@ -475,6 +495,32 @@ function classifyDegradeReason(err: unknown): RembgDegradeReason {
   return "processing_error";
 }
 
+/**
+ * MODO OBSERVAÇÃO do roteamento por confiança (PR 3): quando o sidecar expõe
+ * o score (REMBG_CONFIDENCE=true) e REMBG_CONFIDENCE_LOG=true aqui, logamos a
+ * decisão que o roteamento TOMARIA — calculado, nunca acionado. A distribuição
+ * desses logs em produção é o que calibra o limiar antes de qualquer ação.
+ */
+function isConfidenceLogEnabled(): boolean {
+  const raw = (process.env.REMBG_CONFIDENCE_LOG ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function readConfidenceThreshold(): number {
+  const parsed = Number(process.env.REMBG_CONFIDENCE_THRESHOLD);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : 0.55;
+}
+
+function logConfidenceObservation(confidence: number, signals?: string): void {
+  if (!isConfidenceLogEnabled()) return;
+  const threshold = readConfidenceThreshold();
+  const decision = confidence < threshold ? "WOULD_REROUTE" : "OK";
+  console.log(
+    `[rembg-confidence] conf=${confidence} decision=${decision} threshold=${threshold}` +
+      (signals ? ` signals=${signals}` : ""),
+  );
+}
+
 /** Kill-switch do retry (mesma convenção do REMBG_GATE_DISABLED). Lido por
  *  chamada para funcionar com edição de .env + restart, sem rebuild. */
 function isRembgRetryDisabled(): boolean {
@@ -503,7 +549,11 @@ async function defaultRembgFetcher(
   opts?: {
     addShadow?: boolean;
     timeoutMs?: number;
-    onMeta?: (meta: { timing?: string }) => void;
+    onMeta?: (meta: {
+      timing?: string;
+      confidence?: number;
+      signals?: string;
+    }) => void;
   },
 ): Promise<Buffer> {
   const url = process.env.REMBG_SIDECAR_URL;
@@ -542,9 +592,21 @@ async function defaultRembgFetcher(
   if (REMBG_PROFILE && timing) {
     console.log(`[sidecar-profile] ${timing}`);
   }
+  const meta: { timing?: string; confidence?: number; signals?: string } = {};
   if (timing && typeof timing === "string") {
+    meta.timing = timing;
+  }
+  const confRaw = response.headers?.["x-rembg-confidence"];
+  const confidence =
+    typeof confRaw === "string" ? Number.parseFloat(confRaw) : NaN;
+  if (Number.isFinite(confidence)) {
+    meta.confidence = confidence;
+    const signals = response.headers?.["x-rembg-signals"];
+    if (typeof signals === "string") meta.signals = signals;
+  }
+  if (Object.keys(meta).length > 0) {
     try {
-      opts?.onMeta?.({ timing });
+      opts?.onMeta?.(meta);
     } catch {
       // metadados são best-effort — nunca derrubam o caminho do recorte.
     }

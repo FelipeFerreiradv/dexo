@@ -23,6 +23,7 @@ const okResult = {
   height: 600,
   sidecarMs: 9100,
   sidecarTiming: "remove=9000.0",
+  sidecarConfidence: 0.97,
 };
 
 const fallbackResult = {
@@ -106,6 +107,7 @@ describe("rembg-telemetry", () => {
       durationMs: 9500,
       sidecarMs: 9100,
       sidecarTiming: "remove=9000.0",
+      sidecarConfidence: 0.97,
     });
 
     recordImageOutcome({

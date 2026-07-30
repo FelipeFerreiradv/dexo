@@ -42,7 +42,12 @@ from fastapi.responses import Response
 from PIL import Image
 from rembg import new_session, remove
 
-from mask_postprocess import MaskPostprocessConfig, postprocess_mask
+from mask_postprocess import (
+    MaskPostprocessConfig,
+    confidence_score,
+    mask_signals,
+    postprocess_mask,
+)
 
 # Limites de tamanho:
 # - 10 MB de input cobre folgadamente o limite do app (5 MB) e ainda
@@ -135,6 +140,14 @@ POST_PROCESS_MASK = os.getenv("REMBG_POST_PROCESS_MASK", "false").lower() == "tr
 # Killswitch master REMBG_MASK_POSTPROCESS=false (default) => estagio nem
 # roda. Tunables e heuristicas: ver mask_postprocess.py.
 MASK_POSTPROCESS_CFG = MaskPostprocessConfig.from_env()
+
+# Score de confianca da mascara (PR 3 — MODO OBSERVACAO): calcula sinais
+# baratos sobre o alpha final (pos-refine, pre-sombra) e os expoe nos headers
+# X-Rembg-Confidence / X-Rembg-Signals. NAO muda pixel nem decisao nenhuma —
+# o app Node so LOGA a decisao hipotetica de roteamento para calibrar
+# limiares com dados reais. Default OFF => resposta byte-identica (sem
+# headers novos, sem custo).
+CONFIDENCE_ENABLED = os.getenv("REMBG_CONFIDENCE", "false").lower() == "true"
 
 # --- Sombra de contato (opt-in via form 'add_shadow') ----------------------
 # Killswitch global: REMBG_SHADOW_ENABLED=false ignora add_shadow sem rebuild.
@@ -278,6 +291,8 @@ def health():
         # Aditivos (pos-processamento topologico da mascara).
         "mask_postprocess": MASK_POSTPROCESS_CFG.enabled,
         "mask_shadow_suppress": MASK_POSTPROCESS_CFG.shadow_suppress,
+        # Aditivo (score de confianca em modo observacao).
+        "confidence": CONFIDENCE_ENABLED,
     }
 
 
@@ -437,12 +452,15 @@ def _add_drop_shadow(rgba: np.ndarray) -> np.ndarray:
 
 
 def _process_sync(
-    raw: bytes, add_shadow: bool, prof: bool, timings: dict
+    raw: bytes, add_shadow: bool, prof: bool, timings: dict, extras: dict | None = None
 ) -> bytes:
     """Pipeline completo de uma inferencia (extraido byte-a-byte do handler).
 
     Sincrono de proposito: roda inline no event loop (default, comportamento
-    historico) ou numa thread via anyio (REMBG_ASYNC_OFFLOAD=true)."""
+    historico) ou numa thread via anyio (REMBG_ASYNC_OFFLOAD=true).
+    `extras` (opcional, mutado in-place) carrega metadados de observacao
+    (score de confianca) para o handler expor em headers — nada do pipeline
+    de pixels le esse dict."""
     # Decodifica uma vez e passa PIL ao rembg — evita round-trip de PNG
     # (com bytes, o rembg encodaria o resultado em PNG e nos decodariamos
     # de novo). Com PIL, ele devolve PIL e vamos direto pra ndarray.
@@ -484,6 +502,18 @@ def _process_sync(
     if prof:
         timings["refine"] = perf_counter() - t0
         t0 = perf_counter()
+    # Score de confianca (observacao): sobre o alpha FINAL, antes da sombra.
+    # Best-effort — nunca derruba o recorte; OFF (default) = bloco pulado.
+    if CONFIDENCE_ENABLED and extras is not None:
+        try:
+            signals = mask_signals(rgba[..., 3])
+            extras["confidence"] = confidence_score(signals)
+            extras["signals"] = ";".join(f"{k}={v}" for k, v in signals.items())
+        except Exception:  # noqa: BLE001
+            pass
+        if prof:
+            timings["signals"] = perf_counter() - t0
+            t0 = perf_counter()
     if add_shadow and SHADOW_GLOBAL_ENABLED:
         try:
             rgba = _add_drop_shadow(rgba)
@@ -523,6 +553,7 @@ async def remove_bg(
     # Profiling opt-in: so preenche o dict de tempos quando PROFILE_ENABLED.
     prof = PROFILE_ENABLED
     timings: dict[str, float] = {}
+    extras: dict[str, object] = {}
 
     # Anti-zumbi: no momento em que este handler finalmente roda, a requisicao
     # pode ter esperado MINUTOS (fila serializada). Se o caller ja desistiu
@@ -533,7 +564,7 @@ async def remove_bg(
     try:
         if not ASYNC_OFFLOAD:
             # Caminho default: identico ao historico (inline no event loop).
-            png_bytes = _process_sync(raw, add_shadow, prof, timings)
+            png_bytes = _process_sync(raw, add_shadow, prof, timings, extras)
         else:
             # Offload: backpressure explicito ANTES de enfileirar + inferencia
             # em thread, serializada pelo semaforo (1 por vez, como hoje).
@@ -549,7 +580,7 @@ async def remove_bg(
                             status_code=499, detail="client disconnected"
                         )
                     png_bytes = await anyio.to_thread.run_sync(
-                        _process_sync, raw, add_shadow, prof, timings
+                        _process_sync, raw, add_shadow, prof, timings, extras
                     )
             finally:
                 _pending -= 1
@@ -558,14 +589,22 @@ async def remove_bg(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"rembg failed: {exc}") from exc
 
-    headers = None
+    headers: dict[str, str] = {}
     if prof:
         header_val = ";".join(f"{k}={timings[k] * 1000:.1f}" for k in timings)
-        headers = {"X-Rembg-Timing": header_val}
+        headers["X-Rembg-Timing"] = header_val
         print(
             f"[rembg-profile] {header_val} shadow_req={add_shadow} "
-            f"out_bytes={len(png_bytes)}",
+            f"out_bytes={len(png_bytes)}"
+            + (f" confidence={extras['confidence']}" if "confidence" in extras else ""),
             flush=True,
         )
+    # Headers de observacao (so existem com REMBG_CONFIDENCE=true) — valores
+    # ASCII por construcao (numeros e chaves fixas).
+    if "confidence" in extras:
+        headers["X-Rembg-Confidence"] = str(extras["confidence"])
+        headers["X-Rembg-Signals"] = str(extras["signals"])
 
-    return Response(content=png_bytes, media_type="image/png", headers=headers)
+    return Response(
+        content=png_bytes, media_type="image/png", headers=headers or None
+    )

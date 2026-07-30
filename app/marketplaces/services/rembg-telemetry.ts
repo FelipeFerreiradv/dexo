@@ -71,6 +71,7 @@ export interface RecordImageOutcomeInput {
     | "degradeReason"
     | "sidecarTiming"
     | "sidecarMs"
+    | "sidecarConfidence"
     | "format"
     | "width"
     | "height"
@@ -126,6 +127,9 @@ export function recordImageOutcome(input: RecordImageOutcomeInput): void {
         : {}),
       ...(input.result.sidecarTiming
         ? { sidecarTiming: input.result.sidecarTiming }
+        : {}),
+      ...(input.result.sidecarConfidence !== undefined
+        ? { sidecarConfidence: input.result.sidecarConfidence }
         : {}),
       format: input.result.format,
       widthPx: input.result.width,
