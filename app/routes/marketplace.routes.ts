@@ -1626,6 +1626,12 @@ small{color:#666}</style></head><body>
    * é no-op para qualquer outra rota deste plugin — devolve o `payload`
    * intacto, sem ler o stream.
    */
+  /**
+   * Chaves cuja verificacao bem-sucedida ja foi logada neste processo. Existe so
+   * para o log de `signature_ok` sair uma vez por chave, e nao a cada push.
+   */
+  const chavesJaLogadas = new Set<string>();
+
   app.addHook("preParsing", async (request, _reply, payload) => {
     if (!request.url.split("?")[0].endsWith("/shopee/webhook")) {
       return payload;
@@ -1673,7 +1679,8 @@ small{color:#666}</style></head><body>
    * Recebe push notifications da Shopee (configurado no Partner Portal)
    * Sem auth middleware - a Shopee envia diretamente, autenticada pelo HMAC
    * do header Authorization.
-   * Códigos: 4 = order status update, 3 = order tracking update
+   * Codigos de pedido: 3 = order_status_push, 4 = order_trackingno_push
+   * (conferido no console em 30/07/2026 — o comentario anterior invertia os dois).
    */
   app.post(
     "/shopee/webhook",
@@ -1691,7 +1698,18 @@ small{color:#666}</style></head><body>
       // verificar perderia venda, que é justamente o que estamos consertando.
       // KILL-SWITCH: SHOPEE_WEBHOOK_SIGNATURE_DISABLED=1 desliga a checagem.
       if (process.env.SHOPEE_WEBHOOK_SIGNATURE_DISABLED !== "1") {
-        const partnerKey = SHOPEE_CONSTANTS.PARTNER_KEY;
+        // DUAS chaves candidatas, porque o console tem duas legitimas do mesmo
+        // app e a documentacao nao diz qual assina o push: a "Live Push Partner
+        // Key" (tela Push Mechanism) e a "Live API Partner Key" (tela do app).
+        // Escolher errado rejeita 100% dos pushes com 401, em silencio.
+        const candidatas = [
+          {
+            nome: "push",
+            valor: process.env.SHOPEE_PUSH_PARTNER_KEY?.trim() || undefined,
+          },
+          { nome: "api", valor: SHOPEE_CONSTANTS.PARTNER_KEY },
+        ];
+        const partnerKey = candidatas.find((c) => c.valor)?.valor;
         const callbackUrl = ShopeeWebhookSignatureService.callbackUrl();
         const podeVerificar = Boolean(partnerKey && callbackUrl);
 
@@ -1700,13 +1718,45 @@ small{color:#666}</style></head><body>
             "[Shopee Webhook] Assinatura NAO verificada (falta SHOPEE_PARTNER_KEY ou APP_BACKEND_URL/SHOPEE_WEBHOOK_URL). Rota segue aberta.",
           );
         } else {
-          const ok = ShopeeWebhookSignatureService.verify(
+          const veredito = ShopeeWebhookSignatureService.verifyAny(
             callbackUrl,
             (request as any).shopeeRawBody,
             request.headers["authorization"] as string | undefined,
-            partnerKey,
+            candidatas,
           );
-          if (!ok) {
+
+          // Qual chave conferiu, uma vez por chave por processo: sem isto a
+          // resposta ficaria sendo inferida do comportamento, e trocar uma das
+          // chaves viraria um 401 sem explicacao.
+          if (veredito.ok && veredito.chave && !chavesJaLogadas.has(veredito.chave)) {
+            chavesJaLogadas.add(veredito.chave);
+            console.log(
+              JSON.stringify({
+                event: "shopee.webhook.signature_ok",
+                chave: veredito.chave,
+                callbackUrl,
+              }),
+            );
+          }
+
+          if (!veredito.ok) {
+            // Diagnostico opt-in: com SHOPEE_WEBHOOK_SIGNATURE_DEBUG=1 sai o
+            // header que a Shopee mandou e o que cada chave/base produziria.
+            // Sem isso, "chave errada" e "base errada" dao o mesmo 401.
+            const diag = ShopeeWebhookSignatureService.diagnose(
+              callbackUrl,
+              (request as any).shopeeRawBody,
+              request.headers["authorization"] as string | undefined,
+              candidatas,
+            );
+            if (diag) {
+              console.warn(
+                JSON.stringify({
+                  event: "shopee.webhook.signature_debug",
+                  ...diag,
+                }),
+              );
+            }
             console.warn(
               JSON.stringify({
                 event: "shopee.webhook.invalid_signature",
@@ -1752,7 +1802,8 @@ small{color:#666}</style></head><body>
             return;
           }
 
-          // Códigos de pedido: 3 = order tracking, 4 = order status
+          // 3 = order_status_push, 4 = order_trackingno_push. Os DOIS entram:
+          // o de status traz a mudanca de estado e o de rastreio confirma envio.
           if (code !== 3 && code !== 4) {
             console.log(
               `[Shopee Webhook] Código ${code} ignorado (não é pedido)`,

@@ -35,6 +35,19 @@ export class OrderIngestionReconcilerService {
   private static intervalId: NodeJS.Timeout | null = null;
   private static running = false;
   private static runInProgress = false;
+  /**
+   * Pendências com re-tentativa em voo NESTE processo. O `runInProgress` protege
+   * um tick contra o anterior, mas não protegia o tick contra o botão "Tentar
+   * novamente" (`retryOne`), que é outro ponto de entrada sobre a MESMA
+   * pendência. As duas execuções faziam a mesma varredura na API da Shopee.
+   *
+   * A corrupção de dados desse cruzamento já está fechada onde importa (a baixa
+   * lê o net dentro da transação e o acréscimo de item é atômico); isto aqui
+   * evita o desperdício de chamada e o contador de tentativas andando duas
+   * vezes. Entre PROCESSOS pm2 distintos nada disto serializa — por isso a
+   * proteção real tem que estar no banco, e está.
+   */
+  private static emAndamento = new Set<string>();
 
   static async runOnce(): Promise<void> {
     if (process.env.ORDER_INGESTION_RECONCILER_DISABLED === "1") return;
@@ -60,6 +73,8 @@ export class OrderIngestionReconcilerService {
       });
 
       for (const issue of pendentes) {
+        if (this.emAndamento.has(issue.id)) continue;
+        this.emAndamento.add(issue.id);
         try {
           await this.retryIssue(issue);
         } catch (err) {
@@ -72,6 +87,8 @@ export class OrderIngestionReconcilerService {
             issue,
             err instanceof Error ? err.message : String(err),
           );
+        } finally {
+          this.emAndamento.delete(issue.id);
         }
       }
     } catch (err) {
@@ -87,6 +104,17 @@ export class OrderIngestionReconcilerService {
    * pendência depois da tentativa, para a tela dizer se resolveu.
    */
   static async retryOne(issueId: string): Promise<{ resolved: boolean }> {
+    // Os MESMOS dois kill-switches do runOnce. Sem eles, com a quarentena
+    // desligada o `resolve()` é no-op: o botão bateria na API do marketplace,
+    // baixaria estoque e ainda assim devolveria "não resolvido" para sempre —
+    // a tela mentindo para o cliente a cada clique.
+    if (process.env.ORDER_INGESTION_RECONCILER_DISABLED === "1") {
+      return { resolved: false };
+    }
+    if (process.env.ORDER_INGESTION_ISSUES_DISABLED === "1") {
+      return { resolved: false };
+    }
+
     const issue = await (prisma as any).orderIngestionIssue.findUnique({
       where: { id: issueId },
       include: {
@@ -97,6 +125,11 @@ export class OrderIngestionReconcilerService {
     });
     if (!issue) return { resolved: false };
 
+    // Já tem uma tentativa em voo neste processo (o tick do worker pegou a
+    // mesma pendência): não duplica o trabalho.
+    if (this.emAndamento.has(issue.id)) return { resolved: false };
+    this.emAndamento.add(issue.id);
+
     try {
       await this.retryIssue(issue);
     } catch (err) {
@@ -104,6 +137,8 @@ export class OrderIngestionReconcilerService {
         issue,
         err instanceof Error ? err.message : String(err),
       );
+    } finally {
+      this.emAndamento.delete(issue.id);
     }
 
     const depois = await (prisma as any).orderIngestionIssue.findUnique({
@@ -153,11 +188,58 @@ export class OrderIngestionReconcilerService {
     // Caso 2 — reingerir o pedido pelo caminho canônico. Idempotente: se o
     // Order já existir, a importação devolve `already_exists`.
     if (issue.platform !== "SHOPEE") {
-      // ML e Magalu ainda não têm ingestão dirigida por id nesta etapa —
-      // a pendência fica OPEN e visível, sem re-tentativa cega.
+      // ML e Magalu não têm ingestão dirigida por `order_sn`, então não há como
+      // re-buscar UM pedido. Mas quem resolve esses casos é o próprio poll: o
+      // pedido não existe localmente, logo ele reaparece na janela a cada ciclo
+      // e entra sozinho no momento em que o cliente cadastrar/vincular o
+      // produto. O que falta é FECHAR a pendência quando isso acontece — e
+      // fazer isso sem bater na API (auditoria 29/07/2026).
+      const local = await (prisma as any).order.findFirst({
+        where: {
+          marketplaceAccountId: issue.marketplaceAccountId,
+          externalOrderId: issue.externalOrderId,
+        },
+        select: { id: true, status: true, stockDeductedAt: true },
+      });
+
+      if (!local) {
+        await this.registerFailure(
+          issue,
+          `Pedido ${issue.platform} ainda nao entrou; o poll tenta de novo a cada ciclo.`,
+        );
+        return;
+      }
+
+      if (local.status === "CANCELLED") {
+        await OrderIngestionIssueService.resolve(
+          issue.marketplaceAccountId,
+          issue.externalOrderId,
+          local.id,
+        );
+        return;
+      }
+
+      // Existe: falta garantir a baixa. Idempotente pelo net do StockLog, agora
+      // lido dentro da transação.
+      const { OrderUseCase: UC } = await import("../usecases/order.usercase");
+      const baixou = await UC.retryStockDeduction(
+        local.id,
+        issue.platform,
+        issue.externalOrderId,
+      );
+
+      if (baixou) {
+        await OrderIngestionIssueService.resolve(
+          issue.marketplaceAccountId,
+          issue.externalOrderId,
+          local.id,
+        );
+        return;
+      }
+
       await this.registerFailure(
         issue,
-        `Reingestao automatica ainda nao suportada para ${issue.platform}.`,
+        `Pedido ${issue.platform} existe (${local.id}) e a baixa segue pendente.`,
       );
       return;
     }

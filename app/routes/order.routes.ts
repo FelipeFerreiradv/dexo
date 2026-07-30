@@ -370,12 +370,24 @@ export async function orderRoutes(app: FastifyInstance) {
       try {
         const userId = request.user!.dataOwnerId;
 
+        const filtro = {
+          status: "OPEN",
+          marketplaceAccount: { userId },
+        };
+
+        // `total` tem que ser o total REAL, não o tamanho da página: em produção
+        // um tenant já apareceu com 57 pendências e outro com 26, e o aviso na
+        // tela diria "100" para sempre a partir daí (auditoria 29/07/2026).
+        const total = await (prisma as any).orderIngestionIssue.count({
+          where: filtro,
+        });
+
         const issues = await (prisma as any).orderIngestionIssue.findMany({
-          where: {
-            status: "OPEN",
-            marketplaceAccount: { userId },
-          },
-          orderBy: { createdAt: "desc" },
+          where: filtro,
+          // Mais ANTIGAS primeiro: são as que já esgotaram tentativas e
+          // precisam de gente. Com `desc` e o teto de 100, as antigas eram
+          // justamente as que sumiam da única tela onde o cliente as vê.
+          orderBy: { createdAt: "asc" },
           take: 100,
           select: {
             id: true,
@@ -404,7 +416,10 @@ export async function orderRoutes(app: FastifyInstance) {
             createdAt: i.createdAt,
             accountName: i.marketplaceAccount?.accountName ?? null,
           })),
-          total: issues.length,
+          total,
+          // Sem isto a tela não teria como avisar que existem pendências fora
+          // da página — silenciar o corte é o que o invariante proíbe.
+          exibidas: issues.length,
         });
       } catch (error) {
         console.error("[Orders] Ingestion issues error:", error);

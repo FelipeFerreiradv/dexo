@@ -495,6 +495,19 @@ model Order {
   // anteriores à migração ficam NULL — o backfill é script separado.
   // Migração: ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "stockDeductedAt" TIMESTAMP(3);
   stockDeductedAt      DateTime?
+  // Data em que a VENDA aconteceu no marketplace (ML `date_created`, Shopee
+  // `create_time`, Magalu `purchased_at`).
+  //
+  // Existe porque `createdAt` é a hora em que o Dexo IMPORTOU, e Dashboard e
+  // Financeiro filtram por ela: o faturamento era atribuído à data do import, não
+  // à da compra. Com o ciclo de sync levando até 71,9 h (incidente de 29/07/2026),
+  // vendas eram datadas com até 3 dias de atraso, atravessando virada de mês.
+  //
+  // Pedidos anteriores à migração ficam NULL, e todo filtro usa
+  // COALESCE(soldAt, createdAt) — então o histórico continua se comportando
+  // exatamente como antes.
+  // Migração: ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "soldAt" TIMESTAMP(3);
+  soldAt               DateTime?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   marketplaceAccount   MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id])
@@ -505,6 +518,8 @@ model Order {
 
   @@unique([marketplaceAccountId, externalOrderId])
   @@index([marketplaceAccountId, createdAt])
+  // Migração: CREATE INDEX IF NOT EXISTS "Order_marketplaceAccountId_soldAt_idx" ON "Order"("marketplaceAccountId", "soldAt");
+  @@index([marketplaceAccountId, soldAt])
   @@index([status, updatedAt])
   @@index([customerId])
 }

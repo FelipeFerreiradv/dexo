@@ -37,6 +37,30 @@ process.env.SHOPEE_WEBHOOK_TARGETED_ORDER_DISABLED ??= "1";
 // reabilita explicitamente por caso.
 process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED ??= "1";
 
+// Net-dentro-da-transação na RE-TENTATIVA de baixa (auditoria 29/07/2026):
+// desligado por default na suíte porque os specs existentes de
+// `retryStockDeduction` afirmam o caminho ANTERIOR (net lido fora da transação,
+// `deductStockForOrder` recebendo a lista já filtrada). Em produção o default é
+// o oposto — ligado —, porque o caminho antigo pode baixar duas vezes. O spec da
+// correção (order-stock-retry-race) reabilita explicitamente por caso.
+process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED ??= "1";
+
+// Quarentena de ingestão para ML e Magalu (auditoria 29/07/2026): desligada por
+// default na suíte porque os specs de import de ML e Magalu não mockam a tabela
+// nova, e o registro é best-effort (o erro é engolido, mas gera ruído). Em
+// produção o default é o oposto — ligado —, senão o invariante "nenhum descarte
+// silencioso" valeria para um marketplace de três. O spec da correção
+// (order-ingestion-ml-magalu) reabilita explicitamente por caso.
+process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED ??= "1";
+
+// Data da venda (Order.soldAt) e o filtro por COALESCE(soldAt, createdAt):
+// desligados por default na suíte porque `order-repository-list` afirma o
+// mapeamento ANTERIOR ("dateFrom/dateTo mapeiam createdAt { gte, lte }"), que é
+// exatamente o que muda. Em produção o default é o oposto — ligado —, senão o
+// faturamento continua datado pela hora do import. O spec da correção
+// (order-sold-at-and-unlinked-order) reabilita explicitamente por caso.
+process.env.ORDER_SOLD_AT_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

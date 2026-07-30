@@ -74,8 +74,8 @@ export async function fetchOrdersByPlatform(
     FROM "Order" o
     JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
     WHERE ma."userId" = ${userId}
-      AND o."createdAt" >= ${startDate}
-      AND o."createdAt" <= ${endDate}
+      AND COALESCE(o."soldAt", o."createdAt") >= ${startDate}
+      AND COALESCE(o."soldAt", o."createdAt") <= ${endDate}
       ${platformClause(platforms)}
       ${cancelledClause(excludeCancelled)}
     GROUP BY ma."platform"
@@ -101,8 +101,8 @@ function categoryScope(
     JOIN "MarketplaceAccount" ma ON ma."id" = o."marketplaceAccountId"
     JOIN "Product" p             ON p."id"  = oi."productId"
     WHERE ma."userId" = ${userId}
-      AND o."createdAt" >= ${startDate}
-      AND o."createdAt" <= ${endDate}
+      AND COALESCE(o."soldAt", o."createdAt") >= ${startDate}
+      AND COALESCE(o."soldAt", o."createdAt") <= ${endDate}
       ${platformClause(platforms)}
       ${cancelledClause(excludeCancelled)}
   `;

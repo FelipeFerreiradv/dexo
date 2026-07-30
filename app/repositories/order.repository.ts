@@ -157,6 +157,42 @@ function mapPrismaToOrder(order: PrismaOrderWithRelations): Order {
   };
 }
 
+/**
+ * Aplica o filtro de periodo por COALESCE(soldAt, createdAt).
+ *
+ * `createdAt` e a hora em que o Dexo IMPORTOU o pedido, nao a da venda — e era
+ * por ela que o periodo era filtrado, entao o pedido aparecia na data errada
+ * (com o ciclo de sync em 71,9 h, ate 3 dias de erro, atravessando virada de
+ * mes). `soldAt` guarda a data real; pedidos anteriores a migracao ficam NULL e
+ * caem no `createdAt`, exatamente como antes.
+ *
+ * Vai em `AND` e nao em `OR` de proposito: o `OR` do `where` ja e usado pela
+ * busca textual, e sobrescreve-lo faria a busca ignorar o periodo.
+ *
+ * Kill-switch ORDER_SOLD_AT_DISABLED=1 volta a filtrar so por `createdAt`.
+ */
+function aplicarFiltroDePeriodo(
+  where: any,
+  dateFrom?: Date,
+  dateTo?: Date,
+): void {
+  if (!dateFrom && !dateTo) return;
+
+  const faixa: { gte?: Date; lte?: Date } = {};
+  if (dateFrom) faixa.gte = dateFrom;
+  if (dateTo) faixa.lte = dateTo;
+
+  if (process.env.ORDER_SOLD_AT_DISABLED === "1") {
+    where.createdAt = faixa;
+    return;
+  }
+
+  where.AND = [
+    ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+    { OR: [{ soldAt: faixa }, { soldAt: null, createdAt: faixa }] },
+  ];
+}
+
 class OrderRepositoryPrisma implements OrderRepository {
   /**
    * Criar pedido com itens (transação atômica)
@@ -171,6 +207,9 @@ class OrderRepositoryPrisma implements OrderRepository {
           totalAmount: data.totalAmount,
           customerName: data.customerName ?? null,
           customerEmail: data.customerEmail ?? null,
+          // Ausente => coluna NULL e todo filtro cai no COALESCE para
+          // `createdAt`, byte-identico ao comportamento anterior.
+          soldAt: data.soldAt ?? null,
           items: {
             create: data.items.map((item) => ({
               productId: item.productId,
@@ -518,15 +557,7 @@ class OrderRepositoryPrisma implements OrderRepository {
       where.status = options.status as PrismaOrderStatus;
     }
 
-    if (options?.dateFrom || options?.dateTo) {
-      where.createdAt = {};
-      if (options.dateFrom) {
-        where.createdAt.gte = options.dateFrom;
-      }
-      if (options.dateTo) {
-        where.createdAt.lte = options.dateTo;
-      }
-    }
+    aplicarFiltroDePeriodo(where, options?.dateFrom, options?.dateTo);
 
     if (options?.search) {
       where.OR = [
@@ -647,15 +678,7 @@ class OrderRepositoryPrisma implements OrderRepository {
       where.status = options.status as PrismaOrderStatus;
     }
 
-    if (options?.dateFrom || options?.dateTo) {
-      where.createdAt = {};
-      if (options.dateFrom) {
-        where.createdAt.gte = options.dateFrom;
-      }
-      if (options.dateTo) {
-        where.createdAt.lte = options.dateTo;
-      }
-    }
+    aplicarFiltroDePeriodo(where, options?.dateFrom, options?.dateTo);
 
     // Faixa de valor: só aplica quando vier número finito (ignora NaN/undefined),
     // garantindo no-op idêntico ao de hoje quando o filtro está vazio.

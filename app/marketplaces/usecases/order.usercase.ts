@@ -352,18 +352,37 @@ export class OrderUseCase {
           result.errors++;
           break;
       }
+
+      // Quarentena do ML. Antes deste ponto, um pedido do ML que não vinculasse
+      // ou que não baixasse estoque não deixava rastro nenhum.
+      await this.registrarDesfechoIngestao({
+        platform: "MERCADO_LIVRE",
+        marketplaceAccountId: account.id,
+        resultado: importResult,
+        esperavaBaixa: deductStock && mlOrder.status === "paid",
+      });
     }
 
+    // Veredito honesto (auditoria 29/07/2026): antes só `errors` rebaixava o
+    // ciclo, então uma passada que perdeu pedidos por falta de vínculo era
+    // gravada como SUCCESS — e "sincronizado sem erro" é exatamente o que o
+    // cliente não podia ler nesse caso. `noProducts` conta como perda: são
+    // vendas que não viraram Order.
+    const perdeuAlgo = result.errors > 0 || result.noProducts > 0;
     await this.logSync(
       account.id,
       SyncType.ORDER_IMPORT,
-      result.errors === 0 ? SyncStatus.SUCCESS : SyncStatus.WARNING,
-      `Importados ${result.imported} de ${result.totalOrders} pedidos do ML (account import)`,
+      perdeuAlgo ? SyncStatus.WARNING : SyncStatus.SUCCESS,
+      `Importados ${result.imported} de ${result.totalOrders} pedidos do ML (account import)` +
+        (result.noProducts > 0
+          ? `; ${result.noProducts} sem vinculo de produto (em quarentena)`
+          : ""),
       {
         totalOrders: result.totalOrders,
         imported: result.imported,
         alreadyExists: result.alreadyExists,
         errors: result.errors,
+        noProducts: result.noProducts,
       },
     );
 
@@ -494,6 +513,14 @@ export class OrderUseCase {
 
     const skippedStatuses = new Set<string>();
     let skippedByStatus = 0;
+    /**
+     * Vira true quando a varredura NÃO cobriu todo o período pedido (marca
+     * d'água velha além do teto de blocos). A marca d'água não pode avançar
+     * nesse caso: declararia como sincronizado um intervalo que ninguém leu.
+     */
+    let janelaTruncada = false;
+    /** `order_sn` listados pela Shopee cujo detalhe não voltou. */
+    const semDetalhe: string[] = [];
 
     // Com o kill-switch ligado E sem busca dirigida, nenhuma opção é passada:
     // a chamada a getRecentOrders fica com os mesmos 3 argumentos de antes.
@@ -508,6 +535,20 @@ export class OrderUseCase {
             onStatusSkipped: (orderSn: string, status: string) => {
               skippedByStatus++;
               if (status) skippedStatuses.add(status);
+            },
+            onDetailMissing: (sns: string[]) => {
+              semDetalhe.push(...sns);
+            },
+            onWindowTruncated: (info: { desdeSec: number; ateSec: number }) => {
+              janelaTruncada = true;
+              console.log(
+                JSON.stringify({
+                  event: "shopee.order_import.window_truncated",
+                  marketplaceAccountId,
+                  desde: new Date(info.desdeSec * 1000).toISOString(),
+                  ate: new Date(info.ateSec * 1000).toISOString(),
+                }),
+              );
             },
             orderSns: options?.orderSns,
           }
@@ -600,9 +641,39 @@ export class OrderUseCase {
       }
     }
 
+    // Pedido que a Shopee listou e cujo detalhe não voltou é venda que ela
+    // conhece e nós não. Antes desaparecia sem contador e sem afetar o veredito
+    // do ciclo. Conta como erro: a marca d'água não avança e a próxima passada
+    // tenta de novo.
+    if (semDetalhe.length) {
+      result.errors += semDetalhe.length;
+      console.log(
+        JSON.stringify({
+          event: "shopee.order_import.detail_missing",
+          marketplaceAccountId,
+          orderSns: semDetalhe.slice(0, 50),
+          total: semDetalhe.length,
+        }),
+      );
+    }
+
     // Marca d'água só avança em ciclo limpo: se um pedido deu erro, refazer a
     // janela na próxima volta é mais barato do que pular a venda dele.
-    if (byUpdateTime && result.errors === 0) {
+    //
+    // Três condições a mais, todas da auditoria de 29/07/2026:
+    //  - `!options?.orderSns?.length`: a busca dirigida NÃO varre a janela, então
+    //    não pode declarar a janela sincronizada. Era o caso do reconciliador e
+    //    do webhook, que avançavam a marca d'água sem ter lido o período.
+    //  - `!janelaTruncada`: se a varredura não alcançou o início pedido, existe
+    //    um intervalo não lido. Avançar aqui tornava a perda permanente.
+    //  - `!result.noProducts`/`partialLinks` seguem fora de propósito: esses
+    //    pedidos JÁ estão na quarentena, que é quem os re-tenta.
+    if (
+      byUpdateTime &&
+      result.errors === 0 &&
+      !options?.orderSns?.length &&
+      !janelaTruncada
+    ) {
       try {
         await prisma.marketplaceAccount.update({
           where: { id: marketplaceAccountId },
@@ -709,6 +780,38 @@ export class OrderUseCase {
       if (items.length === 0) {
         // NUNCA descartar em silêncio: sem isto o pedido some — não vira Order,
         // não aparece em /pedidos e o SyncLog do ciclo fica SUCCESS.
+        //
+        // Mas registrar a pendência não bastava. Medição em produção
+        // (29/07/2026): 89 vendas concretizadas de 3 tenants presas aqui, sendo
+        // 26 de um só cliente em 12 dias. Nenhuma existia como Order, logo
+        // nenhuma aparecia em /pedidos, no Financeiro nem no Dashboard: a venda
+        // acontecia e o faturamento do cliente ficava incompleto. O produto
+        // realmente não existe no Dexo (conferido contra o banco: item_id, SKU
+        // exato, skuNormalized e partNumber, todos zero), então não há estoque a
+        // baixar — mas a VENDA existe, e o invariante manda ela virar Order.
+        //
+        // Order com ZERO itens, portanto: carrega o valor da venda e fica
+        // visível. A pendência continua aberta para a parte do estoque, e quando
+        // o cliente cadastrar o produto o reconciliador acrescenta o item
+        // (completePartialShopeeOrder) e baixa (retryStockDeduction) sozinho —
+        // é a máquina que já existe, sem caminho novo.
+        //
+        // Continua contando como `no_products`: o ciclo rebaixa para WARNING,
+        // porque estoque nenhum foi baixado. Nada de "sincronizado sem erro".
+        const orderSemItens = await this.criarOrderSemItens({
+          marketplaceAccountId,
+          externalOrderId,
+          status: this.mapShopeeStatus(shopeeOrder.order_status),
+          totalAmount:
+            typeof shopeeOrder.total_amount === "number"
+              ? Number(shopeeOrder.total_amount)
+              : 0,
+          customerName: shopeeOrder.buyer_username ?? undefined,
+          soldAt: this.resolveSoldAt(shopeeOrder.create_time),
+          plataforma: "SHOPEE",
+          itemsTotal,
+        });
+
         await OrderIngestionIssueService.open({
           marketplaceAccountId,
           platform: "SHOPEE",
@@ -716,14 +819,17 @@ export class OrderUseCase {
           reason: "NO_LINKED_ITEMS",
           detail: this.describeUnlinked(unlinked),
           payload: shopeeOrder,
+          orderId: orderSemItens,
         });
 
         return {
           success: false,
-          orderId: null,
+          orderId: orderSemItens,
           externalOrderId,
           status: "no_products",
-          message: "Nenhum item do pedido Shopee pôde ser vinculado",
+          message: orderSemItens
+            ? "Nenhum item do pedido Shopee pôde ser vinculado; venda registrada sem itens e sem baixa"
+            : "Nenhum item do pedido Shopee pôde ser vinculado",
           stockDeducted: false,
           itemsLinked: 0,
           itemsTotal,
@@ -741,6 +847,7 @@ export class OrderUseCase {
         status: this.mapShopeeStatus(shopeeOrder.order_status),
         totalAmount,
         customerName: shopeeOrder.buyer_username ?? undefined,
+        soldAt: this.resolveSoldAt(shopeeOrder.create_time),
         items,
       };
 
@@ -901,23 +1008,40 @@ export class OrderUseCase {
     );
     if (!items.length) return 0;
 
-    const atuais = await prisma.orderItem.findMany({
-      where: { orderId },
-      select: { productId: true },
-    });
-    const jaTem = new Set(atuais.map((i) => i.productId));
-    const novos = items.filter((i) => !jaTem.has(i.productId));
-    if (!novos.length) return 0;
+    // "Ler os itens atuais e inserir o que falta" precisa ser ATÔMICO. Não
+    // existe unique em (orderId, productId), então duas execuções concorrentes
+    // — o tick do reconciliador e um clique em "Tentar novamente", que rodam em
+    // processos diferentes — liam as duas o conjunto vazio e inseriam as duas o
+    // mesmo item. O pedido ficava com a quantidade DOBRADA, e a baixa seguinte
+    // descontava o dobro do estoque.
+    //
+    // O lock é na linha do Order (mesma ordem de lock do resto: Order antes de
+    // Product) e o `mapShopeeOrderItems` fica FORA da transação de propósito,
+    // para a janela do lock ser só o read+insert.
+    const novos = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
 
-    await prisma.orderItem.createMany({
-      data: novos.map((i) => ({
-        orderId,
-        productId: i.productId,
-        quantity: i.quantity,
-        unitPrice: i.unitPrice,
-        listingId: i.listingId ?? null,
-      })),
+      const atuais = await tx.orderItem.findMany({
+        where: { orderId },
+        select: { productId: true },
+      });
+      const jaTem = new Set(atuais.map((i) => i.productId));
+      const aInserir = items.filter((i) => !jaTem.has(i.productId));
+      if (!aInserir.length) return [];
+
+      await tx.orderItem.createMany({
+        data: aInserir.map((i) => ({
+          orderId,
+          productId: i.productId,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          listingId: i.listingId ?? null,
+        })),
+      });
+      return aInserir;
     });
+
+    if (!novos.length) return 0;
 
     console.log(
       JSON.stringify({
@@ -959,6 +1083,49 @@ export class OrderUseCase {
 
     const reason = `Venda ${platformLabel === "SHOPEE" ? "Shopee" : platformLabel} #${externalOrderId}`;
 
+    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
+    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
+    // linha a linha diria "ja baixado" com metade da quantidade descontada.
+    const pedidoPorProduto = new Map<string, number>();
+    for (const i of order.items) {
+      pedidoPorProduto.set(
+        i.productId,
+        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
+      );
+    }
+
+    // Caminho padrão (auditoria 29/07/2026): quem decide QUANTO falta é a
+    // própria transação da baixa, depois dos locks — ver `netGuard` em
+    // `deductStockForOrder`. Ler o net aqui, fora de transação, e só depois
+    // abrir a transação da baixa era decremento DUPLO quando duas execuções se
+    // cruzavam: o poll (`dexo-sync-orders`) e o reconciliador (`dexo-api`) são
+    // processos pm2 distintos, e o botão "Tentar novamente" é um terceiro
+    // caminho.
+    //
+    // ORDER_STOCK_RETRY_TX_NET_DISABLED=1 restaura a leitura fora da transação.
+    // NÃO é o default de propósito: o caminho antigo destrói estoque de forma
+    // silenciosa e irreversível — dois `-1` sob a MESMA `reason` fazem o net
+    // valer `-2`, e daí em diante toda checagem (inclusive o estorno de
+    // cancelamento, que clampa na quantidade do pedido) considera o estado
+    // correto.
+    if (process.env.ORDER_STOCK_RETRY_TX_NET_DISABLED !== "1") {
+      try {
+        await this.deductStockForOrder(order as unknown as Order, reason, {
+          pedidoPorProduto,
+        });
+        // Sucesso cobre os dois casos: baixou o que faltava, ou não faltava
+        // nada. A única falha possível é exceção.
+        return true;
+      } catch (err) {
+        console.warn(
+          `[OrderUseCase] Re-tentativa de baixa do pedido ${orderId} falhou:`,
+          err instanceof Error ? err.message : err,
+        );
+        return false;
+      }
+    }
+
+    // ── Caminho anterior, preservado sob kill-switch ─────────────────────────
     // Já baixado? O net por `reason` responde sem depender de flag.
     const grouped = await prisma.stockLog.groupBy({
       by: ["productId"],
@@ -971,17 +1138,6 @@ export class OrderUseCase {
     const netByProduct = new Map(
       grouped.map((g) => [g.productId, g._sum.change ?? 0]),
     );
-
-    // Agregado POR PRODUTO, nao por linha de OrderItem: um pedido pode ter duas
-    // linhas do mesmo produto, e o net do StockLog e por produto. Comparar
-    // linha a linha diria "ja baixado" com metade da quantidade descontada.
-    const pedidoPorProduto = new Map<string, number>();
-    for (const i of order.items) {
-      pedidoPorProduto.set(
-        i.productId,
-        (pedidoPorProduto.get(i.productId) ?? 0) + i.quantity,
-      );
-    }
 
     // So o que FALTA. Passar a lista completa para deductStockForOrder
     // descontaria de novo o que ja foi descontado — o net protege contra
@@ -1041,6 +1197,222 @@ export class OrderUseCase {
   }
 
   /**
+   * Cria o Order de uma venda cujos itens NAO puderam ser vinculados a produto.
+   *
+   * Order com ZERO itens: carrega o valor da venda e a data, e fica visivel em
+   * /pedidos, no Financeiro e no Dashboard. Sem isto a venda existia no
+   * marketplace e nao existia no Dexo — medido em producao em 29/07/2026: 89
+   * vendas de 3 tenants presas assim, 26 de um so cliente em 12 dias, com o
+   * faturamento dele incompleto.
+   *
+   * NAO baixa estoque, de proposito: o produto nao esta cadastrado, entao nao
+   * existe estoque a descontar. A pendencia da quarentena continua aberta e,
+   * quando o cliente cadastrar o produto, o reconciliador acrescenta o item e
+   * baixa sozinho.
+   *
+   * `OrderItem.productId` e NOT NULL com FK obrigatoria, por isso zero itens em
+   * vez de item sem produto: tornar a coluna nulavel mexeria no modelo mais
+   * usado da plataforma.
+   *
+   * Devolve o id criado, ou null quando a criacao nao aconteceu (kill-switch
+   * ORDER_CREATE_WITHOUT_ITEMS_DISABLED=1, corrida de P2002 ou falha). Nunca
+   * lanca: perder o Order e ruim, perder o RASTRO e o que o invariante proibe.
+   */
+  private static async criarOrderSemItens(params: {
+    marketplaceAccountId: string;
+    externalOrderId: string;
+    status: OrderStatus;
+    totalAmount: number;
+    customerName?: string;
+    soldAt: Date | null;
+    plataforma: "SHOPEE" | "MERCADO_LIVRE" | "MAGALU";
+    itemsTotal: number;
+  }): Promise<string | null> {
+    if (process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED === "1") return null;
+
+    try {
+      const criado = await orderRepository.create({
+        marketplaceAccountId: params.marketplaceAccountId,
+        externalOrderId: params.externalOrderId,
+        status: params.status,
+        totalAmount: params.totalAmount,
+        customerName: params.customerName,
+        soldAt: params.soldAt,
+        items: [],
+      });
+
+      console.log(
+        JSON.stringify({
+          event: "order_import.created_without_items",
+          platform: params.plataforma,
+          marketplaceAccountId: params.marketplaceAccountId,
+          externalOrderId: params.externalOrderId,
+          orderId: criado.id,
+          itemsTotal: params.itemsTotal,
+        }),
+      );
+      return criado.id;
+    } catch (err) {
+      // P2002 = outro caminho criou o mesmo pedido no meio. Nao e erro: o
+      // @@unique(marketplaceAccountId, externalOrderId) fez o trabalho.
+      const duplicado =
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code?: string }).code === "P2002";
+      if (!duplicado) {
+        console.warn(
+          `[OrderUseCase] Falha ao criar Order sem itens para ${params.plataforma} #${params.externalOrderId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Data da VENDA no marketplace, para gravar em `Order.soldAt`.
+   *
+   * Cada plataforma expoe num formato diferente: ML `date_created` (ISO),
+   * Shopee `create_time` (epoch em segundos), Magalu `purchased_at` (ISO).
+   * Devolve null quando o valor nao da para interpretar — e ai o COALESCE cai
+   * para `createdAt` e nada muda.
+   *
+   * Kill-switch ORDER_SOLD_AT_DISABLED=1 devolve sempre null, deixando a coluna
+   * NULL como antes da migracao.
+   */
+  private static resolveSoldAt(
+    valor: string | number | null | undefined,
+  ): Date | null {
+    if (process.env.ORDER_SOLD_AT_DISABLED === "1") return null;
+    if (valor === null || valor === undefined || valor === "") return null;
+
+    // Shopee: epoch em SEGUNDOS. Numero pequeno tratado como ms daria 1970.
+    if (typeof valor === "number") {
+      if (!Number.isFinite(valor) || valor <= 0) return null;
+      const d = new Date(valor * 1000);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    const d = new Date(valor);
+    if (Number.isNaN(d.getTime())) return null;
+    // Data absurda (ano < 2000 ou no futuro distante) e mais provavel bug de
+    // parsing do que venda real: melhor null e cair no createdAt.
+    const ano = d.getUTCFullYear();
+    if (ano < 2000 || ano > 2100) return null;
+    return d;
+  }
+
+  /**
+   * Abre ou fecha a quarentena a partir do desfecho de UM pedido do ML ou da
+   * Magalu.
+   *
+   * Por que existe (auditoria 29/07/2026): a quarentena cobria SÓ a Shopee. No
+   * ML, um pedido cujos itens não casassem devolvia `no_products` e o ciclo
+   * seguia — sem Order, sem SystemLog, sem aparecer em /pedidos, e com o SyncLog
+   * gravado como SUCCESS. Uma falha de baixa era só um `console.error` e nunca
+   * era re-tentada. Na Magalu, idem. O invariante do cliente ("toda venda vira
+   * Order E baixa estoque, sempre; nenhum descarte silencioso") valia para um
+   * marketplace de três.
+   *
+   * Best-effort de propósito: um erro aqui nunca pode derrubar a importação —
+   * trocaria um pedido incompleto por nenhum pedido.
+   *
+   * Kill-switch ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED=1 volta ao
+   * comportamento anterior (só a Shopee registra). O
+   * ORDER_INGESTION_ISSUES_DISABLED continua desligando a quarentena inteira.
+   */
+  private static async registrarDesfechoIngestao(params: {
+    platform: "MERCADO_LIVRE" | "MAGALU";
+    marketplaceAccountId: string;
+    resultado: ImportOrderResult;
+    /** true quando este pedido deveria ter baixado estoque. */
+    esperavaBaixa: boolean;
+  }): Promise<void> {
+    if (process.env.ORDER_INGESTION_ISSUES_ML_MAGALU_DISABLED === "1") return;
+
+    const { platform, marketplaceAccountId, resultado, esperavaBaixa } = params;
+    const rotulo = platform === "MERCADO_LIVRE" ? "ML" : "Magalu";
+
+    try {
+      const base = {
+        marketplaceAccountId,
+        platform,
+        externalOrderId: resultado.externalOrderId,
+        // Payload NÃO é guardado: a reingestão de ML/Magalu não é dirigida por
+        // id, então ele nunca seria lido — e guardar dado de pedido sem
+        // finalidade é PII persistida sem prazo para sair.
+        payload: null,
+      };
+
+      if (resultado.status === "no_products") {
+        console.log(
+          JSON.stringify({
+            event: `${rotulo.toLowerCase()}.order_import.no_linked_items`,
+            marketplaceAccountId,
+            externalOrderId: resultado.externalOrderId,
+            itemsTotal: resultado.itemsTotal,
+          }),
+        );
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "NO_LINKED_ITEMS",
+          // Com o Order criado sem itens, o reconciliador precisa do id para
+          // achar o pedido e acrescentar o item quando o produto aparecer.
+          orderId: resultado.orderId,
+          detail: `Nenhum dos ${resultado.itemsTotal} item(ns) do pedido casou com produto do tenant.`,
+        });
+        return;
+      }
+
+      if (resultado.status === "error") {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "INGEST_FAILED",
+          detail: resultado.message?.slice(0, 500) ?? null,
+        });
+        return;
+      }
+
+      if (resultado.status !== "imported") return;
+
+      // Importado: a baixa é o motivo mais grave, porque o pedido JÁ aparece na
+      // tela e o estoque continua vendável nos outros canais (oversell).
+      if (esperavaBaixa && !resultado.stockDeducted) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "STOCK_DEDUCTION_FAILED",
+          orderId: resultado.orderId,
+          detail: `Pedido ${rotulo} importado, baixa de estoque NAO efetivada.`,
+        });
+        return;
+      }
+
+      if (resultado.itemsLinked < resultado.itemsTotal) {
+        await OrderIngestionIssueService.open({
+          ...base,
+          reason: "PARTIAL_LINK",
+          orderId: resultado.orderId,
+          detail: `${resultado.itemsLinked} de ${resultado.itemsTotal} item(ns) vinculados.`,
+        });
+        return;
+      }
+
+      // Completo e com baixa: se havia pendência antiga deste pedido, fecha.
+      await OrderIngestionIssueService.resolve(
+        marketplaceAccountId,
+        resultado.externalOrderId,
+        resultado.orderId ?? null,
+      );
+    } catch (err) {
+      console.warn(
+        `[OrderUseCase] Falha ao registrar desfecho de ingestao ${rotulo} #${resultado.externalOrderId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Processa um único pedido do ML
    */
   private static async processOrder(
@@ -1079,14 +1451,35 @@ export class OrderUseCase {
         listingMap,
       );
 
-      // Se nenhum item foi vinculado, não importar
       if (items.length === 0) {
+        // A venda existe no ML. Antes o pedido simplesmente nao entrava: sem
+        // Order, sem rastro, e o ciclo gravado como SUCCESS. Agora entra sem
+        // itens (a quarentena e aberta pelo chamador) e o estoque fica pendente.
+        const orderSemItens = await this.criarOrderSemItens({
+          marketplaceAccountId,
+          externalOrderId,
+          status: this.mapMLStatusToLocal(mlOrder.status),
+          totalAmount:
+            typeof mlOrder.total_amount === "number" &&
+            Number.isFinite(mlOrder.total_amount)
+              ? Number(mlOrder.total_amount)
+              : 0,
+          customerName: this.extractCustomerName(mlOrder),
+          soldAt: this.resolveSoldAt(
+            (mlOrder as { date_created?: string }).date_created,
+          ),
+          plataforma: "MERCADO_LIVRE",
+          itemsTotal: mlOrder.order_items.length,
+        });
+
         return {
           success: false,
-          orderId: null,
+          orderId: orderSemItens,
           externalOrderId,
           status: "no_products",
-          message: "Nenhum item do pedido pôde ser vinculado a produtos locais",
+          message: orderSemItens
+            ? "Nenhum item do pedido pôde ser vinculado a produtos locais; venda registrada sem itens e sem baixa"
+            : "Nenhum item do pedido pôde ser vinculado a produtos locais",
           stockDeducted: false,
           itemsLinked: 0,
           itemsTotal: mlOrder.order_items.length,
@@ -1101,6 +1494,9 @@ export class OrderUseCase {
         totalAmount: mlOrder.total_amount,
         customerName: this.extractCustomerName(mlOrder),
         customerEmail: undefined, // ML não fornece email diretamente
+        soldAt: this.resolveSoldAt(
+          (mlOrder as { date_created?: string }).date_created,
+        ),
         items,
       };
 
@@ -1690,6 +2086,54 @@ export class OrderUseCase {
               },
             ).catch(() => {});
           }
+          // A venda existe na Magalu. Antes o pedido nao entrava de forma alguma.
+          // `mappedStatus` só é calculado mais abaixo no laço, então o status é
+          // resolvido aqui mesmo — mesmo mapeamento, mesma função.
+          const totalMagalu = (() => {
+            const doPedido = magaluMoneyToNumber(magaluOrder.amounts);
+            if (doPedido > 0) return doPedido;
+            const cru =
+              magaluOrder.total ?? magaluOrder.total_amount ?? magaluOrder.amount;
+            return typeof cru === "number" && Number.isFinite(cru)
+              ? Number(cru)
+              : 0;
+          })();
+
+          const orderSemItens = await this.criarOrderSemItens({
+            marketplaceAccountId,
+            externalOrderId,
+            status: this.mapMagaluStatus(magaluOrder.status),
+            totalAmount: totalMagalu,
+            customerName:
+              magaluOrder.customer?.name ??
+              magaluOrder.customer_name ??
+              magaluOrder.buyer?.name ??
+              undefined,
+            soldAt: this.resolveSoldAt(magaluOrder.purchased_at),
+            plataforma: "MAGALU",
+            itemsTotal: itemList.length,
+          });
+
+          // Quarentena (auditoria 29/07/2026): o SystemLog acima nao tem userId,
+          // logo NAO aparece na tela /logs do cliente — o filtro dela e
+          // `userId IN (...)` e NULL nunca casa. A pendencia e o unico registro
+          // que o dono dos dados ve, e a unica coisa que se resolve sozinha
+          // quando ele cadastrar o produto.
+          await this.registrarDesfechoIngestao({
+            platform: "MAGALU",
+            marketplaceAccountId,
+            resultado: {
+              success: false,
+              orderId: orderSemItens,
+              externalOrderId,
+              status: "no_products",
+              message: "Nenhum item do pedido Magalu pode ser vinculado",
+              stockDeducted: false,
+              itemsLinked: 0,
+              itemsTotal: itemList.length,
+            },
+            esperavaBaixa: deductStock,
+          });
           continue;
         }
 
@@ -1731,6 +2175,7 @@ export class OrderUseCase {
             magaluOrder.customer_name ??
             magaluOrder.buyer?.name ??
             undefined,
+          soldAt: this.resolveSoldAt(magaluOrder.purchased_at),
           items,
         };
 
@@ -1775,7 +2220,7 @@ export class OrderUseCase {
 
         result.imported++;
         result.stockDeductions += stockDeducted ? 1 : 0;
-        result.results.push({
+        const desfechoMagalu: ImportOrderResult = {
           success: true,
           orderId: created.id,
           externalOrderId,
@@ -1784,6 +2229,18 @@ export class OrderUseCase {
           stockDeducted,
           itemsLinked: linkedCount,
           itemsTotal: itemList.length,
+        };
+        result.results.push(desfechoMagalu);
+
+        // Baixa que falhou ou vinculo parcial abrem pendencia; completo e com
+        // baixa fecha a que existir. Antes, o pedido Magalu importado sem baixa
+        // ficava "estufado para sempre e sem rastro" — o proprio comentario
+        // acima dizia isso, e nada re-tentava.
+        await this.registrarDesfechoIngestao({
+          platform: "MAGALU",
+          marketplaceAccountId,
+          resultado: desfechoMagalu,
+          esperavaBaixa: deductStock,
         });
 
         // ADITIVO (auto-cliente): best-effort, nunca afeta o import.
@@ -2538,35 +2995,44 @@ export class OrderUseCase {
     },
   ): Promise<ShopeeOrderDetail[]> {
     const fetchAll = async (token: string): Promise<ShopeeOrderDetail[]> => {
+      // Busca DIRIGIDA: só os pedidos pedidos, SEM varrer a janela.
+      //
+      // Antes os dois caminhos eram somados. Custava caro: cada re-tentativa de
+      // pendência fazia um `get_order_list` paginado, os `get_order_detail` de
+      // tudo que caísse na janela e a releitura de TODOS os ProductListing da
+      // conta (11.670 numa das contas de produção, porque `hasNewOrders` é
+      // verdadeiro justamente quando o pedido pendente ainda não existe). Com 89
+      // pendências abertas em produção, ~22x o tráfego de import de pedidos, de
+      // hora em hora, para sempre.
+      //
+      // Varrer a janela aqui também nunca foi necessário: quem cobre a janela é
+      // o poll, a cada 15 min. Mesmo critério de status do poll, para que um
+      // pedido sem venda concretizada (UNPAID/cancelado) não entre por aqui.
+      if (options?.orderSns?.length) {
+        return ShopeeApiService.filterSaleOrders(
+          await ShopeeApiService.getOrderDetails(
+            token,
+            account.shopId,
+            options.orderSns,
+          ),
+          options,
+        ) as ShopeeOrderDetail[];
+      }
+
       // Sem `options` a chamada fica idêntica à anterior (3 argumentos) — é o
       // que o kill-switch precisa para ser byte-a-byte.
-      const fromWindow = options
-        ? await ShopeeApiService.getRecentOrders(
+      return options
+        ? ((await ShopeeApiService.getRecentOrders(
             token,
             account.shopId,
             days,
             options,
-          )
-        : await ShopeeApiService.getRecentOrders(token, account.shopId, days);
-
-      if (!options?.orderSns?.length) return fromWindow;
-
-      // Busca dirigida: mesmo critério de status da janela, para que um pedido
-      // sem venda concretizada (UNPAID/cancelado) não entre por aqui.
-      const targeted = ShopeeApiService.filterSaleOrders(
-        await ShopeeApiService.getOrderDetails(
-          token,
-          account.shopId,
-          options.orderSns,
-        ),
-        options,
-      );
-
-      const byOrderSn = new Map<string, ShopeeOrderDetail>();
-      for (const o of [...fromWindow, ...targeted] as ShopeeOrderDetail[]) {
-        byOrderSn.set(o.order_sn, o);
-      }
-      return [...byOrderSn.values()];
+          )) as ShopeeOrderDetail[])
+        : ((await ShopeeApiService.getRecentOrders(
+            token,
+            account.shopId,
+            days,
+          )) as ShopeeOrderDetail[]);
     };
 
     try {
@@ -2631,6 +3097,25 @@ export class OrderUseCase {
   private static async deductStockForOrder(
     order: Order,
     reason: string,
+    /**
+     * ADITIVO (auditoria 29/07/2026). Presente APENAS no caminho de re-tentativa
+     * (`retryStockDeduction`): faz a quantidade a baixar de cada produto ser
+     * decidida DENTRO desta transação, depois dos locks, a partir do net do
+     * `StockLog`.
+     *
+     * Por que precisa ser aqui e não no chamador: ler o net numa conexão
+     * própria, fora de transação, e só depois abrir a transação da baixa é uma
+     * corrida com decremento DUPLO — e o `SELECT ... FOR UPDATE` do Order abaixo
+     * transforma a corrida em duplicação determinística, porque a segunda
+     * execução espera a primeira commitar e então aplica o delta que calculou
+     * com o net VELHO. O `processOrderCancellation` já fazia certo (ver
+     * "Lock dos produtos ... ANTES do net"); a re-tentativa era o único caminho
+     * de baixa fora desse padrão.
+     *
+     * Sem este parâmetro nada muda: `order.items` é baixado como vem, que é o
+     * caminho do importador, byte-idêntico ao anterior.
+     */
+    netGuard?: { pedidoPorProduto: Map<string, number> },
   ): Promise<OrderStockDeduction[]> {
     const orderItems = order.items;
     if (!orderItems || orderItems.length === 0) return [];
@@ -2662,17 +3147,51 @@ export class OrderUseCase {
               return;
             }
           }
-          const result = await StockDeductionService.deductWithinTx(tx, {
-            items: orderItems.map((i) => ({
-              productId: i.productId,
-              quantity: i.quantity,
-            })),
-            reason,
-            orderId: order.id,
-            logPrefix: "[OrderUseCase]",
-          });
-          deductions = result.deductions;
-          oversellAlerts = result.oversellAlerts;
+          let itemsParaBaixar = orderItems.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          }));
+
+          if (netGuard) {
+            // Ordem de lock idêntica à do motor de estoque (que trava na ordem
+            // de `input.items`) e à do cancelamento ⇒ sem deadlock.
+            const productIds = [...netGuard.pedidoPorProduto.keys()];
+            for (const productId of productIds) {
+              await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+            }
+
+            // Com as linhas travadas, qualquer baixa concorrente já commitou:
+            // agora o net é confiável.
+            const grouped = await tx.stockLog.groupBy({
+              by: ["productId"],
+              where: { productId: { in: productIds }, reason },
+              _sum: { change: true },
+            });
+            const netByProduct = new Map(
+              grouped.map((g) => [g.productId, g._sum.change ?? 0]),
+            );
+
+            itemsParaBaixar = [];
+            for (const productId of productIds) {
+              const pedido = netGuard.pedidoPorProduto.get(productId) ?? 0;
+              const jaBaixado = -(netByProduct.get(productId) ?? 0);
+              const falta = pedido - jaBaixado;
+              if (falta > 0) itemsParaBaixar.push({ productId, quantity: falta });
+            }
+          }
+
+          // Sem netGuard a lista nunca é vazia (garantido acima) ⇒ o caminho do
+          // importador segue chamando o motor exatamente como antes.
+          if (itemsParaBaixar.length > 0) {
+            const result = await StockDeductionService.deductWithinTx(tx, {
+              items: itemsParaBaixar,
+              reason,
+              orderId: order.id,
+              logPrefix: "[OrderUseCase]",
+            });
+            deductions = result.deductions;
+            oversellAlerts = result.oversellAlerts;
+          }
 
           // Marca de auditoria da baixa, na MESMA transação: ou as duas coisas
           // acontecem, ou nenhuma. Torna trivial a pergunta "quais pedidos
@@ -2680,7 +3199,14 @@ export class OrderUseCase {
           // que antes exigia cruzar StockLog por `reason`, que é texto livre.
           // NÃO é a fonte de verdade da idempotência — essa continua sendo o
           // net do StockLog. Kill-switch restaura o caminho anterior.
-          if (process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1") {
+          // Sem netGuard a condição é só a da env ⇒ caminho do importador
+          // byte-idêntico. Com netGuard, não sobrescreve um carimbo que já
+          // existe: perderia a hora da baixa original.
+          const jaCarimbado = Boolean((order as { stockDeductedAt?: Date | null }).stockDeductedAt);
+          if (
+            process.env.ORDER_STOCK_DEDUCTED_AT_DISABLED !== "1" &&
+            !(netGuard && jaCarimbado)
+          ) {
             await tx.order.update({
               where: { id: order.id },
               data: { stockDeductedAt: new Date() },
