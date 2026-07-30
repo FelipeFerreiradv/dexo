@@ -661,6 +661,7 @@ model ProductImageEdit {
   updatedAt      DateTime @updatedAt
 
   @@index([userId, createdAt])
+}
 
 // Teto financeiro DIÁRIO dos provedores externos de recorte (PR 5). Uma linha
 // por (provedor, dia UTC "YYYY-MM-DD"); a reserva é increment condicional
