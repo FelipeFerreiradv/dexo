@@ -364,20 +364,32 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
   const criar = (over: any = {}) =>
     (OrderUseCase as any).criarOrderSemItens({ ...base, ...over });
 
-  it.each(["SHOPEE", "MERCADO_LIVRE", "MAGALU"] as const)(
-    "%s cria o Order com items vazio e devolve o id",
+  it("SHOPEE cria o Order com items vazio e devolve o id", async () => {
+    const create = vi
+      .spyOn(orderRepository, "create")
+      .mockResolvedValue({ id: "order-x" } as any);
+
+    const id = await criar({ plataforma: "SHOPEE" });
+
+    expect(id).toBe("order-x");
+    const dados = create.mock.calls[0][0] as any;
+    expect(dados.items).toEqual([]);
+    expect(dados.totalAmount).toBe(99.5);
+    expect(dados.soldAt).toEqual(base.soldAt);
+  });
+
+  it.each(["MERCADO_LIVRE", "MAGALU"] as const)(
+    "%s NAO cria Order vazio — nao existe caminho para completa-lo depois",
     async (plataforma) => {
-      const create = vi
-        .spyOn(orderRepository, "create")
-        .mockResolvedValue({ id: "order-x" } as any);
+      const create = vi.spyOn(orderRepository, "create");
 
-      const id = await criar({ plataforma });
-
-      expect(id).toBe("order-x");
-      const dados = create.mock.calls[0][0] as any;
-      expect(dados.items).toEqual([]);
-      expect(dados.totalAmount).toBe(99.5);
-      expect(dados.soldAt).toEqual(base.soldAt);
+      // O Order vazio e metade de um par. A outra metade
+      // (`completePartialShopeeOrder`) so existe na Shopee; sem ela o
+      // `exists()` passa a devolver true, o import responde `already_exists` e a
+      // venda fica permanentemente incompleta. A quarentena continua
+      // registrando — o invariante nao e furado.
+      expect(await criar({ plataforma })).toBeNull();
+      expect(create).not.toHaveBeenCalled();
     },
   );
 
@@ -385,7 +397,7 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
     process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED = "1";
     const create = vi.spyOn(orderRepository, "create");
 
-    expect(await criar({ plataforma: "MERCADO_LIVRE" })).toBeNull();
+    expect(await criar({ plataforma: "SHOPEE" })).toBeNull();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -394,7 +406,7 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
       Object.assign(new Error("dup"), { code: "P2002" }),
     );
 
-    await expect(criar({ plataforma: "MAGALU" })).resolves.toBeNull();
+    await expect(criar({ plataforma: "SHOPEE" })).resolves.toBeNull();
   });
 
   it("erro qualquer devolve null sem lançar", async () => {
@@ -408,7 +420,7 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
   });
 });
 
-describe("ML: venda sem produto cadastrado também vira Order", () => {
+describe("ML: venda sem produto NAO cria Order vazio (mas fica na quarentena)", () => {
   const ML_ORDER = {
     id: 2000000123,
     status: "paid",
@@ -428,30 +440,7 @@ describe("ML: venda sem produto cadastrado também vira Order", () => {
     });
   });
 
-  it("cria o Order com zero itens, valor e soldAt do ML", async () => {
-    const create = vi
-      .spyOn(orderRepository, "create")
-      .mockResolvedValue({ id: "order-ml" } as any);
-
-    const r = await (OrderUseCase as any).processOrder(
-      ML_ORDER,
-      "acc-ml",
-      true,
-      undefined,
-      "dono-1",
-    );
-
-    expect(r.status).toBe("no_products");
-    expect(r.orderId).toBe("order-ml");
-    expect(r.stockDeducted).toBe(false);
-    const dados = create.mock.calls[0][0] as any;
-    expect(dados.items).toEqual([]);
-    expect(dados.totalAmount).toBe(250.4);
-    expect(dados.soldAt.toISOString()).toBe("2026-07-10T12:30:00.000Z");
-  });
-
-  it("kill-switch=1 volta a não criar Order no ML", async () => {
-    process.env.ORDER_CREATE_WITHOUT_ITEMS_DISABLED = "1";
+  it("devolve no_products sem orderId e sem criar nada", async () => {
     const create = vi.spyOn(orderRepository, "create");
 
     const r = await (OrderUseCase as any).processOrder(
@@ -462,9 +451,13 @@ describe("ML: venda sem produto cadastrado também vira Order", () => {
       "dono-1",
     );
 
-    expect(create).not.toHaveBeenCalled();
-    expect(r.orderId).toBeNull();
+    // O Order vazio no ML seria armadilha: `exists()` viraria true e o import
+    // seguinte responderia `already_exists` para sempre, sem nunca acrescentar
+    // os itens. Quem registra a venda e a quarentena (aberta pelo chamador).
     expect(r.status).toBe("no_products");
+    expect(r.orderId).toBeNull();
+    expect(r.stockDeducted).toBe(false);
+    expect(create).not.toHaveBeenCalled();
   });
 });
 

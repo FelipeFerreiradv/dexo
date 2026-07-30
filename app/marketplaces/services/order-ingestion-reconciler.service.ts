@@ -204,7 +204,14 @@ export class OrderIngestionReconcilerService {
           marketplaceAccountId: issue.marketplaceAccountId,
           externalOrderId: issue.externalOrderId,
         },
-        select: { id: true, status: true, stockDeductedAt: true },
+        select: {
+          id: true,
+          status: true,
+          stockDeductedAt: true,
+          // Precisa saber se o pedido tem item: um Order de ZERO itens nao pode
+          // fechar a pendencia (ver abaixo).
+          items: { select: { id: true } },
+        },
       });
 
       if (!local) {
@@ -224,8 +231,27 @@ export class OrderIngestionReconcilerService {
         return;
       }
 
-      // Existe: falta garantir a baixa. Idempotente pelo net do StockLog, agora
-      // lido dentro da transação.
+      // Order existe mas SEM ITEM: a venda esta visivel e o estoque nao baixou,
+      // porque o produto nao esta cadastrado. Fechar a pendencia aqui seria
+      // exatamente o estado terminal silencioso que o invariante proibe — a
+      // venda desapareceria da tela de Pendencias sem ter sido resolvida.
+      //
+      // Achado da auditoria de 30/07/2026: `retryStockDeduction` devolvia `true`
+      // para pedido sem itens (nada a baixar, nenhuma excecao), e este ramo
+      // fechava a pendencia na PRIMEIRA volta do worker. Com 173 Order sem itens
+      // em producao, toda pendencia de ML/Magalu sumiria em <= 10 min.
+      // `items?.length` e nao `items.length`: se o select falhar e vier
+      // undefined, a decisao segura e NAO fechar a pendencia.
+      if (!local.items?.length) {
+        await this.registerFailure(
+          issue,
+          `Pedido ${issue.platform} existe (${local.id}) mas sem item vinculado: o produto ainda nao esta cadastrado.`,
+        );
+        return;
+      }
+
+      // Existe e tem item: falta garantir a baixa. Idempotente pelo net do
+      // StockLog, agora lido dentro da transação.
       const { OrderUseCase: UC } = await import("../usecases/order.usercase");
       const baixou = await UC.retryStockDeduction(
         local.id,

@@ -124,6 +124,9 @@ describe("reconciliador — ML e Magalu", () => {
       id: "order-ml-1",
       status: "PAID",
       stockDeductedAt: null,
+      // O select de producao sempre traz os itens; sem eles a guarda de
+      // "Order vazio" nao teria como decidir.
+      items: [{ id: "oi-1" }],
     });
     vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(true as any);
 
@@ -142,6 +145,9 @@ describe("reconciliador — ML e Magalu", () => {
       id: "order-ml-1",
       status: "PAID",
       stockDeductedAt: null,
+      // O select de producao sempre traz os itens; sem eles a guarda de
+      // "Order vazio" nao teria como decidir.
+      items: [{ id: "oi-1" }],
     });
     vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(false as any);
 
@@ -158,6 +164,7 @@ describe("reconciliador — ML e Magalu", () => {
       id: "order-ml-1",
       status: "CANCELLED",
       stockDeductedAt: null,
+      items: [{ id: "oi-1" }],
     });
 
     await retry(issueML());
@@ -183,6 +190,9 @@ describe("reconciliador — ML e Magalu", () => {
       id: "order-mgl-1",
       status: "PAID",
       stockDeductedAt: null,
+      // O select de producao sempre traz os itens; sem eles a guarda de
+      // "Order vazio" nao teria como decidir.
+      items: [{ id: "oi-1" }],
     });
     vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(true as any);
 
@@ -257,5 +267,55 @@ describe("retryOne respeita os kill-switches", () => {
 
     expect(r).toEqual({ resolved: false });
     expect((prisma as any).orderIngestionIssue.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe("Order de ZERO itens não fecha a pendência", () => {
+  // Achado da auditoria de performance de 30/07/2026: `retryStockDeduction`
+  // devolvia `true` para pedido sem itens, e este ramo fechava a pendência na
+  // PRIMEIRA volta do worker. Com 173 Order sem itens em produção, toda
+  // pendência de ML/Magalu sumiria da tela em <= 10 min sem ter sido resolvida.
+  it("mantém OPEN e nem tenta a baixa", async () => {
+    (prisma as any).order.findFirst.mockResolvedValue({
+      id: "order-ml-vazio",
+      status: "PAID",
+      stockDeductedAt: null,
+      items: [],
+    });
+
+    await retry(issueML());
+
+    expect(OrderUseCase.retryStockDeduction).not.toHaveBeenCalled();
+    expect(resolver).not.toHaveBeenCalled();
+    const update = (prisma as any).orderIngestionIssue.update.mock.calls[0][0];
+    expect(update.data.status).toBe("OPEN");
+    expect(String(update.data.detail)).toContain("sem item vinculado");
+  });
+
+  it("pedido COM item segue o caminho normal", async () => {
+    (prisma as any).order.findFirst.mockResolvedValue({
+      id: "order-ml-1",
+      status: "PAID",
+      stockDeductedAt: null,
+      items: [{ id: "oi-1" }],
+    });
+    vi.mocked(OrderUseCase.retryStockDeduction).mockResolvedValue(true as any);
+
+    await retry(issueML());
+
+    expect(resolver).toHaveBeenCalledWith("acc-ml", "ML-999", "order-ml-1");
+  });
+
+  it("o select traz os itens — sem isso a guarda não teria como decidir", async () => {
+    (prisma as any).order.findFirst.mockResolvedValue({
+      id: "x",
+      status: "PAID",
+      items: [],
+    });
+
+    await retry(issueML());
+
+    const sel = (prisma as any).order.findFirst.mock.calls[0][0].select;
+    expect(sel.items).toEqual({ select: { id: true } });
   });
 });
