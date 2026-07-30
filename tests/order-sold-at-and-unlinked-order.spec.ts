@@ -379,15 +379,18 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
   });
 
   it.each(["MERCADO_LIVRE", "MAGALU"] as const)(
-    "%s NAO cria Order vazio — nao existe caminho para completa-lo depois",
+    "%s NAO cria Order vazio com ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED=1",
     async (plataforma) => {
       const create = vi.spyOn(orderRepository, "create");
 
-      // O Order vazio e metade de um par. A outra metade
-      // (`completePartialShopeeOrder`) so existe na Shopee; sem ela o
-      // `exists()` passa a devolver true, o import responde `already_exists` e a
-      // venda fica permanentemente incompleta. A quarentena continua
-      // registrando — o invariante nao e furado.
+      // O Order vazio e metade de um par. Quando este spec foi escrito a outra
+      // metade (`completePartialShopeeOrder`) so existia na Shopee, e sem ela o
+      // `exists()` passava a devolver true, o import respondia `already_exists` e
+      // a venda ficava permanentemente incompleta. Hoje as tres plataformas tem a
+      // outra metade (`completarOrderSemItens`, ver
+      // order-completar-pedido-vazio.spec) e o default em producao e criar nas
+      // tres; a suite fixa o kill-switch em "1" (vitest.config), entao o que este
+      // caso fixa e o comportamento COM o recorte ligado. Assercoes intactas.
       expect(await criar({ plataforma })).toBeNull();
       expect(create).not.toHaveBeenCalled();
     },
@@ -420,7 +423,9 @@ describe("criarOrderSemItens — helper compartilhado pelos 3 marketplaces", () 
   });
 });
 
-describe("ML: venda sem produto NAO cria Order vazio (mas fica na quarentena)", () => {
+// Idem: fixa o comportamento com o recorte de Shopee-apenas LIGADO, que e o
+// default da suite. Em producao o ML tambem cria o Order vazio.
+describe("ML: venda sem produto NAO cria Order vazio com o recorte ligado", () => {
   const ML_ORDER = {
     id: 2000000123,
     status: "paid",

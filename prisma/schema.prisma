@@ -334,9 +334,11 @@ model OrderIngestionIssue {
   /// | STOCK_DEDUCTION_FAILED | FETCH_FAILED | UNKNOWN_STATUS | INGEST_FAILED
   reason               String
   detail               String?
-  /// OPEN | RESOLVED | IGNORED. Nunca existe estado terminal de falha: um
-  /// problema que o reconciliador não resolve continua OPEN (e escala o
-  /// SystemLog para ERROR), em vez de virar FAILED e sumir de vista.
+  /// OPEN | NEEDS_ACTION | RESOLVED. Nunca existe estado terminal de falha nem
+  /// estado terminal SILENCIOSO. O que o reconciliador não resolve em 5
+  /// tentativas vira NEEDS_ACTION: sai da fila automática (runOnce filtra OPEN),
+  /// mas continua visível na aba de Pendências e continua sendo completado pelo
+  /// poll quando o cliente cadastra o produto. Nada vira FAILED e some de vista.
   status               String   @default("OPEN")
   attempts             Int      @default(0)
   nextRetryAt          DateTime @default(now())

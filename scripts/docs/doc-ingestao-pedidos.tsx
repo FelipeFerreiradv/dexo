@@ -356,12 +356,12 @@ export function DocIngestaoPedidos() {
       </Pagina>
 
       <Pagina>
-        <SubTitulo>2.5 Venda de produto não cadastrado (Shopee)</SubTitulo>
+        <SubTitulo>2.5 Venda de produto não cadastrado</SubTitulo>
         <Tabela
           colunas={["Item", "Descrição"]}
           larguras={[26, 74]}
           linhas={[
-            ["Componente", "Importação de pedidos da Shopee"],
+            ["Componente", "Importação de pedidos (ML, Shopee e Magalu)"],
             [
               "Problema anterior",
               "Venda de anúncio criado direto na Shopee, cujo produto nunca foi cadastrado no Dexo, não virava pedido nenhum. A venda existia lá e não existia aqui: fora de Pedidos, fora do Financeiro, fora do Dashboard.",
@@ -380,12 +380,13 @@ export function DocIngestaoPedidos() {
             ],
           ]}
         />
-        <Destaque titulo="Por que só na Shopee, por enquanto">
+        <Destaque titulo="Vale para os três marketplaces">
           Criar o pedido sem itens só é seguro onde existe o caminho que
-          acrescenta os itens depois. Hoje esse caminho existe apenas na Shopee.
-          No Mercado Livre e na Magalu a venda fica registrada na lista de
-          pendências — visível e rastreável —, mas o pedido não é criado ainda,
-          para não gerar um pedido que ficaria permanentemente incompleto.
+          acrescenta os itens depois. Esse caminho passou a existir no Mercado
+          Livre, na Shopee e na Magalu: a cada busca de pedidos, antes de tratar
+          uma venda como já importada, o sistema verifica se o pedido está sem
+          nenhum item e, se estiver, tenta completá-lo com os dados que acabou de
+          buscar. Nenhuma consulta extra ao marketplace é feita para isso.
         </Destaque>
 
         <SubTitulo>2.6 Pendência que depende do cliente</SubTitulo>
@@ -631,6 +632,15 @@ export function DocIngestaoPedidos() {
           Cada um desses pedidos aparece sem itens e com uma pendência indicando o
           SKU a cadastrar. Ao cadastrar, o item entra e o estoque baixa.
         </P>
+        <Destaque titulo="Pendências podem REAPARECER nesses clientes">
+          Setenta e sete pendências do Mercado Livre (R$ 25.622,00, oito clientes)
+          foram fechadas indevidamente por uma falha corrigida em seguida: o
+          pedido existia sem nenhum item e a pendência foi marcada como resolvida.
+          Elas voltam para a lista de pendências por conta própria, com o SKU a
+          cadastrar. <Forte>Não é uma pendência nova</Forte>: é a mesma venda,
+          agora visível de novo. As que já tiverem o produto cadastrado são
+          completadas com baixa de estoque em vez de reabertas.
+        </Destaque>
 
         <SubTitulo>5.4 Nove contas precisam de ação</SubTitulo>
         <P>
@@ -782,12 +792,21 @@ export function DocIngestaoPedidos() {
         <SubTitulo>“Preciso mudar alguma configuração?”</SubTitulo>
         <P>Não. Nenhuma ação é necessária por parte do cliente.</P>
 
-        <SubTitulo>“Por que a Magalu e o ML não criam o pedido vazio?”</SubTitulo>
+        <SubTitulo>“Isso vale para o Mercado Livre e a Magalu também?”</SubTitulo>
         <P>
-          Porque nesses dois marketplaces ainda não existe o caminho que
-          acrescenta os itens depois. Criar o pedido agora produziria um pedido
-          permanentemente incompleto. A venda fica registrada na lista de
-          pendências até que esse caminho exista.
+          Sim. O pedido sem itens é criado nos três marketplaces, e nos três ele
+          se completa sozinho quando o produto é cadastrado — sem ninguém precisar
+          clicar em nada. O botão “Tentar novamente” continua existindo para quem
+          não quiser esperar o ciclo seguinte.
+        </P>
+
+        <SubTitulo>“Cadastrei o produto. Preciso clicar em algo?”</SubTitulo>
+        <P>
+          Não. Na busca seguinte de pedidos o item é acrescentado ao pedido, o
+          estoque é baixado e a pendência fecha sozinha. Isso vale inclusive para
+          a pendência marcada como “precisa da sua ação”, que sai do
+          reprocessamento automático mas continua sendo completada por esse
+          caminho.
         </P>
       </Pagina>
 
@@ -841,6 +860,11 @@ export function DocIngestaoPedidos() {
               "8",
               "Cadastrar um produto de uma pendência e clicar em Tentar novamente",
               "A pendência sai da lista",
+            ],
+            [
+              "8b",
+              "Cadastrar o produto de uma pendência e NÃO clicar em nada",
+              "Na busca seguinte o item entra no pedido, o estoque baixa e a pendência fecha sozinha",
             ],
             [
               "9",

@@ -69,6 +69,24 @@ process.env.ORDER_SOLD_AT_DISABLED ??= "1";
 // correcao (order-ingestion-needs-action) reabilita explicitamente por caso.
 process.env.ORDER_INGESTION_NEEDS_ACTION_DISABLED ??= "1";
 
+// Completar pedido que existe com ZERO itens (31/07/2026): desligado por default
+// na suite porque acrescenta uma consulta `order.findMany` no inicio do laco de
+// import, e os specs pre-existentes mockam `prisma.order.findMany` com UMA
+// implementacao — a consulta nova receberia a lista de pedidos existentes e
+// interpretaria todos como vazios. Em producao o default e o oposto — ligado —,
+// senao o pedido de zero itens nunca mais e revisitado (84 pedidos do ML,
+// R$ 27.731,47, presos assim). O spec da correcao
+// (order-completar-pedido-vazio) reabilita explicitamente por caso.
+process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED ??= "1";
+
+// Recorte "Order sem itens so na Shopee" (31/07/2026): MANTIDO por default na
+// suite porque `order-sold-at-and-unlinked-order` afirma que ML e Magalu NAO
+// criam o Order vazio, que era o estado correto enquanto nao havia caminho de
+// completar. Em producao o default e o oposto — as tres plataformas criam —,
+// porque a outra metade do par agora existe. O spec da correcao reabilita
+// explicitamente por caso.
+process.env.ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
