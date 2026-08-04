@@ -698,6 +698,8 @@ export class ListingRepository {
       categoryOverride?: string | null;
       mlCategoryOverride?: string | null;
       shopeeCategoryOverride?: string | null;
+      olxCategoryOverride?: string | null;
+      fbCategoryOverride?: string | null;
       partNumberOverride?: string | null;
       qualityOverride?: string | null;
       heightCmOverride?: number | null;
@@ -787,6 +789,14 @@ export class ListingRepository {
           data.shopeeCategoryOverride === undefined
             ? undefined
             : data.shopeeCategoryOverride,
+        olxCategoryOverride:
+          data.olxCategoryOverride === undefined
+            ? undefined
+            : data.olxCategoryOverride,
+        fbCategoryOverride:
+          data.fbCategoryOverride === undefined
+            ? undefined
+            : data.fbCategoryOverride,
         partNumberOverride:
           data.partNumberOverride === undefined
             ? undefined

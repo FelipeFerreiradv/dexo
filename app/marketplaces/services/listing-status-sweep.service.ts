@@ -50,6 +50,7 @@ export class ListingStatusSweepService {
         refreshToken: true,
         expiresAt: true,
         shopId: true,
+        fbCatalogId: true,
       },
     });
 

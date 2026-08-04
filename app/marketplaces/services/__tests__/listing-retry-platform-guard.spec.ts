@@ -48,7 +48,7 @@ afterEach(() => {
 });
 
 describe("ListingRetryService — guard de plataforma", () => {
-  it("não chama MLApiService para listing OLX com retryEnabled=true", async () => {
+  it("não chama MLApiService e DESABILITA o retry de listing OLX com retryEnabled=true", async () => {
     vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
       makeListing(Platform.OLX),
     ] as any);
@@ -59,13 +59,20 @@ describe("ListingRetryService — guard de plataforma", () => {
     const mlSpy = vi
       .spyOn(MLApiService, "getSellerItemIds")
       .mockResolvedValue([] as any);
+    const incSpy = vi
+      .spyOn(ListingRepository, "incrementRetryAttempts")
+      .mockResolvedValue(undefined as any);
 
     await ListingRetryService.runOnce();
 
     expect(mlSpy).not.toHaveBeenCalled();
+    expect(incSpy).toHaveBeenCalledWith(
+      "listing-1",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
   });
 
-  it("não chama MLApiService para listing FACEBOOK com retryEnabled=true", async () => {
+  it("não chama MLApiService e DESABILITA o retry de listing FACEBOOK com retryEnabled=true", async () => {
     vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
       makeListing(Platform.FACEBOOK),
     ] as any);
@@ -76,10 +83,41 @@ describe("ListingRetryService — guard de plataforma", () => {
     const mlSpy = vi
       .spyOn(MLApiService, "getSellerItemIds")
       .mockResolvedValue([] as any);
+    const incSpy = vi
+      .spyOn(ListingRepository, "incrementRetryAttempts")
+      .mockResolvedValue(undefined as any);
 
     await ListingRetryService.runOnce();
 
     expect(mlSpy).not.toHaveBeenCalled();
+    expect(incSpy).toHaveBeenCalledWith(
+      "listing-1",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
+  });
+
+  it("DESABILITA o retry de listing MAGALU (regressão: reivindicava a cada ciclo p/ sempre)", async () => {
+    vi.spyOn(ListingRepository, "findPendingRetries").mockResolvedValue([
+      makeListing(Platform.MAGALU),
+    ] as any);
+    vi.spyOn(ListingRepository, "claimRetryCandidate").mockResolvedValue(
+      true as any,
+    );
+
+    const mlSpy = vi
+      .spyOn(MLApiService, "getSellerItemIds")
+      .mockResolvedValue([] as any);
+    const incSpy = vi
+      .spyOn(ListingRepository, "incrementRetryAttempts")
+      .mockResolvedValue(undefined as any);
+
+    await ListingRetryService.runOnce();
+
+    expect(mlSpy).not.toHaveBeenCalled();
+    expect(incSpy).toHaveBeenCalledWith(
+      "listing-1",
+      expect.objectContaining({ retryEnabled: false, nextRetryAt: null }),
+    );
   });
 
   it("chama MLApiService para listing MERCADO_LIVRE (caminho normal não é bloqueado)", async () => {

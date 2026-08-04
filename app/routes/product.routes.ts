@@ -55,6 +55,8 @@ const MARKETPLACE_VALUES = new Set<ProductMarketplaceFilter>([
   "MERCADO_LIVRE",
   "SHOPEE",
   "MAGALU",
+  "OLX",
+  "FACEBOOK",
   "BOTH",
 ]);
 

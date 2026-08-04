@@ -163,10 +163,19 @@ export class ListingRetryService {
         }
         // Só MERCADO_LIVRE segue no caminho ML: OLX/Facebook não podem enviar
         // seus tokens para api.mercadolibre.com (vazamento de token).
+        // DESABILITA o retry ao pular: este é o único publish-retry e
+        // claimRetryCandidate é agnóstico de plataforma — sem desligar, um
+        // candidato Magalu/OLX/FB é reivindicado (write no banco) a cada ciclo,
+        // p/ sempre, e nunca sai da fila.
         if (account?.platform && account.platform !== Platform.MERCADO_LIVRE) {
           console.log(
-            `[ListingRetryService] skipping ${cand.id} (plataforma ${account.platform} não suportada pelo retry ML)`,
+            `[ListingRetryService] skipping ${cand.id} (plataforma ${account.platform} não suportada pelo retry ML) — retry desabilitado`,
           );
+          await ListingRepository.incrementRetryAttempts(cand.id, {
+            retryEnabled: false,
+            nextRetryAt: null,
+            lastError: "[TERMINAL] plataforma sem retry",
+          });
           continue;
         }
 

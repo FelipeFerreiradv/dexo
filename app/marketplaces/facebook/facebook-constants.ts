@@ -106,11 +106,10 @@ export function facebookDialogBase(): string {
  * pendentes) — mesmo contrato de validateOlxConfig/validateMagaluConfig.
  */
 export function validateFacebookConfig(): void {
-  const requiredEnvVars = [
-    "FACEBOOK_APP_ID",
-    "FACEBOOK_APP_SECRET",
-    "FACEBOOK_CATALOG_ID",
-  ];
+  // FACEBOOK_CATALOG_ID NÃO é exigido: o catálogo é por-conta
+  // (account.fbCatalogId); o env é só fallback. Exigi-lo aqui tornaria o
+  // desenho multi-tenant inoperante (bloqueava conectar qualquer conta).
+  const requiredEnvVars = ["FACEBOOK_APP_ID", "FACEBOOK_APP_SECRET"];
 
   for (const envVar of requiredEnvVars) {
     if (!process.env[envVar]) {

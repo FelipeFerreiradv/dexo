@@ -7,6 +7,7 @@ import { ShopeeOAuthService } from "./shopee-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
 import { ListingRepository } from "../repositories/listing.repository";
 import { normalizeListingStatus } from "../lib/listing-status";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
 import {
   FACEBOOK_CONSTANTS,
   facebookGraphBase,
@@ -27,6 +28,7 @@ export type RefreshableListingRow = {
     refreshToken: string | null;
     expiresAt: Date | null;
     shopId: number | null;
+    fbCatalogId: string | null;
   } | null;
 };
 
@@ -152,14 +154,15 @@ const parseShopeeItemId = (externalListingId: string): number | null => {
 async function getFacebookItemStatuses(
   accessToken: string,
   retailerIds: string[],
+  catalogId?: string | null,
 ): Promise<Map<string, string | undefined>> {
   const out = new Map<string, string | undefined>();
-  if (retailerIds.length === 0 || !FACEBOOK_CONSTANTS.CATALOG_ID) return out;
+  // Catálogo por conta (env só fallback) p/ não ler o catálogo global do .env.
+  const catalog = catalogId ?? FACEBOOK_CONSTANTS.CATALOG_ID;
+  if (retailerIds.length === 0 || !catalog) return out;
 
   const filter = JSON.stringify({ retailer_id: { is_any: retailerIds } });
-  const url = new URL(
-    `${facebookGraphBase()}/${FACEBOOK_CONSTANTS.CATALOG_ID}/products`,
-  );
+  const url = new URL(`${facebookGraphBase()}/${catalog}/products`);
   url.searchParams.set("fields", "retailer_id,availability,review_status");
   url.searchParams.set("filter", filter);
   url.searchParams.set("limit", String(retailerIds.length));
@@ -214,7 +217,10 @@ export class ListingStatusRefreshService {
         !row.externalListingId.startsWith("PENDING_") &&
         row.marketplaceAccount &&
         row.marketplaceAccount.status === "ACTIVE" &&
-        row.marketplaceAccount.accessToken,
+        row.marketplaceAccount.accessToken &&
+        // Kill-switch: não consulta status ao vivo de plataforma desligada
+        // (cobre o live=1 do dialog, que escapava do kill-switch).
+        !isPlatformDisabled(row.marketplaceAccount.platform),
     );
     if (eligible.length === 0) return changed;
 
@@ -288,6 +294,7 @@ export class ListingStatusRefreshService {
           const statusByRetailerId = await getFacebookItemStatuses(
             account.accessToken,
             retailerIds,
+            account.fbCatalogId,
           );
           rawByExternalId = new Map(
             group.map((r) => [

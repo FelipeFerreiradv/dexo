@@ -48,6 +48,7 @@ import {
   classifyMLRemoveError,
   withRetry,
 } from "../services/listing-removal.helpers";
+import { isPlatformDisabled } from "@/app/lib/integration-flags";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -3229,6 +3230,21 @@ export class SyncUseCase {
     for (const listing of product.listings) {
       const account = listing.marketplaceAccount;
 
+      // Kill-switch de runtime: com OLX/FACEBOOK_INTEGRATION_DISABLED=1 nenhuma
+      // chamada outbound sai (cobre StockSyncRetryService e baixa por venda).
+      // No-op explícito p/ o operador ver que parou de verdade.
+      if (isPlatformDisabled(account.platform)) {
+        results.push({
+          success: true,
+          productId,
+          externalListingId: listing.externalListingId,
+          platform: account.platform,
+          skipped: true,
+          skipReason: "integration_disabled",
+        });
+        continue;
+      }
+
       try {
         let result: SyncResult;
 
@@ -3940,8 +3956,10 @@ export class SyncUseCase {
       } else {
         const category =
           OlxCategoryResolutionService.resolveCategoryId(product);
-        const phone = OLX_CONSTANTS.SELLER_PHONE;
-        const zipcode = OLX_CONSTANTS.SELLER_ZIPCODE;
+        // Contato do vendedor por conta (env só fallback) p/ não vazar entre
+        // tenants — mesmo desenho de syncOlxProductStock/updateOlxListingFields.
+        const phone = account.olxSellerPhone ?? OLX_CONSTANTS.SELLER_PHONE;
+        const zipcode = account.olxSellerZipcode ?? OLX_CONSTANTS.SELLER_ZIPCODE;
         if (category == null || !phone || !zipcode) {
           throw new Error(
             "Sincronização OLX requer categoria resolvida + OLX_SELLER_PHONE/ZIPCODE.",
@@ -3975,12 +3993,14 @@ export class SyncUseCase {
   private static async confirmFacebookBatchOrThrow(
     accessToken: string,
     resp: { handles?: string[] } | null | undefined,
+    catalogId?: string,
   ): Promise<void> {
     const handle = resp?.handles?.[0];
     if (!handle) return;
     const entry = await FacebookApiService.pollBatchUntilDone(
       accessToken,
       handle,
+      { catalogId },
     );
     if (
       entry &&
@@ -4037,6 +4057,9 @@ export class SyncUseCase {
     }
 
     const targetStock = Number(product.stock) || 0;
+    // Catálogo por conta (env só fallback via FacebookApiService) p/ não escrever
+    // no catálogo global do .env de outro tenant.
+    const catalogId = account.fbCatalogId ?? undefined;
 
     try {
       if (targetStock <= 0) {
@@ -4044,18 +4067,26 @@ export class SyncUseCase {
           account.accessToken,
           retailerId,
           "out of stock",
-          { quantity: 0 },
+          { quantity: 0, catalogId },
         );
-        await this.confirmFacebookBatchOrThrow(account.accessToken, resp);
+        await this.confirmFacebookBatchOrThrow(
+          account.accessToken,
+          resp,
+          catalogId,
+        );
         await ListingRepository.updateStatus(listing.id, "paused");
       } else {
         const resp = await FacebookApiService.setAvailability(
           account.accessToken,
           retailerId,
           "in stock",
-          { quantity: targetStock },
+          { quantity: targetStock, catalogId },
         );
-        await this.confirmFacebookBatchOrThrow(account.accessToken, resp);
+        await this.confirmFacebookBatchOrThrow(
+          account.accessToken,
+          resp,
+          catalogId,
+        );
         await ListingRepository.updateStatus(listing.id, "active");
       }
 
@@ -4134,6 +4165,7 @@ export class SyncUseCase {
         account.accessToken,
         externalListingId,
         data,
+        { catalogId: account.fbCatalogId ?? undefined },
       );
       result.success = true;
       result.newStock = targetStock;
@@ -4446,6 +4478,12 @@ export class SyncUseCase {
       results: [],
     };
 
+    // Kill-switch de runtime: OLX/FACEBOOK_INTEGRATION_DISABLED=1 ⇒ no-op (não
+    // busca contas nem dispara nenhuma chamada outbound).
+    if (isPlatformDisabled(platform)) {
+      return result;
+    }
+
     // 1. Buscar contas do marketplace (multi-contas)
     const accounts =
       accountIds && accountIds.length > 0
@@ -4499,6 +4537,10 @@ export class SyncUseCase {
                     imageUrl: true,
                     imageUrls: true,
                     quality: true,
+                    // Sem isto a republicação resolvia a categoria default
+                    // (2101 carros) ignorando a categoria explícita do produto
+                    // (ex.: 2103 motos), trocando parts_name_motos por _cars.
+                    olxCategoryId: true,
                   }
                 : { id: true, sku: true, stock: true, name: true },
           },

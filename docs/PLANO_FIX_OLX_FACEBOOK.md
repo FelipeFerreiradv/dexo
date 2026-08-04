@@ -37,7 +37,7 @@ npx vitest run
 **Onda 5 (kill-switch de runtime) — CONCLUÍDA.** Rec de Rollback da auditoria. `tsc`=104.
 - `app/lib/integration-flags.ts`: `isOlxDisabled`/`isFacebookDisabled`/`isPlatformDisabled` (padrão `*_DISABLED`, lidas por chamada, sem rebuild).
 - Cobertura: hook `onRequest` bloqueia todo `/marketplace/{olx,facebook}/*` (503); `POST /listings/dispatch` e `/bulk` (503); dispatch do modal de novo produto pula OLX/FB; `updateListingStatus` no-op p/ OLX/FB (cobre auto-pause do PDV, pause manual e restore de cancelamento — caminhos fora do prefixo `/marketplace`); `ListingStatusSweepService` tira FB da varredura.
-- **Migrations agora versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas + `prisma/seed.ts`. Fase 0 vira `prisma migrate deploy` (ver nota de risco abaixo).
+- **Migrations versionadas** (as 16 antigas já eram trackeadas; a linha `prisma/migrations/` do gitignore era inócua e foi removida). 3 migrations novas. Servem apenas p/ reproduzir o schema em **dev local / banco limpo** — **o deploy em São Paulo continua por DDL manual** (F0.1–F0.8 abaixo), como manda o `MIGRACAO_BANCO_SAO_PAULO.md`. **NÃO** rodar `prisma migrate deploy` contra o banco SP.
 
 **Próximo:** só resta **F4.8** (vínculo por SKU na OLX — depende da doc da *Consulta de Anúncios Publicados* da OLX, externo, não é nosso). Todo o resto que é nosso está feito: Fases 1–3, 5, 6 e o Facebook da Fase 4 concluídos.
 
@@ -45,19 +45,20 @@ npx vitest run
 
 ## FASE 0 — Banco de dados (Felipe roda, ANTES do deploy)
 
-> ⚠️ **Atualizado:** as migrations **são versionadas** neste repo (as 16 antigas já
-> estavam trackeadas; a linha `prisma/migrations/` do gitignore não destrackeava nada
-> e foi removida). A Fase 0 agora é `prisma migrate deploy`, não DDL manual — as 3
-> migrations novas (`add_olx_platform`, `add_facebook_platform`,
-> `add_olx_facebook_account_and_category_fields`) cobrem os 8 campos + enum.
+> ⚠️ **Deploy SP = DDL manual (inalterado).** As migrations **são versionadas** neste
+> repo (as 16 antigas já estavam trackeadas; a linha `prisma/migrations/` do gitignore
+> não destrackeava nada e foi removida) e as 3 novas (`add_olx_platform`,
+> `add_facebook_platform`, `add_olx_facebook_account_and_category_fields`) cobrem os 8
+> campos + enum — mas elas servem só p/ **dev local / banco limpo**. No banco de São
+> Paulo o schema evolui por **SQL manual** (F0.1–F0.8), conforme
+> `MIGRACAO_BANCO_SAO_PAULO.md`: **NUNCA rodar `prisma migrate deploy/dev` contra o
+> banco SP** (schema+dados = dump; qualquer processo pm2 que escreve pode colidir).
 >
-> ⚠️ **Risco de deploy — enum sem `IF NOT EXISTS`:** `add_olx_platform` e
-> `add_facebook_platform` fazem `ALTER TYPE "Platform" ADD VALUE 'OLX'/'FACEBOOK'`
-> **sem** `IF NOT EXISTS`. Se algum ambiente já rodou o DDL manual antigo (a versão
-> anterior desta Fase 0), `migrate deploy` **falha** ("value already exists"). Nesse
-> ambiente: `prisma migrate resolve --applied <migration>` para baselinar, OU trocar
-> por `ADD VALUE IF NOT EXISTS` (PG 10+). Em banco limpo, roda direto. Requer PG 12+
-> (ADD VALUE em transação).
+> ⚠️ **Se um dia alguém rodar `migrate deploy` num ambiente que já teve o DDL manual:**
+> `add_olx_platform`/`add_facebook_platform` fazem `ALTER TYPE "Platform" ADD VALUE`
+> **sem** `IF NOT EXISTS` e vão **falhar** ("value already exists"). Baselinar com
+> `prisma migrate resolve --applied <migration>` OU trocar por `ADD VALUE IF NOT EXISTS`
+> (PG 10+). Em banco limpo roda direto (PG 12+ p/ ADD VALUE em transação).
 
 `ALTER TYPE ... ADD VALUE` é irreversível e não roda dentro de transação (PG < 12).
 

@@ -149,6 +149,8 @@ export interface ListingFullEditInput extends MLListingSettings {
   categoryOverride?: string | null;
   mlCategoryOverride?: string | null;
   shopeeCategoryOverride?: string | null;
+  olxCategoryOverride?: string | null;
+  fbCategoryOverride?: string | null;
   partNumberOverride?: string | null;
   qualityOverride?: string | null;
   heightCmOverride?: number | null;
@@ -6396,11 +6398,17 @@ export class ListingUseCase {
     const data: {
       titleOverride?: string | null;
       descriptionOverride?: string | null;
+      olxCategoryOverride?: string | null;
     } = {};
     if (fields.titleOverride !== undefined)
       data.titleOverride = fields.titleOverride;
     if (fields.descriptionOverride !== undefined)
       data.descriptionOverride = fields.descriptionOverride;
+    // Persiste a categoria escolhida ANTES do reload abaixo, p/ o build usar o
+    // valor novo (antes a coluna não tinha caminho de escrita: o operador
+    // digitava, recebia "salvo" e reabria vazio).
+    if (fields.olxCategoryOverride !== undefined)
+      data.olxCategoryOverride = fields.olxCategoryOverride;
     if (Object.keys(data).length > 0) {
       await ListingRepository.updateListing(listing.id, data);
     }
@@ -6410,7 +6418,13 @@ export class ListingUseCase {
       await ListingRepository.updatePriceOverride(listing.id, null);
     }
 
-    const product = listing.product;
+    // Recarrega o produto CHEIO: o findById do updateListingFields usa
+    // leanProduct (só userId+sku), então reconstruir o anúncio a partir de
+    // listing.product reenviaria título/preço/imagens vazios e sobrescreveria o
+    // anúncio vivo. Mesmo padrão do caminho Shopee (findById(listing.productId)).
+    const product = await ListingUseCase.productRepository.findById(
+      listing.productId,
+    );
     if (!product) {
       return { success: false, error: "Produto do anúncio OLX não encontrado" };
     }
@@ -6806,11 +6820,16 @@ export class ListingUseCase {
     const data: {
       titleOverride?: string | null;
       descriptionOverride?: string | null;
+      fbCategoryOverride?: string | null;
     } = {};
     if (fields.titleOverride !== undefined)
       data.titleOverride = fields.titleOverride;
     if (fields.descriptionOverride !== undefined)
       data.descriptionOverride = fields.descriptionOverride;
+    // Persiste a categoria (google_product_category) ANTES do reload abaixo, p/
+    // o build usar o valor novo (a coluna não tinha caminho de escrita).
+    if (fields.fbCategoryOverride !== undefined)
+      data.fbCategoryOverride = fields.fbCategoryOverride;
     if (Object.keys(data).length > 0) {
       await ListingRepository.updateListing(listing.id, data);
     }
@@ -6820,7 +6839,12 @@ export class ListingUseCase {
       await ListingRepository.updatePriceOverride(listing.id, null);
     }
 
-    const product = listing.product;
+    // Recarrega o produto CHEIO (updateListingFields usa leanProduct) p/ não
+    // reenviar título/preço/imagens vazios e apagar o item vivo — mesmo padrão
+    // do caminho Shopee (findById(listing.productId)).
+    const product = await ListingUseCase.productRepository.findById(
+      listing.productId,
+    );
     if (!product) {
       return {
         success: false,
@@ -7932,6 +7956,8 @@ function buildListingPersistData(fields: ListingFullEditInput) {
     categoryOverride: fields.categoryOverride,
     mlCategoryOverride: fields.mlCategoryOverride,
     shopeeCategoryOverride: fields.shopeeCategoryOverride,
+    olxCategoryOverride: fields.olxCategoryOverride,
+    fbCategoryOverride: fields.fbCategoryOverride,
     partNumberOverride: fields.partNumberOverride,
     qualityOverride: fields.qualityOverride,
     heightCmOverride: fields.heightCmOverride,

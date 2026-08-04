@@ -129,4 +129,22 @@ describe("SyncUseCase.syncProductStock — plataforma OLX", () => {
     const results = await SyncUseCase.syncProductStock("prod-1");
     expect(results[0].error).toBeUndefined();
   });
+
+  it("C4: kill-switch OLX_INTEGRATION_DISABLED=1 ⇒ no-op (não chama OlxApiService)", async () => {
+    // Antes o kill-switch não cobria o caminho de estoque (sync.usercase não
+    // importava integration-flags): com a flag ligada o operador achava que
+    // parou, mas o maior volume de chamadas outbound continuava saindo.
+    (prisma as any).product.findUnique.mockResolvedValue(productWith(0));
+    process.env.OLX_INTEGRATION_DISABLED = "1";
+    try {
+      const results = await SyncUseCase.syncProductStock("prod-1");
+      expect(OlxApiService.deleteAd).not.toHaveBeenCalled();
+      expect(OlxApiService.submitImport).not.toHaveBeenCalled();
+      expect(results[0].success).toBe(true);
+      expect((results[0] as any).skipped).toBe(true);
+      expect((results[0] as any).skipReason).toBe("integration_disabled");
+    } finally {
+      delete process.env.OLX_INTEGRATION_DISABLED;
+    }
+  });
 });

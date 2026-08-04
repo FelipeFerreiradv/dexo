@@ -449,6 +449,8 @@ export async function listingRoutes(app: FastifyInstance) {
             categoryOverride: listing.categoryOverride ?? null,
             mlCategoryOverride: listing.mlCategoryOverride ?? null,
             shopeeCategoryOverride: listing.shopeeCategoryOverride ?? null,
+            olxCategoryOverride: listing.olxCategoryOverride ?? null,
+            fbCategoryOverride: listing.fbCategoryOverride ?? null,
             partNumberOverride: listing.partNumberOverride ?? null,
             qualityOverride: listing.qualityOverride ?? null,
             heightCmOverride: listing.heightCmOverride ?? null,
@@ -572,6 +574,8 @@ export async function listingRoutes(app: FastifyInstance) {
           shopeeCategoryOverride: pickOverride<string | null>(
             "shopeeCategoryOverride",
           ),
+          olxCategoryOverride: pickOverride<string | null>("olxCategoryOverride"),
+          fbCategoryOverride: pickOverride<string | null>("fbCategoryOverride"),
           partNumberOverride: pickOverride<string | null>("partNumberOverride"),
           qualityOverride: pickOverride<string | null>("qualityOverride"),
           heightCmOverride: pickOverride<number | null>("heightCmOverride"),
@@ -809,6 +813,7 @@ export async function listingRoutes(app: FastifyInstance) {
                       refreshToken: true,
                       expiresAt: true,
                       shopId: true,
+                      fbCatalogId: true,
                     }
                   : {}),
               },
@@ -921,12 +926,21 @@ export async function listingRoutes(app: FastifyInstance) {
               message: `platform desconhecido: ${req.platform}`,
             });
           }
-          if (isPlatformDisabled(req.platform)) {
-            return reply.status(503).send({
-              error: "Integração desativada",
-              message: `${req.platform} desativado por kill-switch`,
-            });
-          }
+        }
+
+        // Kill-switch: pula SÓ os itens da plataforma desligada e segue com o
+        // resto do lote (antes um único item OLX/FB desligado devolvia 503 e
+        // derrubava a publicação de ML/Shopee/Magalu no mesmo request). 503 só
+        // se TODOS os requests forem de plataformas desativadas.
+        const enabledRequests = body.requests.filter(
+          (req) => !isPlatformDisabled(req.platform),
+        );
+        if (enabledRequests.length === 0) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message:
+              "Todas as plataformas deste lote estão desativadas por kill-switch",
+          });
         }
 
         // Aumento percentual escalonado entre contas ML (edição de produto):
@@ -935,7 +949,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const caCfg = body.crossAccountIncrease;
         const overrideTemplate = caCfg?.enabled
           ? ListingDispatcher.buildCrossAccountOverride(
-              body.requests,
+              enabledRequests,
               await ListingDispatcher.resolveCrossAccountPercent(
                 userId,
                 caCfg.percent,
@@ -946,7 +960,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const snapshot = ListingDispatcher.dispatch({
           userId,
           productId: body.productId,
-          requests: body.requests,
+          requests: enabledRequests,
           overrideTemplate,
           actorId: request.user!.id,
         });
@@ -1158,16 +1172,20 @@ export async function listingRoutes(app: FastifyInstance) {
               "requests deve conter ao menos um par platform+accountId válido",
           });
         }
-        const disabledReq = body.requests.find((r) =>
-          isPlatformDisabled(r.platform),
+        // Kill-switch: pula SÓ os requests de plataforma desligada e segue com o
+        // resto do lote (não devolve 503 no lote inteiro). 503 só se TODOS
+        // forem de plataformas desativadas.
+        const enabledRequests = body.requests.filter(
+          (r) => !isPlatformDisabled(r.platform),
         );
-        if (disabledReq) {
+        if (enabledRequests.length === 0) {
           return reply.status(503).send({
             error: "Integração desativada",
-            message: `${disabledReq.platform} desativado por kill-switch`,
+            message:
+              "Todas as plataformas deste lote estão desativadas por kill-switch",
           });
         }
-        if (body.productIds.length * body.requests.length > 2000) {
+        if (body.productIds.length * enabledRequests.length > 2000) {
           return reply.status(400).send({
             error: "Limite excedido",
             message:
@@ -1181,7 +1199,7 @@ export async function listingRoutes(app: FastifyInstance) {
         // retry-failed, que relê o template persistido, reproduza preços iguais.
         const overrideTemplate = await enrichCrossAccountIncrease(
           userId,
-          body.requests,
+          enabledRequests,
           body.overrideTemplate ?? null,
         );
 
@@ -1189,12 +1207,12 @@ export async function listingRoutes(app: FastifyInstance) {
         // individual, em overrideTemplate.perProductOverrides). Sem overrides ⇒
         // produtos×requests, idêntico ao de hoje. Espelha a poda do dispatcher.
         const ppo = overrideTemplate?.perProductOverrides;
-        let effectiveTotal = body.productIds.length * body.requests.length;
+        let effectiveTotal = body.productIds.length * enabledRequests.length;
         if (ppo) {
           effectiveTotal = 0;
           for (const pid of body.productIds) {
             const ov = ppo[pid];
-            for (const r of body.requests) {
+            for (const r of enabledRequests) {
               const skipped =
                 r.platform === "MERCADO_LIVRE"
                   ? ov?.disabledMlAccountIds?.includes(r.accountId)
@@ -1211,7 +1229,7 @@ export async function listingRoutes(app: FastifyInstance) {
         const job = await BulkListingJobRepository.create({
           userId,
           productIds: body.productIds,
-          requests: body.requests as BulkListingRequestSpec[],
+          requests: enabledRequests as BulkListingRequestSpec[],
           overrideTemplate,
           totalItems: effectiveTotal,
         });
@@ -1224,7 +1242,7 @@ export async function listingRoutes(app: FastifyInstance) {
               userId,
               actorId,
               productIds: body.productIds!,
-              requests: body.requests!.map((r) => ({
+              requests: enabledRequests.map((r) => ({
                 platform: r.platform,
                 accountId: r.accountId,
                 categoryId: r.categoryId,
@@ -1396,7 +1414,18 @@ export async function listingRoutes(app: FastifyInstance) {
         }
 
         const retryProductIds = Array.from(productIdsSet);
-        const retryRequests = Array.from(requestsKey.values());
+        // Kill-switch: não re-enfileira itens de plataforma desligada (este
+        // endpoint não tinha guard nenhum e reprocessava OLX/FB desligado).
+        const retryRequests = Array.from(requestsKey.values()).filter(
+          (r) => !isPlatformDisabled(r.platform),
+        );
+        if (retryRequests.length === 0) {
+          return reply.status(503).send({
+            error: "Integração desativada",
+            message:
+              "Todos os itens falhos são de plataformas desativadas por kill-switch",
+          });
+        }
         const retryTemplate =
           (job.overrideTemplate as unknown as BulkOverrideTemplate | null) ??
           null;
