@@ -227,6 +227,12 @@ export function toIntegrationError(
   return new MarketplaceIntegrationError(`${ctx.operation} falhou: ${message}`, {
     ...ctx,
     httpStatus: null,
+    // Preserva o texto original como `providerMessage`. Sem isto,
+    // `toUserFacingMessage` não teria motivo nenhum e cairia no genérico
+    // "não houve resposta", jogando fora explicações acionáveis que vêm em
+    // Error puro — ex.: o "Request Source IP (…) is undeclared" da Shopee,
+    // que diz exatamente o que fazer.
+    providerMessage: message,
     cause: error,
   });
 }
@@ -239,6 +245,7 @@ const MARKETPLACE_LABEL: Record<IntegrationMarketplace, string> = {
 
 /** Etapas do pipeline em português, para a mensagem que o lojista lê. */
 const STEP_LABEL: Record<string, string> = {
+  token_refresh: "renovar a autorização da conta",
   upload_invoice_doc: "enviar a NF-e",
   send_invoice_data: "enviar a NF-e",
   ship_order: "confirmar o envio",

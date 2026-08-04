@@ -10,7 +10,11 @@ import { MLOAuthService } from "../services/ml-oauth.service";
 import { ShopeeOAuthService } from "../services/shopee-oauth.service";
 import { MagaluOAuthService } from "../services/magalu-oauth.service";
 import { MarketplaceRepository } from "../repositories/marketplace.repository";
-import { MarketplaceIntegrationError } from "./integration-error";
+import {
+  MarketplaceIntegrationError,
+  toIntegrationError,
+  type IntegrationMarketplace,
+} from "./integration-error";
 import type { ShippingAccount } from "./shipping-label.types";
 
 /** Códigos de erro de rede do Node/axios que valem nova tentativa. */
@@ -86,6 +90,30 @@ export async function withTransientRetry<T>(
   throw lastError;
 }
 
+/**
+ * Executa o refresh de token convertendo qualquer falha em erro TIPADO.
+ *
+ * Os `*OAuthService.refresh*` lançam `Error` puro (ex.: "Erro ao renovar token:
+ * Request Source IP (…) is undeclared…"). Sem esta conversão, a falha de
+ * refresh escapa do envelopamento do usecase e volta como HTTP 500 com o texto
+ * cru na tela — a mesma classe de defeito do incidente de 29/07/2026, só que
+ * pelo caminho do OAuth em vez do caminho da API.
+ */
+async function refreshOrThrowTyped<T>(
+  marketplace: IntegrationMarketplace,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    throw toIntegrationError(error, {
+      marketplace,
+      operation: `${marketplace.toLowerCase()}.oauth.refresh_token`,
+      step: "token_refresh",
+    });
+  }
+}
+
 /** Mesma heurística de OrderUseCase.isMarketplaceAuthError. */
 export function isMarketplaceAuthError(error: unknown): boolean {
   const status =
@@ -122,9 +150,11 @@ export class ShippingAuthRetry {
       if (!isMarketplaceAuthError(error) || !account.refreshToken) {
         throw error;
       }
-      const refreshed = await MLOAuthService.refreshAccessTokenForAccount(
-        account.id,
-        account.refreshToken,
+      const refreshed = await refreshOrThrowTyped("MERCADO_LIVRE", () =>
+        MLOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken!,
+        ),
       );
       await MarketplaceRepository.updateTokens(account.id, {
         accessToken: refreshed.accessToken,
@@ -159,9 +189,8 @@ export class ShippingAuthRetry {
       if (!isMarketplaceAuthError(error) || !account.refreshToken) {
         throw error;
       }
-      const refreshed = await ShopeeOAuthService.refreshAccessToken(
-        account.refreshToken,
-        shopId,
+      const refreshed = await refreshOrThrowTyped("SHOPEE", () =>
+        ShopeeOAuthService.refreshAccessToken(account.refreshToken!, shopId),
       );
       await MarketplaceRepository.updateTokens(account.id, {
         accessToken: refreshed.access_token,
@@ -195,9 +224,11 @@ export class ShippingAuthRetry {
       if (!isMarketplaceAuthError(error) || !account.refreshToken) {
         throw error;
       }
-      const refreshed = await MagaluOAuthService.refreshAccessTokenForAccount(
-        account.id,
-        account.refreshToken,
+      const refreshed = await refreshOrThrowTyped("MAGALU", () =>
+        MagaluOAuthService.refreshAccessTokenForAccount(
+          account.id,
+          account.refreshToken!,
+        ),
       );
       await MarketplaceRepository.updateTokens(account.id, {
         accessToken: refreshed.accessToken,

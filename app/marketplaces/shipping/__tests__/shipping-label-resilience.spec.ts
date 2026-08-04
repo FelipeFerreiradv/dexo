@@ -16,6 +16,7 @@ import { ShippingLabelStorageService } from "../shipping-label-storage.service";
 import { MlShippingLabelProvider } from "../../services/ml-shipping.service";
 import { ShopeeShippingLabelProvider } from "../../services/shopee-shipping.service";
 import { ShopeeApiService } from "../../services/shopee-api.service";
+import { ShopeeOAuthService } from "../../services/shopee-oauth.service";
 import { ShippingLabelError } from "../shipping-label.types";
 import {
   MarketplaceIntegrationError,
@@ -23,6 +24,7 @@ import {
 } from "../integration-error";
 import {
   isTransientProviderError,
+  ShippingAuthRetry,
   withTransientRetry,
 } from "../auth-retry";
 import { PDFDocument } from "pdf-lib";
@@ -488,6 +490,50 @@ describe("Shopee: get_shipping_document_parameter (SHOPEE_LABEL_DOC_PARAM)", () 
 
     await new ShopeeShippingLabelProvider().getLabelPdf([ctx], { size: "A4" });
     expect(create.mock.calls[0][3]).toBe("NORMAL_AIR_WAYBILL");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("falha no refresh de token também vira erro tipado", () => {
+  // Achado ao testar localmente: o 401 dispara o refresh, e os *OAuthService
+  // lançam Error PURO. Sem conversão isso escapava do envelopamento e voltava
+  // como HTTP 500 com o texto cru — a mesma classe de defeito do incidente,
+  // só que pelo caminho do OAuth.
+  it("Error puro do OAuth vira MarketplaceIntegrationError com step token_refresh", async () => {
+    const account = {
+      id: "a1",
+      platform: "SHOPEE" as const,
+      accessToken: "tok",
+      refreshToken: "ref",
+      externalUserId: null,
+      shopId: 123,
+    };
+
+    vi.spyOn(ShopeeOAuthService, "refreshAccessToken").mockRejectedValue(
+      new Error(
+        "Erro ao renovar token: Request Source IP (1.2.3.4) is undeclared.",
+      ),
+    );
+
+    const err = await captureError(
+      ShippingAuthRetry.shopee(account, async () => {
+        const e = new Error("unauthorized");
+        (e as { status?: number }).status = 401;
+        throw e;
+      }),
+    );
+
+    expect(err).toBeInstanceOf(MarketplaceIntegrationError);
+    const typed = err as MarketplaceIntegrationError;
+    expect(typed.step).toBe("token_refresh");
+    expect(typed.operation).toBe("shopee.oauth.refresh_token");
+
+    // O motivo real precisa sobreviver até a mensagem do lojista — era o que
+    // se perdia quando um Error puro chegava sem `providerMessage`.
+    const msg = toUserFacingMessage(typed);
+    expect(msg).toContain("renovar a autorização da conta");
+    expect(msg).toContain("is undeclared");
+    expect(msg).not.toContain("não houve resposta");
   });
 });
 
