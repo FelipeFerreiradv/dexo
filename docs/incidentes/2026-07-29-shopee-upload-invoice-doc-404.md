@@ -359,19 +359,61 @@ DEPOIS HTTP 502  {"code":"PROVIDER_ERROR",
                   "correlationId":"req-1"}
 ```
 
-### Achado operacional importante
+## 10-C. Latência de ingestão — investigada e DESCARTADA como causa
 
-Dos **400 pedidos Shopee mais recentes**: 359 `SHIPPED`, 39 `DELIVERED`, 2 `CANCELLED` —
-**nenhum** aguardando despacho. Para esse lojista, o pedido chega ao Dexo quando o envio já foi
-arranjado na Shopee, e nesse estado a Shopee recusa tanto o upload da NF-e
-(*"not accepted after shipment is arranged"*) quanto o `get_shipping_parameter`
-(*"can only be obtained when package is ready to be shipped"*).
+Uma leitura preliminar sugeriu que os pedidos chegariam ao Dexo já despachados, tornando a
+feature inútil. **A medição refutou isso.** Script: `scripts/diag-shopee-ingestion-latency.ts`
+(somente leitura).
 
-Ou seja: **corrigir o 404 era necessário, mas pode não ser suficiente** para esse fluxo. A
-etiqueta precisa ser gerada enquanto o pedido ainda está aguardando despacho. Vale investigar a
-latência da ingestão (o ciclo de sync já chegou a 71,9 h antes das correções de 29/07) antes de
-concluir que a feature está utilizável no dia a dia. Não dá para afirmar isso a partir da base
-atual — só um pedido novo, pego no momento certo, responde.
+### O erro da leitura preliminar
+
+Ela se apoiou em `Order.status`, que **não responde a pergunta**: `mapShopeeStatus`
+(`order.usercase.ts:3603`) colapsa `READY_TO_SHIP`, `PROCESSED`, `SHIPPED`, `RETRY_SHIP`,
+`TO_RETURN` e `TO_CONFIRM_RECEIVE` **todos em `SHIPPED` local**. Contar "359 SHIPPED" não distingue
+"aguardando despacho" de "já despachado" — e `READY_TO_SHIP` é exatamente o estado em que a
+etiqueta PODE ser gerada. Só o `order_status` da Shopee responde.
+
+### Latência real (433 pedidos, 30 dias)
+
+A distribuição global é **bimodal** e o p50 agregado (10,4 h) não descreve nenhum dos dois regimes.
+Separando pela data da VENDA:
+
+| Recorte | p50 | p90 | máx | < 15 min |
+|---|---|---|---|---|
+| **Vendidos a partir de 30/07** (regime atual) | **58 s** | 4 min | 29 min | **96,6%** (85/88) |
+| Vendidos antes de 30/07 (backfill dos órfãos) | 10,0 d | 16,7 d | 28,3 d | 0% |
+
+O segundo grupo são os pedidos órfãos recuperados em 29/07 — vendidos semanas antes, importados de
+uma vez. Eram eles que contaminavam a média. **A ingestão em regime normal leva ~1 minuto: não é
+gargalo.**
+
+### Estado real na Shopee (429 pedidos consultados ao vivo)
+
+| `order_status` | Qtd | Janela de etiqueta |
+|---|---|---|
+| COMPLETED | 270 | fechada |
+| SHIPPED | 75 | fechada |
+| TO_CONFIRM_RECEIVE | 42 | fechada |
+| TO_RETURN | 24 | fechada |
+| CANCELLED | 9 | — |
+| **READY_TO_SHIP** | **7** | **ABERTA** |
+| **PROCESSED** | **2** | **ABERTA** |
+
+**Existem 9 pedidos com a janela aberta agora** — o mais antigo há **116,6 h** (≈5 dias). A janela
+não é uma corrida contra o relógio: fica aberta por dias.
+
+### Conclusão
+
+A feature é viável, e a latência não a impede. **Nenhum dos 9 pedidos com janela aberta tem NF-e
+55 autorizada** — o passo que falta é o fiscal, não o técnico. O pedido do incidente
+provavelmente estava `READY_TO_SHIP` em 29/07 às 14:06, foi barrado pelo 404, e a janela fechou
+nos dias seguintes.
+
+### Achado colateral
+
+Duas contas Shopee de `Jrmimports9@gmail.com` (shops `1796396261` e `1131967803`) estão com
+**token vencido desde 28/07** e continuam marcadas `ACTIVE`. Falham silenciosamente há uma
+semana — mesma classe de problema do incidente: erro real que não chega a ninguém.
 
 ## 11. Sugestões e dívida técnica
 
