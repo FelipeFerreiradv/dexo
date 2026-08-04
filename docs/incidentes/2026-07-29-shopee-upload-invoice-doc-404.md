@@ -248,7 +248,7 @@ de novo quebra o build.
   status code"; 200-com-`error_param` é falha; `request_id` preservado; **segredos ausentes** de
   mensagem, `endpoint` e log; classificação transitório × determinístico; `download` sem campo
   duplicado; JSON travestido de PDF.
-- `app/marketplaces/shipping/__tests__/shipping-label-resilience.spec.ts` (16):
+- `app/marketplaces/shipping/__tests__/shipping-label-resilience.spec.ts` (22):
   `PROVIDER_ERROR` (→502) com mensagem legível; pré-checagem do XML (vazio, JSON, válido); lock
   (concorrência e falha do primeiro); retry (classificação, 5xx retenta, 404 não, kill-switch);
   tolerância ao "shipment arranged"; `get_shipping_document_parameter`; orçamento de tempo.
@@ -260,7 +260,7 @@ de novo quebra o build.
 **Prova de que pegam o defeito:** revertendo o path e o `file_type` no código,
 **4 dos 10 testes falham**; restaurados, 10/10 passam.
 
-**Suíte completa:** `383 arquivos passaram / 2 skipped`, `4009 testes passaram / 27 skipped`,
+**Suíte completa:** `383 arquivos passaram / 2 skipped`, `4015 testes passaram / 27 skipped`,
 **0 falhas** (`vitest run --pool=forks`, exit 0).
 > O pool padrão (`threads`) segfalha nesta máquina Windows **antes e depois** das mudanças —
 > verificado removendo os specs novos. É pré-existente e não relacionado.
@@ -327,6 +327,51 @@ to be shipped"*, `create_shipping_document` falha e o download pede
 três precisam ser resolvidos pelo Seller Center.
 
 ---
+
+## 10-B. Segunda rodada — validação local (04/08/2026, IP liberado na whitelist)
+
+Com o IP da máquina de desenvolvimento cadastrado no Open Platform Console, o fluxo foi
+exercitado ponta a ponta fora da VPS. **O A/B da causa raiz reproduziu idêntico de um segundo
+ponto de rede** (`logistics` → 404 `error_not_found`; `order` → 200 com `request_id`), o que
+descarta artefato de IP ou de região.
+
+A rodada encontrou **quatro defeitos que os testes com HTTP mockado não pegavam** — todos
+corrigidos e cobertos:
+
+| # | Defeito | Por que escapou |
+|---|---|---|
+| 1 | Falha no **refresh de token** voltava como HTTP 500 com texto cru | Os `*OAuthService` lançam `Error` puro; o mock nunca exercitava o caminho do OAuth |
+| 2 | `403 source_ip_undeclared` era tratado como **erro de auth** → refresh inútil e mensagem culpando a "autorização da conta" em vez do IP | Nenhum teste cobria 403 que não fosse de token |
+| 3 | `get_shipping_parameter`, `get_address_list`, `ship_order`, `get_tracking_number`, `create_shipping_document` e `get_shipping_document_result` **ainda lançavam `Error` puro** → 500 opaco | Só `upload_invoice_doc` e `download_shipping_document` haviam sido tipados |
+| 4 | `scripts/repro-shipping-label.ts` **não carregava o `.env`** | Na VPS as variáveis já estavam no ambiente |
+
+Resultado no cenário do incidente, medido localmente:
+
+```
+ANTES  HTTP 500  {"message":"Erro ao obter parâmetros de envio Shopee: Shipping
+                  parameters can only be obtained when package is ready to be shipped"}
+
+DEPOIS HTTP 502  {"code":"PROVIDER_ERROR",
+                  "message":"Falha ao consultar as opções de envio do pedido
+                             2607290P63B8P8 na Shopee: Shipping parameters can only be
+                             obtained when package is ready to be shipped
+                             (referência Shopee: e3e3e7f3583f839f…)",
+                  "correlationId":"req-1"}
+```
+
+### Achado operacional importante
+
+Dos **400 pedidos Shopee mais recentes**: 359 `SHIPPED`, 39 `DELIVERED`, 2 `CANCELLED` —
+**nenhum** aguardando despacho. Para esse lojista, o pedido chega ao Dexo quando o envio já foi
+arranjado na Shopee, e nesse estado a Shopee recusa tanto o upload da NF-e
+(*"not accepted after shipment is arranged"*) quanto o `get_shipping_parameter`
+(*"can only be obtained when package is ready to be shipped"*).
+
+Ou seja: **corrigir o 404 era necessário, mas pode não ser suficiente** para esse fluxo. A
+etiqueta precisa ser gerada enquanto o pedido ainda está aguardando despacho. Vale investigar a
+latência da ingestão (o ciclo de sync já chegou a 71,9 h antes das correções de 29/07) antes de
+concluir que a feature está utilizável no dia a dia. Não dá para afirmar isso a partir da base
+atual — só um pedido novo, pego no momento certo, responde.
 
 ## 11. Sugestões e dívida técnica
 
