@@ -87,16 +87,48 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
     );
   }
 
+  /**
+   * A Shopee recusa o upload da NF-e depois que o envio já foi arranjado:
+   * "Upload is not accepted after shipment is arranged". Isso NÃO é falha —
+   * significa que a etapa fiscal já não se aplica àquele pedido, e insistir
+   * jamais vai passar. Bloquear a etiqueta por causa disso deixaria o pedido
+   * permanentemente preso.
+   *
+   * Mesmo espírito do adapter do ML, que checa `invoiceAlreadyHandled` e não
+   * reenvia quando o envio já foi impresso/despachado.
+   */
+  private isInvoiceNoLongerAccepted(error: unknown): boolean {
+    const msg = (
+      error instanceof Error ? error.message : String(error)
+    ).toLowerCase();
+    return (
+      /not accepted after shipment is arranged/.test(msg) ||
+      /invoice.*already.*(upload|exist)/.test(msg)
+    );
+  }
+
   async ensureInvoiceSent(ctx: ShippingOrderContext): Promise<void> {
     // upload_invoice_doc envia/atualiza — re-chamar é idempotente (update).
-    await ShippingAuthRetry.shopee(ctx.account, (token, shopId) =>
-      ShopeeApiService.uploadInvoiceDoc(
-        token,
-        shopId,
-        ctx.order.externalOrderId,
-        ctx.nfe.xml,
-      ),
-    );
+    try {
+      await ShippingAuthRetry.shopee(ctx.account, (token, shopId) =>
+        ShopeeApiService.uploadInvoiceDoc(
+          token,
+          shopId,
+          ctx.order.externalOrderId,
+          ctx.nfe.xml,
+        ),
+      );
+    } catch (error) {
+      if (
+        process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED === "1" ||
+        !this.isInvoiceNoLongerAccepted(error)
+      ) {
+        throw error;
+      }
+      console.warn(
+        `[Shipping] Shopee não aceita mais a NF-e do pedido ${ctx.order.externalOrderId} (envio já arranjado) — seguindo para a etiqueta.`,
+      );
+    }
   }
 
   async ensureReadyToShip(ctx: ShippingOrderContext): Promise<ShipReadiness> {
@@ -150,11 +182,40 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
     const orderList = ctxs.map((c) => ({ order_sn: c.order.externalOrderId }));
 
     return ShippingAuthRetry.shopee(account, async (token, shopId) => {
+      // A transportadora do pedido dita quais tipos de documento existem.
+      // Pedir um tipo não suportado falha no create com o motivo enterrado no
+      // result_list; consultar antes troca isso por uma escolha informada.
+      // Best-effort: se a consulta falhar, segue com o tipo pedido — o
+      // comportamento anterior.
+      let effectiveDocType = docType;
+      if (process.env.SHOPEE_LABEL_DOC_PARAM_DISABLED !== "1") {
+        try {
+          const param = await ShopeeApiService.getShippingDocumentParameter(
+            token,
+            shopId,
+            orderList,
+          );
+          if (
+            param.selectable.length > 0 &&
+            !param.selectable.includes(docType)
+          ) {
+            effectiveDocType = param.suggested ?? param.selectable[0];
+            console.warn(
+              `[Shipping] Shopee não aceita ${docType} para este pedido; usando ${effectiveDocType} (aceitos: ${param.selectable.join(", ")}).`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[Shipping] get_shipping_document_parameter indisponível: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
       await ShopeeApiService.createShippingDocument(
         token,
         shopId,
         orderList,
-        docType,
+        effectiveDocType,
       );
 
       let ready = false;
@@ -163,7 +224,7 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
           token,
           shopId,
           orderList,
-          docType,
+          effectiveDocType,
         );
         if (results.some((r) => r.status === "FAILED")) {
           throw new ShippingLabelError(
@@ -191,7 +252,7 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
         token,
         shopId,
         orderList,
-        docType,
+        effectiveDocType,
       );
     });
   }

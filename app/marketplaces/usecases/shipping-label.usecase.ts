@@ -18,6 +18,10 @@ import {
 import { FiscalStorageService } from "../../fiscal/storage/fiscal-storage.service";
 import { ShippingLabelStorageService } from "../shipping/shipping-label-storage.service";
 import { getShippingProvider } from "../shipping/provider-factory";
+import {
+  MarketplaceIntegrationError,
+  toUserFacingMessage,
+} from "../shipping/integration-error";
 import { composeA4, mergePdfs } from "../shipping/pdf-merge";
 import {
   ShippingLabelError,
@@ -123,6 +127,20 @@ export class ShippingLabelUseCase {
       );
     }
 
+    // Pré-condição de conteúdo: falhar aqui, com mensagem clara, é muito melhor
+    // que mandar lixo ao marketplace e receber de volta um erro genérico.
+    // Vazio ou não começando com "<" indica arquivo truncado ou JSON gravado
+    // com extensão .xml.
+    if (process.env.SHIPPING_LABEL_PRECHECKS_DISABLED !== "1") {
+      const head = xmlBuf.subarray(0, 256).toString("utf-8").trimStart();
+      if (xmlBuf.length === 0 || !head.startsWith("<")) {
+        throw new ShippingLabelError(
+          "NFE_XML_MISSING",
+          `O arquivo do XML autorizado da NF-e está inválido (${xmlBuf.length} bytes, não começa com "<"). Reemita ou rebaixe o XML antes de gerar a etiqueta.`,
+        );
+      }
+    }
+
     const acc = order.marketplaceAccount;
     return {
       order: {
@@ -159,7 +177,30 @@ export class ShippingLabelUseCase {
   ): Promise<Buffer> {
     const provider = getShippingProvider(ctx.account.platform);
     const orderId = ctx.order.id;
+
+    // Orçamento de tempo. Sem ele o pior caso do pipeline Shopee (upload +
+    // parâmetros + ship + tracking + create + 8 polls + download, a 30s cada)
+    // passa de 7 min dentro de UM request HTTP — tempo suficiente para o proxy
+    // cortar a conexão e o usuário ver 504 sem CORS, em vez de um erro nosso.
+    // Checado ENTRE etapas: limita o estouro a uma etapa, sem mudar a interface
+    // dos providers.
+    const startedAt = Date.now();
+    const budgetMs = Number(process.env.SHIPPING_LABEL_BUDGET_MS ?? 90_000);
+    const budgetEnabled =
+      process.env.SHIPPING_LABEL_TIME_BUDGET_DISABLED !== "1";
+    const checkBudget = (nextStep: string): void => {
+      if (!budgetEnabled) return;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > budgetMs) {
+        throw new ShippingLabelError(
+          "NOT_READY",
+          `A geração da etiqueta excedeu ${Math.round(budgetMs / 1000)}s no marketplace (parou antes de "${nextStep}"). O andamento foi salvo — tente novamente em instantes.`,
+        );
+      }
+    };
+
     try {
+      checkBudget("envio da NF-e");
       await provider.ensureInvoiceSent(ctx);
       await shipmentLabelRepository.upsert(orderId, {
         provider: ctx.account.platform,
@@ -168,6 +209,7 @@ export class ShippingLabelUseCase {
         labelError: null,
       });
 
+      checkBudget("liberação do envio");
       const readiness = await provider.ensureReadyToShip(ctx);
       if (!readiness.ready) {
         await shipmentLabelRepository.upsert(orderId, {
@@ -190,12 +232,34 @@ export class ShippingLabelUseCase {
         trackingNumber: readiness.trackingNumber ?? undefined,
       });
 
+      checkBudget("geração do PDF");
       return await provider.getLabelPdf([ctx], { size });
     } catch (error) {
       if (error instanceof ShippingLabelError && error.code === "NOT_READY") {
         throw error;
       }
-      const message = error instanceof Error ? error.message : String(error);
+
+      // Erro de integração vira PROVIDER_ERROR (→ HTTP 502) com mensagem
+      // legível. Antes ele subia como Error puro, escapava do mapa de status da
+      // rota e virava 500 opaco com o texto cru do axios na tela.
+      let outgoing = error;
+      if (error instanceof MarketplaceIntegrationError) {
+        console.error(
+          "[Shipping] falha de integração",
+          JSON.stringify({
+            ...error.toLogFields(),
+            orderId,
+            outcome: "error",
+          }),
+        );
+        outgoing = new ShippingLabelError(
+          "PROVIDER_ERROR",
+          toUserFacingMessage(error),
+        );
+      }
+
+      const message =
+        outgoing instanceof Error ? outgoing.message : String(outgoing);
       console.warn(
         `[Shipping] Falha ao gerar etiqueta do pedido ${orderId}: ${message}`,
       );
@@ -208,7 +272,7 @@ export class ShippingLabelUseCase {
         .catch(() => {
           /* registrar ERROR é best-effort */
         });
-      throw error;
+      throw outgoing;
     }
   }
 
@@ -247,6 +311,52 @@ export class ShippingLabelUseCase {
     orderId: string,
     size: LabelSize,
   ): Promise<GenerateLabelResult> {
+    if (process.env.SHIPPING_LABEL_LOCK_DISABLED === "1") {
+      return this.generateLabelForOrderUnlocked(userId, orderId, size);
+    }
+    return this.withOrderLock(orderId, () =>
+      this.generateLabelForOrderUnlocked(userId, orderId, size),
+    );
+  }
+
+  /**
+   * Serializa as emissões do MESMO pedido.
+   *
+   * Sem isso, dois cliques (ou duas abas) disparam o pipeline inteiro em
+   * paralelo: dois `upload_invoice_doc`, dois `ship_order`, dois
+   * `create_shipping_document`. O segundo a chegar espera o primeiro e cai na
+   * idempotência de `generateLabelForOrderUnlocked`, devolvendo `reused: true`.
+   *
+   * Escopo: PROCESSO. A API roda como uma instância única no pm2
+   * (`dexo-api`, modo fork), então isso cobre o caso real. Duas instâncias
+   * exigiriam lock distribuído — a idempotência por `ShipmentLabel` continua
+   * sendo a rede de proteção nesse cenário.
+   */
+  private static orderLocks = new Map<string, Promise<unknown>>();
+
+  private static async withOrderLock<T>(
+    orderId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.orderLocks.get(orderId) ?? Promise.resolve();
+    // `catch` para que a falha de quem está na frente não derrube quem espera.
+    const current = previous.catch(() => undefined).then(fn);
+    this.orderLocks.set(orderId, current);
+    try {
+      return await current;
+    } finally {
+      // Só limpa se ninguém entrou depois — senão apagaria a corrente do outro.
+      if (this.orderLocks.get(orderId) === current) {
+        this.orderLocks.delete(orderId);
+      }
+    }
+  }
+
+  private static async generateLabelForOrderUnlocked(
+    userId: string,
+    orderId: string,
+    size: LabelSize,
+  ): Promise<GenerateLabelResult> {
     const ctx = await this.resolveContext(userId, orderId);
 
     const existing = await shipmentLabelRepository.findByOrderId(orderId);
@@ -280,9 +390,10 @@ export class ShippingLabelUseCase {
     // MLApiService.getItemsDetails). Preserva a ORDEM no PDF combinado
     // (results[i]) e as falhas parciais — saída idêntica ao sequencial, só mais
     // rápido. Seguro p/ ML (refresh com mutex in-flight por conta) e a
-    // concorrência baixa evita rate limit. NOTA: para lote 100% Shopee de uma
-    // mesma conta, o refresh da Shopee ainda não tem mutex — como Shopee não
-    // está em produção, fica para hardening quando for validada.
+    // concorrência baixa evita rate limit. O refresh da Shopee também é
+    // serializado por shopId desde ShopeeOAuthService.refreshAccessToken
+    // (kill-switch SHOPEE_REFRESH_MUTEX_DISABLED), então lote 100% Shopee da
+    // mesma conta não dispara refresh concorrente.
     const BATCH_CONCURRENCY = 5;
     const results: (Buffer | null)[] = new Array(orderIds.length).fill(null);
     const failures: BatchLabelFailure[] = [];

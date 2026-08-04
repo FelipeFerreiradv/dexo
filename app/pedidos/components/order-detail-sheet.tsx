@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/select";
 import type { Order, OrderStatus } from "@/app/interfaces/order.interface";
 import { getApiBaseUrl } from "@/lib/api";
+import { formatLabelError } from "@/lib/shipping-label-error";
 import {
   resolveMarketplaceListingLinkState,
   pickPreferredListingsByPlatform,
@@ -208,10 +209,7 @@ export function OrderDetailSheet({
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLabelError(
-          data?.message ||
-            "Não foi possível gerar a etiqueta. Tente novamente.",
-        );
+        setLabelError(formatLabelError(data));
         return;
       }
       setLabelMsg(

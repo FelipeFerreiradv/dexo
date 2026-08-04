@@ -83,7 +83,17 @@ export class ShopeeOAuthService {
       .digest("hex");
 
     if (process.env.SHOPEE_DEBUG === "1") {
-      console.log("[ShopeeSign:HMAC] baseString", baseString);
+      // A baseString concatena o access_token — logá-la crua vazava a
+      // credencial da loja em texto plano no stdout do pm2. Mascaramos o token
+      // e preservamos o que serve para depurar assinatura: path, timestamp e
+      // shop_id, que é onde os erros de fato acontecem.
+      const maskedBase = access_token
+        ? baseString.replace(
+            access_token,
+            `<token:${access_token.length}ch:${access_token.slice(-4)}>`,
+          )
+        : baseString;
+      console.log("[ShopeeSign:HMAC] baseString", maskedBase);
       console.log(
         "[ShopeeSign:HMAC] sign",
         signature.slice(0, 6),
