@@ -5,6 +5,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { FinanceRepository } from "../repositories/finance.repository";
 import { CompanyFiscalRepository } from "../repositories/company-fiscal.repository";
 import { ReceiptPdfService } from "../financeiro/generators/receipt-pdf.service";
+import { loadTenantAvatar } from "../fiscal/generators/load-avatar";
 import prisma from "../lib/prisma";
 import { resolveProductivityRange } from "../lib/team-productivity";
 import {
@@ -407,7 +408,13 @@ export const financeRoutes = async (fastify: FastifyInstance) => {
             .send({ error: "Conta a receber não encontrada" });
         }
 
-        const pdfBytes = await receiptPdf.generate(entry, company);
+        // EGRESS: a imagem de identidade só é resolvida DEPOIS do guard — um id
+        // inexistente ou de outro tenant não paga leitura de arquivo nem
+        // requisição de rede. `loadTenantAvatar` é cacheado por tenant e nunca
+        // lança: falha ⇒ null ⇒ cupom sai com as iniciais da razão social.
+        const avatar = await loadTenantAvatar(prisma as never, userId);
+
+        const pdfBytes = await receiptPdf.generate(entry, company, avatar);
         const buffer = Buffer.from(pdfBytes);
 
         return reply

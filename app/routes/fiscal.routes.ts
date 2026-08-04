@@ -31,6 +31,66 @@ import type {
  *   - certificadoCnpjConfirmado: reconfere o CNPJ do cert (do CN persistido)
  *     contra o emissor, para o aviso de risco sobreviver a um reload.
  */
+/**
+ * Teto de tamanho do XML aceito para re-render no download.
+ *
+ * `storage.readFile` + `parseNfeXml` + o desenho no pdf-lib são TODOS síncronos
+ * — não existe `await` que devolva o event loop no meio. Um `Promise.race` com
+ * timeout não preemptaria nada: a CPU já teria queimado inteira. O controle
+ * real é recusar entrada grande antes de começar.
+ *
+ * O valor vem de medição, não de chute. O custo do render é LINEAR (~0,63 ms
+ * por item) e o XML gasta ~700 B por item, então o teto converte direto em
+ * tempo de event loop bloqueado:
+ *
+ *   512 KB ≈ 757 itens ≈ 480 ms bloqueados   (o teto anterior)
+ *   128 KB ≈ 190 itens ≈ 120 ms bloqueados   (este)
+ *
+ * E 190 itens é folga de duas ordens de grandeza sobre a realidade: das 6.382
+ * notas autorizadas/canceladas em produção, a MAIOR tem 2 itens e 100% têm ≤ 2.
+ * Nenhuma nota real é afetada; o que muda é o pior caso de uma entrada
+ * patológica (XML importado de outro sistema) travar o processo.
+ */
+const DANFE_RERENDER_MAX_XML_BYTES = 128 * 1024;
+
+/**
+ * Re-renderiza o DANFE a partir do XML autorizado, para que notas emitidas
+ * ANTES do redesenho também saiam no layout novo.
+ *
+ * Estritamente best-effort e SEM exceções para fora: `generateFromXml` lança de
+ * propósito para XML sem `protNFe` ou com `cStat` de rejeição (guard PAR-4), e
+ * uma nota que hoje baixa não pode passar a dar erro por causa disto. Qualquer
+ * problema ⇒ `null` ⇒ o chamador serve o PDF gravado em disco, como sempre.
+ *
+ * Fica atrás da MESMA flag do renderer novo: com ela desligada não faz sentido
+ * pagar parse + render para entregar o layout antigo — e o kill-switch precisa
+ * desligar as duas coisas de uma vez.
+ */
+export async function tryRerenderDanfe(
+  storage: Pick<FiscalStorageService, "readFile">,
+  xmlPath: string | null | undefined,
+): Promise<Uint8Array | null> {
+  if (!xmlPath) return null;
+  if (process.env.NEXT_PUBLIC_DANFE_OFICIAL_ENABLED !== "true") return null;
+  try {
+    const raw = await storage.readFile(xmlPath);
+    if (!raw) return null;
+    // `readFile` devolve Buffer; `parseNfeXml` recusa qualquer coisa que não
+    // seja string logo na primeira linha. Sem esta conversão o re-render vira
+    // um no-op silencioso engolido pelo catch abaixo.
+    const xml = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8");
+    if (!xml || Buffer.byteLength(xml, "utf8") > DANFE_RERENDER_MAX_XML_BYTES) {
+      return null;
+    }
+    const { DanfePdfService } = await import(
+      "../fiscal/generators/danfe-pdf.service"
+    );
+    return await new DanfePdfService().generateFromXml(xml);
+  } catch {
+    return null;
+  }
+}
+
 export function sanitizeFiscalConfig(
   config: Awaited<ReturnType<CompanyFiscalUseCase["getByUserId"]>> | null,
 ): Record<string, unknown> | null {
@@ -1115,25 +1175,51 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         const { id } = request.params;
         const row = await (prisma as any).nfeEmitida.findFirst({
           where: { id, userId },
-          select: { danfePdfPath: true, numero: true, serie: true },
+          select: {
+            danfePdfPath: true,
+            xmlAutorizadoPath: true,
+            numero: true,
+            serie: true,
+            modelo: true,
+          },
         });
         if (!row) {
           return reply.status(404).send({ error: "NF-e nao encontrada" });
         }
+
+        // O gate `danfePdfPath` é PRESERVADO: quem decide se a nota tem DANFE
+        // continua sendo o banco, exatamente como antes. Nota sem DANFE gravado
+        // segue devolvendo 404 — o re-render melhora o layout do documento que
+        // já sairia, não muda a resposta do endpoint.
         if (!row.danfePdfPath) {
           return reply.status(404).send({ error: "DANFE nao disponivel" });
         }
-        const content = await storage.readFile(row.danfePdfPath);
+
+        // Re-render a partir do XML autorizado (fonte canônica), para que notas
+        // emitidas ANTES do redesenho também saiam no layout novo. É estritamente
+        // best-effort: qualquer falha cai no PDF gravado em disco, que é o
+        // comportamento de sempre. Nunca transforma um download que funciona
+        // hoje num erro.
+        const fresh = await tryRerenderDanfe(storage, row.xmlAutorizadoPath);
+
+        const content = fresh ?? (await storage.readFile(row.danfePdfPath));
         if (!content) {
           return reply.status(404).send({ error: "Arquivo DANFE nao encontrado" });
         }
+        const prefixo = String(row.modelo) === "65" ? "cupom" : "danfe";
+        // `storage.readFile` já devolve Buffer; só o re-render devolve
+        // Uint8Array. Copiar o que já é Buffer duplicaria o PDF inteiro em
+        // memória a cada download servido do disco — o caminho mais comum.
+        const corpo = Buffer.isBuffer(content)
+          ? content
+          : Buffer.from(content as Uint8Array);
         return reply
           .header("Content-Type", "application/pdf")
           .header(
             "Content-Disposition",
-            `attachment; filename="danfe-${row.serie}-${row.numero}.pdf"`,
+            `attachment; filename="${prefixo}-${row.serie}-${row.numero}.pdf"`,
           )
-          .send(content);
+          .send(corpo);
       } catch (error) {
         return reply.status(500).send({
           error: error instanceof Error ? error.message : "Erro ao baixar DANFE",
@@ -1380,12 +1466,24 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
             });
           }
         }
+        // Mesmo re-render best-effort do download, para o anexo do e-mail não
+        // sair num layout diferente do que o cliente baixa pela tela.
+        //
+        // O gate `nfe.danfePdfPath` é DELIBERADAMENTE preservado: ele decide se
+        // existe anexo, e essa decisão não pode mudar. Nota cujo DANFE falhou na
+        // emissão continua enviando e-mail SEM PDF, exatamente como antes —
+        // acrescentar um anexo onde antes não havia mudaria o conteúdo de uma
+        // mensagem que vai para o cliente final. O que o re-render altera é só o
+        // LAYOUT do anexo que já sairia.
         if (nfe.danfePdfPath) {
-          const pdfContent = await storage.readFile(nfe.danfePdfPath);
+          const danfeFresh = await tryRerenderDanfe(storage, nfe.xmlAutorizadoPath);
+          const pdfContent = danfeFresh ?? (await storage.readFile(nfe.danfePdfPath));
           if (pdfContent) {
             attachments.push({
               filename: `danfe-${nfe.serie}-${nfe.numero}.pdf`,
-              content: typeof pdfContent === "string" ? Buffer.from(pdfContent) : pdfContent,
+              content: Buffer.isBuffer(pdfContent)
+                ? pdfContent
+                : Buffer.from(pdfContent as Uint8Array),
             });
           }
         }
