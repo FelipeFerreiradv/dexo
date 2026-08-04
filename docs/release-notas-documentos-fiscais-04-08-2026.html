@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dexo — Documentos Fiscais Redesenhados · 04/08/2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --pergaminho:#f2ede2; --petroleo:#0e1f2a; --creme:#fbf7ee;
+    --amarelo:#f2c419; --bege:#e8dfca; --aco:#3f4a52; --areia:#ddd3bd;
+    --verde:#1f6f4a; --vermelho:#9b2c2c;
+    --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+    --display:'Bricolage Grotesque','Inter',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--pergaminho); color:var(--petroleo);
+    font-family:var(--sans); font-size:10.5pt; line-height:1.62;
+  }
+  .pagina{max-width:190mm; margin:0 auto; padding:14mm 0 18mm}
+  .capa{
+    min-height:247mm; display:flex; flex-direction:column; justify-content:space-between;
+    padding:22mm 16mm; background:var(--petroleo); color:var(--pergaminho);
+    border-radius:14px; page-break-after:always;
+  }
+  .marca{display:flex; align-items:center; gap:12px}
+  .marca .logo{
+    width:38px;height:38px;border-radius:10px;background:var(--amarelo);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--display); font-weight:700; font-size:20px; color:var(--petroleo);
+  }
+  .marca .nome{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em}
+  .capa h1{
+    font-family:var(--display); font-weight:700; font-size:34pt; line-height:1.1;
+    letter-spacing:-.025em; margin:0 0 10px;
+  }
+  .capa .sub{font-size:13pt;color:#c9c0ad;max-width:135mm;margin:0}
+  .capa .faixa{height:5px;width:96px;background:var(--amarelo);border-radius:3px;margin:22px 0}
+  .capa .meta{display:flex;gap:34px;flex-wrap:wrap;font-size:9.5pt;color:#c9c0ad}
+  .capa .meta b{display:block;color:var(--pergaminho);font-size:10.5pt;font-weight:600;margin-top:3px}
+  h2{
+    font-family:var(--display); font-size:19pt; font-weight:700; letter-spacing:-.02em;
+    margin:30px 0 4px; padding-top:14px; border-top:2px solid var(--petroleo);
+    page-break-after:avoid;
+  }
+  h2 .num{color:var(--aco); font-size:12pt; font-weight:600; margin-right:9px}
+  h3{font-family:var(--display);font-size:12.5pt;font-weight:600;margin:20px 0 6px;page-break-after:avoid}
+  h4{font-size:10.5pt;font-weight:600;margin:14px 0 4px;page-break-after:avoid}
+  p{margin:7px 0}
+  ul,ol{margin:7px 0;padding-left:19px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:9pt;background:var(--bege);padding:1px 5px;border-radius:4px}
+  strong{font-weight:600}
+  a{color:var(--petroleo)}
+  .card{background:var(--creme);border:1px solid var(--areia);border-radius:10px;padding:14px 16px;margin:12px 0;page-break-inside:avoid}
+  .destaque{background:var(--creme);border-left:5px solid var(--amarelo);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .atencao{background:#fdf6f6;border-left:5px solid var(--vermelho);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .ok{background:#f2f8f4;border-left:5px solid var(--verde);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .destaque p:first-child,.atencao p:first-child,.ok p:first-child,.card p:first-child{margin-top:0}
+  .destaque p:last-child,.atencao p:last-child,.ok p:last-child,.card p:last-child{margin-bottom:0}
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:9.5pt;page-break-inside:avoid}
+  th{background:var(--petroleo);color:var(--pergaminho);text-align:left;padding:8px 10px;font-weight:600;font-size:9pt}
+  td{padding:7px 10px;border-bottom:1px solid var(--areia);vertical-align:top}
+  tr:nth-child(even) td{background:var(--creme)}
+  th:first-child{border-radius:7px 0 0 0} th:last-child{border-radius:0 7px 0 0}
+  .sumario{background:var(--creme);border:1px solid var(--areia);border-radius:12px;padding:18px 22px;page-break-after:always}
+  .sumario h2{border:0;margin:0 0 10px;padding:0}
+  .sumario ol{list-style:none;padding:0;counter-reset:s}
+  .sumario li{counter-increment:s;padding:7px 0;border-bottom:1px dashed var(--areia);display:flex;gap:10px;align-items:baseline}
+  .sumario li:last-child{border:0}
+  .sumario li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--aco);font-size:9pt;min-width:22px}
+  .sumario li b{font-weight:600}
+  .sumario li span{color:var(--aco);font-size:9pt}
+  .tag{display:inline-block;font-size:8pt;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--bege);color:var(--aco);vertical-align:middle;margin-left:7px}
+  .tag.novo{background:var(--amarelo);color:var(--petroleo)}
+  .tag.corr{background:#e3efe8;color:var(--verde)}
+  .tag.flag{background:#efe6f3;color:#5b3a72}
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:26px;position:relative;margin:6px 0}
+  .check li::before{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border:2px solid var(--aco);border-radius:4px}
+  .faq dt{font-weight:600;margin-top:13px}
+  .faq dd{margin:3px 0 0;padding-left:0;color:var(--aco)}
+  .rodape{margin-top:26px;padding-top:11px;border-top:1px solid var(--areia);font-size:8.5pt;color:var(--aco);display:flex;justify-content:space-between}
+  @page{size:A4;margin:14mm 12mm 16mm}
+  @media print{
+    body{background:#fff}
+    .pagina{max-width:none;padding:0}
+    .capa{border-radius:0;min-height:250mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    .quebra{page-break-before:always}
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+
+  <!-- ============ CAPA ============ -->
+  <section class="capa">
+    <div class="marca">
+      <div class="logo">D</div>
+      <div class="nome">Dexo</div>
+    </div>
+    <div>
+      <div class="faixa"></div>
+      <h1>Documentos fiscais redesenhados</h1>
+      <p class="sub">A nota fiscal e os cupons que o cliente baixa passam a ter cara de documento profissional — e ficam mais leves do que antes. O que mudou, para quem, e como orientar.</p>
+    </div>
+    <div class="meta">
+      <div>Data<b>04 de agosto de 2026</b></div>
+      <div>Público<b>Suporte · Implantação · CS</b></div>
+      <div>Referência<b>Branch nfe-cupom-layout-redesign</b></div>
+      <div>Classificação<b>Uso interno</b></div>
+    </div>
+  </section>
+
+  <!-- ============ SUMÁRIO ============ -->
+  <section class="sumario">
+    <h2>Sumário</h2>
+    <ol>
+      <li><b>Resumo executivo</b> <span>— o que foi entregue e por quê</span></li>
+      <li><b>Objetivo das otimizações</b> <span>— o problema que motivou a revisão</span></li>
+      <li><b>Funcionalidades analisadas</b> <span>— o que foi olhado</span></li>
+      <li><b>Alterações realizadas</b> <span>— uma seção por documento</span></li>
+      <li><b>Justificativa técnica</b> <span>— por que cada mudança existe</span></li>
+      <li><b>Ganhos de desempenho</b> <span>— o que ficou mais rápido</span></li>
+      <li><b>Consumo de recursos e tráfego</b> <span>— o que deixou de ser gasto</span></li>
+      <li><b>Ausência de regressões</b> <span>— como sabemos que nada quebrou</span></li>
+      <li><b>Funcionalidades críticas validadas</b> <span>— a lista conferida</span></li>
+      <li><b>Impacto para o cliente</b> <span>— o que muda na tela dele</span></li>
+      <li><b>O que o Suporte precisa saber</b> <span>— antes de atender</span></li>
+      <li><b>Como orientar os clientes</b> <span>— passo a passo</span></li>
+      <li><b>Perguntas frequentes</b> <span>— respostas prontas</span></li>
+      <li><b>Observações importantes</b> <span>— limites conhecidos</span></li>
+      <li><b>Checklist do Suporte</b> <span>— validação pós-atualização</span></li>
+    </ol>
+  </section>
+
+  <!-- ============ 1 ============ -->
+  <h2><span class="num">01</span>Resumo executivo</h2>
+
+  <p>O Dexo gera três documentos em PDF que o cliente baixa: a <strong>nota fiscal (DANFE)</strong>, o <strong>cupom de venda de balcão</strong> (sem validade fiscal) e o <strong>cupom fiscal NFC-e</strong> (a bobina de 80&nbsp;mm do PDV). Os três tinham aparência simples e não passavam a impressão de documento profissional.</p>
+
+  <p>Esta entrega redesenha os três. A nota fiscal passa a reproduzir a <strong>grade oficial do DANFE</strong> — a mesma que qualquer contador reconhece —, com canhoto de recebimento, código de barras da chave de acesso e todos os quadros normatizados. Os dois cupons ganham diagramação de documento comercial moderno.</p>
+
+  <div class="destaque">
+    <p><strong>O achado mais relevante:</strong> ao trocar a logo do Dexo pela identidade do cliente no cupom de balcão, a imagem passou a ser embutida no tamanho original — e o cupom, que pesava cerca de 100&nbsp;KB, foi para <strong>164&nbsp;KB</strong>. A auditoria pegou isso antes de ir para produção. Com a correção, o mesmo cupom sai com <strong>9,7&nbsp;KB</strong>: ficou <strong>dez vezes mais leve do que já era</strong>.</p>
+  </div>
+
+  <h3>O que foi entregue</h3>
+  <table>
+    <tr><th style="width:26%">Assunto</th><th>Situação anterior</th><th style="width:30%">Depois</th></tr>
+    <tr><td><b>Nota fiscal (DANFE)</b></td><td>Uma folha com blocos de texto simples. Não parecia nota fiscal.</td><td>Grade oficial completa: canhoto, código de barras, quadros de imposto, transportador e produtos em 14 colunas.</td></tr>
+    <tr><td><b>Cupom de balcão</b></td><td>Layout com faixas coloridas e a marca Dexo no cabeçalho.</td><td>Documento sóbrio com a identidade do <b>cliente</b> no topo. Dexo vira uma linha no rodapé.</td></tr>
+    <tr><td><b>Cupom fiscal NFC-e</b></td><td>Bobina com altura calculada &ldquo;no olho&rdquo;, que podia cortar conteúdo.</td><td>Padrão oficial do DANFE NFC-e, com altura calculada a partir do conteúdo real.</td></tr>
+    <tr><td><b>Notas antigas</b></td><td>Ficariam com o layout velho para sempre.</td><td>Passam a sair no layout novo ao serem baixadas de novo.</td></tr>
+    <tr><td><b>Tamanho dos arquivos</b></td><td>Cupom de balcão em ~100&nbsp;KB por download.</td><td>~9,7&nbsp;KB por download.</td></tr>
+  </table>
+
+  <h3>Resultado esperado</h3>
+  <ul>
+    <li>O cliente entrega ao comprador um documento que parece profissional.</li>
+    <li>A nota fiscal é reconhecível como DANFE por contador, transportadora e fiscalização.</li>
+    <li>Downloads mais rápidos e menos consumo de tráfego.</li>
+    <li>Nenhuma tela, cálculo ou regra fiscal muda de comportamento.</li>
+  </ul>
+
+  <!-- ============ 2 ============ -->
+  <h2 class="quebra"><span class="num">02</span>Objetivo das otimizações</h2>
+
+  <p>O Dexo teve, no passado, um problema de consumo de tráfego externo (o chamado <i>egress</i>): o sistema movimentava muito mais dados do que precisava, e isso pesava na conta e na velocidade. Uma branch anterior de Segurança e Otimização criou regras internas para isso, e elas ficaram marcadas no próprio código em <strong>52 pontos</strong>.</p>
+
+  <p>As regras que mais importam aqui:</p>
+  <ol>
+    <li>Buscar do banco <strong>apenas as colunas que serão usadas</strong>, nunca a linha inteira.</li>
+    <li><strong>Nunca fazer uma chamada externa que já se sabe inútil</strong>.</li>
+    <li>Não repetir aviso ou registro a cada ciclo — <strong>uma vez por ocorrência</strong>.</li>
+    <li><strong>Respeitar os caches</strong> que já existem.</li>
+  </ol>
+
+  <p>Esta entrega tinha duas obrigações: nascer respeitando essas regras e verificar se algo, em algum ponto, voltou ao comportamento antigo. A auditoria encontrou <strong>três regressões que o próprio redesenho estava introduzindo</strong> — todas corrigidas antes de ir para produção. Elas estão descritas na seção 4.</p>
+
+  <!-- ============ 3 ============ -->
+  <h2><span class="num">03</span>Funcionalidades analisadas</h2>
+
+  <p>A revisão cobriu o que foi criado e também o que já estava em produção e compartilha código com a novidade.</p>
+
+  <table>
+    <tr><th style="width:32%">Área</th><th>O que foi verificado</th></tr>
+    <tr><td><b>Notas fiscais</b></td><td>Emissão, download do PDF, download do XML, reenvio por e-mail, cancelamento e a listagem.</td></tr>
+    <tr><td><b>PDV e balcão</b></td><td>Emissão de NFC-e em um clique, cupom fiscal e cupom sem validade fiscal.</td></tr>
+    <tr><td><b>Financeiro</b></td><td>Contas a receber e a geração do cupom de venda.</td></tr>
+    <tr><td><b>Produtos</b></td><td>Criação, edição, exclusão e sincronização com os marketplaces.</td></tr>
+    <tr><td><b>Pedidos e estoque</b></td><td>Importação automática, baixa automática, atualização de estoque e reconciliação.</td></tr>
+    <tr><td><b>Rotinas de fundo</b></td><td>Filas, jobs, webhooks e as rotinas agendadas de sincronização.</td></tr>
+    <tr><td><b>Acesso</b></td><td>Autenticação e permissões de página.</td></tr>
+  </table>
+
+  <!-- ============ 4 ============ -->
+  <h2 class="quebra"><span class="num">04</span>Alterações realizadas</h2>
+
+  <h3>4.1 Nota fiscal — grade oficial do DANFE <span class="tag novo">novo</span></h3>
+  <p>O documento passa a seguir a estrutura normatizada, na ordem que qualquer DANFE do mercado usa: canhoto de recebimento com linha de corte, identificação do emitente, o bloco <code>DANFE</code> com a indicação de entrada/saída e a numeração da folha, o código de barras da chave de acesso, a chave escrita por extenso, natureza da operação, protocolo de autorização, destinatário, fatura/duplicata, cálculo do imposto, transportador e volumes, a tabela de produtos com 14 colunas e, no fim, informações complementares e o espaço reservado ao fisco.</p>
+
+  <div class="ok">
+    <p><strong>Garantia importante:</strong> o documento é montado em duas etapas — primeiro o sistema mede tudo, depois desenha. É isso que permite escrever &ldquo;FOLHA 1/3&rdquo; já na primeira página e garante que <strong>nenhum item e nenhuma linha de observação seja descartada</strong>, por mais longa que a nota seja.</p>
+  </div>
+
+  <h3>4.2 Cupom de balcão — identidade do cliente <span class="tag novo">novo</span></h3>
+  <p>O cabeçalho passa a mostrar a razão social e a logo do <strong>cliente</strong>, não a marca Dexo. Saíram as faixas coloridas; entraram filetes finos, tipografia limpa e um rodapé fixo em duas colunas. O aviso <strong>&ldquo;SEM VALIDADE FISCAL&rdquo;</strong> continua obrigatório e aparece em três lugares independentes: um selo no cabeçalho, uma marca d&rsquo;água diagonal e o rodapé legal.</p>
+  <p>A acentuação foi restaurada: o documento escrevia &ldquo;BALCAO&rdquo; e &ldquo;Descricao&rdquo; sem acento por uma limitação que, na verdade, não existia.</p>
+
+  <h3>4.3 Cupom fiscal NFC-e — padrão oficial <span class="tag novo">novo</span></h3>
+  <p>A bobina de 80&nbsp;mm passa a seguir o Manual do DANFE NFC-e. A altura do cupom deixou de ser uma soma de valores estimados — que já errava para menos em dois blocos — e passa a ser calculada a partir do conteúdo real, com uma verificação automática que impede qualquer texto de sair da área impressa.</p>
+
+  <h3>4.4 Notas antigas ganham o layout novo <span class="tag flag">com chave</span></h3>
+  <p>O PDF da nota é gravado no momento da emissão. Sem nenhuma providência, notas já emitidas ficariam com o layout velho para sempre. Agora, ao baixar, o sistema regenera o documento a partir do <strong>XML autorizado</strong> — que é a fonte oficial e não muda. Se algo falhar, ele entrega o arquivo gravado, como sempre fez.</p>
+
+  <h3>4.5 Correções de tráfego encontradas na auditoria <span class="tag corr">correção</span></h3>
+  <table>
+    <tr><th style="width:30%">Problema</th><th>Correção</th></tr>
+    <tr><td><b>Cupom 65% maior</b> — a logo do cliente era embutida no tamanho original (até 1600&nbsp;px) para ser desenhada num círculo de 1,4&nbsp;cm.</td><td>A imagem passa a ser reduzida antes de entrar no PDF, numa resolução ainda acima do que qualquer impressora aproveita.</td></tr>
+    <tr><td><b>O sistema pedia a imagem para si mesmo</b> por uma requisição de rede, para ler um arquivo que está no próprio disco.</td><td>Passa a ler direto do disco. A rede só é usada para imagem hospedada fora.</td></tr>
+    <tr><td><b>Um cache foi removido sem reposição</b> — a logo era buscada e reprocessada a cada cupom emitido.</td><td>Cache por cliente, com validade de 10 minutos, guardando também as falhas (para não repetir uma busca que já se sabe que falha).</td></tr>
+    <tr><td><b>A imagem era buscada antes de saber se a venda existia</b> — um pedido inválido pagava o custo à toa.</td><td>A imagem só é resolvida depois da verificação.</td></tr>
+    <tr><td><b>O aviso de logo com problema</b> era gravado a cada download, para sempre.</td><td>Passa a ser gravado uma vez por ocorrência.</td></tr>
+  </table>
+
+  <!-- ============ 5 ============ -->
+  <h2 class="quebra"><span class="num">05</span>Justificativa técnica</h2>
+
+  <table>
+    <tr><th style="width:34%">Alteração</th><th>Por que existe</th></tr>
+    <tr><td><b>Grade oficial do DANFE</b></td><td>O cliente veio de um sistema concorrente e forneceu o DANFE dele como referência. Um documento com a grade normatizada é reconhecido de imediato por contador, transportadora e fiscalização; um documento &ldquo;bonito porém livre&rdquo; não é.</td></tr>
+    <tr><td><b>Duas etapas (medir e depois desenhar)</b></td><td>Sem medir antes, não há como saber quantas folhas a nota terá — e a numeração &ldquo;FOLHA 1/3&rdquo; sairia errada. É também o que garante que nada seja cortado.</td></tr>
+    <tr><td><b>Redução da imagem antes do PDF</b></td><td>A logo é desenhada num círculo de 1,4&nbsp;cm. Embutir a imagem original é carregar até 100 vezes mais bytes do que a impressão aproveita — em todo download, para sempre.</td></tr>
+    <tr><td><b>Leitura em disco no lugar de rede</b></td><td>A imagem é servida pelo próprio sistema. Buscá-la por rede é o servidor conversando consigo mesmo, gastando tráfego e ocupando um espaço no limite de requisições. Já havia solução igual em produção para as imagens da Shopee.</td></tr>
+    <tr><td><b>Cache com registro de falhas</b></td><td>Quatro de cada cinco logos verificadas na amostra apontam para arquivo que não existe mais. Sem guardar a falha, cada cupom repetiria a mesma busca inútil.</td></tr>
+    <tr><td><b>Limite de tamanho no regerar</b></td><td>Gerar o PDF ocupa o servidor inteiro enquanto acontece. O limite antigo permitia uma nota gigantesca prender o sistema por meio segundo. O novo limite ainda comporta 190 itens — e a maior nota real em produção tem <b>2</b>.</td></tr>
+  </table>
+
+  <!-- ============ 6 ============ -->
+  <h2><span class="num">06</span>Ganhos de desempenho</h2>
+
+  <p>Todos os números abaixo foram <strong>medidos</strong> neste projeto, não estimados.</p>
+
+  <table>
+    <tr><th style="width:44%">Situação</th><th>Antes</th><th>Depois</th></tr>
+    <tr><td>Buscar a logo do cliente (primeira vez)</td><td>129,6&nbsp;ms</td><td>129,6&nbsp;ms</td></tr>
+    <tr><td>Buscar a logo do cliente (demais vezes)</td><td>129,6&nbsp;ms cada</td><td><b>0,001&nbsp;ms</b></td></tr>
+    <tr><td>10 cupons seguidos do mesmo cliente</td><td>10 consultas + 10 downloads + 10 conversões</td><td><b>1 consulta + 1 leitura + 1 conversão</b></td></tr>
+    <tr><td>Pior caso de travamento ao regerar a nota</td><td>~480&nbsp;ms</td><td><b>~120&nbsp;ms</b></td></tr>
+    <tr><td>Cópia do PDF na memória a cada download</td><td>Sempre</td><td>Só quando necessário</td></tr>
+  </table>
+
+  <!-- ============ 7 ============ -->
+  <h2><span class="num">07</span>Consumo de recursos e tráfego</h2>
+
+  <table>
+    <tr><th style="width:44%">Cupom de venda de balcão</th><th>Tamanho por download</th></tr>
+    <tr><td>Versão em produção hoje (com a logo do Dexo embutida)</td><td>~99,7&nbsp;KB</td></tr>
+    <tr><td>Versão redesenhada, <b>antes</b> da correção</td><td>164,5&nbsp;KB <span class="tag">+65%</span></td></tr>
+    <tr><td>Versão redesenhada, <b>depois</b> da correção</td><td><b>9,7&nbsp;KB</b> <span class="tag corr">&minus;90%</span></td></tr>
+  </table>
+
+  <div class="ok">
+    <p><strong>Confirmação:</strong> nenhuma otimização desta entrega acrescenta chamada, consulta ou processamento. Todas <strong>removem</strong> trabalho. As regras de redução de tráfego da branch de Segurança e Otimização continuam sendo respeitadas — inclusive as duas que o redesenho havia furado, agora corrigidas.</p>
+  </div>
+
+  <h3>Verificações de conformidade</h3>
+  <ul>
+    <li>A única consulta nova ao banco lê <strong>uma coluna</strong>, buscando por chave primária.</li>
+    <li>Nenhuma listagem, nenhuma leitura de tabela inteira e nenhum <i>join</i> pesado foi introduzido.</li>
+    <li>Nenhuma chamada nova a Mercado Livre, Shopee ou Magalu.</li>
+    <li>A chamada de rede que existia foi <strong>eliminada</strong> no caso comum.</li>
+    <li>Avisos repetidos foram reduzidos a um por ocorrência.</li>
+  </ul>
+
+  <!-- ============ 8 ============ -->
+  <h2 class="quebra"><span class="num">08</span>Ausência de regressões</h2>
+
+  <table>
+    <tr><th style="width:38%">Verificação</th><th>Resultado</th></tr>
+    <tr><td>Bateria de testes automatizados</td><td><b>245 arquivos, 7 lotes, zero falha</b></td></tr>
+    <tr><td>Verificação de tipos do projeto</td><td><b>Idêntica ao ponto de partida</b>, sem nenhum problema novo</td></tr>
+    <tr><td>Arquivos críticos conferidos um a um</td><td><b>16 arquivos, todos intocados</b></td></tr>
+    <tr><td>Inspeção visual dos documentos</td><td>19 PDFs gerados e conferidos, incluindo notas reais de produção</td></tr>
+  </table>
+
+  <h3>Contratos preservados</h3>
+  <p>A auditoria encontrou duas situações em que o redesenho havia ampliado, sem que fosse pedido, o comportamento de dois endpoints. As duas foram revertidas:</p>
+  <ul>
+    <li>O download da nota voltou a responder exatamente como antes quando a nota não tem PDF gravado.</li>
+    <li>O reenvio por e-mail voltou a decidir a existência do anexo exatamente como antes — o redesenho muda o <strong>layout</strong> do anexo, nunca se ele existe. Como esse e-mail vai para o cliente final, essa distinção importa.</li>
+  </ul>
+
+  <!-- ============ 9 ============ -->
+  <h2><span class="num">09</span>Funcionalidades críticas validadas</h2>
+
+  <p>Cada item abaixo foi verificado por leitura do código e pela bateria de testes. Nenhum arquivo dessas áreas aparece na entrega.</p>
+
+  <table>
+    <tr><th style="width:50%">Funcionalidade</th><th>Situação</th></tr>
+    <tr><td>Criação, edição e exclusão de produtos</td><td>Intocada</td></tr>
+    <tr><td>Sincronização de produtos com os marketplaces</td><td>Intocada</td></tr>
+    <tr><td>Importação automática de pedidos</td><td>Intocada</td></tr>
+    <tr><td>Baixa automática e atualização de estoque</td><td>Intocada</td></tr>
+    <tr><td>Fluxo de pedidos</td><td>Intocado</td></tr>
+    <tr><td>Integrações (ML, Shopee, Magalu)</td><td>Intocadas</td></tr>
+    <tr><td>Rotinas agendadas, jobs, filas e webhooks</td><td>Intocados</td></tr>
+    <tr><td>Emissão da nota fiscal e cálculo dos impostos</td><td>Intocados</td></tr>
+    <tr><td>Geração e assinatura do XML</td><td>Intocadas</td></tr>
+    <tr><td>Autenticação e permissões</td><td>Intocadas</td></tr>
+    <tr><td>Estrutura do banco de dados</td><td>Intocada</td></tr>
+  </table>
+
+  <!-- ============ 10 ============ -->
+  <h2 class="quebra"><span class="num">10</span>Impacto para o cliente</h2>
+
+  <h3>O que ele vai notar</h3>
+  <ul>
+    <li><strong>A nota fiscal parece uma nota fiscal.</strong> É a mudança mais visível.</li>
+    <li><strong>O cupom de balcão tem a cara da empresa dele</strong>, com a razão social e a logo no topo — não mais a marca Dexo.</li>
+    <li><strong>Os documentos abrem mais rápido</strong> e ocupam menos espaço ao serem salvos ou enviados por WhatsApp.</li>
+    <li><strong>Acentos aparecem corretamente</strong> no cupom de balcão.</li>
+  </ul>
+
+  <h3>O que ele <u>não</u> vai notar</h3>
+  <ul>
+    <li>Nenhuma tela mudou de lugar. Os mesmos botões, nos mesmos lugares.</li>
+    <li>Nenhum valor, imposto ou total mudou. Os números são os mesmos.</li>
+    <li>Notas já emitidas continuam válidas. O XML enviado à SEFAZ é o mesmo.</li>
+  </ul>
+
+  <div class="atencao">
+    <p><strong>Atenção — documentos já baixados:</strong> um PDF que o cliente salvou antes da atualização continua com o layout antigo. Isso é normal: o arquivo já estava no computador dele. Ao <strong>baixar de novo pelo sistema</strong>, sai no layout novo.</p>
+  </div>
+
+  <!-- ============ 11 ============ -->
+  <h2><span class="num">11</span>O que o Suporte precisa saber</h2>
+
+  <div class="card">
+    <p><strong>1. A mudança é apenas visual.</strong> Se o cliente perguntar se precisa reemitir alguma nota, a resposta é <b>não</b>. Nada do que foi enviado à SEFAZ mudou.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>2. A logo do cupom vem da foto de perfil do usuário.</strong> Não existe hoje um campo &ldquo;logo da empresa&rdquo; separado. Se o cliente quiser a logo no cupom, oriente a subir a imagem em <b>Configurações &rsaquo; foto de perfil</b>. Sem imagem, aparecem as iniciais da razão social — o que também fica bom.</p>
+  </div>
+
+  <div class="atencao">
+    <p><strong>3. Existe uma situação em que o botão de baixar a nota não funciona — e ela é anterior a esta entrega.</strong> Levantamos que <b>6.130 das 6.298 notas autorizadas não têm PDF gravado</b>. São notas importadas ou migradas de outros sistemas, que entraram no Dexo só com o cabeçalho, sem os itens. Para elas o botão sempre falhou e continuará falhando. Isso <b>não</b> foi causado por esta atualização e está registrado para tratamento em separado.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>4. Há uma chave de desligamento para a nota fiscal.</strong> Se aparecer qualquer problema no DANFE, a Engenharia consegue voltar ao layout anterior alterando uma configuração e reiniciando — sem publicar versão nova. Os dois cupons <b>não</b> têm essa chave: voltar atrás neles exige nova publicação.</p>
+  </div>
+
+  <!-- ============ 12 ============ -->
+  <h2 class="quebra"><span class="num">12</span>Como orientar os clientes</h2>
+
+  <h3>Cliente diz que a nota &ldquo;mudou de cara&rdquo;</h3>
+  <ol>
+    <li>Confirme que é a aparência, não o conteúdo: peça para conferir número, série, chave de acesso e valor total.</li>
+    <li>Explique que o documento passou a seguir o padrão oficial usado no mercado.</li>
+    <li>Se ele usa contador, reforce que o formato agora é <b>mais</b> familiar para o contador, não menos.</li>
+  </ol>
+
+  <h3>Cliente quer a logo da empresa no cupom</h3>
+  <ol>
+    <li>Peça para acessar <b>Configurações</b> e subir a imagem na foto de perfil.</li>
+    <li>Oriente a usar imagem quadrada — ela é exibida num círculo.</li>
+    <li>Peça para gerar um cupom novo e conferir.</li>
+    <li>Se não aparecer, verifique se a imagem foi realmente salva; imagens antigas podem ter se perdido em migração.</li>
+  </ol>
+
+  <h3>Cliente diz que o botão de baixar a nota não faz nada</h3>
+  <ol>
+    <li>Pergunte de que nota se trata (número e série).</li>
+    <li>Verifique se ela foi <b>emitida pelo Dexo</b> ou importada de outro sistema.</li>
+    <li>Se foi importada, é o caso descrito no item 3 da seção anterior — encaminhe para a Engenharia com o número da nota.</li>
+    <li>Se foi emitida pelo Dexo e mesmo assim falha, abra chamado com o número e a série.</li>
+  </ol>
+
+  <h3>Cliente pergunta se precisa reemitir</h3>
+  <p>Não. Explique que o XML enviado à SEFAZ não mudou — só a folha que se imprime. Se ele quiser a versão nova de uma nota antiga, basta baixar de novo pelo sistema.</p>
+
+  <!-- ============ 13 ============ -->
+  <h2><span class="num">13</span>Perguntas frequentes</h2>
+
+  <dl class="faq">
+    <dt>A nota fiscal mudou de valor ou de imposto?</dt>
+    <dd>Não. Nenhum cálculo foi alterado. Mudou só a diagramação da folha.</dd>
+
+    <dt>Preciso avisar o contador?</dt>
+    <dd>Não é necessário. O documento agora segue o padrão que ele já conhece.</dd>
+
+    <dt>As notas antigas vão sair no formato novo?</dt>
+    <dd>Sim, ao serem baixadas de novo pelo sistema. Arquivos já salvos no computador continuam como estavam.</dd>
+
+    <dt>O cupom de balcão vale como nota fiscal agora que ficou bonito?</dt>
+    <dd>Não, e isso está deixado claro em três lugares do documento: no selo do cabeçalho, na marca d&rsquo;água e no rodapé.</dd>
+
+    <dt>Por que a logo do Dexo saiu do cupom?</dt>
+    <dd>Porque o documento é do cliente e vai para o comprador dele. O Dexo continua identificado numa linha discreta no rodapé.</dd>
+
+    <dt>O cupom fiscal do PDV também mudou?</dt>
+    <dd>Sim. Passou a seguir o padrão oficial do DANFE NFC-e, com todos os blocos obrigatórios e o QR Code.</dd>
+
+    <dt>Ficou mais lento?</dt>
+    <dd>Não. Os arquivos ficaram cerca de dez vezes menores e a busca da logo passou a ser praticamente instantânea a partir do segundo documento.</dd>
+
+    <dt>Isso consome mais internet do servidor?</dt>
+    <dd>Ao contrário. A entrega <b>reduz</b> o consumo: os arquivos são muito menores e uma chamada de rede que existia foi eliminada.</dd>
+  </dl>
+
+  <!-- ============ 14 ============ -->
+  <h2 class="quebra"><span class="num">14</span>Observações importantes</h2>
+
+  <div class="atencao">
+    <p><strong>Notas emitidas pelo provedor Focus NFe não ganham o layout novo ao serem baixadas.</strong> São 3 notas no sistema inteiro, contra 181 pelo caminho direto com a SEFAZ. O arquivo que o Focus devolve não é o XML da nota, e sem ele não é possível regerar o documento. Essas notas continuam entregando o PDF gravado na emissão — nada quebra, apenas não muda de aparência. Registrado para tratamento em separado.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>Não existe campo de logo da empresa.</strong> O sistema usa a foto de perfil do usuário. Se no futuro fizer sentido separar as duas coisas, é uma melhoria a avaliar.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>O cupom de balcão mostra poucos dados do cliente</strong> — nome, CPF e e-mail. Endereço e CNPJ não são carregados nessa tela. Não é limitação do desenho: o dado não chega até ali.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>Melhorias mapeadas e conscientemente não feitas nesta entrega,</strong> por representarem mais risco do que ganho: guardar em memória o PDF já regerado; mudar a forma como o texto espaçado é desenhado no cupom (mudaria o visual aprovado); e otimizar o corte de textos longos (o ganho medido ficou dentro da margem de erro no caso comum).</p>
+  </div>
+
+  <!-- ============ 15 ============ -->
+  <h2><span class="num">15</span>Checklist do Suporte</h2>
+
+  <p>Para validar em uma conta de cliente logo após a atualização:</p>
+
+  <ul class="check">
+    <li>Abrir <b>Notas fiscais</b> e baixar o PDF de uma nota autorizada emitida pelo Dexo.</li>
+    <li>Conferir no PDF: canhoto no topo, código de barras à direita, chave de acesso escrita por extenso e a numeração &ldquo;FOLHA 1/1&rdquo;.</li>
+    <li>Conferir se número, série, chave e valor total batem com a listagem.</li>
+    <li>Abrir <b>Financeiro</b> e gerar o cupom de uma conta a receber com itens.</li>
+    <li>Conferir que o cabeçalho traz a razão social do cliente e que o aviso &ldquo;SEM VALIDADE FISCAL&rdquo; aparece.</li>
+    <li>Conferir que os acentos estão corretos (&ldquo;BALCÃO&rdquo;, &ldquo;Descrição&rdquo;, &ldquo;Preço&rdquo;).</li>
+    <li>Emitir uma NFC-e pelo PDV e conferir o QR Code e a chave de acesso no cupom.</li>
+    <li>Confirmar que o tamanho do cupom baixado ficou em torno de 10&nbsp;KB.</li>
+    <li>Fazer uma venda de balcão completa e confirmar que a baixa de estoque ocorreu normalmente.</li>
+    <li>Conferir que a sincronização com os marketplaces seguiu funcionando.</li>
+  </ul>
+
+  <div class="rodape">
+    <span>Dexo — Documentos Fiscais Redesenhados · 04/08/2026 · branch nfe-cupom-layout-redesign</span>
+    <span>Uso interno</span>
+  </div>
+</div>
+</body>
+</html>

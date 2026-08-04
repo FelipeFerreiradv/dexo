@@ -1,49 +1,39 @@
 /**
- * DANFE NFC-e (cupom) — Documento Auxiliar da NFC-e, modelo 65.
+ * DANFE NFC-e (cupom fiscal), modelo 65 — bobina de 80mm.
  *
- * NOVO serviço (Fase 2 do PDV), 100% aditivo: o DANFE A4 da NF-e 55
- * (danfe-pdf.service.ts) segue intocado. Layout cupom 80mm (226.77pt de
- * largura, altura calculada pelo conteúdo), com QR Code obrigatório.
+ * Segue o Manual de Padrões Técnicos do DANFE NFC-e: cabeçalho do emitente,
+ * faixa legal, tabela de itens, totais, forma de pagamento, consulta pela chave
+ * de acesso, identificação do consumidor, protocolo de autorização e QR Code.
  *
- * QR: pacote `qrcode` (já é dependência; mesmo padrão de uso de
- * app/localizacoes/lib/location-labels-pdf.ts) — toDataURL → embedPng.
- * Roda server-side (Fastify), sem guard de window.
+ * MOTOR DE DUAS FASES (medir → desenhar). A altura da bobina é calculada a
+ * partir de uma lista de operações cujo `h` sai das MESMAS fontes e do MESMO
+ * wrap usados no desenho. Antes disto a altura era uma soma de constantes
+ * chutadas que já subestimava alguns blocos e só não vazava porque outros
+ * sobravam — um item com descrição longa bastava para o conteúdo sair da
+ * página. Agora subestimar é estruturalmente impossível, e há um invariante
+ * de TINTA REAL (não uma tautologia aritmética) verificado nos testes.
  */
 
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf-lib";
 
 import type { NfeDraftResponse } from "../../interfaces/nfe.interface";
 import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interface";
 import { parseNfeXml } from "../sefaz/nfe-xml-parser.service";
 import { extractQrCodeFromXml } from "../nfce/qr-code";
 import { projectParsedNfeToDraft } from "./danfe-pdf.service";
-import { formatBRLNumber } from "./danfe-helpers";
-
-// Rótulos de meio de pagamento locais ao motor fiscal (evita acoplar o
-// backend à lib de formulário do front). Chaves = MeioPagamento (nfe.types).
-const MEIO_LABELS: Record<string, string> = {
-  DINHEIRO: "Dinheiro",
-  CHEQUE: "Cheque",
-  CARTAO_CREDITO: "Cartao de credito",
-  CARTAO_DEBITO: "Cartao de debito",
-  CREDITO_LOJA: "Credito loja",
-  VALE_ALIMENTACAO: "Vale alimentacao",
-  VALE_REFEICAO: "Vale refeicao",
-  VALE_PRESENTE: "Vale presente",
-  VALE_COMBUSTIVEL: "Vale combustivel",
-  BOLETO: "Boleto bancario",
-  DEPOSITO: "Deposito bancario",
-  PIX: "PIX",
-  TRANSFERENCIA: "Transferencia bancaria",
-  PROGRAMA_FIDELIDADE: "Programa de fidelidade",
-  SEM_PAGAMENTO: "Sem pagamento",
-  OUTROS: "Outros",
-};
+import { formatBRLNumber, toWinAnsiSafeLine, wrapTextLines } from "./danfe-helpers";
+import { normalizePagamentos, type PagamentoView } from "./danfe-render-extras";
+import { composeInfCpl } from "../domain/inf-cpl";
 
 // 80mm em pontos (1pt = 1/72"; 80mm ≈ 226.77pt)
 const CUPOM_W = 226.77;
-const MARGIN = 10;
+const MARGIN = 9;
 const INNER_W = CUPOM_W - MARGIN * 2;
+const PAD_TOP = 10;
+const PAD_BOT = 12;
+
+const INK = rgb(0, 0, 0);
+const GRAY = rgb(0.35, 0.35, 0.35);
 
 export interface DanfeNfceInput {
   draft: NfeDraftResponse;
@@ -51,216 +41,466 @@ export interface DanfeNfceInput {
   chaveAcesso: string | null;
   protocolo: string | null;
   dataAutorizacao?: string | Date | null;
-  /** URL completa do QR (conteúdo do <qrCode>). null ⇒ cupom sem imagem QR. */
+  /** URL completa do QR (conteúdo do `<qrCode>`). null ⇒ cupom sem imagem QR. */
   qrCode: string | null;
-  /** URL de consulta por chave (conteúdo do <urlChave>). */
+  /** URL de consulta por chave (conteúdo do `<urlChave>`). */
   urlChave: string | null;
 }
 
-export class DanfeNfcePdfService {
-  async generate(input: DanfeNfceInput): Promise<Uint8Array> {
-    const { draft, config } = input;
-    const itens = draft.itens ?? [];
-    const pagamentos = ((draft.pagamentosJson as any[]) ?? []).filter(Boolean);
-    const isHomolog = draft.ambiente !== "PRODUCAO";
-    const dest = draft.destinatarioJson as any;
-    const totais = (draft.totaisJson as any) ?? null;
-    const totalNota =
-      Number(totais?.totalNota) ||
-      itens.reduce((acc, it) => acc + (Number(it.valorTotal) || 0), 0);
-    const totalDesconto = Number(totais?.totalDesconto) || 0;
+// ═══════════════════════════════════════════════════════════════════
+// Motor de operações
+// ═══════════════════════════════════════════════════════════════════
 
-    // ── Altura calculada pelo conteúdo (cupom térmico: sem página fixa) ──
-    const qrSize = input.qrCode ? 110 : 0;
-    const height =
-      MARGIN * 2 +
-      64 + // cabeçalho emitente
-      (isHomolog ? 22 : 0) +
-      16 + // título documento
-      12 + // header tabela itens
-      itens.length * 18 +
-      8 +
-      (totalDesconto > 0 ? 11 : 0) +
-      13 + // total
-      Math.max(pagamentos.length, 1) * 11 +
-      8 +
-      22 + // consumidor
-      30 + // chave de acesso (label + 2 linhas)
-      (input.urlChave ? 18 : 0) +
-      (qrSize ? qrSize + 8 : 0) +
-      24 + // protocolo
-      8;
+/**
+ * Superfície de desenho que REGISTRA a extensão vertical da tinta emitida.
+ *
+ * É o que permite ao teste afirmar "nenhuma operação desenhou abaixo do que
+ * reservou" — comparar `height` com a soma dos `h` seria tautológico, já que
+ * a altura É a soma.
+ */
+export interface DrawSurface {
+  text(
+    t: string,
+    opts: {
+      x?: number;
+      baseline: number;
+      size: number;
+      bold?: boolean;
+      color?: ReturnType<typeof rgb>;
+      align?: "left" | "center" | "right";
+    },
+  ): void;
+  line(y: number): void;
+  image(img: PDFImage, x: number, y: number, size: number): void;
+}
 
-    const doc = await PDFDocument.create();
-    const page = doc.addPage([CUPOM_W, height]);
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-    const black = rgb(0, 0, 0);
-    const gray = rgb(0.35, 0.35, 0.35);
+export interface CupomOp {
+  /** Rótulo de diagnóstico — aparece nas mensagens de falha dos testes. */
+  label: string;
+  h: number;
+  draw: (s: DrawSurface, top: number) => void;
+}
 
-    let y = height - MARGIN;
-
-    const text = (
-      s: string,
-      size: number,
-      opts?: { bold?: boolean; center?: boolean; color?: any },
-    ) => {
-      const f = opts?.bold ? bold : font;
-      const w = f.widthOfTextAtSize(s, size);
-      const x = opts?.center ? (CUPOM_W - w) / 2 : MARGIN;
-      y -= size + 2;
-      page.drawText(s, { x, y, size, font: f, color: opts?.color ?? black });
-    };
-
-    const hr = () => {
-      y -= 4;
+/** Cria uma superfície ligada a uma página real, reportando a menor tinta. */
+function pageSurface(
+  page: PDFPage,
+  font: PDFFont,
+  bold: PDFFont,
+  onInk: (y: number) => void,
+): DrawSurface {
+  return {
+    text(t, o) {
+      if (!t) return;
+      const f = o.bold ? bold : font;
+      const w = f.widthOfTextAtSize(t, o.size);
+      const x =
+        o.align === "center"
+          ? (CUPOM_W - w) / 2
+          : o.align === "right"
+            ? CUPOM_W - MARGIN - w
+            : (o.x ?? MARGIN);
+      page.drawText(t, { x, y: o.baseline, size: o.size, font: f, color: o.color ?? INK });
+      // Descendente aproximado das Helvetica (~21% do corpo).
+      onInk(o.baseline - o.size * 0.21);
+    },
+    line(y) {
       page.drawLine({
         start: { x: MARGIN, y },
         end: { x: CUPOM_W - MARGIN, y },
         thickness: 0.5,
-        color: gray,
+        color: GRAY,
       });
-      y -= 2;
-    };
+      onInk(y);
+    },
+    image(img, x, y, size) {
+      page.drawImage(img, { x, y, width: size, height: size });
+      onInk(y);
+    },
+  };
+}
 
-    // ── Emitente ──
-    text(trunc(config.razaoSocial ?? "", 38), 9, { bold: true, center: true });
-    text(`CNPJ ${formatCnpj(config.cnpj ?? "")}`, 7, { center: true });
-    const endLinha = [config.logradouro, config.numero]
-      .filter(Boolean)
-      .join(", ");
-    if (endLinha) text(trunc(endLinha, 44), 7, { center: true });
-    const cidadeLinha = [config.municipio, config.uf].filter(Boolean).join(" - ");
-    if (cidadeLinha) text(trunc(cidadeLinha, 44), 7, { center: true });
-    hr();
+// ═══════════════════════════════════════════════════════════════════
+// Construção das operações (fase de medição)
+// ═══════════════════════════════════════════════════════════════════
 
-    if (isHomolog) {
-      text("EMITIDA EM AMBIENTE DE HOMOLOGACAO", 8, { bold: true, center: true });
-      text("SEM VALOR FISCAL", 8, { bold: true, center: true });
-      hr();
-    }
+const LINE_GAP = 2;
+const RULE_H = 6;
 
-    text("DANFE NFC-e - Documento Auxiliar da NFC-e", 7.5, {
-      bold: true,
-      center: true,
-    });
-    text("Nao permite aproveitamento de credito de ICMS", 6.5, {
-      center: true,
-      color: gray,
-    });
-    hr();
+/**
+ * Descendente aproximado das Helvetica, em fração do corpo.
+ *
+ * A altura de um bloco de texto NÃO é só a soma dos corpos + gaps: a última
+ * linha ainda pinta abaixo da sua baseline (perna do "p", "g", "ç"). Ignorar
+ * isso faz cada bloco vazar ~1-2pt para dentro do bloco seguinte — invisível
+ * bloco a bloco, cumulativo ao longo da bobina.
+ */
+const DESCENDER = 0.21;
 
-    // ── Itens ──
-    text("ITEM  DESCRICAO           QTD x UNIT       TOTAL", 6.5, {
-      bold: true,
-    });
-    itens.forEach((it, idx) => {
-      const desc = trunc(it.descricao ?? "", 34);
-      text(`${String(idx + 1).padStart(3, "0")} ${desc}`, 7);
-      const qtd = Number(it.quantidade) || 0;
-      const vu = Number(it.valorUnitario) || 0;
-      const vt = Number(it.valorTotal) || 0;
-      const linha = `${qtd} x ${formatBRLNumber(vu)}`;
-      const totalStr = formatBRLNumber(vt);
-      // linha de valores: qtd x unit à esquerda, total à direita
-      y -= 9;
-      page.drawText(linha, { x: MARGIN + 14, y, size: 7, font, color: black });
-      const tw = bold.widthOfTextAtSize(totalStr, 7);
-      page.drawText(totalStr, {
-        x: CUPOM_W - MARGIN - tw,
-        y,
-        size: 7,
-        font: bold,
-        color: black,
-      });
-    });
-    hr();
+interface BuildDeps {
+  font: PDFFont;
+  bold: PDFFont;
+  qrImage: PDFImage | null;
+}
 
-    // ── Totais + pagamentos ──
-    if (totalDesconto > 0) {
-      rowKV(page, font, bold, y, "Desconto", formatBRLNumber(totalDesconto));
-      y -= 11;
-    }
-    rowKV(page, font, bold, y, "TOTAL R$", formatBRLNumber(totalNota), true);
-    y -= 13;
-    const pagRows =
-      pagamentos.length > 0
-        ? pagamentos.map((p) => ({
-            label: MEIO_LABELS[p.meio] ?? String(p.meio ?? "Outros"),
-            valor: formatBRLNumber(Number(p.valor) || 0),
-          }))
-        : [{ label: "Sem pagamento", valor: formatBRLNumber(0) }];
-    for (const p of pagRows) {
-      rowKV(page, font, bold, y, p.label, p.valor);
-      y -= 11;
-    }
-    hr();
+/** Bloco de linhas de texto (já quebradas), com altura = Σ (size + gap). */
+function textBlock(
+  label: string,
+  linhas: Array<{
+    t: string;
+    size: number;
+    bold?: boolean;
+    align?: "left" | "center" | "right";
+    color?: ReturnType<typeof rgb>;
+  }>,
+): CupomOp {
+  const ultima = linhas[linhas.length - 1];
+  const h =
+    linhas.reduce((a, l) => a + l.size + LINE_GAP, 0) +
+    (ultima ? ultima.size * DESCENDER : 0);
+  return {
+    label,
+    h,
+    draw(s, top) {
+      let y = top;
+      for (const l of linhas) {
+        y -= l.size + LINE_GAP;
+        s.text(l.t, {
+          baseline: y,
+          size: l.size,
+          bold: l.bold,
+          align: l.align ?? "left",
+          color: l.color,
+        });
+      }
+    },
+  };
+}
 
-    // ── Consumidor ──
-    const docDest = String(dest?.cpfCnpj ?? "").replace(/\D/g, "");
-    if (docDest) {
-      text(
-        `CONSUMIDOR ${docDest.length <= 11 ? "CPF" : "CNPJ"} ${docDest}`,
-        7,
-        { center: true },
-      );
-    } else {
-      text("CONSUMIDOR NAO IDENTIFICADO", 7, { center: true });
-    }
-    hr();
+/** Linha rótulo-à-esquerda / valor-à-direita. */
+function kvRow(
+  label: string,
+  esquerda: string,
+  direita: string,
+  size: number,
+  isBold = false,
+): CupomOp {
+  const h = size + LINE_GAP + size * DESCENDER;
+  return {
+    label,
+    h,
+    draw(s, top) {
+      const baseline = top - size - LINE_GAP;
+      s.text(esquerda, { baseline, size, bold: isBold });
+      s.text(direita, { baseline, size, bold: isBold, align: "right" });
+    },
+  };
+}
 
-    // ── Chave de acesso ──
-    const chave = (input.chaveAcesso ?? "").replace(/\D/g, "");
-    text(
-      `NFC-e n. ${draft.numero ?? ""} Serie ${draft.serie ?? ""} ${
-        isHomolog ? "HOMOLOGACAO" : ""
-      }`.trim(),
-      7,
-      { bold: true, center: true },
+function ruleOp(label = "rule"): CupomOp {
+  return {
+    label,
+    h: RULE_H,
+    draw(s, top) {
+      s.line(top - RULE_H / 2);
+    },
+  };
+}
+
+function spacerOp(h: number, label = "spacer"): CupomOp {
+  return { label, h: Math.max(0, h), draw: () => {} };
+}
+
+/** Quantidade com até 4 casas — a SEFAZ permite 4 em `qCom`. */
+function formatQty(n: unknown): string {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "0";
+  const s = v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return s.replace(".", ",");
+}
+
+function formatCnpj(cnpj: unknown): string {
+  const d = String(cnpj ?? "").replace(/\D/g, "");
+  if (d.length !== 14) return String(cnpj ?? "");
+  return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+}
+
+function formatChave(chave: string): string {
+  return chave.replace(/(\d{4})(?=\d)/g, "$1 ");
+}
+
+/**
+ * Monta a lista de operações do cupom. Exportada para que o teste possa medir
+ * o layout sem gerar PDF e verificar o invariante de fechamento.
+ */
+export function buildCupomOps(input: DanfeNfceInput, deps: BuildDeps): CupomOp[] {
+  const { draft, config } = input;
+  const { font, bold, qrImage } = deps;
+  const S = toWinAnsiSafeLine;
+
+  const itens = draft.itens ?? [];
+  const pagamentos = normalizePagamentos(draft.pagamentosJson);
+  const isHomolog = draft.ambiente !== "PRODUCAO";
+  const dest = draft.destinatarioJson as { cpfCnpj?: string | null } | null;
+  const totais = (draft.totaisJson ?? null) as { totalNota?: number; totalDesconto?: number } | null;
+  const totalNota =
+    Number(totais?.totalNota) ||
+    itens.reduce((acc, it) => acc + (Number(it.valorTotal) || 0), 0);
+  const totalDesconto = Number(totais?.totalDesconto) || 0;
+
+  const wrap = (t: string, size: number, f: PDFFont = font, largura = INNER_W) =>
+    wrapTextLines(t, largura, (s) => f.widthOfTextAtSize(s, size));
+
+  const ops: CupomOp[] = [];
+
+  // ── Emitente ──
+  const emitLinhas: Array<{ t: string; size: number; bold?: boolean; align: "center" }> = [];
+  for (const l of wrap(S(config.razaoSocial ?? ""), 8.5, bold)) {
+    emitLinhas.push({ t: l, size: 8.5, bold: true, align: "center" });
+  }
+  emitLinhas.push({ t: `CNPJ ${formatCnpj(config.cnpj)}`, size: 6.5, align: "center" });
+  const endereco = S(
+    [config.logradouro, config.numero, config.bairro].filter(Boolean).join(", "),
+  );
+  for (const l of wrap(endereco, 6.5)) emitLinhas.push({ t: l, size: 6.5, align: "center" });
+  const cidade = S([config.municipio, config.uf].filter(Boolean).join(" - "));
+  if (cidade) emitLinhas.push({ t: cidade, size: 6.5, align: "center" });
+  ops.push(textBlock("emitente", emitLinhas));
+  ops.push(ruleOp("rule:emitente"));
+
+  // ── Faixa legal ──
+  const legal: Array<{ t: string; size: number; bold?: boolean; align: "center"; color?: ReturnType<typeof rgb> }> = [];
+  for (const l of wrap("DANFE NFC-e - Documento Auxiliar da Nota Fiscal de Consumidor Eletrônica", 6.5, bold)) {
+    legal.push({ t: l, size: 6.5, bold: true, align: "center" });
+  }
+  for (const l of wrap("Não permite aproveitamento de crédito de ICMS", 6)) {
+    legal.push({ t: l, size: 6, align: "center", color: GRAY });
+  }
+  ops.push(textBlock("faixa-legal", legal));
+
+  if (isHomolog) {
+    ops.push(ruleOp("rule:homolog"));
+    ops.push(
+      textBlock("homologacao", [
+        { t: "EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO", size: 7, bold: true, align: "center" },
+        { t: "SEM VALOR FISCAL", size: 7.5, bold: true, align: "center" },
+      ]),
     );
-    if (chave) {
-      text("Chave de acesso:", 6.5, { center: true, color: gray });
-      text(formatChave(chave), 6.5, { center: true });
-    }
-    if (input.urlChave) {
-      text("Consulte pela chave em:", 6, { center: true, color: gray });
-      text(trunc(input.urlChave, 52), 6, { center: true });
-    }
+  }
+  ops.push(ruleOp("rule:pre-itens"));
 
-    // ── QR Code ──
+  // ── Itens ──
+  ops.push(
+    textBlock("itens:cabecalho", [
+      { t: "CÓD  DESCRIÇÃO", size: 6, bold: true, align: "left" },
+      { t: "QTD  UN   VL UNIT        VL TOTAL", size: 6, bold: true, align: "right" },
+    ]),
+  );
+
+  itens.forEach((it, idx) => {
+    const numero = String(idx + 1).padStart(3, "0");
+    const codigo = S(String(it.codigo ?? ""));
+    const descricao = S(String(it.descricao ?? ""));
+    const prefixo = `${numero} ${codigo} `;
+    const larguraDesc = INNER_W - font.widthOfTextAtSize(prefixo, 6.5);
+    const linhasDesc = wrap(descricao, 6.5, font, Math.max(40, larguraDesc));
+
+    const qtd = formatQty(it.quantidade);
+    const un = S(String(it.unidade ?? "UN"));
+    const vu = formatBRLNumber(Number(it.valorUnitario) || 0);
+    const vt = formatBRLNumber(Number(it.valorTotal) || 0);
+
+    // (n linhas de descrição + 1 linha de qtd/valores) × passo + descendente.
+    const nLinhas = Math.max(1, linhasDesc.length);
+    const h = (nLinhas + 1) * (6.5 + LINE_GAP) + 6.5 * DESCENDER;
+    ops.push({
+      label: `item:${idx + 1}`,
+      h,
+      draw(s, top) {
+        let y = top - 6.5 - LINE_GAP;
+        s.text(`${prefixo}${linhasDesc[0] ?? ""}`, { baseline: y, size: 6.5 });
+        for (let i = 1; i < linhasDesc.length; i++) {
+          y -= 6.5 + LINE_GAP;
+          s.text(linhasDesc[i], { x: MARGIN + 12, baseline: y, size: 6.5 });
+        }
+        y -= 6.5 + LINE_GAP;
+        s.text(`${qtd} ${un} x ${vu}`, { x: MARGIN + 12, baseline: y, size: 6.5, color: GRAY });
+        s.text(vt, { baseline: y, size: 6.5, bold: true, align: "right" });
+      },
+    });
+  });
+  ops.push(ruleOp("rule:pos-itens"));
+
+  // ── Totais ──
+  ops.push(kvRow("total:qtd", "QTD. TOTAL DE ITENS", String(itens.length), 6.5));
+  ops.push(kvRow("total:produtos", "VALOR TOTAL R$", formatBRLNumber(totalNota + totalDesconto), 6.5));
+  if (totalDesconto > 0) {
+    ops.push(kvRow("total:desconto", "DESCONTO R$", formatBRLNumber(totalDesconto), 6.5));
+  }
+  ops.push(kvRow("total:pagar", "VALOR A PAGAR R$", formatBRLNumber(totalNota), 9, true));
+  ops.push(spacerOp(3, "gap:pagamento"));
+
+  // ── Formas de pagamento ──
+  ops.push(
+    textBlock("pagamento:cabecalho", [
+      { t: "FORMA DE PAGAMENTO", size: 6, bold: true, align: "left" },
+    ]),
+  );
+  const pagRows: PagamentoView[] =
+    pagamentos.length > 0 ? pagamentos : [{ label: "Sem pagamento", valor: 0 }];
+  pagRows.forEach((p, i) => {
+    ops.push(
+      kvRow(`pagamento:${i}`, S(p.label), formatBRLNumber(p.valor ?? 0), 6.5),
+    );
+  });
+  ops.push(ruleOp("rule:pos-pagamento"));
+
+  // ── Consulta pela chave ──
+  const chave = String(input.chaveAcesso ?? "").replace(/\D/g, "");
+  const consulta: Array<{ t: string; size: number; bold?: boolean; align: "center"; color?: ReturnType<typeof rgb> }> = [];
+  consulta.push({ t: "Consulte pela Chave de Acesso em:", size: 6, align: "center", color: GRAY });
+  if (input.urlChave) {
+    for (const l of wrap(S(input.urlChave), 6)) consulta.push({ t: l, size: 6, align: "center" });
+  }
+  if (chave) {
+    for (const l of wrap(formatChave(chave), 6.5, bold)) {
+      consulta.push({ t: l, size: 6.5, bold: true, align: "center" });
+    }
+  }
+  ops.push(textBlock("consulta-chave", consulta));
+  ops.push(ruleOp("rule:pos-chave"));
+
+  // ── Consumidor ──
+  const docDest = String(dest?.cpfCnpj ?? "").replace(/\D/g, "");
+  ops.push(
+    textBlock("consumidor", [
+      { t: "CONSUMIDOR", size: 6, bold: true, align: "center" },
+      {
+        t: docDest
+          ? `${docDest.length <= 11 ? "CPF" : "CNPJ"} ${docDest}`
+          : "CONSUMIDOR NÃO IDENTIFICADO",
+        size: 6.5,
+        align: "center",
+      },
+    ]),
+  );
+  ops.push(ruleOp("rule:pos-consumidor"));
+
+  // ── Identificação / autorização ──
+  const ident: Array<{ t: string; size: number; bold?: boolean; align: "center"; color?: ReturnType<typeof rgb> }> = [];
+  ident.push({
+    t: `NFC-e nº ${draft.numero ?? ""}  Série ${draft.serie ?? ""}`,
+    size: 6.5,
+    bold: true,
+    align: "center",
+  });
+  const dtEmi = toDate(draft.dataEmissao);
+  if (dtEmi) {
+    ident.push({ t: `Emissão: ${formatDateTime(dtEmi)}`, size: 6, align: "center", color: GRAY });
+  }
+  if (input.protocolo) {
+    const dt = toDate(input.dataAutorizacao);
+    ident.push({
+      t: `Protocolo de Autorização: ${input.protocolo}`,
+      size: 6,
+      align: "center",
+      color: GRAY,
+    });
+    if (dt) ident.push({ t: formatDateTime(dt), size: 6, align: "center", color: GRAY });
+  }
+  ops.push(textBlock("identificacao", ident));
+
+  // ── QR Code ──
+  if (qrImage) {
+    const size = 108;
+    ops.push({
+      label: "qrcode",
+      h: size + 10,
+      draw(s, top) {
+        s.image(qrImage, (CUPOM_W - size) / 2, top - size - 5, size);
+      },
+    });
+  } else if (input.qrCode) {
+    ops.push(
+      textBlock("qrcode:indisponivel", [
+        { t: "[QR Code indisponível]", size: 6.5, align: "center", color: GRAY },
+      ]),
+    );
+  }
+
+  // ── Informações complementares (tributos aproximados) ──
+  const infCpl = toWinAnsiSafeLine(composeInfCpl(draft));
+  if (infCpl) {
+    ops.push(ruleOp("rule:pre-infcpl"));
+    ops.push(
+      textBlock(
+        "infcpl",
+        wrap(infCpl, 5.6).map((t) => ({ t, size: 5.6, align: "center" as const, color: GRAY })),
+      ),
+    );
+  }
+
+  return ops;
+}
+
+/** Altura total da bobina = padding + Σ das operações. */
+export function cupomHeight(ops: CupomOp[]): number {
+  return PAD_TOP + ops.reduce((a, o) => a + o.h, 0) + PAD_BOT;
+}
+
+/**
+ * Invariante de layout, verificado só sob teste.
+ *
+ * NUNCA lança em runtime de servidor: a produção do Dexo não define
+ * `NODE_ENV` e a emissão engole exceções num `catch` mudo — lançar aqui
+ * produziria "venda autorizada, cupom inexistente, sem log". Fora dos testes,
+ * no máximo avisa.
+ */
+function assertLayoutClosed(ops: CupomOp[], minInk: number): void {
+  if (minInk >= -0.01) return;
+  const msg = `[NFC-e] layout vazou ${(-minInk).toFixed(2)}pt abaixo da página (ops=${ops.length})`;
+  if (process.env.VITEST) throw new Error(msg);
+  console.warn(msg);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Serviço
+// ═══════════════════════════════════════════════════════════════════
+
+export class DanfeNfcePdfService {
+  async generate(input: DanfeNfceInput): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+
+    // O QR entra na MEDIÇÃO, então é resolvido antes de montar as operações.
+    // Best-effort: falha ⇒ cupom sem imagem (o dado fiscal está no XML).
+    let qrImage: PDFImage | null = null;
     if (input.qrCode) {
       try {
         const QRCode = (await import("qrcode")).default;
-        const dataUrl: string = await QRCode.toDataURL(input.qrCode, {
-          margin: 0,
-          width: 220,
-        });
-        const png = await doc.embedPng(dataUrl);
-        const qx = (CUPOM_W - qrSize) / 2;
-        y -= qrSize + 4;
-        page.drawImage(png, { x: qx, y, width: qrSize, height: qrSize });
-        y -= 4;
+        const dataUrl: string = await QRCode.toDataURL(input.qrCode, { margin: 0, width: 220 });
+        qrImage = await doc.embedPng(dataUrl);
       } catch {
-        // QR é best-effort no PDF (o dado fiscal está no XML); nunca derruba
-        // a geração do cupom.
-        text("[QR Code indisponivel]", 7, { center: true, color: gray });
+        qrImage = null;
       }
     }
 
-    // ── Protocolo ──
-    if (input.protocolo) {
-      const dt = input.dataAutorizacao
-        ? new Date(input.dataAutorizacao)
-        : null;
-      const dtStr =
-        dt && !Number.isNaN(dt.getTime())
-          ? ` ${dt.toLocaleDateString("pt-BR")} ${dt.toLocaleTimeString("pt-BR")}`
-          : "";
-      text(`Protocolo de autorizacao: ${input.protocolo}${dtStr}`, 6.5, {
-        center: true,
-      });
+    const ops = buildCupomOps(input, { font, bold, qrImage });
+    const height = cupomHeight(ops);
+    const page = doc.addPage([CUPOM_W, height]);
+
+    let minInk = Number.POSITIVE_INFINITY;
+    const surface = pageSurface(page, font, bold, (y) => {
+      if (y < minInk) minInk = y;
+    });
+
+    let top = height - PAD_TOP;
+    for (const op of ops) {
+      op.draw(surface, top);
+      top -= op.h;
     }
 
+    assertLayoutClosed(ops, Number.isFinite(minInk) ? minInk : 0);
     return doc.save();
   }
 
@@ -297,46 +537,17 @@ export class DanfeNfcePdfService {
 
 // ── Helpers puros ──
 
-function trunc(s: string, max: number): string {
-  const t = (s ?? "").trim();
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+function toDate(v: unknown): Date | null {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function formatCnpj(cnpj: string): string {
-  const d = (cnpj ?? "").replace(/\D/g, "");
-  if (d.length !== 14) return cnpj ?? "";
-  return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+function formatDateTime(d: Date): string {
+  return `${d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })} ${d.toLocaleTimeString(
+    "pt-BR",
+    { timeZone: "America/Sao_Paulo" },
+  )}`;
 }
 
-/** Chave em grupos de 4 (2 linhas de 22 dígitos p/ caber na largura). */
-function formatChave(chave: string): string {
-  return chave.replace(/(\d{4})(?=\d)/g, "$1 ");
-}
-
-function rowKV(
-  page: any,
-  font: any,
-  bold: any,
-  y: number,
-  label: string,
-  value: string,
-  emphasize = false,
-): void {
-  const size = emphasize ? 8.5 : 7;
-  const f = emphasize ? bold : font;
-  page.drawText(label, {
-    x: MARGIN,
-    y: y - size,
-    size,
-    font: f,
-    color: rgb(0, 0, 0),
-  });
-  const vw = f.widthOfTextAtSize(value, size);
-  page.drawText(value, {
-    x: CUPOM_W - MARGIN - vw,
-    y: y - size,
-    size,
-    font: f,
-    color: rgb(0, 0, 0),
-  });
-}
+export const __internals = { CUPOM_W, MARGIN, INNER_W, PAD_TOP, PAD_BOT };

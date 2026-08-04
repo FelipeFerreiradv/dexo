@@ -184,7 +184,7 @@ export function parseNfeXml(xml: string): ParsedNfe {
 
   const ide = parseIde(infNFe.ide);
   const emit = parseEmit(infNFe.emit);
-  const dest = parseDest(infNFe.dest);
+  const dest = parseDest(infNFe.dest, ide.mod);
   const itens = parseItens(infNFe.det);
   const total = parseTotal(infNFe.total?.ICMSTot);
   const transp = parseTransp(infNFe.transp);
@@ -241,8 +241,34 @@ function parseEmit(emit: any): ParsedEmit {
   };
 }
 
-function parseDest(dest: any): ParsedDest {
-  if (!dest) throw new Error("XML NFe sem <dest>");
+/**
+ * Lê `<dest>`. No modelo 65 (NFC-e) o grupo é OPCIONAL: venda a consumidor não
+ * identificado sai sem `<dest>` nenhum — é o que o próprio builder faz
+ * (`nfe-xml-builder-sefaz.service.ts`, `buildDest`, ramo `modelo === "65"`), e é
+ * o caso mais comum do PDV.
+ *
+ * Antes isto lançava para qualquer XML sem `<dest>`, o que tornava
+ * `DanfeNfcePdfService.generateFromXml` inalcançável justamente na maioria dos
+ * cupons. Guard ADITIVO: o modelo 55 continua exigindo o grupo (lá ele é
+ * obrigatório e a ausência é XML corrompido), o 65 cai num destinatário neutro
+ * que o renderer desenha como "CONSUMIDOR NÃO IDENTIFICADO".
+ */
+function parseDest(dest: any, modelo?: string): ParsedDest {
+  if (!dest) {
+    if (modelo === "65") {
+      return {
+        CNPJ: null,
+        CPF: null,
+        idEstrangeiro: null,
+        xNome: "",
+        IE: null,
+        indIEDest: "9", // 9 = não contribuinte
+        email: null,
+        ender: null,
+      };
+    }
+    throw new Error("XML NFe sem <dest>");
+  }
   return {
     CNPJ: dest.CNPJ ? str(dest.CNPJ) : null,
     CPF: dest.CPF ? str(dest.CPF) : null,
