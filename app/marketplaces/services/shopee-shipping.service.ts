@@ -79,7 +79,10 @@ export class ShopeeShippingLabelProvider implements ShippingLabelProvider {
   private isAlreadyArranged(error: unknown): boolean {
     const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
     const code = (
-      (error as { shopeeError?: string })?.shopeeError ?? ""
+      (error as { shopeeError?: string })?.shopeeError ??
+      // MarketplaceIntegrationError expõe o mesmo código como providerErrorCode.
+      (error as { providerErrorCode?: string })?.providerErrorCode ??
+      ""
     ).toLowerCase();
     return (
       /already|has been|arranged|logistics_status|ready/.test(msg) ||

@@ -20,6 +20,7 @@ import { ShippingLabelStorageService } from "../shipping/shipping-label-storage.
 import { getShippingProvider } from "../shipping/provider-factory";
 import {
   MarketplaceIntegrationError,
+  toIntegrationError,
   toUserFacingMessage,
 } from "../shipping/integration-error";
 import { composeA4, mergePdfs } from "../shipping/pdf-merge";
@@ -242,19 +243,39 @@ export class ShippingLabelUseCase {
       // Erro de integração vira PROVIDER_ERROR (→ HTTP 502) com mensagem
       // legível. Antes ele subia como Error puro, escapava do mapa de status da
       // rota e virava 500 opaco com o texto cru do axios na tela.
-      let outgoing = error;
-      if (error instanceof MarketplaceIntegrationError) {
+      //
+      // O `normalized` cobre também o que ainda não é tipado na origem:
+      // `makeAuthenticatedRequest` é compartilhado com importação, anúncios e
+      // sync, então tipá-lo lá mudaria o erro de fluxos não relacionados — a
+      // conversão acontece AQUI, na fronteira do módulo de etiqueta. O `.status`
+      // numérico é o discriminador: erro de programação (TypeError e afins) não
+      // tem, segue como 500 e permanece visível como bug em vez de virar 502.
+      const normalized =
+        error instanceof MarketplaceIntegrationError ||
+        typeof (error as { status?: unknown })?.status !== "number"
+          ? error
+          : toIntegrationError(error, {
+              marketplace: ctx.account.platform,
+              operation: `${ctx.account.platform.toLowerCase()}.shipping_label`,
+              step: "shipping_label",
+              orderId,
+              orderSn: ctx.order.externalOrderId,
+              shopId: ctx.account.shopId,
+            });
+
+      let outgoing = normalized;
+      if (normalized instanceof MarketplaceIntegrationError) {
         console.error(
           "[Shipping] falha de integração",
           JSON.stringify({
-            ...error.toLogFields(),
+            ...normalized.toLogFields(),
             orderId,
             outcome: "error",
           }),
         );
         outgoing = new ShippingLabelError(
           "PROVIDER_ERROR",
-          toUserFacingMessage(error),
+          toUserFacingMessage(normalized),
         );
       }
 

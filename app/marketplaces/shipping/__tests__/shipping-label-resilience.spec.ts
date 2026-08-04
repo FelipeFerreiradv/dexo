@@ -23,6 +23,7 @@ import {
   toUserFacingMessage,
 } from "../integration-error";
 import {
+  isMarketplaceAuthError,
   isTransientProviderError,
   ShippingAuthRetry,
   withTransientRetry,
@@ -534,6 +535,96 @@ describe("falha no refresh de token também vira erro tipado", () => {
     expect(msg).toContain("renovar a autorização da conta");
     expect(msg).toContain("is undeclared");
     expect(msg).not.toContain("não houve resposta");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("403 que não é de token não dispara refresh", () => {
+  // Achado no teste local: a Shopee devolve HTTP 403 `source_ip_undeclared`
+  // quando o IP não está na whitelist. Tratar como erro de auth disparava um
+  // refresh inútil E fazia a mensagem final culpar a "autorização da conta",
+  // mandando o usuário consertar a coisa errada.
+  it("source_ip_undeclared NÃO é erro de auth", () => {
+    const err = new MarketplaceIntegrationError("x", {
+      marketplace: "SHOPEE",
+      operation: "shopee.order.upload_invoice_doc",
+      httpStatus: 403,
+      providerErrorCode: "source_ip_undeclared",
+    });
+    expect(isMarketplaceAuthError(err)).toBe(false);
+  });
+
+  it("401/403 de token continuam sendo erro de auth", () => {
+    const tokenErr = new MarketplaceIntegrationError("x", {
+      marketplace: "SHOPEE",
+      operation: "op",
+      httpStatus: 401,
+      providerErrorCode: "error_auth",
+    });
+    expect(isMarketplaceAuthError(tokenErr)).toBe(true);
+  });
+
+  it("não refresca e propaga o motivo real do IP", async () => {
+    const account = {
+      id: "a1",
+      platform: "SHOPEE" as const,
+      accessToken: "tok",
+      refreshToken: "ref",
+      externalUserId: null,
+      shopId: 123,
+    };
+    const refresh = vi.spyOn(ShopeeOAuthService, "refreshAccessToken");
+
+    const err = await captureError(
+      ShippingAuthRetry.shopee(account, async () => {
+        throw new MarketplaceIntegrationError(
+          "shopee.order.upload_invoice_doc falhou (HTTP 403): Request Source IP (1.2.3.4) is undeclared.",
+          {
+            marketplace: "SHOPEE",
+            operation: "shopee.order.upload_invoice_doc",
+            step: "upload_invoice_doc",
+            httpStatus: 403,
+            providerErrorCode: "source_ip_undeclared",
+            providerMessage: "Request Source IP (1.2.3.4) is undeclared.",
+          },
+        );
+      }),
+    );
+
+    expect(refresh).not.toHaveBeenCalled();
+    const msg = toUserFacingMessage(err as MarketplaceIntegrationError);
+    expect(msg).toContain("is undeclared");
+    expect(msg).not.toContain("renovar a autorização");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("erro com .status numérico vira 502, erro de programação continua 500", () => {
+  it("Error puro com .status (makeAuthenticatedRequest) vira PROVIDER_ERROR", async () => {
+    const raw = new Error("Shopee API 403: alguma coisa");
+    (raw as { status?: number }).status = 403;
+    vi.spyOn(
+      MlShippingLabelProvider.prototype,
+      "ensureInvoiceSent",
+    ).mockRejectedValue(raw);
+
+    const err = await captureError(
+      ShippingLabelUseCase.generateLabelForOrder("u1", "order1", "A4"),
+    );
+    expect((err as ShippingLabelError).code).toBe("PROVIDER_ERROR");
+  });
+
+  it("TypeError (bug nosso) NÃO vira 502 — continua visível como erro real", async () => {
+    vi.spyOn(
+      MlShippingLabelProvider.prototype,
+      "ensureInvoiceSent",
+    ).mockRejectedValue(new TypeError("x is not a function"));
+
+    const err = await captureError(
+      ShippingLabelUseCase.generateLabelForOrder("u1", "order1", "A4"),
+    );
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err).not.toBeInstanceOf(ShippingLabelError);
   });
 });
 

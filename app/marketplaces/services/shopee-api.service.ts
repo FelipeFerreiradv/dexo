@@ -1356,8 +1356,15 @@ export class ShopeeApiService {
       ShopeeApiResponse<Record<string, any>>
     >("GET", apiPath, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao obter parâmetros de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_parameter",
+        step: "get_shipping_parameter",
+        shopId,
+        orderSn,
+      },
       );
     }
     return response.response ?? {};
@@ -1372,8 +1379,14 @@ export class ShopeeApiService {
       ShopeeApiResponse<{ address_list?: any[] }>
     >("GET", SHOPEE_ENDPOINTS.logistics.getAddressList, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao listar endereços Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_address_list",
+        step: "get_address_list",
+        shopId,
+      },
       );
     }
     return response.response?.address_list ?? [];
@@ -1389,12 +1402,20 @@ export class ShopeeApiService {
       ShopeeApiResponse<unknown>
     >("POST", SHOPEE_ENDPOINTS.logistics.shipOrder, accessToken, shopId, body);
     if (response.error) {
-      const err = new Error(
-        `Erro ao arranjar envio Shopee: ${response.message ?? response.error}`,
-      );
-      (err as { shopeeError?: string }).shopeeError =
+      // `shopeeError`/`shopeeMessage` são mantidos além do erro tipado: o
+      // `isAlreadyArranged` do adapter os lê. MarketplaceIntegrationError já
+      // expõe o mesmo em providerErrorCode/providerMessage, mas remover os
+      // campos antigos quebraria aquele caminho sem ganho nenhum.
+      const err = integrationErrorFromBody(response, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.ship_order",
+        step: "ship_order",
+        shopId,
+        orderSn: body.order_sn,
+      });
+      (err as unknown as { shopeeError?: string }).shopeeError =
         response.error ?? undefined;
-      (err as { shopeeMessage?: string }).shopeeMessage =
+      (err as unknown as { shopeeMessage?: string }).shopeeMessage =
         response.message ?? undefined;
       throw err;
     }
@@ -1413,9 +1434,13 @@ export class ShopeeApiService {
       ShopeeApiResponse<{ tracking_number?: string }>
     >("GET", apiPath, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao obter tracking Shopee: ${response.message ?? response.error}`,
-      );
+      throw integrationErrorFromBody(response, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_tracking_number",
+        step: "get_tracking_number",
+        shopId,
+        orderSn,
+      });
     }
     return response.response?.tracking_number ?? null;
   }
@@ -1448,8 +1473,14 @@ export class ShopeeApiService {
       },
     );
     if (response.error) {
-      throw new Error(
-        `Erro ao criar documento de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        shopId,
+      },
       );
     }
     const failed = (response.response?.result_list ?? []).find(
@@ -1486,8 +1517,14 @@ export class ShopeeApiService {
       },
     );
     if (response.error) {
-      throw new Error(
-        `Erro ao consultar documento de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_document_result",
+        step: "get_shipping_document_result",
+        shopId,
+      },
       );
     }
     return (response.response?.result_list ?? []).map((r) => ({

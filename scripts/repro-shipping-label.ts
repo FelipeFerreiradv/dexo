@@ -34,6 +34,12 @@
  *     --file-type=<valor>        default: normal_invoice
  */
 
+// Side-effect import, PRIMEIRO de todos: roda dotenv.config() na fase de
+// imports, antes do prisma e do SHOPEE_CONSTANTS — ambos leem process.env no
+// load do módulo. Fora desta posição o script sobe sem DATABASE_URL e sem as
+// credenciais da Shopee. Mesmo padrão de app/api/api.ts.
+import "dotenv/config";
+
 import axios from "axios";
 import FormData from "form-data";
 

@@ -114,8 +114,30 @@ async function refreshOrThrowTyped<T>(
   }
 }
 
+/**
+ * 4xx que a Shopee devolve com cara de auth mas que NÃO se resolve renovando
+ * token. Renovar aqui é inútil (falha pelo mesmo motivo) e — pior — faz a
+ * mensagem final culpar a "autorização da conta" quando a ação necessária é
+ * outra, mandando o usuário para o lugar errado.
+ *
+ * `source_ip_undeclared`: o IP de origem não está na whitelist do app no Shopee
+ * Open Platform Console. Chega como HTTP 403, e a correção é cadastrar o IP.
+ */
+const NON_TOKEN_403_CODES = /source_ip_undeclared|ip.*whitelist|is undeclared/i;
+
 /** Mesma heurística de OrderUseCase.isMarketplaceAuthError. */
 export function isMarketplaceAuthError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const providerCode =
+    error instanceof MarketplaceIntegrationError
+      ? (error.providerErrorCode ?? "")
+      : "";
+
+  // Antes de qualquer coisa: 403 que não é de token não deve disparar refresh.
+  if (NON_TOKEN_403_CODES.test(providerCode) || NON_TOKEN_403_CODES.test(message)) {
+    return false;
+  }
+
   const status =
     error &&
     typeof error === "object" &&
@@ -123,7 +145,6 @@ export function isMarketplaceAuthError(error: unknown): boolean {
     typeof (error as { status?: unknown }).status === "number"
       ? (error as { status: number }).status
       : undefined;
-  const message = error instanceof Error ? error.message : String(error);
   if (status === 401 || status === 403) {
     return true;
   }
