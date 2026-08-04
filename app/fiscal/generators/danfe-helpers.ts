@@ -32,17 +32,67 @@ export function resolveCstCsosn(
 const WINANSI_EXTRAS = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ''“”•–—˜™š›œžŸ";
 
 /**
- * Substitui caracteres fora do WinAnsi (encoding das StandardFonts do
- * pdf-lib) por "?", para que texto livre do usuário (ex.: emoji) não derrube
- * a geração do DANFE com "cannot encode" do pdf-lib.
+ * Testa se um codepoint é desenhável pelas StandardFonts (WinAnsiEncoding).
+ *
+ * O encoder do pdf-lib LANÇA — não substitui — para três faixas que um
+ * `code <= 0xff` ingênuo deixaria passar (verificado em runtime contra o
+ * pdf-lib 1.17.1 deste worktree, varrendo 0x00..0xFF):
+ *   • C0, 0x00–0x1F  (inclui \n, \t e \r)
+ *   • DEL, 0x7F
+ *   • C1, 0x80–0x9F  (os "buracos" do CP-1252)
+ *
+ * Os símbolos tipográficos do CP-1252 (€ … — • š …) são codepoints ACIMA de
+ * 0xFF e entram por `WINANSI_EXTRAS`; não confundir com a faixa 0x80–0x9F.
+ */
+function isWinAnsiDrawable(ch: string): boolean {
+  const code = ch.codePointAt(0) ?? 0;
+  if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return false;
+  return code <= 0xff || WINANSI_EXTRAS.includes(ch);
+}
+
+/**
+ * Torna texto livre do usuário seguro para o pdf-lib.
+ *
+ * Caractere não-desenhável vira "?" (visível, sinalizando perda) e caractere
+ * de CONTROLE é removido (invisível por natureza — marcá-lo com "?" só sujaria
+ * o documento). `\t` vira espaço.
+ *
+ * ⚠️ `\n` é PRESERVADO: esta função é usada em conjunto com `wrapTextLines`,
+ * que quebra parágrafos nos `\n` do usuário (é assim que o bloco de
+ * Informações Complementares fica multilinha). Logo o resultado ainda NÃO pode
+ * ir direto para `drawText` — passe por `wrapTextLines` antes, ou use
+ * `toWinAnsiSafeLine` para campos de uma linha só.
+ *
+ * IMPORTANTE: sanear ANTES de qualquer medição. `PDFFont.widthOfTextAtSize()`
+ * lança exatamente como `drawText`, então medir texto cru (para quebra de linha
+ * ou truncamento) derruba a geração antes de desenhar qualquer coisa.
  */
 export function toWinAnsiSafe(s: string): string {
   let out = "";
-  for (const ch of s) {
+  for (const ch of String(s ?? "")) {
+    if (ch === "\n") {
+      out += ch;
+      continue;
+    }
+    if (ch === "\t") {
+      out += " ";
+      continue;
+    }
     const code = ch.codePointAt(0) ?? 0;
-    out += code <= 0xff || WINANSI_EXTRAS.includes(ch) ? ch : "?";
+    // Controle (C0/DEL/C1): remove em silêncio, não tem representação visual.
+    if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue;
+    out += isWinAnsiDrawable(ch) ? ch : "?";
   }
   return out;
+}
+
+/**
+ * Igual a `toWinAnsiSafe`, mas para campos de UMA linha (razão social,
+ * descrição do item, endereço): as quebras viram espaço, então o resultado
+ * pode ir direto para `drawText`/`widthOfTextAtSize` sem intermediários.
+ */
+export function toWinAnsiSafeLine(s: string): string {
+  return toWinAnsiSafe(s).replace(/\n/g, " ").replace(/ {2,}/g, " ").trim();
 }
 
 /**

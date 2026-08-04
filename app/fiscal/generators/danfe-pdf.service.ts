@@ -8,8 +8,28 @@ import type { CompanyFiscalConfig } from "../../interfaces/company-fiscal.interf
 import type { NfeTotais } from "../domain/nfe.types";
 import { parseNfeXml, type ParsedNfe } from "../sefaz/nfe-xml-parser.service";
 import { renderDanfeV2, type DanfeAvatar } from "./danfe-v2-renderer";
+import {
+  renderDanfeOficial,
+  type DanfeOficialExtras,
+} from "./danfe-oficial-renderer";
+import { readItemImposto } from "./danfe-render-extras";
 import { composeInfCpl } from "../domain/inf-cpl";
 import { toWinAnsiSafe, wrapTextLines, formatBRLNumber } from "./danfe-helpers";
+
+/**
+ * Layout do DANFE em uso.
+ *
+ * `oficial` reproduz a grade normatizada (ATO COTEPE/ICMS 51/15) e é o alvo do
+ * redesenho; `v2` e `legacy` ficam como escape hatch de rollback. Ambas as
+ * flags DESLIGADAS ⇒ comportamento byte-idêntico ao de antes do redesenho.
+ */
+export type DanfeLayout = "oficial" | "v2" | "legacy";
+
+export function resolveDanfeLayout(): DanfeLayout {
+  if (process.env.NEXT_PUBLIC_DANFE_OFICIAL_ENABLED === "true") return "oficial";
+  if (process.env.NEXT_PUBLIC_DANFE_V2_ENABLED === "true") return "v2";
+  return "legacy";
+}
 
 /**
  * Gerador de DANFE simplificado usando pdf-lib.
@@ -36,11 +56,24 @@ export class DanfePdfService {
     chaveAcesso: string | null,
     protocolo: string | null,
     avatar?: DanfeAvatar | null,
+    extras?: DanfeOficialExtras | null,
   ): Promise<Uint8Array> {
-    if (process.env.NEXT_PUBLIC_DANFE_V2_ENABLED === "true") {
-      return this.generateV2(nfe, config, chaveAcesso, protocolo, avatar);
+    switch (resolveDanfeLayout()) {
+      case "oficial":
+        return renderDanfeOficial({
+          nfe,
+          config,
+          chaveAcesso,
+          protocolo,
+          dataAutorizacao: null,
+          avatar,
+          extras,
+        });
+      case "v2":
+        return this.generateV2(nfe, config, chaveAcesso, protocolo, avatar);
+      default:
+        return this.generateLegacy(nfe, config, chaveAcesso, protocolo);
     }
-    return this.generateLegacy(nfe, config, chaveAcesso, protocolo);
   }
 
   private async generateLegacy(
@@ -368,8 +401,28 @@ export class DanfePdfService {
       parsed.chaveAcesso || projected.draft.chaveAcesso,
       parsed.protNFe?.nProt ?? null,
       avatar,
+      buildExtrasFromParsed(parsed),
     );
   }
+}
+
+/**
+ * Dados que EXISTEM no XML autorizado mas que `projectParsedNfeToDraft` não
+ * consegue carregar nos tipos de domínio: os valores fiscais por item (que ele
+ * zera) e o telefone do emitente (que `CompanyFiscalConfig` não tem).
+ *
+ * Sem isto, um DANFE re-renderizado a partir do XML imprimiria CST/CSOSN
+ * default e ICMS/IPI zerados por item, contradizendo o quadro CÁLCULO DO
+ * IMPOSTO — que mostra o total real vindo de `<ICMSTot>`.
+ *
+ * É projeção de LEITURA para desenho: não altera cálculo, XML nem persistência.
+ */
+export function buildExtrasFromParsed(parsed: ParsedNfe): DanfeOficialExtras {
+  return {
+    itensImpostos: parsed.itens.map((it) => readItemImposto(it.imposto)),
+    emitenteFone: parsed.emit.ender?.fone ?? null,
+    dataAutorizacao: parsed.protNFe?.dhRecbto ?? null,
+  };
 }
 
 /**
