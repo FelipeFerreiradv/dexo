@@ -83,7 +83,17 @@ export class ShopeeOAuthService {
       .digest("hex");
 
     if (process.env.SHOPEE_DEBUG === "1") {
-      console.log("[ShopeeSign:HMAC] baseString", baseString);
+      // A baseString concatena o access_token — logá-la crua vazava a
+      // credencial da loja em texto plano no stdout do pm2. Mascaramos o token
+      // e preservamos o que serve para depurar assinatura: path, timestamp e
+      // shop_id, que é onde os erros de fato acontecem.
+      const maskedBase = access_token
+        ? baseString.replace(
+            access_token,
+            `<token:${access_token.length}ch:${access_token.slice(-4)}>`,
+          )
+        : baseString;
+      console.log("[ShopeeSign:HMAC] baseString", maskedBase);
       console.log(
         "[ShopeeSign:HMAC] sign",
         signature.slice(0, 6),
@@ -317,11 +327,87 @@ export class ShopeeOAuthService {
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        throw new Error(
+        const code = (error.response?.data as { error?: string })?.error;
+        // Marca a conta quando a Shopee diz que a autorização morreu de vez.
+        // Best-effort e assíncrono ao fluxo: NÃO altera o que é lançado.
+        await this.markAccountDeadIfTerminal(shopId, code);
+        const err = new Error(
           `Erro ao renovar token: ${error.response?.data?.message || error.message}`,
         );
+        // Preserva o código do parceiro — sem ele é impossível distinguir
+        // "loja desvinculou" de "IP fora da whitelist" olhando o log.
+        (err as { shopeeError?: string }).shopeeError = code;
+        (err as { status?: number }).status = error.response?.status;
+        throw err;
       }
       throw error;
+    }
+  }
+
+  /**
+   * Códigos que significam autorização MORTA — só reautorizando volta.
+   *
+   * Lista deliberadamente estreita, confirmada contra a API de produção em
+   * 04/08/2026 sondando as 5 contas Shopee que estavam vencidas:
+   *   shop_no_linked        HTTP 403  "Partner and shop has no linked."   (4x)
+   *   refresh_token_expired HTTP 403  "Your refresh_token expired."       (1x)
+   *
+   * A régua é alta de propósito: `status: ERROR` REMOVE a conta do laço de
+   * sync (sync-orders-and-metrics-loop.ts filtra por ACTIVE), então um falso
+   * positivo pararia a ingestão de um vendedor que está funcionando. Por isso
+   * NADA além destes dois entra — em particular ficam de fora
+   * `source_ip_undeclared` (IP fora da whitelist), `error_sign`, `error_param`
+   * e qualquer falha de rede/5xx, que são condições passageiras ou de
+   * infraestrutura nossa, não da autorização do lojista.
+   */
+  private static readonly TERMINAL_AUTH_ERRORS = new Set([
+    "shop_no_linked",
+    "refresh_token_expired",
+  ]);
+
+  /**
+   * Espelha o que MLOAuthService já faz em falha terminal de refresh. Sem isto
+   * a conta seguia `ACTIVE` para sempre com o token morto: o sync tentava a
+   * cada 15 min, falhava, e ninguém ficava sabendo — a conta reportava uma
+   * saúde que não tinha, e "cliente inativo" virava indistinguível de
+   * "integração quebrada".
+   *
+   * Atualiza por `shopId` e não por conta: `shop_no_linked` é um desvínculo
+   * entre o PARCEIRO e a LOJA, então vale para toda conta que aponta para
+   * aquela loja.
+   *
+   * Best-effort: qualquer falha aqui é engolida — marcar é diagnóstico, não
+   * pode derrubar o refresh.
+   */
+  private static async markAccountDeadIfTerminal(
+    shopId: number,
+    errorCode?: string,
+  ): Promise<void> {
+    if (!errorCode || !this.TERMINAL_AUTH_ERRORS.has(errorCode)) return;
+    if (process.env.SHOPEE_AUTO_DEACTIVATE_DISABLED === "1") return;
+
+    try {
+      const prisma = (await import("../../lib/prisma")).default;
+      const { count } = await prisma.marketplaceAccount.updateMany({
+        where: { shopId, platform: "SHOPEE", status: "ACTIVE" },
+        data: { status: "ERROR" },
+      });
+      if (count > 0) {
+        console.warn(
+          JSON.stringify({
+            event: "shopee.oauth.account.auto_deactivated",
+            shopId,
+            errorCode,
+            accountsMarked: count,
+            reason: "refresh terminal failure — requer reautorizacao",
+          }),
+        );
+      }
+    } catch (dbErr) {
+      console.warn(
+        `[ShopeeOAuthService] falha ao marcar conta ${shopId} como ERROR:`,
+        dbErr instanceof Error ? dbErr.message : String(dbErr),
+      );
     }
   }
 

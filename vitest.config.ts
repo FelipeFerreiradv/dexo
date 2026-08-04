@@ -87,6 +87,33 @@ process.env.ORDER_COMPLETE_EMPTY_ORDER_DISABLED ??= "1";
 // explicitamente por caso.
 process.env.ORDER_CREATE_WITHOUT_ITEMS_ML_MAGALU_DISABLED ??= "1";
 
+// Resiliência do módulo de etiqueta (incidente Shopee 29/07/2026): lock por
+// pedido, retry de transitório, orçamento de tempo, pré-checagem do XML e
+// consulta do get_shipping_document_parameter. TODOS desligados por default na
+// suíte para os specs existentes continuarem byte-idênticos — eles mockam o
+// conjunto exato de chamadas do caminho anterior e afirmam "uma chamada, um
+// erro propagado". Em produção o default é o oposto — ligados —, senão dois
+// cliques duplicam ship_order e um 5xx passageiro vira falha definitiva. Os
+// specs da correção reabilitam explicitamente por caso.
+process.env.SHIPPING_LABEL_LOCK_DISABLED ??= "1";
+process.env.SHIPPING_LABEL_RETRY_DISABLED ??= "1";
+process.env.SHIPPING_LABEL_TIME_BUDGET_DISABLED ??= "1";
+process.env.SHIPPING_LABEL_PRECHECKS_DISABLED ??= "1";
+process.env.SHOPEE_LABEL_DOC_PARAM_DISABLED ??= "1";
+
+// Tolerância ao "upload não aceito após o envio arranjado" da Shopee: também
+// desligada por default na suíte, porque muda `ensureInvoiceSent` de "propaga o
+// erro" para "segue em frente". Em produção o default é o oposto — ligada —,
+// senão o pedido cujo envio já foi arranjado nunca mais consegue etiqueta.
+process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED ??= "1";
+
+// Auto-desativacao de conta Shopee em falha terminal de refresh: desligada por
+// default na suite porque escreve em `MarketplaceAccount` (status=ERROR) a
+// partir de dentro do refresh, e os specs de OAuth mockam axios sem mockar o
+// prisma. Em producao o default e o oposto — ligada —, senao a conta com
+// autorizacao morta segue reportando ACTIVE para sempre.
+process.env.SHOPEE_AUTO_DEACTIVATE_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",

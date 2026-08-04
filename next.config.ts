@@ -75,7 +75,11 @@ const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: blob: https://*.supabase.co http://http2.mlstatic.com https://http2.mlstatic.com ${apiOrigin}`,
+  // cf.shopee.com.br / susercontent.com: CDNs das fotos dos anúncios Shopee,
+  // que a tela de pedidos exibe. Hoje só geram relatório (Report-Only), mas
+  // passariam a ser BLOQUEADAS no dia em que a CSP virar enforce. Hosts
+  // explícitos, sem curinga.
+  `img-src 'self' data: blob: https://*.supabase.co http://http2.mlstatic.com https://http2.mlstatic.com https://cf.shopee.com.br https://down-br.img.susercontent.com ${apiOrigin}`,
   "font-src 'self' data:",
   `connect-src 'self' https://*.supabase.co ${apiOrigin}`,
   "frame-ancestors 'self'",

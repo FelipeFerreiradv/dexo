@@ -5,8 +5,15 @@ import { join, basename } from "path";
 import sharp from "sharp";
 import {
   SHOPEE_CONSTANTS,
+  SHOPEE_ENDPOINTS,
+  SHOPEE_INVOICE_FILE_TYPE_NFE,
   validateShopeeConfig,
 } from "../shopee/shopee-constants";
+import {
+  integrationErrorFromBody,
+  sanitizeUrl,
+  toIntegrationError,
+} from "../shipping/integration-error";
 import { ShopeeOAuthService } from "./shopee-oauth.service";
 import {
   ShopeeApiResponse,
@@ -1246,9 +1253,14 @@ export class ShopeeApiService {
     this.validateConfig();
     const partnerId = parseInt(SHOPEE_CONSTANTS.PARTNER_ID!);
     const timestamp = Math.floor(Date.now() / 1000);
+    // A Shopee assina apenas o PATH, sem query string — mesma regra de
+    // makeAuthenticatedRequest. Sem este split, o primeiro chamador que passar
+    // um apiPath com `?` gera assinatura inválida (`error_sign`), e o sintoma
+    // não aponta para cá.
+    const pathOnly = apiPath.split("?")[0];
     const signature = ShopeeOAuthService.generateSignature({
       partner_id: partnerId,
-      api_path: apiPath,
+      api_path: pathOnly,
       timestamp,
       access_token: accessToken,
       shop_id: shopId,
@@ -1266,52 +1278,70 @@ export class ShopeeApiService {
    * Envia/atualiza a NF-e do pedido (passo fiscal do Brasil). Multipart com o
    * XML autorizado. A loja precisa estar configurada como emissor externo de
    * NF-e no Seller Center.
+   *
+   * Contrato verificado contra a API de produção em 04/08/2026 (ver
+   * docs/incidentes/2026-07-29-shopee-upload-invoice-doc-404.md):
+   *  - módulo `order`, NÃO `logistics` (era a causa do 404 `error_not_found`);
+   *  - multipart/form-data (JSON+base64 devolve "field file_type type error");
+   *  - campo do arquivo chama-se `file` (com `invoice_file` a Shopee responde
+   *    "file is a required field");
+   *  - `file_type` é INTEIRO (a string "normal_invoice" devolvia
+   *    "normal_invoice can not be parsed to integer").
+   *
+   * A Shopee recusa o upload depois que o envio já foi arranjado
+   * ("Upload is not accepted after shipment is arranged") — quem trata isso
+   * como não-bloqueante é o adapter, não este método.
    */
   static async uploadInvoiceDoc(
     accessToken: string,
     shopId: number,
     orderSn: string,
     xml: string,
-    fileType = "normal_invoice",
+    fileType: number = SHOPEE_INVOICE_FILE_TYPE_NFE,
   ): Promise<void> {
     const url = this.buildSignedUrl(
-      "/api/v2/logistics/upload_invoice_doc",
+      SHOPEE_ENDPOINTS.order.uploadInvoiceDoc,
       accessToken,
       shopId,
     );
+    // Montado SÓ quando há erro. `sanitizeUrl` faz parse da URL, reescreve a
+    // query e serializa de volta — trabalho puro de diagnóstico, que não tem
+    // por que rodar no caminho feliz.
+    const errCtx = () => ({
+      marketplace: "SHOPEE" as const,
+      operation: "shopee.order.upload_invoice_doc",
+      step: "upload_invoice_doc",
+      endpoint: `POST ${sanitizeUrl(url)}`,
+      orderSn,
+      shopId,
+    });
+
     const form = new FormData();
     form.append("order_sn", orderSn);
-    form.append("file_type", fileType);
+    form.append("file_type", String(fileType));
     form.append("file", Buffer.from(xml, "utf-8"), {
       filename: `${orderSn}.xml`,
       contentType: "application/xml",
     });
+
+    let resp;
     try {
-      const resp = await axios.post(url, form, {
+      resp = await axios.post(url, form, {
         headers: { ...form.getHeaders() },
         timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
         maxContentLength: 10 * 1024 * 1024,
         maxBodyLength: 10 * 1024 * 1024,
       });
-      const data = resp.data as ShopeeApiResponse<unknown>;
-      if (data?.error) {
-        throw new Error(
-          `Erro ao enviar NF-e à Shopee: ${data.message ?? data.error}`,
-        );
-      }
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        const message =
-          (error.response?.data as { message?: string })?.message ||
-          error.message;
-        const err = new Error(
-          `Shopee upload_invoice_doc ${status ?? ""}: ${message}`,
-        );
-        (err as { status?: number }).status = status;
-        throw err;
-      }
-      throw error;
+      // Preserva corpo, código do parceiro e request_id — o catch anterior
+      // lia só `data.message`, campo que o corpo do 404 não tem.
+      throw toIntegrationError(error, errCtx());
+    }
+
+    // Erro de negócio da Shopee chega como HTTP 200 com `error` preenchido.
+    const data = resp.data as ShopeeApiResponse<unknown>;
+    if (data?.error) {
+      throw integrationErrorFromBody(data, errCtx());
     }
   }
 
@@ -1321,15 +1351,22 @@ export class ShopeeApiService {
     shopId: number,
     orderSn: string,
   ): Promise<Record<string, any>> {
-    const apiPath = `/api/v2/logistics/get_shipping_parameter?order_sn=${encodeURIComponent(
+    const apiPath = `${SHOPEE_ENDPOINTS.logistics.getShippingParameter}?order_sn=${encodeURIComponent(
       orderSn,
     )}`;
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<Record<string, any>>
     >("GET", apiPath, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao obter parâmetros de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_parameter",
+        step: "get_shipping_parameter",
+        shopId,
+        orderSn,
+      },
       );
     }
     return response.response ?? {};
@@ -1342,10 +1379,16 @@ export class ShopeeApiService {
   ): Promise<any[]> {
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<{ address_list?: any[] }>
-    >("GET", "/api/v2/logistics/get_address_list", accessToken, shopId);
+    >("GET", SHOPEE_ENDPOINTS.logistics.getAddressList, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao listar endereços Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_address_list",
+        step: "get_address_list",
+        shopId,
+      },
       );
     }
     return response.response?.address_list ?? [];
@@ -1359,14 +1402,22 @@ export class ShopeeApiService {
   ): Promise<void> {
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<unknown>
-    >("POST", "/api/v2/logistics/ship_order", accessToken, shopId, body);
+    >("POST", SHOPEE_ENDPOINTS.logistics.shipOrder, accessToken, shopId, body);
     if (response.error) {
-      const err = new Error(
-        `Erro ao arranjar envio Shopee: ${response.message ?? response.error}`,
-      );
-      (err as { shopeeError?: string }).shopeeError =
+      // `shopeeError`/`shopeeMessage` são mantidos além do erro tipado: o
+      // `isAlreadyArranged` do adapter os lê. MarketplaceIntegrationError já
+      // expõe o mesmo em providerErrorCode/providerMessage, mas remover os
+      // campos antigos quebraria aquele caminho sem ganho nenhum.
+      const err = integrationErrorFromBody(response, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.ship_order",
+        step: "ship_order",
+        shopId,
+        orderSn: body.order_sn,
+      });
+      (err as unknown as { shopeeError?: string }).shopeeError =
         response.error ?? undefined;
-      (err as { shopeeMessage?: string }).shopeeMessage =
+      (err as unknown as { shopeeMessage?: string }).shopeeMessage =
         response.message ?? undefined;
       throw err;
     }
@@ -1378,16 +1429,20 @@ export class ShopeeApiService {
     shopId: number,
     orderSn: string,
   ): Promise<string | null> {
-    const apiPath = `/api/v2/logistics/get_tracking_number?order_sn=${encodeURIComponent(
+    const apiPath = `${SHOPEE_ENDPOINTS.logistics.getTrackingNumber}?order_sn=${encodeURIComponent(
       orderSn,
     )}`;
     const response = await this.makeAuthenticatedRequest<
       ShopeeApiResponse<{ tracking_number?: string }>
     >("GET", apiPath, accessToken, shopId);
     if (response.error) {
-      throw new Error(
-        `Erro ao obter tracking Shopee: ${response.message ?? response.error}`,
-      );
+      throw integrationErrorFromBody(response, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_tracking_number",
+        step: "get_tracking_number",
+        shopId,
+        orderSn,
+      });
     }
     return response.response?.tracking_number ?? null;
   }
@@ -1409,7 +1464,7 @@ export class ShopeeApiService {
       }>
     >(
       "POST",
-      "/api/v2/logistics/create_shipping_document",
+      SHOPEE_ENDPOINTS.logistics.createShippingDocument,
       accessToken,
       shopId,
       {
@@ -1420,8 +1475,14 @@ export class ShopeeApiService {
       },
     );
     if (response.error) {
-      throw new Error(
-        `Erro ao criar documento de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.create_shipping_document",
+        step: "create_shipping_document",
+        shopId,
+      },
       );
     }
     const failed = (response.response?.result_list ?? []).find(
@@ -1447,7 +1508,7 @@ export class ShopeeApiService {
       }>
     >(
       "POST",
-      "/api/v2/logistics/get_shipping_document_result",
+      SHOPEE_ENDPOINTS.logistics.getShippingDocumentResult,
       accessToken,
       shopId,
       {
@@ -1458,8 +1519,14 @@ export class ShopeeApiService {
       },
     );
     if (response.error) {
-      throw new Error(
-        `Erro ao consultar documento de envio Shopee: ${response.message ?? response.error}`,
+      throw integrationErrorFromBody(
+        response,
+        {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_document_result",
+        step: "get_shipping_document_result",
+        shopId,
+      },
       );
     }
     return (response.response?.result_list ?? []).map((r) => ({
@@ -1479,7 +1546,7 @@ export class ShopeeApiService {
     docType: string,
   ): Promise<Buffer> {
     const url = this.buildSignedUrl(
-      "/api/v2/logistics/download_shipping_document",
+      SHOPEE_ENDPOINTS.logistics.downloadShippingDocument,
       accessToken,
       shopId,
     );
@@ -1487,10 +1554,10 @@ export class ShopeeApiService {
       const resp = await axios.post(
         url,
         {
-          order_list: orderList.map((o) => ({
-            order_sn: o.order_sn,
-            shipping_document_type: docType,
-          })),
+          // `shipping_document_type` vai só na RAIZ: no spec do endpoint os
+          // itens de order_list aceitam apenas order_sn e package_number.
+          // Repetir o campo por item não consta no contrato.
+          order_list: orderList.map((o) => ({ order_sn: o.order_sn })),
           shipping_document_type: docType,
         },
         {
@@ -1498,17 +1565,74 @@ export class ShopeeApiService {
           timeout: SHOPEE_CONSTANTS.REQUEST_TIMEOUT,
         },
       );
-      return Buffer.from(resp.data as ArrayBuffer);
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        const err = new Error(
-          `Shopee download_shipping_document ${status ?? ""}`,
-        );
-        (err as { status?: number }).status = status;
-        throw err;
+
+      // A resposta é binária no caminho feliz, mas em erro a Shopee devolve
+      // JSON com HTTP 200 — que chegaria aqui como "PDF" corrompido. Detectar
+      // isso é o que impede salvar um arquivo de erro como se fosse etiqueta.
+      const buf = Buffer.from(resp.data as ArrayBuffer);
+      if (buf.subarray(0, 4).toString("latin1") !== "%PDF") {
+        let parsed: Record<string, unknown> | undefined;
+        try {
+          parsed = JSON.parse(buf.toString("utf-8"));
+        } catch {
+          /* não era JSON — cai no erro genérico abaixo */
+        }
+        throw integrationErrorFromBody(parsed ?? { error: "resposta_nao_pdf" }, {
+          marketplace: "SHOPEE",
+          operation: "shopee.logistics.download_shipping_document",
+          step: "download_shipping_document",
+          endpoint: `POST ${sanitizeUrl(url)}`,
+          shopId,
+        });
       }
-      throw error;
+      return buf;
+    } catch (error) {
+      throw toIntegrationError(error, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.download_shipping_document",
+        step: "download_shipping_document",
+        endpoint: `POST ${sanitizeUrl(url)}`,
+        shopId,
+      });
     }
+  }
+
+  /**
+   * POST /api/v2/logistics/get_shipping_document_parameter
+   *
+   * Diz quais `shipping_document_type` a transportadora daquele pedido aceita.
+   * A Shopee documenta como pré-requisito do create_shipping_document: pedir um
+   * tipo não suportado falha no create, e o motivo real fica escondido no
+   * `result_list`. Consultar antes transforma isso em escolha informada.
+   */
+  static async getShippingDocumentParameter(
+    accessToken: string,
+    shopId: number,
+    orderList: Array<{ order_sn: string }>,
+  ): Promise<{ suggested?: string; selectable: string[] }> {
+    const response = await this.makeAuthenticatedRequest<
+      ShopeeApiResponse<{
+        suggested_shipping_document_type?: string;
+        selectable_shipping_document_type?: string[];
+      }>
+    >(
+      "POST",
+      SHOPEE_ENDPOINTS.logistics.getShippingDocumentParameter,
+      accessToken,
+      shopId,
+      { order_list: orderList.map((o) => ({ order_sn: o.order_sn })) },
+    );
+    if (response.error) {
+      throw integrationErrorFromBody(response, {
+        marketplace: "SHOPEE",
+        operation: "shopee.logistics.get_shipping_document_parameter",
+        step: "get_shipping_document_parameter",
+        shopId,
+      });
+    }
+    return {
+      suggested: response.response?.suggested_shipping_document_type,
+      selectable: response.response?.selectable_shipping_document_type ?? [],
+    };
   }
 }

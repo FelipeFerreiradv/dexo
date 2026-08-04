@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dexo — Etiqueta de Envio Shopee: correção e revisão de performance · 05/08/2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --pergaminho:#f2ede2; --petroleo:#0e1f2a; --creme:#fbf7ee;
+    --amarelo:#f2c419; --bege:#e8dfca; --aco:#3f4a52; --areia:#ddd3bd;
+    --verde:#1f6f4a; --vermelho:#9b2c2c;
+    --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+    --display:'Bricolage Grotesque','Inter',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--pergaminho); color:var(--petroleo);
+    font-family:var(--sans); font-size:10.5pt; line-height:1.62;
+  }
+  .pagina{max-width:190mm; margin:0 auto; padding:14mm 0 18mm}
+  .capa{
+    min-height:247mm; display:flex; flex-direction:column; justify-content:space-between;
+    padding:22mm 16mm; background:var(--petroleo); color:var(--pergaminho);
+    border-radius:14px; page-break-after:always;
+  }
+  .marca{display:flex; align-items:center; gap:12px}
+  .marca .logo{
+    width:38px;height:38px;border-radius:10px;background:var(--amarelo);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--display); font-weight:700; font-size:20px; color:var(--petroleo);
+  }
+  .marca .nome{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em}
+  .capa h1{
+    font-family:var(--display); font-weight:700; font-size:34pt; line-height:1.1;
+    letter-spacing:-.025em; margin:0 0 10px;
+  }
+  .capa .sub{font-size:13pt;color:#c9c0ad;max-width:135mm;margin:0}
+  .capa .faixa{height:5px;width:96px;background:var(--amarelo);border-radius:3px;margin:22px 0}
+  .capa .meta{display:flex;gap:34px;flex-wrap:wrap;font-size:9.5pt;color:#c9c0ad}
+  .capa .meta b{display:block;color:var(--pergaminho);font-size:10.5pt;font-weight:600;margin-top:3px}
+  h2{
+    font-family:var(--display); font-size:19pt; font-weight:700; letter-spacing:-.02em;
+    margin:30px 0 4px; padding-top:14px; border-top:2px solid var(--petroleo);
+    page-break-after:avoid;
+  }
+  h2 .num{color:var(--aco); font-size:12pt; font-weight:600; margin-right:9px}
+  h3{font-family:var(--display);font-size:12.5pt;font-weight:600;margin:20px 0 6px;page-break-after:avoid}
+  h4{font-size:10.5pt;font-weight:600;margin:14px 0 4px;page-break-after:avoid}
+  p{margin:7px 0}
+  ul,ol{margin:7px 0;padding-left:19px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:9pt;background:var(--bege);padding:1px 5px;border-radius:4px}
+  strong{font-weight:600}
+  a{color:var(--petroleo)}
+  .card{background:var(--creme);border:1px solid var(--areia);border-radius:10px;padding:14px 16px;margin:12px 0;page-break-inside:avoid}
+  .destaque{background:var(--creme);border-left:5px solid var(--amarelo);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .atencao{background:#fdf6f6;border-left:5px solid var(--vermelho);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .ok{background:#f2f8f4;border-left:5px solid var(--verde);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .destaque p:first-child,.atencao p:first-child,.ok p:first-child,.card p:first-child{margin-top:0}
+  .destaque p:last-child,.atencao p:last-child,.ok p:last-child,.card p:last-child{margin-bottom:0}
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:9.5pt;page-break-inside:avoid}
+  th{background:var(--petroleo);color:var(--pergaminho);text-align:left;padding:8px 10px;font-weight:600;font-size:9pt}
+  td{padding:7px 10px;border-bottom:1px solid var(--areia);vertical-align:top}
+  tr:nth-child(even) td{background:var(--creme)}
+  th:first-child{border-radius:7px 0 0 0} th:last-child{border-radius:0 7px 0 0}
+  .sumario{background:var(--creme);border:1px solid var(--areia);border-radius:12px;padding:18px 22px;page-break-after:always}
+  .sumario h2{border:0;margin:0 0 10px;padding:0}
+  .sumario ol{list-style:none;padding:0;counter-reset:s}
+  .sumario li{counter-increment:s;padding:7px 0;border-bottom:1px dashed var(--areia);display:flex;gap:10px;align-items:baseline}
+  .sumario li:last-child{border:0}
+  .sumario li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--aco);font-size:9pt;min-width:22px}
+  .sumario li b{font-weight:600}
+  .sumario li span{color:var(--aco);font-size:9pt}
+  .tag{display:inline-block;font-size:8pt;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--bege);color:var(--aco);vertical-align:middle;margin-left:7px}
+  .tag.novo{background:var(--amarelo);color:var(--petroleo)}
+  .tag.corr{background:#e3efe8;color:var(--verde)}
+  .tag.flag{background:#efe6f3;color:#5b3a72}
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:26px;position:relative;margin:6px 0}
+  .check li::before{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border:2px solid var(--aco);border-radius:4px}
+  .faq dt{font-weight:600;margin-top:13px}
+  .faq dd{margin:3px 0 0;padding-left:0;color:var(--aco)}
+  .rodape{margin-top:26px;padding-top:11px;border-top:1px solid var(--areia);font-size:8.5pt;color:var(--aco);display:flex;justify-content:space-between}
+  @page{size:A4;margin:14mm 12mm 16mm}
+  @media print{
+    body{background:#fff}
+    .pagina{max-width:none;padding:0}
+    .capa{border-radius:0;min-height:250mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    .quebra{page-break-before:always}
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+
+  <!-- ============ CAPA ============ -->
+  <section class="capa">
+    <div class="marca">
+      <div class="logo">D</div>
+      <div class="nome">Dexo</div>
+    </div>
+    <div>
+      <div class="faixa"></div>
+      <h1>Etiqueta de envio da Shopee volta a funcionar</h1>
+      <p class="sub">A emissão de etiqueta da Shopee nunca chegou a funcionar desde que foi lançada. Descobrimos o motivo, corrigimos, e de quebra acabamos com as mensagens de erro incompreensíveis. O que mudou e como orientar o cliente.</p>
+    </div>
+    <div class="meta">
+      <div>Data<b>05 de agosto de 2026</b></div>
+      <div>Público<b>Suporte · Implantação · CS</b></div>
+      <div>Referência<b>PR #234</b></div>
+      <div>Classificação<b>Uso interno</b></div>
+    </div>
+  </section>
+
+  <!-- ============ SUMÁRIO ============ -->
+  <section class="sumario">
+    <h2>Sumário</h2>
+    <ol>
+      <li><b>Resumo executivo</b> <span>— o que aconteceu e o que foi entregue</span></li>
+      <li><b>Objetivo</b> <span>— por que mexemos nisso</span></li>
+      <li><b>Funcionalidades analisadas</b> <span>— o que foi olhado</span></li>
+      <li><b>Alterações realizadas</b> <span>— lista completa</span></li>
+      <li><b>Justificativa técnica</b> <span>— por que cada uma</span></li>
+      <li><b>Ganhos de performance</b> <span>— o que fica mais rápido</span></li>
+      <li><b>Consumo de recursos e egress</b> <span>— tráfego externo</span></li>
+      <li><b>Ausência de regressões</b> <span>— como provamos</span></li>
+      <li><b>Funcionalidades críticas validadas</b> <span>— a lista testada</span></li>
+      <li><b>O que muda para o cliente</b> <span>— na prática</span></li>
+      <li><b>O que o Suporte precisa saber</b> <span>— o essencial</span></li>
+      <li><b>Como orientar os clientes</b> <span>— roteiros prontos</span></li>
+      <li><b>Perguntas frequentes</b> <span>— FAQ</span></li>
+      <li><b>Observações importantes</b> <span>— pontos de atenção</span></li>
+      <li><b>Checklist final</b> <span>— validação</span></li>
+    </ol>
+  </section>
+
+  <h2><span class="num">01</span>Resumo executivo</h2>
+  <p>Em 29/07 um cliente tentou emitir a etiqueta de envio de um pedido da Shopee e recebeu na tela a mensagem <code>Shopee upload_invoice_doc 404: Request failed with status code 404</code>. Investigando, descobrimos algo maior do que um erro pontual.</p>
+
+  <div class="atencao">
+    <p><strong>A emissão de etiqueta da Shopee nunca funcionou.</strong> O defeito existia desde que a funcionalidade foi criada, em 24 de junho. Nenhum cliente conseguiu emitir uma etiqueta da Shopee pelo Dexo nesse período.</p>
+  </div>
+
+  <p>O motivo: o Dexo pedia a operação no <em>endereço errado</em> dentro da API da Shopee. É como entregar um documento no balcão errado — o atendente responde "aqui não é", e era exatamente isso que a Shopee dizia. Só que essa resposta chegava ao lojista traduzida como um texto técnico sem sentido.</p>
+
+  <p>O incidente de 29/07 <strong>não foi uma piora</strong>. Foi o dia em que consertamos a entrada de pedidos da Shopee; com mais pedidos entrando, mais gente tentou emitir etiqueta e o problema — que já estava lá — apareceu.</p>
+
+  <p>Além de corrigir, atacamos a <em>categoria</em> do problema: mensagens de erro que não ajudam ninguém. Agora, quando algo falha numa integração, a tela diz <strong>qual etapa</strong> falhou, <strong>qual pedido</strong>, <strong>qual marketplace</strong> e <strong>o motivo dado pelo próprio marketplace</strong>.</p>
+
+  <h2><span class="num">02</span>Objetivo</h2>
+  <ul>
+    <li>Fazer a etiqueta da Shopee funcionar.</li>
+    <li>Acabar com mensagens de erro técnicas chegando ao lojista.</li>
+    <li>Impedir que uma falha de integração fique invisível para a equipe.</li>
+    <li>Revisar performance e tráfego externo, sem alterar o funcionamento de nada que já funciona.</li>
+  </ul>
+
+  <h2><span class="num">03</span>Funcionalidades analisadas</h2>
+  <p>Além da etiqueta, revisamos tudo que compartilha código com ela, para garantir que nada foi afetado:</p>
+  <ul>
+    <li>Emissão de etiqueta — individual e em lote — nos três marketplaces.</li>
+    <li>Autenticação das contas de marketplace (renovação automática de acesso).</li>
+    <li>Entrada automática de pedidos e o tempo que ela leva.</li>
+    <li>Sincronização de produtos, anúncios e estoque.</li>
+    <li>Baixa automática de estoque na venda.</li>
+    <li>Webhooks, rotinas agendadas e processos em segundo plano.</li>
+  </ul>
+
+  <h2><span class="num">04</span>Alterações realizadas</h2>
+  <table>
+    <tr><th>O que mudou</th><th>Efeito prático</th></tr>
+    <tr><td>Endereço correto da operação na Shopee <span class="tag corr">correção</span></td><td>A etiqueta passa a ser possível</td></tr>
+    <tr><td>Formato do envio da NF-e ajustado ao que a Shopee espera</td><td>Sem isso, o endereço certo ainda falharia</td></tr>
+    <tr><td>Mensagens de erro reescritas em português <span class="tag novo">novo</span></td><td>O lojista entende o que houve e o que fazer</td></tr>
+    <tr><td>Código de referência em cada erro <span class="tag novo">novo</span></td><td>O Suporte localiza o caso no log sem pedir print</td></tr>
+    <tr><td>Pedido já despachado não trava mais a etiqueta</td><td>O fluxo segue em vez de parar</td></tr>
+    <tr><td>Dois cliques no botão não duplicam a operação</td><td>Evita envio duplicado no marketplace</td></tr>
+    <tr><td>Nova tentativa automática em falha passageira</td><td>Instabilidade momentânea deixa de virar erro definitivo</td></tr>
+    <tr><td>Limite de tempo na geração</td><td>Erro claro em vez de tela travada</td></tr>
+    <tr><td>Conferência da nota antes de enviar</td><td>Aviso claro em vez de erro genérico do marketplace</td></tr>
+    <tr><td>Conta de marketplace desconectada agora fica marcada <span class="tag novo">novo</span></td><td>Aparece para a equipe em vez de falhar em silêncio</td></tr>
+    <tr><td>Credencial deixa de aparecer no log técnico <span class="tag corr">segurança</span></td><td>Reduz exposição de dado sensível</td></tr>
+    <tr><td>Ajuste de performance no envio da nota <span class="tag flag">perf</span></td><td>Menos processamento por chamada</td></tr>
+  </table>
+
+  <h2><span class="num">05</span>Justificativa técnica</h2>
+  <p>Resumo do porquê de cada frente, sem entrar no código:</p>
+  <ul>
+    <li><b>Endereço da operação.</b> Confirmado com um teste lado a lado contra a Shopee: mesma requisição, mudando só o endereço — um responde "não existe", o outro é aceito. Repetimos de dois lugares diferentes para descartar coincidência.</li>
+    <li><b>Mensagens.</b> A resposta da Shopee vinha com o motivo em um campo que o Dexo não lia. Passamos a ler todos os campos e a montar a mensagem em português.</li>
+    <li><b>Conta desconectada.</b> Mercado Livre e Magalu já marcavam a conta quando o cliente desconectava o app. A Shopee não marcava — ficava "ativa" para sempre, falhando de hora em hora sem avisar ninguém.</li>
+    <li><b>Proteções (duplo clique, nova tentativa, limite de tempo).</b> Todas podem ser desligadas individualmente por configuração, sem precisar de nova versão, caso algo se comporte de forma inesperada.</li>
+  </ul>
+
+  <h2><span class="num">06</span>Ganhos de performance</h2>
+  <div class="card">
+    <p>Esta entrega é primariamente uma <strong>correção</strong>. O ganho de performance é pontual e honesto:</p>
+    <ul>
+      <li>O envio da nota à Shopee deixou de fazer um processamento de diagnóstico em toda chamada — agora só quando há erro.</li>
+      <li>Nova tentativa automática evita que uma instabilidade de segundos vire um chamado de suporte.</li>
+      <li>O limite de tempo evita requisições que ficariam presas por vários minutos.</li>
+    </ul>
+    <p>Não prometemos ganho perceptível de velocidade na tela. O que muda de verdade é <strong>confiabilidade</strong> e <strong>clareza</strong>.</p>
+  </div>
+
+  <h2><span class="num">07</span>Consumo de recursos e egress</h2>
+  <p>Revisamos esta entrega contra as regras de redução de tráfego externo criadas na branch de Segurança e Otimização. <strong>Nenhuma regra foi violada:</strong></p>
+  <ul>
+    <li>Nenhuma consulta nova ao banco trazendo mais dados do que precisa.</li>
+    <li>Nenhuma conta ou soma que era feita no banco passou a ser feita fora dele.</li>
+    <li>Nenhum cache foi removido ou enfraquecido.</li>
+    <li>Nenhuma requisição do sistema para ele mesmo.</li>
+  </ul>
+  <div class="destaque">
+    <p><b>Um aumento declarado.</b> A geração de etiqueta faz <strong>uma consulta a mais</strong> à Shopee, para perguntar qual formato de etiqueta a transportadora daquele pedido aceita. Assumimos esse custo porque: é uma ação feita pelo usuário, poucas vezes por dia (não é rotina automática); e ela substitui uma tentativa que falharia quando o formato não é aceito. Pode ser desligada por configuração.</p>
+  </div>
+
+  <h2><span class="num">08</span>Ausência de regressões</h2>
+  <table>
+    <tr><th>Verificação</th><th>Resultado</th></tr>
+    <tr><td>Bateria automática de testes</td><td>384 arquivos · 4.026 testes · <b>0 falhas</b></td></tr>
+    <tr><td>Verificação de tipos do projeto</td><td>Igual antes e depois — nada novo introduzido</td></tr>
+    <tr><td>Endereços das operações da Shopee</td><td>Conferidos um a um contra a versão anterior</td></tr>
+    <tr><td>Mercado Livre e Magalu</td><td>Inalterados — testes passam sem qualquer ajuste</td></tr>
+  </table>
+  <div class="ok">
+    <p>Todo comportamento novo está atrás de uma chave de desligamento. Se algo se comportar de forma inesperada em produção, é possível voltar ao comportamento anterior <strong>sem publicar nova versão</strong>.</p>
+  </div>
+
+  <h2><span class="num">09</span>Funcionalidades críticas validadas</h2>
+  <ul class="check">
+    <li>Criação, edição e exclusão de produtos</li>
+    <li>Sincronização de produtos e anúncios</li>
+    <li>Entrada automática de pedidos</li>
+    <li>Baixa e atualização automática de estoque</li>
+    <li>Fluxo de pedidos e integrações existentes</li>
+    <li>Rotinas agendadas, processos em segundo plano e filas</li>
+    <li>Webhooks dos marketplaces</li>
+    <li>Login, autenticação e permissões</li>
+    <li>Emissão de etiqueta — individual e em lote</li>
+  </ul>
+
+  <h2><span class="num">10</span>O que muda para o cliente</h2>
+  <table>
+    <tr><th>Situação</th><th>Antes</th><th>Depois</th></tr>
+    <tr><td>Emitir etiqueta da Shopee</td><td>Nunca funcionou</td><td>Funciona, no momento certo do pedido</td></tr>
+    <tr><td>Quando dá erro</td><td>Texto técnico em inglês</td><td>Frase em português dizendo etapa, pedido e motivo</td></tr>
+    <tr><td>Abrir chamado</td><td>Print da tela</td><td>Código de referência que localiza o caso no log</td></tr>
+    <tr><td>Clicar duas vezes</td><td>Podia duplicar a operação</td><td>A segunda espera a primeira</td></tr>
+    <tr><td>Conta desconectada da Shopee</td><td>Parecia ativa, sem sincronizar</td><td>Fica marcada com erro, pedindo reconexão</td></tr>
+  </table>
+
+  <h2><span class="num">11</span>O que o Suporte precisa saber</h2>
+
+  <h3>Existe uma janela para emitir a etiqueta</h3>
+  <p>A Shopee só aceita a etiqueta enquanto o pedido está <strong>aguardando despacho</strong>. Depois que o envio é arranjado, ela recusa. A janela costuma durar <strong>vários dias</strong> — medimos pedidos com mais de 4 dias ainda abertos —, então não é corrida contra o tempo, mas não é infinita.</p>
+  <div class="atencao">
+    <p><strong>Pedidos antigos não têm conserto.</strong> Se o cliente reclamar de um pedido que já foi despachado, a etiqueta não pode mais ser emitida pelo Dexo — nem por nós. A janela da Shopee fechou. Oriente a usar o Seller Center da Shopee para aquele pedido específico.</p>
+  </div>
+
+  <h3>A nota fiscal precisa vir antes</h3>
+  <p>A etiqueta depende de uma NF-e modelo 55, autorizada e de produção. Sem isso o sistema avisa com clareza. Na verificação que fizemos, <strong>todos</strong> os pedidos com a janela aberta estavam sem nota emitida — ou seja, o passo que costuma faltar é o fiscal, não o técnico.</p>
+
+  <h3>A entrada de pedidos está rápida</h3>
+  <p>Medimos: metade dos pedidos entra em <strong>menos de 1 minuto</strong> após a venda, e 96,6% em menos de 15 minutos. Se um cliente disser que "o pedido não chegou no Dexo", a causa provavelmente <em>não</em> é demora — vale checar se a conta dele está conectada.</p>
+
+  <h2><span class="num">12</span>Como orientar os clientes</h2>
+
+  <div class="card">
+    <h4>"Não consigo emitir a etiqueta da Shopee"</h4>
+    <ol>
+      <li>Leia a mensagem na tela — ela agora diz o motivo.</li>
+      <li>Se falar em <b>NF-e</b>: oriente a emitir e autorizar a nota primeiro.</li>
+      <li>Se falar em <b>envio já arranjado</b>: a janela fechou; use o Seller Center para esse pedido.</li>
+      <li>Se falar em <b>autorização da conta</b>: a loja precisa reconectar a Shopee no Dexo.</li>
+      <li>Em qualquer outro caso, abra chamado <b>com o código de referência</b> que aparece na mensagem.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h4>"Minha conta da Shopee parou de sincronizar"</h4>
+    <p>Se a conta aparecer com <b>erro</b>, a loja desconectou o Dexo do lado da Shopee — às vezes sem perceber. A solução é reconectar pela tela de Integrações. Não é falha do Dexo e não há como reconectar por nós: depende de o lojista autorizar novamente.</p>
+  </div>
+
+  <div class="destaque">
+    <p><b>Antes de escalar:</b> confirme se o pedido ainda está aguardando despacho na Shopee e se a NF-e já foi autorizada. Esses dois pontos explicam a grande maioria dos casos.</p>
+  </div>
+
+  <h2><span class="num">13</span>Perguntas frequentes</h2>
+  <dl class="faq">
+    <dt>O cliente vai perceber alguma diferença no dia a dia?</dt>
+    <dd>Sim, em dois pontos: a etiqueta da Shopee passa a funcionar, e as mensagens de erro passam a ser compreensíveis. O resto da tela continua igual.</dd>
+
+    <dt>Isso quebrou desde quando? Alguém perdeu venda?</dt>
+    <dd>Desde 24/06, quando a funcionalidade foi criada — ela nunca funcionou. Não houve perda de venda: o pedido entra, o estoque baixa e a nota é emitida normalmente. O que não saía era a etiqueta pelo Dexo.</dd>
+
+    <dt>Precisa que o cliente faça alguma coisa?</dt>
+    <dd>Não, exceto as contas que aparecerem com erro — essas precisam ser reconectadas pelo próprio lojista.</dd>
+
+    <dt>Mudou alguma coisa no Mercado Livre ou na Magalu?</dt>
+    <dd>Não. Foram verificados e estão inalterados.</dd>
+
+    <dt>Por que o pedido antigo não pode ser resolvido?</dt>
+    <dd>Porque a limitação é da Shopee, não do Dexo: depois que o envio é arranjado, ela recusa a etiqueta e a nota. Não há caminho técnico do nosso lado.</dd>
+
+    <dt>Isso aumentou o consumo de dados do sistema?</dt>
+    <dd>Praticamente não. Há uma consulta a mais por etiqueta emitida, que é uma ação manual e pouco frequente. Nenhuma rotina automática ficou mais pesada.</dd>
+  </dl>
+
+  <h2><span class="num">14</span>Observações importantes</h2>
+  <ul>
+    <li><b>Um ponto ainda em confirmação.</b> Um detalhe do formato aceito pela Shopee não pôde ser confirmado porque não havia pedido no estado necessário durante os testes. Mantivemos o comportamento de sempre. Se aparecer erro mencionando arquivo ou formato ao emitir etiqueta, <b>registre e escale</b> — é exatamente o caso que estamos esperando para fechar.</li>
+    <li><b>Cinco contas Shopee foram marcadas com erro</b> por estarem desconectadas há entre 7 e 50 dias. Se algum desses clientes procurar o Suporte, a orientação é reconectar.</li>
+    <li>Uma dessas contas pertence a um cliente <b>ativo</b>. Vale um contato proativo do CS.</li>
+  </ul>
+
+  <h2><span class="num">15</span>Checklist final de validação</h2>
+  <ul class="check">
+    <li>Causa raiz confirmada com teste contra a Shopee real, de dois pontos de rede</li>
+    <li>Bateria completa de testes sem falhas (4.026 testes)</li>
+    <li>Verificação de tipos sem novos problemas</li>
+    <li>Endereços das operações conferidos contra a versão anterior</li>
+    <li>Regras de redução de tráfego externo respeitadas</li>
+    <li>Mercado Livre e Magalu inalterados</li>
+    <li>Todo comportamento novo com chave de desligamento</li>
+    <li>Funcionalidades críticas validadas</li>
+    <li>Pull Request aberto com evidências (#234)</li>
+  </ul>
+
+  <div class="rodape">
+    <span>Dexo · Uso interno — Suporte, Implantação e CS</span>
+    <span>05/08/2026 · PR #234</span>
+  </div>
+
+</div>
+</body>
+</html>

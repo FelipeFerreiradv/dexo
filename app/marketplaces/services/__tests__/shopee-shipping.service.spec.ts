@@ -233,11 +233,17 @@ describe("ShopeeApiService — logistics (HTTP de baixo nível)", () => {
     expect(config.responseType).toBe("arraybuffer");
   });
 
-  it("uploadInvoiceDoc → POST multipart para upload_invoice_doc", async () => {
+  it("uploadInvoiceDoc → POST multipart para /api/v2/ORDER/upload_invoice_doc", async () => {
     (mockedAxios as any).post.mockResolvedValue({ data: { error: "" } });
     await ShopeeApiService.uploadInvoiceDoc("tok", 123, "2504ABC", "<nfeProc/>");
     const [url, body] = (mockedAxios as any).post.mock.calls[0];
-    expect(url).toContain("/api/v2/logistics/upload_invoice_doc");
+
+    // REGRESSÃO 29/07/2026: este endpoint é do módulo `order`. Enquanto
+    // apontava para `logistics` a Shopee devolvia 404 error_not_found e a
+    // etiqueta era impossível. A asserção anterior deste teste congelava o
+    // path errado — ela afirmava a suposição, não o contrato.
+    expect(url).toContain("/api/v2/order/upload_invoice_doc");
+    expect(url).not.toContain("/api/v2/logistics/upload_invoice_doc");
     // body é um FormData (form-data): possui getHeaders()
     expect(typeof (body as any).getHeaders).toBe("function");
   });

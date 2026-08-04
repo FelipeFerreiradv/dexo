@@ -18,6 +18,27 @@ import {
 } from "../marketplaces/shipping/shipping-label.types";
 
 /** Mapeia o code de ShippingLabelError para um status HTTP legível. */
+/**
+ * Payload de erro do módulo de etiqueta.
+ *
+ * ADITIVO: `error` e `message` continuam exatamente onde estavam — o front
+ * antigo segue funcionando. O que entra é `code` (já existia no POST), `step`,
+ * `provider` e `correlationId`, para o suporte correlacionar com o log sem
+ * pedir print de tela.
+ */
+function shippingErrorPayload(
+  error: ShippingLabelError,
+  correlationId: string,
+  title = "Não foi possível gerar a etiqueta",
+): Record<string, unknown> {
+  return {
+    error: title,
+    code: error.code,
+    message: error.message,
+    correlationId,
+  };
+}
+
 function shippingErrorStatus(code?: string): number {
   switch (code) {
     case "ORDER_NOT_FOUND":
@@ -819,16 +840,15 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       } catch (error) {
         if (error instanceof ShippingLabelError) {
-          return reply.status(shippingErrorStatus(error.code)).send({
-            error: "Não foi possível gerar a etiqueta",
-            code: error.code,
-            message: error.message,
-          });
+          return reply
+            .status(shippingErrorStatus(error.code))
+            .send(shippingErrorPayload(error, request.id));
         }
         console.error("[Orders] Shipping label error:", error);
         return reply.status(500).send({
           error: "Erro ao gerar etiqueta",
           message: error instanceof Error ? error.message : "Erro desconhecido",
+          correlationId: request.id,
         });
       }
     },
@@ -865,16 +885,21 @@ export async function orderRoutes(app: FastifyInstance) {
           .send(stored.pdf);
       } catch (error) {
         if (error instanceof ShippingLabelError) {
-          return reply.status(shippingErrorStatus(error.code)).send({
-            error: "Não foi possível baixar a etiqueta",
-            code: error.code,
-            message: error.message,
-          });
+          return reply
+            .status(shippingErrorStatus(error.code))
+            .send(
+              shippingErrorPayload(
+                error,
+                request.id,
+                "Não foi possível baixar a etiqueta",
+              ),
+            );
         }
         console.error("[Orders] Shipping label download error:", error);
         return reply.status(500).send({
           error: "Erro ao baixar etiqueta",
           message: error instanceof Error ? error.message : "Erro desconhecido",
+          correlationId: request.id,
         });
       }
     },

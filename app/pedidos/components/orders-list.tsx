@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ToastViewport } from "@/components/ui/toast-viewport";
 import { getApiBaseUrl } from "@/lib/api";
+import { formatLabelError } from "@/lib/shipping-label-error";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -212,7 +213,7 @@ export function OrdersList() {
           ? data.failures.length
           : ids.length;
         showToast(
-          `${data?.error ?? "Não foi possível gerar as etiquetas"} (${fails} falha(s)).`,
+          `${formatLabelError(data, "Não foi possível gerar as etiquetas")} (${fails} falha(s)).`,
           "error",
         );
         return;

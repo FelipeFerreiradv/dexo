@@ -416,6 +416,23 @@ try {
       host: "0.0.0.0",
     })
     .then(() => {
+      // ATENÇÃO: os workers abaixo MUTAM MARKETPLACE (criam/atualizam anúncio,
+      // empurram estoque). Com um .env de produção, subir a API na máquina de
+      // alguém faz a máquina dela começar a escrever no ML/Shopee/Magalu em
+      // 30-60s, concorrendo com a VPS. `BACKGROUND_WORKERS_DISABLED=1` desliga
+      // o bloco inteiro — é o que torna `npm run api` seguro para testar
+      // localmente. Ausente/vazio = comportamento de sempre.
+      if (process.env.BACKGROUND_WORKERS_DISABLED === "1") {
+        api.log.warn(
+          "[api] BACKGROUND_WORKERS_DISABLED=1 — nenhum worker de fundo iniciado (sem escrita em marketplace).",
+        );
+        // `/ready` continua 200: a inicialização terminou como configurado.
+        // Sem isso o healthcheck reportaria "degraded" por uma escolha
+        // deliberada, e não por falha.
+        backgroundServicesStarted = true;
+        return;
+      }
+
       // start background retry loop for placeholder listings
       ListingRetryService.start();
       // start durable cross-marketplace stock sync worker
