@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import prisma from "../lib/prisma";
+import { loadTenantAvatar } from "../fiscal/generators/load-avatar";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { CompanyFiscalUseCase } from "../usecases/company-fiscal.usecase";
 import { NfeDraftUseCase } from "../usecases/nfe-draft.usecase";
@@ -65,10 +66,18 @@ const DANFE_RERENDER_MAX_XML_BYTES = 128 * 1024;
  * Fica atrás da MESMA flag do renderer novo: com ela desligada não faz sentido
  * pagar parse + render para entregar o layout antigo — e o kill-switch precisa
  * desligar as duas coisas de uma vez.
+ *
+ * `userId` resolve a logo do emitente. Sem ele o documento cai nas iniciais da
+ * razão social, que era o comportamento da primeira versão desta função e o
+ * motivo de o DANFE baixado sair sem a logo mesmo quando o tenant tem imagem
+ * cadastrada. `loadTenantAvatar` é cacheado por tenant e lê do disco quando a
+ * imagem é servida pela própria aplicação, então o custo por download é
+ * desprezível depois da primeira vez.
  */
 export async function tryRerenderDanfe(
   storage: Pick<FiscalStorageService, "readFile">,
   xmlPath: string | null | undefined,
+  userId?: string | null,
 ): Promise<Uint8Array | null> {
   if (!xmlPath) return null;
   if (process.env.NEXT_PUBLIC_DANFE_OFICIAL_ENABLED !== "true") return null;
@@ -85,7 +94,13 @@ export async function tryRerenderDanfe(
     const { DanfePdfService } = await import(
       "../fiscal/generators/danfe-pdf.service"
     );
-    return await new DanfePdfService().generateFromXml(xml);
+    // A logo é best-effort DENTRO do best-effort: `loadTenantAvatar` nunca
+    // lança e devolve null em qualquer falha, então o DANFE sai com as
+    // iniciais em vez de não sair.
+    const avatar = userId
+      ? await loadTenantAvatar(prisma as never, userId, "[DANFE avatar]")
+      : null;
+    return await new DanfePdfService().generateFromXml(xml, avatar);
   } catch {
     return null;
   }
@@ -1200,7 +1215,7 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         // best-effort: qualquer falha cai no PDF gravado em disco, que é o
         // comportamento de sempre. Nunca transforma um download que funciona
         // hoje num erro.
-        const fresh = await tryRerenderDanfe(storage, row.xmlAutorizadoPath);
+        const fresh = await tryRerenderDanfe(storage, row.xmlAutorizadoPath, userId);
 
         const content = fresh ?? (await storage.readFile(row.danfePdfPath));
         if (!content) {
@@ -1476,7 +1491,11 @@ export const fiscalRoutes = async (fastify: FastifyInstance) => {
         // mensagem que vai para o cliente final. O que o re-render altera é só o
         // LAYOUT do anexo que já sairia.
         if (nfe.danfePdfPath) {
-          const danfeFresh = await tryRerenderDanfe(storage, nfe.xmlAutorizadoPath);
+          const danfeFresh = await tryRerenderDanfe(
+            storage,
+            nfe.xmlAutorizadoPath,
+            userId,
+          );
           const pdfContent = danfeFresh ?? (await storage.readFile(nfe.danfePdfPath));
           if (pdfContent) {
             attachments.push({
