@@ -1304,15 +1304,17 @@ export class ShopeeApiService {
       accessToken,
       shopId,
     );
-    const endpoint = `POST ${sanitizeUrl(url)}`;
-    const errCtx = {
+    // Montado SÓ quando há erro. `sanitizeUrl` faz parse da URL, reescreve a
+    // query e serializa de volta — trabalho puro de diagnóstico, que não tem
+    // por que rodar no caminho feliz.
+    const errCtx = () => ({
       marketplace: "SHOPEE" as const,
       operation: "shopee.order.upload_invoice_doc",
       step: "upload_invoice_doc",
-      endpoint,
+      endpoint: `POST ${sanitizeUrl(url)}`,
       orderSn,
       shopId,
-    };
+    });
 
     const form = new FormData();
     form.append("order_sn", orderSn);
@@ -1333,13 +1335,13 @@ export class ShopeeApiService {
     } catch (error) {
       // Preserva corpo, código do parceiro e request_id — o catch anterior
       // lia só `data.message`, campo que o corpo do 404 não tem.
-      throw toIntegrationError(error, errCtx);
+      throw toIntegrationError(error, errCtx());
     }
 
     // Erro de negócio da Shopee chega como HTTP 200 com `error` preenchido.
     const data = resp.data as ShopeeApiResponse<unknown>;
     if (data?.error) {
-      throw integrationErrorFromBody(data, errCtx);
+      throw integrationErrorFromBody(data, errCtx());
     }
   }
 
