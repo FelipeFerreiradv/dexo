@@ -107,6 +107,13 @@ process.env.SHOPEE_LABEL_DOC_PARAM_DISABLED ??= "1";
 // senão o pedido cujo envio já foi arranjado nunca mais consegue etiqueta.
 process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED ??= "1";
 
+// Auto-desativacao de conta Shopee em falha terminal de refresh: desligada por
+// default na suite porque escreve em `MarketplaceAccount` (status=ERROR) a
+// partir de dentro do refresh, e os specs de OAuth mockam axios sem mockar o
+// prisma. Em producao o default e o oposto — ligada —, senao a conta com
+// autorizacao morta segue reportando ACTIVE para sempre.
+process.env.SHOPEE_AUTO_DEACTIVATE_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
