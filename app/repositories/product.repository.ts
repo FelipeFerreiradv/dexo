@@ -326,11 +326,24 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
  * producao, `findAll({page,limit})` e `findAll({page,limit,sort:"recentes"})`
  * devolvem a MESMA lista de ids.
  *
- * A ordem por SKU e NUMERICA NATURAL: extrai os digitos do SKU e ordena por
- * eles, caindo no texto para desempatar e para SKU sem digito nenhum
- * (`NULLS LAST`). Sem isso "1000" viria antes de "999" — e 83% dos 220 mil SKUs
- * em producao sao so digitos (medido em 04/08/2026). Tambem acerta o
- * alfanumerico: "ESC P1, ESC P2, ... ESC P10" em vez de "P1, P10, P2".
+ * A ordem por SKU e NUMERICA NATURAL, em DOIS niveis:
+ *
+ *  1. SKU puramente numerico vem PRIMEIRO, em ordem natural. Sem isso "1000"
+ *     viria antes de "999" — e 83% dos 220 mil SKUs em producao sao so digitos
+ *     (medido em 04/08/2026).
+ *  2. Depois os alfanumericos, AGRUPADOS pelo prefixo nao-numerico e em ordem
+ *     natural dentro do grupo: "ESC P1, ESC P2, ESC P10".
+ *
+ * O agrupamento por prefixo e o que mudou em 05/08/2026. Antes a ordenacao
+ * comparava SO OS DIGITOS, entao "ESC P1" valia 1 e caia entre "2" e "10":
+ * a lista saia intercalada (ESC P1, 2, ESC P2, 10, ESC P10, 999...), o que
+ * torna a impressao de etiquetas em ordem de SKU inutil para quem usa prefixo.
+ *
+ * No sentido decrescente o grupo numerico CONTINUA primeiro — inverter isso
+ * jogaria os alfanumericos para o topo de "SKU decrescente", que nao e o que
+ * "decrescente" significa para quem pediu. O que inverte e a ordem DENTRO de
+ * cada grupo e a ordem dos prefixos. SKU sem digito nenhum continua por ultimo
+ * nos dois sentidos, que ja era o efeito do `NULLS LAST`.
  *
  * A barra DUPLA no regex e obrigatoria: em template literal do JS um
  * "\D" solto perde a barra e o padrao viraria a letra "D".
@@ -339,10 +352,20 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
  * SKU natural 130 ms · SKU natural na pagina 500, 151 ms. Os 3x so sao pagos
  * quando o usuario escolhe a ordenacao — o indice unico (userId, sku) nao serve
  * porque a expressao nao e indexavel, e nao vale um indice de expressao novo.
+ * O prefixo acrescenta um segundo `regexp_replace` por linha, da mesma ordem
+ * de grandeza do que ja se pagava.
  */
 function productOrderBySql(sort?: ProductSort): Prisma.Sql {
+  // Prefixo nao-numerico: tudo antes do primeiro digito. "" para SKU puramente
+  // numerico, o proprio SKU para quem nao tem digito nenhum.
+  const prefixo = Prisma.raw(`regexp_replace(p."sku", '[0-9].*$', '')`);
+  const digitos = Prisma.raw(
+    `NULLIF(regexp_replace(p."sku", '\\D', '', 'g'), '')::numeric`,
+  );
   const naturalSku = (dir: Prisma.Sql) => Prisma.sql`
-      NULLIF(regexp_replace(p."sku", '\\D', '', 'g'), '')::numeric ${dir} NULLS LAST,
+      (${prefixo} = '') DESC,
+      ${prefixo} ${dir},
+      ${digitos} ${dir} NULLS LAST,
       p."sku" ${dir}`;
   if (sort === "sku_asc") return naturalSku(Prisma.raw("ASC"));
   if (sort === "sku_desc") return naturalSku(Prisma.raw("DESC"));

@@ -59,19 +59,34 @@ describe("parseProductSort — allowlist do parâmetro", () => {
 
 /**
  * Ordenação natural de SKU, replicada em JS a partir da mesma regra do SQL
- * (`NULLIF(regexp_replace(sku, '\D', '', 'g'), '')::numeric`, texto como
- * desempate e SKU sem dígito por último).
+ * (`productOrderBySql` em app/repositories/product.repository.ts).
+ *
+ * São DOIS níveis:
+ *   1. SKU puramente numérico primeiro, em ordem natural;
+ *   2. depois os alfanuméricos, agrupados pelo prefixo não-numérico.
  *
  * Serve para travar a INTENÇÃO: 83% dos 220 mil SKUs em produção são só
- * dígitos, e alfabeticamente "1000" viria antes de "999".
+ * dígitos, e alfabeticamente "1000" viria antes de "999". Sem o agrupamento
+ * por prefixo, "ESC P1" valia 1 e caía entre "2" e "10", intercalando as duas
+ * famílias.
  */
 function ordenarComoOSql(skus: string[], dir: "asc" | "desc"): string[] {
+  const prefixo = (sku: string) => sku.replace(/[0-9].*$/, "");
   const chave = (sku: string) => {
     const digitos = sku.replace(/\D/g, "");
     return digitos === "" ? null : Number(digitos);
   };
   const sinal = dir === "asc" ? 1 : -1;
   return [...skus].sort((a, b) => {
+    const pa = prefixo(a);
+    const pb = prefixo(b);
+    // Grupo dos puramente numéricos primeiro NOS DOIS SENTIDOS: inverter isso
+    // jogaria os alfanuméricos para o topo de "SKU decrescente".
+    const puroA = pa === "";
+    const puroB = pb === "";
+    if (puroA !== puroB) return puroA ? -1 : 1;
+    // Prefixos diferentes: o grupo inteiro se move junto.
+    if (pa !== pb) return pa < pb ? -sinal : sinal;
     const ka = chave(a);
     const kb = chave(b);
     // NULLS LAST nos dois sentidos, como o SQL faz.
@@ -97,6 +112,122 @@ describe("ordem natural de SKU", () => {
       "ESC P1",
       "ESC P2",
       "ESC P10",
+    ]);
+  });
+
+  it("NÃO intercala alfanumérico com numérico: numérico vem primeiro", () => {
+    // Este é o caso que motivou o agrupamento por prefixo. Comparando só os
+    // dígitos, "ESC P1" valia 1 e a lista saía
+    // ESC P1, 2, ESC P2, 10, ESC P10, 999, 1000, 1001.
+    const skus = [
+      "999",
+      "1000",
+      "2",
+      "10",
+      "1001",
+      "ESC P1",
+      "ESC P10",
+      "ESC P2",
+    ];
+    expect(ordenarComoOSql(skus, "asc")).toEqual([
+      "2",
+      "10",
+      "999",
+      "1000",
+      "1001",
+      "ESC P1",
+      "ESC P2",
+      "ESC P10",
+    ]);
+  });
+
+  it("no decrescente o grupo numérico continua primeiro", () => {
+    // "SKU decrescente" inverte DENTRO de cada grupo; não joga os
+    // alfanuméricos para o topo.
+    const skus = [
+      "999",
+      "1000",
+      "2",
+      "10",
+      "1001",
+      "ESC P1",
+      "ESC P10",
+      "ESC P2",
+    ];
+    expect(ordenarComoOSql(skus, "desc")).toEqual([
+      "1001",
+      "1000",
+      "999",
+      "10",
+      "2",
+      "ESC P10",
+      "ESC P2",
+      "ESC P1",
+    ]);
+  });
+
+  it("prefixos diferentes ficam agrupados, não misturados", () => {
+    const skus = ["ESC P2", "RAD 1", "ESC P1", "RAD 10", "7"];
+    expect(ordenarComoOSql(skus, "asc")).toEqual([
+      "7",
+      "ESC P1",
+      "ESC P2",
+      "RAD 1",
+      "RAD 10",
+    ]);
+  });
+
+  /**
+   * Estes dois casos foram COPIADOS da saída de um Postgres 16 real rodando o
+   * ORDER BY de `productOrderBySql` (05/08/2026). É o que amarra este espelho
+   * em JS ao SQL de verdade — se um dos dois mudar, o teste acusa.
+   */
+  const COMO_O_POSTGRES = [
+    "999",
+    "1000",
+    "2",
+    "10",
+    "1001",
+    "ESC P1",
+    "ESC P10",
+    "ESC P2",
+    "RAD 1",
+    "RAD 10",
+    "ABC",
+    "ZZZ",
+  ];
+
+  it("bate com a saída medida do Postgres, crescente", () => {
+    expect(ordenarComoOSql(COMO_O_POSTGRES, "asc")).toEqual([
+      "2",
+      "10",
+      "999",
+      "1000",
+      "1001",
+      "ABC",
+      "ESC P1",
+      "ESC P2",
+      "ESC P10",
+      "RAD 1",
+      "RAD 10",
+      "ZZZ",
+    ]);
+  });
+
+  it("bate com a saída medida do Postgres, decrescente", () => {
+    expect(ordenarComoOSql(COMO_O_POSTGRES, "desc")).toEqual([
+      "1001",
+      "1000",
+      "999",
+      "10",
+      "2",
+      "ZZZ",
+      "RAD 10",
+      "RAD 1",
+      "ESC P10",
+      "ESC P2",
+      "ESC P1",
+      "ABC",
     ]);
   });
 
