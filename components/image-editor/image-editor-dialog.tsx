@@ -521,11 +521,10 @@ export default function ImageEditorDialog({
           >
             <DialogTitle className="sr-only">Editar imagem</DialogTitle>
 
-            {/* Host do textarea invisível do IText: caixa de tamanho ZERO,
-                `fixed` (bloco de contenção na origem do viewport, que é o
-                mesmo referencial de canvas._offset dentro deste Content
-                `fixed`) e `overflow: hidden` — o navegador só consegue rolar
-                uma caixa vazia, nunca o wrapper do canvas. Ver text-editing.ts. */}
+            {/* Host do textarea invisível do IText: caixa de tamanho ZERO com
+                `overflow: hidden`, dentro do focus-trap do Radix mas FORA do
+                wrapper do canvas — o navegador só consegue rolar uma caixa
+                vazia, nunca o wrapper. Ver text-editing.ts. */}
             <div ref={textareaHostRef} style={TEXTAREA_HOST_STYLE} />
 
             {/* Canvas + camadas (sidebar no desktop usa o espaço vazio à

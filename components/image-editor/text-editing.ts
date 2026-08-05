@@ -21,11 +21,21 @@
  *    do enquadramento (= "tudo em branco"), e cada reposicionamento de cursor
  *    repete o salto (= "dançando").
  *
- * A correção é ancorar o textarea num host `position: fixed` de tamanho ZERO:
- * ele continua DENTRO do focus-trap do Radix (a razão original de ancorar fora
- * do body), mas o bloco de contenção passa a ser a origem do viewport — que é o
- * mesmo referencial de `_offset` dentro de um dialog `fixed` — e a única caixa
- * que o navegador pode rolar é uma caixa vazia que não contém o canvas.
+ * A correção é ancorar o textarea num host de tamanho ZERO com
+ * `overflow: hidden`, filho do Content do dialog: ele continua DENTRO do
+ * focus-trap do Radix (a razão original de ancorar fora do body), mas deixa de
+ * conter o canvas — então a única caixa que o navegador pode rolar para trazer
+ * o textarea à vista é uma caixa vazia, e o canvas não sai do lugar. O
+ * `position: fixed` do host tira o textarea do fluxo e evita que ele estique o
+ * scroll de qualquer ancestral.
+ *
+ * OBS: o host NÃO fica na origem do viewport. O Content do dialog usa
+ * `translate-x/-y`, e um `transform` cria bloco de contenção até para
+ * descendentes `fixed` — então o host nasce no canto do Content. Isso é
+ * irrelevante aqui: o textarea é invisível (`opacity: 0`) e fica clipado; o que
+ * importa é ele não estar mais dentro da caixa rolável do canvas. Medido em
+ * desktop e em toque, com o texto no canto (pior caso): o scroll do wrapper
+ * fica em 0 e o canvas segue 99-100% visível.
  */
 
 /** Só o que `clampScroll` precisa tocar (mantém o módulo livre de lib.dom). */
