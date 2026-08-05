@@ -170,10 +170,23 @@ function imprimirResumo(rel: ImportReport, dryRun: boolean): void {
   console.log(`  etiquetas ambíguas (puladas) .. ${n(c.etiqueta_ambigua)}`);
   console.log(`  sem produto no Dexo ........... ${n(rel.semProduto?.total)}`);
   console.log(`  SKU ambíguo ................... ${n(c.sku_ambiguo)}`);
+  // ⚠️ Os nomes dos contadores vêm do `executeLocationPlan` e são três, não um:
+  // `a_criar` só existe em dry-run, `criadas` só no apply, e `ja_existiam` nos
+  // dois. A 1ª versão deste script leu um nome que NÃO EXISTE
+  // (`localizacoes_criadas`) e caía no tamanho do plano — na parte 2 da
+  // migração real isso imprimiu "480 criadas" quando foram 107 criadas e 373
+  // reaproveitadas. O número no banco estava certo; o relatório mentia.
+  const locCriadas = dryRun
+    ? loc?.contadores.a_criar
+    : loc?.contadores.criadas;
+  const locJaExistiam = loc?.contadores.ja_existiam;
   console.log(
-    `  localizações ${dryRun ? "a criar" : "criadas"} ............ ` +
-      `${n(loc?.contadores.localizacoes_criadas ?? loc?.contadores.localizacoes_distintas)}`,
+    `  localizações no arquivo ....... ${n(loc?.contadores.localizacoes_distintas)}`,
   );
+  console.log(
+    `     ${dryRun ? "a criar" : "criadas"} .................... ${n(locCriadas)}`,
+  );
+  console.log(`     já existiam ................ ${n(locJaExistiam)}`);
   console.log(
     `  vínculos de localização ....... ` +
       `${n(c.local_vinculado ?? c.local_a_vincular)}`,
