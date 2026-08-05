@@ -24,8 +24,18 @@ import {
   type ProductFormSnapshot,
 } from "./product-form-snapshot";
 
-/** Campos de texto copiáveis do cadastro anterior. */
+/**
+ * Campos de texto copiáveis do cadastro anterior.
+ *
+ * `name` e `partNumber` entraram em 05/08/2026. Os dois identificam a peça
+ * específica — "Farol Esquerdo" e "Farol Direito" têm nome e part number
+ * diferentes — então valem só como PONTO DE PARTIDA para editar. O que torna
+ * isso seguro é a política de `tryFillString`: preenche apenas quando o campo
+ * está vazio e, se já houver valor, registra conflito em vez de sobrescrever.
+ */
 const STRING_FIELDS = [
+  "name",
+  "partNumber",
   "description",
   "brand",
   "model",
@@ -45,8 +55,18 @@ const STRING_FIELDS = [
   "mlShippingMode",
 ] as const;
 
-/** Campos numéricos copiáveis (medidas + configuração de anúncio). */
+/**
+ * Campos numéricos copiáveis (medidas + configuração de anúncio).
+ *
+ * `price` e `stock` entraram em 05/08/2026. Para o merge, `isEmptyNumber`
+ * trata `0` como vazio — e `0` é justamente o default do formulário para os
+ * dois —, então eles são preenchidos num cadastro novo e preservados assim que
+ * o usuário digita qualquer coisa. `costPrice` e `markup` continuam de fora:
+ * o custo é da peça específica e o markup é derivado dele.
+ */
 const NUMBER_FIELDS = [
+  "price",
+  "stock",
   "heightCm",
   "widthCm",
   "lengthCm",

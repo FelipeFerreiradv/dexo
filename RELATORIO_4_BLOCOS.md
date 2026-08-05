@@ -188,8 +188,15 @@ Aplica reusando `suggestion-merge.ts`: **preenche só o que está vazio**, merge
 destrutivo de `attributes`, união de `compatibilities`, conflito informado no
 toast em vez de sobrescrever.
 
-**Nunca copiados:** `sku`, `partNumber`, `imageUrl`/`imageUrls`, `stock`, `name`,
-`price`/`costPrice`/`markup`, `mlCatalogProductId`, `scrapId`.
+**Nunca copiados:** `sku`, `imageUrl`/`imageUrls`, `costPrice`/`markup`,
+`mlCatalogProductId`, `scrapId`.
+
+> Atualizado em 05/08/2026: `name`, `partNumber`, `stock` e `price` passaram a
+> ser copiados a pedido do Felipe — quem cadastra peças parecidas em sequência
+> quer esses campos como ponto de partida. A política de merge não mudou: só
+> preenchem campo vazio, e o que o usuário digitou vira conflito informado no
+> toast, nunca sobrescrita. `costPrice`/`markup` continuam fora porque o custo é
+> da peça específica e o markup é derivado dele.
 
 **Fonte = snapshot do formulário, não o banco.** O `Product` não guarda contas de
 marketplace selecionadas, tipo de anúncio, garantia, modo de envio, tempo de
@@ -319,7 +326,8 @@ automaticamente de forma errada caíram 65%.
 
 **Cadastro em sequência.** Ao cadastrar várias peças parecidas, o modal agora
 oferece os 5 últimos cadastros para reaproveitar. Ele preenche apenas os campos
-que estão vazios e nunca copia SKU, part number, fotos, estoque, nome ou preço.
+que estão vazios — inclusive nome, part number, estoque e preço — e nunca copia
+SKU, fotos nem o preço de custo. O que você já digitou nunca é sobrescrito.
 
 **Nada mais se perde.** Se o modal fechar sem querer, o preenchimento fica salvo e
 ao reabrir o sistema pergunta se você quer continuar de onde parou.
