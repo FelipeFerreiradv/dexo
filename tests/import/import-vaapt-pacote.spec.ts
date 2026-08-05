@@ -254,6 +254,7 @@ function makeDeps() {
     nfe,
     photos,
     produtos,
+    etiqueta: { loadTodosOsProdutos: async () => [] },
   };
   return { deps, attachCalls, linkCalls, customersCreated, scrapsCreated, nfeCreated, locCreated, fotosGravadas, produtosCriados };
 }

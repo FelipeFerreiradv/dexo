@@ -27,6 +27,12 @@ export interface LinkPlanItem {
   locationLabel?: string | null;
   /** Chave da sucata destino (cod Vaapt / GUID WebDesmonte). */
   scrapKey?: string | null;
+  /**
+   * Etiqueta física da peça (só o relatório de produtos do Vaapt tem).
+   * Segunda chance de casamento quando o `Cod Peça` não existe no Dexo —
+   * ver `lib/etiqueta-match.ts`. Ausente nos demais arquivos.
+   */
+  etiqueta?: string | null;
 }
 
 export interface LinksMapResult {
@@ -80,6 +86,9 @@ export function mapVaaptLinks(file: DetectedFile): LinksMapResult {
       locationCode: normalizeCodeFlat(rawLoc),
       locationLabel: rawLoc,
       scrapKey: asString(get("Cod Veiculo")),
+      // Só o relatório de produtos tem esta coluna; no arquivo-ponte clássico
+      // `read` devolve null e o campo simplesmente não entra em jogo.
+      etiqueta: asString(read(row, "Etiqueta")),
     });
   }
 
