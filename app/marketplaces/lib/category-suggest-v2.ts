@@ -93,7 +93,12 @@ export function isContextEmpty(ctx: ProductSuggestContext): boolean {
  *
  * Por isso a chave de cache usa SO estes quatro. Ver `contextCacheSuffix`.
  */
-const CACHE_KEY_FIELDS = ["brand", "model", "year", "partNumber"] as const;
+export const CACHE_KEY_FIELDS = [
+  "brand",
+  "model",
+  "year",
+  "partNumber",
+] as const;
 
 /**
  * Sufixo estavel para a chave de cache. Vazio quando o contexto e vazio — assim
