@@ -13,7 +13,7 @@
 import XLSX from "xlsx";
 import type { ImportRow } from "../import.types";
 import { ImportValidationError } from "../import.types";
-import { asString, normKey } from "../lib/normalize";
+import { asString, createNormKeyMemo, normKey } from "../lib/normalize";
 import type { ParsedTable } from "./csv-reader";
 
 export interface ParsedWorkbook extends ParsedTable {
@@ -95,7 +95,23 @@ export function readXlsxBuffer(buffer: Buffer): ParsedWorkbook {
   // (32,3s → 16,5s no total) e ~1,36 GB → ~1,03 GB de heap. NÃO muda a saída:
   // o sha256 do sheet_to_json completo das 653.239 linhas é IDÊNTICO nos dois
   // modos, e o `sheet_to_json` da própria lib trata os dois formatos.
-  const wb = XLSX.read(buffer, { type: "buffer", dense: true });
+  //
+  // `cellHTML: false` desliga a geração do campo `.h` (a versão HTML-escapada
+  // do texto), que o SheetJS materializa em TODA célula de texto por padrão.
+  // Ninguém aqui lê `.h`: o `sheet_to_json` usa `.v` (valor bruto) ou `.w`
+  // (texto formatado, controlado por `cellText`, que fica LIGADO). Medido numa
+  // planilha do mesmo porte (653.239 × 12): 7.838.880 células deixam de
+  // carregar o campo e o XLSX.read cai de 19.311ms para 16.045ms (−16,5%), com
+  // o sha256 do sheet_to_json IDÊNTICO. O ganho é de RELÓGIO (o `escapehtml` e
+  // a escrita da propriedade por célula), NÃO de memória — medindo o heap logo
+  // após o read, isoladamente, a diferença é de ~3 MB: para texto simples o
+  // `.h` aponta para a mesma string do `.v`, então não há cópia. (Ponta a
+  // ponta o heap cai ~82 MB, mas isso é o efeito somado com o memo de rótulo.)
+  const wb = XLSX.read(buffer, {
+    type: "buffer",
+    dense: true,
+    cellHTML: false,
+  });
   const sheetName = pickSheetName(wb);
   if (!sheetName) throw new Error("Planilha sem abas");
   const sheet = wb.Sheets[sheetName];
@@ -142,8 +158,10 @@ export function readXlsxBuffer(buffer: Buffer): ParsedWorkbook {
     }
     if (header.length >= 3) {
       const rows = raw.slice(1);
+      // Memo do rótulo: este `get` roda por LINHA (ver createNormKeyMemo).
+      const nk = createNormKeyMemo();
       const get = (row: ImportRow, label: string): unknown => {
-        const k = labelToKey.get(normKey(label));
+        const k = labelToKey.get(nk(label));
         return k !== undefined ? (row[k] ?? null) : null;
       };
       return { sheetName, header, rows, get, shiftedLabels: true };
@@ -152,8 +170,9 @@ export function readXlsxBuffer(buffer: Buffer): ParsedWorkbook {
 
   const keyByNorm = new Map<string, string>();
   for (const k of headerKeys) keyByNorm.set(normKey(k), k);
+  const nk = createNormKeyMemo();
   const get = (row: ImportRow, label: string): unknown => {
-    const k = keyByNorm.get(normKey(label));
+    const k = keyByNorm.get(nk(label));
     return k !== undefined ? (row[k] ?? null) : null;
   };
   return { sheetName, header: headerKeys, rows: raw, get, shiftedLabels: false };

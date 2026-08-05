@@ -130,13 +130,75 @@ describe("readXlsxBuffer — guard de dimensão", () => {
 
 /* --------------- Equivalência do modo denso (otimização) ---------------- */
 
-describe("readXlsxBuffer — `dense: true` não muda a saída", () => {
+describe("readXlsxBuffer — `dense: true` + `cellHTML: false` não mudam a saída", () => {
   /** Caminho ANTIGO, literal, para comparar contra o atual. */
   function lerModoAntigo(buffer: Buffer) {
     const wb = XLSX.read(buffer, { type: "buffer" });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     return XLSX.utils.sheet_to_json(sheet, { defval: null });
   }
+
+  const COM_ESCAPE = [
+    ["Titulo", "Localização"],
+    ["PARA-CHOQUE <DIANT.> & CIA", "GALPÃO 1 > CX 9"],
+  ];
+
+  it("o reader PASSA `cellHTML: false` (e `dense: true`) para o XLSX.read", () => {
+    // ⚠️ Espionar a chamada é a ÚNICA forma de testar isto: as duas opções são
+    // escolhidas justamente por NÃO mudarem a saída, então nenhum assert sobre
+    // o resultado consegue distinguir. A primeira versão deste teste montava os
+    // próprios XLSX.read com as opções na mão — afirmava o comportamento da
+    // BIBLIOTECA, e continuava verde com a opção removida do nosso código
+    // (comprovado no mutation check).
+    const spy = vi.spyOn(XLSX, "read");
+    try {
+      readXlsxBuffer(xlsxBufferOf(COM_ESCAPE));
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toMatchObject({
+        type: "buffer",
+        dense: true,
+        cellHTML: false,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("com `cellHTML: false` nenhuma célula carrega o campo `.h`", () => {
+    // A outra metade: o que a opção efetivamente desliga. O SheetJS gera `.h`
+    // (o texto HTML-escapado) em TODA célula de texto por padrão; ninguém aqui
+    // lê `.h` — o sheet_to_json usa `.v`/`.w`.
+    const buffer = xlsxBufferOf(COM_ESCAPE);
+    const contaH = (opts: XLSX.ParsingOptions) => {
+      const wb = XLSX.read(buffer, { type: "buffer", dense: true, ...opts });
+      const sheet = wb.Sheets[wb.SheetNames[0]] as unknown as Array<
+        Array<{ t?: string; h?: string } | undefined> | undefined
+      >;
+      let comH = 0;
+      let texto = 0;
+      for (const linha of sheet) {
+        if (!linha) continue;
+        for (const c of linha) {
+          if (c && c.t === "s") {
+            texto++;
+            if (c.h !== undefined) comH++;
+          }
+        }
+      }
+      return { texto, comH };
+    };
+
+    expect(contaH({}).comH).toBeGreaterThan(0); // default da lib
+    expect(contaH({ cellHTML: false })).toEqual({ texto: 4, comH: 0 });
+  });
+
+  it("a leitura continua idêntica com `<`, `>` e `&` (que o escape alteraria)", () => {
+    const buffer = xlsxBufferOf(COM_ESCAPE);
+    expect(readXlsxBuffer(buffer).rows).toEqual(lerModoAntigo(buffer));
+    expect(readXlsxBuffer(buffer).rows[0]).toMatchObject({
+      Titulo: "PARA-CHOQUE <DIANT.> & CIA",
+    });
+  });
 
   it("linhas idênticas com tipos e acentos misturados", () => {
     const buffer = xlsxBufferOf([
@@ -157,6 +219,35 @@ describe("readXlsxBuffer — `dense: true` não muda a saída", () => {
     expect(t.header).toEqual(["# Cod Peca", "Localização"]);
     expect(t.get(t.rows[0], "localizacao")).toBe("LOCAL 1");
     expect(t.shiftedLabels).toBe(false);
+  });
+
+  it("o getter memoizado devolve o mesmo que o rótulo cru, repetidamente", () => {
+    // O `get` passou a memoizar a normalização do RÓTULO (roda por linha). O
+    // que não pode mudar: variantes do mesmo rótulo continuam resolvendo, e
+    // chamar duas vezes devolve o mesmo valor.
+    const buffer = xlsxBufferOf([
+      ["# Cod Peca", "Localização", "Valor (R$)"],
+      ["100", "LOCAL 1", "10,50"],
+      ["101", "LOCAL 2", "20,00"],
+    ]);
+    const t = readXlsxBuffer(buffer);
+    for (const linha of t.rows) {
+      for (const rotulo of [
+        "# Cod Peca",
+        "cod peca",
+        "COD.PECA",
+        "Localização",
+        "localizacao",
+        "Valor (R$)",
+        "valor",
+      ]) {
+        expect(t.get(linha, rotulo)).toBe(t.get(linha, rotulo));
+      }
+    }
+    expect(t.get(t.rows[0], "COD.PECA")).toBe("100");
+    expect(t.get(t.rows[1], "localizacao")).toBe("LOCAL 2");
+    expect(t.get(t.rows[0], "valor")).toBe("10,50");
+    expect(t.get(t.rows[0], "coluna que não existe")).toBeNull();
   });
 
   it("continua reconhecendo o formato de rótulos deslocados (invoicy)", () => {

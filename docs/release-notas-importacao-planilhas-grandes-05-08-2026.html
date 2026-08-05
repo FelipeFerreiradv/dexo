@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dexo — Importação de Bases Grandes e Revisão do Motor · 05/08/2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --pergaminho:#f2ede2; --petroleo:#0e1f2a; --creme:#fbf7ee;
+    --amarelo:#f2c419; --bege:#e8dfca; --aco:#3f4a52; --areia:#ddd3bd;
+    --verde:#1f6f4a; --vermelho:#9b2c2c;
+    --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+    --display:'Bricolage Grotesque','Inter',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--pergaminho); color:var(--petroleo);
+    font-family:var(--sans); font-size:10.5pt; line-height:1.62;
+  }
+  .pagina{max-width:190mm; margin:0 auto; padding:14mm 0 18mm}
+  /* ---------- Capa ---------- */
+  .capa{
+    min-height:247mm; display:flex; flex-direction:column; justify-content:space-between;
+    padding:22mm 16mm; background:var(--petroleo); color:var(--pergaminho);
+    border-radius:14px; page-break-after:always;
+  }
+  .marca{display:flex; align-items:center; gap:12px}
+  .marca .logo{
+    width:38px;height:38px;border-radius:10px;background:var(--amarelo);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--display); font-weight:700; font-size:20px; color:var(--petroleo);
+  }
+  .marca .nome{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em}
+  .capa h1{
+    font-family:var(--display); font-weight:700; font-size:34pt; line-height:1.1;
+    letter-spacing:-.025em; margin:0 0 10px;
+  }
+  .capa .sub{font-size:13pt;color:#c9c0ad;max-width:135mm;margin:0}
+  .capa .faixa{height:5px;width:96px;background:var(--amarelo);border-radius:3px;margin:22px 0}
+  .capa .meta{display:flex;gap:34px;flex-wrap:wrap;font-size:9.5pt;color:#c9c0ad}
+  .capa .meta b{display:block;color:var(--pergaminho);font-size:10.5pt;font-weight:600;margin-top:3px}
+  /* ---------- Tipografia ---------- */
+  h2{
+    font-family:var(--display); font-size:19pt; font-weight:700; letter-spacing:-.02em;
+    margin:30px 0 4px; padding-top:14px; border-top:2px solid var(--petroleo);
+    page-break-after:avoid;
+  }
+  h2 .num{color:var(--aco); font-size:12pt; font-weight:600; margin-right:9px}
+  h3{font-family:var(--display);font-size:12.5pt;font-weight:600;margin:20px 0 6px;page-break-after:avoid}
+  h4{font-size:10.5pt;font-weight:600;margin:14px 0 4px;page-break-after:avoid}
+  p{margin:7px 0}
+  ul,ol{margin:7px 0;padding-left:19px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:9pt;background:var(--bege);padding:1px 5px;border-radius:4px}
+  strong{font-weight:600}
+  a{color:var(--petroleo)}
+  /* ---------- Blocos ---------- */
+  .card{background:var(--creme);border:1px solid var(--areia);border-radius:10px;padding:14px 16px;margin:12px 0;page-break-inside:avoid}
+  .destaque{background:var(--creme);border-left:5px solid var(--amarelo);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .atencao{background:#fdf6f6;border-left:5px solid var(--vermelho);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .ok{background:#f2f8f4;border-left:5px solid var(--verde);border-radius:0 10px 10px 0;padding:13px 16px;margin:13px 0;page-break-inside:avoid}
+  .destaque p:first-child,.atencao p:first-child,.ok p:first-child,.card p:first-child{margin-top:0}
+  .destaque p:last-child,.atencao p:last-child,.ok p:last-child,.card p:last-child{margin-bottom:0}
+  /* ---------- Tabelas ---------- */
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:9.5pt;page-break-inside:avoid}
+  th{background:var(--petroleo);color:var(--pergaminho);text-align:left;padding:8px 10px;font-weight:600;font-size:9pt}
+  td{padding:7px 10px;border-bottom:1px solid var(--areia);vertical-align:top}
+  tr:nth-child(even) td{background:var(--creme)}
+  th:first-child{border-radius:7px 0 0 0} th:last-child{border-radius:0 7px 0 0}
+  /* ---------- Sumário ---------- */
+  .sumario{background:var(--creme);border:1px solid var(--areia);border-radius:12px;padding:18px 22px;page-break-after:always}
+  .sumario h2{border:0;margin:0 0 10px;padding:0}
+  .sumario ol{list-style:none;padding:0;counter-reset:s}
+  .sumario li{counter-increment:s;padding:7px 0;border-bottom:1px dashed var(--areia);display:flex;gap:10px;align-items:baseline}
+  .sumario li:last-child{border:0}
+  .sumario li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--aco);font-size:9pt;min-width:22px}
+  .sumario li b{font-weight:600}
+  .sumario li span{color:var(--aco);font-size:9pt}
+  /* ---------- Etiquetas ---------- */
+  .tag{display:inline-block;font-size:8pt;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--bege);color:var(--aco);vertical-align:middle;margin-left:7px}
+  .tag.novo{background:var(--amarelo);color:var(--petroleo)}
+  .tag.corr{background:#e3efe8;color:var(--verde)}
+  .tag.flag{background:#efe6f3;color:#5b3a72}
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:26px;position:relative;margin:6px 0}
+  .check li::before{content:"";position:absolute;left:0;top:3px;width:14px;height:14px;border:2px solid var(--aco);border-radius:4px}
+  .faq dt{font-weight:600;margin-top:13px}
+  .faq dd{margin:3px 0 0;padding-left:0;color:var(--aco)}
+  .rodape{margin-top:26px;padding-top:11px;border-top:1px solid var(--areia);font-size:8.5pt;color:var(--aco);display:flex;justify-content:space-between}
+  /* ---------- Impressão ---------- */
+  @page{size:A4;margin:14mm 12mm 16mm}
+  @media print{
+    body{background:#fff}
+    .pagina{max-width:none;padding:0}
+    .capa{border-radius:0;min-height:250mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    .quebra{page-break-before:always}
+  }
+</style>
+</head>
+<body>
+<div class="pagina">
+
+  <!-- ============ CAPA ============ -->
+  <section class="capa">
+    <div class="marca">
+      <div class="logo">D</div>
+      <div class="nome">Dexo</div>
+    </div>
+    <div>
+      <div class="faixa"></div>
+      <h1>Importação de bases grandes</h1>
+      <p class="sub">A migração de clientes deixou de esbarrar num limite de tamanho — e o motor que lê as planilhas ficou um quarto mais rápido no caminho.</p>
+    </div>
+    <div class="meta">
+      <div>Data<b>5 de agosto de 2026</b></div>
+      <div>Público<b>Suporte · Implantação · CS</b></div>
+      <div>Referência<b>PR #231 + revisão do parser</b></div>
+      <div>Classificação<b>Uso interno</b></div>
+    </div>
+  </section>
+
+  <!-- ============ SUMÁRIO ============ -->
+  <section class="sumario">
+    <h2>Sumário</h2>
+    <ol>
+      <li><b>Resumo executivo</b> <span>— o que foi entregue e por quê</span></li>
+      <li><b>Objetivo das otimizações</b> <span>— o problema que motivou</span></li>
+      <li><b>Funcionalidades analisadas</b> <span>— o que foi olhado</span></li>
+      <li><b>Alterações realizadas</b> <span>— uma seção por assunto</span></li>
+      <li><b>Justificativa técnica</b> <span>— por que cada decisão</span></li>
+      <li><b>Ganhos de desempenho</b> <span>— com os números medidos</span></li>
+      <li><b>Consumo de recursos e tráfego</b> <span>— o egress não subiu</span></li>
+      <li><b>Ausência de regressões</b> <span>— como sabemos que nada quebrou</span></li>
+      <li><b>Funcionalidades críticas validadas</b> <span>— a lista completa</span></li>
+      <li><b>Impacto para o cliente</b> <span>— o que muda na tela dele</span></li>
+      <li><b>O que o Suporte precisa saber</b> <span>— antes de atender</span></li>
+      <li><b>Como orientar os clientes</b> <span>— passo a passo</span></li>
+      <li><b>Perguntas frequentes</b> <span>— respostas prontas</span></li>
+      <li><b>Observações importantes</b> <span>— limites conhecidos</span></li>
+      <li><b>Checklist do Suporte</b> <span>— validação pós-atualização</span></li>
+    </ol>
+  </section>
+
+  <!-- ============ 1 ============ -->
+  <h2><span class="num">01</span>Resumo executivo</h2>
+
+  <p>Ao migrar um cliente novo pela tela de <strong>Colaboradores → Importar dados do sistema antigo</strong>, o sistema recusava a planilha com a mensagem <i>“Arquivo muito grande — o tamanho máximo permitido é 20MB”</i>. A base desse cliente tinha uma planilha de <strong>36 MB e 653 mil linhas</strong> — e o problema iria se repetir em toda migração de cliente grande.</p>
+
+  <p>A investigação mostrou que <strong>não era um limite, eram dois</strong>, um atrás do outro. Elevar só o primeiro faria o arquivo subir por inteiro para ser recusado alguns segundos depois — e, pior, com uma mensagem genérica de erro do servidor, sem dizer o que fazer.</p>
+
+  <div class="destaque">
+    <p><strong>O achado mais relevante:</strong> o limite de 20 MB não era “o limite da importação”. Era o limite das <strong>fotos de produto</strong>, compartilhado por todas as telas que recebem arquivo. Aumentá-lo teria afrouxado, de uma vez só, o envio de imagens, o envio de XML de nota e o envio de certificado digital — três portas que qualquer usuário logado alcança. A importação passou a ter <strong>limite próprio</strong>, e o das imagens ficou exatamente onde estava.</p>
+  </div>
+
+  <h3>O que foi entregue</h3>
+  <table>
+    <tr><th style="width:30%">Assunto</th><th>Situação anterior</th><th style="width:28%">Depois</th></tr>
+    <tr><td><b>Tamanho por arquivo</b></td><td>20 MB — o mesmo das fotos de produto.</td><td><b>100 MB</b>, só na importação.</td></tr>
+    <tr><td><b>Tamanho total do envio</b></td><td>Não existia limite próprio.</td><td><b>200 MB</b> somando todos os arquivos.</td></tr>
+    <tr><td><b>Quantidade de arquivos</b></td><td>Sem limite.</td><td>Até <b>12</b> por importação.</td></tr>
+    <tr><td><b>Planilha muito “larga”</b></td><td>Recusava acima de 5 milhões de células, com <b>erro genérico de servidor</b>.</td><td>Limite proporcional ao arquivo, e a mensagem explica o que fazer.</td></tr>
+    <tr><td><b>Aviso de tamanho</b></td><td>Só depois de subir o arquivo inteiro.</td><td>Na hora de anexar, <b>antes do envio</b>.</td></tr>
+    <tr><td><b>Velocidade da leitura</b></td><td>Referência da base grande: ~32 s.</td><td><b>~18 s</b> (duas rodadas de otimização).</td></tr>
+  </table>
+
+  <h3>Resultado esperado</h3>
+  <ul>
+    <li>Migrações de clientes grandes deixam de travar por tamanho.</li>
+    <li>Quem opera a migração recebe mensagens que dizem o que fazer, em vez de “erro na importação”.</li>
+    <li>O restante do sistema não muda em nada — inclusive os limites de foto de produto.</li>
+  </ul>
+
+  <!-- ============ 2 ============ -->
+  <h2 class="quebra"><span class="num">02</span>Objetivo das otimizações</h2>
+
+  <p>Cada cliente que migra traz um volume diferente. O limite antigo foi definido pensando em foto tirada de celular, não em planilha de migração — então ele ia continuar barrando clientes indefinidamente.</p>
+
+  <p>Havia duas obrigações nesta entrega:</p>
+  <ol>
+    <li><strong>Resolver de forma definitiva</strong>, não caso a caso: descobrir todos os pontos que limitam tamanho, em todas as camadas, e tratar cada um pelo motivo certo.</li>
+    <li><strong>Não reabrir o problema de tráfego.</strong> O Dexo já teve um problema de consumo de dados (o chamado <i>egress</i>), e desde então existe uma regra interna: o sistema só busca do banco o que realmente vai usar. Qualquer mudança precisa ser conferida contra essa regra.</li>
+  </ol>
+
+  <p>Depois da primeira entrega, foi feita uma <strong>revisão adversarial</strong> do próprio trabalho: 33 possíveis problemas levantados, <strong>31 descartados</strong> após conferência no código, e 2 confirmados — os dois de velocidade descritos na seção 4.</p>
+
+  <!-- ============ 3 ============ -->
+  <h2><span class="num">03</span>Funcionalidades analisadas</h2>
+
+  <table>
+    <tr><th style="width:34%">Área</th><th>O que foi verificado</th></tr>
+    <tr><td><b>Importar dados do sistema antigo</b></td><td>Todo o caminho: escolha do sistema, envio dos arquivos, reconhecimento do formato, prévia e aplicação.</td></tr>
+    <tr><td><b>Envio de imagens</b></td><td>Foto de produto, editor de imagem e remoção de fundo — para garantir que o limite <b>deles</b> não mudou.</td></tr>
+    <tr><td><b>Notas fiscais</b></td><td>Importação de XML e envio de certificado digital, que usam o mesmo mecanismo de envio de arquivo.</td></tr>
+    <tr><td><b>Leitura de planilhas</b></td><td>O componente que abre .xlsx, .xls e .csv — usado por todas as importações, de todos os sistemas de origem.</td></tr>
+    <tr><td><b>Infraestrutura</b></td><td>Limites do servidor web (o intermediário entre o navegador e o sistema) e memória disponível na máquina.</td></tr>
+  </table>
+
+  <!-- ============ 4 ============ -->
+  <h2><span class="num">04</span>Alterações realizadas</h2>
+
+  <h3>4.1 Limite próprio para a importação <span class="tag novo">novo</span></h3>
+  <p>A importação passou a declarar o seu próprio limite no momento do envio, sem tocar no limite geral. Foram definidos <strong>100 MB por arquivo</strong>, <strong>200 MB no total</strong> e <strong>12 arquivos</strong> por vez.</p>
+
+  <h3>4.2 Limite de “largura” proporcional ao arquivo <span class="tag corr">correção</span></h3>
+  <p>Existe uma proteção contra planilhas corrompidas ou maliciosas, que declaram um tamanho gigante sem ter conteúdo. Ela era um número fixo, e barrava também planilhas legítimas grandes.</p>
+  <p>Agora o limite é <strong>proporcional ao tamanho do arquivo</strong>. Uma planilha pequena que se declara enorme continua sendo recusada com o mesmo rigor de antes; uma planilha grande de verdade passa.</p>
+
+  <h3>4.3 A mensagem de erro virou orientação <span class="tag corr">correção</span></h3>
+  <p>Esse limite devolvia um erro genérico de servidor (“Erro na importação de dados”), que não ajudava ninguém. Agora devolve uma recusa explicando o motivo e sugerindo dividir a planilha.</p>
+
+  <h3>4.4 Aviso antes do envio <span class="tag novo">novo</span></h3>
+  <p>O modal agora confere o tamanho <strong>no momento de anexar</strong> e mostra quantos arquivos foram escolhidos e quanto somam. Se algo estiver fora do limite, ele diz <b>qual arquivo</b> e <b>quanto ele tem</b>, sem subir nada.</p>
+
+  <h3>4.5 Erros do servidor web deixaram de ser opacos <span class="tag corr">correção</span></h3>
+  <p>Quando o intermediário entre o navegador e o sistema corta um envio muito grande ou demorado, ele responde numa linguagem que o modal não entendia — e a tela mostrava algo como “Failed to fetch”. Agora esses dois casos são traduzidos para português, dizendo o que aconteceu.</p>
+
+  <h3>4.6 Leitura da planilha mais rápida <span class="tag corr">otimização</span></h3>
+  <p>Três ajustes, todos internos, sem mudar um único dado lido:</p>
+  <ul>
+    <li><b>Formato compacto de leitura</b> — a biblioteca que abre a planilha passou a guardar as células de forma mais econômica.</li>
+    <li><b>Campo desnecessário desligado</b> — ela criava, para cada célula de texto, uma segunda cópia do texto em formato de página web. Nada no Dexo lê essa cópia. Na base do cliente eram <b>7,8 milhões de cópias</b> criadas e jogadas fora.</li>
+    <li><b>Fim do retrabalho de leitura</b> — o motor reprocessava o mesmo arquivo até quatro vezes na mesma operação quando o operador escolhia o sistema errado na lista. Agora ele reaproveita o trabalho já feito.</li>
+  </ul>
+
+  <h3>4.7 Memória liberada mais cedo <span class="tag corr">otimização</span></h3>
+  <p>Durante a aplicação da importação, o sistema segurava na memória os arquivos originais por todo o tempo do processamento, mesmo sem precisar mais deles. Agora eles são liberados assim que a importação começa.</p>
+
+  <!-- ============ 5 ============ -->
+  <h2 class="quebra"><span class="num">05</span>Justificativa técnica de cada alteração</h2>
+
+  <table>
+    <tr><th style="width:26%">Alteração</th><th>Por que foi feita assim</th></tr>
+    <tr><td><b>Limite por rota, não geral</b></td><td>O limite geral protege as telas de imagem, abertas a qualquer usuário logado. A importação é restrita a administradores do Dexo. Separar dá folga a quem precisa sem afrouxar quem não precisa.</td></tr>
+    <tr><td><b>Limite proporcional</b></td><td>Arquivo pequeno que se diz enorme é ataque; arquivo grande que se diz grande é cliente. O que separa os dois é a proporção, não o número absoluto. O piso do novo limite é <b>exatamente o valor antigo</b> — por construção, nenhuma planilha que passava antes deixa de passar.</td></tr>
+    <tr><td><b>Teto de 100 MB / 200 MB</b></td><td>Cerca de 2,8× o maior arquivo já recebido. Quem realmente protege a memória é o limite de largura, calculado a partir de medição de consumo real.</td></tr>
+    <tr><td><b>Conferência no navegador</b></td><td>Usa exatamente a mesma regra e o mesmo texto do servidor, para a tela nunca prometer um limite diferente do que o sistema aceita. O servidor continua sendo a autoridade.</td></tr>
+    <tr><td><b>Otimizações de leitura</b></td><td>Só entraram porque foi possível <b>provar</b> que a saída é idêntica: o resultado da leitura das 653 mil linhas tem a mesma “impressão digital” antes e depois.</td></tr>
+    <tr><td><b>Liberação de memória</b></td><td>Uma particularidade do interpretador mantém viva toda a informação da operação quando uma tarefa em segundo plano referencia qualquer parte dela. Bastou copiar o dado necessário antes.</td></tr>
+  </table>
+
+  <!-- ============ 6 ============ -->
+  <h2><span class="num">06</span>Ganhos de desempenho</h2>
+
+  <p>Medido com uma planilha de <strong>653.239 linhas × 12 colunas</strong>, do mesmo porte da base real, com quatro execuções de cada lado (a máquina de teste tem variação; abaixo vão as medianas).</p>
+
+  <table>
+    <tr><th style="width:34%">Etapa</th><th>Antes</th><th>Depois</th><th>Ganho</th></tr>
+    <tr><td><b>Leitura da planilha</b></td><td>21,9 s</td><td>17,1 s</td><td>−22%</td></tr>
+    <tr><td><b>Organização dos dados</b></td><td>2,0 s</td><td><b>0,6 s</b></td><td><b>−73%</b></td></tr>
+    <tr><td><b>Total do processamento</b></td><td>24,2 s</td><td><b>17,8 s</b></td><td><b>−26%</b></td></tr>
+    <tr><td><b>Memória usada</b></td><td>1.169 MB</td><td>1.073 MB</td><td>−82 MB</td></tr>
+    <tr><td><b>Releituras do mesmo arquivo</b></td><td>até 4 por operação</td><td><b>1</b></td><td>−16 s no pior caso</td></tr>
+  </table>
+
+  <div class="ok">
+    <p><strong>Como sabemos que nada mudou no resultado:</strong> o plano de importação gerado — a lista completa do que seria criado — foi comparado por impressão digital antes e depois, nas oito execuções. <strong>Idêntico em todas.</strong></p>
+  </div>
+
+  <p>Somando as duas entregas, a leitura da base grande saiu de aproximadamente <strong>32 segundos para 18</strong>.</p>
+
+  <!-- ============ 7 ============ -->
+  <h2><span class="num">07</span>Consumo de recursos e tráfego (egress)</h2>
+
+  <div class="ok">
+    <p><strong>O tráfego não aumentou em nenhum ponto — nem podia.</strong> Nenhuma das alterações consulta o banco de dados nem chama serviço externo. São ajustes de leitura de arquivo, que acontecem inteiramente na memória do servidor.</p>
+  </div>
+
+  <p>A conferência foi feita de forma mecânica sobre o conjunto de mudanças, procurando qualquer linha nova que fizesse consulta ao banco ou chamada externa. <strong>Nenhuma.</strong> As regras da fase de segurança e otimização continuam valendo integralmente:</p>
+
+  <table>
+    <tr><th style="width:44%">Regra</th><th>Situação</th></tr>
+    <tr><td>Buscar do banco só as colunas necessárias</td><td>Intocada — nenhuma consulta foi alterada.</td></tr>
+    <tr><td>Buscar em lotes grandes em vez de um a um</td><td>Intocada.</td></tr>
+    <tr><td>Reaproveitar dados já carregados na mesma operação</td><td><b>Reforçada</b> — o retrabalho de leitura de arquivo foi eliminado.</td></tr>
+    <tr><td>Não carregar relacionamentos que não serão usados</td><td>Intocada.</td></tr>
+  </table>
+
+  <p>Sobre <b>uso de memória</b>: o pico caiu 82 MB por planilha grande, e os arquivos enviados deixam de ficar retidos durante todo o processamento.</p>
+
+  <!-- ============ 8 ============ -->
+  <h2 class="quebra"><span class="num">08</span>Ausência de regressões</h2>
+
+  <p>Quatro camadas de verificação, todas com resultado registrado:</p>
+
+  <ol>
+    <li><strong>Impressão digital do resultado.</strong> A leitura completa da planilha de 653 mil linhas e o plano de importação gerado foram comparados byte a byte, antes e depois. Idênticos.</li>
+    <li><strong>Verificação de tipos.</strong> Contagem de apontamentos idêntica à do sistema em produção — nenhum novo.</li>
+    <li><strong>Testes automáticos.</strong> A suíte inteira, dividida em quatro lotes, sem nenhuma falha.</li>
+    <li><strong>Teste dos próprios testes.</strong> Cada correção foi <b>desfeita de propósito</b> para confirmar que algum teste quebra. Duas das verificações passaram mesmo com a correção desfeita — ou seja, eram testes sem valor. Foram reescritas até acusarem o problema.</li>
+  </ol>
+
+  <div class="destaque">
+    <p><strong>Por que a quarta camada importa:</strong> um teste que passa com e sem a correção não prova nada. Dos quatro desfazimentos testados, dois inicialmente não foram detectados. Os testes foram refeitos e hoje os quatro são acusados.</p>
+  </div>
+
+  <!-- ============ 9 ============ -->
+  <h2><span class="num">09</span>Funcionalidades críticas validadas</h2>
+
+  <p>A suíte automática cobre, entre outras:</p>
+
+  <table>
+    <tr><th style="width:38%">Funcionalidade</th><th>Situação</th></tr>
+    <tr><td>Criação, edição e exclusão de produtos</td><td>Aprovado</td></tr>
+    <tr><td>Sincronização de produtos com os marketplaces</td><td>Aprovado</td></tr>
+    <tr><td>Importação automática de pedidos (ML, Shopee, Magalu)</td><td>Aprovado</td></tr>
+    <tr><td>Baixa automática e atualização de estoque</td><td>Aprovado</td></tr>
+    <tr><td>Fluxo de pedidos e cancelamentos</td><td>Aprovado</td></tr>
+    <tr><td>Integrações e renovação de credenciais</td><td>Aprovado</td></tr>
+    <tr><td>Rotinas agendadas, jobs e processos em segundo plano</td><td>Aprovado</td></tr>
+    <tr><td>Webhooks das plataformas</td><td>Aprovado</td></tr>
+    <tr><td>Autenticação, permissões e isolamento entre clientes</td><td>Aprovado</td></tr>
+    <tr><td>Envio de imagens (limite de 20 MB preservado)</td><td>Aprovado</td></tr>
+    <tr><td>Notas fiscais e importação de XML</td><td>Aprovado</td></tr>
+    <tr><td>Todas as importações de bases legadas</td><td>Aprovado</td></tr>
+  </table>
+
+  <!-- ============ 10 ============ -->
+  <h2><span class="num">10</span>Impacto para o cliente</h2>
+
+  <div class="ok">
+    <p><strong>Para o cliente final, nada muda.</strong> Estas telas são do painel de administração do Dexo, usadas pela equipe na migração. O cliente não vê nem acessa.</p>
+  </div>
+
+  <p>O que ele percebe é <strong>indireto e positivo</strong>:</p>
+  <ul>
+    <li>A migração dele deixa de emperrar por tamanho de arquivo.</li>
+    <li>A migração termina mais rápido.</li>
+    <li>O limite de <b>20 MB por foto de produto continua exatamente o mesmo</b> — nada mudou para quem cadastra peça.</li>
+  </ul>
+
+  <!-- ============ 11 ============ -->
+  <h2 class="quebra"><span class="num">11</span>O que o Suporte precisa saber</h2>
+
+  <div class="atencao">
+    <p><strong>1. Existe um limite acima do nosso, que não está no sistema.</strong> O servidor web que fica na frente do Dexo corta envios acima de <strong>64 MB no total</strong>. O caso real que motivou a mudança soma cerca de 42 MB e passa sem problema. Se um dia um cliente passar de 64 MB somando todos os arquivos, é preciso um ajuste manual no servidor — <b>escale para a Engenharia</b>, está documentado no runbook de infraestrutura.</p>
+  </div>
+
+  <div class="atencao">
+    <p><strong>2. Durante uma migração grande, o sistema fica lento para todo mundo.</strong> A leitura de uma planilha de dezenas de MB ocupa o servidor por cerca de <b>17 segundos</b>, e nesse intervalo os demais clientes sentem lentidão. Isso é uma limitação da biblioteca de planilhas e não tem solução rápida. <b>Migrações grandes devem ser feitas fora do horário de pico.</b></p>
+  </div>
+
+  <ul>
+    <li><b>A prévia não grava nada.</b> Gerar prévia é seguro em qualquer situação. Só a confirmação escreve no sistema do cliente.</li>
+    <li><b>Reimportar é seguro.</b> A importação não duplica dados: reconhece o que já foi criado e ignora. Se um processo for interrompido, pode-se rodar de novo.</li>
+    <li><b>Se aparecer “Importação interrompida”</b> depois de uma atualização do sistema, é o processo tendo sido reiniciado no meio. Basta refazer.</li>
+    <li><b>Se aparecer “Prévia desatualizada”</b>, a prévia foi gerada antes de uma atualização. Basta gerar de novo — é uma proteção, não um erro.</li>
+    <li><b>O sistema reconhece o arquivo pelas colunas</b>, não pelo nome. Renomear arquivo não muda nada; escolher o sistema errado na lista o Dexo corrige sozinho.</li>
+  </ul>
+
+  <!-- ============ 12 ============ -->
+  <h2><span class="num">12</span>Como orientar os clientes</h2>
+
+  <h3>Ao receber a base do cliente</h3>
+  <ol>
+    <li>Peça o <strong>export completo</strong> do sistema antigo, sem selecionar arquivos: o Dexo identifica cada planilha e ignora o que não usa.</li>
+    <li>Confira se cada arquivo tem <strong>menos de 100 MB</strong> e se o conjunto <strong>não passa de 64 MB</strong> — acima disso, escale para a Engenharia antes de tentar.</li>
+    <li>Envie no máximo <strong>12 arquivos</strong> por vez.</li>
+  </ol>
+
+  <h3>Ao executar a migração</h3>
+  <ol>
+    <li>Colaboradores → localize o administrador → <strong>Importar dados do sistema antigo</strong>.</li>
+    <li>Escolha o sistema de origem e o que importar. Na dúvida, escolha qualquer um e anexe tudo.</li>
+    <li>Anexe os arquivos. O modal mostra <strong>quantos são e quanto somam</strong>; se algo estiver fora do limite, ele diz qual arquivo antes de enviar.</li>
+    <li>Clique em <strong>Gerar prévia</strong> e aguarde. Em base grande pode levar alguns minutos. <b>Não feche a janela.</b></li>
+    <li>Confira os números da prévia com o cliente. <strong>Nada foi gravado ainda.</strong></li>
+    <li>Só então confirme.</li>
+  </ol>
+
+  <div class="destaque">
+    <p><strong>Se o cliente reclamar de lentidão no mesmo horário de uma migração:</strong> é esperado e temporário. Confirme o horário da migração e explique que o sistema volta ao normal assim que ela terminar. Se for recorrente, agende as migrações para fora do horário comercial.</p>
+  </div>
+
+  <!-- ============ 13 ============ -->
+  <h2 class="quebra"><span class="num">13</span>Perguntas frequentes</h2>
+
+  <dl class="faq">
+    <dt>O limite de foto de produto também subiu para 100 MB?</dt>
+    <dd>Não. Fotos de produto continuam com 20 MB. O aumento vale <b>só</b> para a importação de bases no painel de administração.</dd>
+
+    <dt>Anexei um arquivo de 90 MB e a tela recusou. Por quê?</dt>
+    <dd>Se a mensagem falou em <b>somatório</b>, o conjunto passou de 200 MB. Se veio um erro pedindo para “ajustar o limite do domínio da API”, foi o servidor web cortando acima de 64 MB — escale para a Engenharia.</dd>
+
+    <dt>Apareceu “Planilha declara X células — acima do limite suportado”.</dt>
+    <dd>A planilha é grande demais ou está corrompida. Peça ao cliente para dividi-la em partes, ou reexportar do sistema antigo. A mensagem informa o limite exato para aquele arquivo.</dd>
+
+    <dt>A prévia demorou muito e a tela mostrou erro de conexão. Perdi alguma coisa?</dt>
+    <dd>Não. A prévia não grava nada. Tente de novo, de preferência com menos arquivos por vez.</dd>
+
+    <dt>Rodei a importação duas vezes. Duplicou?</dt>
+    <dd>Não. A importação reconhece o que já foi criado e ignora. Isso vale para clientes, localizações, sucatas, vínculos, notas e fotos.</dd>
+
+    <dt>A importação ficou mais rápida mesmo?</dt>
+    <dd>Sim. Na base de referência, o processamento caiu de cerca de 32 s para 18 s. Quanto maior a base, maior a diferença.</dd>
+
+    <dt>Algum número da importação mudou com as otimizações?</dt>
+    <dd>Não. Foi verificado por comparação exata: o plano gerado é idêntico ao de antes. Só ficou mais rápido.</dd>
+
+    <dt>Preciso avisar o cliente sobre esta atualização?</dt>
+    <dd>Não. Nada muda na tela dele.</dd>
+
+    <dt>Enviei o pacote inteiro e o relatório diz que ignorou arquivos. É problema?</dt>
+    <dd>Não. É o comportamento esperado: o Dexo usa o que reconhece e lista o resto. O relatório diz o motivo de cada um — inclusive quais colunas ele leu, se não reconheceu o formato.</dd>
+  </dl>
+
+  <!-- ============ 14 ============ -->
+  <h2><span class="num">14</span>Observações importantes</h2>
+
+  <ul>
+    <li><b>Nenhuma configuração precisa ser ligada.</b> Diferente de outras entregas, esta vale a partir da publicação — não há chave a ativar.</li>
+    <li><b>Nenhuma alteração no banco de dados.</b> Não há passo de migração a executar.</li>
+    <li><b>Os limites de imagem, XML de nota e certificado digital não mudaram.</b> Foi decisão explícita: são as portas abertas a qualquer usuário logado.</li>
+    <li><b>O limite do servidor web (64 MB) é o próximo obstáculo</b>, e é manual. Está documentado no runbook, com o passo pronto.</li>
+    <li><b>A lentidão durante migração grande é conhecida e não tem correção prevista</b> — a biblioteca de planilhas usada não permite leitura em partes. Só se resolveria trocando a biblioteca, o que ainda não se justifica.</li>
+  </ul>
+
+  <!-- ============ 15 ============ -->
+  <h2><span class="num">15</span>Checklist do Suporte</h2>
+
+  <p>Após a publicação, validar com uma base de cliente real:</p>
+
+  <ul class="check">
+    <li>Colaboradores → Importar abre normalmente</li>
+    <li>O rótulo dos arquivos mostra <b>“até 100 MB cada”</b></li>
+    <li>Anexar arquivos mostra quantos são e quanto somam</li>
+    <li>Anexar um arquivo acima do limite mostra o nome dele e bloqueia o botão</li>
+    <li>A prévia da base grande conclui e traz os números esperados</li>
+    <li>A prévia lista os arquivos ignorados, com o motivo de cada um</li>
+    <li>Confirmar a importação cria os dados no cliente certo</li>
+    <li>Rodar a mesma importação de novo não duplica nada</li>
+    <li>Cadastro de produto com foto continua aceitando até 20 MB</li>
+    <li>Envio de XML de nota fiscal continua funcionando</li>
+    <li>Envio de certificado digital continua funcionando</li>
+    <li>Pedidos, estoque e sincronização seguem normais durante e depois</li>
+    <li>Nenhuma reclamação de lentidão fora do intervalo da migração</li>
+  </ul>
+
+  <div class="rodape">
+    <span>Dexo — documento de uso interno</span>
+    <span>05/08/2026 · Suporte · Implantação · CS</span>
+  </div>
+
+</div>
+</body>
+</html>

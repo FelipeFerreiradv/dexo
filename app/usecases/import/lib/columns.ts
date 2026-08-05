@@ -13,7 +13,7 @@
  */
 
 import type { DetectedFile, ImportRow } from "../import.types";
-import { normKey } from "./normalize";
+import { createNormKeyMemo, normKey } from "./normalize";
 
 /** Chaves normalizadas do header (acento/caixa/pontuação-insensíveis). */
 export function headerKeys(file: DetectedFile): Set<string> {
@@ -34,9 +34,11 @@ export function aliasReader(
   file: DetectedFile,
 ): (row: ImportRow, ...labels: string[]) => unknown {
   const keys = headerKeys(file);
+  // Memo do rótulo: este leitor roda por LINHA (ver createNormKeyMemo).
+  const nk = createNormKeyMemo();
   return (row, ...labels) => {
     for (const label of labels) {
-      if (keys.has(normKey(label))) return file.get(row, label);
+      if (keys.has(nk(label))) return file.get(row, label);
     }
     return null;
   };

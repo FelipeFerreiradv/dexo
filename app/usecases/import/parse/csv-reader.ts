@@ -12,7 +12,7 @@
  */
 
 import type { ImportRow } from "../import.types";
-import { normKey } from "../lib/normalize";
+import { createNormKeyMemo, normKey } from "../lib/normalize";
 
 const DELIMITER_CANDIDATES = [",", ";", "\t"] as const;
 export type CsvDelimiter = (typeof DELIMITER_CANDIDATES)[number];
@@ -149,8 +149,10 @@ export function readCsvBuffer(buffer: Buffer): ParsedTable {
     rows.push(obj);
   }
 
+  // Memo do rótulo: este `get` roda por LINHA (ver createNormKeyMemo).
+  const nk = createNormKeyMemo();
   const get = (row: ImportRow, label: string): unknown => {
-    const k = keyByNorm.get(normKey(label));
+    const k = keyByNorm.get(nk(label));
     return k !== undefined ? (row[k] ?? null) : null;
   };
   return { header, rows, get };
