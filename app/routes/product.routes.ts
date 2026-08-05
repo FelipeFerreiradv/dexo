@@ -6,6 +6,7 @@ import {
 import {
   ProductCreate,
   ProductListFilters,
+  parseProductSort,
   ProductMarketplaceFilter,
   ProductPublicationStatus,
   ProductStockStatus,
@@ -1049,6 +1050,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           quality?: string;
           locationId?: string;
           marketplace?: string;
+          sort?: string;
         };
       }>,
       reply: FastifyReply,
@@ -1056,6 +1058,7 @@ export const productRoutes = async (fastify: FastifyInstance) => {
       try {
         const {
           search,
+          sort,
           page,
           limit,
           createdFrom,
@@ -1157,6 +1160,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
           quality: parsedQuality,
           locationId: locationId?.trim() || undefined,
           marketplace: parsedMarketplace,
+          // Aditivo: parametro opcional com allowlist. Valor ausente ou
+          // desconhecido vira `undefined`, e o repositorio cai na ordenacao
+          // historica — chamada antiga continua com o mesmo resultado.
+          sort: parseProductSort(sort),
           userId,
         };
 

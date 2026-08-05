@@ -78,6 +78,22 @@ import { StepPreview } from "./listing-preview/step-preview";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
 import { InternalSuggestionPicker } from "./internal-suggestion-picker";
+import { ProductHistoryPicker } from "./product-history-picker";
+import { useProductDraft } from "../hooks/use-product-draft";
+import { useProductHistory } from "../hooks/use-product-history";
+import { applyProductHistory } from "../lib/apply-product-history";
+import type { ProductFormSnapshot } from "../lib/product-form-snapshot";
+import { scopeKeyFor, type DraftScope } from "../lib/product-form-storage";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   applyMlCatalogSuggestion,
   type CatalogApplyFormValues,
@@ -528,6 +544,50 @@ export function CreateProductDialog({
   const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
   const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
   const magaluSuggestedRef = useRef(false);
+  /** Categoria Magalu que a sugestão automática aplicou nesta abertura. */
+  const magaluAutoValueRef = useRef<string | null>(null);
+
+  // ── Rascunho automático (Bloco 4) e histórico de cadastros (Bloco 3) ──
+  // Flags de build-time do Next: precisam ser lidas com o nome literal.
+  const draftEnabled = process.env.NEXT_PUBLIC_PRODUCT_DRAFT_DISABLED !== "1";
+  const historyEnabled =
+    process.env.NEXT_PUBLIC_PRODUCT_HISTORY_DISABLED !== "1";
+  // Dono dos dados: espelha o `dataOwnerId` do backend
+  // (auth.middleware.ts: parentUserId ?? id). Sem identidade, não persiste.
+  const storageOwner = scopeKeyFor(
+    (session?.user as any)?.parentUserId,
+    (session?.user as any)?.id,
+  );
+  // Cada contexto de abertura tem o SEU rascunho: o do cadastro normal nunca
+  // aparece no fluxo de NF-e nem no de sucata travada, onde o modal já abre
+  // pré-preenchido por um contexto externo.
+  const draftScope: DraftScope =
+    source === "nfe" ? "nfe" : lockedScrap ? "scrap" : "manual";
+  const draft = useProductDraft({
+    enabled: draftEnabled,
+    owner: storageOwner,
+    scope: draftScope,
+  });
+  const history = useProductHistory({
+    enabled: historyEnabled,
+    owner: storageOwner,
+  });
+  const [askRestoreDraft, setAskRestoreDraft] = useState(false);
+  /** Impede o autosave de gravar por cima antes do usuário decidir. */
+  const draftDecisionPendingRef = useRef(false);
+
+  /**
+   * Espelho do estado que NÃO vive no react-hook-form. Mantido em ref (mesmo
+   * padrão de `initialValuesRef`) para o callback do autosave ler sempre o
+   * valor atual sem virar dependência e sem recriar a assinatura a cada
+   * digitação.
+   */
+  const draftExtrasRef = useRef<{
+    compatibilities: CompatibilityEntry[];
+    scrapId: string | null;
+    magaluLabel: string | null;
+    step: number;
+  }>({ compatibilities: [], scrapId: null, magaluLabel: null, step: 1 });
   const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
     [],
   );
@@ -818,8 +878,7 @@ export function CreateProductDialog({
           // Não sobrescrever custo/estoque vindos da NF-e (fluxo de importação).
           // Sem `initialValues` (fluxo manual), o comportamento é idêntico ao de hoje.
           const nfeInit = initialValuesRef.current as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           if (costPriceDefault != null && nfeInit?.costPrice == null) {
             setValue("costPrice", costPriceDefault);
           }
@@ -868,50 +927,87 @@ export function CreateProductDialog({
     }
   }, [session?.user?.email, setValue]);
 
-  const fetchCategorySuggestion = useCallback(
+  /**
+   * Contexto que o formulário já tem em mãos na hora de pedir a sugestão.
+   *
+   * Até 04/08/2026 mandávamos SÓ o título e jogávamos fora marca, modelo, ano,
+   * versão, part number, categoria interna e veículo de origem — campos que o
+   * próprio callback do debounce já lia (`getValues` logo abaixo, na
+   * auto-detecção). O `getValues` é lido no momento da chamada, não capturado
+   * em dependência, então isto não muda o debounce nem provoca re-render.
+   */
+  const buildSuggestContext = useCallback(
+    (title: string) => {
+      const v = getValues();
+      return {
+        title,
+        brand: v.brand || null,
+        model: v.model || null,
+        year: v.year || null,
+        version: v.version || null,
+        partNumber: v.partNumber || null,
+        internalCategory: v.category || null,
+        sourceVehicle: v.sourceVehicle || null,
+        quality: v.quality || null,
+        heightCm: v.heightCm ?? null,
+        widthCm: v.widthCm ?? null,
+        lengthCm: v.lengthCm ?? null,
+        weightKg: v.weightKg ?? null,
+      };
+    },
+    [getValues],
+  );
+
+  /**
+   * POST irmão do GET de sempre. Fail-open em duas camadas: erro de rede ou
+   * resposta não-ok devolve `null` e o fluxo segue exatamente como já seguia
+   * quando a sugestão falhava.
+   */
+  const fetchSuggestionWithContext = useCallback(
     async (
+      path: string,
       title: string,
       signal?: AbortSignal,
     ): Promise<SuggestionResponse | null> => {
       try {
-        const resp = await fetch(
-          `${backendBase}/marketplace/ml/category-suggest?title=${encodeURIComponent(
-            title,
-          )}`,
-          { headers: { email: session?.user?.email || "" }, signal },
-        );
+        const resp = await fetch(`${backendBase}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email: session?.user?.email || "",
+          },
+          body: JSON.stringify(buildSuggestContext(title)),
+          signal,
+        });
         if (!resp.ok) return null;
         return (await resp.json()) as SuggestionResponse;
       } catch (err) {
         if ((err as any)?.name === "AbortError") return null;
-        console.error("Erro ao sugerir categoria:", err);
+        console.error(`Erro ao sugerir categoria (${path}):`, err);
         return null;
       }
     },
-    [backendBase, session?.user?.email],
+    [backendBase, session?.user?.email, buildSuggestContext],
+  );
+
+  const fetchCategorySuggestion = useCallback(
+    (title: string, signal?: AbortSignal) =>
+      fetchSuggestionWithContext(
+        "/marketplace/ml/category-suggest",
+        title,
+        signal,
+      ),
+    [fetchSuggestionWithContext],
   );
 
   const fetchShopeeCategorySuggestion = useCallback(
-    async (
-      title: string,
-      signal?: AbortSignal,
-    ): Promise<SuggestionResponse | null> => {
-      try {
-        const resp = await fetch(
-          `${backendBase}/marketplace/shopee/category-suggest?title=${encodeURIComponent(
-            title,
-          )}`,
-          { headers: { email: session?.user?.email || "" }, signal },
-        );
-        if (!resp.ok) return null;
-        return (await resp.json()) as SuggestionResponse;
-      } catch (err) {
-        if ((err as any)?.name === "AbortError") return null;
-        console.error("Erro ao sugerir categoria Shopee:", err);
-        return null;
-      }
-    },
-    [backendBase, session?.user?.email],
+    (title: string, signal?: AbortSignal) =>
+      fetchSuggestionWithContext(
+        "/marketplace/shopee/category-suggest",
+        title,
+        signal,
+      ),
+    [fetchSuggestionWithContext],
   );
 
   // Import shared parser
@@ -1193,6 +1289,9 @@ export function CreateProductDialog({
         const data = await resp.json();
         if (data?.categoryId) {
           const label = data.path || data.categoryId;
+          // Guarda o valor SUGERIDO para o submit distinguir "aceitou a
+          // sugestão" de "escolheu na mão" ao gravar magaluCategorySource.
+          magaluAutoValueRef.current = data.categoryId;
           setValue("magaluCategory", data.categoryId, { shouldDirty: true });
           setMagaluSelectedLabel(label);
           setMagaluOptions([{ id: data.categoryId, value: label }]);
@@ -1201,12 +1300,7 @@ export function CreateProductDialog({
         console.error("Erro ao sugerir categoria Magalu:", err);
       }
     })();
-  }, [
-    watchCreateMagaluListing,
-    watchName,
-    setValue,
-    session?.user?.email,
-  ]);
+  }, [watchCreateMagaluListing, watchName, setValue, session?.user?.email]);
 
   // Busca server-side de categorias Magalu (debounced) ao digitar no combobox.
   useEffect(() => {
@@ -2033,8 +2127,7 @@ export function CreateProductDialog({
             // whose fullPath contains any token. If not found, fall back to the
             // static `ML_CATEGORY_OPTIONS` (which includes keyword hints).
             let childMatch:
-              | { id: string; value: string; keywords?: string[] }
-              | undefined;
+              { id: string; value: string; keywords?: string[] } | undefined;
 
             if (mlOptions && mlOptions.length > 0) {
               const externalMatch = mlOptions.find((c) => {
@@ -2698,7 +2791,28 @@ export function CreateProductDialog({
         mlCategorySource: mlCategorySourceToSend,
         mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
         shopeeCategory: data.shopeeCategory || undefined,
-        shopeeCategorySource: data.shopeeCategory ? "manual" : undefined,
+        // Distingue humano de sugestão aceita passivamente, exatamente como o
+        // ML já fazia (comparando com `autoDetectedRef`). Antes gravava
+        // "manual" sempre que o campo tivesse valor — mas o auto-detect
+        // preenche esse mesmo campo quando a confiança passa de 0,15, então
+        // TODA sugestão aceita virava "manual". Resultado: 6.022 produtos com
+        // shopeeCategorySource='manual' e nenhuma forma de saber quais foram
+        // realmente escolhidos por alguém, o que inviabiliza medir precisão.
+        // Não muda publicação, estoque nem pedido — só o valor da coluna.
+        shopeeCategorySource: data.shopeeCategory
+          ? autoDetectedRef.current?.shopeeCategory === data.shopeeCategory
+            ? "auto"
+            : "manual"
+          : autoDetectedRef.current?.shopeeCategory
+            ? "auto"
+            : undefined,
+        // Idem Magalu: nenhum modal enviava o campo, então o backend caía no
+        // default `magaluCategory ? "manual" : "auto"`.
+        magaluCategorySource: data.magaluCategory
+          ? magaluAutoValueRef.current === data.magaluCategory
+            ? "auto"
+            : "manual"
+          : undefined,
         imageUrls: data.imageUrls || [],
 
         // Sucata vinculada
@@ -2775,6 +2889,27 @@ export function CreateProductDialog({
         }
       }
 
+      // Histórico: só cadastro EFETIVAMENTE criado entra. E o rascunho morre
+      // aqui — nunca pode ressuscitar em cima de um cadastro já concluído.
+      const extras = draftExtrasRef.current;
+      history.record({
+        values: { ...cleanData, sku: result?.sku ?? undefined } as Record<
+          string,
+          unknown
+        >,
+        compatibilities: extras.compatibilities.map((c) => ({
+          brand: c.brand,
+          model: c.model,
+          yearFrom: c.yearFrom ?? null,
+          yearTo: c.yearTo ?? null,
+          version: c.version ?? null,
+        })),
+        scrap: extras.scrapId ? { id: extras.scrapId } : null,
+        magaluCategoryLabel: extras.magaluLabel,
+        currentStep: null,
+      });
+      draft.clear();
+
       handleClose();
       onProductCreated();
     } catch (error) {
@@ -2786,6 +2921,169 @@ export function CreateProductDialog({
       setIsSubmitting(false);
     }
   };
+
+  // ── Autosave do rascunho ─────────────────────────────────────────────────
+  // Espelha o estado fora do RHF a cada render (barato, sem efeito).
+  draftExtrasRef.current = {
+    compatibilities,
+    scrapId: selectedScrap?.id ?? null,
+    magaluLabel: magaluSelectedLabel,
+    step: currentStep,
+  };
+
+  // `draft` é um objeto novo a cada render do hook, então `draft.save` também
+  // muda de identidade. Guardar em ref mantém `saveDraftNow` ESTÁVEL — sem
+  // isso, o efeito da assinatura abaixo se re-inscreveria a cada tecla.
+  const draftSaveRef = useRef(draft.save);
+  draftSaveRef.current = draft.save;
+
+  const saveDraftNow = useCallback(() => {
+    // Enquanto a pergunta de restauração está na tela, não grava por cima do
+    // rascunho que o usuário ainda vai decidir se quer.
+    if (draftDecisionPendingRef.current) return;
+    const extras = draftExtrasRef.current;
+    draftSaveRef.current({
+      values: getValues() as Record<string, unknown>,
+      compatibilities: extras.compatibilities.map((c) => ({
+        brand: c.brand,
+        model: c.model,
+        yearFrom: c.yearFrom ?? null,
+        yearTo: c.yearTo ?? null,
+        version: c.version ?? null,
+      })),
+      scrap: extras.scrapId ? { id: extras.scrapId } : null,
+      magaluCategoryLabel: extras.magaluLabel,
+      currentStep: extras.step,
+    });
+  }, [getValues]);
+
+  // Assinatura do react-hook-form: dispara por MUDANÇA de campo, sem
+  // re-renderizar o modal. A escrita em si passa pelo debounce do hook, então
+  // uma rajada de digitação vira UMA gravação.
+  useEffect(() => {
+    if (!draftEnabled || !open) return;
+    const sub = watch(() => saveDraftNow());
+    return () => sub.unsubscribe();
+  }, [draftEnabled, open, watch, saveDraftNow]);
+
+  // Compatibilidades, sucata, categoria Magalu e seção vivem fora do RHF, então
+  // a assinatura acima não os enxerga.
+  useEffect(() => {
+    if (!draftEnabled || !open) return;
+    saveDraftNow();
+  }, [
+    draftEnabled,
+    open,
+    saveDraftNow,
+    compatibilities,
+    selectedScrap,
+    magaluSelectedLabel,
+    currentStep,
+  ]);
+
+  // ── Pergunta de restauração ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!open) {
+      setAskRestoreDraft(false);
+      draftDecisionPendingRef.current = false;
+      return;
+    }
+    if (!draftEnabled || !draft.hasDraft) return;
+    draftDecisionPendingRef.current = true;
+    setAskRestoreDraft(true);
+  }, [open, draftEnabled, draft.hasDraft]);
+
+  /** Reaplica um snapshot no formulário (rascunho restaurado). */
+  const restoreSnapshotIntoForm = useCallback(
+    (snapshot: ProductFormSnapshot) => {
+      const opts = { shouldDirty: true } as const;
+      for (const [field, value] of Object.entries(snapshot.values)) {
+        // `sku` não está no snapshot por construção; a checagem é
+        // cinto-e-suspensório para nunca reintroduzir um código já consumido.
+        if (field === "sku") continue;
+        setValue(field as keyof ProductFormData, value as never, opts);
+      }
+      if (snapshot.compatibilities.length > 0) {
+        setCompatibilities(
+          snapshot.compatibilities.map((c, i) => ({
+            ...c,
+            _localId: `compat-draft-${i}`,
+          })) as CompatibilityEntry[],
+        );
+      }
+      if (snapshot.magaluCategoryLabel) {
+        setMagaluSelectedLabel(snapshot.magaluCategoryLabel);
+        const id = snapshot.values.magaluCategory;
+        if (typeof id === "string" && id) {
+          setMagaluOptions([{ id, value: snapshot.magaluCategoryLabel }]);
+        }
+      }
+    },
+    [setValue],
+  );
+
+  const handleRestoreDraft = useCallback(() => {
+    const snapshot = draft.restore();
+    setAskRestoreDraft(false);
+    draftDecisionPendingRef.current = false;
+    if (!snapshot) return;
+    restoreSnapshotIntoForm(snapshot);
+    onToast("Cadastro em andamento restaurado.", "success");
+  }, [draft, restoreSnapshotIntoForm, onToast]);
+
+  const handleDiscardDraft = useCallback(() => {
+    draft.discard();
+    setAskRestoreDraft(false);
+    draftDecisionPendingRef.current = false;
+  }, [draft]);
+
+  // ── Histórico de cadastros ───────────────────────────────────────────────
+  const handleApplyHistory = useCallback(
+    (snapshot: ProductFormSnapshot) => {
+      const current = getValues() as Record<string, unknown>;
+      const {
+        next,
+        applied,
+        conflicts,
+        compatibilities: mergedCompat,
+      } = applyProductHistory(current, compatibilities, snapshot);
+
+      const opts = {
+        shouldDirty: true,
+        shouldValidate: true,
+        shouldTouch: true,
+      } as const;
+      for (const field of applied) {
+        if (field === "compatibilities" || field === "attributes") continue;
+        setValue(field as keyof ProductFormData, next[field] as never, opts);
+      }
+      if (applied.includes("attributes")) {
+        setValue("attributes", next.attributes as never, opts);
+      }
+      if (mergedCompat) {
+        setCompatibilities(
+          mergedCompat.map((c, i) => ({
+            ...c,
+            _localId: `compat-hist-${i}`,
+          })) as CompatibilityEntry[],
+        );
+      }
+
+      const total = applied.length;
+      if (total === 0) {
+        onToast("Nada a preencher: os campos já estão preenchidos.", "warning");
+        return;
+      }
+      onToast(
+        `${total} campo(s) preenchido(s) a partir do cadastro anterior.` +
+          (conflicts.length > 0
+            ? ` ${conflicts.length} campo(s) já preenchido(s) foram mantidos.`
+            : ""),
+        "success",
+      );
+    },
+    [getValues, compatibilities, setValue, onToast],
+  );
 
   const handleClose = () => {
     reset();
@@ -2799,10 +3097,14 @@ export function CreateProductDialog({
     hasFetchedOnOpenRef.current = false;
     // Zera a sugestão memorizada — a próxima abertura busca uma nova.
     autoSuggestedSkuRef.current = "";
+    magaluAutoValueRef.current = null;
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
     // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
     lockedScrapAppliedRef.current = false;
+    // Fechou antes do debounce disparar: grava agora, senão os últimos
+    // segundos de digitação se perdem — que é justamente a dor do bloco.
+    draft.flush();
     // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
     scrollContainerRef.current?.scrollTo({ top: 0 });
     setOpen(false);
@@ -2877,8 +3179,44 @@ export function CreateProductDialog({
     return option?.label || value;
   };
 
+  /**
+   * Pergunta de restauração do rascunho. Só aparece quando existe rascunho
+   * válido (dentro do TTL, versão conhecida, com conteúdo de verdade) para
+   * ESTE usuário e ESTE contexto de abertura.
+   *
+   * Fica numa const e é renderizada DENTRO do <Dialog>, em vez de um fragmento
+   * em volta do `return`: o fragmento empurraria as ~2.000 linhas de JSX do
+   * modal em 2 espaços, e o diff do arquivo viraria 4.400 linhas para uma
+   * mudança de 450. O root do Dialog do Radix é só um provider de contexto
+   * (não emite DOM) e o AlertDialog tem Portal próprio, então a árvore
+   * renderizada é exatamente a mesma.
+   */
+  const dialogoRestaurarRascunho = (
+    <AlertDialog open={askRestoreDraft} onOpenChange={setAskRestoreDraft}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Continuar de onde parou?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Encontramos um cadastro em andamento
+            {draft.draft?.label.name ? ` — "${draft.draft.label.name}"` : ""}.
+            Deseja continuar de onde parou?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={handleDiscardDraft}>
+            Descartar rascunho
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleRestoreDraft}>
+            Continuar
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
+      {dialogoRestaurarRascunho}
       {!hideTrigger && (
         <DialogTrigger asChild>
           <Button>
@@ -2982,8 +3320,7 @@ export function CreateProductDialog({
                       // Trim de leading/trailing antes de validar: mantendo o
                       // valor sugerido com um espaço acidental, ele ainda cai no
                       // caminho automático em vez de bloquear o submit.
-                      setValueAs: (v) =>
-                        typeof v === "string" ? v.trim() : v,
+                      setValueAs: (v) => (typeof v === "string" ? v.trim() : v),
                     })}
                     disabled={isLoadingSku}
                     aria-invalid={!!errors.sku}
@@ -2996,7 +3333,8 @@ export function CreateProductDialog({
                   ) : (
                     <p className="text-xs text-muted-foreground">
                       Sugerido automaticamente. Edite se quiser um código
-                      específico; mantendo o sugerido, ele é atribuído ao salvar.
+                      específico; mantendo o sugerido, ele é atribuído ao
+                      salvar.
                     </p>
                   )}
                 </div>
@@ -3059,8 +3397,14 @@ export function CreateProductDialog({
                   </p>
                 )}
                 {/* Base interna primeiro (prioridade): preço/peso/medidas/compat
-                    reais agregados. Ambos só preenchem vazios, então a ordem é
-                    natural; o catálogo ML segue logo abaixo p/ ficha técnica. */}
+                  reais agregados. Ambos só preenchem vazios, então a ordem é
+                  natural; o catálogo ML segue logo abaixo p/ ficha técnica. */}
+                <ProductHistoryPicker
+                  entries={history.entries}
+                  onApply={handleApplyHistory}
+                  onClear={history.clear}
+                  disabled={isSubmitting}
+                />
                 <InternalSuggestionPicker
                   title={watchName || ""}
                   onAccept={handleInternalSuggestionAccepted}
@@ -3306,7 +3650,7 @@ export function CreateProductDialog({
             <SectionHeading step={STEPS[3]} />
             <div className="space-y-4">
               {/* Sucata TRAVADA (fluxo "Adicionar peça" do lote): card
-                  informativo no lugar do Select — o vínculo não é alterável. */}
+                informativo no lugar do Select — o vínculo não é alterável. */}
               {lockedScrap ? (
                 <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-1">
                   <Label>Peça vinculada ao lote</Label>
@@ -3324,75 +3668,76 @@ export function CreateProductDialog({
               ) : (
                 /* Seleção de Sucata (opcional) */
                 availableScraps.length > 0 && (
-                <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
-                  <Label>Vincular a uma sucata (opcional)</Label>
-                  <Select
-                    value={selectedScrap?.id ?? "NONE"}
-                    onValueChange={(v) => {
-                      if (v === "NONE") {
-                        // Desvincular: limpar campos preenchidos pela sucata
-                        const prev = scrapAutofilledRef.current;
-                        if (prev.brand && getValues("brand") === prev.brand)
-                          setValue("brand", "");
-                        if (prev.model && getValues("model") === prev.model)
-                          setValue("model", "");
-                        if (prev.year && getValues("year") === prev.year)
-                          setValue("year", "");
-                        if (
-                          prev.version &&
-                          getValues("version") === prev.version
-                        )
-                          setValue("version", "");
-                        if (
-                          prev.sourceVehicle &&
-                          getValues("sourceVehicle") === prev.sourceVehicle
-                        )
-                          setValue("sourceVehicle", "");
-                        setSelectedScrap(null);
-                        scrapAutofilledRef.current = {};
-                      } else {
-                        const scrap = availableScraps.find((s) => s.id === v);
-                        if (scrap) {
-                          setSelectedScrap(scrap);
-                          // Herdar dados do veículo
-                          const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
-                          setValue("brand", scrap.brand);
-                          setValue("model", scrap.model);
-                          if (scrap.year) setValue("year", scrap.year);
-                          if (scrap.version) setValue("version", scrap.version);
-                          setValue("sourceVehicle", sourceDesc);
-                          scrapAutofilledRef.current = {
-                            brand: scrap.brand,
-                            model: scrap.model,
-                            year: scrap.year,
-                            version: scrap.version,
-                            sourceVehicle: sourceDesc,
-                          };
+                  <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
+                    <Label>Vincular a uma sucata (opcional)</Label>
+                    <Select
+                      value={selectedScrap?.id ?? "NONE"}
+                      onValueChange={(v) => {
+                        if (v === "NONE") {
+                          // Desvincular: limpar campos preenchidos pela sucata
+                          const prev = scrapAutofilledRef.current;
+                          if (prev.brand && getValues("brand") === prev.brand)
+                            setValue("brand", "");
+                          if (prev.model && getValues("model") === prev.model)
+                            setValue("model", "");
+                          if (prev.year && getValues("year") === prev.year)
+                            setValue("year", "");
+                          if (
+                            prev.version &&
+                            getValues("version") === prev.version
+                          )
+                            setValue("version", "");
+                          if (
+                            prev.sourceVehicle &&
+                            getValues("sourceVehicle") === prev.sourceVehicle
+                          )
+                            setValue("sourceVehicle", "");
+                          setSelectedScrap(null);
+                          scrapAutofilledRef.current = {};
+                        } else {
+                          const scrap = availableScraps.find((s) => s.id === v);
+                          if (scrap) {
+                            setSelectedScrap(scrap);
+                            // Herdar dados do veículo
+                            const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
+                            setValue("brand", scrap.brand);
+                            setValue("model", scrap.model);
+                            if (scrap.year) setValue("year", scrap.year);
+                            if (scrap.version)
+                              setValue("version", scrap.version);
+                            setValue("sourceVehicle", sourceDesc);
+                            scrapAutofilledRef.current = {
+                              brand: scrap.brand,
+                              model: scrap.model,
+                              year: scrap.year,
+                              version: scrap.version,
+                              sourceVehicle: sourceDesc,
+                            };
+                          }
                         }
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Nenhuma sucata selecionada" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="NONE">Nenhuma sucata</SelectItem>
-                      {availableScraps.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.brand} {s.model}
-                          {s.year ? ` ${s.year}` : ""}
-                          {s.plate ? ` — ${s.plate}` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedScrap && (
-                    <p className="text-xs text-muted-foreground">
-                      Marca, modelo, ano e versão foram preenchidos pela sucata
-                      selecionada.
-                    </p>
-                  )}
-                </div>
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Nenhuma sucata selecionada" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NONE">Nenhuma sucata</SelectItem>
+                        {availableScraps.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.brand} {s.model}
+                            {s.year ? ` ${s.year}` : ""}
+                            {s.plate ? ` — ${s.plate}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedScrap && (
+                      <p className="text-xs text-muted-foreground">
+                        Marca, modelo, ano e versão foram preenchidos pela
+                        sucata selecionada.
+                      </p>
+                    )}
+                  </div>
                 )
               )}
 
@@ -3925,8 +4270,8 @@ export function CreateProductDialog({
                 )}
 
                 {/* Aumento percentual escalonado entre contas (por marketplace).
-                    Estado COMPARTILHADO com os blocos das seções Shopee/Magalu:
-                    o percentual é global e cada marketplace tem escada própria. */}
+                  Estado COMPARTILHADO com os blocos das seções Shopee/Magalu:
+                  o percentual é global e cada marketplace tem escada própria. */}
                 {watch("createMLListing") && mlAccounts.length > 1 && (
                   <div className="space-y-2 rounded-md border p-3">
                     <label className="flex items-center gap-2 text-sm font-medium">
@@ -4326,7 +4671,7 @@ export function CreateProductDialog({
                 )}
 
                 {/* Aumento escalonado — mesmo estado do bloco ML (percentual
-                    global; escada independente por marketplace). */}
+                  global; escada independente por marketplace). */}
                 {watchCreateShopeeListing && shopeeAccounts.length > 1 && (
                   <div className="space-y-2 rounded-md border p-3">
                     <label className="flex items-center gap-2 text-sm font-medium">
@@ -4521,7 +4866,7 @@ export function CreateProductDialog({
           </section>
 
           {/* Passo Magalu (só com a flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED).
-              Categoria é auto-resolvida no backend → só toggle + seleção de contas. */}
+            Categoria é auto-resolvida no backend → só toggle + seleção de contas. */}
           {MAGALU_ENABLED && (
             <section
               data-step={MAGALU_STEP}
@@ -4564,7 +4909,9 @@ export function CreateProductDialog({
                     {magaluAccounts.length > 0 ? (
                       <div className="space-y-2 rounded-md border p-3">
                         {magaluAccounts.map((acc) => {
-                          const checked = watchMagaluAccountIds.includes(acc.id);
+                          const checked = watchMagaluAccountIds.includes(
+                            acc.id,
+                          );
                           return (
                             <label
                               key={acc.id}
@@ -4597,7 +4944,7 @@ export function CreateProductDialog({
                 )}
 
                 {/* Aumento escalonado — mesmo estado do bloco ML (percentual
-                    global; escada independente por marketplace). */}
+                  global; escada independente por marketplace). */}
                 {watchCreateMagaluListing && magaluAccounts.length > 1 && (
                   <div className="space-y-2 rounded-md border p-3">
                     <label className="flex items-center gap-2 text-sm font-medium">
@@ -4795,8 +5142,8 @@ export function CreateProductDialog({
           )}
 
           {/* Prévia + Revisão: sempre montadas; assinam o formulário via
-              useWatch, isolando o re-render do StepPreview (pesado) e da Revisão
-              das demais seções (digitar nos outros campos não re-renderiza tudo). */}
+            useWatch, isolando o re-render do StepPreview (pesado) e da Revisão
+            das demais seções (digitar nos outros campos não re-renderiza tudo). */}
           <LiveFormValues control={control}>
             {(formValues) => (
               <>

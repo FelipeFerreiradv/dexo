@@ -8,6 +8,16 @@ import {
 import { fuseVotes, shouldAutoApply } from "../lib/category-inference/fuse";
 import type { CategoryVote } from "../lib/category-inference/types";
 import { getVehicleRootSet } from "./category-resolution.service";
+import {
+  coherenceVerdict,
+  contextCacheSuffix,
+  isContextEmpty,
+  isV2Enabled,
+  shouldAutoApplyV2,
+  COHERENCE_PENALTY,
+  type CoherenceVerdict,
+  type ProductSuggestContext,
+} from "../lib/category-suggest-v2";
 
 type AttributeSuggestion = {
   brand?: string;
@@ -42,6 +52,12 @@ export type CategorySuggestion = {
   autoApply?: boolean;
   /** human-readable reasons that contributed to the score */
   reasons?: string[];
+  /**
+   * Quantos sinais DISTINTOS sustentam esta sugestão (marca, modelo, ano, part
+   * number, tokens do alias, mapa curado, base interna...). Campo aditivo: é o
+   * que a recalibragem do auto-aplicar consulta, em vez de contar `reasons`.
+   */
+  signalCount?: number;
   /** inferred piece/part type when identifiable from tokens (e.g. "amortecedor", "porta") */
   pieceType?: string;
 };
@@ -806,19 +822,78 @@ export class CategorySuggestionService {
     synonymTokens: string[];
     patterns: any;
     rawText: string;
+    /**
+     * Fatos AFIRMADOS pelo formulário (não adivinhados do título). Entram como
+     * casamento estruturado — nunca como token no saco de tokens: a régua
+     * mostrou que despejar o contexto na tokenização derruba a Shopee de 73,3%
+     * para 41,5%, porque lá o único caminho é o keyword sobre o `fullPath` e o
+     * `matchRatio` (hits / total de tokens) fica diluído.
+     */
+    ctxBrand?: string | null;
+    ctxModel?: string | null;
+    ctxYear?: string | null;
   }) {
-    const { tokenSet, tokens, aliasTokens, synonymTokens, patterns, rawText } =
-      opts;
+    const {
+      tokenSet,
+      tokens,
+      aliasTokens,
+      synonymTokens,
+      patterns,
+      rawText,
+      ctxBrand,
+      ctxModel,
+      ctxYear,
+    } = opts;
     const norm = (s: string) => this.normalize(s);
+    const ctxHas = (fact: string | null | undefined, value: string) => {
+      if (!fact) return false;
+      return norm(fact) === norm(value);
+    };
     const intersect = aliasTokens.filter((t) => tokenSet.has(t));
     const synonymHits = synonymTokens.filter((t) => tokenSet.has(t));
     const reasons: string[] = [];
 
-    let score = intersect.length * 2 + synonymHits.length;
+    /**
+     * A coluna `CategoryAlias.tokens` foi populada com o TÍTULO INTEIRO do
+     * anúncio de origem, veículo incluído. Exemplo real:
+     *
+     *   tokens="acabamento,retrovisor,direito,volvo,v40,2014,1287712,pecas,..."
+     *
+     * Consequência: "volkswagen", "fox", "2011" e "2012" entravam em
+     * `intersect` e valiam +2 cada (8 pontos), e AINDA somavam +3 de marca e
+     * +2 de modelo pelo `brandModelPatterns` — o mesmo veículo contado duas
+     * vezes, sem que o tipo de peça precisasse casar uma única vez.
+     *
+     * Medido em produção com "Retrovisor Direito Volkswagen fox 2011 2012":
+     * cinco categorias empatavam em score 13 — Fechaduras de Portas, Grades de
+     * Faróis de Milha, Reservatório do Radiador, Carroceria > Outros — todas
+     * com confiança 0,95 e TODAS auto-aplicadas. Nenhuma tinha relação com
+     * retrovisor. O mesmo título sem marca/modelo/ano acertava a categoria.
+     *
+     * Aqui os tokens de veículo e os puramente numéricos (ano, part number)
+     * deixam de contar como evidência de TIPO DE PEÇA. Eles continuam
+     * pontuando pelo caminho próprio (marca/modelo/ano), que é onde têm peso
+     * calibrado e não duplicam.
+     */
+    const vehicleTokens = new Set<string>();
+    if (patterns?.brand) vehicleTokens.add(norm(patterns.brand));
+    if (patterns?.model) vehicleTokens.add(norm(patterns.model));
+    if (patterns?.years) {
+      const ys = Array.isArray(patterns.years)
+        ? patterns.years
+        : [patterns.years];
+      for (const y of ys) vehicleTokens.add(norm(String(y)));
+    }
+    const gateOn = isV2Enabled();
+    const pieceHits = gateOn
+      ? intersect.filter((t) => !vehicleTokens.has(t) && !/^\d+$/.test(t))
+      : intersect;
+
+    let score = pieceHits.length * 2 + synonymHits.length;
     let signalCount = 0;
 
-    if (intersect.length > 0) {
-      reasons.push(`tokens diretos: ${intersect.join(", ")}`);
+    if (pieceHits.length > 0) {
+      reasons.push(`tokens diretos: ${pieceHits.join(", ")}`);
       signalCount++;
     }
     if (synonymHits.length > 0) {
@@ -828,9 +903,42 @@ export class CategorySuggestionService {
 
     const attr: AttributeSuggestion = {};
 
+    /**
+     * ORDEM DE PRIORIDADE DOS SINAIS (explícita, V2):
+     *   1. tipo de peça  — é o que IDENTIFICA a categoria;
+     *   2. marca / modelo / ano — QUALIFICAM a peça, não a identificam;
+     *   3. texto livre.
+     *
+     * Antes, (2) somava sozinho: um alias de "fechadura VW Fox 2011" ganhava
+     * 3+2+1 = 6 pontos em QUALQUER produto de um VW Fox 2011, sem casar um
+     * único token do tipo de peça — e 6 pontos batem os 2 de um token de tipo
+     * correto. Foi isto que a régua flagrou em produção:
+     *
+     *   "Retrovisor Eletrico Gol G5"                    -> Espelhos Retrovisores Laterais  (certo)
+     *   "Retrovisor Direito Volkswagen fox 2011 2012"   -> Fechaduras de Portas   conf 0,95 AUTO-APLICADO
+     *   "Retrovisor Esquerdo Chevrolet Onix Prisma ..." -> Portas                 conf 1,00 AUTO-APLICADO
+     *   "Retrovisor Manual Direito Fiat Palio Siena ..." -> Climatização > Comandos conf 1,00 AUTO-APLICADO
+     *
+     * O mesmo título, sem marca/modelo/ano, acertava. Quanto MAIS contexto o
+     * usuário dava, PIOR ficava a sugestão — e com confiança alta o bastante
+     * para auto-aplicar.
+     *
+     * Com o gate: marca/modelo/ano só pontuam quando o alias já demonstrou
+     * evidência do tipo de peça (token direto ou sinônimo). Eles continuam
+     * desempatando entre aliases do mesmo tipo, que é o papel deles.
+     */
+    // Com o V2 ligado, os qualificadores de veículo só pontuam quando o alias
+    // já demonstrou evidência do tipo de peça. Com o kill-switch, voltam a
+    // somar sempre — byte-idêntico ao comportamento anterior.
+    const vehicleFactsScore =
+      !gateOn || pieceHits.length > 0 || synonymHits.length > 0;
+
     if (patterns?.brand) {
       const brandNorm = norm(patterns.brand);
-      if (tokenSet.has(brandNorm)) {
+      if (
+        vehicleFactsScore &&
+        (tokenSet.has(brandNorm) || ctxHas(ctxBrand, patterns.brand))
+      ) {
         score += 3;
         reasons.push(`marca: ${patterns.brand}`);
         signalCount++;
@@ -840,7 +948,10 @@ export class CategorySuggestionService {
 
     if (patterns?.model) {
       const modelNorm = norm(patterns.model);
-      if (tokenSet.has(modelNorm)) {
+      if (
+        vehicleFactsScore &&
+        (tokenSet.has(modelNorm) || ctxHas(ctxModel, patterns.model))
+      ) {
         score += 2;
         reasons.push(`modelo: ${patterns.model}`);
         signalCount++;
@@ -852,8 +963,10 @@ export class CategorySuggestionService {
       const years: string[] = Array.isArray(patterns.years)
         ? patterns.years
         : [patterns.years];
-      const yearHit = years.find((y) => tokenSet.has(norm(y)));
-      if (yearHit) {
+      const yearHit = years.find(
+        (y) => tokenSet.has(norm(y)) || ctxHas(ctxYear, y),
+      );
+      if (vehicleFactsScore && yearHit) {
         score += 1;
         attr.year = yearHit;
         reasons.push(`ano: ${yearHit}`);
@@ -872,7 +985,7 @@ export class CategorySuggestionService {
     }
 
     // Detect piece type from the alias tokens that matched
-    const pieceType = intersect.length > 0 ? intersect[0] : undefined;
+    const pieceType = pieceHits.length > 0 ? pieceHits[0] : undefined;
 
     const measurements: MeasurementSuggestion | undefined =
       patterns?.measurements;
@@ -880,6 +993,12 @@ export class CategorySuggestionService {
     return { score, attr, measurements, reasons, signalCount, pieceType };
   }
 
+  /**
+   * Entrada historica: só o título. Continua existindo com a MESMA assinatura e
+   * o mesmo retorno — delega para `suggestFromProduct` com o contexto vazio, o
+   * que é transparente por construção (contexto vazio => mesma chave de cache,
+   * mesmo enriquecimento, mesmo ranking).
+   */
   static async suggestFromTitle(
     title: string,
     siteId = "MLB",
@@ -888,9 +1007,61 @@ export class CategorySuggestionService {
     tokens: string[];
     suggestions: CategorySuggestion[];
   }> {
+    return this.suggestFromProduct({ title }, siteId);
+  }
+
+  /**
+   * Último segmento do `fullPath` — o nome da própria folha. A coerência olha
+   * SÓ a folha: o caminho inteiro carrega qualificadores dos ancestrais
+   * ("Peças de Interior") que não qualificam a categoria final.
+   */
+  private static leafNameOf(fullPath?: string): string {
+    if (!fullPath) return "";
+    const parts = fullPath.split(">");
+    return (parts[parts.length - 1] || "").trim();
+  }
+
+  /** Quantos sinais distintos sustentam a sugestão (1 quando não informado). */
+  private static signalCountOf(s: CategorySuggestion): number {
+    if (typeof s.signalCount === "number") return s.signalCount;
+    return s.source === "keyword" ? 1 : 2;
+  }
+
+  /**
+   * Entrada rica: o formulário manda o que já tem em mãos (marca, modelo, ano,
+   * versão, part number, categoria interna, veículo de origem, medidas...) em
+   * vez de só o título.
+   *
+   * Até 04/08/2026 as nove chamadas do front mandavam apenas o título e
+   * jogavam fora todo o resto — inclusive campos que eram LIDOS no mesmo
+   * callback (create-product-dialog.tsx:2295-2299). Era o maior ganho parado
+   * em cima da mesa.
+   *
+   * Aditivo: contexto ausente => comportamento e chave de cache idênticos aos
+   * de quem chama por título.
+   */
+  static async suggestFromProduct(
+    input: ProductSuggestContext,
+    siteId = "MLB",
+  ): Promise<{
+    normalizedTitle: string;
+    tokens: string[];
+    suggestions: CategorySuggestion[];
+  }> {
+    const title = input.title;
+    const v2 = isV2Enabled();
+    const hasContext = v2 && !isContextEmpty(input);
     const startedAt = Date.now();
     const normalizedTitle = this.normalize(title);
-    const tokens = this.tokenize(title);
+    const baseTokens = this.tokenize(title);
+    // O contexto NÃO entra no saco de tokens. Medido em 04/08/2026: despejar
+    // marca/modelo/versão/categoria interna na tokenização derruba a Shopee de
+    // 73,3% para 41,5% de top-1, porque lá o único caminho é o keyword sobre o
+    // `fullPath` e a confiança usa `matchRatio = hits / total de tokens` — cada
+    // token de contexto que não casa com nada dilui o denominador. O contexto
+    // entra como FATO ESTRUTURADO em `scoreAliasMatch` (marca/modelo/ano) e em
+    // `aliasRawText` (part number), onde ele soma sem diluir.
+    const tokens = baseTokens;
 
     // ── Result cache (siteId + normalizedTitle) ──
     // suggestFromTitle is pure relative to its caches (aliases/categories are
@@ -898,12 +1069,13 @@ export class CategorySuggestionService {
     // same title produces the same result until those caches flip. The log
     // "suggestFromTitle lento: 3728ms" showed repeated calls for similar
     // titles during modal interactions — caching here avoids recomputing.
-    const cacheKey = `${siteId}::${normalizedTitle}`;
+    // Sem contexto o sufixo é string vazia, então a chave continua sendo
+    // exatamente `${siteId}::${normalizedTitle}` — as entradas antigas seguem
+    // válidas. Com contexto, a chave passa a distingui-lo; sem isso o primeiro
+    // resultado "grudaria" por 1h e o enriquecimento não teria efeito nenhum.
+    const cacheKey = `${siteId}::${normalizedTitle}${hasContext ? contextCacheSuffix(input) : ""}`;
     const cached = this.suggestResultCache.get(cacheKey);
-    if (
-      cached &&
-      Date.now() - cached.cachedAt < this.SUGGEST_CACHE_TTL_MS
-    ) {
+    if (cached && Date.now() - cached.cachedAt < this.SUGGEST_CACHE_TTL_MS) {
       return cached.result;
     }
 
@@ -924,11 +1096,7 @@ export class CategorySuggestionService {
     // ── Guard: titles too short for keyword-only matching (SHP has no aliases) ──
     // Com voto de inferência ("Farol" tem 1 token mas tipo conhecido) o fluxo
     // segue; sem voto, retorna vazio exatamente como antes.
-    if (
-      tokens.length < 2 &&
-      siteId !== "MLB" &&
-      inference.votes.length === 0
-    ) {
+    if (tokens.length < 2 && siteId !== "MLB" && inference.votes.length === 0) {
       return { normalizedTitle, tokens, suggestions: [] };
     }
 
@@ -940,8 +1108,25 @@ export class CategorySuggestionService {
       parentMaps = this.buildParentMaps(categories);
       this.parentMapCache.set(siteId, parentMaps);
     }
-    const { brand, model, year } = parseTitleToFields(title);
-    const baseAttr: AttributeSuggestion = { brand, model, year };
+    const parsed = parseTitleToFields(title);
+    // O que o usuário digitou no formulário tem precedência sobre o que a
+    // heurística adivinha do título — é dado afirmado, não inferido.
+    const baseAttr: AttributeSuggestion = hasContext
+      ? {
+          brand: input.brand?.trim() || parsed.brand,
+          model: input.model?.trim() || parsed.model,
+          year: input.year?.trim() || parsed.year,
+          partNumber: input.partNumber?.trim() || undefined,
+        }
+      : { brand: parsed.brand, model: parsed.model, year: parsed.year };
+    // `rawText` é onde o casamento de part number procura (substring, não
+    // token). Com contexto, o PN do formulário entra aqui mesmo que o título
+    // não o contenha — é o sinal mais forte que existe e estava sendo perdido.
+    const aliasRawText = hasContext
+      ? [normalizedTitle, this.normalize(input.partNumber ?? undefined)]
+          .filter(Boolean)
+          .join(" ")
+      : normalizedTitle;
     const suggestions = new Map<string, CategorySuggestion>();
 
     // Build token Set once for the entire alias loop (O(1) lookup vs O(n) array scan)
@@ -966,7 +1151,10 @@ export class CategorySuggestionService {
           aliasTokens,
           synonymTokens,
           patterns,
-          rawText: normalizedTitle,
+          rawText: aliasRawText,
+          ctxBrand: hasContext ? input.brand : null,
+          ctxModel: hasContext ? input.model : null,
+          ctxYear: hasContext ? input.year : null,
         });
 
       if (!alias.marketplaceCategory?.externalId || score <= 0) continue;
@@ -1031,6 +1219,7 @@ export class CategorySuggestionService {
           autoApply,
           reasons,
           pieceType,
+          signalCount,
         });
       }
     }
@@ -1181,7 +1370,11 @@ export class CategorySuggestionService {
     // "Peças e Acessórios para Veículos > Iluminação Interna"), return a
     // curated set of leaf categories inside the automotive tree so the UI
     // can offer them as searchable starting points instead of dumping all.
-    if (suggestions.size === 0 && detectedDomain === "automotive" && siteId !== "MLB") {
+    if (
+      suggestions.size === 0 &&
+      detectedDomain === "automotive" &&
+      siteId !== "MLB"
+    ) {
       const fallbackMarkers = ["veiculos", "automoveis", "automotiv"];
       let picked = 0;
       for (const cat of categories) {
@@ -1199,8 +1392,13 @@ export class CategorySuggestionService {
           }
         }
         if (!inDomain) continue;
-        if (this.isDomainIncompatible("automotive", catPathNorm, true)) continue;
-        const leaf = this.ensureLeafLocal(cat.externalId, categories, parentMaps);
+        if (this.isDomainIncompatible("automotive", catPathNorm, true))
+          continue;
+        const leaf = this.ensureLeafLocal(
+          cat.externalId,
+          categories,
+          parentMaps,
+        );
         if (!leaf?.externalId) continue;
         if (suggestions.has(leaf.externalId)) continue;
         suggestions.set(leaf.externalId, {
@@ -1272,6 +1470,17 @@ export class CategorySuggestionService {
             if (!existing.pieceType && inference.pieceType) {
               existing.pieceType = inference.pieceType;
             }
+            // Cada fonte de inferência INDEPENDENTE que também votou nesta
+            // categoria é um sinal a mais. Sem isto, a recalibragem do
+            // auto-aplicar leria só o signalCount do alias/keyword original e
+            // desligaria justamente o caso que a fusão existe para reconhecer:
+            // dois sinais independentes concordando.
+            existing.signalCount =
+              (existing.signalCount ??
+                (existing.source === "keyword" ? 1 : 2)) +
+              cand.signals.filter(
+                (sig) => sig === "part-type-map" || sig === "catalog-stat",
+              ).length;
           } else {
             suggestions.set(leaf.externalId, {
               categoryId: leaf.externalId,
@@ -1285,6 +1494,7 @@ export class CategorySuggestionService {
               autoApply: shouldAutoApply(cand),
               reasons: cand.reasons,
               pieceType: inference.pieceType ?? undefined,
+              signalCount: cand.signals.length,
             });
           }
         }
@@ -1340,6 +1550,50 @@ export class CategorySuggestionService {
       } catch {
         skipCache = true;
       }
+    }
+
+    // ── V2: coerência de qualificador + recalibragem do auto-aplicar ──
+    // A régua contra o gabarito humano do ML mostrou o candidato carregando um
+    // qualificador que o título não sustenta ("Retrovisores INTERNOS" para um
+    // retrovisor lateral, 22 ocorrências) e auto-aplicação em 366 de 400 casos,
+    // todos divergentes. Fica ANTES do sort porque mexe no `score`.
+    if (isV2Enabled()) {
+      const titleTokenSet = new Set(tokens);
+      const kept: CategorySuggestion[] = [];
+      for (const s of scoped) {
+        const leafName = this.leafNameOf(s.fullPath);
+        const verdict: CoherenceVerdict = coherenceVerdict(
+          titleTokenSet,
+          new Set(this.tokenize(leafName)),
+        );
+        if (verdict === "block") continue;
+
+        const confidence =
+          verdict === "penalize"
+            ? (s.confidence ?? 0) * COHERENCE_PENALTY
+            : s.confidence;
+        kept.push({
+          ...s,
+          score: verdict === "penalize" ? s.score * COHERENCE_PENALTY : s.score,
+          confidence,
+          autoApply: shouldAutoApplyV2({
+            confidence: confidence ?? 0,
+            signalCount: this.signalCountOf(s),
+            coherence: verdict,
+          }),
+          signalCount: this.signalCountOf(s),
+          reasons:
+            verdict === "penalize"
+              ? [
+                  ...(s.reasons ?? []),
+                  "penalizada: a categoria tem um qualificador que o título não menciona",
+                ]
+              : s.reasons,
+        });
+      }
+      // Nunca zera: se a coerência derrubar tudo, mantém a lista anterior. O
+      // guard existe para desempatar, não para esconder a única resposta.
+      scoped = kept.length > 0 ? kept : scoped;
     }
 
     scoped.sort((a, b) => {
