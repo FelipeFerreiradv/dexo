@@ -328,6 +328,51 @@ ao reabrir o sistema pergunta se você quer continuar de onde parou.
 
 ---
 
+## 8.1 Os 10.232 aliases que apontam para um galho — investigado e DESCARTADO
+
+Numa versão anterior deste relatório eu escrevi que `ensureLeafLocal` descia
+para "Outros" **ou para o primeiro filho**, "escolha arbitrária", e apontei isso
+como a próxima maior fonte de erro. **A afirmação estava errada** — era o pior
+caso teórico do código, não o que os dados fazem. Medido:
+
+|                                                    |                   |
+| -------------------------------------------------- | ----------------- |
+| Aliases MLB apontando para um galho                | 10.232            |
+| Que descem para um filho **"Outros"**              | **10.232 (100%)** |
+| Que caem no ramo do "primeiro filho"               | **0**             |
+| Cujos tokens nomeariam outro filho, de forma única | 704 (6,9%)        |
+
+A origem dos galhos é a planilha que gerou os aliases
+(`categorizacao_mercado_livre_sugerida.xlsx`, `Produto` →
+`Categoria_Oficial_ML_Sugerida`): quem a preencheu escreveu caminhos em
+profundidades variadas. Descer para "Outros" é uma escolha **conservadora e
+legítima** — "Outros" é uma folha real da árvore do ML.
+
+Havia um caso concreto que parecia valer a pena: `"Máquina de vidro MANUAL
+traseira esquerda Onix 2013"` cai no galho "Sistemas de Elevação" (4 filhos) e
+vira "Outros", quando o título nomeia exatamente o filho "Manual".
+
+Implementei a descida ciente do título (precedência: filho nomeado pelo título >
+"Outros" > primeiro filho, aceitando só casamento único) e medi:
+
+| Métrica (ML, n=533)  | Sem a mudança | Com a descida ciente |
+| -------------------- | ------------- | -------------------- |
+| top-1 exato          | **8,1%**      | 7,3%                 |
+| mesmo ramo           | **15,9%**     | 14,4%                |
+| top-5                | 10,7%         | 11,1%                |
+| auto-aplicado ERRADO | **164**       | **240**              |
+
+**Piora.** Mudar a folha muda o nome dela, o que muda o veredito do guard de
+coerência e reordena os candidatos — o efeito colateral supera o ganho pontual,
+e a auto-aplicação errada sobe 46%. Pela regra do bloco ("descarte a que não
+melhorar"), a mudança foi **revertida** e não está em nenhum commit.
+
+Se ainda assim valer a pena perseguir, o caminho não é repontar os aliases (o
+dado não sabe qual folha é a certa): é **enriquecer a planilha de origem com
+caminhos de folha** e reimportar via `scripts/import-category-aliases.ts`, que
+já faz `deleteMany` + `createMany` por site. Aí o gabarito passa a ser humano de
+verdade, e não uma heurística de descida.
+
 ## 9. Recomendações
 
 **Barato e vale a pena**
@@ -335,10 +380,7 @@ ao reabrir o sistema pergunta se você quer continuar de onde parou.
 1. **Rodar `npm run map:part-type-categories`** e repopular `CategoryAlias.tokens`
    sem os tokens de veículo. A correção deste bloco neutraliza o dado sujo em
    tempo de consulta; limpar a origem melhora tudo que consome a tabela.
-2. **10.232 dos 19.485 aliases do ML apontam para um GALHO, não para uma folha.**
-   `ensureLeafLocal` então desce para "Outros" ou para o **primeiro filho** —
-   escolha arbitrária. É a próxima maior fonte de erro depois desta.
-3. Rodar a régua periodicamente agora que `*Source` distingue humano de máquina.
+2. Rodar a régua periodicamente agora que `*Source` distingue humano de máquina.
 
 **Grande e precisa de decisão**
 
