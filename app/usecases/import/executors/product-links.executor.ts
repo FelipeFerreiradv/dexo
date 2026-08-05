@@ -342,7 +342,14 @@ export async function runVaaptLinks(
   ctx: ImportContext,
   deps: LinksRunnerDeps = defaultLinksRunnerDeps,
 ): Promise<ImportReport> {
-  const pecas = fileOfKind(ctx.files, "VAAPT_PECAS");
+  // Aceita os DOIS arquivos que trazem SKU + localização: o arquivo-ponte
+  // clássico e o relatório de produtos (export novo). Os mappers resolvem a
+  // diferença de rótulo da coluna de local por sinônimo. A diferença que
+  // importa é outra: o vínculo só LIGA produtos que já existem — quem cria os
+  // faltantes é a entidade VAAPT/PRODUTOS.
+  const pecas =
+    fileOfKind(ctx.files, "VAAPT_PECAS") ??
+    fileOfKind(ctx.files, "VAAPT_PRODUTOS");
   if (!pecas) {
     throw new ImportValidationError(
       "Arquivo de peças/localização (Vaapt) não encontrado.",

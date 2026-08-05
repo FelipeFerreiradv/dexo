@@ -39,7 +39,11 @@ export type ImportEntity =
   | "FOTOS"
   // Estoque IBR: cria a árvore de localizações do próprio arquivo, casa o
   // produto por SKU (vincula a localização) e cria os produtos faltantes.
-  | "ESTOQUE";
+  | "ESTOQUE"
+  // Relatório de produtos do Vaapt: mesmo contrato do ESTOQUE do IBR (cria
+  // localizações, casa por SKU, cria os faltantes), mas para o export novo do
+  // Vaapt, que traz nome/preço/quantidade/descrição além da localização.
+  | "PRODUTOS";
 
 /**
  * Arquivo recebido no multipart, já em memória. Os tetos (por arquivo, por
@@ -60,6 +64,11 @@ export interface ImportFile {
  */
 export type DetectedKind =
   | "VAAPT_PECAS" // arquivo-ponte Vaapt: "# Cod Peca" + "Localizacao" (+ "Cod Veiculo")
+  // Relatório de produtos do Vaapt ("Cod Peça" + "Nome Produto" +
+  // "Localização Produto"): o export NOVO, com o catálogo inteiro — nome,
+  // preço, quantidade, descrição e localização. Diferente do arquivo-ponte,
+  // que só tem SKU→localização→veículo. Ver vaapt-produtos.mapper.ts.
+  | "VAAPT_PRODUTOS"
   | "VAAPT_CLIENTES" // "# Cod Cliente" + "Nome Cliente" + "TipoPessoa"
   // "# Codigo Veiculo" + ≥2 atributos de veículo. Há DUAS variantes reais do
   // mesmo relatório: a clássica ("Marca/Modelo/Chassi/…") e a de imagens

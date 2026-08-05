@@ -26,6 +26,7 @@ import {
   runWdLinks,
 } from "./executors/product-links.executor";
 import { runVaaptPhotos } from "./executors/product-photos.executor";
+import { runVaaptProdutos } from "./executors/vaapt-produtos.executor";
 import { runVaaptPacote } from "./executors/vaapt-pacote.executor";
 import { runWdPacote } from "./executors/wd-pacote.executor";
 import { runContas } from "./executors/finance.executor";
@@ -41,6 +42,7 @@ const RUNNERS: Partial<Record<`${ImportSystem}/${ImportEntity}`, ImportRunner>> 
     "VAAPT/LOCALIZACOES": runVaaptLocations,
     "VAAPT/CLIENTES": runVaaptCustomers,
     "VAAPT/SUCATAS": runVaaptScraps,
+    "VAAPT/PRODUTOS": runVaaptProdutos,
     "VAAPT/VINCULOS": runVaaptLinks,
     "VAAPT/NFE": runVaaptNfes,
     "VAAPT/FOTOS": runVaaptPhotos,

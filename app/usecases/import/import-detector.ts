@@ -21,6 +21,7 @@ import { readXlsxBuffer, sniffFileFormat } from "./parse/xlsx-reader";
 
 const KIND_LABEL: Record<DetectedKind, string> = {
   VAAPT_PECAS: "Vaapt — peças/localização (arquivo-ponte)",
+  VAAPT_PRODUTOS: "Vaapt — relatório de produtos (catálogo + localização)",
   VAAPT_CLIENTES: "Vaapt — clientes",
   VAAPT_VEICULOS: "Vaapt — veículos (sucatas)",
   VAAPT_NFE: "Vaapt — notas fiscais emitidas (resumo)",
@@ -115,6 +116,27 @@ const SIGNATURES: ColumnSignature[] = [
     requires: ["licenseplate", "chassis", "purchasevalue"],
   },
   { kind: "WD_CUSTOMERS", requires: ["name", "document", "type", "companyid"] },
+  // Relatório de produtos do Vaapt — o export NOVO. Vem ANTES do arquivo-ponte
+  // porque é o mais específico dos dois (três colunas contra duas).
+  //
+  // ⚠️ CAUSA RAIZ DE UM BUG REAL. Este arquivo era classificado como
+  // VAAPT_VEICULOS, e disso saíam os dois erros que o operador via:
+  //
+  //   VAAPT_PECAS  exige "codpeca" E "localizacao". O arquivo tem "Cod Peça"
+  //     (→ codpeca ✓), mas a coluna de local é "Localização Produto"
+  //     (→ localizacaoproduto ✗). Não casa.
+  //   VAAPT_VEICULOS exige "codigoveiculo" + ≥2 acessórias. O arquivo tem
+  //     "Código Veículo" (→ codigoveiculo ✓), "Chassi" ✓ e "RENAVAM" ✓. CASA.
+  //
+  // Com UM arquivo: "Falta o arquivo obrigatório: Vaapt — peças/localização".
+  // Com DOIS (o export vem partido em partes): "Recebi 2 arquivos do tipo
+  // Vaapt — veículos (sucatas)". E, pior, PACOTE com um arquivo só era
+  // ACEITO em silêncio e rodava a fase de sucatas em cima de um relatório de
+  // produtos — as colunas de veículo do export medido são o literal "DUMMY".
+  {
+    kind: "VAAPT_PRODUTOS",
+    requires: ["codpeca", "nomeproduto", "localizacaoproduto"],
+  },
   { kind: "VAAPT_PECAS", requires: ["codpeca", "localizacao"] },
   // Fotos das peças: "# idPeca" (≠ "# Cod Peca" da planilha de peças) + a
   // coluna de link. Reconhecido só para o operador receber uma mensagem
@@ -274,9 +296,18 @@ export function expectedKinds(
       CLIENTES: { required: [["VAAPT_CLIENTES"]], optional: [] },
       LOCALIZACOES: { required: [["VAAPT_PECAS"]], optional: [] },
       SUCATAS: { required: [["VAAPT_VEICULOS"]], optional: [] },
+      // Relatório de produtos (export novo): cria localizações, casa por SKU e
+      // cria os produtos faltantes. Mesmo contrato do IBR/ESTOQUE.
+      PRODUTOS: { required: [["VAAPT_PRODUTOS"]], optional: [] },
       // O vínculo cria as localizações faltantes do próprio arquivo-ponte
       // (idempotente) e aceita o arquivo de veículos junto p/ criar sucatas.
-      VINCULOS: { required: [["VAAPT_PECAS"]], optional: ["VAAPT_VEICULOS"] },
+      // Aceita TAMBÉM o relatório de produtos: ele traz SKU + localização, que
+      // é tudo de que o vínculo precisa. A diferença é que o vínculo só LIGA
+      // produtos que já existem — quem cria é a entidade PRODUTOS.
+      VINCULOS: {
+        required: [["VAAPT_PECAS", "VAAPT_PRODUTOS"]],
+        optional: ["VAAPT_VEICULOS"],
+      },
       NFE: { required: [["VAAPT_NFE"]], optional: [] },
       FOTOS: { required: [["VAAPT_PECAS_IMAGENS"]], optional: [] },
       PACOTE: {
@@ -284,6 +315,7 @@ export function expectedKinds(
         required: [
           [
             "VAAPT_PECAS",
+            "VAAPT_PRODUTOS",
             "VAAPT_CLIENTES",
             "VAAPT_VEICULOS",
             "VAAPT_NFE",
@@ -292,6 +324,7 @@ export function expectedKinds(
         ],
         optional: [
           "VAAPT_PECAS",
+          "VAAPT_PRODUTOS",
           "VAAPT_CLIENTES",
           "VAAPT_VEICULOS",
           "VAAPT_NFE",
@@ -427,14 +460,25 @@ export function detectAndValidate(
   }
 
   // Papéis repetidos ENTRE OS ACEITOS = ambiguidade (erro).
-  const byKind = new Map<DetectedKind, number>();
+  //
+  // A mensagem NOMEIA os arquivos. Sem isso, um export cujo formato o detector
+  // classifica errado produz "Recebi 2 arquivos do tipo X" sem nenhuma pista de
+  // QUAIS arquivos são, e o operador não tem como descobrir sozinho que o
+  // problema é a classificação — foi exatamente o que aconteceu com o
+  // relatório de produtos do Vaapt, lido como relatório de veículos.
+  const byKind = new Map<DetectedKind, DetectedFile[]>();
   for (const f of accepted) {
-    byKind.set(f.kind, (byKind.get(f.kind) ?? 0) + 1);
+    const arr = byKind.get(f.kind) ?? [];
+    arr.push(f);
+    byKind.set(f.kind, arr);
   }
-  for (const [kind, count] of byKind) {
-    if (count > 1) {
+  for (const [kind, arquivos] of byKind) {
+    if (arquivos.length > 1) {
+      const nomes = arquivos.map((f) => `"${f.filename}"`).join(" e ");
       throw new ImportValidationError(
-        `Recebi ${count} arquivos do tipo "${kindLabel(kind)}". Envie apenas um de cada.`,
+        `Recebi ${arquivos.length} arquivos do tipo "${kindLabel(kind)}" (${nomes}). Envie apenas um de cada — se o export vier partido em partes, importe uma parte de cada vez (rodar de novo não duplica). Colunas lidas em ${arquivos
+          .map((f) => `"${f.filename}": ${describeHeader(f.header)}`)
+          .join(" | ")}.`,
       );
     }
   }
@@ -460,8 +504,18 @@ export function detectAndValidate(
       const dica = accepted.length
         ? `Envie-a junto para importar ${entity}.`
         : `Confira se você escolheu o SISTEMA certo e envie-a para importar ${entity}.`;
+      // O que os arquivos ACEITOS viraram. Um arquivo aceito com o papel
+      // ERRADO não aparece em `ignored` e, sem esta lista, o operador vê
+      // "falta o arquivo obrigatório" enquanto olha para o arquivo que ele
+      // acabou de anexar — sem nenhuma forma de saber que ele foi classificado
+      // como outra coisa.
+      const lidos = accepted.length
+        ? ` Reconheci ${accepted.length} arquivo(s): ${accepted
+            .map((f) => `${f.filename} → "${kindLabel(f.kind)}"`)
+            .join("; ")}.`
+        : "";
       throw new ImportValidationError(
-        `Falta o arquivo obrigatório: ${names}. ${dica}${extra}`,
+        `Falta o arquivo obrigatório: ${names}. ${dica}${lidos}${extra}`,
       );
     }
   }

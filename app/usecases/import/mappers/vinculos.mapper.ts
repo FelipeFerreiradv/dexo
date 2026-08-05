@@ -15,6 +15,7 @@ import type { DetectedFile, ImportRowIssue } from "../import.types";
 import { addIssue } from "../import.types";
 import { normalizeCodeFlat } from "../lib/codes";
 import { asString } from "../lib/normalize";
+import { aliasReader } from "../lib/columns";
 
 export interface LinkPlanItem {
   linha: number;
@@ -43,6 +44,17 @@ export function mapVaaptLinks(file: DetectedFile): LinksMapResult {
   let invalidRows = 0;
   let duplicateSkuInSheet = 0;
 
+  // Sinônimo da coluna de local, resolvido pelo HEADER: o arquivo-ponte usa
+  // "Localizacao" e o relatório de produtos (export novo) usa "Localização
+  // Produto". Sem isto, o relatório de produtos entrava com locationCode NULL
+  // em TODAS as linhas — a importação dizia sucesso e não vinculava nada.
+  //
+  // ⚠️ A coluna de VEÍCULO fica de fora de propósito. No relatório de produtos
+  // ela é "Código Veículo" e, no export medido, o valor é o literal "DUMMY"
+  // com um único código para as 28.910 peças. Aliasá-la produziria 28.910
+  // avisos de "sucata de origem não existe no Dexo" sem nenhum ganho.
+  const read = aliasReader(file);
+
   for (let i = 0; i < file.rows.length; i++) {
     const row = file.rows[i];
     const get = (label: string) => file.get(row, label);
@@ -59,7 +71,9 @@ export function mapVaaptLinks(file: DetectedFile): LinksMapResult {
     }
     seenSku.add(sku);
 
-    const rawLoc = asString(get("Localizacao"));
+    const rawLoc = asString(
+      read(row, "Localizacao", "Localização Produto", "Localizacao Produto"),
+    );
     items.push({
       linha,
       sku,
