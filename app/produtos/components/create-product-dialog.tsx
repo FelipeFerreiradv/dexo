@@ -78,6 +78,22 @@ import { StepPreview } from "./listing-preview/step-preview";
 import { MLDynamicAttributesSection } from "./ml-dynamic-attributes-section";
 import { MLCatalogSuggestionPicker } from "./ml-catalog-suggestion-picker";
 import { InternalSuggestionPicker } from "./internal-suggestion-picker";
+import { ProductHistoryPicker } from "./product-history-picker";
+import { useProductDraft } from "../hooks/use-product-draft";
+import { useProductHistory } from "../hooks/use-product-history";
+import { applyProductHistory } from "../lib/apply-product-history";
+import type { ProductFormSnapshot } from "../lib/product-form-snapshot";
+import { scopeKeyFor, type DraftScope } from "../lib/product-form-storage";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   applyMlCatalogSuggestion,
   type CatalogApplyFormValues,
@@ -530,6 +546,48 @@ export function CreateProductDialog({
   const magaluSuggestedRef = useRef(false);
   /** Categoria Magalu que a sugestão automática aplicou nesta abertura. */
   const magaluAutoValueRef = useRef<string | null>(null);
+
+  // ── Rascunho automático (Bloco 4) e histórico de cadastros (Bloco 3) ──
+  // Flags de build-time do Next: precisam ser lidas com o nome literal.
+  const draftEnabled = process.env.NEXT_PUBLIC_PRODUCT_DRAFT_DISABLED !== "1";
+  const historyEnabled =
+    process.env.NEXT_PUBLIC_PRODUCT_HISTORY_DISABLED !== "1";
+  // Dono dos dados: espelha o `dataOwnerId` do backend
+  // (auth.middleware.ts: parentUserId ?? id). Sem identidade, não persiste.
+  const storageOwner = scopeKeyFor(
+    (session?.user as any)?.parentUserId,
+    (session?.user as any)?.id,
+  );
+  // Cada contexto de abertura tem o SEU rascunho: o do cadastro normal nunca
+  // aparece no fluxo de NF-e nem no de sucata travada, onde o modal já abre
+  // pré-preenchido por um contexto externo.
+  const draftScope: DraftScope =
+    source === "nfe" ? "nfe" : lockedScrap ? "scrap" : "manual";
+  const draft = useProductDraft({
+    enabled: draftEnabled,
+    owner: storageOwner,
+    scope: draftScope,
+  });
+  const history = useProductHistory({
+    enabled: historyEnabled,
+    owner: storageOwner,
+  });
+  const [askRestoreDraft, setAskRestoreDraft] = useState(false);
+  /** Impede o autosave de gravar por cima antes do usuário decidir. */
+  const draftDecisionPendingRef = useRef(false);
+
+  /**
+   * Espelho do estado que NÃO vive no react-hook-form. Mantido em ref (mesmo
+   * padrão de `initialValuesRef`) para o callback do autosave ler sempre o
+   * valor atual sem virar dependência e sem recriar a assinatura a cada
+   * digitação.
+   */
+  const draftExtrasRef = useRef<{
+    compatibilities: CompatibilityEntry[];
+    scrapId: string | null;
+    magaluLabel: string | null;
+    step: number;
+  }>({ compatibilities: [], scrapId: null, magaluLabel: null, step: 1 });
   const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
     [],
   );
@@ -2831,6 +2889,27 @@ export function CreateProductDialog({
         }
       }
 
+      // Histórico: só cadastro EFETIVAMENTE criado entra. E o rascunho morre
+      // aqui — nunca pode ressuscitar em cima de um cadastro já concluído.
+      const extras = draftExtrasRef.current;
+      history.record({
+        values: { ...cleanData, sku: result?.sku ?? undefined } as Record<
+          string,
+          unknown
+        >,
+        compatibilities: extras.compatibilities.map((c) => ({
+          brand: c.brand,
+          model: c.model,
+          yearFrom: c.yearFrom ?? null,
+          yearTo: c.yearTo ?? null,
+          version: c.version ?? null,
+        })),
+        scrap: extras.scrapId ? { id: extras.scrapId } : null,
+        magaluCategoryLabel: extras.magaluLabel,
+        currentStep: null,
+      });
+      draft.clear();
+
       handleClose();
       onProductCreated();
     } catch (error) {
@@ -2842,6 +2921,169 @@ export function CreateProductDialog({
       setIsSubmitting(false);
     }
   };
+
+  // ── Autosave do rascunho ─────────────────────────────────────────────────
+  // Espelha o estado fora do RHF a cada render (barato, sem efeito).
+  draftExtrasRef.current = {
+    compatibilities,
+    scrapId: selectedScrap?.id ?? null,
+    magaluLabel: magaluSelectedLabel,
+    step: currentStep,
+  };
+
+  // `draft` é um objeto novo a cada render do hook, então `draft.save` também
+  // muda de identidade. Guardar em ref mantém `saveDraftNow` ESTÁVEL — sem
+  // isso, o efeito da assinatura abaixo se re-inscreveria a cada tecla.
+  const draftSaveRef = useRef(draft.save);
+  draftSaveRef.current = draft.save;
+
+  const saveDraftNow = useCallback(() => {
+    // Enquanto a pergunta de restauração está na tela, não grava por cima do
+    // rascunho que o usuário ainda vai decidir se quer.
+    if (draftDecisionPendingRef.current) return;
+    const extras = draftExtrasRef.current;
+    draftSaveRef.current({
+      values: getValues() as Record<string, unknown>,
+      compatibilities: extras.compatibilities.map((c) => ({
+        brand: c.brand,
+        model: c.model,
+        yearFrom: c.yearFrom ?? null,
+        yearTo: c.yearTo ?? null,
+        version: c.version ?? null,
+      })),
+      scrap: extras.scrapId ? { id: extras.scrapId } : null,
+      magaluCategoryLabel: extras.magaluLabel,
+      currentStep: extras.step,
+    });
+  }, [getValues]);
+
+  // Assinatura do react-hook-form: dispara por MUDANÇA de campo, sem
+  // re-renderizar o modal. A escrita em si passa pelo debounce do hook, então
+  // uma rajada de digitação vira UMA gravação.
+  useEffect(() => {
+    if (!draftEnabled || !open) return;
+    const sub = watch(() => saveDraftNow());
+    return () => sub.unsubscribe();
+  }, [draftEnabled, open, watch, saveDraftNow]);
+
+  // Compatibilidades, sucata, categoria Magalu e seção vivem fora do RHF, então
+  // a assinatura acima não os enxerga.
+  useEffect(() => {
+    if (!draftEnabled || !open) return;
+    saveDraftNow();
+  }, [
+    draftEnabled,
+    open,
+    saveDraftNow,
+    compatibilities,
+    selectedScrap,
+    magaluSelectedLabel,
+    currentStep,
+  ]);
+
+  // ── Pergunta de restauração ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!open) {
+      setAskRestoreDraft(false);
+      draftDecisionPendingRef.current = false;
+      return;
+    }
+    if (!draftEnabled || !draft.hasDraft) return;
+    draftDecisionPendingRef.current = true;
+    setAskRestoreDraft(true);
+  }, [open, draftEnabled, draft.hasDraft]);
+
+  /** Reaplica um snapshot no formulário (rascunho restaurado). */
+  const restoreSnapshotIntoForm = useCallback(
+    (snapshot: ProductFormSnapshot) => {
+      const opts = { shouldDirty: true } as const;
+      for (const [field, value] of Object.entries(snapshot.values)) {
+        // `sku` não está no snapshot por construção; a checagem é
+        // cinto-e-suspensório para nunca reintroduzir um código já consumido.
+        if (field === "sku") continue;
+        setValue(field as keyof ProductFormData, value as never, opts);
+      }
+      if (snapshot.compatibilities.length > 0) {
+        setCompatibilities(
+          snapshot.compatibilities.map((c, i) => ({
+            ...c,
+            _localId: `compat-draft-${i}`,
+          })) as CompatibilityEntry[],
+        );
+      }
+      if (snapshot.magaluCategoryLabel) {
+        setMagaluSelectedLabel(snapshot.magaluCategoryLabel);
+        const id = snapshot.values.magaluCategory;
+        if (typeof id === "string" && id) {
+          setMagaluOptions([{ id, value: snapshot.magaluCategoryLabel }]);
+        }
+      }
+    },
+    [setValue],
+  );
+
+  const handleRestoreDraft = useCallback(() => {
+    const snapshot = draft.restore();
+    setAskRestoreDraft(false);
+    draftDecisionPendingRef.current = false;
+    if (!snapshot) return;
+    restoreSnapshotIntoForm(snapshot);
+    onToast("Cadastro em andamento restaurado.", "success");
+  }, [draft, restoreSnapshotIntoForm, onToast]);
+
+  const handleDiscardDraft = useCallback(() => {
+    draft.discard();
+    setAskRestoreDraft(false);
+    draftDecisionPendingRef.current = false;
+  }, [draft]);
+
+  // ── Histórico de cadastros ───────────────────────────────────────────────
+  const handleApplyHistory = useCallback(
+    (snapshot: ProductFormSnapshot) => {
+      const current = getValues() as Record<string, unknown>;
+      const {
+        next,
+        applied,
+        conflicts,
+        compatibilities: mergedCompat,
+      } = applyProductHistory(current, compatibilities, snapshot);
+
+      const opts = {
+        shouldDirty: true,
+        shouldValidate: true,
+        shouldTouch: true,
+      } as const;
+      for (const field of applied) {
+        if (field === "compatibilities" || field === "attributes") continue;
+        setValue(field as keyof ProductFormData, next[field] as never, opts);
+      }
+      if (applied.includes("attributes")) {
+        setValue("attributes", next.attributes as never, opts);
+      }
+      if (mergedCompat) {
+        setCompatibilities(
+          mergedCompat.map((c, i) => ({
+            ...c,
+            _localId: `compat-hist-${i}`,
+          })) as CompatibilityEntry[],
+        );
+      }
+
+      const total = applied.length;
+      if (total === 0) {
+        onToast("Nada a preencher: os campos já estão preenchidos.", "warning");
+        return;
+      }
+      onToast(
+        `${total} campo(s) preenchido(s) a partir do cadastro anterior.` +
+          (conflicts.length > 0
+            ? ` ${conflicts.length} campo(s) já preenchido(s) foram mantidos.`
+            : ""),
+        "success",
+      );
+    },
+    [getValues, compatibilities, setValue, onToast],
+  );
 
   const handleClose = () => {
     reset();
@@ -2860,6 +3102,9 @@ export function CreateProductDialog({
     nfeAppliedRef.current = false;
     // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
     lockedScrapAppliedRef.current = false;
+    // Fechou antes do debounce disparar: grava agora, senão os últimos
+    // segundos de digitação se perdem — que é justamente a dor do bloco.
+    draft.flush();
     // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
     scrollContainerRef.current?.scrollTo({ top: 0 });
     setOpen(false);
@@ -2935,1355 +3180,1694 @@ export function CreateProductDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      {!hideTrigger && (
-        <DialogTrigger asChild>
-          <Button>
-            <Plus className="size-4" />
-            Novo Produto
-          </Button>
-        </DialogTrigger>
-      )}
-      <DialogContent className="flex h-[96vh] max-h-[96vh] w-[98vw] max-w-[1600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[98vw]">
-        {/* ===== TOPO FIXO: cabeçalho + progress + indicadores ===== */}
-        <div className="shrink-0 border-b px-4 py-3 sm:px-6">
-          <DialogHeader>
-            <DialogTitle>Criar Novo Produto</DialogTitle>
-            <DialogDescription>
-              Role a tela para preencher todas as informações do produto.
-            </DialogDescription>
-          </DialogHeader>
-          {source === "nfe" && (
-            <div className="mt-3 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
-              Dados importados da NF-e. Revise os valores e lembre de adicionar
-              a <strong>imagem</strong> (obrigatória) e a categoria antes de
-              finalizar.
-            </div>
-          )}
+    <>
+      {/* Pergunta de restauração do rascunho. Só aparece quando existe rascunho
+        válido (dentro do TTL, versão conhecida, com conteúdo de verdade) para
+        ESTE usuário e ESTE contexto de abertura. */}
+      <AlertDialog open={askRestoreDraft} onOpenChange={setAskRestoreDraft}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Continuar de onde parou?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Encontramos um cadastro em andamento
+              {draft.draft?.label.name ? ` — "${draft.draft.label.name}"` : ""}.
+              Deseja continuar de onde parou?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleDiscardDraft}>
+              Descartar rascunho
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={handleRestoreDraft}>
+              Continuar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        {!hideTrigger && (
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="size-4" />
+              Novo Produto
+            </Button>
+          </DialogTrigger>
+        )}
+        <DialogContent className="flex h-[96vh] max-h-[96vh] w-[98vw] max-w-[1600px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[98vw]">
+          {/* ===== TOPO FIXO: cabeçalho + progress + indicadores ===== */}
+          <div className="shrink-0 border-b px-4 py-3 sm:px-6">
+            <DialogHeader>
+              <DialogTitle>Criar Novo Produto</DialogTitle>
+              <DialogDescription>
+                Role a tela para preencher todas as informações do produto.
+              </DialogDescription>
+            </DialogHeader>
+            {source === "nfe" && (
+              <div className="mt-3 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-200">
+                Dados importados da NF-e. Revise os valores e lembre de
+                adicionar a <strong>imagem</strong> (obrigatória) e a categoria
+                antes de finalizar.
+              </div>
+            )}
 
-          {/* Progress Bar + indicadores (reativos ao scroll) */}
-          <div className="mt-4 space-y-4">
-            <Progress value={progressPercentage} className="h-2" />
+            {/* Progress Bar + indicadores (reativos ao scroll) */}
+            <div className="mt-4 space-y-4">
+              <Progress value={progressPercentage} className="h-2" />
 
-            {/* Indicadores = índice clicável: clicar rola até a seção */}
-            <div className="flex justify-between gap-1 overflow-x-auto">
-              {STEPS.map((step) => {
-                const Icon = step.icon;
-                const isActive = step.id === currentStep;
-                const isCompleted = step.id < currentStep;
+              {/* Indicadores = índice clicável: clicar rola até a seção */}
+              <div className="flex justify-between gap-1 overflow-x-auto">
+                {STEPS.map((step) => {
+                  const Icon = step.icon;
+                  const isActive = step.id === currentStep;
+                  const isCompleted = step.id < currentStep;
 
-                return (
-                  <button
-                    key={step.id}
-                    type="button"
-                    onClick={() => scrollToSection(step.id)}
-                    className="flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 transition-colors"
-                  >
-                    <div
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
-                        isActive
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : isCompleted
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-muted-foreground/30 text-muted-foreground/50"
-                      }`}
+                  return (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() => scrollToSection(step.id)}
+                      className="flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 transition-colors"
                     >
-                      {isCompleted ? (
-                        <Check className="h-5 w-5" />
-                      ) : (
-                        <Icon className="h-5 w-5" />
-                      )}
-                    </div>
-                    <span
-                      className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
-                        isActive
-                          ? "text-primary"
-                          : isCompleted
-                            ? "text-primary/80"
-                            : "text-muted-foreground/50"
-                      }`}
-                    >
-                      {step.title}
-                    </span>
-                  </button>
-                );
-              })}
+                      <div
+                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-all sm:h-10 sm:w-10 ${
+                          isActive
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : isCompleted
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-muted-foreground/30 text-muted-foreground/50"
+                        }`}
+                      >
+                        {isCompleted ? (
+                          <Check className="h-5 w-5" />
+                        ) : (
+                          <Icon className="h-5 w-5" />
+                        )}
+                      </div>
+                      <span
+                        className={`text-[11px] leading-tight font-medium text-center wrap-break-word max-w-20 max-sm:hidden ${
+                          isActive
+                            ? "text-primary"
+                            : isCompleted
+                              ? "text-primary/80"
+                              : "text-muted-foreground/50"
+                        }`}
+                      >
+                        {step.title}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* ===== CORPO ROLÁVEL: o próprio <form> é o root do observer ===== */}
-        <form
-          ref={scrollContainerRef}
-          onScroll={handleBodyScroll}
-          onSubmit={(e) => e.preventDefault()}
-          className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 sm:px-6"
-        >
-          {/* Step 1: Identificação */}
-          <section
-            data-step={1}
-            ref={(el) => {
-              sectionRefs.current[1] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+          {/* ===== CORPO ROLÁVEL: o próprio <form> é o root do observer ===== */}
+          <form
+            ref={scrollContainerRef}
+            onScroll={handleBodyScroll}
+            onSubmit={(e) => e.preventDefault()}
+            className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 sm:px-6"
           >
-            <SectionHeading step={STEPS[0]} />
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="sku">SKU</Label>
-                  <Input
-                    id="sku"
-                    placeholder={isLoadingSku ? "Carregando..." : "001"}
-                    {...register("sku", {
-                      // Trim de leading/trailing antes de validar: mantendo o
-                      // valor sugerido com um espaço acidental, ele ainda cai no
-                      // caminho automático em vez de bloquear o submit.
-                      setValueAs: (v) => (typeof v === "string" ? v.trim() : v),
-                    })}
-                    disabled={isLoadingSku}
-                    aria-invalid={!!errors.sku}
-                    maxLength={50}
-                  />
-                  {errors.sku ? (
-                    <p className="text-xs text-destructive">
-                      {errors.sku.message}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Sugerido automaticamente. Edite se quiser um código
-                      específico; mantendo o sugerido, ele é atribuído ao
-                      salvar.
-                    </p>
-                  )}
+            {/* Step 1: Identificação */}
+            <section
+              data-step={1}
+              ref={(el) => {
+                sectionRefs.current[1] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[0]} />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="sku">SKU</Label>
+                    <Input
+                      id="sku"
+                      placeholder={isLoadingSku ? "Carregando..." : "001"}
+                      {...register("sku", {
+                        // Trim de leading/trailing antes de validar: mantendo o
+                        // valor sugerido com um espaço acidental, ele ainda cai no
+                        // caminho automático em vez de bloquear o submit.
+                        setValueAs: (v) =>
+                          typeof v === "string" ? v.trim() : v,
+                      })}
+                      disabled={isLoadingSku}
+                      aria-invalid={!!errors.sku}
+                      maxLength={50}
+                    />
+                    {errors.sku ? (
+                      <p className="text-xs text-destructive">
+                        {errors.sku.message}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Sugerido automaticamente. Edite se quiser um código
+                        específico; mantendo o sugerido, ele é atribuído ao
+                        salvar.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="partNumber">Part Number</Label>
+                    <Input
+                      id="partNumber"
+                      placeholder="OEM / Código original"
+                      {...register("partNumber")}
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="partNumber">Part Number</Label>
+                  <Label htmlFor="name">Nome do Produto *</Label>
                   <Input
-                    id="partNumber"
-                    placeholder="OEM / Código original"
-                    {...register("partNumber")}
+                    id="name"
+                    placeholder="Nome do produto"
+                    {...register("name")}
+                    aria-invalid={!!errors.name}
+                    maxLength={60}
                   />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="name">Nome do Produto *</Label>
-                <Input
-                  id="name"
-                  placeholder="Nome do produto"
-                  {...register("name")}
-                  aria-invalid={!!errors.name}
-                  maxLength={60}
-                />
-                <div className="flex justify-end text-xs text-muted-foreground">
-                  <span
-                    className={
-                      (watchName?.length || 0) >= 60
-                        ? "text-destructive"
-                        : undefined
-                    }
-                  >
-                    {watchName?.length || 0}/60
-                  </span>
-                </div>
-                {titleSuggestion &&
-                  titleSuggestion.toLowerCase() !==
-                    watchName?.toLowerCase() && (
-                    <div className="flex items-center justify-between rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-xs text-muted-foreground">
-                      <span className="min-w-0 truncate">
-                        Sugestão:{" "}
-                        <span className="font-medium">{titleSuggestion}</span>
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() =>
-                          setValue("name", titleSuggestion.slice(0, 60), {
-                            shouldDirty: true,
-                          })
-                        }
-                      >
-                        Usar
-                      </Button>
-                    </div>
+                  <div className="flex justify-end text-xs text-muted-foreground">
+                    <span
+                      className={
+                        (watchName?.length || 0) >= 60
+                          ? "text-destructive"
+                          : undefined
+                      }
+                    >
+                      {watchName?.length || 0}/60
+                    </span>
+                  </div>
+                  {titleSuggestion &&
+                    titleSuggestion.toLowerCase() !==
+                      watchName?.toLowerCase() && (
+                      <div className="flex items-center justify-between rounded-md border border-dashed border-muted-foreground/40 px-2 py-1 text-xs text-muted-foreground">
+                        <span className="min-w-0 truncate">
+                          Sugestão:{" "}
+                          <span className="font-medium">{titleSuggestion}</span>
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            setValue("name", titleSuggestion.slice(0, 60), {
+                              shouldDirty: true,
+                            })
+                          }
+                        >
+                          Usar
+                        </Button>
+                      </div>
+                    )}
+                  {errors.name && (
+                    <p className="text-sm text-destructive">
+                      {errors.name.message}
+                    </p>
                   )}
-                {errors.name && (
-                  <p className="text-sm text-destructive">
-                    {errors.name.message}
-                  </p>
-                )}
-                {/* Base interna primeiro (prioridade): preço/peso/medidas/compat
+                  {/* Base interna primeiro (prioridade): preço/peso/medidas/compat
                     reais agregados. Ambos só preenchem vazios, então a ordem é
                     natural; o catálogo ML segue logo abaixo p/ ficha técnica. */}
-                <InternalSuggestionPicker
-                  title={watchName || ""}
-                  onAccept={handleInternalSuggestionAccepted}
-                  disabled={isSubmitting}
-                  email={session?.user?.email}
-                />
-                <MLCatalogSuggestionPicker
-                  title={watchName || ""}
-                  selectedId={watch("mlCatalogProductId")}
-                  onAccept={handleCatalogSuggestionAccepted}
-                  disabled={isSubmitting}
-                  email={session?.user?.email}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="description">Descrição</Label>
-                <Textarea
-                  id="description"
-                  placeholder="A descrição padrão configurada nas suas Preferências será aplicada automaticamente. Você pode editar."
-                  {...register("description")}
-                  className="min-h-24 resize-none"
-                  maxLength={4000}
-                />
-                <div className="flex items-start justify-between text-xs text-muted-foreground">
-                  <span className="pr-4">
-                    A descrição padrão definida em suas Configurações será
-                    aplicada automaticamente ao criar novos produtos. Você pode
-                    editar manualmente se desejar.
-                  </span>
-                  <span>{watchDescription.length}/4000</span>
+                  <ProductHistoryPicker
+                    entries={history.entries}
+                    onApply={handleApplyHistory}
+                    onClear={history.clear}
+                    disabled={isSubmitting}
+                  />
+                  <InternalSuggestionPicker
+                    title={watchName || ""}
+                    onAccept={handleInternalSuggestionAccepted}
+                    disabled={isSubmitting}
+                    email={session?.user?.email}
+                  />
+                  <MLCatalogSuggestionPicker
+                    title={watchName || ""}
+                    selectedId={watch("mlCatalogProductId")}
+                    onAccept={handleCatalogSuggestionAccepted}
+                    disabled={isSubmitting}
+                    email={session?.user?.email}
+                  />
                 </div>
-                {errors.description && (
-                  <p className="text-sm text-destructive">
-                    {errors.description.message}
-                  </p>
-                )}
-              </div>
-            </div>
-          </section>
 
-          {/* Step 2: Imagem */}
-          <section
-            data-step={2}
-            ref={(el) => {
-              sectionRefs.current[2] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[1]} />
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Fotos do Produto *</Label>
-                <Controller
-                  name="imageUrls"
-                  control={control}
-                  render={({ field: imageUrlsField }) => (
-                    <MultiImageUpload
-                      value={imageUrlsField.value || []}
-                      onChange={(urls) => {
-                        imageUrlsField.onChange(urls);
-                        // Manter imageUrl sincronizado com a primeira imagem
-                        setValue("imageUrl", urls[0] || "");
-                      }}
-                      onError={(error: string) => {
-                        console.error("Erro no upload:", error);
-                        // Mostra a mensagem REAL (o componente já a classifica).
-                        // Antes era uma string fixa, então o usuário nunca sabia
-                        // se foi arquivo inválido, sobrecarga ou timeout.
-                        onToast(error, "error");
-                      }}
-                      onWarning={(warning) => onToast(warning, "warning")}
-                      maxImages={10}
-                    />
+                <div className="space-y-2">
+                  <Label htmlFor="description">Descrição</Label>
+                  <Textarea
+                    id="description"
+                    placeholder="A descrição padrão configurada nas suas Preferências será aplicada automaticamente. Você pode editar."
+                    {...register("description")}
+                    className="min-h-24 resize-none"
+                    maxLength={4000}
+                  />
+                  <div className="flex items-start justify-between text-xs text-muted-foreground">
+                    <span className="pr-4">
+                      A descrição padrão definida em suas Configurações será
+                      aplicada automaticamente ao criar novos produtos. Você
+                      pode editar manualmente se desejar.
+                    </span>
+                    <span>{watchDescription.length}/4000</span>
+                  </div>
+                  {errors.description && (
+                    <p className="text-sm text-destructive">
+                      {errors.description.message}
+                    </p>
                   )}
-                />
-                {errors.imageUrl && (
-                  <p className="text-sm text-destructive">
-                    {errors.imageUrl.message}
-                  </p>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Faça upload de fotos do produto. A primeira imagem será a
-                  principal. Máximo 10 imagens, 20MB cada (JPG, PNG, WebP).
-                </p>
-              </div>
-            </div>
-          </section>
-
-          {/* Step 3: Preços e Estoque */}
-          <section
-            data-step={3}
-            ref={(el) => {
-              sectionRefs.current[3] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[2]} />
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="costPrice">Preço de Custo</Label>
-                  <Controller
-                    name="costPrice"
-                    control={control}
-                    render={({ field }) => (
-                      <CurrencyInput
-                        id="costPrice"
-                        placeholder="0,00"
-                        value={field.value}
-                        onChange={field.onChange}
-                      />
-                    )}
-                  />
                 </div>
+              </div>
+            </section>
 
+            {/* Step 2: Imagem */}
+            <section
+              data-step={2}
+              ref={(el) => {
+                sectionRefs.current[2] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[1]} />
+              <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="markup">Margem (%) - automática</Label>
+                  <Label>Fotos do Produto *</Label>
                   <Controller
-                    name="markup"
+                    name="imageUrls"
                     control={control}
-                    render={({ field }) => (
-                      <Input
-                        id="markup"
-                        value={
-                          field.value !== null && field.value !== undefined
-                            ? `${field.value.toFixed(2)}%`
-                            : ""
-                        }
-                        placeholder="Informe custo e venda"
-                        readOnly
-                        className="bg-muted"
+                    render={({ field: imageUrlsField }) => (
+                      <MultiImageUpload
+                        value={imageUrlsField.value || []}
+                        onChange={(urls) => {
+                          imageUrlsField.onChange(urls);
+                          // Manter imageUrl sincronizado com a primeira imagem
+                          setValue("imageUrl", urls[0] || "");
+                        }}
+                        onError={(error: string) => {
+                          console.error("Erro no upload:", error);
+                          // Mostra a mensagem REAL (o componente já a classifica).
+                          // Antes era uma string fixa, então o usuário nunca sabia
+                          // se foi arquivo inválido, sobrecarga ou timeout.
+                          onToast(error, "error");
+                        }}
+                        onWarning={(warning) => onToast(warning, "warning")}
+                        maxImages={10}
                       />
                     )}
                   />
+                  {errors.imageUrl && (
+                    <p className="text-sm text-destructive">
+                      {errors.imageUrl.message}
+                    </p>
+                  )}
                   <p className="text-xs text-muted-foreground">
-                    (Venda - Custo) / Custo × 100
+                    Faça upload de fotos do produto. A primeira imagem será a
+                    principal. Máximo 10 imagens, 20MB cada (JPG, PNG, WebP).
                   </p>
                 </div>
               </div>
+            </section>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="price">Preço de Venda *</Label>
-                  <Controller
-                    name="price"
-                    control={control}
-                    render={({ field }) => (
-                      <CurrencyInput
-                        id="price"
-                        placeholder="0,00"
-                        value={field.value}
-                        onChange={(v) => field.onChange(v ?? 0)}
-                        aria-invalid={!!errors.price}
-                      />
+            {/* Step 3: Preços e Estoque */}
+            <section
+              data-step={3}
+              ref={(el) => {
+                sectionRefs.current[3] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[2]} />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="costPrice">Preço de Custo</Label>
+                    <Controller
+                      name="costPrice"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="costPrice"
+                          placeholder="0,00"
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="markup">Margem (%) - automática</Label>
+                    <Controller
+                      name="markup"
+                      control={control}
+                      render={({ field }) => (
+                        <Input
+                          id="markup"
+                          value={
+                            field.value !== null && field.value !== undefined
+                              ? `${field.value.toFixed(2)}%`
+                              : ""
+                          }
+                          placeholder="Informe custo e venda"
+                          readOnly
+                          className="bg-muted"
+                        />
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      (Venda - Custo) / Custo × 100
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="price">Preço de Venda *</Label>
+                    <Controller
+                      name="price"
+                      control={control}
+                      render={({ field }) => (
+                        <CurrencyInput
+                          id="price"
+                          placeholder="0,00"
+                          value={field.value}
+                          onChange={(v) => field.onChange(v ?? 0)}
+                          aria-invalid={!!errors.price}
+                        />
+                      )}
+                    />
+                    {errors.price && (
+                      <p className="text-sm text-destructive">
+                        {errors.price.message}
+                      </p>
                     )}
-                  />
-                  {errors.price && (
-                    <p className="text-sm text-destructive">
-                      {errors.price.message}
-                    </p>
-                  )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="stock">Quantidade em Estoque *</Label>
+                    <Input
+                      id="stock"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0"
+                      {...register("stock", { valueAsNumber: true })}
+                      aria-invalid={!!errors.stock}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value);
+                        setValue("stock", isNaN(value) ? 0 : value);
+                      }}
+                    />
+                    {errors.stock && (
+                      <p className="text-sm text-destructive">
+                        {errors.stock.message}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="stock">Quantidade em Estoque *</Label>
-                  <Input
-                    id="stock"
-                    type="number"
-                    min="0"
-                    step="1"
-                    placeholder="0"
-                    {...register("stock", { valueAsNumber: true })}
-                    aria-invalid={!!errors.stock}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value);
-                      setValue("stock", isNaN(value) ? 0 : value);
-                    }}
-                  />
-                  {errors.stock && (
-                    <p className="text-sm text-destructive">
-                      {errors.stock.message}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="location">Localização no Estoque</Label>
-                {locationOptions.length > 0 ? (
-                  <Controller
-                    name="locationId"
-                    control={control}
-                    render={({ field }) => (
-                      <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1">
-                          <LocationCombobox
-                            id="location"
+                  <Label htmlFor="location">Localização no Estoque</Label>
+                  {locationOptions.length > 0 ? (
+                    <Controller
+                      name="locationId"
+                      control={control}
+                      render={({ field }) => (
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <LocationCombobox
+                              id="location"
+                              options={locationOptions}
+                              value={field.value ?? null}
+                              onChange={(locId, fullPath) => {
+                                field.onChange(locId);
+                                // Mantém o campo legado `location` (texto) em sincronia.
+                                setValue("location", fullPath);
+                              }}
+                            />
+                          </div>
+                          <LocationScanButton
                             options={locationOptions}
-                            value={field.value ?? null}
-                            onChange={(locId, fullPath) => {
-                              field.onChange(locId);
-                              // Mantém o campo legado `location` (texto) em sincronia.
+                            currentLocationId={field.value ?? null}
+                            onToast={onToast}
+                            onResolved={({ id, fullPath }) => {
+                              // Mesmo par de escrituras do onChange do combobox (FK + texto).
+                              field.onChange(id);
                               setValue("location", fullPath);
                             }}
                           />
                         </div>
-                        <LocationScanButton
-                          options={locationOptions}
-                          currentLocationId={field.value ?? null}
-                          onToast={onToast}
-                          onResolved={({ id, fullPath }) => {
-                            // Mesmo par de escrituras do onChange do combobox (FK + texto).
-                            field.onChange(id);
-                            setValue("location", fullPath);
-                          }}
-                        />
-                      </div>
-                    )}
-                  />
-                ) : (
-                  <Input
-                    id="location"
-                    placeholder="Ex: Prateleira A1, Gaveta 3"
-                    {...register("location")}
-                  />
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Onde o produto está armazenado fisicamente
-                </p>
-              </div>
-            </div>
-          </section>
-
-          {/* Step 4: Veículo e Peça */}
-          <section
-            data-step={4}
-            ref={(el) => {
-              sectionRefs.current[4] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[3]} />
-            <div className="space-y-4">
-              {/* Sucata TRAVADA (fluxo "Adicionar peça" do lote): card
-                  informativo no lugar do Select — o vínculo não é alterável. */}
-              {lockedScrap ? (
-                <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-1">
-                  <Label>Peça vinculada ao lote</Label>
-                  <p className="text-sm font-medium">
-                    {lockedScrap.brand} {lockedScrap.model}
-                    {lockedScrap.year ? ` ${lockedScrap.year}` : ""}
-                    {lockedScrap.plate ? ` — ${lockedScrap.plate}` : ""}
-                    {lockedScrap.nickname ? ` · “${lockedScrap.nickname}”` : ""}
-                  </p>
+                      )}
+                    />
+                  ) : (
+                    <Input
+                      id="location"
+                      placeholder="Ex: Prateleira A1, Gaveta 3"
+                      {...register("location")}
+                    />
+                  )}
                   <p className="text-xs text-muted-foreground">
-                    Marca, modelo, ano e versão foram herdados do lote. O
-                    vínculo não pode ser alterado aqui.
+                    Onde o produto está armazenado fisicamente
                   </p>
                 </div>
-              ) : (
-                /* Seleção de Sucata (opcional) */
-                availableScraps.length > 0 && (
-                  <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
-                    <Label>Vincular a uma sucata (opcional)</Label>
-                    <Select
-                      value={selectedScrap?.id ?? "NONE"}
-                      onValueChange={(v) => {
-                        if (v === "NONE") {
-                          // Desvincular: limpar campos preenchidos pela sucata
-                          const prev = scrapAutofilledRef.current;
-                          if (prev.brand && getValues("brand") === prev.brand)
-                            setValue("brand", "");
-                          if (prev.model && getValues("model") === prev.model)
-                            setValue("model", "");
-                          if (prev.year && getValues("year") === prev.year)
-                            setValue("year", "");
-                          if (
-                            prev.version &&
-                            getValues("version") === prev.version
-                          )
-                            setValue("version", "");
-                          if (
-                            prev.sourceVehicle &&
-                            getValues("sourceVehicle") === prev.sourceVehicle
-                          )
-                            setValue("sourceVehicle", "");
-                          setSelectedScrap(null);
-                          scrapAutofilledRef.current = {};
-                        } else {
-                          const scrap = availableScraps.find((s) => s.id === v);
-                          if (scrap) {
-                            setSelectedScrap(scrap);
-                            // Herdar dados do veículo
-                            const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
-                            setValue("brand", scrap.brand);
-                            setValue("model", scrap.model);
-                            if (scrap.year) setValue("year", scrap.year);
-                            if (scrap.version)
-                              setValue("version", scrap.version);
-                            setValue("sourceVehicle", sourceDesc);
-                            scrapAutofilledRef.current = {
-                              brand: scrap.brand,
-                              model: scrap.model,
-                              year: scrap.year,
-                              version: scrap.version,
-                              sourceVehicle: sourceDesc,
-                            };
-                          }
-                        }
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Nenhuma sucata selecionada" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="NONE">Nenhuma sucata</SelectItem>
-                        {availableScraps.map((s) => (
-                          <SelectItem key={s.id} value={s.id}>
-                            {s.brand} {s.model}
-                            {s.year ? ` ${s.year}` : ""}
-                            {s.plate ? ` — ${s.plate}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {selectedScrap && (
-                      <p className="text-xs text-muted-foreground">
-                        Marca, modelo, ano e versão foram preenchidos pela
-                        sucata selecionada.
-                      </p>
-                    )}
-                  </div>
-                )
-              )}
+              </div>
+            </section>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="quality">Qualidade</Label>
-                  <Controller
-                    name="quality"
-                    control={control}
-                    render={({ field }) => (
+            {/* Step 4: Veículo e Peça */}
+            <section
+              data-step={4}
+              ref={(el) => {
+                sectionRefs.current[4] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[3]} />
+              <div className="space-y-4">
+                {/* Sucata TRAVADA (fluxo "Adicionar peça" do lote): card
+                  informativo no lugar do Select — o vínculo não é alterável. */}
+                {lockedScrap ? (
+                  <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-1">
+                    <Label>Peça vinculada ao lote</Label>
+                    <p className="text-sm font-medium">
+                      {lockedScrap.brand} {lockedScrap.model}
+                      {lockedScrap.year ? ` ${lockedScrap.year}` : ""}
+                      {lockedScrap.plate ? ` — ${lockedScrap.plate}` : ""}
+                      {lockedScrap.nickname
+                        ? ` · “${lockedScrap.nickname}”`
+                        : ""}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Marca, modelo, ano e versão foram herdados do lote. O
+                      vínculo não pode ser alterado aqui.
+                    </p>
+                  </div>
+                ) : (
+                  /* Seleção de Sucata (opcional) */
+                  availableScraps.length > 0 && (
+                    <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
+                      <Label>Vincular a uma sucata (opcional)</Label>
                       <Select
-                        onValueChange={field.onChange}
-                        value={field.value ?? ""}
+                        value={selectedScrap?.id ?? "NONE"}
+                        onValueChange={(v) => {
+                          if (v === "NONE") {
+                            // Desvincular: limpar campos preenchidos pela sucata
+                            const prev = scrapAutofilledRef.current;
+                            if (prev.brand && getValues("brand") === prev.brand)
+                              setValue("brand", "");
+                            if (prev.model && getValues("model") === prev.model)
+                              setValue("model", "");
+                            if (prev.year && getValues("year") === prev.year)
+                              setValue("year", "");
+                            if (
+                              prev.version &&
+                              getValues("version") === prev.version
+                            )
+                              setValue("version", "");
+                            if (
+                              prev.sourceVehicle &&
+                              getValues("sourceVehicle") === prev.sourceVehicle
+                            )
+                              setValue("sourceVehicle", "");
+                            setSelectedScrap(null);
+                            scrapAutofilledRef.current = {};
+                          } else {
+                            const scrap = availableScraps.find(
+                              (s) => s.id === v,
+                            );
+                            if (scrap) {
+                              setSelectedScrap(scrap);
+                              // Herdar dados do veículo
+                              const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
+                              setValue("brand", scrap.brand);
+                              setValue("model", scrap.model);
+                              if (scrap.year) setValue("year", scrap.year);
+                              if (scrap.version)
+                                setValue("version", scrap.version);
+                              setValue("sourceVehicle", sourceDesc);
+                              scrapAutofilledRef.current = {
+                                brand: scrap.brand,
+                                model: scrap.model,
+                                year: scrap.year,
+                                version: scrap.version,
+                                sourceVehicle: sourceDesc,
+                              };
+                            }
+                          }
+                        }}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="Selecione..." />
+                          <SelectValue placeholder="Nenhuma sucata selecionada" />
                         </SelectTrigger>
                         <SelectContent>
-                          {qualityOptions.map((opt) => (
-                            <SelectItem key={opt.value} value={opt.value}>
-                              {opt.label}
+                          <SelectItem value="NONE">Nenhuma sucata</SelectItem>
+                          {availableScraps.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.brand} {s.model}
+                              {s.year ? ` ${s.year}` : ""}
+                              {s.plate ? ` — ${s.plate}` : ""}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="brand">Marca</Label>
-                  <Controller
-                    name="brand"
-                    control={control}
-                    render={({ field }) => (
-                      <Input
-                        id="brand"
-                        placeholder="Ex: Bosch, Denso"
-                        {...field}
-                        value={field.value ?? ""}
-                      />
-                    )}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="model">Modelo</Label>
-                  <Controller
-                    name="model"
-                    control={control}
-                    render={({ field }) => (
-                      <Input
-                        id="model"
-                        placeholder="Ex: Civic"
-                        {...field}
-                        value={field.value ?? ""}
-                      />
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="year">Ano</Label>
-                  <Controller
-                    name="year"
-                    control={control}
-                    render={({ field }) => (
-                      <Input
-                        id="year"
-                        placeholder="Ex: 2018-2022"
-                        {...field}
-                        value={field.value ?? ""}
-                      />
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="version">Versão</Label>
-                  <Input
-                    id="version"
-                    placeholder="Ex: EXL, LX"
-                    {...register("version")}
-                  />
-                </div>
-              </div>
-
-              {/* Medidas */}
-              <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <div className="space-y-2">
-                  <Label htmlFor="heightCm">Altura (cm)</Label>
-                  <Controller
-                    name="heightCm"
-                    control={control}
-                    render={({ field }) => {
-                      return (
-                        <Input
-                          id="heightCm"
-                          type="number"
-                          value={field.value ?? ""}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value === ""
-                                ? undefined
-                                : Number(e.target.value),
-                            )
-                          }
-                        />
-                      );
-                    }}
-                  />
-                  {errors.heightCm && (
-                    <p className="text-sm text-destructive">
-                      {errors.heightCm.message}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="widthCm">Largura (cm)</Label>
-                  <Controller
-                    name="widthCm"
-                    control={control}
-                    render={({ field }) => {
-                      return (
-                        <Input
-                          id="widthCm"
-                          type="number"
-                          value={field.value ?? ""}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value === ""
-                                ? undefined
-                                : Number(e.target.value),
-                            )
-                          }
-                        />
-                      );
-                    }}
-                  />
-                  {errors.widthCm && (
-                    <p className="text-sm text-destructive">
-                      {errors.widthCm.message}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="lengthCm">Comprimento (cm)</Label>
-                  <Controller
-                    name="lengthCm"
-                    control={control}
-                    render={({ field }) => {
-                      return (
-                        <Input
-                          id="lengthCm"
-                          type="number"
-                          value={field.value ?? ""}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value === ""
-                                ? undefined
-                                : Number(e.target.value),
-                            )
-                          }
-                        />
-                      );
-                    }}
-                  />
-                  {errors.lengthCm && (
-                    <p className="text-sm text-destructive">
-                      {errors.lengthCm.message}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="weightKg">Peso (kg)</Label>
-                  <Controller
-                    name="weightKg"
-                    control={control}
-                    render={({ field }) => {
-                      return (
-                        <Input
-                          id="weightKg"
-                          type="number"
-                          step="0.01"
-                          value={field.value ?? ""}
-                          onChange={(e) =>
-                            field.onChange(
-                              e.target.value === ""
-                                ? undefined
-                                : Number(e.target.value),
-                            )
-                          }
-                        />
-                      );
-                    }}
-                  />
-                  {errors.weightKg && (
-                    <p className="text-sm text-destructive">
-                      {errors.weightKg.message}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="sourceVehicle">Veículo de Origem</Label>
-                <Input
-                  id="sourceVehicle"
-                  placeholder="Ex: Honda Civic 2020 - Placa ABC1234"
-                  {...register("sourceVehicle")}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Para peças de sucata, informe o veículo de origem
-                </p>
-              </div>
-
-              <Separator />
-
-              <div className="flex flex-wrap gap-6">
-                <div className="flex items-center gap-2">
-                  <Controller
-                    name="isSecurityItem"
-                    control={control}
-                    render={({ field }) => (
-                      <Switch
-                        id="isSecurityItem"
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    )}
-                  />
-                  <Label htmlFor="isSecurityItem" className="cursor-pointer">
-                    Item de Segurança
-                  </Label>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Controller
-                    name="isTraceable"
-                    control={control}
-                    render={({ field }) => (
-                      <Switch
-                        id="isTraceable"
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    )}
-                  />
-                  <Label htmlFor="isTraceable" className="cursor-pointer">
-                    Item Rastreável
-                  </Label>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* Step 5: Compatibilidade */}
-          <section
-            data-step={5}
-            ref={(el) => {
-              sectionRefs.current[5] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[4]} />
-            <CompatibilityTab
-              value={compatibilities}
-              onChange={setCompatibilities}
-            />
-          </section>
-
-          {/* Step 6: Mercado Livre */}
-          <section
-            data-step={6}
-            ref={(el) => {
-              sectionRefs.current[6] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[5]} />
-            <div className="space-y-4">
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Controller
-                    name="createMLListing"
-                    control={control}
-                    render={({ field }) => (
-                      <Switch
-                        id="createMLListing"
-                        checked={field.value || false}
-                        onCheckedChange={field.onChange}
-                        disabled={
-                          mlConnected === false ||
-                          mlAccountStatus === "ERROR" ||
-                          mlAccountStatus === "INACTIVE"
-                        }
-                      />
-                    )}
-                  />
-                  <Label htmlFor="createMLListing" className="cursor-pointer">
-                    Criar anúncio no Mercado Livre
-                  </Label>
-                </div>
-
-                <p className="text-sm text-muted-foreground">
-                  Selecione esta opção para criar automaticamente um anúncio do
-                  produto no Mercado Livre. Você pode escolher uma categoria
-                  específica ou usar a sugerida automaticamente.
-                </p>
-
-                {mlAccountStatus === "ERROR" && (
-                  <p className="text-sm text-red-600">
-                    Conta do Mercado Livre com restrição — anúncios bloqueados.
-                    Reconecte a conta ou verifique o Seller Center.
-                  </p>
+                      {selectedScrap && (
+                        <p className="text-xs text-muted-foreground">
+                          Marca, modelo, ano e versão foram preenchidos pela
+                          sucata selecionada.
+                        </p>
+                      )}
+                    </div>
+                  )
                 )}
 
-                {mlRestricted && (
-                  <p className="text-sm text-red-600">
-                    Conta do Mercado Livre com restrição de política — não é
-                    possível criar anúncios.{" "}
-                    {mlRestrictionMessage || "Verifique o Seller Center."}
-                  </p>
-                )}
-
-                {!mlRestricted && mlAccountStatus === "INACTIVE" && (
-                  <p className="text-sm text-yellow-600">
-                    Conta do Mercado Livre em modo férias/inativa — ative a
-                    venda no Seller Center para criar anúncios.
-                  </p>
-                )}
-
-                {mlConnected === false && (
-                  <p className="text-sm text-yellow-600">
-                    Conta do Mercado Livre não conectada — conecte sua conta em
-                    Integrações para habilitar a criação de anúncios.
-                  </p>
-                )}
-
-                {watch("createMLListing") && (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="mlCategory">
-                      Categoria no Mercado Livre
-                    </Label>
-                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        checked={mlShowAllCats}
-                        onChange={(e) => setMlShowAllCats(e.target.checked)}
-                        className="h-3 w-3"
-                      />
-                      Mostrar todas as categorias (inclui fora de autopeças)
-                    </label>
+                    <Label htmlFor="quality">Qualidade</Label>
                     <Controller
-                      name="mlCategory"
+                      name="quality"
+                      control={control}
+                      render={({ field }) => (
+                        <Select
+                          onValueChange={field.onChange}
+                          value={field.value ?? ""}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {qualityOptions.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="brand">Marca</Label>
+                    <Controller
+                      name="brand"
+                      control={control}
+                      render={({ field }) => (
+                        <Input
+                          id="brand"
+                          placeholder="Ex: Bosch, Denso"
+                          {...field}
+                          value={field.value ?? ""}
+                        />
+                      )}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="model">Modelo</Label>
+                    <Controller
+                      name="model"
+                      control={control}
+                      render={({ field }) => (
+                        <Input
+                          id="model"
+                          placeholder="Ex: Civic"
+                          {...field}
+                          value={field.value ?? ""}
+                        />
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="year">Ano</Label>
+                    <Controller
+                      name="year"
+                      control={control}
+                      render={({ field }) => (
+                        <Input
+                          id="year"
+                          placeholder="Ex: 2018-2022"
+                          {...field}
+                          value={field.value ?? ""}
+                        />
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="version">Versão</Label>
+                    <Input
+                      id="version"
+                      placeholder="Ex: EXL, LX"
+                      {...register("version")}
+                    />
+                  </div>
+                </div>
+
+                {/* Medidas */}
+                <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="heightCm">Altura (cm)</Label>
+                    <Controller
+                      name="heightCm"
                       control={control}
                       render={({ field }) => {
-                        // Prefer backend-synced mlOptions when available, fallback to static ML_CATEGORY_OPTIONS
-                        const optionsSource =
-                          mlOptions && mlOptions.length > 0
-                            ? mlOptions
-                            : ML_CATEGORY_OPTIONS.map((c) => ({
-                                id: c.id,
-                                value: c.value,
-                              }));
-
-                        const selectedLabel =
-                          optionsSource.find((o) => o.id === field.value)
-                            ?.value ||
-                          watch("category") ||
-                          undefined;
-
-                        // Filter options by search term, limit to 50 results
-                        const searchNorm = mlCategorySearch
-                          .normalize("NFD")
-                          .replace(/[\u0300-\u036f]/g, "")
-                          .toLowerCase()
-                          .trim();
-                        const filteredOptions = searchNorm
-                          ? optionsSource
-                              .filter((c) =>
-                                c.value
-                                  .normalize("NFD")
-                                  .replace(/[\u0300-\u036f]/g, "")
-                                  .toLowerCase()
-                                  .includes(searchNorm),
-                              )
-                              .slice(0, 50)
-                          : [];
-
                         return (
-                          <div className="relative">
-                            {/* Display selected category */}
-                            {selectedLabel && !mlCategoryDropdownOpen && (
-                              <div
-                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
-                                onClick={() => {
-                                  setMlCategoryDropdownOpen(true);
-                                  setMlCategorySearch("");
-                                }}
-                              >
-                                <span className="truncate">
-                                  {selectedLabel}
-                                </span>
-                                <span className="ml-2 text-xs text-muted-foreground">
-                                  Alterar
-                                </span>
-                              </div>
-                            )}
-
-                            {/* Search input */}
-                            {(mlCategoryDropdownOpen || !selectedLabel) && (
-                              <>
-                                <Input
-                                  placeholder="Buscar categoria do Mercado Livre..."
-                                  value={mlCategorySearch}
-                                  onChange={(e) =>
-                                    setMlCategorySearch(e.target.value)
-                                  }
-                                  onBlur={() => {
-                                    // Delay to allow click on items
-                                    setTimeout(
-                                      () => setMlCategoryDropdownOpen(false),
-                                      200,
-                                    );
-                                  }}
-                                  autoFocus={mlCategoryDropdownOpen}
-                                />
-                                {searchNorm && filteredOptions.length > 0 && (
-                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
-                                    {filteredOptions.map((cat) => (
-                                      <button
-                                        type="button"
-                                        key={cat.id}
-                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                          cat.id === field.value
-                                            ? "bg-accent font-medium"
-                                            : ""
-                                        }`}
-                                        onMouseDown={(e) => {
-                                          e.preventDefault();
-                                          field.onChange(cat.id);
-                                          setValue("category", cat.value);
-                                          setMlCategorySearch("");
-                                          setMlCategoryDropdownOpen(false);
-                                        }}
-                                      >
-                                        {cat.value}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                                {searchNorm && filteredOptions.length === 0 && (
-                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
-                                    Nenhuma categoria encontrada
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
+                          <Input
+                            id="heightCm"
+                            type="number"
+                            value={field.value ?? ""}
+                            onChange={(e) =>
+                              field.onChange(
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                              )
+                            }
+                          />
                         );
                       }}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      Categoria sugerida: {watch("category") || "Nenhuma"}
-                    </p>
-
-                    <Controller
-                      name="attributes"
-                      control={control}
-                      render={({ field }) => (
-                        <MLDynamicAttributesSection
-                          categoryId={watchMlCategory || ""}
-                          value={(field.value as any) || {}}
-                          onChange={(next) => field.onChange(next as any)}
-                          email={session?.user?.email || undefined}
-                        />
-                      )}
-                    />
-                  </div>
-                )}
-
-                {watch("createMLListing") && (
-                  <div className="space-y-2">
-                    <Label>Contas do Mercado Livre</Label>
-                    {mlAccounts.length > 0 ? (
-                      <div className="space-y-2 rounded-md border p-3">
-                        {mlAccounts.map((acc) => {
-                          const checked = watchMlAccountIds.includes(acc.id);
-                          return (
-                            <label
-                              key={acc.id}
-                              className="flex items-center gap-2 text-sm"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  toggleAccountSelection(
-                                    "mlAccountIds",
-                                    acc.id,
-                                    e.target.checked,
-                                  )
-                                }
-                              />
-                              <span className="font-medium">
-                                {acc.accountName || "Conta ML"}
-                              </span>
-                              {acc.status && (
-                                <span className="text-xs text-muted-foreground">
-                                  ({acc.status})
-                                </span>
-                              )}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Nenhuma conta Mercado Livre conectada. Conecte em
-                        Integrações.
+                    {errors.heightCm && (
+                      <p className="text-sm text-destructive">
+                        {errors.heightCm.message}
                       </p>
                     )}
                   </div>
-                )}
 
-                {/* Aumento percentual escalonado entre contas (por marketplace).
-                    Estado COMPARTILHADO com os blocos das seções Shopee/Magalu:
-                    o percentual é global e cada marketplace tem escada própria. */}
-                {watch("createMLListing") && mlAccounts.length > 1 && (
-                  <div className="space-y-2 rounded-md border p-3">
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={!!watch("mlCrossAccountIncrease")}
-                        onChange={(e) =>
-                          setValue("mlCrossAccountIncrease", e.target.checked, {
-                            shouldDirty: true,
-                          })
-                        }
-                      />
-                      Aumentar percentual nas demais contas (por marketplace)
-                    </label>
-                    {watch("mlCrossAccountIncrease") && (
-                      <div className="space-y-1 pl-6">
-                        <Label
-                          htmlFor="mlCrossAccountPercent"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Percentual de aumento composto entre contas
-                        </Label>
-                        <div className="relative w-40">
+                  <div className="space-y-2">
+                    <Label htmlFor="widthCm">Largura (cm)</Label>
+                    <Controller
+                      name="widthCm"
+                      control={control}
+                      render={({ field }) => {
+                        return (
                           <Input
-                            id="mlCrossAccountPercent"
+                            id="widthCm"
                             type="number"
-                            inputMode="decimal"
-                            min={0}
-                            max={100}
-                            step="0.01"
-                            value={watch("mlCrossAccountPercent") ?? ""}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              setValue(
-                                "mlCrossAccountPercent",
-                                v === "" ? null : Number(v),
-                                { shouldDirty: true },
-                              );
-                            }}
-                            placeholder="Ex.: 10"
-                            className="pr-7"
+                            value={field.value ?? ""}
+                            onChange={(e) =>
+                              field.onChange(
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                              )
+                            }
                           />
-                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                            %
-                          </span>
-                        </div>
-                        <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          Aplicado em cascata e por marketplace: em cada um, a
-                          1ª conta selecionada mantém o preço base e cada conta
-                          seguinte recebe este % sobre o preço da anterior. O
-                          percentual é único para todos os marketplaces.
-                        </p>
-                      </div>
+                        );
+                      }}
+                    />
+                    {errors.widthCm && (
+                      <p className="text-sm text-destructive">
+                        {errors.widthCm.message}
+                      </p>
                     )}
                   </div>
-                )}
 
-                {/* Configurações do anúncio ML */}
-                {watch("createMLListing") && (
-                  <div className="space-y-4 rounded-lg border border-border/50 p-4">
-                    <h4 className="text-sm font-semibold">
-                      Configurações do Anúncio
-                    </h4>
-                    <p className="text-xs text-muted-foreground">
-                      Os valores abaixo foram pré-preenchidos com suas
-                      preferências padrão. Você pode alterar para este anúncio.
+                  <div className="space-y-2">
+                    <Label htmlFor="lengthCm">Comprimento (cm)</Label>
+                    <Controller
+                      name="lengthCm"
+                      control={control}
+                      render={({ field }) => {
+                        return (
+                          <Input
+                            id="lengthCm"
+                            type="number"
+                            value={field.value ?? ""}
+                            onChange={(e) =>
+                              field.onChange(
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                              )
+                            }
+                          />
+                        );
+                      }}
+                    />
+                    {errors.lengthCm && (
+                      <p className="text-sm text-destructive">
+                        {errors.lengthCm.message}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="weightKg">Peso (kg)</Label>
+                    <Controller
+                      name="weightKg"
+                      control={control}
+                      render={({ field }) => {
+                        return (
+                          <Input
+                            id="weightKg"
+                            type="number"
+                            step="0.01"
+                            value={field.value ?? ""}
+                            onChange={(e) =>
+                              field.onChange(
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                              )
+                            }
+                          />
+                        );
+                      }}
+                    />
+                    {errors.weightKg && (
+                      <p className="text-sm text-destructive">
+                        {errors.weightKg.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="sourceVehicle">Veículo de Origem</Label>
+                  <Input
+                    id="sourceVehicle"
+                    placeholder="Ex: Honda Civic 2020 - Placa ABC1234"
+                    {...register("sourceVehicle")}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Para peças de sucata, informe o veículo de origem
+                  </p>
+                </div>
+
+                <Separator />
+
+                <div className="flex flex-wrap gap-6">
+                  <div className="flex items-center gap-2">
+                    <Controller
+                      name="isSecurityItem"
+                      control={control}
+                      render={({ field }) => (
+                        <Switch
+                          id="isSecurityItem"
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <Label htmlFor="isSecurityItem" className="cursor-pointer">
+                      Item de Segurança
+                    </Label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Controller
+                      name="isTraceable"
+                      control={control}
+                      render={({ field }) => (
+                        <Switch
+                          id="isTraceable"
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      )}
+                    />
+                    <Label htmlFor="isTraceable" className="cursor-pointer">
+                      Item Rastreável
+                    </Label>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Step 5: Compatibilidade */}
+            <section
+              data-step={5}
+              ref={(el) => {
+                sectionRefs.current[5] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[4]} />
+              <CompatibilityTab
+                value={compatibilities}
+                onChange={setCompatibilities}
+              />
+            </section>
+
+            {/* Step 6: Mercado Livre */}
+            <section
+              data-step={6}
+              ref={(el) => {
+                sectionRefs.current[6] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[5]} />
+              <div className="space-y-4">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Controller
+                      name="createMLListing"
+                      control={control}
+                      render={({ field }) => (
+                        <Switch
+                          id="createMLListing"
+                          checked={field.value || false}
+                          onCheckedChange={field.onChange}
+                          disabled={
+                            mlConnected === false ||
+                            mlAccountStatus === "ERROR" ||
+                            mlAccountStatus === "INACTIVE"
+                          }
+                        />
+                      )}
+                    />
+                    <Label htmlFor="createMLListing" className="cursor-pointer">
+                      Criar anúncio no Mercado Livre
+                    </Label>
+                  </div>
+
+                  <p className="text-sm text-muted-foreground">
+                    Selecione esta opção para criar automaticamente um anúncio
+                    do produto no Mercado Livre. Você pode escolher uma
+                    categoria específica ou usar a sugerida automaticamente.
+                  </p>
+
+                  {mlAccountStatus === "ERROR" && (
+                    <p className="text-sm text-red-600">
+                      Conta do Mercado Livre com restrição — anúncios
+                      bloqueados. Reconecte a conta ou verifique o Seller
+                      Center.
                     </p>
+                  )}
 
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="mlListingType">
-                          Listagem do anúncio
-                        </Label>
-                        <Controller
-                          name="mlListingType"
-                          control={control}
-                          render={({ field }) => (
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value ?? "bronze"}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Tipo de listagem" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="gold_premium">
-                                  Premium
-                                </SelectItem>
-                                <SelectItem value="gold_special">
-                                  Clássico
-                                </SelectItem>
-                                <SelectItem value="bronze">Grátis</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
+                  {mlRestricted && (
+                    <p className="text-sm text-red-600">
+                      Conta do Mercado Livre com restrição de política — não é
+                      possível criar anúncios.{" "}
+                      {mlRestrictionMessage || "Verifique o Seller Center."}
+                    </p>
+                  )}
+
+                  {!mlRestricted && mlAccountStatus === "INACTIVE" && (
+                    <p className="text-sm text-yellow-600">
+                      Conta do Mercado Livre em modo férias/inativa — ative a
+                      venda no Seller Center para criar anúncios.
+                    </p>
+                  )}
+
+                  {mlConnected === false && (
+                    <p className="text-sm text-yellow-600">
+                      Conta do Mercado Livre não conectada — conecte sua conta
+                      em Integrações para habilitar a criação de anúncios.
+                    </p>
+                  )}
+
+                  {watch("createMLListing") && (
+                    <div className="space-y-2">
+                      <Label htmlFor="mlCategory">
+                        Categoria no Mercado Livre
+                      </Label>
+                      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={mlShowAllCats}
+                          onChange={(e) => setMlShowAllCats(e.target.checked)}
+                          className="h-3 w-3"
                         />
-                      </div>
+                        Mostrar todas as categorias (inclui fora de autopeças)
+                      </label>
+                      <Controller
+                        name="mlCategory"
+                        control={control}
+                        render={({ field }) => {
+                          // Prefer backend-synced mlOptions when available, fallback to static ML_CATEGORY_OPTIONS
+                          const optionsSource =
+                            mlOptions && mlOptions.length > 0
+                              ? mlOptions
+                              : ML_CATEGORY_OPTIONS.map((c) => ({
+                                  id: c.id,
+                                  value: c.value,
+                                }));
 
-                      <div className="space-y-2">
-                        <Label htmlFor="mlItemCondition">
-                          Condição do item
-                        </Label>
-                        <Controller
-                          name="mlItemCondition"
-                          control={control}
-                          render={({ field }) => (
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value ?? "new"}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Condição" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="new">Novo</SelectItem>
-                                <SelectItem value="used">Usado</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-                        />
-                      </div>
-                    </div>
+                          const selectedLabel =
+                            optionsSource.find((o) => o.id === field.value)
+                              ?.value ||
+                            watch("category") ||
+                            undefined;
 
-                    <div className="space-y-3 rounded-lg border border-border/40 p-3">
-                      <div className="flex items-center gap-3">
-                        <Controller
-                          name="mlHasWarranty"
-                          control={control}
-                          render={({ field }) => (
-                            <input
-                              type="checkbox"
-                              id="mlHasWarranty"
-                              checked={field.value || false}
-                              onChange={(e) => field.onChange(e.target.checked)}
-                              className="h-4 w-4 rounded border-gray-300"
-                            />
-                          )}
-                        />
-                        <Label
-                          htmlFor="mlHasWarranty"
-                          className="cursor-pointer font-medium"
-                        >
-                          Possui Garantia
-                        </Label>
-                      </div>
+                          // Filter options by search term, limit to 50 results
+                          const searchNorm = mlCategorySearch
+                            .normalize("NFD")
+                            .replace(/[\u0300-\u036f]/g, "")
+                            .toLowerCase()
+                            .trim();
+                          const filteredOptions = searchNorm
+                            ? optionsSource
+                                .filter((c) =>
+                                  c.value
+                                    .normalize("NFD")
+                                    .replace(/[\u0300-\u036f]/g, "")
+                                    .toLowerCase()
+                                    .includes(searchNorm),
+                                )
+                                .slice(0, 50)
+                            : [];
 
-                      {watch("mlHasWarranty") && (
-                        <div className="grid grid-cols-1 gap-4 pl-7 sm:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label htmlFor="mlWarrantyUnit">Garantia em</Label>
-                            <Controller
-                              name="mlWarrantyUnit"
-                              control={control}
-                              render={({ field }) => (
-                                <Select
-                                  onValueChange={field.onChange}
-                                  value={field.value ?? "dias"}
+                          return (
+                            <div className="relative">
+                              {/* Display selected category */}
+                              {selectedLabel && !mlCategoryDropdownOpen && (
+                                <div
+                                  className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                  onClick={() => {
+                                    setMlCategoryDropdownOpen(true);
+                                    setMlCategorySearch("");
+                                  }}
                                 >
-                                  <SelectTrigger>
-                                    <SelectValue placeholder="Unidade" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="dias">Dias</SelectItem>
-                                    <SelectItem value="meses">Meses</SelectItem>
-                                  </SelectContent>
-                                </Select>
+                                  <span className="truncate">
+                                    {selectedLabel}
+                                  </span>
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    Alterar
+                                  </span>
+                                </div>
                               )}
-                            />
-                          </div>
 
-                          <div className="space-y-2">
-                            <Label htmlFor="mlWarrantyDuration">
-                              Prazo da garantia
-                            </Label>
+                              {/* Search input */}
+                              {(mlCategoryDropdownOpen || !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria do Mercado Livre..."
+                                    value={mlCategorySearch}
+                                    onChange={(e) =>
+                                      setMlCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      // Delay to allow click on items
+                                      setTimeout(
+                                        () => setMlCategoryDropdownOpen(false),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={mlCategoryDropdownOpen}
+                                  />
+                                  {searchNorm && filteredOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                      {filteredOptions.map((cat) => (
+                                        <button
+                                          type="button"
+                                          key={cat.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            cat.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(cat.id);
+                                            setValue("category", cat.value);
+                                            setMlCategorySearch("");
+                                            setMlCategoryDropdownOpen(false);
+                                          }}
+                                        >
+                                          {cat.value}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {searchNorm &&
+                                    filteredOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Categoria sugerida: {watch("category") || "Nenhuma"}
+                      </p>
+
+                      <Controller
+                        name="attributes"
+                        control={control}
+                        render={({ field }) => (
+                          <MLDynamicAttributesSection
+                            categoryId={watchMlCategory || ""}
+                            value={(field.value as any) || {}}
+                            onChange={(next) => field.onChange(next as any)}
+                            email={session?.user?.email || undefined}
+                          />
+                        )}
+                      />
+                    </div>
+                  )}
+
+                  {watch("createMLListing") && (
+                    <div className="space-y-2">
+                      <Label>Contas do Mercado Livre</Label>
+                      {mlAccounts.length > 0 ? (
+                        <div className="space-y-2 rounded-md border p-3">
+                          {mlAccounts.map((acc) => {
+                            const checked = watchMlAccountIds.includes(acc.id);
+                            return (
+                              <label
+                                key={acc.id}
+                                className="flex items-center gap-2 text-sm"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) =>
+                                    toggleAccountSelection(
+                                      "mlAccountIds",
+                                      acc.id,
+                                      e.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="font-medium">
+                                  {acc.accountName || "Conta ML"}
+                                </span>
+                                {acc.status && (
+                                  <span className="text-xs text-muted-foreground">
+                                    ({acc.status})
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Nenhuma conta Mercado Livre conectada. Conecte em
+                          Integrações.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Aumento percentual escalonado entre contas (por marketplace).
+                    Estado COMPARTILHADO com os blocos das seções Shopee/Magalu:
+                    o percentual é global e cada marketplace tem escada própria. */}
+                  {watch("createMLListing") && mlAccounts.length > 1 && (
+                    <div className="space-y-2 rounded-md border p-3">
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                          type="checkbox"
+                          checked={!!watch("mlCrossAccountIncrease")}
+                          onChange={(e) =>
+                            setValue(
+                              "mlCrossAccountIncrease",
+                              e.target.checked,
+                              {
+                                shouldDirty: true,
+                              },
+                            )
+                          }
+                        />
+                        Aumentar percentual nas demais contas (por marketplace)
+                      </label>
+                      {watch("mlCrossAccountIncrease") && (
+                        <div className="space-y-1 pl-6">
+                          <Label
+                            htmlFor="mlCrossAccountPercent"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Percentual de aumento composto entre contas
+                          </Label>
+                          <div className="relative w-40">
                             <Input
-                              id="mlWarrantyDuration"
+                              id="mlCrossAccountPercent"
                               type="number"
-                              min="1"
-                              step="1"
-                              {...register("mlWarrantyDuration", {
-                                valueAsNumber: true,
-                              })}
+                              inputMode="decimal"
+                              min={0}
+                              max={100}
+                              step="0.01"
+                              value={watch("mlCrossAccountPercent") ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setValue(
+                                  "mlCrossAccountPercent",
+                                  v === "" ? null : Number(v),
+                                  { shouldDirty: true },
+                                );
+                              }}
+                              placeholder="Ex.: 10"
+                              className="pr-7"
                             />
+                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                              %
+                            </span>
                           </div>
+                          <p className="text-[11px] leading-relaxed text-muted-foreground">
+                            Aplicado em cascata e por marketplace: em cada um, a
+                            1ª conta selecionada mantém o preço base e cada
+                            conta seguinte recebe este % sobre o preço da
+                            anterior. O percentual é único para todos os
+                            marketplaces.
+                          </p>
                         </div>
                       )}
                     </div>
+                  )}
 
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="mlShippingMode">Frete</Label>
-                        <Controller
-                          name="mlShippingMode"
-                          control={control}
-                          render={({ field }) => (
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value ?? "me2"}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Tipo de frete" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="me2">
-                                  Mercado Envios
-                                </SelectItem>
-                                <SelectItem value="me1">
-                                  Mercado Envios 1
-                                </SelectItem>
-                                <SelectItem value="custom">
-                                  Personalizado
-                                </SelectItem>
-                                <SelectItem value="not_specified">
-                                  Não especificado
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-                        />
+                  {/* Configurações do anúncio ML */}
+                  {watch("createMLListing") && (
+                    <div className="space-y-4 rounded-lg border border-border/50 p-4">
+                      <h4 className="text-sm font-semibold">
+                        Configurações do Anúncio
+                      </h4>
+                      <p className="text-xs text-muted-foreground">
+                        Os valores abaixo foram pré-preenchidos com suas
+                        preferências padrão. Você pode alterar para este
+                        anúncio.
+                      </p>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="mlListingType">
+                            Listagem do anúncio
+                          </Label>
+                          <Controller
+                            name="mlListingType"
+                            control={control}
+                            render={({ field }) => (
+                              <Select
+                                onValueChange={field.onChange}
+                                value={field.value ?? "bronze"}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Tipo de listagem" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="gold_premium">
+                                    Premium
+                                  </SelectItem>
+                                  <SelectItem value="gold_special">
+                                    Clássico
+                                  </SelectItem>
+                                  <SelectItem value="bronze">Grátis</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="mlItemCondition">
+                            Condição do item
+                          </Label>
+                          <Controller
+                            name="mlItemCondition"
+                            control={control}
+                            render={({ field }) => (
+                              <Select
+                                onValueChange={field.onChange}
+                                value={field.value ?? "new"}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Condição" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="new">Novo</SelectItem>
+                                  <SelectItem value="used">Usado</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 rounded-lg border border-border/40 p-3">
+                        <div className="flex items-center gap-3">
+                          <Controller
+                            name="mlHasWarranty"
+                            control={control}
+                            render={({ field }) => (
+                              <input
+                                type="checkbox"
+                                id="mlHasWarranty"
+                                checked={field.value || false}
+                                onChange={(e) =>
+                                  field.onChange(e.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-gray-300"
+                              />
+                            )}
+                          />
+                          <Label
+                            htmlFor="mlHasWarranty"
+                            className="cursor-pointer font-medium"
+                          >
+                            Possui Garantia
+                          </Label>
+                        </div>
+
+                        {watch("mlHasWarranty") && (
+                          <div className="grid grid-cols-1 gap-4 pl-7 sm:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label htmlFor="mlWarrantyUnit">
+                                Garantia em
+                              </Label>
+                              <Controller
+                                name="mlWarrantyUnit"
+                                control={control}
+                                render={({ field }) => (
+                                  <Select
+                                    onValueChange={field.onChange}
+                                    value={field.value ?? "dias"}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Unidade" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="dias">Dias</SelectItem>
+                                      <SelectItem value="meses">
+                                        Meses
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                )}
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label htmlFor="mlWarrantyDuration">
+                                Prazo da garantia
+                              </Label>
+                              <Input
+                                id="mlWarrantyDuration"
+                                type="number"
+                                min="1"
+                                step="1"
+                                {...register("mlWarrantyDuration", {
+                                  valueAsNumber: true,
+                                })}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="mlShippingMode">Frete</Label>
+                          <Controller
+                            name="mlShippingMode"
+                            control={control}
+                            render={({ field }) => (
+                              <Select
+                                onValueChange={field.onChange}
+                                value={field.value ?? "me2"}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Tipo de frete" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="me2">
+                                    Mercado Envios
+                                  </SelectItem>
+                                  <SelectItem value="me1">
+                                    Mercado Envios 1
+                                  </SelectItem>
+                                  <SelectItem value="custom">
+                                    Personalizado
+                                  </SelectItem>
+                                  <SelectItem value="not_specified">
+                                    Não especificado
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="mlFreeShipping">Frete grátis</Label>
+                          <Controller
+                            name="mlFreeShipping"
+                            control={control}
+                            render={({ field }) => (
+                              <Select
+                                onValueChange={(v) =>
+                                  field.onChange(v === "true")
+                                }
+                                value={field.value ? "true" : "false"}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Frete grátis?" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="true">Sim</SelectItem>
+                                  <SelectItem value="false">Não</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="mlLocalPickup">
+                            Retirar pessoalmente
+                          </Label>
+                          <Controller
+                            name="mlLocalPickup"
+                            control={control}
+                            render={({ field }) => (
+                              <Select
+                                onValueChange={(v) =>
+                                  field.onChange(v === "true")
+                                }
+                                value={field.value ? "true" : "false"}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Retirar?" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="true">Sim</SelectItem>
+                                  <SelectItem value="false">Não</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="mlManufacturingTime">
+                            Tempo de disponibilidade (Dias)
+                          </Label>
+                          <Input
+                            id="mlManufacturingTime"
+                            type="number"
+                            min="0"
+                            step="1"
+                            {...register("mlManufacturingTime", {
+                              valueAsNumber: true,
+                            })}
+                          />
+                        </div>
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="mlFreeShipping">Frete grátis</Label>
-                        <Controller
-                          name="mlFreeShipping"
-                          control={control}
-                          render={({ field }) => (
-                            <Select
-                              onValueChange={(v) =>
-                                field.onChange(v === "true")
-                              }
-                              value={field.value ? "true" : "false"}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Frete grátis?" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="true">Sim</SelectItem>
-                                <SelectItem value="false">Não</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="mlLocalPickup">
-                          Retirar pessoalmente
+                        <Label htmlFor="mlListingPrice">
+                          Valor do Anúncio (R$)
                         </Label>
                         <Controller
-                          name="mlLocalPickup"
+                          name="mlListingPrice"
                           control={control}
                           render={({ field }) => (
-                            <Select
-                              onValueChange={(v) =>
-                                field.onChange(v === "true")
-                              }
-                              value={field.value ? "true" : "false"}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Retirar?" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="true">Sim</SelectItem>
-                                <SelectItem value="false">Não</SelectItem>
-                              </SelectContent>
-                            </Select>
+                            <CurrencyInput
+                              id="mlListingPrice"
+                              placeholder="Usar preço de venda do produto"
+                              value={field.value}
+                              onChange={field.onChange}
+                            />
                           )}
                         />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="mlManufacturingTime">
-                          Tempo de disponibilidade (Dias)
-                        </Label>
-                        <Input
-                          id="mlManufacturingTime"
-                          type="number"
-                          min="0"
-                          step="1"
-                          {...register("mlManufacturingTime", {
-                            valueAsNumber: true,
-                          })}
-                        />
+                        <p className="text-xs text-muted-foreground">
+                          Se não informado, será usado o preço de venda do
+                          produto.
+                        </p>
                       </div>
                     </div>
+                  )}
+                </div>
+              </div>
+            </section>
 
+            {/* Step 7: Shopee */}
+            <section
+              data-step={7}
+              ref={(el) => {
+                sectionRefs.current[7] = el;
+              }}
+              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+            >
+              <SectionHeading step={STEPS[6]} />
+              <div className="space-y-4">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Controller
+                      name="createShopeeListing"
+                      control={control}
+                      render={({ field }) => (
+                        <Switch
+                          id="createShopeeListing"
+                          checked={field.value || false}
+                          onCheckedChange={field.onChange}
+                          disabled={shopeeAccounts.length === 0}
+                        />
+                      )}
+                    />
+                    <Label
+                      htmlFor="createShopeeListing"
+                      className="cursor-pointer"
+                    >
+                      Criar anúncio no Shopee
+                    </Label>
+                  </div>
+
+                  <p className="text-sm text-muted-foreground">
+                    Selecione esta opção para publicar o produto nas contas
+                    conectadas do Shopee.
+                  </p>
+
+                  {watchCreateShopeeListing && (
                     <div className="space-y-2">
-                      <Label htmlFor="mlListingPrice">
+                      <Label>Contas do Shopee</Label>
+                      {shopeeAccounts.length > 0 ? (
+                        <div className="space-y-2 rounded-md border p-3">
+                          {shopeeAccounts.map((acc) => {
+                            const checked = watchShopeeAccountIds.includes(
+                              acc.id,
+                            );
+                            return (
+                              <label
+                                key={acc.id}
+                                className="flex items-center gap-2 text-sm"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) =>
+                                    toggleAccountSelection(
+                                      "shopeeAccountIds",
+                                      acc.id,
+                                      e.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="font-medium">
+                                  {acc.accountName || "Conta Shopee"}
+                                </span>
+                                {acc.shopId && (
+                                  <span className="text-xs text-muted-foreground">
+                                    (Shop {acc.shopId})
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Nenhuma conta Shopee conectada. Conecte em
+                          Integrações.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Aumento escalonado — mesmo estado do bloco ML (percentual
+                    global; escada independente por marketplace). */}
+                  {watchCreateShopeeListing && shopeeAccounts.length > 1 && (
+                    <div className="space-y-2 rounded-md border p-3">
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                          type="checkbox"
+                          checked={!!watch("mlCrossAccountIncrease")}
+                          onChange={(e) =>
+                            setValue(
+                              "mlCrossAccountIncrease",
+                              e.target.checked,
+                              {
+                                shouldDirty: true,
+                              },
+                            )
+                          }
+                        />
+                        Aumentar percentual nas demais contas (por marketplace)
+                      </label>
+                      {watch("mlCrossAccountIncrease") && (
+                        <div className="space-y-1 pl-6">
+                          <Label
+                            htmlFor="shopeeCrossAccountPercent"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Percentual de aumento composto entre contas
+                          </Label>
+                          <div className="relative w-40">
+                            <Input
+                              id="shopeeCrossAccountPercent"
+                              type="number"
+                              inputMode="decimal"
+                              min={0}
+                              max={100}
+                              step="0.01"
+                              value={watch("mlCrossAccountPercent") ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setValue(
+                                  "mlCrossAccountPercent",
+                                  v === "" ? null : Number(v),
+                                  { shouldDirty: true },
+                                );
+                              }}
+                              placeholder="Ex.: 10"
+                              className="pr-7"
+                            />
+                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                              %
+                            </span>
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-muted-foreground">
+                            Aplicado em cascata entre as contas Shopee: a 1ª
+                            conta selecionada mantém o preço base; cada conta
+                            seguinte recebe este % sobre o preço da anterior. O
+                            percentual é único e compartilhado com os demais
+                            marketplaces (escadas independentes).
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {watchCreateShopeeListing && (
+                    <div className="space-y-2">
+                      <Label htmlFor="shopeeCategory">
+                        Categoria no Shopee
+                      </Label>
+                      <Controller
+                        name="shopeeCategory"
+                        control={control}
+                        render={({ field }) => {
+                          const optionsSource = shopeeOptions;
+
+                          const selectedLabel =
+                            optionsSource.find((o) => o.id === field.value)
+                              ?.value || undefined;
+
+                          const searchNorm = shopeeCategorySearch
+                            .normalize("NFD")
+                            .replace(/[\u0300-\u036f]/g, "")
+                            .toLowerCase()
+                            .trim();
+                          const filteredOptions = searchNorm
+                            ? optionsSource
+                                .filter((c) =>
+                                  c.value
+                                    .normalize("NFD")
+                                    .replace(/[\u0300-\u036f]/g, "")
+                                    .toLowerCase()
+                                    .includes(searchNorm),
+                                )
+                                .slice(0, 50)
+                            : [];
+
+                          return (
+                            <div className="relative">
+                              {selectedLabel && !shopeeCategoryDropdownOpen && (
+                                <div
+                                  className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                  onClick={() => {
+                                    setShopeeCategoryDropdownOpen(true);
+                                    setShopeeCategorySearch("");
+                                  }}
+                                >
+                                  <span className="truncate">
+                                    {selectedLabel}
+                                  </span>
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    Alterar
+                                  </span>
+                                </div>
+                              )}
+
+                              {(shopeeCategoryDropdownOpen ||
+                                !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria do Shopee..."
+                                    value={shopeeCategorySearch}
+                                    onChange={(e) =>
+                                      setShopeeCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      setTimeout(
+                                        () =>
+                                          setShopeeCategoryDropdownOpen(false),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={shopeeCategoryDropdownOpen}
+                                  />
+                                  {searchNorm && filteredOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                      {filteredOptions.map((cat) => (
+                                        <button
+                                          type="button"
+                                          key={cat.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            cat.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(cat.id);
+                                            setShopeeCategorySearch("");
+                                            setShopeeCategoryDropdownOpen(
+                                              false,
+                                            );
+                                          }}
+                                        >
+                                          {cat.value}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {searchNorm &&
+                                    filteredOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      {shopeeOptions.length === 0 && (
+                        <p className="text-xs text-yellow-600">
+                          Nenhuma categoria Shopee sincronizada. Vá em
+                          Integrações e sincronize as categorias do Shopee.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {watchCreateShopeeListing && (
+                    <div className="space-y-2">
+                      <Label htmlFor="shopeeListingPrice">
                         Valor do Anúncio (R$)
                       </Label>
                       <Controller
-                        name="mlListingPrice"
+                        name="shopeeListingPrice"
                         control={control}
                         render={({ field }) => (
                           <CurrencyInput
-                            id="mlListingPrice"
+                            id="shopeeListingPrice"
                             placeholder="Usar preço de venda do produto"
                             value={field.value}
                             onChange={field.onChange}
@@ -4295,904 +4879,650 @@ export function CreateProductDialog({
                         produto.
                       </p>
                     </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          {/* Step 7: Shopee */}
-          <section
-            data-step={7}
-            ref={(el) => {
-              sectionRefs.current[7] = el;
-            }}
-            className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-          >
-            <SectionHeading step={STEPS[6]} />
-            <div className="space-y-4">
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Controller
-                    name="createShopeeListing"
-                    control={control}
-                    render={({ field }) => (
-                      <Switch
-                        id="createShopeeListing"
-                        checked={field.value || false}
-                        onCheckedChange={field.onChange}
-                        disabled={shopeeAccounts.length === 0}
-                      />
-                    )}
-                  />
-                  <Label
-                    htmlFor="createShopeeListing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Shopee
-                  </Label>
+                  )}
                 </div>
-
-                <p className="text-sm text-muted-foreground">
-                  Selecione esta opção para publicar o produto nas contas
-                  conectadas do Shopee.
-                </p>
-
-                {watchCreateShopeeListing && (
-                  <div className="space-y-2">
-                    <Label>Contas do Shopee</Label>
-                    {shopeeAccounts.length > 0 ? (
-                      <div className="space-y-2 rounded-md border p-3">
-                        {shopeeAccounts.map((acc) => {
-                          const checked = watchShopeeAccountIds.includes(
-                            acc.id,
-                          );
-                          return (
-                            <label
-                              key={acc.id}
-                              className="flex items-center gap-2 text-sm"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  toggleAccountSelection(
-                                    "shopeeAccountIds",
-                                    acc.id,
-                                    e.target.checked,
-                                  )
-                                }
-                              />
-                              <span className="font-medium">
-                                {acc.accountName || "Conta Shopee"}
-                              </span>
-                              {acc.shopId && (
-                                <span className="text-xs text-muted-foreground">
-                                  (Shop {acc.shopId})
-                                </span>
-                              )}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Nenhuma conta Shopee conectada. Conecte em Integrações.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* Aumento escalonado — mesmo estado do bloco ML (percentual
-                    global; escada independente por marketplace). */}
-                {watchCreateShopeeListing && shopeeAccounts.length > 1 && (
-                  <div className="space-y-2 rounded-md border p-3">
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={!!watch("mlCrossAccountIncrease")}
-                        onChange={(e) =>
-                          setValue("mlCrossAccountIncrease", e.target.checked, {
-                            shouldDirty: true,
-                          })
-                        }
-                      />
-                      Aumentar percentual nas demais contas (por marketplace)
-                    </label>
-                    {watch("mlCrossAccountIncrease") && (
-                      <div className="space-y-1 pl-6">
-                        <Label
-                          htmlFor="shopeeCrossAccountPercent"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Percentual de aumento composto entre contas
-                        </Label>
-                        <div className="relative w-40">
-                          <Input
-                            id="shopeeCrossAccountPercent"
-                            type="number"
-                            inputMode="decimal"
-                            min={0}
-                            max={100}
-                            step="0.01"
-                            value={watch("mlCrossAccountPercent") ?? ""}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              setValue(
-                                "mlCrossAccountPercent",
-                                v === "" ? null : Number(v),
-                                { shouldDirty: true },
-                              );
-                            }}
-                            placeholder="Ex.: 10"
-                            className="pr-7"
-                          />
-                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                            %
-                          </span>
-                        </div>
-                        <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          Aplicado em cascata entre as contas Shopee: a 1ª conta
-                          selecionada mantém o preço base; cada conta seguinte
-                          recebe este % sobre o preço da anterior. O percentual
-                          é único e compartilhado com os demais marketplaces
-                          (escadas independentes).
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {watchCreateShopeeListing && (
-                  <div className="space-y-2">
-                    <Label htmlFor="shopeeCategory">Categoria no Shopee</Label>
-                    <Controller
-                      name="shopeeCategory"
-                      control={control}
-                      render={({ field }) => {
-                        const optionsSource = shopeeOptions;
-
-                        const selectedLabel =
-                          optionsSource.find((o) => o.id === field.value)
-                            ?.value || undefined;
-
-                        const searchNorm = shopeeCategorySearch
-                          .normalize("NFD")
-                          .replace(/[\u0300-\u036f]/g, "")
-                          .toLowerCase()
-                          .trim();
-                        const filteredOptions = searchNorm
-                          ? optionsSource
-                              .filter((c) =>
-                                c.value
-                                  .normalize("NFD")
-                                  .replace(/[\u0300-\u036f]/g, "")
-                                  .toLowerCase()
-                                  .includes(searchNorm),
-                              )
-                              .slice(0, 50)
-                          : [];
-
-                        return (
-                          <div className="relative">
-                            {selectedLabel && !shopeeCategoryDropdownOpen && (
-                              <div
-                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
-                                onClick={() => {
-                                  setShopeeCategoryDropdownOpen(true);
-                                  setShopeeCategorySearch("");
-                                }}
-                              >
-                                <span className="truncate">
-                                  {selectedLabel}
-                                </span>
-                                <span className="ml-2 text-xs text-muted-foreground">
-                                  Alterar
-                                </span>
-                              </div>
-                            )}
-
-                            {(shopeeCategoryDropdownOpen || !selectedLabel) && (
-                              <>
-                                <Input
-                                  placeholder="Buscar categoria do Shopee..."
-                                  value={shopeeCategorySearch}
-                                  onChange={(e) =>
-                                    setShopeeCategorySearch(e.target.value)
-                                  }
-                                  onBlur={() => {
-                                    setTimeout(
-                                      () =>
-                                        setShopeeCategoryDropdownOpen(false),
-                                      200,
-                                    );
-                                  }}
-                                  autoFocus={shopeeCategoryDropdownOpen}
-                                />
-                                {searchNorm && filteredOptions.length > 0 && (
-                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
-                                    {filteredOptions.map((cat) => (
-                                      <button
-                                        type="button"
-                                        key={cat.id}
-                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                          cat.id === field.value
-                                            ? "bg-accent font-medium"
-                                            : ""
-                                        }`}
-                                        onMouseDown={(e) => {
-                                          e.preventDefault();
-                                          field.onChange(cat.id);
-                                          setShopeeCategorySearch("");
-                                          setShopeeCategoryDropdownOpen(false);
-                                        }}
-                                      >
-                                        {cat.value}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                                {searchNorm && filteredOptions.length === 0 && (
-                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
-                                    Nenhuma categoria encontrada
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        );
-                      }}
-                    />
-                    {shopeeOptions.length === 0 && (
-                      <p className="text-xs text-yellow-600">
-                        Nenhuma categoria Shopee sincronizada. Vá em Integrações
-                        e sincronize as categorias do Shopee.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {watchCreateShopeeListing && (
-                  <div className="space-y-2">
-                    <Label htmlFor="shopeeListingPrice">
-                      Valor do Anúncio (R$)
-                    </Label>
-                    <Controller
-                      name="shopeeListingPrice"
-                      control={control}
-                      render={({ field }) => (
-                        <CurrencyInput
-                          id="shopeeListingPrice"
-                          placeholder="Usar preço de venda do produto"
-                          value={field.value}
-                          onChange={field.onChange}
-                        />
-                      )}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Se não informado, será usado o preço de venda do produto.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          {/* Passo Magalu (só com a flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED).
-              Categoria é auto-resolvida no backend → só toggle + seleção de contas. */}
-          {MAGALU_ENABLED && (
-            <section
-              data-step={MAGALU_STEP}
-              ref={(el) => {
-                sectionRefs.current[MAGALU_STEP] = el;
-              }}
-              className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-            >
-              <SectionHeading step={STEPS[MAGALU_STEP - 1]} />
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Controller
-                    name="createMagaluListing"
-                    control={control}
-                    render={({ field }) => (
-                      <Switch
-                        id="createMagaluListing"
-                        checked={field.value || false}
-                        onCheckedChange={field.onChange}
-                        disabled={magaluAccounts.length === 0}
-                      />
-                    )}
-                  />
-                  <Label
-                    htmlFor="createMagaluListing"
-                    className="cursor-pointer"
-                  >
-                    Criar anúncio no Magalu
-                  </Label>
-                </div>
-
-                <p className="text-sm text-muted-foreground">
-                  Selecione esta opção para publicar o produto nas contas
-                  conectadas do Magalu. A categoria é resolvida automaticamente.
-                </p>
-
-                {watchCreateMagaluListing && (
-                  <div className="space-y-2">
-                    <Label>Contas do Magalu</Label>
-                    {magaluAccounts.length > 0 ? (
-                      <div className="space-y-2 rounded-md border p-3">
-                        {magaluAccounts.map((acc) => {
-                          const checked = watchMagaluAccountIds.includes(
-                            acc.id,
-                          );
-                          return (
-                            <label
-                              key={acc.id}
-                              className="flex items-center gap-2 text-sm"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) =>
-                                  toggleAccountSelection(
-                                    "magaluAccountIds",
-                                    acc.id,
-                                    e.target.checked,
-                                  )
-                                }
-                              />
-                              <span className="font-medium">
-                                {acc.accountName || "Conta Magalu"}
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Nenhuma conta Magalu conectada. Conecte em Integrações.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* Aumento escalonado — mesmo estado do bloco ML (percentual
-                    global; escada independente por marketplace). */}
-                {watchCreateMagaluListing && magaluAccounts.length > 1 && (
-                  <div className="space-y-2 rounded-md border p-3">
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={!!watch("mlCrossAccountIncrease")}
-                        onChange={(e) =>
-                          setValue("mlCrossAccountIncrease", e.target.checked, {
-                            shouldDirty: true,
-                          })
-                        }
-                      />
-                      Aumentar percentual nas demais contas (por marketplace)
-                    </label>
-                    {watch("mlCrossAccountIncrease") && (
-                      <div className="space-y-1 pl-6">
-                        <Label
-                          htmlFor="magaluCrossAccountPercent"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Percentual de aumento composto entre contas
-                        </Label>
-                        <div className="relative w-40">
-                          <Input
-                            id="magaluCrossAccountPercent"
-                            type="number"
-                            inputMode="decimal"
-                            min={0}
-                            max={100}
-                            step="0.01"
-                            value={watch("mlCrossAccountPercent") ?? ""}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              setValue(
-                                "mlCrossAccountPercent",
-                                v === "" ? null : Number(v),
-                                { shouldDirty: true },
-                              );
-                            }}
-                            placeholder="Ex.: 10"
-                            className="pr-7"
-                          />
-                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                            %
-                          </span>
-                        </div>
-                        <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          Aplicado em cascata entre as contas Magalu: a 1ª conta
-                          selecionada mantém o preço base; cada conta seguinte
-                          recebe este % sobre o preço da anterior. O percentual
-                          é único e compartilhado com os demais marketplaces
-                          (escadas independentes).
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {watchCreateMagaluListing && (
-                  <div className="space-y-2">
-                    <Label htmlFor="magaluCategory">Categoria no Magalu</Label>
-                    <Controller
-                      name="magaluCategory"
-                      control={control}
-                      render={({ field }) => {
-                        // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
-                        const fmt = (v: string) =>
-                          v
-                            .split("/")
-                            .map((s) => s.trim())
-                            .filter(Boolean)
-                            .join(" > ");
-                        const rawLabel =
-                          magaluSelectedLabel ||
-                          magaluOptions.find((o) => o.id === field.value)
-                            ?.value ||
-                          "";
-                        const selectedLabel = rawLabel ? fmt(rawLabel) : "";
-                        const term = magaluCategorySearch.trim();
-                        return (
-                          <div className="relative">
-                            {selectedLabel && !magaluCategoryDropdownOpen && (
-                              <div
-                                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
-                                onClick={() => {
-                                  setMagaluCategoryDropdownOpen(true);
-                                  setMagaluCategorySearch("");
-                                }}
-                              >
-                                <span className="truncate">
-                                  {selectedLabel}
-                                </span>
-                                <span className="ml-2 text-xs text-muted-foreground">
-                                  Alterar
-                                </span>
-                              </div>
-                            )}
-
-                            {(magaluCategoryDropdownOpen || !selectedLabel) && (
-                              <>
-                                <Input
-                                  placeholder="Buscar categoria do Magalu..."
-                                  value={magaluCategorySearch}
-                                  onChange={(e) =>
-                                    setMagaluCategorySearch(e.target.value)
-                                  }
-                                  onBlur={() => {
-                                    setTimeout(
-                                      () =>
-                                        setMagaluCategoryDropdownOpen(false),
-                                      200,
-                                    );
-                                  }}
-                                  autoFocus={magaluCategoryDropdownOpen}
-                                />
-                                {term && magaluOptions.length > 0 && (
-                                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
-                                    {magaluOptions.map((o) => (
-                                      <button
-                                        type="button"
-                                        key={o.id}
-                                        className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
-                                          o.id === field.value
-                                            ? "bg-accent font-medium"
-                                            : ""
-                                        }`}
-                                        onMouseDown={(e) => {
-                                          e.preventDefault();
-                                          field.onChange(o.id);
-                                          setMagaluSelectedLabel(o.value);
-                                          setMagaluCategorySearch("");
-                                          setMagaluCategoryDropdownOpen(false);
-                                        }}
-                                      >
-                                        {fmt(o.value)}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                                {term &&
-                                  !magaluCategoryLoading &&
-                                  magaluOptions.length === 0 && (
-                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
-                                      Nenhuma categoria encontrada
-                                    </div>
-                                  )}
-                                {magaluCategoryLoading && (
-                                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
-                                    Buscando…
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        );
-                      }}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Categoria sugerida:{" "}
-                      {magaluSelectedLabel
-                        ? magaluSelectedLabel
-                            .split("/")
-                            .map((s) => s.trim())
-                            .filter(Boolean)
-                            .join(" > ")
-                        : "Nenhuma"}
-                    </p>
-                  </div>
-                )}
-
-                {watchCreateMagaluListing && (
-                  <div className="space-y-2">
-                    <Label htmlFor="magaluListingPrice">
-                      Valor do Anúncio (R$)
-                    </Label>
-                    <Controller
-                      name="magaluListingPrice"
-                      control={control}
-                      render={({ field }) => (
-                        <CurrencyInput
-                          id="magaluListingPrice"
-                          placeholder="Usar preço de venda do produto"
-                          value={field.value}
-                          onChange={field.onChange}
-                        />
-                      )}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Se não informado, será usado o preço de venda do produto.
-                    </p>
-                  </div>
-                )}
               </div>
             </section>
-          )}
 
-          {/* Prévia + Revisão: sempre montadas; assinam o formulário via
+            {/* Passo Magalu (só com a flag NEXT_PUBLIC_MAGALU_INTEGRATION_ENABLED).
+              Categoria é auto-resolvida no backend → só toggle + seleção de contas. */}
+            {MAGALU_ENABLED && (
+              <section
+                data-step={MAGALU_STEP}
+                ref={(el) => {
+                  sectionRefs.current[MAGALU_STEP] = el;
+                }}
+                className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+              >
+                <SectionHeading step={STEPS[MAGALU_STEP - 1]} />
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Controller
+                      name="createMagaluListing"
+                      control={control}
+                      render={({ field }) => (
+                        <Switch
+                          id="createMagaluListing"
+                          checked={field.value || false}
+                          onCheckedChange={field.onChange}
+                          disabled={magaluAccounts.length === 0}
+                        />
+                      )}
+                    />
+                    <Label
+                      htmlFor="createMagaluListing"
+                      className="cursor-pointer"
+                    >
+                      Criar anúncio no Magalu
+                    </Label>
+                  </div>
+
+                  <p className="text-sm text-muted-foreground">
+                    Selecione esta opção para publicar o produto nas contas
+                    conectadas do Magalu. A categoria é resolvida
+                    automaticamente.
+                  </p>
+
+                  {watchCreateMagaluListing && (
+                    <div className="space-y-2">
+                      <Label>Contas do Magalu</Label>
+                      {magaluAccounts.length > 0 ? (
+                        <div className="space-y-2 rounded-md border p-3">
+                          {magaluAccounts.map((acc) => {
+                            const checked = watchMagaluAccountIds.includes(
+                              acc.id,
+                            );
+                            return (
+                              <label
+                                key={acc.id}
+                                className="flex items-center gap-2 text-sm"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) =>
+                                    toggleAccountSelection(
+                                      "magaluAccountIds",
+                                      acc.id,
+                                      e.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="font-medium">
+                                  {acc.accountName || "Conta Magalu"}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Nenhuma conta Magalu conectada. Conecte em
+                          Integrações.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Aumento escalonado — mesmo estado do bloco ML (percentual
+                    global; escada independente por marketplace). */}
+                  {watchCreateMagaluListing && magaluAccounts.length > 1 && (
+                    <div className="space-y-2 rounded-md border p-3">
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        <input
+                          type="checkbox"
+                          checked={!!watch("mlCrossAccountIncrease")}
+                          onChange={(e) =>
+                            setValue(
+                              "mlCrossAccountIncrease",
+                              e.target.checked,
+                              {
+                                shouldDirty: true,
+                              },
+                            )
+                          }
+                        />
+                        Aumentar percentual nas demais contas (por marketplace)
+                      </label>
+                      {watch("mlCrossAccountIncrease") && (
+                        <div className="space-y-1 pl-6">
+                          <Label
+                            htmlFor="magaluCrossAccountPercent"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Percentual de aumento composto entre contas
+                          </Label>
+                          <div className="relative w-40">
+                            <Input
+                              id="magaluCrossAccountPercent"
+                              type="number"
+                              inputMode="decimal"
+                              min={0}
+                              max={100}
+                              step="0.01"
+                              value={watch("mlCrossAccountPercent") ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setValue(
+                                  "mlCrossAccountPercent",
+                                  v === "" ? null : Number(v),
+                                  { shouldDirty: true },
+                                );
+                              }}
+                              placeholder="Ex.: 10"
+                              className="pr-7"
+                            />
+                            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                              %
+                            </span>
+                          </div>
+                          <p className="text-[11px] leading-relaxed text-muted-foreground">
+                            Aplicado em cascata entre as contas Magalu: a 1ª
+                            conta selecionada mantém o preço base; cada conta
+                            seguinte recebe este % sobre o preço da anterior. O
+                            percentual é único e compartilhado com os demais
+                            marketplaces (escadas independentes).
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {watchCreateMagaluListing && (
+                    <div className="space-y-2">
+                      <Label htmlFor="magaluCategory">
+                        Categoria no Magalu
+                      </Label>
+                      <Controller
+                        name="magaluCategory"
+                        control={control}
+                        render={({ field }) => {
+                          // path "A/B/C" → breadcrumb "A > B > C" (igual ML/Shopee).
+                          const fmt = (v: string) =>
+                            v
+                              .split("/")
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(" > ");
+                          const rawLabel =
+                            magaluSelectedLabel ||
+                            magaluOptions.find((o) => o.id === field.value)
+                              ?.value ||
+                            "";
+                          const selectedLabel = rawLabel ? fmt(rawLabel) : "";
+                          const term = magaluCategorySearch.trim();
+                          return (
+                            <div className="relative">
+                              {selectedLabel && !magaluCategoryDropdownOpen && (
+                                <div
+                                  className="flex items-center justify-between rounded-md border px-3 py-2 text-sm cursor-pointer hover:bg-accent"
+                                  onClick={() => {
+                                    setMagaluCategoryDropdownOpen(true);
+                                    setMagaluCategorySearch("");
+                                  }}
+                                >
+                                  <span className="truncate">
+                                    {selectedLabel}
+                                  </span>
+                                  <span className="ml-2 text-xs text-muted-foreground">
+                                    Alterar
+                                  </span>
+                                </div>
+                              )}
+
+                              {(magaluCategoryDropdownOpen ||
+                                !selectedLabel) && (
+                                <>
+                                  <Input
+                                    placeholder="Buscar categoria do Magalu..."
+                                    value={magaluCategorySearch}
+                                    onChange={(e) =>
+                                      setMagaluCategorySearch(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      setTimeout(
+                                        () =>
+                                          setMagaluCategoryDropdownOpen(false),
+                                        200,
+                                      );
+                                    }}
+                                    autoFocus={magaluCategoryDropdownOpen}
+                                  />
+                                  {term && magaluOptions.length > 0 && (
+                                    <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border bg-background shadow-md">
+                                      {magaluOptions.map((o) => (
+                                        <button
+                                          type="button"
+                                          key={o.id}
+                                          className={`w-full px-3 py-2 text-left text-sm hover:bg-accent ${
+                                            o.id === field.value
+                                              ? "bg-accent font-medium"
+                                              : ""
+                                          }`}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            field.onChange(o.id);
+                                            setMagaluSelectedLabel(o.value);
+                                            setMagaluCategorySearch("");
+                                            setMagaluCategoryDropdownOpen(
+                                              false,
+                                            );
+                                          }}
+                                        >
+                                          {fmt(o.value)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {term &&
+                                    !magaluCategoryLoading &&
+                                    magaluOptions.length === 0 && (
+                                      <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                        Nenhuma categoria encontrada
+                                      </div>
+                                    )}
+                                  {magaluCategoryLoading && (
+                                    <div className="absolute z-50 mt-1 w-full rounded-md border bg-background shadow-md px-3 py-2 text-sm text-muted-foreground">
+                                      Buscando…
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Categoria sugerida:{" "}
+                        {magaluSelectedLabel
+                          ? magaluSelectedLabel
+                              .split("/")
+                              .map((s) => s.trim())
+                              .filter(Boolean)
+                              .join(" > ")
+                          : "Nenhuma"}
+                      </p>
+                    </div>
+                  )}
+
+                  {watchCreateMagaluListing && (
+                    <div className="space-y-2">
+                      <Label htmlFor="magaluListingPrice">
+                        Valor do Anúncio (R$)
+                      </Label>
+                      <Controller
+                        name="magaluListingPrice"
+                        control={control}
+                        render={({ field }) => (
+                          <CurrencyInput
+                            id="magaluListingPrice"
+                            placeholder="Usar preço de venda do produto"
+                            value={field.value}
+                            onChange={field.onChange}
+                          />
+                        )}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Se não informado, será usado o preço de venda do
+                        produto.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* Prévia + Revisão: sempre montadas; assinam o formulário via
               useWatch, isolando o re-render do StepPreview (pesado) e da Revisão
               das demais seções (digitar nos outros campos não re-renderiza tudo). */}
-          <LiveFormValues control={control}>
-            {(formValues) => (
-              <>
-                {/* Seção 8: Prévia */}
-                <section
-                  data-step={PREVIEW_STEP}
-                  ref={(el) => {
-                    sectionRefs.current[PREVIEW_STEP] = el;
-                  }}
-                  className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-                >
-                  <SectionHeading step={STEPS[PREVIEW_STEP - 1]} />
-                  <StepPreview
-                    values={formValues}
-                    compatibilities={compatibilities}
-                    mlAccounts={mlAccounts}
-                    shopeeAccounts={shopeeAccounts}
-                    selectedMlAccountIds={
-                      (formValues.mlAccountIds ?? []) as string[]
-                    }
-                    selectedShopeeAccountIds={
-                      (formValues.shopeeAccountIds ?? []) as string[]
-                    }
-                    mlOptions={mlOptions}
-                    shopeeOptions={shopeeOptions}
-                    formatCurrency={formatCurrency}
-                    magaluAccounts={magaluAccounts}
-                    selectedMagaluAccountIds={
-                      (formValues.magaluAccountIds ?? []) as string[]
-                    }
-                    magaluOptions={magaluOptions}
-                  />
-                </section>
+            <LiveFormValues control={control}>
+              {(formValues) => (
+                <>
+                  {/* Seção 8: Prévia */}
+                  <section
+                    data-step={PREVIEW_STEP}
+                    ref={(el) => {
+                      sectionRefs.current[PREVIEW_STEP] = el;
+                    }}
+                    className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+                  >
+                    <SectionHeading step={STEPS[PREVIEW_STEP - 1]} />
+                    <StepPreview
+                      values={formValues}
+                      compatibilities={compatibilities}
+                      mlAccounts={mlAccounts}
+                      shopeeAccounts={shopeeAccounts}
+                      selectedMlAccountIds={
+                        (formValues.mlAccountIds ?? []) as string[]
+                      }
+                      selectedShopeeAccountIds={
+                        (formValues.shopeeAccountIds ?? []) as string[]
+                      }
+                      mlOptions={mlOptions}
+                      shopeeOptions={shopeeOptions}
+                      formatCurrency={formatCurrency}
+                      magaluAccounts={magaluAccounts}
+                      selectedMagaluAccountIds={
+                        (formValues.magaluAccountIds ?? []) as string[]
+                      }
+                      magaluOptions={magaluOptions}
+                    />
+                  </section>
 
-                {/* Seção 9: Revisão */}
-                <section
-                  data-step={REVIEW_STEP}
-                  ref={(el) => {
-                    sectionRefs.current[REVIEW_STEP] = el;
-                  }}
-                  className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
-                >
-                  <SectionHeading step={STEPS[REVIEW_STEP - 1]} />
-                  <div className="space-y-4">
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Identificação</h4>
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">SKU:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.sku || "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">
-                            Part Number:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formValues.partNumber || "—"}
-                          </span>
-                        </div>
-                        <div className="col-span-2">
-                          <span className="text-muted-foreground">Nome:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.name || "—"}
-                          </span>
-                        </div>
-                        {formValues.description && (
-                          <div className="col-span-2">
+                  {/* Seção 9: Revisão */}
+                  <section
+                    data-step={REVIEW_STEP}
+                    ref={(el) => {
+                      sectionRefs.current[REVIEW_STEP] = el;
+                    }}
+                    className="scroll-mt-6 space-y-4 border-t pt-6 first:border-t-0 first:pt-0"
+                  >
+                    <SectionHeading step={STEPS[REVIEW_STEP - 1]} />
+                    <div className="space-y-4">
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Identificação</h4>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-muted-foreground">SKU:</span>{" "}
+                            <span className="font-medium">
+                              {formValues.sku || "—"}
+                            </span>
+                          </div>
+                          <div>
                             <span className="text-muted-foreground">
-                              Descrição:
+                              Part Number:
                             </span>{" "}
                             <span className="font-medium">
-                              {formValues.description}
+                              {formValues.partNumber || "—"}
                             </span>
                           </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Imagem</h4>
-                      <div className="text-sm">
-                        {formValues.imageUrls &&
-                        formValues.imageUrls.length > 0 ? (
-                          <div className="space-y-2">
-                            <div className="flex gap-2 flex-wrap">
-                              {formValues.imageUrls.map((url, idx) => (
-                                /* eslint-disable-next-line @next/next/no-img-element */
-                                <img
-                                  key={`${url}-${idx}`}
-                                  src={url}
-                                  alt={`Produto ${idx + 1}`}
-                                  className="h-20 w-20 rounded-lg object-cover border"
-                                />
-                              ))}
-                            </div>
-                            <p className="text-muted-foreground">
-                              {formValues.imageUrls.length} imagem(ns)
-                              carregada(s)
-                            </p>
-                          </div>
-                        ) : formValues.imageUrl ? (
-                          <div className="space-y-2">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={formValues.imageUrl}
-                              alt="Produto"
-                              className="h-24 w-24 rounded-lg object-cover border"
-                            />
-                            <p className="text-muted-foreground">
-                              Imagem carregada
-                            </p>
-                          </div>
-                        ) : (
-                          <p className="text-muted-foreground">
-                            Nenhuma imagem
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Preços e Estoque</h4>
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">
-                            Preço Custo:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formatCurrency(formValues.costPrice)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Margem:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.markup ? `${formValues.markup}%` : "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">
-                            Preço Venda:
-                          </span>{" "}
-                          <span className="font-medium text-primary">
-                            {formatCurrency(formValues.price)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">
-                            Estoque:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formValues.stock} unidades
-                          </span>
-                        </div>
-                        <div className="col-span-2">
-                          <span className="text-muted-foreground">
-                            Localização:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formValues.location || "—"}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Veículo e Peça</h4>
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">
-                            Qualidade:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formatQuality(formValues.quality)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Marca:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.brand || "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Modelo:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.model || "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Ano:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.year || "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">Versão:</span>{" "}
-                          <span className="font-medium">
-                            {formValues.version || "—"}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">
-                            Categoria:
-                          </span>{" "}
-                          <span className="font-medium">
-                            {formValues.category || "—"}
-                          </span>
-                        </div>
-                        {formValues.sourceVehicle && (
                           <div className="col-span-2">
-                            <span className="text-muted-foreground">
-                              Veículo Origem:
-                            </span>{" "}
+                            <span className="text-muted-foreground">Nome:</span>{" "}
                             <span className="font-medium">
-                              {formValues.sourceVehicle}
+                              {formValues.name || "—"}
                             </span>
                           </div>
-                        )}
-                        <div className="col-span-2 flex gap-4 pt-2">
-                          {formValues.isSecurityItem && (
-                            <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
-                              Item de Segurança
-                            </span>
-                          )}
-                          {formValues.isTraceable && (
-                            <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                              Rastreável
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Compatibilidade</h4>
-                      <div className="text-sm">
-                        {compatibilities.length > 0 ? (
-                          <div className="space-y-1">
-                            <p className="text-muted-foreground mb-2">
-                              {compatibilities.length} veículo(s) compatível(is)
-                            </p>
-                            {compatibilities.slice(0, 5).map((c, i) => (
-                              <div key={c._localId || i} className="text-sm">
-                                <span className="font-medium">{c.brand}</span>{" "}
-                                {c.model}
-                                {c.yearFrom
-                                  ? ` (${c.yearFrom}${c.yearTo && c.yearTo !== c.yearFrom ? `–${c.yearTo}` : ""})`
-                                  : ""}
-                                {c.version ? ` ${c.version}` : ""}
-                              </div>
-                            ))}
-                            {compatibilities.length > 5 && (
-                              <p className="text-muted-foreground text-xs">
-                                ... e mais {compatibilities.length - 5}
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-muted-foreground">
-                            Nenhuma compatibilidade adicionada
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <h4 className="mb-3 font-medium">Mercado Livre</h4>
-                      <div className="text-sm">
-                        {formValues.createMLListing ? (
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                                Anúncio será criado
-                              </span>
-                            </div>
-                            <div>
+                          {formValues.description && (
+                            <div className="col-span-2">
                               <span className="text-muted-foreground">
-                                Categoria:
+                                Descrição:
                               </span>{" "}
                               <span className="font-medium">
-                                {(formValues.mlCategory &&
-                                  (mlOptions.find(
-                                    (c) => c.id === formValues.mlCategory,
-                                  )?.value ||
-                                    ML_CATEGORIES.find(
-                                      (c) => c.id === formValues.mlCategory,
-                                    )?.value)) ||
-                                  formValues.category ||
-                                  "Não especificada"}
+                                {formValues.description}
                               </span>
                             </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Imagem</h4>
+                        <div className="text-sm">
+                          {formValues.imageUrls &&
+                          formValues.imageUrls.length > 0 ? (
+                            <div className="space-y-2">
+                              <div className="flex gap-2 flex-wrap">
+                                {formValues.imageUrls.map((url, idx) => (
+                                  /* eslint-disable-next-line @next/next/no-img-element */
+                                  <img
+                                    key={`${url}-${idx}`}
+                                    src={url}
+                                    alt={`Produto ${idx + 1}`}
+                                    className="h-20 w-20 rounded-lg object-cover border"
+                                  />
+                                ))}
+                              </div>
+                              <p className="text-muted-foreground">
+                                {formValues.imageUrls.length} imagem(ns)
+                                carregada(s)
+                              </p>
+                            </div>
+                          ) : formValues.imageUrl ? (
+                            <div className="space-y-2">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={formValues.imageUrl}
+                                alt="Produto"
+                                className="h-24 w-24 rounded-lg object-cover border"
+                              />
+                              <p className="text-muted-foreground">
+                                Imagem carregada
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-muted-foreground">
+                              Nenhuma imagem
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Preços e Estoque</h4>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-muted-foreground">
+                              Preço Custo:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formatCurrency(formValues.costPrice)}
+                            </span>
                           </div>
-                        ) : (
-                          <p className="text-muted-foreground">
-                            Anúncio não será criado
-                          </p>
-                        )}
+                          <div>
+                            <span className="text-muted-foreground">
+                              Margem:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.markup
+                                ? `${formValues.markup}%`
+                                : "—"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Preço Venda:
+                            </span>{" "}
+                            <span className="font-medium text-primary">
+                              {formatCurrency(formValues.price)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Estoque:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.stock} unidades
+                            </span>
+                          </div>
+                          <div className="col-span-2">
+                            <span className="text-muted-foreground">
+                              Localização:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.location || "—"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Veículo e Peça</h4>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-muted-foreground">
+                              Qualidade:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formatQuality(formValues.quality)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Marca:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.brand || "—"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Modelo:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.model || "—"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Ano:</span>{" "}
+                            <span className="font-medium">
+                              {formValues.year || "—"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Versão:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.version || "—"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">
+                              Categoria:
+                            </span>{" "}
+                            <span className="font-medium">
+                              {formValues.category || "—"}
+                            </span>
+                          </div>
+                          {formValues.sourceVehicle && (
+                            <div className="col-span-2">
+                              <span className="text-muted-foreground">
+                                Veículo Origem:
+                              </span>{" "}
+                              <span className="font-medium">
+                                {formValues.sourceVehicle}
+                              </span>
+                            </div>
+                          )}
+                          <div className="col-span-2 flex gap-4 pt-2">
+                            {formValues.isSecurityItem && (
+                              <span className="rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+                                Item de Segurança
+                              </span>
+                            )}
+                            {formValues.isTraceable && (
+                              <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                                Rastreável
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Compatibilidade</h4>
+                        <div className="text-sm">
+                          {compatibilities.length > 0 ? (
+                            <div className="space-y-1">
+                              <p className="text-muted-foreground mb-2">
+                                {compatibilities.length} veículo(s)
+                                compatível(is)
+                              </p>
+                              {compatibilities.slice(0, 5).map((c, i) => (
+                                <div key={c._localId || i} className="text-sm">
+                                  <span className="font-medium">{c.brand}</span>{" "}
+                                  {c.model}
+                                  {c.yearFrom
+                                    ? ` (${c.yearFrom}${c.yearTo && c.yearTo !== c.yearFrom ? `–${c.yearTo}` : ""})`
+                                    : ""}
+                                  {c.version ? ` ${c.version}` : ""}
+                                </div>
+                              ))}
+                              {compatibilities.length > 5 && (
+                                <p className="text-muted-foreground text-xs">
+                                  ... e mais {compatibilities.length - 5}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-muted-foreground">
+                              Nenhuma compatibilidade adicionada
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border bg-muted/30 p-4">
+                        <h4 className="mb-3 font-medium">Mercado Livre</h4>
+                        <div className="text-sm">
+                          {formValues.createMLListing ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                                  Anúncio será criado
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-muted-foreground">
+                                  Categoria:
+                                </span>{" "}
+                                <span className="font-medium">
+                                  {(formValues.mlCategory &&
+                                    (mlOptions.find(
+                                      (c) => c.id === formValues.mlCategory,
+                                    )?.value ||
+                                      ML_CATEGORIES.find(
+                                        (c) => c.id === formValues.mlCategory,
+                                      )?.value)) ||
+                                    formValues.category ||
+                                    "Não especificada"}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-muted-foreground">
+                              Anúncio não será criado
+                            </p>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </section>
-              </>
-            )}
-          </LiveFormValues>
-        </form>
+                  </section>
+                </>
+              )}
+            </LiveFormValues>
+          </form>
 
-        {/* ===== FOOTER FIXO: só Cancelar + Criar Produto ===== */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-3 sm:px-6">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => handleOpenChange(false)}
-            disabled={isSubmitting}
-          >
-            Cancelar
-          </Button>
-          <Button
-            type="button"
-            onClick={handleSubmit(onSubmit, onInvalid)}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="size-4 animate-spin" />
-                Criando...
-              </>
-            ) : (
-              <>
-                <Check className="mr-1 h-4 w-4" />
-                Criar Produto
-              </>
-            )}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          {/* ===== FOOTER FIXO: só Cancelar + Criar Produto ===== */}
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t px-4 py-3 sm:px-6">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => handleOpenChange(false)}
+              disabled={isSubmitting}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={handleSubmit(onSubmit, onInvalid)}
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Criando...
+                </>
+              ) : (
+                <>
+                  <Check className="mr-1 h-4 w-4" />
+                  Criar Produto
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
