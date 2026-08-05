@@ -577,6 +577,21 @@ export function CreateProductDialog({
   const [askRestoreDraft, setAskRestoreDraft] = useState(false);
   /** Impede o autosave de gravar por cima antes do usuário decidir. */
   const draftDecisionPendingRef = useRef(false);
+  /**
+   * Ligado assim que o fechamento começa. `handleClose` chama `reset()`, e o
+   * `reset()` dispara a assinatura do react-hook-form de forma SÍNCRONA — com
+   * `open` ainda true, porque `setOpen(false)` só acontece no fim. Sem esta
+   * trava, o autosave agendava um snapshot com os campos JÁ ZERADOS e, 600 ms
+   * depois, gravava por cima do rascunho bom.
+   *
+   * O snapshot zerado passava despercebido porque `hasMeaningfulContent`
+   * devolve true na primeira linha quando há compatibilidades, e elas ainda
+   * estão em `draftExtrasRef` nesse instante (o `setCompatibilities([])` só
+   * chega no render seguinte). Resultado relatado em produção: ao reabrir,
+   * voltavam as compatibilidades e mais nada — nome, preço e part number
+   * vinham vazios.
+   */
+  const draftClosingRef = useRef(false);
 
   /**
    * Espelho do estado que NÃO vive no react-hook-form. Mantido em ref (mesmo
@@ -2958,6 +2973,10 @@ export function CreateProductDialog({
     // Enquanto a pergunta de restauração está na tela, não grava por cima do
     // rascunho que o usuário ainda vai decidir se quer.
     if (draftDecisionPendingRef.current) return;
+    // Fechando: o que vale já foi gravado pelo `flush` no início de
+    // `handleClose`. Daqui pra frente o formulário está sendo desmontado, e
+    // qualquer snapshot só teria valores zerados.
+    if (draftClosingRef.current) return;
     const extras = draftExtrasRef.current;
     draftSaveRef.current({
       values: getValues() as Record<string, unknown>,
@@ -3006,6 +3025,8 @@ export function CreateProductDialog({
       draftDecisionPendingRef.current = false;
       return;
     }
+    // Reabriu: o autosave volta a valer.
+    draftClosingRef.current = false;
     if (!draftEnabled || !draft.hasDraft) return;
     draftDecisionPendingRef.current = true;
     setAskRestoreDraft(true);
@@ -3110,6 +3131,8 @@ export function CreateProductDialog({
     // Fechar antes do debounce disparar também perderia os últimos segundos de
     // digitação — que é justamente a dor que o bloco resolve.
     draft.flush();
+    // E a partir daqui nenhum autosave mais: ver `draftClosingRef`.
+    draftClosingRef.current = true;
     reset();
     setCurrentStep(1);
     setMlCategorySearch("");
