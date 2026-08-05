@@ -100,6 +100,12 @@ export const HISTORY_MAX_ENTRIES = 5;
  * compatibilidades e ficha técnica cheia passa fácil de 10 KB; acima disto o
  * ganho de guardar não compensa o risco de estourar a quota do domínio inteiro
  * (que derrubaria também as preferências de visão).
+ *
+ * ATENÇÃO ao nome: a comparação é contra `serialized.length`, que conta
+ * unidades UTF-16, não bytes. Para texto ASCII os dois coincidem; com acento e
+ * emoji o teto real em bytes chega a ser o dobro. Fica assim de propósito — o
+ * número é uma salvaguarda folgada, não um limite exato, e apertá-lo passaria a
+ * descartar snapshots que hoje são guardados. Auditado em 05/08/2026.
  */
 export const HISTORY_MAX_ENTRY_BYTES = 48 * 1024;
 
