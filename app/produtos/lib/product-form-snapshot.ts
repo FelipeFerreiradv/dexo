@@ -28,23 +28,25 @@ export const NEVER_PERSISTED_FIELDS = ["sku"] as const;
 /**
  * Campos que o HISTÓRICO nunca copia, mesmo estando no snapshot.
  *
- *  - `partNumber`  identifica a peça específica: farol esquerdo e direito têm
- *                  part numbers diferentes. Copiar gera dado errado.
+ *  - `sku`         nunca chega aqui: não é sequer persistido
+ *                  (`NEVER_PERSISTED_FIELDS`). É único por tenant, vem do
+ *                  servidor a cada abertura, e restaurar um antigo faria o
+ *                  submit tomar o caminho de SKU manual.
  *  - `imageUrl` / `imageUrls`  a imagem é do produto físico, nunca do anterior.
- *  - `stock`       quantidade é do item, não do modelo de cadastro.
- *  - `name`        é justamente o que muda entre "Farol esquerdo" e "Farol
- *                  direito"; copiar silenciosamente esconderia o erro.
- *  - `price` / `costPrice` / `markup`  preço não se repete por padrão.
+ *  - `costPrice` / `markup`  o custo é da peça específica, e o markup é
+ *                  derivado dele — copiar um sem o outro produz margem errada.
  *  - ids e códigos únicos (`mlCatalogProductId`, `scrapId`).
+ *
+ * `partNumber`, `stock`, `name` e `price` SAÍRAM desta lista em 05/08/2026 a
+ * pedido do Felipe: quem cadastra peças parecidas em sequência quer esses
+ * campos pré-preenchidos. A política de merge continua sendo a mesma —
+ * `applyProductHistory` só preenche campo VAZIO e nunca sobrescreve o que o
+ * usuário digitou (ver `tryFillString` / `tryFillNumber`).
  */
 export const HISTORY_BLOCKED_FIELDS = [
   "sku",
-  "partNumber",
   "imageUrl",
   "imageUrls",
-  "stock",
-  "name",
-  "price",
   "costPrice",
   "markup",
   "mlCatalogProductId",

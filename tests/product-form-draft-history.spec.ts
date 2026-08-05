@@ -458,22 +458,63 @@ describe("aplicação do histórico: campos bloqueados", () => {
     expect(r.next.sku).toBe("");
   });
 
-  it("part number nunca é copiado (esquerdo e direito são diferentes)", () => {
-    const r = applyProductHistory(atual, [], anterior);
-    expect(r.next.partNumber).toBe("");
-  });
-
   it("imagem nunca é copiada (é do produto físico)", () => {
     const r = applyProductHistory(atual, [], anterior);
     expect(r.next.imageUrl).toBe("");
     expect(r.next.imageUrls).toEqual([]);
   });
 
-  it("nome e preços não são copiados silenciosamente", () => {
+  it("custo e markup não são copiados (o custo é da peça específica)", () => {
     const r = applyProductHistory(atual, [], anterior);
-    expect(r.next.name).toBe("");
-    expect(r.next.price).toBe(0);
     expect(r.next.costPrice).toBe(0);
+    expect(r.next.markup).toBe(0);
+  });
+});
+
+describe("aplicação do histórico: nome, part number, preço e estoque", () => {
+  // Passaram a ser copiados em 05/08/2026 (pedido do Felipe). O que os torna
+  // seguros é a política de merge: só preenchem campo VAZIO.
+  const anterior = snap();
+  const vazio = {
+    name: "",
+    partNumber: "",
+    price: 0,
+    stock: 0,
+  };
+
+  it("preenche os quatro quando o formulário está vazio", () => {
+    const r = applyProductHistory(vazio, [], anterior);
+    expect(r.next.name).toBe(anterior.values.name);
+    expect(r.next.partNumber).toBe(anterior.values.partNumber);
+    expect(r.next.price).toBe(anterior.values.price);
+    expect(r.next.stock).toBe(anterior.values.stock);
+    for (const campo of ["name", "partNumber", "price", "stock"]) {
+      expect(r.applied).toContain(campo);
+    }
+  });
+
+  it("NÃO sobrescreve o que o usuário já digitou — vira conflito", () => {
+    const digitado = {
+      name: "Farol Direito Gol 2015",
+      partNumber: "PN-DIREITO",
+      price: 199.9,
+      stock: 7,
+    };
+    const r = applyProductHistory(digitado, [], anterior);
+    expect(r.next.name).toBe("Farol Direito Gol 2015");
+    expect(r.next.partNumber).toBe("PN-DIREITO");
+    expect(r.next.price).toBe(199.9);
+    expect(r.next.stock).toBe(7);
+    for (const campo of ["name", "partNumber", "price", "stock"]) {
+      expect(r.applied).not.toContain(campo);
+      expect(r.conflicts.map((c) => c.field)).toContain(campo);
+    }
+  });
+
+  it("o SKU continua fora, mesmo com os outros liberados", () => {
+    const r = applyProductHistory({ ...vazio, sku: "" }, [], anterior);
+    expect(r.applied).not.toContain("sku");
+    expect(r.next.sku).toBe("");
   });
 });
 

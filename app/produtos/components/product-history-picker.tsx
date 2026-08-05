@@ -77,8 +77,7 @@ export function ProductHistoryPicker({
 
       <p className="flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground">
         <Info className="mt-0.5 size-3 shrink-0" />
-        Preenche só os campos vazios. SKU, part number, imagens, estoque, nome e
-        preço nunca são copiados.
+        Preenche só os campos vazios. SKU, imagens e custo nunca são copiados.
       </p>
     </div>
   );

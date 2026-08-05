@@ -20,6 +20,12 @@ export interface UseProductHistoryOptions {
   enabled: boolean;
   /** `parentUserId ?? id` da sessão. `null` => não lê nem grava. */
   owner: string | null;
+  /**
+   * Modal aberto? Mesma razão do rascunho (ver `use-product-draft.ts`): o
+   * modal não desmonta ao fechar, então ler só no mount deixaria o histórico
+   * desatualizado em relação ao que outra aba gravou.
+   */
+  open: boolean;
   now?: () => number;
 }
 
@@ -48,19 +54,23 @@ export interface UseProductHistory {
 export function useProductHistory({
   enabled,
   owner,
+  open,
   now = Date.now,
 }: UseProductHistoryOptions): UseProductHistory {
   const [entries, setEntries] = useState<ProductFormSnapshot[]>([]);
   const key = owner ? historyKey(owner) : null;
 
-  // Leitura única no mount, como o padrão do projeto manda.
+  // Leitura a cada abertura. `record` já atualiza o estado na hora, então
+  // isto cobre o caso de outra aba ter cadastrado algo enquanto esta estava
+  // com o modal fechado.
   useEffect(() => {
     if (!enabled || !key) {
       setEntries([]);
       return;
     }
+    if (!open) return;
     setEntries(readHistory(key));
-  }, [enabled, key]);
+  }, [enabled, key, open]);
 
   const record = useCallback(
     (input: Omit<SerializeInput, "now">) => {

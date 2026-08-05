@@ -1184,10 +1184,25 @@ export class CategorySuggestionService {
           continue;
       }
 
+      // O veículo de `attr` vem do `brandModelPatterns` do alias — ou seja, do
+      // ANÚNCIO que semeou aquele alias, não da peça que está sendo cadastrada.
+      // Ele só preenche o que NÃO veio do usuário: nem o contexto explícito que
+      // o modal manda, nem o que dá para ler do título dele.
+      //
+      // Antes o spread `...attr` sobrescrevia os dois. Como o front aplica
+      // `attributes` de volta no formulário (create-product-dialog.tsx), um
+      // título "Retrovisor Direito Volkswagen Fox 2011 2012" preenchia
+      // marca=volvo e modelo=v40 — o veículo do anúncio que semeou o alias de
+      // Espelhos Retrovisores. Medido no navegador em 05/08/2026.
+      //
+      // Não mexe em ranking: `score`, `signalCount`, `confidence` e `autoApply`
+      // são calculados a partir de `scoreAliasMatch` e não leem `mergedAttr` —
+      // ele alimenta só o campo `attributes` e o `buildTitleSuggestion`.
       const mergedAttr: AttributeSuggestion = {
-        ...baseAttr,
-        ...attr,
-        year: attr.year || baseAttr.year,
+        brand: baseAttr.brand || attr.brand,
+        model: baseAttr.model || attr.model,
+        year: baseAttr.year || attr.year,
+        partNumber: baseAttr.partNumber || attr.partNumber,
       };
 
       const titleSuggestion = this.buildTitleSuggestion(
