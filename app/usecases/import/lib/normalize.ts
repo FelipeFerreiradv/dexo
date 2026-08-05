@@ -166,6 +166,44 @@ export function normKey(s: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * `normKey` memoizado, para os getters que rodam POR LINHA.
+ *
+ * `normKey` custa ~287ns (regex + `normalize("NFD")` + duas substituições).
+ * Barato isolado, caro no laço: o mapper de fotos lê 2 rótulos por linha e cada
+ * leitura normaliza o rótulo DUAS vezes — uma no `aliasReader`, para saber se a
+ * coluna existe, outra dentro do `get` do reader, para achar a chave. São 4
+ * chamadas por linha; nas 653.239 linhas do export do Emp595, **2.612.956
+ * chamadas** e ~750ms para recalcular sempre os mesmos 2 rótulos.
+ *
+ * ⚠️ O memo é DA INSTÂNCIA, nunca global. Cada `readXlsxBuffer`/`readCsvBuffer`/
+ * `aliasReader` cria o seu, e ele morre junto com o arquivo. As chaves são
+ * RÓTULOS DE COLUNA — literais escritos nos mappers, um punhado por arquivo —,
+ * nunca valores de célula; um memo global cresceria sem teto se alguém um dia
+ * chamasse `normKey` sobre dado. Como `normKey` é pura, o resultado é
+ * idêntico ao de recalcular.
+ */
+export function createNormKeyMemo(
+  // Injetável só para o teste conseguir CONTAR as chamadas — o efeito do memo
+  // é invisível na saída (`normKey` é pura), então sem esta costura não há como
+  // provar que ele memoiza de verdade. Produção sempre usa o default.
+  normalizar: (s: string) => string = normKey,
+): (s: string) => string {
+  const memo = new Map<string, string>();
+  return (s) => {
+    let k = memo.get(s);
+    // ⚠️ `=== undefined`, nunca `!k`: um rótulo só de pontuação (`"###"`, ou
+    // `"(obs)"`, cujo conteúdo entre parênteses é removido) normaliza para
+    // `""`, que é falsy. Com `!k` ele recalcularia a cada linha — o memo
+    // pareceria funcionar, porque a saída é idêntica, e não economizaria nada.
+    if (k === undefined) {
+      k = normalizar(s);
+      memo.set(s, k);
+    }
+    return k;
+  };
+}
+
 export function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));

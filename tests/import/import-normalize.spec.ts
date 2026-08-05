@@ -14,6 +14,7 @@ import {
   cleanPlate,
   parseFlexibleDate,
   normKey,
+  createNormKeyMemo,
   chunk,
 } from "../../app/usecases/import/lib/normalize";
 
@@ -122,5 +123,79 @@ describe("import/normalize — normKey / chunk", () => {
   });
   it("chunk divide preservando a ordem", () => {
     expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+});
+
+describe("import/normalize — createNormKeyMemo", () => {
+  const ROTULOS = [
+    "N° NFe",
+    "# Cod Peca",
+    "Localização",
+    "Valor (R$)",
+    "",
+    "   ",
+    "já-normalizado",
+    "###",
+    "ÁÉÍÓÚ àèìòù ÇÑ",
+  ];
+
+  it("devolve EXATAMENTE o mesmo que normKey, para qualquer rótulo", () => {
+    const nk = createNormKeyMemo();
+    for (const r of ROTULOS) expect(nk(r)).toBe(normKey(r));
+  });
+
+  it("a segunda chamada devolve o valor memoizado (mesma string)", () => {
+    const nk = createNormKeyMemo();
+    for (const r of ROTULOS) {
+      const a = nk(r);
+      const b = nk(r);
+      expect(b).toBe(a);
+      expect(b).toBe(normKey(r));
+    }
+  });
+
+  it("normaliza UMA vez por rótulo distinto, por mais que seja chamado", () => {
+    // ⚠️ O efeito do memo é INVISÍVEL na saída (`normKey` é pura), então o
+    // único jeito de provar que ele memoiza é contar as chamadas — daí a
+    // costura de injeção. Sem este teste, remover o memo passava despercebido.
+    const chamadas: string[] = [];
+    const nk = createNormKeyMemo((s) => {
+      chamadas.push(s);
+      return normKey(s);
+    });
+    for (let i = 0; i < 50; i++) {
+      nk("# Cod Peca");
+      nk("Localização");
+    }
+    expect(chamadas).toEqual(["# Cod Peca", "Localização"]);
+  });
+
+  it("memoiza rótulo que normaliza para VAZIO (a marca de miss não pode ser falsy)", () => {
+    // `normKey("###")` e `normKey("(obs)")` devolvem "" — falsy. Se a marca de
+    // "não está no memo" fosse `!k` em vez de `k === undefined`, esses rótulos
+    // recalculariam a cada linha: a saída ficaria idêntica e o memo não
+    // economizaria nada.
+    expect(normKey("###")).toBe("");
+    expect(normKey("(obs)")).toBe("");
+
+    const chamadas: string[] = [];
+    const nk = createNormKeyMemo((s) => {
+      chamadas.push(s);
+      return normKey(s);
+    });
+    for (let i = 0; i < 20; i++) {
+      expect(nk("###")).toBe("");
+      expect(nk("(obs)")).toBe("");
+      expect(nk("")).toBe("");
+    }
+    expect(chamadas).toEqual(["###", "(obs)", ""]);
+  });
+
+  it("cada memo é independente — nada é compartilhado entre arquivos", () => {
+    const a = createNormKeyMemo();
+    const b = createNormKeyMemo();
+    expect(a("Localização")).toBe("localizacao");
+    expect(b("Localização")).toBe("localizacao");
+    expect(a).not.toBe(b);
   });
 });
