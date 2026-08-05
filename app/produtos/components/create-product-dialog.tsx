@@ -567,10 +567,12 @@ export function CreateProductDialog({
     enabled: draftEnabled,
     owner: storageOwner,
     scope: draftScope,
+    open,
   });
   const history = useProductHistory({
     enabled: historyEnabled,
     owner: storageOwner,
+    open,
   });
   const [askRestoreDraft, setAskRestoreDraft] = useState(false);
   /** Impede o autosave de gravar por cima antes do usuário decidir. */

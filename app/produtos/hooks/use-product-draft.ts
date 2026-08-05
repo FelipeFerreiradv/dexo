@@ -31,6 +31,16 @@ export interface UseProductDraftOptions {
   owner: string | null;
   /** Contexto de abertura: cada um tem o seu próprio rascunho. */
   scope: DraftScope;
+  /**
+   * Modal aberto? A leitura acontece a CADA abertura, não uma vez no mount.
+   *
+   * O `CreateProductDialog` fica montado junto com a lista de produtos e só
+   * alterna `open` — ele não desmonta ao fechar. Lendo só no mount, o rascunho
+   * gravado ao fechar o modal só era oferecido depois de recarregar a página,
+   * o que justamente elimina o caso mais comum da feature: fechar sem querer
+   * e reabrir em seguida. Medido no navegador em 05/08/2026.
+   */
+  open: boolean;
   /** Injetável para teste. */
   now?: () => number;
 }
@@ -70,6 +80,7 @@ export function useProductDraft({
   enabled,
   owner,
   scope,
+  open,
   now = Date.now,
 }: UseProductDraftOptions): UseProductDraft {
   const [draft, setDraft] = useState<ProductFormSnapshot | null>(null);
@@ -87,12 +98,17 @@ export function useProductDraft({
     [],
   );
 
-  // Leitura única no mount (SSR-safe: o 1º render nunca toca em window).
+  // Leitura a cada abertura (SSR-safe: o 1º render nunca toca em window).
+  // Dentro de UMA abertura o efeito não roda de novo, então responder a
+  // pergunta (restaurar/descartar) não faz ela voltar.
   useEffect(() => {
     if (!enabled || !key) {
       setDraft(null);
       return;
     }
+    // Fechado: não lê e não mexe no que já está em memória. Quem grava ao
+    // fechar é o `flush`; a próxima abertura relê.
+    if (!open) return;
     const stored = readDraft(key);
     if (!stored) return;
     // Expirado ou sem conteúdo de verdade => some sem perguntar.
@@ -104,7 +120,7 @@ export function useProductDraft({
       return;
     }
     setDraft(stored);
-  }, [enabled, key, now]);
+  }, [enabled, key, open, now]);
 
   useEffect(() => () => writer.cancel(), [writer]);
 
