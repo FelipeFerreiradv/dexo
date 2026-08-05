@@ -302,6 +302,14 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
         | Record<string, unknown>
         | null
         | undefined) ?? undefined,
+    // JSONB de forma livre no banco: só sobe se de fato for array de strings.
+    // Linha antiga (coluna NULL) e row do productSelect (que não projeta o
+    // campo) caem no mesmo `undefined` de antes.
+    compatibilityPositions: Array.isArray((item as any).compatibilityPositions)
+      ? ((item as any).compatibilityPositions as unknown[]).filter(
+          (p): p is string => typeof p === "string",
+        )
+      : undefined,
     scrapId: (item as any).scrapId ?? undefined,
     createdFromMarketplace: (item as any).createdFromMarketplace ?? false,
     originPlatform: (item as any).originPlatform ?? undefined,
@@ -461,6 +469,13 @@ class ProductRepositoryPrisma implements ProductRepository {
       // nunca lê (só usa mlCatalogProductId). O detalhe (findByIdDetailed) usa
       // `include` e continua trazendo-o; o update guarda `!== undefined`, então
       // salvar uma edição não o sobrescreve. EGRESS: corta o maior peso por linha.
+      //
+      // compatibilityPositions, ao contrário, ENTRA: são no máximo 4 rótulos
+      // curtos (dezenas de bytes, não KB) e o modal de edição precisa deles no
+      // instante em que abre — ele recebe o produto já carregado pela listagem.
+      // Deixar de fora custaria uma consulta extra por abertura de modal, que é
+      // mais caro do que os bytes que economizaria.
+      compatibilityPositions: true,
       scrapId: true,
       createdFromMarketplace: true,
       originPlatform: true,
@@ -999,6 +1014,11 @@ class ProductRepositoryPrisma implements ProductRepository {
             data.mlCatalogSnapshot == null
               ? Prisma.DbNull
               : (data.mlCatalogSnapshot as Prisma.InputJsonValue),
+          compatibilityPositions:
+            Array.isArray(data.compatibilityPositions) &&
+            data.compatibilityPositions.length > 0
+              ? (data.compatibilityPositions as Prisma.InputJsonValue)
+              : Prisma.DbNull,
           scrapId: data.scrapId ?? null,
           createdFromMarketplace: data.createdFromMarketplace ?? false,
           originPlatform: data.originPlatform ?? null,
@@ -1977,6 +1997,16 @@ class ProductRepositoryPrisma implements ProductRepository {
             data.mlCatalogSnapshot === null
               ? Prisma.DbNull
               : (data.mlCatalogSnapshot as Prisma.InputJsonValue),
+        }),
+        // Ausente = não mexe. Lista vazia e `null` são a mesma coisa aqui
+        // ("sem posição") e gravam DbNull, para a coluna não guardar `[]` —
+        // que leria como "tem valor" em qualquer comparação futura.
+        ...(data.compatibilityPositions !== undefined && {
+          compatibilityPositions:
+            data.compatibilityPositions === null ||
+            data.compatibilityPositions.length === 0
+              ? Prisma.DbNull
+              : (data.compatibilityPositions as Prisma.InputJsonValue),
         }),
       };
 

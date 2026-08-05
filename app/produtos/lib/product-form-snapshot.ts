@@ -70,6 +70,16 @@ export interface ProductFormSnapshot {
   values: Record<string, unknown>;
   /** Estado que vive FORA do react-hook-form e vai no payload do submit. */
   compatibilities: CompatibilitySnapshot[];
+  /**
+   * Posição das compatibilidades ("Dianteira", "Esquerda"). Também vive fora do
+   * react-hook-form.
+   *
+   * Opcional: snapshot gravado antes desta versão não tem o campo e cai em lista
+   * vazia — mesmo tratamento do `defaultStock`. Não vale mexer no
+   * SNAPSHOT_VERSION por isso: subir a versão descartaria em silêncio todo
+   * rascunho aberto no navegador de quem está trabalhando na hora do deploy.
+   */
+  compatibilityPositions?: string[];
   /** Sucata vinculada (vira `scrapId`). */
   scrap: { id: string; label?: string } | null;
   /** Rótulo exibido da categoria Magalu (o id está em `values.magaluCategory`). */
@@ -96,6 +106,7 @@ export interface ProductFormSnapshot {
 export interface SerializeInput {
   values: Record<string, unknown>;
   compatibilities: CompatibilitySnapshot[];
+  compatibilityPositions?: string[];
   scrap?: { id: string; label?: string } | null;
   magaluCategoryLabel?: string | null;
   currentStep?: number | null;
@@ -131,6 +142,9 @@ export function serializeProductForm(
       yearTo: c.yearTo ?? null,
       version: c.version ?? null,
     })),
+    compatibilityPositions: (input.compatibilityPositions ?? []).filter(
+      (p): p is string => typeof p === "string" && p.length > 0,
+    ),
     scrap: input.scrap ?? null,
     magaluCategoryLabel: input.magaluCategoryLabel ?? null,
     currentStep: input.currentStep ?? null,
@@ -161,6 +175,11 @@ export function parseSnapshot(raw: unknown): ProductFormSnapshot | null {
     savedAt: s.savedAt,
     values: s.values as Record<string, unknown>,
     compatibilities: Array.isArray(s.compatibilities) ? s.compatibilities : [],
+    compatibilityPositions: Array.isArray(s.compatibilityPositions)
+      ? s.compatibilityPositions.filter(
+          (p): p is string => typeof p === "string",
+        )
+      : [],
     scrap: s.scrap ?? null,
     magaluCategoryLabel: s.magaluCategoryLabel ?? null,
     currentStep: typeof s.currentStep === "number" ? s.currentStep : null,
@@ -223,6 +242,9 @@ const MEANINGFUL_FIELDS = [
 
 export function hasMeaningfulContent(snapshot: ProductFormSnapshot): boolean {
   if (snapshot.compatibilities.length > 0) return true;
+  // Posição só existe por clique explícito — nada a pré-preenche —, então ela
+  // nunca cria o falso "continuar de onde parou?" que o `stock` acima evita.
+  if ((snapshot.compatibilityPositions?.length ?? 0) > 0) return true;
   const attrs = snapshot.values.attributes;
   if (attrs && typeof attrs === "object" && Object.keys(attrs).length > 0) {
     return true;

@@ -3280,10 +3280,14 @@ export class ListingUseCase {
           // read-back confirmar veículos gravados. Antes, qualquer HTTP 200
           // encerrava o fluxo — inclusive o 200 com `ids: []`, que é o ML
           // dizendo "aceitei e ignorei".
+          // A posição é do PRODUTO e vale para todos os veículos. Vem da
+          // linha completa que o findById já carregou — nenhuma query a mais.
           const compat = await MLApiService.applyCompatibilitiesVerified(
             acc.accessToken,
             mlItem.id,
             vehicles,
+            (product as { compatibilityPositions?: string[] | null })
+              .compatibilityPositions ?? undefined,
           );
 
           if (compat.unresolved.length > 0) {
@@ -3313,6 +3317,12 @@ export class ListingUseCase {
               unresolvedSample: compat.unresolved.slice(0, 3),
               budgetExhausted: compat.budgetExhausted,
               firstError: compat.errors[0],
+              // `positionsEcho: "dropped"` é o ML tendo aceitado o corpo e
+              // jogado a posição fora — 200 na resposta, nada gravado.
+              positionsRequested: compat.positions?.requested,
+              positionsSent: compat.positions?.sent.map((v) => v.value_name),
+              positionsUnresolved: compat.positions?.unresolved,
+              positionsEcho: compat.positions?.echo,
             }),
           );
 
@@ -5854,6 +5864,12 @@ export class ListingUseCase {
       yearTo?: number | null;
     }> | null;
     origin: "edit" | "product_sync";
+    /**
+     * Rótulos de posição do produto. Só quem JÁ tem o produto em mãos passa —
+     * não vale gastar uma query a mais num caminho que é opt-in por flag e que
+     * na maioria das vezes sai pelo atalho "already_covered" logo abaixo.
+     */
+    positionLabels?: string[] | null;
   }): Promise<void> {
     if (process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED !== "true") return;
     if (!args.itemId || args.itemId.startsWith("PENDING_")) return;
@@ -5893,6 +5909,7 @@ export class ListingUseCase {
         args.accessToken,
         args.itemId,
         vehicles,
+        args.positionLabels ?? undefined,
       );
 
       console.log(
@@ -5910,6 +5927,8 @@ export class ListingUseCase {
           unresolved: compat.unresolved.length,
           budgetExhausted: compat.budgetExhausted,
           firstError: compat.errors[0],
+          positionsSent: compat.positions?.sent.map((v) => v.value_name),
+          positionsEcho: compat.positions?.echo,
         }),
       );
 

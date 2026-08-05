@@ -23,6 +23,14 @@ import {
   MLOrdersSearchParams,
   MLOrderStatus,
 } from "../types/ml-order.types";
+import {
+  COMPAT_POSITION_ATTRIBUTE_ID,
+  CompatPositionValue,
+  CompatRestrictionBlock,
+  buildCompatRestrictions,
+  inspectRestrictionsEcho,
+  resolveCompatPositions,
+} from "../lib/ml-compat-position.logic";
 
 export const ML_COMPAT_DOMAIN_ID = "MLB-CARS_AND_VANS";
 
@@ -1710,6 +1718,69 @@ export class MLApiService {
   }
 
   /**
+   * Valores de POSITION que o ML aceita para um par de domínios (veículo × peça).
+   *
+   * Os `value_id` NÃO são constantes: variam por par de domínios. Guardar os
+   * medidos numa tabela fixa daria falha silenciosa nas outras categorias, porque
+   * `value_id` inválido faz o ML responder 200 com `restrictions: []` — aceita e
+   * descarta sem avisar. Por isso a resolução é sempre contra a API.
+   *
+   * EGRESS: uma chamada por domínio de peça a cada 10 minutos por processo
+   * (`compatCache`), e SÓ quando o produto tem posição escolhida. Produto sem
+   * posição — a esmagadora maioria — não chega aqui.
+   *
+   * Nunca lança: lista vazia significa "não sei", e quem chama não envia posição.
+   */
+  static async getCompatibilityPositionValues(
+    accessToken: string,
+    partDomainId: string,
+    mainDomainId: string = ML_COMPAT_DOMAIN_ID,
+  ): Promise<CompatPositionValue[]> {
+    if (!partDomainId) return [];
+    const cacheKey = `compat:restrictions:${mainDomainId}:${partDomainId}`;
+    const cached = compatCacheGet<CompatPositionValue[]>(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const url =
+        `${ML_CONSTANTS.API_URL}/catalog_compatibilities/restrictions/values` +
+        `?main_domain_id=${encodeURIComponent(mainDomainId)}` +
+        `&secondary_domain_id=${encodeURIComponent(partDomainId)}`;
+      const resp = await axios.get<{
+        attributes_values?: Array<{
+          attribute_id?: string;
+          values?: Array<{ value_id?: unknown; value_name?: unknown }>;
+        }>;
+      }>(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 15000,
+      });
+
+      const grupo = (resp.data?.attributes_values ?? []).find(
+        (a) => a?.attribute_id === COMPAT_POSITION_ATTRIBUTE_ID,
+      );
+      const values: CompatPositionValue[] = [];
+      for (const v of grupo?.values ?? []) {
+        const id = v?.value_id;
+        const name = v?.value_name;
+        if (typeof id !== "string" && typeof id !== "number") continue;
+        if (typeof name !== "string" || name.length === 0) continue;
+        values.push({ value_id: String(id), value_name: name });
+      }
+      // Lista vazia (categoria sem POSITION) entra com o TTL curto que o
+      // compatCacheSet aplica sozinho — errar 30s é recuperável, 10 min não.
+      compatCacheSet(cacheKey, values);
+      return values;
+    } catch (error) {
+      console.warn(
+        `[ML Compat] falha ao ler valores de POSITION de ${partDomainId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Anexa uma lista de catalog products (IDs já resolvidos) como compatibilidades
    * do item — preenche a aba "Ficha técnica → Compatibilidades" no ML.
    *
@@ -1725,12 +1796,16 @@ export class MLApiService {
    * `opts.verify` liga o read-back: depois do PUT/POST, relê as compatibilidades
    * e devolve quantas de fato ficaram (`persisted`). `createdCount` continua
    * sendo o número ENVIADO — é o contrato dos chamadores atuais.
+   *
+   * `opts.positionLabels` anexa a POSIÇÃO (Dianteira, Esquerda…) às
+   * compatibilidades criadas. Ausente ou vazio = corpo byte-idêntico ao de
+   * antes desta opção existir, que é o caminho de todo produto sem posição.
    */
   static async setItemCompatibilities(
     accessToken: string,
     itemId: string,
     catalogProductIds: string[],
-    opts?: { verify?: boolean },
+    opts?: { verify?: boolean; positionLabels?: string[] },
   ): Promise<{
     success: boolean;
     createdCount: number;
@@ -1738,6 +1813,13 @@ export class MLApiService {
     persisted?: number;
     verified?: boolean;
     userProductId?: string | null;
+    /** Diagnóstico das posições. Ausente quando nenhuma foi pedida. */
+    positions?: {
+      requested: string[];
+      sent: CompatPositionValue[];
+      unresolved: string[];
+      echo: "echoed" | "dropped" | "unknown";
+    };
   }> {
     const errors: string[] = [];
     let createdCount = 0;
@@ -1760,21 +1842,68 @@ export class MLApiService {
     // precisa de category_id no root do body.
     let userProductId: string | null = null;
     let categoryId: string | null = null;
+    // Domínio DA PEÇA (não o do veículo). Sai da mesma resposta que já
+    // buscávamos — nenhuma requisição a mais. É a chave para resolver os
+    // value_id de POSITION, que variam por par de domínios.
+    let partDomainId: string | null = null;
     try {
       const resp = await axios.get<{
         user_product_id?: string | null;
         category_id?: string | null;
+        domain_id?: string | null;
       }>(`${ML_CONSTANTS.API_URL}/items/${itemId}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
         timeout: 15000,
       });
       const upId = resp.data?.user_product_id;
       const catId = resp.data?.category_id;
+      const domId = resp.data?.domain_id;
       userProductId =
         typeof upId === "string" && upId.length > 0 ? upId : null;
       categoryId = typeof catId === "string" && catId.length > 0 ? catId : null;
+      partDomainId =
+        typeof domId === "string" && domId.length > 0 ? domId : null;
     } catch {
       /* mantém null — caímos no caminho legacy com items */
+    }
+
+    // Resolve a posição ANTES de montar os corpos. Falha em qualquer etapa
+    // (flag ligada, domínio ausente, categoria sem POSITION, nenhum rótulo
+    // reconhecido) devolve `null` e o payload sai exatamente como saía antes.
+    const rotulosPedidos = (opts?.positionLabels ?? []).filter(
+      (l): l is string => typeof l === "string" && l.length > 0,
+    );
+    let restrictions: CompatRestrictionBlock[] | null = null;
+    let posicoesEnviadas: CompatPositionValue[] = [];
+    let posicoesNaoResolvidas: string[] = [];
+    if (
+      rotulosPedidos.length > 0 &&
+      process.env.ML_COMPAT_POSITIONS_DISABLED !== "1"
+    ) {
+      if (!partDomainId) {
+        posicoesNaoResolvidas = [...rotulosPedidos];
+        console.warn(
+          `[ML Compat] ${itemId} sem domain_id — posição não enviada (${rotulosPedidos.join(", ")}).`,
+        );
+      } else {
+        const permitidos = await this.getCompatibilityPositionValues(
+          accessToken,
+          partDomainId,
+        );
+        const r = resolveCompatPositions(rotulosPedidos, permitidos);
+        posicoesEnviadas = r.resolved;
+        posicoesNaoResolvidas = r.unresolved;
+        restrictions = buildCompatRestrictions(r.resolved);
+        if (r.unresolved.length > 0) {
+          console.warn(
+            `[ML Compat] ${itemId} (${partDomainId}) não expõe os valores de ` +
+              `POSITION: ${r.unresolved.join(", ")} — ` +
+              (r.resolved.length > 0
+                ? `enviando só ${r.resolved.map((v) => v.value_name).join(", ")}.`
+                : "nenhuma posição será enviada."),
+          );
+        }
+      }
     }
 
     // Shape do PUT /user-products/{up}/compatibilities com catalog product
@@ -1787,13 +1916,26 @@ export class MLApiService {
       build: (ids: string[]) => Record<string, unknown>;
     }> = [
       // V1 (vencedor em prod): products no root de create.
+      //
+      // É o ÚNICO degrau que carrega a posição. Foi este o shape medido contra
+      // a API em 05/08/2026 (item MLBU4609176634: read-back saiu de 57 para 58
+      // compatibilidades, a nova com as posições gravadas). V2 e V3 são
+      // fallbacks defensivos que nunca vencem em produção, e pendurar neles um
+      // campo não testado trocaria um fallback que funciona por um 400.
       {
         label: "create.products",
         build: (ids) => {
           const body: Record<string, unknown> = {
             domain_id: ML_COMPAT_DOMAIN_ID,
             create: {
-              products: ids.map((id) => ({ id })),
+              products: ids.map((id) =>
+                restrictions
+                  ? // `creation_source` só aparece junto com `restrictions`:
+                    // foi assim que o par foi validado, e é o que mantém o
+                    // corpo de quem não usa posição byte-idêntico ao de hoje.
+                    { id, creation_source: "DEFAULT", restrictions }
+                  : { id },
+              ),
               universal: false,
             },
           };
@@ -1842,6 +1984,15 @@ export class MLApiService {
       },
     ];
     let workingVariantIndex = -1;
+    /**
+     * Veredito do eco das posições. Fica fora do closure porque o resultado
+     * precisa subir junto com o retorno da função.
+     *
+     * Sem esta conferência a falha seria invisível: o ML responde 200 e ecoa o
+     * `id` normalmente mesmo quando joga fora as restrições, e é exatamente
+     * esse `id` que o `inspectCompatWriteResponse` lê como sucesso.
+     */
+    let ecoPosicoes: "echoed" | "dropped" | "unknown" = "unknown";
 
     const putUserProduct = async (
       ids: string[],
@@ -1868,6 +2019,19 @@ export class MLApiService {
           console.warn(
             `[ML Compat] PUT ${url} (${variant.label}) ${inspected.verdict} — ids=${ids.length}, response=${logResumo(response.data)}`,
           );
+          if (restrictions) {
+            const eco = inspectRestrictionsEcho(response?.data);
+            // "dropped" nunca regride para "unknown"/"echoed" num lote
+            // posterior: uma posição descartada continua descartada.
+            if (ecoPosicoes !== "dropped") ecoPosicoes = eco.verdict;
+            if (eco.verdict === "dropped") {
+              console.warn(
+                `[ML Compat] ${itemId} ACEITOU e DESCARTOU as posições ` +
+                  `(200 com restrictions vazio). Enviadas: ` +
+                  `${posicoesEnviadas.map((v) => `${v.value_name}=${v.value_id}`).join(", ")}`,
+              );
+            }
+          }
           if (inspected.verdict === "empty") {
             // 200 com ids:[] é vínculo fantasma: o ML aceitou o corpo e não
             // amarrou nada. NÃO promove esta variante a "campeã", senão o
@@ -1969,13 +2133,32 @@ export class MLApiService {
       persisted?: number;
       verified?: boolean;
       userProductId?: string | null;
+      positions?: {
+        requested: string[];
+        sent: CompatPositionValue[];
+        unresolved: string[];
+        echo: "echoed" | "dropped" | "unknown";
+      };
     }> => {
+      // Só existe quando alguém pediu posição — assim o retorno de todo o
+      // resto continua com as mesmas chaves de sempre.
+      const positions =
+        rotulosPedidos.length > 0
+          ? {
+              requested: rotulosPedidos,
+              sent: posicoesEnviadas,
+              unresolved: posicoesNaoResolvidas,
+              echo: ecoPosicoes,
+            }
+          : undefined;
+
       if (!verifyEnabled) {
         return {
           success: legacySuccess,
           createdCount: sentCount,
           errors,
           userProductId,
+          ...(positions ? { positions } : {}),
         };
       }
       const read = await this.readCompatibilities(
@@ -1990,6 +2173,7 @@ export class MLApiService {
         persisted: read.available ? read.count : undefined,
         verified: read.available,
         userProductId,
+        ...(positions ? { positions } : {}),
       };
     };
 
@@ -2655,6 +2839,13 @@ export class MLApiService {
       yearFrom?: number | null;
       yearTo?: number | null;
     }>,
+    /**
+     * Rótulos de posição do produto ("Dianteira", "Esquerda"), aplicados a
+     * TODAS as compatibilidades. Só o degrau 1 (catalog product IDs) os carrega
+     * — é o único shape validado contra a API. Omitido = comportamento e
+     * payload idênticos aos de antes deste parâmetro existir.
+     */
+    positionLabels?: string[],
   ): Promise<{
     ok: boolean;
     strategy:
@@ -2680,6 +2871,16 @@ export class MLApiService {
      * categoria — a correção é recategorizar, não reenviar.
      */
     unsupportedDomain?: string;
+    /**
+     * Diagnóstico das posições. Ausente quando nenhuma foi pedida ou quando a
+     * escada não chegou ao degrau que as carrega (só o degrau 1 as envia).
+     */
+    positions?: {
+      requested: string[];
+      sent: CompatPositionValue[];
+      unresolved: string[];
+      echo: "echoed" | "dropped" | "unknown";
+    };
   }> {
     const requested = (vehicles || []).filter((v) => v?.brand && v?.model)
       .length;
@@ -2728,7 +2929,7 @@ export class MLApiService {
         accessToken,
         itemId,
         resolvedIds,
-        { verify: true },
+        { verify: true, positionLabels },
       );
       if (r.errors.length > 0) errors.push(...r.errors);
       if (r.userProductId !== undefined) userProductId = r.userProductId ?? null;
@@ -2744,6 +2945,7 @@ export class MLApiService {
           errors,
           budgetExhausted,
           userProductId,
+          ...(r.positions ? { positions: r.positions } : {}),
         };
       }
     }

@@ -62,6 +62,19 @@ import {
   getVersionsForModel,
   matchesVehicleQuery,
 } from "../../lib/vehicle-catalog";
+import {
+  COMPAT_POSITION_LABELS,
+  COMPAT_POSITION_MAX_VALUES,
+  conflictsWithCompatPositions,
+} from "../../marketplaces/lib/ml-compat-position.logic";
+
+/**
+ * KILL-SWITCH do seletor de posição. "1" esconde o bloco e devolve a aba ao
+ * layout anterior byte-idêntico. Flag de BUILD-TIME: mudar exige rebuild.
+ * Esconder NÃO para o envio — para isso existe ML_COMPAT_POSITIONS_DISABLED.
+ */
+const COMPAT_POSITIONS_ENABLED =
+  process.env.NEXT_PUBLIC_ML_COMPAT_POSITIONS_DISABLED !== "1";
 
 // ---- Tipos locais ----
 
@@ -80,6 +93,14 @@ interface CompatibilityTabProps {
   onChange: (entries: CompatibilityEntry[]) => void;
   /** Mensagem de loading enquanto carrega entradas existentes */
   isLoading?: boolean;
+  /**
+   * Posição aplicada a TODAS as compatibilidades (uma por produto, é como o
+   * ML usa na prática — os anúncios reais medidos têm 57/57 e 4/4 veículos com
+   * a mesma posição). Ausente = o bloco não aparece, e a aba fica idêntica ao
+   * que era antes desta prop existir.
+   */
+  positions?: string[];
+  onPositionsChange?: (next: string[]) => void;
 }
 
 // Helper para gerar um id local simples
@@ -331,6 +352,8 @@ export function CompatibilityTab({
   value,
   onChange,
   isLoading,
+  positions,
+  onPositionsChange,
 }: CompatibilityTabProps) {
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -539,6 +562,28 @@ export function CompatibilityTab({
     setSelectedIds(new Set());
   }, [onChange]);
 
+  // ---- Posição (uma por produto, aplicada a todas as compatibilidades) ----
+
+  const posicoes = useMemo(() => positions ?? [], [positions]);
+  const mostrarPosicoes = COMPAT_POSITIONS_ENABLED && !!onPositionsChange;
+
+  const togglePosicao = useCallback(
+    (label: string) => {
+      if (!onPositionsChange) return;
+      if (posicoes.includes(label)) {
+        onPositionsChange(posicoes.filter((p) => p !== label));
+        return;
+      }
+      // Teto e exclusão mútua são conferidos de novo no servidor
+      // (`sanitizeCompatPositions`); aqui é só para o operador não conseguir
+      // montar uma combinação que o ML recusaria.
+      if (posicoes.length >= COMPAT_POSITION_MAX_VALUES) return;
+      if (conflictsWithCompatPositions(posicoes, label)) return;
+      onPositionsChange([...posicoes, label]);
+    },
+    [posicoes, onPositionsChange],
+  );
+
   const formatYear = (from?: number | null, to?: number | null): string => {
     if (from && to) return from === to ? String(from) : `${from}–${to}`;
     if (from) return `${from}+`;
@@ -580,6 +625,78 @@ export function CompatibilityTab({
           como compatíveis
         </p>
       </div>
+
+      {/* Posição da peça no veículo — vale para TODAS as compatibilidades */}
+      {mostrarPosicoes && (
+        <div className="space-y-2 rounded-lg border p-4">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium">Posição no veículo</p>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p>
+                    Onde a peça fica instalada. A posição escolhida vale para
+                    todos os veículos da lista acima e é enviada ao Mercado
+                    Livre junto das compatibilidades. Combine até{" "}
+                    {COMPAT_POSITION_MAX_VALUES} termos (ex.: Dianteira +
+                    Esquerda). Opostos se excluem.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Opcional. Aplicada aos anúncios publicados a partir de agora — em
+            anúncio já publicado a posição precisa ser ajustada pelo Mercado
+            Livre.
+          </p>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {COMPAT_POSITION_LABELS.map((label) => {
+              const marcado = posicoes.includes(label);
+              const bloqueado =
+                !marcado &&
+                (posicoes.length >= COMPAT_POSITION_MAX_VALUES ||
+                  conflictsWithCompatPositions(posicoes, label));
+              return (
+                <Button
+                  key={label}
+                  type="button"
+                  size="sm"
+                  variant={marcado ? "default" : "outline"}
+                  disabled={bloqueado}
+                  aria-pressed={marcado}
+                  onClick={() => togglePosicao(label)}
+                >
+                  {marcado && <Check className="mr-1 h-3.5 w-3.5" />}
+                  {label}
+                </Button>
+              );
+            })}
+          </div>
+          {posicoes.length > 0 && (
+            <div className="flex items-center justify-between pt-1">
+              <p className="text-xs text-muted-foreground">
+                Será enviada como{" "}
+                <span className="font-medium text-foreground">
+                  {posicoes.join(" + ")}
+                </span>
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => onPositionsChange?.([])}
+              >
+                Limpar posição
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Barra de busca e ações */}
       <div className="flex flex-wrap items-center gap-2">

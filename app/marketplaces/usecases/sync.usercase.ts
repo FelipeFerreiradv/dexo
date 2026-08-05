@@ -4443,6 +4443,10 @@ export class SyncUseCase {
                 vehicles: Array.isArray(product.compatibilities)
                   ? product.compatibilities
                   : null,
+                // De graça: o `product` já está carregado aqui.
+                positionLabels: (
+                  product as { compatibilityPositions?: string[] | null }
+                ).compatibilityPositions,
                 origin: "product_sync",
               });
             }

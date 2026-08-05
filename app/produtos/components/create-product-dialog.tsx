@@ -601,10 +601,17 @@ export function CreateProductDialog({
    */
   const draftExtrasRef = useRef<{
     compatibilities: CompatibilityEntry[];
+    compatibilityPositions: string[];
     scrapId: string | null;
     magaluLabel: string | null;
     step: number;
-  }>({ compatibilities: [], scrapId: null, magaluLabel: null, step: 1 });
+  }>({
+    compatibilities: [],
+    compatibilityPositions: [],
+    scrapId: null,
+    magaluLabel: null,
+    step: 1,
+  });
   /**
    * `defaultStock` das preferências do usuário. O formulário abre com ele já
    * aplicado, então o rascunho precisa da referência para saber se a quantidade
@@ -616,6 +623,10 @@ export function CreateProductDialog({
     [],
   );
   const [compatibilities, setCompatibilities] = useState<CompatibilityEntry[]>(
+    [],
+  );
+  /** Posição aplicada a todas as compatibilidades. Vive fora do RHF, como elas. */
+  const [compatibilityPositions, setCompatibilityPositions] = useState<string[]>(
     [],
   );
 
@@ -2858,6 +2869,9 @@ export function CreateProductDialog({
           version: c.version ?? null,
         })),
 
+        // Posição aplicada a todas elas
+        compatibilityPositions,
+
         // Vínculo com catalog product do Mercado Livre (quando o usuário
         // aceitou uma sugestão de catálogo no Step 1).
         mlCatalogProductId: data.mlCatalogProductId || undefined,
@@ -2935,6 +2949,7 @@ export function CreateProductDialog({
           yearTo: c.yearTo ?? null,
           version: c.version ?? null,
         })),
+        compatibilityPositions: extras.compatibilityPositions,
         scrap: extras.scrapId ? { id: extras.scrapId } : null,
         magaluCategoryLabel: extras.magaluLabel,
         currentStep: null,
@@ -2958,6 +2973,7 @@ export function CreateProductDialog({
   // Espelha o estado fora do RHF a cada render (barato, sem efeito).
   draftExtrasRef.current = {
     compatibilities,
+    compatibilityPositions,
     scrapId: selectedScrap?.id ?? null,
     magaluLabel: magaluSelectedLabel,
     step: currentStep,
@@ -2987,6 +3003,7 @@ export function CreateProductDialog({
         yearTo: c.yearTo ?? null,
         version: c.version ?? null,
       })),
+      compatibilityPositions: extras.compatibilityPositions,
       scrap: extras.scrapId ? { id: extras.scrapId } : null,
       magaluCategoryLabel: extras.magaluLabel,
       currentStep: extras.step,
@@ -3013,6 +3030,7 @@ export function CreateProductDialog({
     open,
     saveDraftNow,
     compatibilities,
+    compatibilityPositions,
     selectedScrap,
     magaluSelectedLabel,
     currentStep,
@@ -3050,6 +3068,11 @@ export function CreateProductDialog({
           })) as CompatibilityEntry[],
         );
       }
+      if ((snapshot.compatibilityPositions?.length ?? 0) > 0) {
+        setCompatibilityPositions([
+          ...(snapshot.compatibilityPositions as string[]),
+        ]);
+      }
       if (snapshot.magaluCategoryLabel) {
         setMagaluSelectedLabel(snapshot.magaluCategoryLabel);
         const id = snapshot.values.magaluCategory;
@@ -3085,7 +3108,13 @@ export function CreateProductDialog({
         applied,
         conflicts,
         compatibilities: mergedCompat,
-      } = applyProductHistory(current, compatibilities, snapshot);
+        compatibilityPositions: posicoesDoHistorico,
+      } = applyProductHistory(
+        current,
+        compatibilities,
+        snapshot,
+        compatibilityPositions,
+      );
 
       const opts = {
         shouldDirty: true,
@@ -3093,7 +3122,15 @@ export function CreateProductDialog({
         shouldTouch: true,
       } as const;
       for (const field of applied) {
-        if (field === "compatibilities" || field === "attributes") continue;
+        // Os três vivem fora do react-hook-form: mandá-los ao `setValue`
+        // criaria um campo fantasma no formulário.
+        if (
+          field === "compatibilities" ||
+          field === "compatibilityPositions" ||
+          field === "attributes"
+        ) {
+          continue;
+        }
         setValue(field as keyof ProductFormData, next[field] as never, opts);
       }
       if (applied.includes("attributes")) {
@@ -3106,6 +3143,9 @@ export function CreateProductDialog({
             _localId: `compat-hist-${i}`,
           })) as CompatibilityEntry[],
         );
+      }
+      if (posicoesDoHistorico) {
+        setCompatibilityPositions(posicoesDoHistorico);
       }
 
       const total = applied.length;
@@ -3121,7 +3161,7 @@ export function CreateProductDialog({
         "success",
       );
     },
-    [getValues, compatibilities, setValue, onToast],
+    [getValues, compatibilities, compatibilityPositions, setValue, onToast],
   );
 
   const handleClose = () => {
@@ -3138,6 +3178,7 @@ export function CreateProductDialog({
     setMlCategorySearch("");
     setMlCategoryDropdownOpen(false);
     setCompatibilities([]);
+    setCompatibilityPositions([]);
     setSelectedScrap(null);
     scrapAutofilledRef.current = {};
     // Permite que o useEffect dispare fetchNextSku de novo na próxima abertura.
@@ -4055,6 +4096,8 @@ export function CreateProductDialog({
             <CompatibilityTab
               value={compatibilities}
               onChange={setCompatibilities}
+              positions={compatibilityPositions}
+              onPositionsChange={setCompatibilityPositions}
             />
           </section>
 

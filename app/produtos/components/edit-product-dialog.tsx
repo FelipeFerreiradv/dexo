@@ -206,6 +206,8 @@ interface Product {
     { value_id?: string; value_name?: string }
   > | null;
   mlCatalogProductId?: string | null;
+  /** Posição das compatibilidades no ML (["Dianteira","Esquerda"]). */
+  compatibilityPositions?: string[] | null;
 }
 
 /**
@@ -380,6 +382,11 @@ export function EditProductDialog({
     [],
   );
   const [compatibilitiesLoading, setCompatibilitiesLoading] = useState(false);
+  const [compatibilityPositions, setCompatibilityPositions] = useState<string[]>(
+    Array.isArray(product.compatibilityPositions)
+      ? product.compatibilityPositions
+      : [],
+  );
   const [showCompatibilitySection, setShowCompatibilitySection] =
     useState(false);
   const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
@@ -1063,6 +1070,16 @@ export function EditProductDialog({
       setMagaluCategoryDropdownOpen(false);
 
       setMlCategoryWarning(null);
+
+      // A posição vem junto do produto (está no productSelect da listagem), não
+      // do fetch de compatibilidades. Reaplicada a cada abertura porque o modal
+      // fica montado entre produtos — sem isso, abrir o produto B depois do A
+      // mostraria a posição do A.
+      setCompatibilityPositions(
+        Array.isArray(product.compatibilityPositions)
+          ? product.compatibilityPositions
+          : [],
+      );
 
       // Pre-fetch ML categories (reusa cache de módulo se disponível).
       // Necessário para o sanity-check/auto-suggest resolver o título
@@ -1846,6 +1863,9 @@ export function EditProductDialog({
           yearTo: c.yearTo || null,
           version: c.version || null,
         })),
+        // Sempre enviado (mesmo vazio): é assim que o operador consegue REMOVER
+        // uma posição. A rota trata ausente como "não mexer".
+        compatibilityPositions,
       };
 
       const fetchWithTimeout = async (
@@ -2881,6 +2901,8 @@ export function EditProductDialog({
                 <CompatibilityTab
                   value={compatibilities}
                   onChange={setCompatibilities}
+                  positions={compatibilityPositions}
+                  onPositionsChange={setCompatibilityPositions}
                 />
               )}
             </CollapsibleContent>

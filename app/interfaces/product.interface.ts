@@ -142,6 +142,12 @@ export interface Product {
   mlCatalogProductId?: string | null;
   mlCatalogSnapshot?: Record<string, unknown> | null;
 
+  // Posição das compatibilidades no ML: rótulos como ["Dianteira","Esquerda"].
+  // UMA posição por produto, aplicada a todos os veículos compatíveis. Guarda
+  // rótulo, não value_id — os ids do ML variam por par de domínios (veículo ×
+  // peça) e são resolvidos na hora do envio. Ver ml-compat-position.logic.ts.
+  compatibilityPositions?: string[] | null;
+
   // Origem do produto: quando true, foi criado automaticamente a partir de um
   // anúncio detectado no marketplace (não criado direto na Dexo). Aditivo, default
   // false — todo produto pré-existente continua false e idêntico ao de hoje.
@@ -216,6 +222,9 @@ export interface ProductCreate {
   // Vínculo opcional ao catálogo do Mercado Livre
   mlCatalogProductId?: string | null;
   mlCatalogSnapshot?: Record<string, unknown> | null;
+
+  // Rótulos de posição das compatibilidades (ver Product.compatibilityPositions).
+  compatibilityPositions?: string[] | null;
 
   // Origem = anúncio do marketplace detectado automaticamente. Aditivo, default
   // false; só o caminho de auto-detecção seta true. Ver ListingAutodetectUseCase.
@@ -314,6 +323,10 @@ export interface ProductUpdate {
   // Vínculo opcional ao catálogo do Mercado Livre
   mlCatalogProductId?: string | null;
   mlCatalogSnapshot?: Record<string, unknown> | null;
+
+  // Rótulos de posição das compatibilidades. `null` = limpar, ausente = não
+  // atualizar — mesma convenção do `attributes` acima.
+  compatibilityPositions?: string[] | null;
 
   compatibilities?: Array<{
     brand: string;

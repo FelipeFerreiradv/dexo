@@ -139,6 +139,10 @@ model Product {
   attributes             Json?
   mlCatalogProductId     String?
   mlCatalogSnapshot      Json?
+  // Posição das compatibilidades no ML (["Dianteira","Esquerda"]). Uma posição
+  // por produto, aplicada a todos os veículos compatíveis — por isso mora aqui
+  // e não na ProductCompatibility.
+  compatibilityPositions Json?
   createdFromMarketplace Boolean                @default(false)
   originPlatform         Platform?
   orderItems             OrderItem[]
