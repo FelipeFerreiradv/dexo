@@ -1621,10 +1621,22 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
             // Ficha técnica secundária por categoria (ML).
             // Sanitiza só quando o cliente envia o campo — undefined = não atualiza.
+            // Quando o cliente ENVIA o campo e nada sobra da sanitização, isso é
+            // "limpar tudo", não "não mexer": sem isso o operador não conseguia
+            // apagar o último atributo (ex.: um Código OEM digitado errado) —
+            // salvava 200 e o valor antigo voltava ao reabrir, e seguia indo
+            // para o Mercado Livre.
+            //
+            // Limpar é `null`, NUNCA `{}`. O repositório mapeia null para
+            // Prisma.DbNull, e `clearOverridesForEditedFields` compara a ficha
+            // nova com a antiga por JSON: um `{}` contra a coluna NULL contaria
+            // como edição e zeraria o `attributesOverride` de todos os anúncios
+            // do produto — inclusive a ficha por anúncio da Revisão individual —
+            // sem ninguém ter mexido na ficha.
             attributes:
               attributes === undefined
                 ? undefined
-                : sanitizeProductAttributes(attributes),
+                : (sanitizeProductAttributes(attributes) ?? null),
 
             // Compatibilidades veiculares (persistidas atomicamente pelo repositório)
             compatibilities: Array.isArray(compatibilities)

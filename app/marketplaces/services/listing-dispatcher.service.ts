@@ -218,6 +218,11 @@ export class ListingDispatcher {
           req.mlSettings,
           undefined, // titleOverride
           actorId,
+          // Simetria com runOneWithResult: o código OEM não pode chegar pelo
+          // update pós-criação (o ML não aceita alterá-lo). Aqui costuma ser
+          // no-op, porque o fluxo single já gravou o OEM em Product.attributes
+          // e o produto tem precedência sobre o override.
+          overrideTemplate?.perProductOverrides?.[productId]?.ml?.attributes,
         );
         this.logDispatchResult({
           userId,
@@ -587,6 +592,11 @@ export class ListingDispatcher {
           mlSettings,
           undefined, // titleOverride
           actorId,
+          // Ficha por produto da Revisão individual. O create só lê o código
+          // OEM daqui — os demais atributos seguem indo pelo update
+          // pós-criação, logo abaixo, como sempre foi. O OEM precisa deste
+          // caminho porque o ML não aceita alterá-lo depois de criado.
+          ov?.ml?.attributes,
         );
       } else if (req.platform === "SHOPEE") {
         const categoryId = ov?.shopee?.categoryId ?? req.categoryId;

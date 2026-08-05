@@ -39,7 +39,10 @@ import {
   resolvePositionValue,
 } from "../lib/ml-position.logic";
 import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
-import { applyOverridesToProduct } from "../services/listing-overrides.service";
+import {
+  applyOverridesToProduct,
+  mergeAttributeOverride,
+} from "../services/listing-overrides.service";
 
 /**
  * Campos cuja edição muda a ficha técnica de um anúncio Shopee. Só quando um
@@ -72,6 +75,18 @@ const POSITION_ATTRIBUTE_IDS = new Set([
   "MOUNTING_POSITION",
   "PART_POSITION",
 ]);
+
+/**
+ * Ids que o ML usa para o código original de fábrica. Mesma ideia do Set acima:
+ * é o vocabulário do atributo, não uma lista de categorias.
+ *
+ * Só `OEM` porque só ele existe: levantado em 38 categorias reais de autopeça
+ * (as 10 citadas neste arquivo + 28 folhas sob MLB22693) via
+ * GET /categories/{id}/attributes. `ORIGINAL_PART_NUMBER`, `OEM_PART_NUMBER` e
+ * `ALTERNATIVE_PART_NUMBER` NÃO existem — não inventar. `PART_NUMBER` fica de
+ * fora de propósito: ele continua vindo exclusivamente de `product.partNumber`.
+ */
+const ML_OEM_ATTRIBUTE_IDS = new Set(["OEM"]);
 
 export interface CreateListingResult {
   success: boolean;
@@ -655,6 +670,63 @@ export class ListingUseCase {
    * hardcoded — decide se o lado/posição entra no payload e com qual value_id.
    * Quando ausente, o comportamento é o legado (ver bloco de POSITION abaixo).
    */
+  /**
+   * Devolve o produto com APENAS o código OEM do override da Revisão individual
+   * fundido em `attributes`. Sem override, sem OEM nele, ou com OEM em branco,
+   * devolve o MESMO objeto — o caminho de hoje, byte-idêntico.
+   *
+   * Não sobrescreve um OEM que já esteja no produto: o cadastro do produto é a
+   * fonte, o override só preenche o que falta. Reusa `mergeAttributeOverride`
+   * (mesma semântica de merge parcial usada pelos overrides de anúncio).
+   */
+  private static withOemFromOverride<T extends { attributes?: unknown }>(
+    product: T,
+    attributeOverrides?: Record<string, unknown> | null,
+  ): T {
+    if (
+      !attributeOverrides ||
+      typeof attributeOverrides !== "object" ||
+      Array.isArray(attributeOverrides)
+    ) {
+      return product;
+    }
+
+    const jaTemNoProduto = (id: string): boolean => {
+      const atual = product.attributes as Record<string, unknown> | undefined;
+      const v = atual && !Array.isArray(atual) ? atual[id] : undefined;
+      if (!v || typeof v !== "object") return false;
+      const { value_id, value_name } = v as {
+        value_id?: unknown;
+        value_name?: unknown;
+      };
+      return (
+        (typeof value_id === "string" && value_id.trim().length > 0) ||
+        (typeof value_name === "string" && value_name.trim().length > 0)
+      );
+    };
+
+    const somenteOem: Record<string, unknown> = {};
+    for (const id of ML_OEM_ATTRIBUTE_IDS) {
+      const raw = attributeOverrides[id];
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const { value_id, value_name } = raw as {
+        value_id?: unknown;
+        value_name?: unknown;
+      };
+      const temValor =
+        (typeof value_id === "string" && value_id.trim().length > 0) ||
+        (typeof value_name === "string" && value_name.trim().length > 0);
+      if (!temValor || jaTemNoProduto(id)) continue;
+      somenteOem[id] = raw;
+    }
+
+    if (Object.keys(somenteOem).length === 0) return product;
+    return {
+      ...product,
+      attributes: mergeAttributeOverride(product.attributes, somenteOem),
+    };
+  }
+
   private static buildMLAttributes(
     product: any,
     resolvedCategoryId?: string,
@@ -759,6 +831,37 @@ export class ListingUseCase {
         if (valueName) entry.value_name = valueName;
         attrs.push(entry);
         seen.add(id);
+      }
+    }
+
+    // Código OEM informado na ficha técnica: ele JÁ chega ao payload pelo merge
+    // acima (o id não está em `seen`). O que falta é não mandá-lo para uma
+    // categoria que não o expõe — o campo é fixo no formulário e aparece em
+    // qualquer categoria, inclusive fora de autopeça, onde `OEM` não existe.
+    //
+    // Só age quando a ficha oficial da categoria está em mãos. Sem ela
+    // (fallback legado) nada muda, para não remover no escuro o que hoje é
+    // enviado. ML_OEM_ATTR_DISABLED=1 restaura o pass-through byte-a-byte.
+    if (
+      process.env.ML_OEM_ATTR_DISABLED !== "1" &&
+      categoryAttrs &&
+      categoryAttrs.length > 0
+    ) {
+      const categoriaAceitaOem = categoryAttrs.some((a) =>
+        ML_OEM_ATTRIBUTE_IDS.has(a?.id ?? ""),
+      );
+      if (!categoriaAceitaOem) {
+        const removidos = attrs.filter((a) => ML_OEM_ATTRIBUTE_IDS.has(a.id));
+        if (removidos.length > 0) {
+          for (const alvo of removidos) {
+            attrs.splice(attrs.indexOf(alvo), 1);
+          }
+          console.log(
+            `[ListingUseCase] OEM ignorado: categoria ${resolvedCategoryId ?? "?"} nao expoe atributo de codigo OEM (${removidos
+              .map((a) => a.id)
+              .join(", ")})`,
+          );
+        }
       }
     }
 
@@ -974,6 +1077,13 @@ export class ListingUseCase {
      * criada; fluxos de sistema (sync/retry) não passam → NULL → UI "—".
      */
     actorId?: string,
+    /**
+     * Ficha técnica por produto da Revisão individual do anúncio em massa.
+     * Só o código OEM é lido daqui (ver `withOemFromOverride`); os demais
+     * atributos continuam sendo aplicados pelo update pós-criação. Ausente nos
+     * outros fluxos, que leem a ficha do próprio `product.attributes`.
+     */
+    attributeOverrides?: Record<string, unknown> | null,
   ): Promise<CreateListingResult> {
     try {
       let account = accountId
@@ -1610,8 +1720,22 @@ export class ListingUseCase {
           )
         : undefined;
 
+      // Código OEM vindo da Revisão individual do anúncio em massa. Ele NÃO
+      // chega por nenhum outro caminho: o wizard não grava em Product, e o
+      // update pós-criação descarta `OEM` porque o ML não aceita alterar esse
+      // atributo depois (IMMUTABLE_ATTRS em updateMLListingFields). Então ou
+      // entra aqui, na criação, ou não entra nunca.
+      //
+      // Escopo deliberadamente mínimo: só os ids de ML_OEM_ATTRIBUTE_IDS. Os
+      // demais atributos da ficha por produto continuam indo pelo update
+      // pós-criação, exatamente como hoje.
+      const productForAttrs =
+        process.env.ML_OEM_ATTR_DISABLED !== "1"
+          ? this.withOemFromOverride(product, attributeOverrides)
+          : product;
+
       let attributes = this.buildMLAttributes(
-        product,
+        productForAttrs,
         resolvedCategoryId,
         categoryAttrsForBuild && categoryAttrsForBuild.length > 0
           ? categoryAttrsForBuild

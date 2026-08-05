@@ -304,8 +304,12 @@ export interface ProductUpdate {
   imageUrl?: string;
   imageUrls?: string[];
 
-  // Ficha técnica secundária por categoria (ML)
-  attributes?: Record<string, { value_id?: string; value_name?: string }>;
+  // Ficha técnica secundária por categoria (ML).
+  // `null` = limpar a ficha (o repositório grava Prisma.DbNull); ausente =
+  // não atualizar. Não use `{}` para limpar: um mapa vazio conta como MUDANÇA
+  // contra a coluna NULL em `clearOverridesForEditedFields` e zeraria o
+  // `attributesOverride` dos anúncios do produto sem ninguém ter editado a ficha.
+  attributes?: Record<string, { value_id?: string; value_name?: string }> | null;
 
   // Vínculo opcional ao catálogo do Mercado Livre
   mlCatalogProductId?: string | null;

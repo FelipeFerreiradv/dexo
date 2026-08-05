@@ -62,6 +62,46 @@ export function getVisibleAttributes(
   );
 }
 
+/**
+ * Código OEM: campo FIXO da ficha técnica, presente em qualquer categoria.
+ *
+ * Por que fixo e não um atributo dinâmico: `OEM` está em FIXED_FIELD_ATTRS
+ * (acima), então `getVisibleAttributes` sempre o remove da lista dinâmica — e
+ * tirá-lo de lá só o faria aparecer nas categorias que expõem o id, que é o
+ * oposto do que o operador precisa. Fixo, ele aparece sempre; quem decide se o
+ * valor vai para o Mercado Livre é o catálogo da categoria, no backend.
+ *
+ * Levantamento em 38 categorias reais de autopeça (as 10 citadas em
+ * listing.usercase.ts + 28 folhas sob MLB22693): `OEM` ("Código OEM",
+ * value_type `string`, value_max_length 255) existe em TODAS, e nunca é
+ * required nem hidden. Fora de autopeça (Celulares, Esportes, Informática,
+ * Brinquedos) ele não existe — daí a guarda por categoria no backend.
+ */
+export const OEM_FIELD_ATTR_ID = "OEM";
+
+/** `value_max_length` real do atributo OEM no ML. */
+export const OEM_MAX_LENGTH = 255;
+
+/**
+ * A seção deve renderizar? Antes era só `visible.length > 0`; com o campo OEM
+ * ligado ela passa a existir mesmo numa categoria sem nenhum atributo extra —
+ * que é justamente o caso em que o operador não tinha onde informar o OEM.
+ */
+export function shouldRenderSection(
+  visibleCount: number,
+  oemFieldEnabled: boolean,
+): boolean {
+  return visibleCount > 0 || oemFieldEnabled;
+}
+
+/** Contador do cabeçalho: o campo OEM é um campo da seção e conta como tal. */
+export function sectionFieldCount(
+  visibleCount: number,
+  oemFieldEnabled: boolean,
+): number {
+  return visibleCount + (oemFieldEnabled ? 1 : 0);
+}
+
 /** Renderiza como Select (lista) quando a categoria expõe valores permitidos. */
 export function isListAttribute(attr: MLDynamicAttribute): boolean {
   return (

@@ -102,12 +102,14 @@ import {
   listAnnotations,
   moveAnnotation,
   remapAnnotations,
+  rememberTextareaHost,
   removeAnnotation,
   restoreAnnotations,
   serializeAnnotations,
   setBaseInteractive,
 } from "./annotations";
 import { EDITOR_FONTS, ensureEditorFontsLoaded } from "./fonts";
+import { TEXTAREA_HOST_STYLE, clampScroll } from "./text-editing";
 import { useFabricEditor } from "./use-fabric-editor";
 
 export interface ImageEditorDialogProps {
@@ -154,6 +156,10 @@ export default function ImageEditorDialog({
   // Camadas de uma receita reaberta, aplicadas UMA vez quando o canvas fica
   // pronto (restore parcial tolerante; não marca dirty).
   const pendingLayersRef = useRef<unknown[] | null>(null);
+  // Host do <textarea> invisível de edição do IText. Fica DENTRO do Content
+  // (logo, dentro do focus-trap do Radix, que é o motivo de não usar o <body>)
+  // mas FORA do wrapper `overflow-hidden` do canvas — ver text-editing.ts.
+  const textareaHostRef = useRef<HTMLDivElement>(null);
   // Biblioteca de veículos (padrão "peça + carro compatível"): carregada
   // LAZY na primeira abertura do painel — zero custo p/ quem não usa.
   const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
@@ -302,11 +308,44 @@ export default function ImageEditorDialog({
   useEffect(() => {
     const c = editor.getCanvas();
     if (!c || !editor.ready) return;
+    // Registrado ANTES do early-return: caminhos internos que criam IText sem
+    // receber o host (duplicar uma camada de texto) o resolvem pelo canvas.
+    rememberTextareaHost(c, textareaHostRef.current);
     const pending = pendingLayersRef.current;
     if (!pending) return;
     pendingLayersRef.current = null;
-    void restoreAnnotations(c, pending, { resolveUploadUrl });
+    void restoreAnnotations(c, pending, {
+      resolveUploadUrl,
+      textareaHost: textareaHostRef.current,
+    });
   }, [editor, editor.ready, resolveUploadUrl]);
+
+  // Cinto e suspensório do salto de scroll: durante a edição, o fabric
+  // reposiciona o textarea a cada movimento de cursor, e o navegador pode rolar
+  // o wrapper `overflow-hidden` para trazer o elemento focado à vista — tirando
+  // o canvas do enquadramento. Com o host acima isso não deve mais acontecer; a
+  // guarda cobre diferença de comportamento entre navegadores. A condição é
+  // lida DENTRO do handler (e não via assinatura de text:editing:entered/exited)
+  // porque um listener montado por evento seria perdido caso o efeito re-rodasse
+  // no meio da edição.
+  //
+  // Deps: `getCanvas` (useCallback sem deps) e `wrapperRef` (ref) são estáveis;
+  // depender delas em vez de `editor` — que é um objeto novo a cada render —
+  // faz o listener ser montado UMA vez em vez de a cada render. `passive`
+  // porque o handler só ajusta scrollLeft/Top, nunca chama preventDefault.
+  const { getCanvas: getEditorCanvas, wrapperRef: editorWrapperRef } = editor;
+  useEffect(() => {
+    const c = getEditorCanvas();
+    if (!c || !editor.ready) return;
+    const wrapper = editorWrapperRef.current;
+    if (!wrapper) return;
+    const onScroll = () => {
+      const active = c.getActiveObject() as { isEditing?: boolean } | undefined;
+      if (active?.isEditing) clampScroll(wrapper);
+    };
+    wrapper.addEventListener("scroll", onScroll, { passive: true });
+    return () => wrapper.removeEventListener("scroll", onScroll);
+  }, [getEditorCanvas, editorWrapperRef, editor.ready]);
 
   const canvas = editor.ready ? editor.getCanvas() : null;
   const annotationObjects = canvas ? listAnnotations(canvas) : [];
@@ -328,7 +367,7 @@ export default function ImageEditorDialog({
     if (!c) return;
     enterAnnotate();
     markDirty();
-    void addText(c);
+    void addText(c, undefined, textareaHostRef.current);
   }, [editor, enterAnnotate, markDirty]);
 
   const handleAddArrow = useCallback(() => {
@@ -487,6 +526,12 @@ export default function ImageEditorDialog({
             className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed top-[50%] left-[50%] z-50 flex max-h-[95vh] w-[96vw] max-w-5xl translate-x-[-50%] translate-y-[-50%] flex-col gap-3 rounded-lg border bg-background p-4 shadow-2xl outline-none"
           >
             <DialogTitle className="sr-only">Editar imagem</DialogTitle>
+
+            {/* Host do textarea invisível do IText: caixa de tamanho ZERO com
+                `overflow: hidden`, dentro do focus-trap do Radix mas FORA do
+                wrapper do canvas — o navegador só consegue rolar uma caixa
+                vazia, nunca o wrapper. Ver text-editing.ts. */}
+            <div ref={textareaHostRef} style={TEXTAREA_HOST_STYLE} />
 
             {/* Canvas + camadas (sidebar no desktop usa o espaço vazio à
                 direita — no celular as camadas viram chips abaixo) */}
