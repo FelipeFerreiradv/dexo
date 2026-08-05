@@ -590,6 +590,13 @@ export function CreateProductDialog({
     magaluLabel: string | null;
     step: number;
   }>({ compatibilities: [], scrapId: null, magaluLabel: null, step: 1 });
+  /**
+   * `defaultStock` das preferências do usuário. O formulário abre com ele já
+   * aplicado, então o rascunho precisa da referência para saber se a quantidade
+   * foi DIGITADA ou só herdada — senão abrir e fechar o modal já viraria um
+   * "continuar de onde parou?". Ref, não estado: só é lido na hora de salvar.
+   */
+  const defaultStockRef = useRef<number | null>(null);
   const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
     [],
   );
@@ -886,6 +893,13 @@ export function CreateProductDialog({
           }
 
           if (user.defaultStock != null && nfeInit?.stock == null) {
+            // A referência ANTES do setValue: a assinatura do react-hook-form
+            // dispara o autosave de forma síncrona dentro do setValue, e nesse
+            // instante o snapshot já precisa saber qual é o padrão. Invertido,
+            // a primeira gravação enxergava `defaultStock = null`, achava que a
+            // quantidade tinha sido digitada e gravava um rascunho de um
+            // formulário intocado.
+            defaultStockRef.current = Number(user.defaultStock);
             setValue("stock", Number(user.defaultStock));
           }
 
@@ -2909,6 +2923,7 @@ export function CreateProductDialog({
         scrap: extras.scrapId ? { id: extras.scrapId } : null,
         magaluCategoryLabel: extras.magaluLabel,
         currentStep: null,
+        defaultStock: defaultStockRef.current,
       });
       draft.clear();
 
@@ -2956,6 +2971,7 @@ export function CreateProductDialog({
       scrap: extras.scrapId ? { id: extras.scrapId } : null,
       magaluCategoryLabel: extras.magaluLabel,
       currentStep: extras.step,
+      defaultStock: defaultStockRef.current,
     });
   }, [getValues]);
 
@@ -3088,6 +3104,12 @@ export function CreateProductDialog({
   );
 
   const handleClose = () => {
+    // ANTES do reset: `reset()` dispara a assinatura do react-hook-form, que
+    // agenda um autosave com o formulário JÁ ZERADO. Gravando depois, o que
+    // ficava salvo era o formulário vazio, não o que o usuário tinha digitado.
+    // Fechar antes do debounce disparar também perderia os últimos segundos de
+    // digitação — que é justamente a dor que o bloco resolve.
+    draft.flush();
     reset();
     setCurrentStep(1);
     setMlCategorySearch("");
@@ -3104,9 +3126,6 @@ export function CreateProductDialog({
     nfeAppliedRef.current = false;
     // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
     lockedScrapAppliedRef.current = false;
-    // Fechou antes do debounce disparar: grava agora, senão os últimos
-    // segundos de digitação se perdem — que é justamente a dor do bloco.
-    draft.flush();
     // Reabre sempre do topo (seção 1), nunca na posição de scroll anterior.
     scrollContainerRef.current?.scrollTo({ top: 0 });
     setOpen(false);

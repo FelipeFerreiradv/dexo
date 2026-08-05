@@ -209,6 +209,74 @@ describe("parse e validade", () => {
     });
     expect(hasMeaningfulContent(s)).toBe(true);
   });
+
+  /**
+   * Medido no navegador em 05/08/2026: preenchendo APENAS preço e estoque, o
+   * rascunho não era gravado — `MEANINGFUL_FIELDS` não tinha nenhum dos dois,
+   * então `save()` saía cedo e fechar o modal perdia o trabalho.
+   */
+  it("só o preço já conta como conteúdo", () => {
+    const s = serializeProductForm({
+      values: { name: "", brand: "", price: 250, stock: 0 },
+      compatibilities: [],
+      now: T0,
+    });
+    expect(hasMeaningfulContent(s)).toBe(true);
+  });
+
+  it("só a quantidade digitada já conta como conteúdo", () => {
+    const s = serializeProductForm({
+      values: { name: "", price: 0, stock: 7 },
+      compatibilities: [],
+      defaultStock: 0,
+      now: T0,
+    });
+    expect(hasMeaningfulContent(s)).toBe(true);
+  });
+
+  it("quantidade IGUAL ao padrão do tenant não conta — senão abrir e fechar viraria rascunho", () => {
+    // Num desmanche `defaultStock` costuma ser 1, porque cada peça é única.
+    const s = serializeProductForm({
+      values: { name: "", price: 0, stock: 1, description: "padrão" },
+      compatibilities: [],
+      defaultStock: 1,
+      now: T0,
+    });
+    expect(hasMeaningfulContent(s)).toBe(false);
+  });
+
+  it("mudar a quantidade a partir do padrão conta", () => {
+    const s = serializeProductForm({
+      values: { name: "", price: 0, stock: 3 },
+      compatibilities: [],
+      defaultStock: 1,
+      now: T0,
+    });
+    expect(hasMeaningfulContent(s)).toBe(true);
+  });
+
+  it("formulário RECÉM-ZERADO não conta, mesmo com defaultStock alto", () => {
+    // `reset()` devolve `stock` a 0. Sem a regra `> 0`, um tenant com
+    // defaultStock = 1 teria 0 !== 1 => "tem conteúdo", e o autosave gravaria
+    // um rascunho vazio por cima do que o usuário tinha digitado.
+    const zerado = serializeProductForm({
+      values: { name: "", price: 0, stock: 0, description: "" },
+      compatibilities: [],
+      defaultStock: 1,
+      now: T0,
+    });
+    expect(hasMeaningfulContent(zerado)).toBe(false);
+  });
+
+  it("rascunho antigo sem `defaultStock` cai no fallback 0 (comportamento anterior)", () => {
+    const antigo = serializeProductForm({
+      values: { name: "", price: 0, stock: 0 },
+      compatibilities: [],
+      now: T0,
+    });
+    delete (antigo as { defaultStock?: number | null }).defaultStock;
+    expect(hasMeaningfulContent(antigo)).toBe(false);
+  });
 });
 
 describe("escopo das chaves", () => {

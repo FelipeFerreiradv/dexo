@@ -78,6 +78,19 @@ export interface ProductFormSnapshot {
   currentStep: number | null;
   /** Só para exibir no histórico — nunca reaplicado. */
   label: { name: string; sku: string | null };
+  /**
+   * `defaultStock` das preferências do usuário no momento em que o modal abriu.
+   *
+   * Existe só para `hasMeaningfulContent` conseguir distinguir "o usuário
+   * digitou a quantidade" de "o formulário abriu com o padrão do tenant". Num
+   * desmanche `defaultStock` costuma ser 1, então sem esta referência bastaria
+   * abrir e fechar o modal para o sistema achar que há trabalho a salvar e
+   * perguntar "continuar de onde parou?" sobre um formulário intocado.
+   *
+   * Opcional: rascunhos gravados antes desta versão não têm o campo e caem no
+   * fallback `0`, que era o comportamento anterior.
+   */
+  defaultStock?: number | null;
 }
 
 export interface SerializeInput {
@@ -86,6 +99,8 @@ export interface SerializeInput {
   scrap?: { id: string; label?: string } | null;
   magaluCategoryLabel?: string | null;
   currentStep?: number | null;
+  /** Ver `ProductFormSnapshot.defaultStock`. */
+  defaultStock?: number | null;
   /** Injetado para manter a função pura e testável com relógio fixo. */
   now: number;
 }
@@ -123,6 +138,7 @@ export function serializeProductForm(
       name: String(input.values?.name ?? "").trim(),
       sku: (input.values?.sku as string | undefined)?.trim() || null,
     },
+    defaultStock: input.defaultStock ?? null,
   };
 }
 
@@ -173,8 +189,22 @@ export function isExpired(
  * de fora da conta porque a abertura os pré-preenche sozinha
  * (`fetchDefaultDescription`), e `stock`/`price` porque têm default numérico.
  */
+/**
+ * Campos cuja presença significa "há trabalho do usuário aqui, vale salvar".
+ *
+ * `price` entrou em 05/08/2026: o formulário abre com 0 e nada o pré-preenche,
+ * então qualquer valor diferente de zero foi digitado. `stock` NÃO está na
+ * lista porque é pré-preenchido por `user.defaultStock` — ele é avaliado à
+ * parte, comparando com o padrão do tenant (ver `hasMeaningfulContent`).
+ *
+ * `description`, `costPrice` e `markup` seguem de fora pelo mesmo motivo do
+ * `stock`: os três podem vir das preferências do usuário, e contá-los faria
+ * abrir-e-fechar o modal virar um "continuar de onde parou?" sobre um
+ * formulário intocado.
+ */
 const MEANINGFUL_FIELDS = [
   "name",
+  "price",
   "brand",
   "model",
   "year",
@@ -199,6 +229,23 @@ export function hasMeaningfulContent(snapshot: ProductFormSnapshot): boolean {
   }
   const urls = snapshot.values.imageUrls;
   if (Array.isArray(urls) && urls.length > 0) return true;
+  // Estoque conta como conteúdo quando é MAIOR QUE ZERO e DIFERE do padrão do
+  // tenant com que o modal abriu. As duas condições são necessárias:
+  //
+  //  - sem a comparação com o padrão, um tenant com `defaultStock = 1` (o caso
+  //    comum num desmanche, onde cada peça é única) veria a pergunta de
+  //    restauração toda vez que abrisse e fechasse o modal sem digitar nada;
+  //  - sem o `> 0`, o formulário RECÉM-ZERADO (`reset()` devolve `stock` a 0)
+  //    passaria a contar como conteúdo para esse mesmo tenant, e o autosave
+  //    gravaria um rascunho vazio por cima do que o usuário tinha digitado.
+  //
+  // Zero é "sem estoque", que neste domínio é o mesmo que vazio — o preço
+  // segue a mesma regra via `MEANINGFUL_FIELDS`.
+  const stock = snapshot.values.stock;
+  const stockPadrao = snapshot.defaultStock ?? 0;
+  if (typeof stock === "number" && Number.isFinite(stock)) {
+    if (stock > 0 && stock !== stockPadrao) return true;
+  }
   return MEANINGFUL_FIELDS.some((f) => {
     const v = snapshot.values[f];
     return typeof v === "string" ? v.trim().length > 0 : Boolean(v);
