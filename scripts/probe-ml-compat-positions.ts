@@ -356,6 +356,12 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------
   section("2. Valores permitidos de POSITION para esse par de domínios");
   // ---------------------------------------------------------------------
+  // Resolvidos aqui e USADOS no passo 4. Enviar value_id inventado faz o ML
+  // responder 200 com `restrictions: []` — aceito e ignorado —, o que torna o
+  // teste de escrita inconclusivo: não dá para separar "o shape não funciona"
+  // de "os ids eram inválidos".
+  const valoresPorRotulo = new Map<string, { value_id: string; value_name: string }>();
+
   if (!partDomain) {
     log("PULADO: sem domain_id da peça não dá para consultar as restrições.");
   } else {
@@ -395,7 +401,15 @@ async function main(): Promise<void> {
         const op = v.opposite_values?.length
           ? ` (exclui: ${v.opposite_values.join(", ")})`
           : "";
-        log(`      ${v.value_id.padEnd(12)} ${v.value_name}${op}`);
+        log(`      ${String(v.value_id).padEnd(12)} ${v.value_name}${op}`);
+        valoresPorRotulo.set(
+          v.value_name
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .trim()
+            .toLowerCase(),
+          { value_id: String(v.value_id), value_name: v.value_name },
+        );
       }
       log(`>>> ${(position.combined_values ?? []).length} combinações prontas.`);
 
@@ -432,23 +446,41 @@ async function main(): Promise<void> {
   const antes = await probeGet(urlCompat, token);
   const produtosAtuais = ((antes.data as { products?: Array<{ id?: string }> })
     ?.products ?? []) as Array<Record<string, unknown>>;
+  const semRestricao = produtosAtuais.filter(
+    (p) => p.restrictions === undefined,
+  );
+  // PREFERE um veículo que AINDA NÃO tem posição. A API de compatibilidade do
+  // ML é aditiva e não substitui: escrever numa compatibilidade que já tem
+  // posição deixa o teste ambíguo — não dá para distinguir "o shape falhou" de
+  // "o ML recusou sobrescrever".
   const productIdParaTeste =
     productIdArg ??
-    (produtosAtuais.find((p) => typeof p.catalog_product_id === "string")
+    (semRestricao.find((p) => typeof p.catalog_product_id === "string")
       ?.catalog_product_id as string | undefined) ??
-    (produtosAtuais.find((p) => typeof p.id === "string")?.id as
-      | string
-      | undefined);
+    (produtosAtuais.find((p) => typeof p.catalog_product_id === "string")
+      ?.catalog_product_id as string | undefined);
+
+  const jaTemPosicao = produtosAtuais.filter(
+    (p) => p.restrictions !== undefined,
+  ).length;
 
   log("");
   log(`>>> compatibilidades hoje: ${produtosAtuais.length}`);
+  log(`>>> quantas já têm posição: ${jaTemPosicao}`);
   log(`>>> product id para o teste de escrita: ${productIdParaTeste ?? "NENHUM"}`);
-  log(
-    ">>> alguma já tem `restrictions`? " +
-      JSON.stringify(
-        produtosAtuais.filter((p) => p.restrictions !== undefined).length,
-      ),
-  );
+  if (!productIdArg && semRestricao.length === 0 && produtosAtuais.length > 0) {
+    log("");
+    log(
+      "!!! ATENÇÃO: TODAS as compatibilidades deste anúncio já têm posição. O",
+    );
+    log(
+      "!!! teste de escrita será INCONCLUSIVO — a API é aditiva e não",
+    );
+    log(
+      "!!! substitui. Passe --product-id=MLB... de um veículo AINDA NÃO",
+    );
+    log("!!! compatível, ou use um anúncio de teste sem posições.");
+  }
 
   // ---------------------------------------------------------------------
   section("4. Hipóteses de ESCRITA");
@@ -462,13 +494,39 @@ async function main(): Promise<void> {
     );
   }
 
-  // Posições de teste: uma simples e uma combinada. Os value_id reais saem do
-  // passo 2; aqui usamos placeholders explícitos para o dry-run não mentir.
+  // Posições de teste com os value_id REAIS resolvidos no passo 2: uma simples
+  // e uma combinada. Sem ids válidos o ML responde 200 com `restrictions: []`
+  // e o teste não distingue "shape errado" de "id inválido".
+  const rotulo = (nome: string) => {
+    const achado = valoresPorRotulo.get(
+      nome
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+        .toLowerCase(),
+    );
+    if (!achado) {
+      log(
+        `!!! rótulo "${nome}" não existe nesse domínio — o teste de escrita vai sair inválido.`,
+      );
+      return { value_id: "SEM_VALUE_ID", value_name: nome };
+    }
+    return achado;
+  };
+
+  if (valoresPorRotulo.size === 0) {
+    log("");
+    log(
+      "!!! Nenhum value_id de POSITION foi resolvido no passo 2 — as escritas",
+    );
+    log("!!! abaixo seriam inconclusivas. Abortando o passo 4.");
+    return;
+  }
+
   const posicoesTeste = montarRestrictions([
-    [{ value_id: "PREENCHER_COM_O_PASSO_2", value_name: "Dianteira" }],
+    [rotulo("Dianteira")],
     [
-      { value_id: "PREENCHER_COM_O_PASSO_2", value_name: "Dianteira" },
-      { value_id: "PREENCHER_COM_O_PASSO_2", value_name: "Esquerda" },
+      rotulo("Dianteira"),
+      rotulo("Esquerda"),
     ],
   ]);
 
