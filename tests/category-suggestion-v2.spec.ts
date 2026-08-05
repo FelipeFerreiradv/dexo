@@ -419,3 +419,81 @@ describe("(h) shape só ganha campos", () => {
     expect(r.suggestions[0].signalCount).toBeGreaterThanOrEqual(3);
   });
 });
+
+/**
+ * (i) O veículo do ALIAS não sobrescreve o do usuário.
+ *
+ * `attr.brand`/`attr.model` são atribuídos INCONDICIONALMENTE em
+ * `scoreAliasMatch` a partir do `brandModelPatterns` — isto é, o veículo do
+ * ANÚNCIO que semeou aquele alias. O merge fazia `{...baseAttr, ...attr}`, então
+ * esse veículo entrava por cima do que o usuário informou (ou do que dava para
+ * ler do título dele). Como o front aplica `attributes` de volta no formulário,
+ * o efeito medido no navegador em 05/08/2026 foi: digitar
+ * "Retrovisor Direito Volkswagen Fox 2011 2012" preenchia marca=volvo,
+ * modelo=v40.
+ *
+ * A correção NÃO é condicionada a `hasContext` de propósito: o caso medido tem
+ * contexto VAZIO (o usuário só tinha digitado o título), então um gate por
+ * contexto não consertaria nada. É seguro porque `attributes` é campo de SAÍDA
+ * — `score`, `signalCount`, `confidence` e `autoApply` são fechados antes de
+ * `mergedAttr` existir e nunca o leem.
+ */
+describe("(i) veículo do alias não sobrescreve o do usuário", () => {
+  /** Pega a sugestão do alias de amortecedor (que carrega Chevrolet/Onix/2014). */
+  async function amortecedor(input: Record<string, unknown>) {
+    const r = await CategorySuggestionService.suggestFromProduct(
+      input as any,
+      "MLB",
+    );
+    const s = r.suggestions.find((x) => x.categoryId === "MLB_AMORT");
+    if (!s) throw new Error("MLB_AMORT não veio nas sugestões");
+    return s;
+  }
+
+  it("contexto explícito vence o brandModelPatterns do alias", async () => {
+    const s = await amortecedor({
+      title: "Amortecedor",
+      brand: "Ford",
+      model: "Ka",
+      year: "2018",
+    });
+    expect(s.attributes?.brand).toBe("Ford");
+    expect(s.attributes?.model).toBe("Ka");
+    expect(s.attributes?.year).toBe("2018");
+  });
+
+  it("sem contexto, o veículo lido do TÍTULO vence o do alias", async () => {
+    // Este é o caso medido no navegador: o usuário só digitou o título, então
+    // `isContextEmpty` é true e um gate por `hasContext` não pegaria nada.
+    const s = await amortecedor({
+      title: "Amortecedor Dianteiro Ford Ka 2018",
+    });
+    expect(s.attributes?.brand?.toLowerCase()).not.toBe("chevrolet");
+    expect(s.attributes?.model?.toLowerCase()).not.toBe("onix");
+  });
+
+  it("o alias ainda preenche o que o usuário não informou", async () => {
+    // Sem contexto e sem veículo no título, o veículo do alias é a única
+    // informação disponível e continua valendo como sugestão.
+    const s = await amortecedor({ title: "Amortecedor" });
+    expect(s.attributes?.brand).toBe("Chevrolet");
+    expect(s.attributes?.model).toBe("Onix");
+  });
+
+  it("o ranking do alias não muda por causa do atributo", async () => {
+    // `attributes` é campo de SAÍDA: score/signalCount/confidence/autoApply são
+    // fechados antes de `mergedAttr` existir. Com e sem veículo no título, o
+    // token de peça é o mesmo e o alias não pontua veículo — o score tem de ser
+    // idêntico, mudando só o atributo devolvido.
+    const semVeiculo = await amortecedor({ title: "Amortecedor" });
+    clearCaches();
+    const comVeiculo = await amortecedor({
+      title: "Amortecedor Dianteiro Ford Ka 2018",
+    });
+    expect(comVeiculo.score).toBe(semVeiculo.score);
+    expect(comVeiculo.confidence).toBe(semVeiculo.confidence);
+    expect(comVeiculo.autoApply).toBe(semVeiculo.autoApply);
+    expect(comVeiculo.signalCount).toBe(semVeiculo.signalCount);
+    expect(comVeiculo.attributes?.brand).not.toBe(semVeiculo.attributes?.brand);
+  });
+});
