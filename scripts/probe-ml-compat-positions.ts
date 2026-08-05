@@ -58,17 +58,22 @@ import { ML_CONSTANTS } from "../app/marketplaces/mercado-livre/ml-constants";
  * então as posições gravadas aqui não têm como ser desfeitas pelo sistema.
  * Nenhum access_token é impresso.
  *
+ * ACEITA OS DOIS ESPAÇOS DE ID. A URL da Central de Vendedores expõe o id de
+ * USER PRODUCT (`MLBU...`), não o do item (`MLB...`) — passar um pelo outro dá
+ * 403/404. A sonda detecta pelo prefixo e usa o endpoint certo em cada caso.
+ *
  * Uso:
+ *   tsx scripts/probe-ml-compat-positions.ts --item=MLBU4609176634
  *   tsx scripts/probe-ml-compat-positions.ts --item=MLB1234567890
- *   tsx scripts/probe-ml-compat-positions.ts --item=MLB123 --apply
- *   tsx scripts/probe-ml-compat-positions.ts --item=MLB123 --apply --only=H1
+ *   tsx scripts/probe-ml-compat-positions.ts --item=MLBU... --apply --only=H1
  *
  * Flags:
- *   --item=MLB...        (obrigatório) anúncio a sondar
- *   --account-id=ID      conta ML específica; default = a conta dona do anúncio
+ *   --item=MLB... | MLBU...  (obrigatório) anúncio ou user product a sondar
+ *   --account-id=ID      conta ML específica. OBRIGATÓRIO quando o anúncio não
+ *                        está no nosso banco (ex.: criado direto no ML)
  *   --product-id=MLB...  catalog product id do veículo para as escritas de H1/H2;
  *                        default = o primeiro que já estiver na compat do item
- *   --apply              EXECUTA as escritas do passo 3 (sem isso, só imprime)
+ *   --apply              EXECUTA as escritas do passo 4 (sem isso, só imprime)
  *   --only=H1|H2|H3      roda só uma hipótese
  *   --full               imprime bodies completos em vez de resumo + amostra
  */
@@ -295,28 +300,58 @@ async function main(): Promise<void> {
   log(`[probe] modo: ${apply ? "APPLY (ESCREVE NO ML)" : "dry-run (read-only)"}`);
 
   // ---------------------------------------------------------------------
-  section("1. O GET /items devolve o domain_id DA PEÇA?");
+  section("1. De onde sai o domain_id DA PEÇA?");
   // ---------------------------------------------------------------------
-  const item = await probeGet(
-    `${ML_CONSTANTS.API_URL}/items/${itemIdArg}`,
-    token,
+  // A URL da Central de Vendedores expõe MLBU (user product). Confundir os dois
+  // espaços de id dá 403 no /items e 404 no /user-products.
+  const ehUserProduct = /^MLBU/i.test(itemIdArg);
+  const alvoLeitura = ehUserProduct
+    ? `${ML_CONSTANTS.API_URL}/user-products/${itemIdArg}`
+    : `${ML_CONSTANTS.API_URL}/items/${itemIdArg}`;
+  log(
+    `>>> id reconhecido como ${ehUserProduct ? "USER PRODUCT" : "ITEM"} — lendo ${alvoLeitura}`,
   );
+
+  const item = await probeGet(alvoLeitura, token);
   const itemData = (item.data ?? {}) as Record<string, unknown>;
   const partDomain = itemData.domain_id as string | undefined;
-  const userProductId = itemData.user_product_id as string | undefined;
+  const userProductId = ehUserProduct
+    ? itemIdArg
+    : (itemData.user_product_id as string | undefined);
   const categoryId = itemData.category_id as string | undefined;
 
   log("");
-  log(`>>> domain_id da peça: ${partDomain ?? "AUSENTE — precisa de request extra"}`);
+  log(`>>> domain_id da peça: ${partDomain ?? "AUSENTE"}`);
   log(`>>> user_product_id:   ${userProductId ?? "(nenhum — item legado)"}`);
-  log(`>>> category_id:       ${categoryId ?? "?"}`);
-  log(
-    `>>> tags relevantes:   ${JSON.stringify(
-      ((itemData.tags as string[]) ?? []).filter((t) =>
-        /compatibilit/i.test(t),
-      ),
-    )}`,
+  log(`>>> category_id:       ${categoryId ?? "(user product não expõe)"}`);
+
+  // O dump diz se ESSE domínio de peça aceita compatibilidade e posição.
+  // Medido em 05/08/2026: 1418 domínios, 2033 categorias com restrictions
+  // ENABLED e ZERO com restrictions_required=true — posição nunca é obrigatória.
+  const dumpDominios = await probeGet(
+    `${ML_CONSTANTS.API_URL}/catalog/dumps/domains/MLB/compatibilities`,
+    token,
   );
+  if (Array.isArray(dumpDominios.data) && partDomain) {
+    const entrada = (dumpDominios.data as Array<Record<string, any>>).find(
+      (d) => d.domain_id === partDomain,
+    );
+    log("");
+    if (!entrada) {
+      log(
+        `>>> ${partDomain} NÃO está no dump — esse domínio de peça NÃO aceita ` +
+          "compatibilidade. Nada de posição a enviar aqui.",
+      );
+    } else {
+      const cat = entrada.compatibilities?.[0]?.categories?.[0];
+      log(`>>> ${partDomain} ACEITA compatibilidade.`);
+      log(
+        `    restrictions_status=${cat?.restrictions_status} ` +
+          `restrictions_required=${cat?.restrictions_required} ` +
+          `note_status=${cat?.note_status}`,
+      );
+    }
+  }
 
   // ---------------------------------------------------------------------
   section("2. Valores permitidos de POSITION para esse par de domínios");
@@ -386,10 +421,15 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------
   section("3. Compatibilidades atuais (base para o read-back)");
   // ---------------------------------------------------------------------
-  const antes = await probeGet(
-    `${ML_CONSTANTS.API_URL}/items/${itemIdArg}/compatibilities?extended=true`,
-    token,
-  );
+  // A leitura por user product EXIGE `main_domain_id`. Sem ele o ML devolve
+  // 400 "Missing request parameter" — foi esse 400, e não uma limitação do
+  // endpoint, que levou o readCompatibilities do MLApiService a ler por /items
+  // primeiro (ver o comentário em ml-api.service.ts:1677-1688).
+  const urlCompat = userProductId
+    ? `${ML_CONSTANTS.API_URL}/user-products/${userProductId}/compatibilities` +
+      `?main_domain_id=${encodeURIComponent(VEHICLE_DOMAIN)}&extended=true`
+    : `${ML_CONSTANTS.API_URL}/items/${itemIdArg}/compatibilities?extended=true`;
+  const antes = await probeGet(urlCompat, token);
   const produtosAtuais = ((antes.data as { products?: Array<{ id?: string }> })
     ?.products ?? []) as Array<Record<string, unknown>>;
   const productIdParaTeste =
@@ -508,10 +548,7 @@ async function main(): Promise<void> {
       // ele declara sucesso só por ver o id ecoado.
       log("");
       log(`>>> read-back de ${h.nome}:`);
-      const depois = await probeGet(
-        `${ML_CONSTANTS.API_URL}/items/${itemIdArg}/compatibilities?extended=true`,
-        token,
-      );
+      const depois = await probeGet(urlCompat, token);
       const lista = ((depois.data as { products?: unknown[] })?.products ??
         []) as Array<Record<string, unknown>>;
       const comRestricao = lista.filter((p) => p.restrictions !== undefined);
