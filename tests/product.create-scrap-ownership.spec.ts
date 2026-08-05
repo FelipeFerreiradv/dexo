@@ -31,6 +31,13 @@ const base = {
   price: 10,
 } as any;
 
+// Relógio FIXO de propósito. Com `new Date()` aqui, o teste
+// "o Product devolvido é o MESMO com include vazio ou sem include" chama
+// makeRow() duas vezes e compara os dois objetos com toEqual: quando as duas
+// chamadas caíam em milissegundos diferentes, ele falhava sozinho
+// (createdAt ...38.011Z vs ...38.012Z). O timestamp não é o que este spec mede.
+const INSTANTE_FIXO = new Date("2026-01-01T00:00:00.000Z");
+
 // Linha "raw" mínima que o mapPrismaToProduct consegue mapear (price.toNumber()).
 function makeRow(over: Record<string, unknown> = {}) {
   return {
@@ -40,8 +47,8 @@ function makeRow(over: Record<string, unknown> = {}) {
     name: "Pastilha de freio",
     stock: 1,
     price: { toNumber: () => 10 },
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    createdAt: INSTANTE_FIXO,
+    updatedAt: INSTANTE_FIXO,
     imageUrls: [],
     compatibilities: [],
     ...over,
@@ -109,7 +116,15 @@ describe("ProductRepository.create — include condicional de compatibilities", 
   it("COM compatibilidades: mantém o include verbatim", async () => {
     mockProductCreate.mockResolvedValue(
       makeRow({
-        compatibilities: [{ brand: "VW", model: "GOL", yearFrom: 2010, yearTo: null, version: null }],
+        compatibilities: [
+          {
+            brand: "VW",
+            model: "GOL",
+            yearFrom: 2010,
+            yearTo: null,
+            version: null,
+          },
+        ],
       }),
     );
 
@@ -121,7 +136,13 @@ describe("ProductRepository.create — include condicional de compatibilities", 
     const arg = mockProductCreate.mock.calls[0][0];
     expect(arg.include).toEqual({ compatibilities: true });
     expect(out.compatibilities).toEqual([
-      { brand: "VW", model: "GOL", yearFrom: 2010, yearTo: null, version: null },
+      {
+        brand: "VW",
+        model: "GOL",
+        yearFrom: 2010,
+        yearTo: null,
+        version: null,
+      },
     ]);
   });
 
