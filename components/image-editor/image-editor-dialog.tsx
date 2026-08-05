@@ -326,20 +326,26 @@ export default function ImageEditorDialog({
   // o canvas do enquadramento. Com o host acima isso não deve mais acontecer; a
   // guarda cobre diferença de comportamento entre navegadores. A condição é
   // lida DENTRO do handler (e não via assinatura de text:editing:entered/exited)
-  // porque este efeito re-roda a cada render — `editor` troca de identidade — e
-  // um listener montado por evento seria perdido no meio da edição.
+  // porque um listener montado por evento seria perdido caso o efeito re-rodasse
+  // no meio da edição.
+  //
+  // Deps: `getCanvas` (useCallback sem deps) e `wrapperRef` (ref) são estáveis;
+  // depender delas em vez de `editor` — que é um objeto novo a cada render —
+  // faz o listener ser montado UMA vez em vez de a cada render. `passive`
+  // porque o handler só ajusta scrollLeft/Top, nunca chama preventDefault.
+  const { getCanvas: getEditorCanvas, wrapperRef: editorWrapperRef } = editor;
   useEffect(() => {
-    const c = editor.getCanvas();
+    const c = getEditorCanvas();
     if (!c || !editor.ready) return;
-    const wrapper = editor.wrapperRef.current;
+    const wrapper = editorWrapperRef.current;
     if (!wrapper) return;
     const onScroll = () => {
       const active = c.getActiveObject() as { isEditing?: boolean } | undefined;
       if (active?.isEditing) clampScroll(wrapper);
     };
-    wrapper.addEventListener("scroll", onScroll);
+    wrapper.addEventListener("scroll", onScroll, { passive: true });
     return () => wrapper.removeEventListener("scroll", onScroll);
-  }, [editor, editor.ready]);
+  }, [getEditorCanvas, editorWrapperRef, editor.ready]);
 
   const canvas = editor.ready ? editor.getCanvas() : null;
   const annotationObjects = canvas ? listAnnotations(canvas) : [];
