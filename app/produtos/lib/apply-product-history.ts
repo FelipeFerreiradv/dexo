@@ -99,6 +99,15 @@ export interface HistoryApplyResult {
   conflicts: SuggestionConflict[];
   /** Compatibilidades resultantes (união), ou `null` se nada mudou. */
   compatibilities: CompatLike[] | null;
+  /**
+   * Posição do cadastro anterior, ou `null` quando não há o que copiar.
+   *
+   * Não é união como as compatibilidades: posição é UMA por produto, e juntar
+   * a do cadastro anterior com a atual montaria uma combinação que ninguém
+   * escolheu — inclusive combinações impossíveis ("Esquerda" + "Direita").
+   * Segue a política do resto do arquivo: só preenche quando está vazia.
+   */
+  compatibilityPositions: string[] | null;
 }
 
 const isBlocked = (field: string) =>
@@ -112,6 +121,8 @@ export function applyProductHistory(
   current: Record<string, unknown>,
   currentCompatibilities: CompatLike[],
   snapshot: ProductFormSnapshot,
+  /** Posição já escolhida no formulário aberto. Vazia = pode receber a anterior. */
+  currentPositions: readonly string[] = [],
 ): HistoryApplyResult {
   const next: Record<string, unknown> = { ...current };
   const applied: string[] = [];
@@ -188,7 +199,21 @@ export function applyProductHistory(
     }
   }
 
-  return { next, applied, conflicts, compatibilities };
+  // Posição: só preenche quando o formulário aberto ainda não tem nenhuma.
+  let compatibilityPositions: string[] | null = null;
+  const posicoesAnteriores = snapshot.compatibilityPositions ?? [];
+  if (posicoesAnteriores.length > 0 && currentPositions.length === 0) {
+    compatibilityPositions = [...posicoesAnteriores];
+    applied.push("compatibilityPositions");
+  }
+
+  return {
+    next,
+    applied,
+    conflicts,
+    compatibilities,
+    compatibilityPositions,
+  };
 }
 
 /**

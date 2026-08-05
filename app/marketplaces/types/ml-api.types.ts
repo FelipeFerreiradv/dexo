@@ -118,6 +118,16 @@ export interface MLItemCreatePayload {
     id: string;
     value_id?: string;
     value_name?: string;
+    /**
+     * Forma multivalorada do ML (`tags.multivalued`), usada hoje só pelo código
+     * OEM — ver `ml-oem-tags.logic.ts`. Excludente com `value_name`: o atributo
+     * sai OU singular OU em lista, nunca nos dois formatos.
+     *
+     * Só existe no payload de CRIAÇÃO: `MLItemUpdatePayload` não precisa porque
+     * `OEM` está em `IMMUTABLE_ATTRS` nos dois caminhos de update (o ML rejeita
+     * alterar o atributo depois de criado o anúncio).
+     */
+    values?: Array<{ id?: string; name?: string }>;
   }>;
   description?: {
     plain_text: string;

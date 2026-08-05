@@ -25,6 +25,7 @@ import { CategoryResolutionService } from "../marketplaces/services/category-res
 import { parseProductListingCategoryValue } from "../lib/product-listing-category";
 import { getMeasurementsForCategory } from "../lib/ml-measurements";
 import { normalizeQuality, InvalidQualityError } from "../lib/quality";
+import { sanitizeCompatPositions } from "../marketplaces/lib/ml-compat-position.logic";
 import {
   parseNfeXml,
   NfeParseError,
@@ -318,6 +319,8 @@ export const productRoutes = async (fastify: FastifyInstance) => {
         listings,
         // Compatibilidades veiculares
         compatibilities,
+        // Posição das compatibilidades no ML (uma por produto)
+        compatibilityPositions,
         // Vínculo opcional a catalog product do Mercado Livre
         mlCatalogProductId,
         // Opt-in: servidor atribui o SKU sequencial atomicamente ao salvar
@@ -422,6 +425,10 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                     : null,
               }))
           : undefined,
+        // Descarta rótulo desconhecido, repetido, conflitante ("Esquerda" com
+        // "Direita") e o que passar de 4. Cliente que não manda o campo cai em
+        // lista vazia, que o repositório grava como NULL — igual a hoje.
+        compatibilityPositions: sanitizeCompatPositions(compatibilityPositions),
       } as const;
 
       // Server-side validation: reject clearly malformed requests before hitting usecase/DB.
@@ -802,6 +809,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           // Compatibilidades veiculares (persistidas transacionalmente pelo repositório)
           compatibilities: sanitized.compatibilities,
+
+          // Posição aplicada a todas as compatibilidades no ML
+          compatibilityPositions: sanitized.compatibilityPositions,
 
           // Vínculo com catalog product do ML (opcional)
           mlCatalogProductId:
@@ -1468,6 +1478,9 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
           // Compatibilidades veiculares
           compatibilities,
+
+          // Posição das compatibilidades no ML (uma por produto)
+          compatibilityPositions,
         } = request.body as any;
 
         if (!id) {
@@ -1667,6 +1680,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
                         : null,
                   }))
               : undefined,
+
+            // Mesma convenção do `attributes` acima: ausente = não mexe; enviado
+            // = vira a lista sanitizada, e lista vazia limpa (o repositório grava
+            // NULL). Sem isso o operador não conseguiria REMOVER uma posição
+            // depois de escolher — o sintoma clássico deste formulário.
+            compatibilityPositions:
+              compatibilityPositions === undefined
+                ? undefined
+                : sanitizeCompatPositions(compatibilityPositions),
           },
           userId,
         );
