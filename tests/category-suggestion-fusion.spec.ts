@@ -125,7 +125,11 @@ function clearCaches() {
   svc.suggestResultCache?.clear?.();
 }
 
-const vote = (externalId: string, strength: number, signal = "part-type-map") => ({
+const vote = (
+  externalId: string,
+  strength: number,
+  signal = "part-type-map",
+) => ({
   externalId,
   strength,
   signal,
@@ -267,6 +271,11 @@ describe("CategorySuggestionService — fusão da inferência", () => {
       "autoApply",
       "reasons",
       "pieceType",
+      // Aditivo (04/08/2026): quantos sinais DISTINTOS sustentam a sugestão.
+      // A recalibragem do auto-aplicar consulta este campo em vez de contar
+      // `reasons`. O invariante que esta spec protege continua o mesmo: a
+      // resposta só GANHA chaves, nunca perde.
+      "signalCount",
     ]);
     for (const key of Object.keys(top)) {
       expect(allowed.has(key), `chave inesperada: ${key}`).toBe(true);

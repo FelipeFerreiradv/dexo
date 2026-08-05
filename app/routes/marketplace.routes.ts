@@ -566,6 +566,68 @@ small{color:#666}</style></head><body>
   );
 
   /**
+   * POST /marketplace/ml/category-suggest   (irmão ADITIVO do GET acima)
+   * POST /marketplace/shopee/category-suggest
+   *
+   * Mesma resposta do GET, mas aceita o CONTEXTO do produto no corpo — marca,
+   * modelo, ano, versão, part number, categoria interna, veículo de origem,
+   * qualidade e medidas. O GET continua existindo, inalterado, e quem chamar
+   * só com o título recebe exatamente o mesmo resultado de antes.
+   *
+   * É POST, e não mais query string, porque `description` estoura o limite
+   * prático de URL. Nada aqui é obrigatório além de `title`.
+   */
+  const buildSuggestContext = (body: any) => ({
+    title: String(body?.title ?? ""),
+    description: body?.description ?? null,
+    brand: body?.brand ?? null,
+    model: body?.model ?? null,
+    year: body?.year ?? null,
+    version: body?.version ?? null,
+    partNumber: body?.partNumber ?? null,
+    internalCategory: body?.internalCategory ?? null,
+    sourceVehicle: body?.sourceVehicle ?? null,
+    quality: body?.quality ?? null,
+    heightCm: body?.heightCm ?? null,
+    widthCm: body?.widthCm ?? null,
+    lengthCm: body?.lengthCm ?? null,
+    weightKg: body?.weightKg ?? null,
+  });
+
+  const registerSuggestPost = (path: string, siteId: string, label: string) => {
+    app.post(
+      path,
+      { preHandler: [authMiddleware] },
+      async (request: FastifyRequest, reply: FastifyReply) => {
+        const body = request.body as any;
+        const title = body?.title as string | undefined;
+        if (!title || !title.trim()) {
+          return reply
+            .status(400)
+            .send({ error: "Parâmetro 'title' é obrigatório" });
+        }
+        try {
+          const suggestions =
+            await CategorySuggestionService.suggestFromProduct(
+              buildSuggestContext(body),
+              siteId,
+            );
+          return reply.send(suggestions);
+        } catch (error) {
+          return reply.status(500).send({
+            error: `Erro ao sugerir categorias ${label}`,
+            message:
+              error instanceof Error ? error.message : "Erro desconhecido",
+          });
+        }
+      },
+    );
+  };
+
+  registerSuggestPost("/ml/category-suggest", "MLB", "do Mercado Livre");
+  registerSuggestPost("/shopee/category-suggest", "SHP", "Shopee");
+
+  /**
    * GET /marketplace/ml/catalog/suggestions?q=...&category_id=...&limit=5
    * Sugere catalog products do Mercado Livre a partir do título do produto.
    * Fail-open: erros de API viram 200/{suggestions:[]}.
@@ -1658,7 +1720,8 @@ small{color:#666}</style></head><body>
     logar: boolean;
     acumulado: number;
   } {
-    const chave = shopId === undefined || shopId === null ? "sem-shop" : String(shopId);
+    const chave =
+      shopId === undefined || shopId === null ? "sem-shop" : String(shopId);
     const agora = Date.now();
 
     // Teto de memoria: a chave vem de entrada externa, entao o mapa nao pode
@@ -1719,7 +1782,9 @@ small{color:#666}</style></head><body>
       chunks.push(b);
     }
     const raw = Buffer.concat(chunks);
-    (request as any).shopeeRawBody = estourou ? undefined : raw.toString("utf8");
+    (request as any).shopeeRawBody = estourou
+      ? undefined
+      : raw.toString("utf8");
     if (estourou) {
       console.warn(
         JSON.stringify({
@@ -1786,7 +1851,11 @@ small{color:#666}</style></head><body>
           // Qual chave conferiu, uma vez por chave por processo: sem isto a
           // resposta ficaria sendo inferida do comportamento, e trocar uma das
           // chaves viraria um 401 sem explicacao.
-          if (veredito.ok && veredito.chave && !chavesJaLogadas.has(veredito.chave)) {
+          if (
+            veredito.ok &&
+            veredito.chave &&
+            !chavesJaLogadas.has(veredito.chave)
+          ) {
             chavesJaLogadas.add(veredito.chave);
             console.log(
               JSON.stringify({

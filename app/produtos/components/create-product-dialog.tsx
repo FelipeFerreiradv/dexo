@@ -528,6 +528,8 @@ export function CreateProductDialog({
   const [magaluCategoryLoading, setMagaluCategoryLoading] = useState(false);
   const [magaluSelectedLabel, setMagaluSelectedLabel] = useState("");
   const magaluSuggestedRef = useRef(false);
+  /** Categoria Magalu que a sugestão automática aplicou nesta abertura. */
+  const magaluAutoValueRef = useRef<string | null>(null);
   const [locationOptions, setLocationOptions] = useState<LocationSelectItem[]>(
     [],
   );
@@ -818,8 +820,7 @@ export function CreateProductDialog({
           // Não sobrescrever custo/estoque vindos da NF-e (fluxo de importação).
           // Sem `initialValues` (fluxo manual), o comportamento é idêntico ao de hoje.
           const nfeInit = initialValuesRef.current as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           if (costPriceDefault != null && nfeInit?.costPrice == null) {
             setValue("costPrice", costPriceDefault);
           }
@@ -868,50 +869,87 @@ export function CreateProductDialog({
     }
   }, [session?.user?.email, setValue]);
 
-  const fetchCategorySuggestion = useCallback(
+  /**
+   * Contexto que o formulário já tem em mãos na hora de pedir a sugestão.
+   *
+   * Até 04/08/2026 mandávamos SÓ o título e jogávamos fora marca, modelo, ano,
+   * versão, part number, categoria interna e veículo de origem — campos que o
+   * próprio callback do debounce já lia (`getValues` logo abaixo, na
+   * auto-detecção). O `getValues` é lido no momento da chamada, não capturado
+   * em dependência, então isto não muda o debounce nem provoca re-render.
+   */
+  const buildSuggestContext = useCallback(
+    (title: string) => {
+      const v = getValues();
+      return {
+        title,
+        brand: v.brand || null,
+        model: v.model || null,
+        year: v.year || null,
+        version: v.version || null,
+        partNumber: v.partNumber || null,
+        internalCategory: v.category || null,
+        sourceVehicle: v.sourceVehicle || null,
+        quality: v.quality || null,
+        heightCm: v.heightCm ?? null,
+        widthCm: v.widthCm ?? null,
+        lengthCm: v.lengthCm ?? null,
+        weightKg: v.weightKg ?? null,
+      };
+    },
+    [getValues],
+  );
+
+  /**
+   * POST irmão do GET de sempre. Fail-open em duas camadas: erro de rede ou
+   * resposta não-ok devolve `null` e o fluxo segue exatamente como já seguia
+   * quando a sugestão falhava.
+   */
+  const fetchSuggestionWithContext = useCallback(
     async (
+      path: string,
       title: string,
       signal?: AbortSignal,
     ): Promise<SuggestionResponse | null> => {
       try {
-        const resp = await fetch(
-          `${backendBase}/marketplace/ml/category-suggest?title=${encodeURIComponent(
-            title,
-          )}`,
-          { headers: { email: session?.user?.email || "" }, signal },
-        );
+        const resp = await fetch(`${backendBase}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            email: session?.user?.email || "",
+          },
+          body: JSON.stringify(buildSuggestContext(title)),
+          signal,
+        });
         if (!resp.ok) return null;
         return (await resp.json()) as SuggestionResponse;
       } catch (err) {
         if ((err as any)?.name === "AbortError") return null;
-        console.error("Erro ao sugerir categoria:", err);
+        console.error(`Erro ao sugerir categoria (${path}):`, err);
         return null;
       }
     },
-    [backendBase, session?.user?.email],
+    [backendBase, session?.user?.email, buildSuggestContext],
+  );
+
+  const fetchCategorySuggestion = useCallback(
+    (title: string, signal?: AbortSignal) =>
+      fetchSuggestionWithContext(
+        "/marketplace/ml/category-suggest",
+        title,
+        signal,
+      ),
+    [fetchSuggestionWithContext],
   );
 
   const fetchShopeeCategorySuggestion = useCallback(
-    async (
-      title: string,
-      signal?: AbortSignal,
-    ): Promise<SuggestionResponse | null> => {
-      try {
-        const resp = await fetch(
-          `${backendBase}/marketplace/shopee/category-suggest?title=${encodeURIComponent(
-            title,
-          )}`,
-          { headers: { email: session?.user?.email || "" }, signal },
-        );
-        if (!resp.ok) return null;
-        return (await resp.json()) as SuggestionResponse;
-      } catch (err) {
-        if ((err as any)?.name === "AbortError") return null;
-        console.error("Erro ao sugerir categoria Shopee:", err);
-        return null;
-      }
-    },
-    [backendBase, session?.user?.email],
+    (title: string, signal?: AbortSignal) =>
+      fetchSuggestionWithContext(
+        "/marketplace/shopee/category-suggest",
+        title,
+        signal,
+      ),
+    [fetchSuggestionWithContext],
   );
 
   // Import shared parser
@@ -1193,6 +1231,9 @@ export function CreateProductDialog({
         const data = await resp.json();
         if (data?.categoryId) {
           const label = data.path || data.categoryId;
+          // Guarda o valor SUGERIDO para o submit distinguir "aceitou a
+          // sugestão" de "escolheu na mão" ao gravar magaluCategorySource.
+          magaluAutoValueRef.current = data.categoryId;
           setValue("magaluCategory", data.categoryId, { shouldDirty: true });
           setMagaluSelectedLabel(label);
           setMagaluOptions([{ id: data.categoryId, value: label }]);
@@ -1201,12 +1242,7 @@ export function CreateProductDialog({
         console.error("Erro ao sugerir categoria Magalu:", err);
       }
     })();
-  }, [
-    watchCreateMagaluListing,
-    watchName,
-    setValue,
-    session?.user?.email,
-  ]);
+  }, [watchCreateMagaluListing, watchName, setValue, session?.user?.email]);
 
   // Busca server-side de categorias Magalu (debounced) ao digitar no combobox.
   useEffect(() => {
@@ -2033,8 +2069,7 @@ export function CreateProductDialog({
             // whose fullPath contains any token. If not found, fall back to the
             // static `ML_CATEGORY_OPTIONS` (which includes keyword hints).
             let childMatch:
-              | { id: string; value: string; keywords?: string[] }
-              | undefined;
+              { id: string; value: string; keywords?: string[] } | undefined;
 
             if (mlOptions && mlOptions.length > 0) {
               const externalMatch = mlOptions.find((c) => {
@@ -2698,7 +2733,28 @@ export function CreateProductDialog({
         mlCategorySource: mlCategorySourceToSend,
         mlCategory: data.mlCategory || autoDetectedRef.current?.mlCategory,
         shopeeCategory: data.shopeeCategory || undefined,
-        shopeeCategorySource: data.shopeeCategory ? "manual" : undefined,
+        // Distingue humano de sugestão aceita passivamente, exatamente como o
+        // ML já fazia (comparando com `autoDetectedRef`). Antes gravava
+        // "manual" sempre que o campo tivesse valor — mas o auto-detect
+        // preenche esse mesmo campo quando a confiança passa de 0,15, então
+        // TODA sugestão aceita virava "manual". Resultado: 6.022 produtos com
+        // shopeeCategorySource='manual' e nenhuma forma de saber quais foram
+        // realmente escolhidos por alguém, o que inviabiliza medir precisão.
+        // Não muda publicação, estoque nem pedido — só o valor da coluna.
+        shopeeCategorySource: data.shopeeCategory
+          ? autoDetectedRef.current?.shopeeCategory === data.shopeeCategory
+            ? "auto"
+            : "manual"
+          : autoDetectedRef.current?.shopeeCategory
+            ? "auto"
+            : undefined,
+        // Idem Magalu: nenhum modal enviava o campo, então o backend caía no
+        // default `magaluCategory ? "manual" : "auto"`.
+        magaluCategorySource: data.magaluCategory
+          ? magaluAutoValueRef.current === data.magaluCategory
+            ? "auto"
+            : "manual"
+          : undefined,
         imageUrls: data.imageUrls || [],
 
         // Sucata vinculada
@@ -2799,6 +2855,7 @@ export function CreateProductDialog({
     hasFetchedOnOpenRef.current = false;
     // Zera a sugestão memorizada — a próxima abertura busca uma nova.
     autoSuggestedSkuRef.current = "";
+    magaluAutoValueRef.current = null;
     // Permite reaplicar o pré-preenchimento da NF-e na próxima abertura (multi-item).
     nfeAppliedRef.current = false;
     // Permite reaplicar a sucata travada na próxima abertura (várias peças em sequência).
@@ -2982,8 +3039,7 @@ export function CreateProductDialog({
                       // Trim de leading/trailing antes de validar: mantendo o
                       // valor sugerido com um espaço acidental, ele ainda cai no
                       // caminho automático em vez de bloquear o submit.
-                      setValueAs: (v) =>
-                        typeof v === "string" ? v.trim() : v,
+                      setValueAs: (v) => (typeof v === "string" ? v.trim() : v),
                     })}
                     disabled={isLoadingSku}
                     aria-invalid={!!errors.sku}
@@ -2996,7 +3052,8 @@ export function CreateProductDialog({
                   ) : (
                     <p className="text-xs text-muted-foreground">
                       Sugerido automaticamente. Edite se quiser um código
-                      específico; mantendo o sugerido, ele é atribuído ao salvar.
+                      específico; mantendo o sugerido, ele é atribuído ao
+                      salvar.
                     </p>
                   )}
                 </div>
@@ -3324,75 +3381,76 @@ export function CreateProductDialog({
               ) : (
                 /* Seleção de Sucata (opcional) */
                 availableScraps.length > 0 && (
-                <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
-                  <Label>Vincular a uma sucata (opcional)</Label>
-                  <Select
-                    value={selectedScrap?.id ?? "NONE"}
-                    onValueChange={(v) => {
-                      if (v === "NONE") {
-                        // Desvincular: limpar campos preenchidos pela sucata
-                        const prev = scrapAutofilledRef.current;
-                        if (prev.brand && getValues("brand") === prev.brand)
-                          setValue("brand", "");
-                        if (prev.model && getValues("model") === prev.model)
-                          setValue("model", "");
-                        if (prev.year && getValues("year") === prev.year)
-                          setValue("year", "");
-                        if (
-                          prev.version &&
-                          getValues("version") === prev.version
-                        )
-                          setValue("version", "");
-                        if (
-                          prev.sourceVehicle &&
-                          getValues("sourceVehicle") === prev.sourceVehicle
-                        )
-                          setValue("sourceVehicle", "");
-                        setSelectedScrap(null);
-                        scrapAutofilledRef.current = {};
-                      } else {
-                        const scrap = availableScraps.find((s) => s.id === v);
-                        if (scrap) {
-                          setSelectedScrap(scrap);
-                          // Herdar dados do veículo
-                          const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
-                          setValue("brand", scrap.brand);
-                          setValue("model", scrap.model);
-                          if (scrap.year) setValue("year", scrap.year);
-                          if (scrap.version) setValue("version", scrap.version);
-                          setValue("sourceVehicle", sourceDesc);
-                          scrapAutofilledRef.current = {
-                            brand: scrap.brand,
-                            model: scrap.model,
-                            year: scrap.year,
-                            version: scrap.version,
-                            sourceVehicle: sourceDesc,
-                          };
+                  <div className="rounded-lg border border-dashed border-muted-foreground/30 p-4 space-y-2">
+                    <Label>Vincular a uma sucata (opcional)</Label>
+                    <Select
+                      value={selectedScrap?.id ?? "NONE"}
+                      onValueChange={(v) => {
+                        if (v === "NONE") {
+                          // Desvincular: limpar campos preenchidos pela sucata
+                          const prev = scrapAutofilledRef.current;
+                          if (prev.brand && getValues("brand") === prev.brand)
+                            setValue("brand", "");
+                          if (prev.model && getValues("model") === prev.model)
+                            setValue("model", "");
+                          if (prev.year && getValues("year") === prev.year)
+                            setValue("year", "");
+                          if (
+                            prev.version &&
+                            getValues("version") === prev.version
+                          )
+                            setValue("version", "");
+                          if (
+                            prev.sourceVehicle &&
+                            getValues("sourceVehicle") === prev.sourceVehicle
+                          )
+                            setValue("sourceVehicle", "");
+                          setSelectedScrap(null);
+                          scrapAutofilledRef.current = {};
+                        } else {
+                          const scrap = availableScraps.find((s) => s.id === v);
+                          if (scrap) {
+                            setSelectedScrap(scrap);
+                            // Herdar dados do veículo
+                            const sourceDesc = `${scrap.brand} ${scrap.model}${scrap.year ? ` ${scrap.year}` : ""}${scrap.plate ? ` (${scrap.plate})` : ""}`;
+                            setValue("brand", scrap.brand);
+                            setValue("model", scrap.model);
+                            if (scrap.year) setValue("year", scrap.year);
+                            if (scrap.version)
+                              setValue("version", scrap.version);
+                            setValue("sourceVehicle", sourceDesc);
+                            scrapAutofilledRef.current = {
+                              brand: scrap.brand,
+                              model: scrap.model,
+                              year: scrap.year,
+                              version: scrap.version,
+                              sourceVehicle: sourceDesc,
+                            };
+                          }
                         }
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Nenhuma sucata selecionada" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="NONE">Nenhuma sucata</SelectItem>
-                      {availableScraps.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {s.brand} {s.model}
-                          {s.year ? ` ${s.year}` : ""}
-                          {s.plate ? ` — ${s.plate}` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedScrap && (
-                    <p className="text-xs text-muted-foreground">
-                      Marca, modelo, ano e versão foram preenchidos pela sucata
-                      selecionada.
-                    </p>
-                  )}
-                </div>
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Nenhuma sucata selecionada" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NONE">Nenhuma sucata</SelectItem>
+                        {availableScraps.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.brand} {s.model}
+                            {s.year ? ` ${s.year}` : ""}
+                            {s.plate ? ` — ${s.plate}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedScrap && (
+                      <p className="text-xs text-muted-foreground">
+                        Marca, modelo, ano e versão foram preenchidos pela
+                        sucata selecionada.
+                      </p>
+                    )}
+                  </div>
                 )
               )}
 
@@ -4564,7 +4622,9 @@ export function CreateProductDialog({
                     {magaluAccounts.length > 0 ? (
                       <div className="space-y-2 rounded-md border p-3">
                         {magaluAccounts.map((acc) => {
-                          const checked = watchMagaluAccountIds.includes(acc.id);
+                          const checked = watchMagaluAccountIds.includes(
+                            acc.id,
+                          );
                           return (
                             <label
                               key={acc.id}
