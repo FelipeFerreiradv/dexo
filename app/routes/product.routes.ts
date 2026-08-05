@@ -1621,10 +1621,15 @@ export const productRoutes = async (fastify: FastifyInstance) => {
 
             // Ficha técnica secundária por categoria (ML).
             // Sanitiza só quando o cliente envia o campo — undefined = não atualiza.
+            // Quando o cliente ENVIA o campo e nada sobra da sanitização, isso é
+            // "limpar tudo", não "não mexer": sem o `?? {}` o operador não
+            // conseguia apagar o último atributo (ex.: um Código OEM digitado
+            // errado) — salvava 200 e o valor antigo voltava ao reabrir, e
+            // seguia indo para o Mercado Livre.
             attributes:
               attributes === undefined
                 ? undefined
-                : sanitizeProductAttributes(attributes),
+                : (sanitizeProductAttributes(attributes) ?? {}),
 
             // Compatibilidades veiculares (persistidas atomicamente pelo repositório)
             compatibilities: Array.isArray(compatibilities)

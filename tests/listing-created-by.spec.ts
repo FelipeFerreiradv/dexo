@@ -121,6 +121,7 @@ describe("ListingDispatcher — threading do actorId até os createXListing", ()
       undefined, // mlSettings
       undefined, // titleOverride
       "collab-1",
+      undefined, // attributeOverrides (só a Revisão individual preenche)
     );
   });
 
@@ -175,6 +176,7 @@ describe("ListingDispatcher — threading do actorId até os createXListing", ()
       undefined,
       undefined,
       "collab-1",
+      undefined, // attributeOverrides (só a Revisão individual preenche)
     );
   });
 });

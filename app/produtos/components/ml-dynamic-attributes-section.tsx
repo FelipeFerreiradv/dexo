@@ -19,14 +19,26 @@ import {
 import { getApiBaseUrl } from "@/lib/api";
 
 import {
+  OEM_FIELD_ATTR_ID,
+  OEM_MAX_LENGTH,
   getVisibleAttributes,
   isListAttribute,
   positionNeedsInput,
+  sectionFieldCount,
+  shouldRenderSection,
   type MLAttributeValue,
   type MLDynamicAttribute,
 } from "./ml-dynamic-attributes.logic";
 
 export type { MLAttributeValue, MLDynamicAttribute };
+
+/**
+ * KILL-SWITCH do campo Código OEM. "1" esconde o campo e devolve a seção ao
+ * comportamento anterior byte-idêntico (inclusive os `return null` quando não
+ * há atributo visível). Flag de BUILD-TIME: mudar exige rebuild do front.
+ */
+const OEM_FIELD_ENABLED =
+  process.env.NEXT_PUBLIC_ML_OEM_FIELD_DISABLED !== "1";
 
 interface MLDynamicAttributesSectionProps {
   categoryId: string | null | undefined;
@@ -39,10 +51,16 @@ interface MLDynamicAttributesSectionProps {
 
 /**
  * Renderiza a "ficha técnica secundária" oficial da categoria do Mercado Livre
- * (GET /categories/{id}/attributes). Mostra somente atributos que ainda não
- * são gerenciados por campos fixos do formulário. Se a categoria não tiver
- * atributos extras (ou a API falhar), renderiza nada — comportamento idêntico
- * ao fluxo legado.
+ * (GET /categories/{id}/attributes). Da lista dinâmica mostra somente atributos
+ * que ainda não são gerenciados por campos fixos do formulário.
+ *
+ * Além dela há UM campo fixo, o Código OEM: ele não vem do catálogo, aparece em
+ * qualquer categoria e é a razão de a seção existir mesmo quando a lista
+ * dinâmica está vazia ou o fetch falhou. Com
+ * NEXT_PUBLIC_ML_OEM_FIELD_DISABLED=1 o campo some e a seção volta a não
+ * renderizar nada nesses casos — o comportamento legado.
+ *
+ * Sem categoria selecionada a seção continua não renderizando nada.
  */
 export function MLDynamicAttributesSection({
   categoryId,
@@ -132,11 +150,15 @@ export function MLDynamicAttributesSection({
       </div>
     );
   }
-  if (error && visible.length === 0) {
+  // Com o campo OEM ligado a seção não depende mais do catálogo da categoria:
+  // ela continua existindo com zero atributo dinâmico, e uma falha de fetch não
+  // pode esconder o OEM. Com a flag desligada, os dois portões voltam a ser os
+  // de antes.
+  if (error && visible.length === 0 && !OEM_FIELD_ENABLED) {
     // Falha + nada a mostrar = silencioso, sem regressão visual.
     return null;
   }
-  if (visible.length === 0) return null;
+  if (!shouldRenderSection(visible.length, OEM_FIELD_ENABLED)) return null;
 
   const updateAttr = (id: string, next: MLAttributeValue | null) => {
     const copy = { ...value };
@@ -159,7 +181,16 @@ export function MLDynamicAttributesSection({
           <div className="text-sm font-medium">
             Ficha técnica (Mercado Livre){" "}
             <span className="font-normal text-muted-foreground">
-              · {visible.length} campos
+              {(() => {
+                const n = sectionFieldCount(visible.length, OEM_FIELD_ENABLED);
+                // Com o campo OEM, categoria sem atributo extra passa a exibir
+                // "1 campo" — o singular deixa de ser exceção rara e vale
+                // acertar. Com o kill-switch ligado o texto volta a ser o de
+                // hoje, "N campos" inclusive no singular, para a renderização
+                // ser byte-idêntica.
+                if (!OEM_FIELD_ENABLED) return `· ${n} campos`;
+                return `· ${n} ${n === 1 ? "campo" : "campos"}`;
+              })()}
             </span>
             {needsPosition && (
               <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
@@ -177,6 +208,31 @@ export function MLDynamicAttributesSection({
         />
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-3">
+        {OEM_FIELD_ENABLED && (
+          <div className="mb-3 space-y-1">
+            <Label htmlFor={`ml-attr-${OEM_FIELD_ATTR_ID}`}>Código OEM</Label>
+            <Input
+              id={`ml-attr-${OEM_FIELD_ATTR_ID}`}
+              type="text"
+              value={value[OEM_FIELD_ATTR_ID]?.value_name ?? ""}
+              onChange={(e) => {
+                const text = e.target.value;
+                if (!text || !text.trim()) {
+                  updateAttr(OEM_FIELD_ATTR_ID, null);
+                  return;
+                }
+                updateAttr(OEM_FIELD_ATTR_ID, { value_name: text });
+              }}
+              maxLength={OEM_MAX_LENGTH}
+              disabled={disabled}
+              placeholder="Opcional"
+            />
+            <p className="text-xs text-muted-foreground">
+              Código original do fabricante da peça. Enviado ao Mercado Livre na
+              publicação, quando a categoria aceitar o atributo.
+            </p>
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {visible.map((attr) => {
             const current = value[attr.id] || {};

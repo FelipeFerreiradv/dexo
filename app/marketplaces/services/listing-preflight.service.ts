@@ -456,13 +456,15 @@ export class ListingPreflightService {
         severity: "block",
         message: `Categoria ${categoryId} exige o atributo "${attr.name}" (${attr.id})`,
         fixHint:
-          attr.id === "PART_NUMBER" || attr.id === "MPN" || attr.id === "OEM"
-            ? "Preencha o Part Number da peça antes de publicar."
-            : attr.id === "BRAND"
-              ? "Preencha a marca do produto antes de publicar."
-              : attr.id === "MODEL"
-                ? "Preencha o modelo do veículo antes de publicar."
-                : `Preencha o campo ${attr.name} antes de publicar.`,
+          attr.id === "OEM"
+            ? "Preencha o Código OEM na ficha técnica (ou o Part Number da peça) antes de publicar."
+            : attr.id === "PART_NUMBER" || attr.id === "MPN"
+              ? "Preencha o Part Number da peça antes de publicar."
+              : attr.id === "BRAND"
+                ? "Preencha a marca do produto antes de publicar."
+                : attr.id === "MODEL"
+                  ? "Preencha o modelo do veículo antes de publicar."
+                  : `Preencha o campo ${attr.name} antes de publicar.`,
       });
     }
 
