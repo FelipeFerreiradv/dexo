@@ -160,6 +160,7 @@ export async function runVaaptPacote(
     bump(rProd, "sem_sku", mapped.semSku);
     bump(rProd, "sku_duplicado_no_arquivo", mapped.duplicadosSku);
     bump(rProd, "linhas_excluidas_na_origem", mapped.excluidos);
+    bump(rProd, "estoque_zerado_por_status", mapped.estoqueZeradoPorStatus);
     for (const aviso of mapped.avisos) {
       bump(rProd, "avisos");
       addIssue(rProd.avisos, aviso);

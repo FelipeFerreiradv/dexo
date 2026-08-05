@@ -242,6 +242,7 @@ function makeDeps() {
     loadOwner: vi.fn(async () => ({ id: "admin-1" }) as never),
     loadProductsBySkuNormalized: vi.fn(async () => []),
     loadLegacyProducts: vi.fn(async () => []),
+    contarProdutosDoTenant: vi.fn(async () => 0),
     attachProducts: links.attachProducts,
   };
 

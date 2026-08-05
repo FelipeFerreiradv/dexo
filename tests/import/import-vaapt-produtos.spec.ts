@@ -136,6 +136,8 @@ function makeDeps(
     skuNormalized: string | null;
     locationId: string | null;
   }> = [],
+  /** Total que o cliente já tem no Dexo (guarda de catálogo duplicado). */
+  produtosNoTenant = 0,
 ) {
   const created: ProductCreate[] = [];
   const attachCalls: Array<{ locationId: string; ids: string[] }> = [];
@@ -143,6 +145,7 @@ function makeDeps(
   const ownerCalls: string[] = [];
   let locSeq = 0;
   let legacyCalls = 0;
+  let tenantCounts = 0;
   const deps: VaaptProdutosDeps = {
     locations: {
       locationUseCase: {
@@ -172,6 +175,10 @@ function makeDeps(
       legacyCalls++;
       return existing.filter((e) => e.skuNormalized === null);
     }),
+    contarProdutosDoTenant: vi.fn(async () => {
+      tenantCounts++;
+      return produtosNoTenant;
+    }),
     attachProducts: vi.fn(async (locationId: string, ids: string[]) => {
       attachCalls.push({ locationId, ids });
       return {
@@ -189,6 +196,7 @@ function makeDeps(
     locCreated,
     ownerCalls,
     legadosCarregados: () => legacyCalls,
+    contagensDoTenant: () => tenantCounts,
   };
 }
 
@@ -291,9 +299,61 @@ describe("import/vaapt-produtos — mapper", () => {
       description: "Produto usado original",
       locationCode: "S1P1N1CX1", // plano, convenção Vaapt
       locationText: "S1 P1 N1 CX1",
-      mlb: "MLB1427772",
+      etiqueta: "MLB1427772",
       mlCategoriaExterna: "MLB101763",
     });
+  });
+
+  it("ESTOQUE FANTASMA: peça 'Vendido' com Qtd Disponivel entra com estoque ZERO", () => {
+    // Medido nos dois arquivos reais: 15.037 linhas "Vendido", das quais 10.782
+    // trazem Qtd Disponivel > 0. Sem esta regra seriam 10.782 anúncios de peça
+    // que já saiu do estoque.
+    const r = mapVaaptProdutos(
+      produtosFile([
+        linha("1", "Vendida com qtd", 10, 1, "L1", "Vendido"),
+        linha("2", "Disponivel", 10, 3, "L1", "Cadastro completo - estocado"),
+      ]),
+    );
+    expect(r.produtos.map((p) => [p.sku, p.stock])).toEqual([
+      ["1", 0],
+      ["2", 3],
+    ]);
+    expect(r.estoqueZeradoPorStatus).toBe(1);
+    // O cadastro entra igual — só a quantidade não.
+    expect(r.produtos[0].name).toBe("Vendida com qtd");
+    expect(r.produtos[0].price).toBe(10);
+    expect(r.avisos.some((a) => /estoque ZERO/i.test(a.motivo))).toBe(true);
+  });
+
+  it("ESTOQUE FANTASMA: 'não estocado' também zera (com e sem acento)", () => {
+    const r = mapVaaptProdutos(
+      produtosFile([
+        linha("1", "A", 10, 1, "L1", "Cadastro completo - não estocado"),
+        linha("2", "B", 10, 1, "L1", "Cadastro parcial - nao estocado"),
+        linha("3", "C", 10, 1, "L1", "Cadastro parcial - estocado"),
+      ]),
+    );
+    expect(r.produtos.map((p) => p.stock)).toEqual([0, 0, 1]);
+    expect(r.estoqueZeradoPorStatus).toBe(2);
+  });
+
+  it("'Condição' = Novo vira quality NOVO; o resto continua SEMINOVO", () => {
+    const r = mapVaaptProdutos(
+      produtosFile([
+        [...linha("1", "Nova", 10, 1, "L1").slice(0, 5), "Novo", ...linha("1", "Nova", 10, 1, "L1").slice(6)],
+        linha("2", "Usada", 10, 1, "L1"),
+      ]),
+    );
+    expect(r.produtos.map((p) => p.quality)).toEqual(["NOVO", "SEMINOVO"]);
+  });
+
+  it("'Etiqueta' é a etiqueta física, não o MLB — e status/qtd vendida são preservados", () => {
+    // 27.058 dos 28.880 valores reais sao numero puro. Guardar isso como "mlb"
+    // faria 27.058 produtos mentirem para qualquer relatorio futuro.
+    const r = mapVaaptProdutos(produtosFile());
+    expect(r.produtos[0].etiqueta).toBe("MLB1427772");
+    expect(r.produtos[0].status).toBe("Cadastro completo - estocado");
+    expect(r.produtos[0].qtdVendida).toBe(0);
   });
 
   it("estoque vem de 'Qtd Disponivel', não de 'Qtd Inicial'", () => {
@@ -408,7 +468,8 @@ describe("import/vaapt-produtos — executor", () => {
     expect(created[0].locationId).toBeTruthy();
     // Rastro da origem em attributes; NÃO cria anúncio nem resolve categoria.
     expect(created[0].attributes?.migration?.value_name).toBe("VAAPT");
-    expect(created[0].attributes?.vaaptMlb?.value_name).toBe("MLB1427772");
+    expect(created[0].attributes?.vaaptEtiqueta?.value_name).toBe("MLB1427772");
+    expect(created[0].attributes?.vaaptStatus?.value_name).toBe("Cadastro completo - estocado");
     expect(r.contadores.produtos_criados).toBe(2);
   });
 
@@ -495,6 +556,52 @@ describe("import/vaapt-produtos — executor", () => {
     );
     expect(r.porFase?.produtos.contadores.ja_existiam_corrida).toBe(1);
     expect(r.contadores.erros).toBe(0);
+  });
+
+  it("GUARDA: avisa quando o cliente já tem catálogo e NENHUM SKU casa", async () => {
+    // Caso real do 777 AutoParts: 24.415 produtos vindos da importação de
+    // anúncios, e `Cod Peça` casando com ZERO deles — mas 8.857 batendo por
+    // nome E preço, ou seja, as mesmas peças com outra numeração.
+    const linhas = Array.from({ length: 200 }, (_, i) =>
+      linha(String(900000 + i), `Peca ${i}`, 10, 1, "L1"),
+    );
+    const { deps, created } = makeDeps([], 24415);
+    const r = await runVaaptProdutos(ctx(true, produtosFile(linhas)), deps);
+    expect(created).toEqual([]); // prévia não escreve
+    const aviso = r.porFase?.produtos.avisos[0]?.motivo ?? "";
+    expect(aviso).toMatch(/catálogo duplicado/i);
+    expect(aviso).toContain("24.415");
+    expect(aviso).toContain("24.615"); // total projetado
+    expect(r.porFase?.produtos.contadores.produtos_ja_no_dexo).toBe(24415);
+  });
+
+  it("GUARDA: cliente NOVO (Dexo vazio) não recebe o aviso", async () => {
+    const linhas = Array.from({ length: 200 }, (_, i) =>
+      linha(String(900000 + i), `Peca ${i}`, 10, 1, "L1"),
+    );
+    const { deps } = makeDeps([], 0);
+    const r = await runVaaptProdutos(ctx(true, produtosFile(linhas)), deps);
+    const avisos = (r.porFase?.produtos.avisos ?? []).map((a) => a.motivo).join(" ");
+    expect(avisos).not.toMatch(/catálogo duplicado/i);
+  });
+
+  it("GUARDA: se ALGUM SKU casa, não avisa (a numeração confere)", async () => {
+    const linhas = Array.from({ length: 200 }, (_, i) =>
+      linha(String(900000 + i), `Peca ${i}`, 10, 1, "L1"),
+    );
+    const { deps } = makeDeps(
+      [{ id: "p1", sku: "900000", skuNormalized: "900000", locationId: null }],
+      24415,
+    );
+    const r = await runVaaptProdutos(ctx(true, produtosFile(linhas)), deps);
+    const avisos = (r.porFase?.produtos.avisos ?? []).map((a) => a.motivo).join(" ");
+    expect(avisos).not.toMatch(/catálogo duplicado/i);
+  });
+
+  it("GUARDA: o `count` roda SÓ na prévia, nunca no apply", async () => {
+    const { deps, contagensDoTenant } = makeDeps([], 24415);
+    await runVaaptProdutos(ctx(false, produtosFile()), deps);
+    expect(contagensDoTenant()).toBe(0);
   });
 
   it("sem descrição na planilha, não força o campo (cai no padrão do tenant)", async () => {

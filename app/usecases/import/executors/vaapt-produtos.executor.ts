@@ -29,6 +29,7 @@ import { ProductUseCase } from "../../product.usercase";
 import type { ImportContext, ImportReport } from "../import.types";
 import {
   ImportValidationError,
+  MAX_ISSUES,
   addIssue,
   addSample,
   bump,
@@ -76,6 +77,11 @@ export interface VaaptProdutosDeps {
    * SKU. Separar custa nada e é o que a regra de egress da casa manda.
    */
   loadLegacyProducts: (userId: string) => Promise<ExistingProductRef[]>;
+  /**
+   * Total de produtos que o cliente JÁ tem. Consultado **só na prévia**, para a
+   * guarda de catálogo duplicado abaixo. Um `count` por prévia, zero no apply.
+   */
+  contarProdutosDoTenant: (userId: string) => Promise<number>;
   attachProducts: LocationUseCase["attachProducts"];
 }
 
@@ -101,8 +107,47 @@ export const defaultVaaptProdutosDeps: VaaptProdutosDeps = {
       where: { userId, skuNormalized: null },
       select: { id: true, sku: true, skuNormalized: true, locationId: true },
     }),
+  contarProdutosDoTenant: (userId) => prisma.product.count({ where: { userId } }),
   attachProducts: locationUseCase.attachProducts.bind(locationUseCase),
 };
+
+/**
+ * Guarda de CATÁLOGO DUPLICADO.
+ *
+ * O casamento é por SKU. Quando o cliente já tem catálogo no Dexo mas NENHUM
+ * SKU da planilha casa, há duas leituras possíveis, e elas levam a resultados
+ * opostos: ou são peças realmente novas (importar está certo), ou são AS MESMAS
+ * peças com outra numeração (importar duplica o catálogo inteiro).
+ *
+ * Medido num caso real: um cliente com 24.415 produtos vindos da importação de
+ * anúncios recebeu uma planilha de 28.910 peças em que `Cod Peça` casava com
+ * **0** SKUs — mas 8.857 produtos batiam por nome E preço até o centavo, ou
+ * seja, eram as mesmas peças. Confirmar a importação levaria o cliente a 53.325
+ * produtos, metade duplicados, sem nenhum sinal na tela.
+ *
+ * A prévia é o único momento em que dá para barrar isso, e ela existe
+ * justamente para o operador conferir antes de gravar. Então: aviso alto e
+ * explícito, nunca bloqueio — quem decide é quem está olhando os números.
+ */
+const MIN_PARA_SUSPEITAR = 100;
+
+export function avisoDeCatalogoDuplicado(
+  produtosNoTenant: number,
+  casados: number,
+  aCriar: number,
+): string | null {
+  if (produtosNoTenant < MIN_PARA_SUSPEITAR) return null;
+  if (aCriar < MIN_PARA_SUSPEITAR) return null;
+  if (casados > 0) return null;
+  return (
+    `ATENÇÃO — possível catálogo duplicado. Este cliente já tem ` +
+    `${produtosNoTenant.toLocaleString("pt-BR")} produtos no Dexo, e NENHUM dos ` +
+    `${aCriar.toLocaleString("pt-BR")} códigos desta planilha casa com eles. Se forem as ` +
+    `mesmas peças com outra numeração, confirmar esta importação vai DUPLICAR o catálogo ` +
+    `(o cliente ficaria com ${(produtosNoTenant + aCriar).toLocaleString("pt-BR")} produtos). ` +
+    `Confira com o cliente qual coluna da planilha corresponde ao código usado no Dexo antes de confirmar.`
+  );
+}
 
 const BATCH = 200; // limite hard do attachProducts
 const PRELOAD_CHUNK = 500;
@@ -128,6 +173,7 @@ export async function runVaaptProdutos(
   bump(report, "sku_duplicado_no_arquivo", mapped.duplicadosSku);
   bump(report, "linhas_excluidas_na_origem", mapped.excluidos);
   bump(report, "sem_localizacao_no_arquivo", mapped.semLocalizacao);
+  bump(report, "estoque_zerado_por_status", mapped.estoqueZeradoPorStatus);
   for (const aviso of mapped.avisos) {
     bump(report, "avisos");
     addIssue(report.avisos, aviso);
@@ -326,6 +372,21 @@ export async function executeProdutosPlan(
         localizacao: item.locationText ?? null,
       });
     }
+    // Só na prévia: um `count` para poder avisar antes de o operador confirmar.
+    const noTenant = await deps.contarProdutosDoTenant(ctx.targetUserId);
+    const aviso = avisoDeCatalogoDuplicado(
+      noTenant,
+      report.contadores.produtos_casados ?? 0,
+      aCriar.length,
+    );
+    if (aviso) {
+      bump(report, "avisos");
+      bump(report, "produtos_ja_no_dexo", noTenant);
+      // `unshift` pelo mesmo motivo do mapper: `addIssue` corta no MAX_ISSUES e
+      // este é, de longe, o aviso mais importante da lista.
+      report.avisos.unshift({ motivo: aviso });
+      if (report.avisos.length > MAX_ISSUES) report.avisos.length = MAX_ISSUES;
+    }
     return;
   }
 
@@ -358,17 +419,24 @@ export async function executeProdutosPlan(
         // Sem descrição na planilha, `applyUserDefaults` usa a padrão do
         // tenant — mesmo comportamento dos outros importadores.
         ...(item.description ? { description: item.description } : {}),
-        quality: "SEMINOVO",
+        // Vem da coluna "Condição" (530 peças reais são "Novo"), não cravado.
+        quality: item.quality,
         imageUrl: "",
         ...(locationId
           ? { locationId, location: item.locationText ?? undefined }
           : {}),
+        // Rastro da origem. NÃO cria anúncio nem resolve categoria: importar é
+        // povoar o catálogo, publicar é outro ato. Os nomes dizem a verdade
+        // sobre o que o campo contém — `vaaptEtiqueta` e não `vaaptMlb`,
+        // porque 27.058 dos 28.880 valores são a etiqueta física, não um MLB.
         attributes: {
           migration: { value_name: "VAAPT" },
-          // Rastro da origem. NÃO cria anúncio nem resolve categoria:
-          // importar é povoar o catálogo, publicar é outro ato.
-          vaaptMlb: { value_name: item.mlb ?? "" },
+          vaaptEtiqueta: { value_name: item.etiqueta ?? "" },
           vaaptCategoriaMl: { value_name: item.mlCategoriaExterna ?? "" },
+          // Preservados para auditar o estoque depois do import: sem eles não
+          // dá para saber por que uma peça entrou com quantidade zero.
+          vaaptStatus: { value_name: item.status ?? "" },
+          vaaptQtdVendida: { value_name: String(item.qtdVendida ?? "") },
         },
       });
       bump(report, "produtos_criados");

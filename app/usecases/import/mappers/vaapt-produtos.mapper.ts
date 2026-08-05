@@ -22,8 +22,20 @@
  * - **Estoque = "Qtd Disponivel"**, não "Qtd Inicial". Inicial é histórico; o
  *   que o Dexo precisa saber é o que está na prateleira hoje.
  * - **"Cód Status" = "Excluido" pula a linha.** São peças apagadas na origem;
- *   criá-las no Dexo seria importar lixo. "Vendido" NÃO pula — a peça existiu e
- *   a quantidade disponível já reflete a venda.
+ *   criá-las no Dexo seria importar lixo.
+ * - ⚠️ **"Qtd Disponivel" MENTE quando o status diz o contrário.** Esta é a
+ *   correção de um erro meu: eu havia documentado que "a quantidade disponível
+ *   já reflete a venda". **É falso**, e a medição nos dois arquivos reais
+ *   mostra o tamanho do estrago:
+ *
+ *       Vendido .......................... 15.037 linhas, 10.782 com Qtd > 0
+ *       Cadastro completo - não estocado .. 1.216 linhas,  1.216 com Qtd > 0
+ *
+ *   Seriam **12.009 produtos (41,5% do arquivo) nascendo com estoque fantasma**
+ *   numa plataforma que publica em marketplace — ou seja, anúncio de peça que
+ *   não existe. Por isso o estoque é **zerado** quando o status é "Vendido" ou
+ *   contém "não estocado". A peça continua entrando (preço, descrição e
+ *   histórico se preservam); o que não entra é a mentira sobre disponibilidade.
  * - **As colunas de veículo são ignoradas.** No export medido, "Placa
  *   Veículo", "Apelido Veículo", "Chassi" e "RENAVAM" são o literal "DUMMY" em
  *   100% das linhas e "Código Veículo" tem UM valor distinto. Não há sucata
@@ -32,6 +44,14 @@
  * - **"Etiqueta" e "Categoria ML" vão para `attributes`**, não viram anúncio
  *   nem categoria resolvida. Importar é povoar o catálogo; publicar é outro
  *   ato, explícito — mesma fronteira que `setImageUrlsMany` respeita.
+ * - ⚠️ **"Etiqueta" NÃO é o MLB.** Medido: 27.058 valores são número puro,
+ *   1.596 têm formato MLB e 255 são texto solto (inclusive "EXCLUIDO" e
+ *   localizações digitadas no campo errado). É a etiqueta física da peça no
+ *   Vaapt. Guardar isso num atributo chamado `mlb` faria 27.058 produtos
+ *   mentirem para qualquer relatório futuro — por isso o nome é `vaaptEtiqueta`.
+ * - **"Condição" vira `quality`**: "Novo" → NOVO (530 peças nos arquivos
+ *   reais), o resto → SEMINOVO. Cravar SEMINOVO em tudo classificaria peça
+ *   nova errado, e `quality` alimenta filtro de estoque e condição do anúncio.
  * - **Localização plana** (`normalizeCodeFlat`), igual a
  *   `mapVaaptLocations`/`scripts/migracao-vaapt.ts`. "S1 P1 N1 CX1" vira
  *   "S1P1N1CX1", um nó só. Quebrar em árvore S1→P1→N1→CX1 criaria uma árvore
@@ -50,14 +70,21 @@ export interface VaaptProdutoPlanItem {
   sku: string;
   name: string;
   price: number;
+  /** Já zerado quando o status diz que a peça não está disponível. */
   stock: number;
+  /** "NOVO" quando a coluna Condição diz Novo; senão "SEMINOVO". */
+  quality: "NOVO" | "SEMINOVO";
+  /** Status cru da origem — vai para attributes, para auditoria. */
+  status: string | null;
+  /** Quantidade vendida na origem — auditoria do estoque depois do import. */
+  qtdVendida: number | null;
   description: string | null;
   /** Código normalizado da localização; null se a linha não tem. */
   locationCode: string | null;
   /** Texto original (vira `Product.location` e a descrição da Location). */
   locationText: string | null;
-  /** MLB do anúncio na origem — só auditoria, não cria anúncio. */
-  mlb: string | null;
+  /** Etiqueta física da peça no Vaapt (NÃO é o MLB) — só auditoria. */
+  etiqueta: string | null;
   /** Categoria ML da origem (ex.: "MLB101763") — só auditoria. */
   mlCategoriaExterna: string | null;
 }
@@ -75,6 +102,8 @@ export interface VaaptProdutosMapResult {
   excluidos: number;
   /** Linhas sem localização preenchida (não é erro). */
   semLocalizacao: number;
+  /** Linhas cujo estoque foi ZERADO por causa do status (vendida/não estocada). */
+  estoqueZeradoPorStatus: number;
   avisos: ImportRowIssue[];
 }
 
@@ -83,6 +112,16 @@ function asStock(v: unknown): number {
   const n = asNumber(v);
   if (n === null) return 0;
   return Math.max(0, Math.floor(n));
+}
+
+/**
+ * O status diz que a peça NÃO está disponível? Cobre "Vendido" e qualquer
+ * variante de "não estocado" (com e sem acento — normName remove acento).
+ */
+export function statusIndisponivel(status: string | null): boolean {
+  if (!status) return false;
+  const n = normName(status);
+  return n === "VENDIDO" || n.includes("NAO ESTOCADO");
 }
 
 export function mapVaaptProdutos(file: DetectedFile): VaaptProdutosMapResult {
@@ -94,6 +133,7 @@ export function mapVaaptProdutos(file: DetectedFile): VaaptProdutosMapResult {
   let duplicadosSku = 0;
   let excluidos = 0;
   let semLocalizacao = 0;
+  let estoqueZeradoPorStatus = 0;
 
   // Sinônimos resolvidos pelo HEADER: absorvem variação entre exports sem
   // duplicar o mapper. O 1º rótulo PRESENTE vence.
@@ -145,16 +185,27 @@ export function mapVaaptProdutos(file: DetectedFile): VaaptProdutosMapResult {
     }
     if (!locationCode) semLocalizacao++;
 
+    const disponivel = asStock(
+      read(row, "Qtd Disponivel", "Qtd Disponível", "Quantidade disponivel"),
+    );
+    const indisponivel = statusIndisponivel(status);
+    if (indisponivel && disponivel > 0) estoqueZeradoPorStatus++;
+
+    const condicao = asString(read(row, "Condição", "Condicao"));
+
     produtos.push({
       linha,
       sku,
       name: asString(read(row, "Nome Produto", "Nome Peca", "Nome")) ?? "(sem nome)",
       price: asNumber(read(row, "Preço", "Preco", "Valor")) ?? 0,
-      stock: asStock(read(row, "Qtd Disponivel", "Qtd Disponível", "Quantidade disponivel")),
+      stock: indisponivel ? 0 : disponivel,
+      quality: condicao && normName(condicao) === "NOVO" ? "NOVO" : "SEMINOVO",
+      status,
+      qtdVendida: asNumber(read(row, "Qtd Vendida", "Quantidade vendida")),
       description: asString(read(row, "Descrição Produto", "Descricao Produto", "Descrição")),
       locationCode,
       locationText,
-      mlb: asString(read(row, "Etiqueta")),
+      etiqueta: asString(read(row, "Etiqueta")),
       mlCategoriaExterna: asString(read(row, "Categoria ML")),
     });
   }
@@ -171,6 +222,15 @@ export function mapVaaptProdutos(file: DetectedFile): VaaptProdutosMapResult {
       motivo: `${semSku} linha(s) sem "Cod Peça" foram ignoradas.`,
     });
   }
+  if (estoqueZeradoPorStatus > 0) {
+    avisos.unshift({
+      motivo:
+        `${estoqueZeradoPorStatus} peça(s) entram com estoque ZERO porque o status na origem ` +
+        `é "Vendido" ou "não estocado", mesmo tendo quantidade preenchida na planilha. ` +
+        `O cadastro (nome, preço, descrição, localização) é criado normalmente — só a ` +
+        `quantidade não é, para o cliente não anunciar peça que já saiu.`,
+    });
+  }
 
   return {
     produtos,
@@ -180,6 +240,7 @@ export function mapVaaptProdutos(file: DetectedFile): VaaptProdutosMapResult {
     duplicadosSku,
     excluidos,
     semLocalizacao,
+    estoqueZeradoPorStatus,
     avisos,
   };
 }
