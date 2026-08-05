@@ -37,6 +37,7 @@ import {
   readAnnotationLayers,
 } from "./recipe";
 import { DEFAULT_FONT_FAMILY, ensureEditorFontsLoaded } from "./fonts";
+import { resolveTextareaHost } from "./text-editing";
 import { arrowPathString } from "./tools/arrow-geometry";
 
 export const ANNOTATION_PALETTE = [
@@ -102,6 +103,35 @@ export function outlineColorFor(fill: string): string {
   return luminance < 140 ? "#ffffff" : "#111111";
 }
 
+/**
+ * Host do textarea invisível por canvas. Existe porque nem todo caminho que
+ * cria um IText recebe o host como parâmetro — `duplicateAnnotation` reentra em
+ * `restoreAnnotations` sem opts. Memorizando por canvas, um texto duplicado
+ * herda o mesmo host do que foi criado pelo botão "Texto".
+ */
+const textareaHosts = new WeakMap<Canvas, HTMLElement>();
+
+/** Registra o host deste canvas (idempotente); ignora ausência. */
+export function rememberTextareaHost(
+  canvas: Canvas,
+  host: HTMLElement | null | undefined,
+): void {
+  if (host) textareaHosts.set(canvas, host);
+}
+
+/** Host efetivo: explícito > memorizado no canvas > wrapper do fabric. */
+function textareaHostFor(
+  canvas: Canvas,
+  explicit?: HTMLElement | null,
+): HTMLElement | null {
+  rememberTextareaHost(canvas, explicit);
+  return resolveTextareaHost<HTMLElement>(
+    canvas.wrapperEl,
+    explicit,
+    textareaHosts.get(canvas),
+  );
+}
+
 /** Texto apagado por completo vira camada-zumbi (chip "Texto: ", warning ML,
  *  linha na receita) — remove no fim da edição, padrão de editor. */
 function attachEmptyTextCleanup(obj: IText): void {
@@ -116,6 +146,7 @@ function attachEmptyTextCleanup(obj: IText): void {
 export async function addText(
   canvas: Canvas,
   style: TextStyle = DEFAULT_TEXT_STYLE,
+  textareaHost?: HTMLElement | null,
 ): Promise<IText> {
   await ensureEditorFontsLoaded(); // desenhar antes = fallback que "pula" depois
   const obj = new IText("Texto", {
@@ -139,9 +170,10 @@ export async function addText(
   (obj as Tagged).dexoKind = "text";
   // O textarea INVISÍVEL de edição do IText vai por default no <body> — FORA
   // do Radix Dialog, cujo focus-trap rouba o foco de volta e a digitação
-  // simplesmente não funciona. Ancorado no wrapper do fabric (dentro do
-  // dialog), o foco fica no escopo e editar volta a funcionar.
-  obj.hiddenTextareaContainer = canvas.wrapperEl ?? null;
+  // simplesmente não funciona. Precisa ficar dentro do dialog; mas ancorá-lo no
+  // wrapper do fabric (`position: relative`) fazia o offset do documento ser
+  // contado duas vezes e o canvas saltar para fora da vista — ver text-editing.ts.
+  obj.hiddenTextareaContainer = textareaHostFor(canvas, textareaHost);
   attachEmptyTextCleanup(obj);
   canvas.add(obj);
   canvas.setActiveObject(obj);
@@ -505,7 +537,12 @@ export function serializeAnnotations(canvas: Canvas): AnnotationLayerV1[] {
 export async function restoreAnnotations(
   canvas: Canvas,
   rawLayers: unknown[],
-  opts: { select?: boolean; resolveUploadUrl?: (fileName: string) => string } = {},
+  opts: {
+    select?: boolean;
+    resolveUploadUrl?: (fileName: string) => string;
+    /** Host do textarea invisível; ausente = wrapper do fabric (ver addText). */
+    textareaHost?: HTMLElement | null;
+  } = {},
 ): Promise<void> {
   const layers = readAnnotationLayers(rawLayers);
   if (layers.length === 0) return;
@@ -537,7 +574,7 @@ export async function restoreAnnotations(
           : {}),
       });
       t.set({ flipX: layer.flipX ?? false, flipY: layer.flipY ?? false });
-      t.hiddenTextareaContainer = canvas.wrapperEl ?? null;
+      t.hiddenTextareaContainer = textareaHostFor(canvas, opts.textareaHost);
       (t as Tagged).dexoKind = "text";
       attachEmptyTextCleanup(t);
       canvas.add(t);

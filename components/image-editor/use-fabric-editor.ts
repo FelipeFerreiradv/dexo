@@ -117,11 +117,18 @@ export function useFabricEditor(opts: FabricEditorOptions): FabricEditorApi {
       availableH / canvasHeight,
       1,
     );
+    const nextWidth = `${Math.round(canvasWidth * scale)}px`;
+    const nextHeight = `${Math.round(canvasHeight * scale)}px`;
+    // `setDimensions` chama `calcOffset()` SEMPRE — inclusive com `cssOnly` — e
+    // esse offset alimenta o posicionamento do textarea de edição de texto. Sem
+    // mudança real de tamanho não há o que reaplicar, então o ResizeObserver
+    // deixa de recalcular offset à toa.
+    const el = canvas.lowerCanvasEl;
+    if (el && el.style.width === nextWidth && el.style.height === nextHeight) {
+      return;
+    }
     canvas.setDimensions(
-      {
-        width: `${Math.round(canvasWidth * scale)}px`,
-        height: `${Math.round(canvasHeight * scale)}px`,
-      },
+      { width: nextWidth, height: nextHeight },
       { cssOnly: true },
     );
   }, [canvasWidth, canvasHeight]);
