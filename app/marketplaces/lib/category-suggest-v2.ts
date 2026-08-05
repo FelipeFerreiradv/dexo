@@ -80,22 +80,54 @@ export function isContextEmpty(ctx: ProductSuggestContext): boolean {
 }
 
 /**
+ * Campos que de fato ENTRAM NO CALCULO da sugestao, e portanto os unicos que
+ * podem mudar a resposta.
+ *
+ * Auditado em 05/08/2026 lendo `category-suggestion.service.ts` inteiro: o
+ * servico le exatamente `input.brand`, `input.model`, `input.year` e
+ * `input.partNumber` (em `baseAttr`, no `aliasRawText` e como `ctxBrand`/
+ * `ctxModel`/`ctxYear` do `scoreAliasMatch`). `description`, `version`,
+ * `internalCategory`, `sourceVehicle` e `quality` NAO sao lidos em lugar
+ * nenhum — eles existem no contrato de entrada, mas nao influenciam o
+ * resultado.
+ *
+ * Por isso a chave de cache usa SO estes quatro. Ver `contextCacheSuffix`.
+ */
+export const CACHE_KEY_FIELDS = [
+  "brand",
+  "model",
+  "year",
+  "partNumber",
+] as const;
+
+/**
  * Sufixo estavel para a chave de cache. Vazio quando o contexto e vazio — assim
  * a chave continua sendo exatamente `${siteId}::${normalizedTitle}` para quem
  * chama do jeito antigo, e as entradas de cache antigas seguem valendo.
  *
  * Determinista: ordem fixa dos campos, sem JSON.stringify (que depende da ordem
  * de insercao das chaves).
+ *
+ * Usa `CACHE_KEY_FIELDS`, e nao `CONTEXT_FIELDS`: campos que nao entram no
+ * calculo so fragmentavam o cache. Concretamente, `sourceVehicle` muda a cada
+ * sucata e `quality` a cada peca, entao o MESMO titulo com a MESMA marca,
+ * modelo, ano e part number gerava uma entrada nova a cada cadastro — cache
+ * miss garantido, e o servico refazia a varredura inteira de aliases para
+ * devolver exatamente a mesma resposta. O `suggestResultCache` tem teto de
+ * 2.000 entradas com evicao FIFO, entao a fragmentacao ainda expulsava
+ * entradas uteis de outros produtos.
+ *
+ * `isContextEmpty` continua usando `CONTEXT_FIELDS` de proposito: ele decide o
+ * `hasContext`, que MUDA o comportamento (liga `baseAttr` com part number e o
+ * `aliasRawText`). Mexer nele seria mudanca funcional; aqui a equivalencia e
+ * demonstravel — mesmas entradas para o calculo, mesma saida.
  */
 export function contextCacheSuffix(ctx: ProductSuggestContext): string {
   if (isContextEmpty(ctx)) return "";
-  const parts = CONTEXT_FIELDS.map((f) => {
+  const parts = CACHE_KEY_FIELDS.map((f) => {
     const v = ctx[f];
     if (v === undefined || v === null) return "";
-    // A descricao pode ser enorme; entra so o comeco normalizado, que e o que
-    // carrega o tipo de peca. Evita chave de cache de 4 KB.
-    const s = String(v).trim().toLowerCase();
-    return f === "description" ? s.slice(0, 120) : s;
+    return String(v).trim().toLowerCase();
   });
   return `::${parts.join("|")}`;
 }
