@@ -2,12 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import {
-  PRODUCT_SORTS,
-  type ProductSort,
-} from "@/app/interfaces/product.interface";
+import { type ProductSort } from "@/app/interfaces/product.interface";
 
-const STORAGE_KEY = "dexo:produtos:sort";
+/**
+ * Chave da versão anterior, que persistia a escolha. Mantida só para APAGAR o
+ * resíduo de quem já usou o seletor — sem isso, quem experimentou "SKU
+ * crescente" continuaria com a chave parada no navegador para sempre.
+ * Pode sair do código depois de 05/09/2026.
+ */
+const CHAVE_LEGADA = "dexo:produtos:sort";
 
 /** Rótulos do seletor. A ordem aqui é a ordem que aparece na tela. */
 export const PRODUCT_SORT_LABELS: Record<ProductSort, string> = {
@@ -16,50 +19,35 @@ export const PRODUCT_SORT_LABELS: Record<ProductSort, string> = {
   sku_desc: "SKU decrescente",
 };
 
-function readStored(): ProductSort | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return (PRODUCT_SORTS as readonly string[]).includes(raw ?? "")
-      ? (raw as ProductSort)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function persist(value: ProductSort): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, value);
-  } catch {
-    // localStorage pode estar bloqueado (modo privado etc.) — ignora.
-  }
-}
-
 /**
- * Ordenação da lista de Produtos, persistida no localStorage. SSR-safe: o 1º
- * render usa `defaultValue` e o valor real é aplicado no mount. Espelha
- * `app/produtos/hooks/use-products-view.ts`.
+ * Ordenação da lista de Produtos.
  *
- * Não é escopada por usuário de propósito: é preferência de VISUALIZAÇÃO, como
- * `dexo:produtos:view` e `dexo:pedidos:view`, e não conteúdo de ninguém. O
- * escopo por usuário fica para rascunho e histórico, que carregam dado digitado.
+ * NÃO é persistida — de propósito, desde 05/08/2026. A versão anterior gravava
+ * a escolha no `localStorage`, e isso tinha um efeito que ninguém pediu:
+ * bastava experimentar "SKU crescente" UMA vez para a lista abrir naquela
+ * ordem em toda visita seguinte, indefinidamente. O sintoma relatado em
+ * produção foi "cadastrei um produto e ele não apareceu onde sempre aparecia":
+ * a ordenação por SKU seguia valendo, silenciosamente, dias depois do teste.
+ *
+ * Agora a página sempre abre em "Mais recentes", que é o comportamento
+ * histórico da lista; a ordenação por SKU vale enquanto o usuário está naquela
+ * tela, que é justamente quando ele precisa dela (imprimir etiqueta em ordem).
  */
 export function useProductSort(
   defaultValue: ProductSort = "recentes",
 ): [ProductSort, (next: ProductSort) => void] {
   const [sort, setSort] = useState<ProductSort>(defaultValue);
 
+  // Limpeza única do resíduo da versão que persistia.
   useEffect(() => {
-    const stored = readStored();
-    if (stored !== null) setSort(stored);
+    try {
+      window.localStorage.removeItem(CHAVE_LEGADA);
+    } catch {
+      // localStorage pode estar bloqueado (modo privado etc.) — ignora.
+    }
   }, []);
 
-  const setAndPersist = useCallback((next: ProductSort) => {
-    setSort(next);
-    persist(next);
-  }, []);
+  const set = useCallback((next: ProductSort) => setSort(next), []);
 
-  return [sort, setAndPersist];
+  return [sort, set];
 }
