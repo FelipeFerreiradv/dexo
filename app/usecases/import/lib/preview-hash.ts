@@ -12,7 +12,13 @@ import type { ImportEntity, ImportFile, ImportSystem } from "../import.types";
 // uma prévia gerada antes deste deploy planejava menos sucatas do que o apply
 // criaria.
 // 3: entrou a importação de FOTOS das peças (nova fase no pacote Vaapt).
-export const MAPPER_VERSION = 3;
+// 4: o relatório de produtos do Vaapt (export novo) ganhou papel próprio
+// (VAAPT_PRODUTOS) e uma fase que CRIA os produtos. Antes, o mesmo arquivo era
+// classificado como relatório de veículos: uma prévia gerada antes deste
+// deploy planejava sucatas onde o apply agora cria produtos. Os mappers de
+// vínculo/localização também passaram a ler "Localização Produto" por
+// sinônimo, então uma prévia antiga planejava ZERO localizações.
+export const MAPPER_VERSION = 4;
 
 /**
  * Hash que liga a prévia ao apply: sha256 dos bytes dos arquivos (em ordem

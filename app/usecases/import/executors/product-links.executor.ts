@@ -33,6 +33,10 @@ import {
 } from "../import.types";
 import { chunk } from "../lib/normalize";
 import { matchItemsBySku } from "../lib/sku-match";
+import {
+  resolverPorEtiqueta,
+  type EtiquetaMatchDeps,
+} from "../lib/etiqueta-match";
 import { parseScrapWdMarker, parseVehicleMarker } from "../lib/markers";
 import { fileOfKind } from "../import-detector";
 import type { LinkPlanItem, LinksMapResult } from "../mappers/vinculos.mapper";
@@ -325,12 +329,21 @@ export interface LinksRunnerDeps {
   links: LinksExecDeps;
   locations: LocationExecDeps;
   scraps: ScrapsExecDeps;
+  /** Segunda chance de casamento pela etiqueta (ver lib/etiqueta-match.ts). */
+  etiqueta: EtiquetaMatchDeps;
 }
 
 export const defaultLinksRunnerDeps: LinksRunnerDeps = {
   links: defaultLinksDeps,
   locations: defaultLocationDeps,
   scraps: defaultScrapsDeps,
+  etiqueta: {
+    loadTodosOsProdutos: (userId) =>
+      prisma.product.findMany({
+        where: { userId },
+        select: { id: true, sku: true, skuNormalized: true },
+      }),
+  },
 };
 
 /**
@@ -342,7 +355,14 @@ export async function runVaaptLinks(
   ctx: ImportContext,
   deps: LinksRunnerDeps = defaultLinksRunnerDeps,
 ): Promise<ImportReport> {
-  const pecas = fileOfKind(ctx.files, "VAAPT_PECAS");
+  // Aceita os DOIS arquivos que trazem SKU + localização: o arquivo-ponte
+  // clássico e o relatório de produtos (export novo). Os mappers resolvem a
+  // diferença de rótulo da coluna de local por sinônimo. A diferença que
+  // importa é outra: o vínculo só LIGA produtos que já existem — quem cria os
+  // faltantes é a entidade VAAPT/PRODUTOS.
+  const pecas =
+    fileOfKind(ctx.files, "VAAPT_PECAS") ??
+    fileOfKind(ctx.files, "VAAPT_PRODUTOS");
   if (!pecas) {
     throw new ImportValidationError(
       "Arquivo de peças/localização (Vaapt) não encontrado.",
@@ -401,10 +421,20 @@ export async function runVaaptLinks(
   );
   const mapped = mapVaaptLinks(pecas);
   applyMapCounters(linksReport, mapped);
-  await executeLinksPlan(
+  // Segunda chance pela ETIQUETA, antes do casamento normal: reescreve o `sku`
+  // dos itens cujo "Cod Peça" não existe no Dexo mas cuja etiqueta identifica
+  // um único produto. Não faz nada (nem consulta) se o arquivo não tiver a
+  // coluna — é o caso do arquivo-ponte clássico.
+  const resolvido = await resolverPorEtiqueta(
     ctx,
     linksReport,
     mapped.items,
+    deps.etiqueta,
+  );
+  await executeLinksPlan(
+    ctx,
+    linksReport,
+    resolvido.items,
     { locCodeToId, scrapKeyToId },
     deps.links,
   );
@@ -414,6 +444,9 @@ export async function runVaaptLinks(
   report.semProduto = linksReport.semProduto;
   report.ambiguos = linksReport.ambiguos;
   bump(report, "produtos_casados", linksReport.contadores.produtos_casados ?? 0);
+  if (resolvido.resolvidos > 0) {
+    bump(report, "casados_pela_etiqueta", resolvido.resolvidos);
+  }
   bump(report, "erros", linksReport.contadores.erros ?? 0);
   return report;
 }

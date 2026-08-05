@@ -28,6 +28,8 @@ import type { ScrapsExecDeps } from "../../app/usecases/import/executors/scraps.
 import type { CustomersExecDeps } from "../../app/usecases/import/executors/customers.executor";
 import type { PhotosExecDeps } from "../../app/usecases/import/executors/product-photos.executor";
 import type { NfeImportDeps } from "../../app/usecases/import/nfe-import.usecase";
+import type { VaaptProdutosDeps } from "../../app/usecases/import/executors/vaapt-produtos.executor";
+import type { ProductCreate } from "../../app/interfaces/product.interface";
 import type { CustomerCreate } from "../../app/interfaces/customer.interface";
 import type { NfeHistoricCreate } from "../../app/repositories/nfe.repository";
 
@@ -61,6 +63,40 @@ const clientesFile = () =>
       ["1", "MARIA SILVA", "52998224725", "", "Rua A", "10", "", "Centro", "Itajai", "SC", "88300000", "4733334444", "m@x.com", "", "", "Fisica"],
     ],
     "clientes.xlsx",
+  );
+
+/**
+ * Relatório de produtos (export NOVO). As colunas de veículo são o literal
+ * "DUMMY" com um único código, como no arquivo real do cliente — é o que fazia
+ * o detector classificá-lo como relatório de veículos.
+ */
+const produtosFile = () =>
+  sheet(
+    [
+      [
+        "Cod Peça", "Nome Produto", "Etiqueta", "Preço", "Cód Status",
+        "Condição", "Qualidade", "Un Medida", "Qtd Inicial", "Qtd Disponivel",
+        "Qtd Vendida", "Descrição Produto", "Localização Produto",
+        "Categoria ML", "Mercado Livre", "Status Mercado Livre",
+        "Config. Envio", "Placa Veículo", "Código Veículo", "Apelido Veículo",
+        "Chassi", "RENAVAM", "Tipo Anúncio",
+      ],
+      [
+        "1427772", "Porta Dianteira Gm Onix", "MLB1", 250,
+        "Cadastro completo - estocado", "Usado", " ", "UN", 1, 1, 0,
+        "Produto usado original", "S1 P1 N1 CX1", "MLB101763",
+        "Produto anunciado", "active", "Frete Grátis", "DUMMY", "V76",
+        "DUMMY", "DUMMY", "DUMMY", "gold_special",
+      ],
+      [
+        "1427773", "Par De Bracinhos Do Capo", "MLB2", 100,
+        "Cadastro completo - estocado", "Usado", " ", "UN", 1, 2, 0,
+        "Produto usado original", "S1 P1 N1 CX2", "MLB101763",
+        "Produto anunciado", "active", "Frete Grátis", "DUMMY", "V76",
+        "DUMMY", "DUMMY", "DUMMY", "gold_special",
+      ],
+    ],
+    "relatorio produtos parte 1.xlsx",
   );
 
 const veiculosFile = () =>
@@ -113,6 +149,7 @@ function makeDeps() {
   const nfeCreated: NfeHistoricCreate[] = [];
   const locCreated: string[] = [];
   const fotosGravadas: Array<{ productId: string; urls: string[] }> = [];
+  const produtosCriados: ProductCreate[] = [];
   let locSeq = 0;
   let scrapSeq = 0;
 
@@ -194,8 +231,32 @@ function makeDeps() {
     ) as PhotosExecDeps["setImageUrlsMany"],
   };
 
-  const deps: VaaptPacoteDeps = { links, locations, scraps, customers, nfe, photos };
-  return { deps, attachCalls, linkCalls, customersCreated, scrapsCreated, nfeCreated, locCreated, fotosGravadas };
+  const produtos: VaaptProdutosDeps = {
+    locations,
+    makeProductUseCase: () => ({
+      create: vi.fn(async (d: ProductCreate) => {
+        produtosCriados.push(d);
+        return { id: `np-${produtosCriados.length}` } as never;
+      }),
+    }),
+    loadOwner: vi.fn(async () => ({ id: "admin-1" }) as never),
+    loadProductsBySkuNormalized: vi.fn(async () => []),
+    loadLegacyProducts: vi.fn(async () => []),
+    contarProdutosDoTenant: vi.fn(async () => 0),
+    attachProducts: links.attachProducts,
+  };
+
+  const deps: VaaptPacoteDeps = {
+    links,
+    locations,
+    scraps,
+    customers,
+    nfe,
+    photos,
+    produtos,
+    etiqueta: { loadTodosOsProdutos: async () => [] },
+  };
+  return { deps, attachCalls, linkCalls, customersCreated, scrapsCreated, nfeCreated, locCreated, fotosGravadas, produtosCriados };
 }
 
 const ctx = (dryRun: boolean, files: DetectedFile[]): ImportContext => ({
@@ -383,6 +444,26 @@ describe("import/vaapt-pacote — runner (todas as fases numa execução)", () =
     // Sem veículos, a sucata do arquivo de peças não resolve (aviso, não erro).
     expect(d.linkCalls).toEqual([]);
     expect(report.porFase?.vinculos.contadores.sucata_nao_encontrada).toBe(1);
+  });
+
+  it("REGRESSÃO: relatório de produtos roda a fase de PRODUTOS, nunca a de sucatas", async () => {
+    // Antes, este arquivo era classificado como "Vaapt — veículos" e o pacote
+    // com UM arquivo era ACEITO EM SILÊNCIO: rodava a fase de sucatas em cima
+    // de um relatório de produtos, criando lixo e dizendo "sucesso". As
+    // colunas de veículo do export real são o literal "DUMMY".
+    const d = makeDeps();
+    const report = await runVaaptPacote(ctx(false, [produtosFile()]), d.deps);
+    const fases = Object.keys(report.porFase ?? {});
+    expect(fases).toContain("produtos");
+    expect(fases).not.toContain("sucatas");
+    expect(d.scrapsCreated).toEqual([]);
+    // E os produtos entram de verdade, com nome e preço da planilha.
+    expect(d.produtosCriados.map((p) => p.sku)).toEqual(["1427772", "1427773"]);
+    expect(d.produtosCriados[0]).toMatchObject({
+      name: "Porta Dianteira Gm Onix",
+      price: 250,
+      stock: 1,
+    });
   });
 
   it("nenhuma planilha Vaapt reconhecida → erro claro", async () => {

@@ -257,7 +257,14 @@ describe("import/vinculos — runner composto Vaapt (localizações + vínculo)"
       [product("p1", "100"), product("p2", "200")],
       { scraps: [{ id: "s-36", notes: "Legado 704 · veículo #36" }] },
     );
-    const runnerDeps: LinksRunnerDeps = { links, locations, scraps };
+    // O arquivo-ponte clássico não tem coluna "Etiqueta": `resolverPorEtiqueta`
+    // sai antes de consultar, e este stub nunca é chamado.
+    const runnerDeps: LinksRunnerDeps = {
+      links,
+      locations,
+      scraps,
+      etiqueta: { loadTodosOsProdutos: async () => [] },
+    };
 
     const report = await runVaaptLinks(
       { targetUserId: "admin-1", files: [pecasXlsx()], dryRun: false },

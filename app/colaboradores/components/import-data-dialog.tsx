@@ -49,7 +49,8 @@ type ImportEntity =
   | "NFE"
   | "PACOTE"
   | "FOTOS"
-  | "ESTOQUE";
+  | "ESTOQUE"
+  | "PRODUTOS";
 
 interface RowIssue {
   linha?: number;
@@ -156,6 +157,7 @@ const ENTITY_LABELS: Record<ImportEntity, string> = {
   FOTOS: "Fotos das peças",
   PACOTE: "Pacote completo (vários CSVs)",
   ESTOQUE: "Estoque (produtos + localização por SKU)",
+  PRODUTOS: "Relatório de produtos (cria o cadastro + localização)",
 };
 
 const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
@@ -164,13 +166,15 @@ const FILE_HINTS: Partial<Record<`${ImportSystem}/${ImportEntity}`, string>> = {
   "VAAPT/CLIENTES": "Envie a planilha de clientes (“# Cod Cliente”).",
   "VAAPT/SUCATAS":
     "Envie a planilha de veículos (“# Codigo Veiculo”) — nem todo pacote traz esse arquivo. Serve tanto o “Backup Veiculos” (com Marca/Modelo) quanto o “Veiculos<N>” (uma linha por foto); neste, sem Marca/Modelo, as sucatas ficam como INDEFINIDO e você as identifica pela placa/chassi.",
+  "VAAPT/PRODUTOS":
+    "Envie o “Relatório de Produtos Cadastrados” (“Cod Peça” + “Nome Produto” + “Localização Produto”). Esta é a opção para quem ainda NÃO tem os produtos no Dexo: ela cria o cadastro (nome, preço, quantidade, descrição) e já vincula a localização. Se o export vier partido em partes, envie uma parte por vez — pode rodar quantas vezes precisar, não duplica.",
   "VAAPT/VINCULOS":
-    "Envie a planilha de peças (“# Cod Peca” + “Localizacao” + “Cod Veiculo”).",
+    "Envie a planilha de peças (“# Cod Peca” + “Localizacao” + “Cod Veiculo”) ou o “Relatório de Produtos Cadastrados”. Atenção: esta opção só LIGA a localização a produtos que JÁ EXISTEM no Dexo — ela não cria cadastro. Se o cliente ainda não tem produtos, use “Relatório de produtos”.",
   "VAAPT/NFE": "Envie o resumo de notas emitidas (aba “Java Books”).",
   "VAAPT/FOTOS":
     "Envie a planilha de fotos das peças (“# idPeca” + “Link das imagens”). Casa a peça pelo mesmo código do vínculo e preenche só quem AINDA NÃO TEM foto — produto com imagem própria não é sobrescrito. As fotos continuam servidas pelo servidor de origem; nada é publicado nos anúncios.",
   "VAAPT/PACOTE":
-    "Envie as planilhas do export juntas: peças, clientes, veículos, fotos das peças e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → sucatas → vínculo por SKU → fotos → NF-e. O que ele não usar aparece listado no relatório.",
+    "Envie as planilhas do export juntas: peças ou relatório de produtos, clientes, veículos, fotos das peças e notas emitidas (qualquer combinação). O sistema identifica cada arquivo pelas colunas e importa tudo na ordem certa — clientes → localizações → produtos → sucatas → vínculo por SKU → fotos → NF-e. O que ele não usar aparece listado no relatório. Envie no máximo um arquivo de cada tipo por vez: se o relatório de produtos vier partido em partes, rode uma parte de cada vez.",
   "WEBDESMONTE/VINCULOS":
     "Envie products.csv E locations.csv juntos (o locations.csv resolve os vínculos).",
   "WEBDESMONTE/PACOTE":

@@ -10,6 +10,7 @@
 import type { DetectedFile } from "../import.types";
 import { normalizeCodeFlat } from "../lib/codes";
 import { asString } from "../lib/normalize";
+import { aliasReader } from "../lib/columns";
 import type { LocationPlanItem } from "../executors/locations.executor";
 
 export interface VaaptLocationsMapResult {
@@ -26,8 +27,19 @@ export function mapVaaptLocations(
   const byCode = new Map<string, LocationPlanItem>();
   let rowsWithoutLocation = 0;
 
+  // Mesmo sinônimo do mapper de vínculos: o relatório de produtos (export
+  // novo) chama a coluna de "Localização Produto".
+  const read = aliasReader(file);
+
   for (let i = 0; i < file.rows.length; i++) {
-    const raw = asString(file.get(file.rows[i], "Localizacao"));
+    const raw = asString(
+      read(
+        file.rows[i],
+        "Localizacao",
+        "Localização Produto",
+        "Localizacao Produto",
+      ),
+    );
     if (!raw) {
       rowsWithoutLocation++;
       continue;

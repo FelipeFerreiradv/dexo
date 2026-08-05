@@ -38,6 +38,7 @@ import { mapVaaptCustomers } from "../mappers/vaapt-clientes.mapper";
 import { mapVaaptLocations } from "../mappers/vaapt-localizacoes.mapper";
 import { mapVaaptScraps } from "../mappers/sucatas.mapper";
 import { mapVaaptLinks } from "../mappers/vinculos.mapper";
+import { mapVaaptProdutos } from "../mappers/vaapt-produtos.mapper";
 import { mapVaaptPhotos } from "../mappers/vaapt-fotos.mapper";
 import {
   executeCustomersPlan,
@@ -57,6 +58,11 @@ import {
   type PhotosExecDeps,
 } from "./product-photos.executor";
 import {
+  executeProdutosPlan,
+  defaultVaaptProdutosDeps,
+  type VaaptProdutosDeps,
+} from "./vaapt-produtos.executor";
+import {
   runVaaptNfes,
   defaultNfeImportDeps,
   type NfeImportDeps,
@@ -66,6 +72,7 @@ export interface VaaptPacoteDeps extends LinksRunnerDeps {
   customers: CustomersExecDeps;
   nfe: NfeImportDeps;
   photos: PhotosExecDeps;
+  produtos: VaaptProdutosDeps;
 }
 
 export const defaultVaaptPacoteDeps: VaaptPacoteDeps = {
@@ -73,6 +80,7 @@ export const defaultVaaptPacoteDeps: VaaptPacoteDeps = {
   customers: defaultCustomersDeps,
   nfe: defaultNfeImportDeps,
   photos: defaultPhotosDeps,
+  produtos: defaultVaaptProdutosDeps,
 };
 
 export async function runVaaptPacote(
@@ -81,12 +89,13 @@ export async function runVaaptPacote(
 ): Promise<ImportReport> {
   const clientes = fileOfKind(ctx.files, "VAAPT_CLIENTES");
   const pecas = fileOfKind(ctx.files, "VAAPT_PECAS");
+  const produtos = fileOfKind(ctx.files, "VAAPT_PRODUTOS");
   const veiculos = fileOfKind(ctx.files, "VAAPT_VEICULOS");
   const nfe = fileOfKind(ctx.files, "VAAPT_NFE");
   const fotos = fileOfKind(ctx.files, "VAAPT_PECAS_IMAGENS");
-  if (!clientes && !pecas && !veiculos && !nfe && !fotos) {
+  if (!clientes && !pecas && !produtos && !veiculos && !nfe && !fotos) {
     throw new ImportValidationError(
-      "Envie ao menos uma planilha do export Vaapt (peças, clientes, veículos, notas emitidas ou fotos das peças).",
+      "Envie ao menos uma planilha do export Vaapt (peças, relatório de produtos, clientes, veículos, notas emitidas ou fotos das peças).",
     );
   }
 
@@ -120,6 +129,51 @@ export async function runVaaptPacote(
     bump(r, "localizacoes_distintas", mapped.items.length);
     locCodeToId = await executeLocationPlan(ctx, r, mapped.items, deps.locations);
     report.porFase["localizacoes"] = r;
+  }
+
+  // Fase 2b — relatório de produtos (export NOVO do Vaapt). Cria as
+  // localizações do próprio arquivo e os produtos faltantes. Roda ANTES do
+  // vínculo (fase 4) porque é ela que faz os produtos existirem — o vínculo
+  // só liga o que já está no Dexo.
+  if (produtos) {
+    const rLoc = sub();
+    const mapped = mapVaaptProdutos(produtos);
+    bump(rLoc, "linhas_no_arquivo", mapped.totalRows);
+    bump(rLoc, "localizacoes_distintas", mapped.locationItems.length);
+    const codeToId = await executeLocationPlan(
+      ctx,
+      rLoc,
+      mapped.locationItems,
+      deps.locations,
+    );
+    // As localizações criadas aqui alimentam as fases seguintes. Na prévia
+    // elas só existem neste mapa, então não mesclar geraria aviso falso.
+    if (locCodeToId) {
+      for (const [code, id] of codeToId) locCodeToId.set(code, id);
+    } else {
+      locCodeToId = codeToId;
+    }
+    report.porFase["localizacoes_produtos"] = rLoc;
+
+    const rProd = sub();
+    bump(rProd, "produtos_validos", mapped.produtos.length);
+    bump(rProd, "sem_sku", mapped.semSku);
+    bump(rProd, "sku_duplicado_no_arquivo", mapped.duplicadosSku);
+    bump(rProd, "linhas_excluidas_na_origem", mapped.excluidos);
+    bump(rProd, "estoque_zerado_por_status", mapped.estoqueZeradoPorStatus);
+    for (const aviso of mapped.avisos) {
+      bump(rProd, "avisos");
+      addIssue(rProd.avisos, aviso);
+    }
+    await executeProdutosPlan(
+      ctx,
+      rProd,
+      mapped.produtos,
+      codeToId,
+      deps.produtos,
+    );
+    report.porFase["produtos"] = rProd;
+    bump(report, "produtos_criados", rProd.contadores.produtos_criados ?? 0);
   }
 
   // Fase 3 — sucatas (recebem o mapa da fase 2: na prévia as localizações
