@@ -303,8 +303,10 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
         | null
         | undefined) ?? undefined,
     // JSONB de forma livre no banco: só sobe se de fato for array de strings.
-    // Linha antiga (coluna NULL) e row do productSelect (que não projeta o
-    // campo) caem no mesmo `undefined` de antes.
+    // Cai em `undefined` tanto para linha antiga (coluna NULL) quanto para as
+    // projeções que não pedem o campo — o `rulesLite` do findById e as demais
+    // seleções enxutas. O productSelect da listagem PROJETA (ver o comentário
+    // ao lado dele), porque o modal de edição recebe o produto já carregado.
     compatibilityPositions: Array.isArray((item as any).compatibilityPositions)
       ? ((item as any).compatibilityPositions as unknown[]).filter(
           (p): p is string => typeof p === "string",
