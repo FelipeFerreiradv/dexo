@@ -23,6 +23,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { generateLocationLabelsPdf } from "../lib/location-labels-pdf";
+import { orderBySelection } from "@/app/lib/label-order";
 import { HighlightText } from "./highlight-text";
 import { useLocationSearch } from "../hooks/use-location-search";
 import { BulkLocationsDialog } from "./bulk-locations-dialog";
@@ -1048,7 +1049,15 @@ export function LocationsList() {
     }
 
     const flat = flattenLocations(locations);
-    const selected = flat.filter((loc) => selectedLocationIds.has(loc.id));
+    // Ordem canônica: a do usuário. `selectedLocationIds` é um Set, que preserva
+    // a ordem de inserção — o `filter` anterior a descartava e devolvia a ordem
+    // da lista achatada (code ASC global), que nem é a ordem da tela (a tela
+    // renderiza a ÁRVORE, em pré-ordem).
+    const selected = orderBySelection(
+      flat,
+      Array.from(selectedLocationIds),
+      (loc) => loc.id,
+    );
 
     if (selected.length === 0) {
       showToast(

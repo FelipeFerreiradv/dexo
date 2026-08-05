@@ -69,6 +69,10 @@ import { type MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-l
 import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
+import {
+  orderBySelection,
+  selectAllIdsInPrintOrder,
+} from "@/app/lib/label-order";
 import { StandaloneLabelDialog } from "@/app/produtos/components/standalone-label-dialog";
 import {
   DEFAULT_PRODUCT_FILTERS,
@@ -1127,7 +1131,14 @@ export function ProductsList() {
 
   const toggleSelectAll = (checked: boolean | "indeterminate") => {
     if (checked === true) {
-      setSelectedIds(products.map((product) => product.id));
+      // Insere de BAIXO PARA CIMA. A listagem é servida newest-first
+      // (ORDER BY (stock > 0) DESC, "createdAt" DESC) e não tem controle de
+      // ordenação, então inserir na ordem visível faria o PDF sair 10..1 —
+      // exatamente a queixa. Invertendo, "selecionar todos" entrega o mais
+      // antigo primeiro, que é a ordem de cadastro esperada na impressão.
+      setSelectedIds(
+        selectAllIdsInPrintOrder(products, (product) => product.id),
+      );
       return;
     }
 
@@ -1155,8 +1166,12 @@ export function ProductsList() {
       return;
     }
 
-    const selectedProducts = products.filter((product) =>
-      selectedIds.includes(product.id),
+    // Ordem canônica: a do usuário, não a da tela. O `filter` anterior devolvia
+    // a ordem de `products` e descartava a ordem de clique (além de ser O(n·m)).
+    const selectedProducts = orderBySelection(
+      products,
+      selectedIds,
+      (product) => product.id,
     );
 
     if (selectedProducts.length === 0) {
