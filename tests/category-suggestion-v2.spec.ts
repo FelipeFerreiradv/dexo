@@ -210,6 +210,66 @@ describe("(b) chave de cache", () => {
     expect(a).not.toBe(c);
   });
 
+  /**
+   * Só os quatro campos que o cálculo lê entram na chave. Os outros cinco do
+   * contrato de entrada não influenciam a resposta, e mantê-los na chave só
+   * fragmentava o cache: `sourceVehicle` muda a cada sucata e `quality` a cada
+   * peça, então o MESMO título com o MESMO veículo gerava entrada nova a cada
+   * cadastro — miss garantido para devolver exatamente a mesma resposta.
+   */
+  it("campos que não entram no cálculo NÃO fragmentam a chave", () => {
+    const base = { title: "x", brand: "Fiat", model: "Uno", year: "2010" };
+    const referencia = contextCacheSuffix(base);
+    for (const extra of [
+      { description: "peça revisada, sem detalhes" },
+      { version: "Way" },
+      { internalCategory: "Suspensão" },
+      { sourceVehicle: "Uno 2010 - Placa ABC1234" },
+      { quality: "SEMINOVO" },
+    ]) {
+      expect(
+        contextCacheSuffix({ ...base, ...extra }),
+        `o campo ${Object.keys(extra)[0]} não pode mudar a chave`,
+      ).toBe(referencia);
+    }
+  });
+
+  it("os quatro campos que o cálculo lê continuam distinguindo a chave", () => {
+    const base = { title: "x", brand: "Fiat", model: "Uno", year: "2010" };
+    const referencia = contextCacheSuffix(base);
+    for (const dif of [
+      { brand: "Ford" },
+      { model: "Palio" },
+      { year: "2011" },
+      { partNumber: "PN-1" },
+    ]) {
+      expect(
+        contextCacheSuffix({ ...base, ...dif }),
+        `o campo ${Object.keys(dif)[0]} PRECISA mudar a chave`,
+      ).not.toBe(referencia);
+    }
+  });
+
+  it("mesma resposta para contextos que só diferem nos campos ignorados", async () => {
+    const a = await CategorySuggestionService.suggestFromProduct(
+      { title: "Amortecedor", brand: "Chevrolet", quality: "SEMINOVO" },
+      "MLB",
+    );
+    clearCaches();
+    const b = await CategorySuggestionService.suggestFromProduct(
+      {
+        title: "Amortecedor",
+        brand: "Chevrolet",
+        quality: "NOVO",
+        sourceVehicle: "Onix 2014 - Placa XYZ9876",
+      },
+      "MLB",
+    );
+    // Equivalência demonstrada: é por isso que compartilhar a entrada de cache
+    // é seguro.
+    expect(b).toEqual(a);
+  });
+
   it("contexto diferente NÃO reaproveita o resultado do título-só", async () => {
     const semCtx = await CategorySuggestionService.suggestFromProduct(
       { title: "Amortecedor" },
