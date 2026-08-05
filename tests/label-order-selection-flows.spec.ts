@@ -1,9 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 
-import {
-  orderBySelection,
-  selectAllIdsInPrintOrder,
-} from "../app/lib/label-order";
+import { orderBySelection } from "../app/lib/label-order";
 import {
   expandItemsToPages,
   normalizeQuantity,
@@ -76,9 +73,21 @@ describe("etiquetas de produto", () => {
     ]);
   });
 
-  it('"selecionar todos" gera o PDF do mais antigo ao mais novo (SKU-01..SKU-10)', () => {
-    const selecionados = selectAllIdsInPrintOrder(LISTA_PRODUTOS, (p) => p.id);
-    expect(paginasDoPdf(LISTA_PRODUTOS, selecionados)).toEqual([
+  it('"selecionar todos" segue a ordem VISÍVEL — quem manda é o seletor de ordenação', () => {
+    // `toggleSelectAll` faz `products.map(p => p.id)`: a ordem de impressão é a
+    // ordem da tela. Com a lista no padrão (mais recentes), sai 10..1.
+    const selecionados = LISTA_PRODUTOS.map((p) => p.id);
+    expect(paginasDoPdf(LISTA_PRODUTOS, selecionados)).toEqual(
+      LISTA_PRODUTOS.map((p) => p.sku),
+    );
+  });
+
+  it("com a lista ordenada por SKU crescente, selecionar todos sai 01..10", () => {
+    // É o que o seletor "SKU crescente" entrega: a API já devolve nessa ordem,
+    // então a ordem visível JÁ é a ordem desejada de impressão.
+    const listaAsc = [...LISTA_PRODUTOS].reverse();
+    const selecionados = listaAsc.map((p) => p.id);
+    expect(paginasDoPdf(listaAsc, selecionados)).toEqual([
       "SKU-01",
       "SKU-02",
       "SKU-03",
@@ -141,12 +150,12 @@ describe("etiquetas de produto", () => {
     ]);
   });
 
-  it("com a flag legada, tudo volta a sair na ordem da tela (10..1)", () => {
+  it("com a flag legada, o PDF volta a ignorar a ordem de clique", () => {
     process.env.NEXT_PUBLIC_LABELS_ORDER_LEGACY = "1";
-    const selecionados = selectAllIdsInPrintOrder(LISTA_PRODUTOS, (p) => p.id);
-    expect(paginasDoPdf(LISTA_PRODUTOS, selecionados)).toEqual(
-      LISTA_PRODUTOS.map((p) => p.sku),
-    );
+    // Clicou 1, 2, 3 — mas o legado devolve na ordem da coleção (10..1).
+    expect(
+      paginasDoPdf(LISTA_PRODUTOS, ["prod-1", "prod-2", "prod-3"]),
+    ).toEqual(["SKU-03", "SKU-02", "SKU-01"]);
   });
 });
 

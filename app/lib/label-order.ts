@@ -12,8 +12,15 @@
  * quem cadastrava 1..10 e mandava imprimir recebia 10..1. Não havia `reverse()`
  * nem sort escondido: o PDF só refletia fielmente a ordem da listagem.
  *
+ * "Selecionar todos" NÃO tem regra própria: ele marca na ordem visível, e a
+ * ordem visível é a que o usuário escolheu no seletor de ordenação da lista
+ * (`useProductSort`). Houve uma versão intermediária em que ele inseria de
+ * baixo para cima, para compensar a listagem ser fixa em newest-first; com o
+ * seletor existindo isso passou a CONTRADIZER o usuário — quem escolhesse "SKU
+ * crescente" e marcasse tudo receberia o PDF em SKU decrescente.
+ *
  * Kill-switch: NEXT_PUBLIC_LABELS_ORDER_LEGACY=1 restaura exatamente o
- * comportamento anterior nas duas funções. A env é lida DENTRO das funções (e
+ * comportamento anterior. A env é lida DENTRO da função (e
  * não num const de módulo) para o valor não congelar no import — o Next inlina
  * `process.env.NEXT_PUBLIC_*` no build em qualquer posição, então continua
  * funcionando no bundle do cliente.
@@ -70,28 +77,4 @@ export function orderBySelection<T>(
     ordered.push(item);
   }
   return ordered;
-}
-
-/**
- * Ids que o "selecionar todos" deve inserir, na ordem em que devem sair no PDF.
- *
- * A listagem de produtos é servida com o mais novo primeiro e NÃO tem controle
- * de ordenação — não há como o usuário pedir crescente. Se "selecionar todos"
- * inserisse na ordem visível, o PDF continuaria saindo 10..1, que é exatamente
- * a queixa. Por isso aqui a inserção é de BAIXO PARA CIMA: com a lista
- * newest-first, isso entrega o mais antigo primeiro, ou seja, a ordem de
- * cadastro — que para peças cadastradas em sequência é a ordem crescente de
- * SKU que o cliente espera na impressão.
- *
- * A regra do `orderBySelection` continua valendo: quem marca item a item manda
- * na ordem, e "selecionar todos" é só um atalho que já entrega a seleção na
- * ordem certa.
- */
-export function selectAllIdsInPrintOrder<T>(
-  items: readonly T[],
-  getId: (item: T) => string,
-): string[] {
-  const ids = items.map(getId);
-  if (isLegacyOrder()) return ids;
-  return ids.reverse();
 }

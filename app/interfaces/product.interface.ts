@@ -23,8 +23,38 @@ export interface ProductListingSummary {
   updatedAt?: Date;
 }
 
+/**
+ * Ordenacao da listagem de Produtos.
+ *
+ * "recentes" e o DEFAULT e reproduz exatamente a ordem que sempre existiu
+ * (em-estoque primeiro, mais novo primeiro). Ausencia do parametro => "recentes",
+ * entao chamada antiga continua com o mesmo resultado.
+ *
+ * A ordem por SKU e NUMERICA NATURAL, nao alfabetica: 83% dos 220 mil SKUs em
+ * producao sao so digitos (medido em 04/08/2026), e alfabeticamente "1000"
+ * viria antes de "999" — inutil justamente para imprimir etiqueta em ordem.
+ */
+export const PRODUCT_SORTS = ["recentes", "sku_asc", "sku_desc"] as const;
+export type ProductSort = (typeof PRODUCT_SORTS)[number];
+
+/**
+ * Allowlist do parametro `sort`. So aceita STRING: query string repetida
+ * (`?sort=a&sort=b`) chega como array, e `String(["sku_asc"])` daria
+ * "sku_asc" — devolvendo o array como se fosse a ordenacao, com o tipo
+ * mentindo. Qualquer outra coisa vira `undefined`, e o repositorio cai na
+ * ordenacao historica.
+ */
+export function parseProductSort(value: unknown): ProductSort | undefined {
+  if (typeof value !== "string") return undefined;
+  return (PRODUCT_SORTS as readonly string[]).includes(value)
+    ? (value as ProductSort)
+    : undefined;
+}
+
 export interface ProductListFilters {
   search?: string;
+  /** Ausente => "recentes" (comportamento historico). */
+  sort?: ProductSort;
   page?: number;
   limit?: number;
   createdFrom?: Date;

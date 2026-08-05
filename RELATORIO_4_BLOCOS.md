@@ -62,18 +62,16 @@ existia nos dois (`Set` preserva inserção); só não era consumida.
 - **novo** `app/lib/label-order.ts` — `orderBySelection()` em **O(n+m)** (o
   `filter` + `includes` anterior era O(n·m)) e `selectAllIdsInPrintOrder()`.
 - `products-list.tsx` e `locations-list.tsx` passam a consumir a ordem de seleção.
-- **"Selecionar todos" insere de baixo para cima.** A lista **não tem controle de
-  ordenação** (grep por `sortBy|orderBy|sort=` retorna zero em `products-list.tsx`
-  e em `product.routes.ts`), então respeitar só a ordem de clique deixaria o caso
-  mais comum — selecionar tudo e imprimir — saindo 10..1, que é a queixa. Com a
-  lista newest-first, inserir de baixo para cima entrega o mais antigo primeiro.
+- **"Selecionar todos" marca na ordem visível.** ⚠️ Esta parte MUDOU depois:
+  na entrega original ela inseria de baixo para cima, porque a lista não tinha
+  controle de ordenação. Com o seletor de ordenação (seção 10), a inversão
+  passaria a contradizer o usuário, e foi removida. Ver a seção 10.
 - Etiqueta avulsa e etiqueta de envio em lote **não mudaram** — já estavam
   corretas. Ganharam teste de regressão.
 
-**Efeito colateral assumido:** quando a seleção vem de "selecionar todos",
-exclusão e pausa em massa percorrem os ids na ordem inversa. O resultado é
-idêntico (ambas são operações independentes por id); muda só a ordem das chamadas
-e do relatório de falhas. Está atrás do mesmo kill-switch.
+**Efeito colateral que existiu e foi eliminado:** enquanto "selecionar todos"
+invertia, exclusão e pausa em massa percorriam os ids na ordem inversa. Com a
+volta à ordem visível (seção 10), esse efeito deixou de existir.
 
 ### Testes (42)
 
@@ -384,10 +382,63 @@ verdade, e não uma heurística de descida.
 
 **Grande e precisa de decisão**
 
-4. **Controle de ordenação na lista de produtos** (SKU, cadastro, asc/desc).
-   Resolveria a ordem das etiquetas de forma geral, em vez da convenção
-   "selecionar todos = de baixo para cima".
+4. ~~Controle de ordenação na lista de produtos~~ — **FEITO**, ver seção 10.
 5. **Preditor nativo do ML como voto** na sugestão, com timeout e fail-open.
 6. **jsdom + `@testing-library/react`** para cobrir interação de modal.
 7. Endpoint de "últimos produtos do tenant" como complemento do histórico, para
    quem troca de máquina.
+
+---
+
+## 10. Seletor de ordenação da lista de Produtos · commit posterior
+
+A lista não tinha controle de ordenação nenhum: a ordem era fixa no SQL
+(em-estoque primeiro, mais novo primeiro). Agora há um seletor **"Ordenar por"**
+com "Mais recentes" (padrão), "SKU crescente" e "SKU decrescente".
+
+### A ordem de SKU é numérica natural, não alfabética
+
+Medido em produção: **182.354 dos 220.805 SKUs (83%) são só dígitos**, de 1 a 43
+dígitos. Alfabeticamente `"1000"` viria antes de `"999"` — inútil justamente para
+o caso de uso que motivou tudo isto, que é imprimir etiqueta em ordem. A mesma
+expressão acerta o alfanumérico: `ESC P1, ESC P2, … ESC P10` em vez de
+`P1, P10, P2`.
+
+### O que mudou no Bloco 1
+
+`selectAllIdsInPrintOrder` foi **removida** (não deixada atrás de flag). Com o
+seletor existindo, inserir de baixo para cima passaria a contradizer o usuário:
+quem escolhesse "SKU crescente" e marcasse tudo receberia o PDF em SKU
+decrescente. Agora há **uma regra só**: o PDF sai na ordem que você está vendo.
+
+### Custo, medido com EXPLAIN ANALYZE (tenant de 36.382 produtos)
+
+| Ordenação               | Tempo      | Plano                             |
+| ----------------------- | ---------- | --------------------------------- |
+| padrão (de sempre)      | 42 ms      | top-N heapsort                    |
+| SKU lexicográfico       | 0,1 ms     | Index Scan — mas ordem **errada** |
+| **SKU natural**         | **130 ms** | top-N heapsort                    |
+| SKU natural, página 500 | 151 ms     | top-N heapsort                    |
+
+Os 3x só são pagos quando o usuário escolhe a ordenação. O índice único
+`(userId, sku)` não serve porque a expressão não é indexável; não adicionei
+índice de expressão para não mexer no schema.
+
+### Zero regressão, verificada contra produção
+
+`findAll({page,limit})` e `findAll({page,limit,sort:"recentes"})` devolvem a
+**mesma lista de ids**. Sem o parâmetro, a query é a de antes.
+
+O sort explícito **substitui a relevância** na busca, de propósito: quem filtra e
+pede ordem de SKU quer ordem de SKU, senão o seletor seria inútil junto da busca.
+Sem sort, a relevância continua mandando.
+
+### Bug pego pelo próprio teste
+
+`parseProductSort` aceitava array. Query string repetida (`?sort=a&sort=b`) chega
+como array no Fastify, e `String(["sku_asc"])` devolve `"sku_asc"` — o array
+passava na allowlist e era devolvido com o tipo mentindo. Corrigido para aceitar
+só string.
+
+**Flag:** `NEXT_PUBLIC_PRODUCT_SORT_DISABLED=1` esconde o seletor. Não há flag de
+servidor — sem o parâmetro, o backend já devolve o resultado de antes.

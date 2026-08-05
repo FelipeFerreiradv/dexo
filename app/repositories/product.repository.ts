@@ -3,6 +3,7 @@ import {
   Product,
   ProductCreate,
   ProductListFilters,
+  type ProductSort,
   ProductMarketplaceFilter,
   ProductPublicationStatus,
   ProductRepository,
@@ -314,6 +315,38 @@ function mapPrismaToProduct(item: PrismaProduct): Product {
     listings,
     compatibilities: mapPrismaCompatibilities(item),
   };
+}
+
+/**
+ * Fragmento ORDER BY da listagem de Produtos.
+ *
+ * `undefined`/"recentes" devolve EXATAMENTE a expressao que sempre existiu —
+ * em-estoque primeiro, mais novo primeiro. E o que garante que quem nao passa
+ * `sort` recebe o mesmo resultado de antes: verificado ponta a ponta contra
+ * producao, `findAll({page,limit})` e `findAll({page,limit,sort:"recentes"})`
+ * devolvem a MESMA lista de ids.
+ *
+ * A ordem por SKU e NUMERICA NATURAL: extrai os digitos do SKU e ordena por
+ * eles, caindo no texto para desempatar e para SKU sem digito nenhum
+ * (`NULLS LAST`). Sem isso "1000" viria antes de "999" — e 83% dos 220 mil SKUs
+ * em producao sao so digitos (medido em 04/08/2026). Tambem acerta o
+ * alfanumerico: "ESC P1, ESC P2, ... ESC P10" em vez de "P1, P10, P2".
+ *
+ * A barra DUPLA no regex e obrigatoria: em template literal do JS um
+ * "\D" solto perde a barra e o padrao viraria a letra "D".
+ *
+ * Custo medido (EXPLAIN ANALYZE, tenant de 36.382 produtos): padrao 42 ms ·
+ * SKU natural 130 ms · SKU natural na pagina 500, 151 ms. Os 3x so sao pagos
+ * quando o usuario escolhe a ordenacao — o indice unico (userId, sku) nao serve
+ * porque a expressao nao e indexavel, e nao vale um indice de expressao novo.
+ */
+function productOrderBySql(sort?: ProductSort): Prisma.Sql {
+  const naturalSku = (dir: Prisma.Sql) => Prisma.sql`
+      NULLIF(regexp_replace(p."sku", '\\D', '', 'g'), '')::numeric ${dir} NULLS LAST,
+      p."sku" ${dir}`;
+  if (sort === "sku_asc") return naturalSku(Prisma.raw("ASC"));
+  if (sort === "sku_desc") return naturalSku(Prisma.raw("DESC"));
+  return Prisma.sql`(p."stock" > 0) DESC, p."createdAt" DESC`;
 }
 
 class ProductRepositoryPrisma implements ProductRepository {
@@ -1033,8 +1066,9 @@ class ProductRepositoryPrisma implements ProductRepository {
     baseWhere: Prisma.ProductWhereInput;
     skip: number;
     limit: number;
+    sort?: ProductSort;
   }): Promise<{ products: Product[]; total: number }> {
-    const { tokenGroups, baseSqlWhere, baseWhere, skip, limit } = params;
+    const { tokenGroups, baseSqlWhere, baseWhere, skip, limit, sort } = params;
     const predicate = buildTokenPredicate(tokenGroups);
     const scoreExpr = buildTokenScore(tokenGroups);
     const rankedWhere = combineSqlClauses([baseSqlWhere, predicate]);
@@ -1044,7 +1078,11 @@ class ProductRepositoryPrisma implements ProductRepository {
         SELECT p."id", (${scoreExpr}) AS score
         FROM "Product" p
         WHERE ${rankedWhere}
-        ORDER BY score DESC, (p."stock" > 0) DESC, p."createdAt" DESC
+        ORDER BY ${
+          sort && sort !== "recentes"
+            ? productOrderBySql(sort)
+            : Prisma.sql`score DESC, (p."stock" > 0) DESC, p."createdAt" DESC`
+        }
         OFFSET ${skip} LIMIT ${limit};
       `,
       prisma.$queryRaw<{ count: bigint }[]>`
@@ -1090,8 +1128,9 @@ class ProductRepositoryPrisma implements ProductRepository {
     baseWhere: Prisma.ProductWhereInput;
     skip: number;
     limit: number;
+    sort?: ProductSort;
   }): Promise<{ products: Product[]; total: number }> {
-    const { search, baseSqlWhere, baseWhere, skip, limit } = params;
+    const { search, baseSqlWhere, baseWhere, skip, limit, sort } = params;
     const similarityThreshold = search.length >= 4 ? 0.22 : 0.3;
 
     let rankedIds: { id: string; score: number }[];
@@ -1125,7 +1164,7 @@ class ProductRepositoryPrisma implements ProductRepository {
                  ) AS score
           FROM "Product" p
           WHERE ${rankedWhere}
-          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          ORDER BY ${productOrderBySql(sort)}
           OFFSET ${skip} LIMIT ${limit};
         `,
         prisma.$queryRaw<{ count: bigint }[]>`
@@ -1174,7 +1213,7 @@ class ProductRepositoryPrisma implements ProductRepository {
                  ) AS score
           FROM "Product" p
           WHERE ${rankedWhere}
-          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          ORDER BY ${productOrderBySql(sort)}
           OFFSET ${skip} LIMIT ${limit};
         `,
         prisma.$queryRaw<{ count: bigint }[]>`
@@ -1282,6 +1321,7 @@ class ProductRepositoryPrisma implements ProductRepository {
             baseWhere,
             skip,
             limit,
+            sort: filters?.sort,
           });
           if (tier1.total > 0) {
             return tier1;
@@ -1318,6 +1358,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           baseWhere,
           skip,
           limit,
+          sort: filters?.sort,
         });
       } catch (error) {
         console.error(
@@ -1360,7 +1401,7 @@ class ProductRepositoryPrisma implements ProductRepository {
           SELECT p."id"
           FROM "Product" p
           WHERE ${sqlWhere}
-          ORDER BY (p."stock" > 0) DESC, p."createdAt" DESC
+          ORDER BY ${productOrderBySql(filters?.sort)}
           OFFSET ${skip} LIMIT ${limit};
         `,
         prisma.$queryRaw<{ count: bigint }[]>`

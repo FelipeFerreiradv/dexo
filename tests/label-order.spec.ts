@@ -1,9 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 
-import {
-  orderBySelection,
-  selectAllIdsInPrintOrder,
-} from "../app/lib/label-order";
+import { orderBySelection } from "../app/lib/label-order";
 
 /**
  * Helper puro da ordem canônica das etiquetas.
@@ -136,50 +133,6 @@ describe("orderBySelection", () => {
   });
 });
 
-describe("selectAllIdsInPrintOrder", () => {
-  it("inverte a ordem visível para entregar o mais antigo primeiro", () => {
-    expect(selectAllIdsInPrintOrder(LISTA_NEWEST_FIRST, (i) => i.id)).toEqual([
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-      "7",
-      "8",
-      "9",
-      "10",
-    ]);
-  });
-
-  it("selecionar todos + orderBySelection = PDF do mais antigo ao mais novo", () => {
-    const selecao = selectAllIdsInPrintOrder(LISTA_NEWEST_FIRST, (i) => i.id);
-    const paginas = orderBySelection(LISTA_NEWEST_FIRST, selecao, (i) => i.id);
-    expect(ids(paginas)).toEqual([
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-      "7",
-      "8",
-      "9",
-      "10",
-    ]);
-  });
-
-  it("lista vazia devolve vazio", () => {
-    expect(selectAllIdsInPrintOrder([] as Item[], (i) => i.id)).toEqual([]);
-  });
-
-  it("não muta a coleção recebida", () => {
-    const items = [item("a"), item("b"), item("c")];
-    selectAllIdsInPrintOrder(items, (i) => i.id);
-    expect(ids(items)).toEqual(["a", "b", "c"]);
-  });
-});
-
 describe("kill-switch NEXT_PUBLIC_LABELS_ORDER_LEGACY=1", () => {
   it("orderBySelection volta a devolver a ordem da COLEÇÃO", () => {
     process.env.NEXT_PUBLIC_LABELS_ORDER_LEGACY = "1";
@@ -195,13 +148,6 @@ describe("kill-switch NEXT_PUBLIC_LABELS_ORDER_LEGACY=1", () => {
     const anterior = LISTA_NEWEST_FIRST.filter((i) => selecao.includes(i.id));
     expect(orderBySelection(LISTA_NEWEST_FIRST, selecao, (i) => i.id)).toEqual(
       anterior,
-    );
-  });
-
-  it("selectAllIdsInPrintOrder volta a ser a ordem visível", () => {
-    process.env.NEXT_PUBLIC_LABELS_ORDER_LEGACY = "1";
-    expect(selectAllIdsInPrintOrder(LISTA_NEWEST_FIRST, (i) => i.id)).toEqual(
-      LISTA_NEWEST_FIRST.map((i) => i.id),
     );
   });
 

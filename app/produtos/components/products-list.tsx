@@ -69,10 +69,23 @@ import { type MarketplaceListingPlatform } from "@/app/lib/marketplace-listing-l
 import { getApiBaseUrl } from "@/lib/api";
 import { SectionHeading } from "@/components/section-heading";
 import { generateLabelsPdf } from "@/app/produtos/lib/labels-pdf";
+import { orderBySelection } from "@/app/lib/label-order";
 import {
-  orderBySelection,
-  selectAllIdsInPrintOrder,
-} from "@/app/lib/label-order";
+  useProductSort,
+  PRODUCT_SORT_LABELS,
+} from "@/app/produtos/hooks/use-product-sort";
+import {
+  PRODUCT_SORTS,
+  type ProductSort,
+} from "@/app/interfaces/product.interface";
+
+/**
+ * Kill-switch do seletor de ordenação. Com "1" o controle some da tela e a
+ * listagem volta a ser sempre a ordem histórica — o backend já ignora o
+ * parâmetro ausente, então não há flag de servidor a manter.
+ */
+const SORT_CONTROL_ENABLED =
+  process.env.NEXT_PUBLIC_PRODUCT_SORT_DISABLED !== "1";
 import { StandaloneLabelDialog } from "@/app/produtos/components/standalone-label-dialog";
 import {
   DEFAULT_PRODUCT_FILTERS,
@@ -428,6 +441,13 @@ export function ProductsList() {
   const productsRequestIdRef = useRef(0);
   const productsAbortControllerRef = useRef<AbortController | null>(null);
   const pageSizeRef = useRef(10);
+  // Ordenação da listagem. `"recentes"` reproduz a ordem histórica
+  // (em-estoque primeiro, mais novo primeiro); o parâmetro só vai para a API
+  // quando o usuário escolhe outra coisa, então a chamada padrão continua
+  // idêntica à de antes.
+  const [productSort, setProductSort] = useProductSort();
+  const productSortRef = useRef<ProductSort>(productSort);
+  productSortRef.current = productSort;
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -543,6 +563,9 @@ export function ProductsList() {
           page,
           limit: pageSizeRef.current,
         });
+        if (productSortRef.current !== "recentes") {
+          params.set("sort", productSortRef.current);
+        }
         const response = await fetch(`${getApiBaseUrl()}/products?${params}`, {
           headers: { email },
           signal: controller.signal,
@@ -670,6 +693,16 @@ export function ProductsList() {
   const handlePageChange = (newPage: number) => {
     setSelectedIds([]);
     fetchProducts(newPage, filters);
+  };
+
+  const handleSortChange = (next: ProductSort) => {
+    setProductSort(next);
+    productSortRef.current = next;
+    // A ordem mudou: manter a seleção anterior geraria um PDF numa ordem que o
+    // usuário não vê mais. Volta para a página 1, como a troca de filtro faz.
+    setSelectedIds([]);
+    setPagination((prev) => ({ ...prev, page: 1 }));
+    fetchProducts(1, filters);
   };
 
   const handlePageSizeChange = (newSize: number) => {
@@ -1131,14 +1164,12 @@ export function ProductsList() {
 
   const toggleSelectAll = (checked: boolean | "indeterminate") => {
     if (checked === true) {
-      // Insere de BAIXO PARA CIMA. A listagem é servida newest-first
-      // (ORDER BY (stock > 0) DESC, "createdAt" DESC) e não tem controle de
-      // ordenação, então inserir na ordem visível faria o PDF sair 10..1 —
-      // exatamente a queixa. Invertendo, "selecionar todos" entrega o mais
-      // antigo primeiro, que é a ordem de cadastro esperada na impressão.
-      setSelectedIds(
-        selectAllIdsInPrintOrder(products, (product) => product.id),
-      );
+      // Ordem VISÍVEL. Com o seletor de ordenação, esta é a única regra que não
+      // contradiz o usuário: quem escolhe "SKU crescente" e marca tudo espera o
+      // PDF em SKU crescente. Antes daqui existir, isto inseria de baixo para
+      // cima para compensar a lista ser fixa em newest-first — o que agora
+      // inverteria a ordenação escolhida.
+      setSelectedIds(products.map((product) => product.id));
       return;
     }
 
@@ -1307,6 +1338,29 @@ export function ProductsList() {
                 )}
               </div>
             </div>
+
+            {SORT_CONTROL_ENABLED && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Ordenar por</label>
+                <Select
+                  value={productSort}
+                  onValueChange={(value) =>
+                    handleSortChange(value as ProductSort)
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRODUCT_SORTS.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {PRODUCT_SORT_LABELS[option]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-sm font-medium">
