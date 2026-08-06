@@ -38,6 +38,11 @@ import {
   inferPositionFromName,
   resolvePositionValue,
 } from "../lib/ml-position.logic";
+import {
+  ML_TITLE_MAX_LEN,
+  compareMLTitles,
+  sanitizeMLTitle,
+} from "../lib/ml-title";
 import { applyOemTags } from "../lib/ml-oem-tags.logic";
 import { buildShopeeAttributeList } from "../lib/shopee-attribute-mapper";
 import {
@@ -515,28 +520,22 @@ export class ListingUseCase {
 
   /**
    * Sanitiza e normaliza título para ML, preservando o nome original.
+   *
+   * O algoritmo vive em ../lib/ml-title para que o re-sync consiga comparar
+   * contra o MESMO valor que este caminho publica — a divergência entre os dois
+   * era o que fazia todo save de produto republicar um anúncio User Product.
+   * Delegação pura: mesmo resultado para qualquer entrada.
    */
   private static sanitizeTitle(
     raw: string,
     product: any,
-    maxLen: number = 60,
+    maxLen: number = ML_TITLE_MAX_LEN,
   ): string {
-    const base = raw || product?.name || "";
-    let fullTitle = base
-      .toString()
-      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!fullTitle && product?.sku) {
-      fullTitle = String(product.sku);
-    }
-
-    if (fullTitle.length > maxLen) {
-      fullTitle = fullTitle.substring(0, maxLen).trim();
-    }
-
-    return fullTitle || "Produto";
+    return sanitizeMLTitle(
+      raw || product?.name || "",
+      product?.sku ?? null,
+      maxLen,
+    );
   }
 
   /**
@@ -3092,20 +3091,26 @@ export class ListingUseCase {
       const mlReturnedFamilyName = ((mlItem as any)?.family_name || "")
         .toString()
         .trim();
+
+      // `compareMLTitles` é a MESMA função usada pelo re-sync (../lib/ml-title).
+      // Os dois lados precisam concordar sobre "o título mudou?": enquanto a
+      // criação considerava OK exatamente o que o re-sync considerava
+      // divergente, todo save republicava o anúncio.
+      //
+      // Aceitamos aqui só `exact` e `remote_contains_desired` — que é a
+      // semântica literal do `===`/`includes()` que estava inline, agora
+      // insensível a acento e pontuação também. `desired_contains_remote` e
+      // `empty_remote` continuam contando como divergência, como antes.
+      const equivalentToDesired = (remote: string): boolean => {
+        const { reason } = compareMLTitles(desiredFamilyName, remote);
+        return reason === "exact" || reason === "remote_contains_desired";
+      };
+
       const familyNameAlreadyOk =
-        !!mlReturnedFamilyName &&
-        (mlReturnedFamilyName.toLowerCase() ===
-          desiredFamilyName.toLowerCase() ||
-          mlReturnedFamilyName
-            .toLowerCase()
-            .includes(desiredFamilyName.toLowerCase()));
+        !!mlReturnedFamilyName && equivalentToDesired(mlReturnedFamilyName);
 
       const mlReturnedTitle = (mlItem.title || "").trim();
-      const titleMismatch =
-        mlReturnedTitle.toLowerCase() !== desiredFamilyName.toLowerCase() &&
-        !mlReturnedTitle
-          .toLowerCase()
-          .includes(desiredFamilyName.toLowerCase());
+      const titleMismatch = !equivalentToDesired(mlReturnedTitle);
 
       const shouldUpdateFamilyName =
         !!mlItem?.id &&
