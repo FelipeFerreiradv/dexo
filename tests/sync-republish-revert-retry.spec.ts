@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import prisma from "@/app/lib/prisma";
 import { SyncUseCase } from "@/app/marketplaces/usecases/sync.usercase";
 import { ListingRepository } from "@/app/marketplaces/repositories/listing.repository";
 import { ListingUseCase } from "@/app/marketplaces/usecases/listing.usercase";
@@ -47,10 +48,16 @@ const args = {
   newTitle: "Farol Dianteiro Gol G5",
 };
 
-/** Última chamada de updateListing que restaurou o MLB antigo. */
+/**
+ * Chamada de revert. Desde a correção do estoque órfão, o revert passa por
+ * `revertRepublishPlaceholder` — um compare-and-swap que só grava se a linha
+ * ainda estiver no placeholder — em vez de um `updateListing` cego. O reset do
+ * retry mudou de lugar (vive dentro do repositório agora), NÃO deixou de
+ * existir: ver o describe do repositório no fim deste arquivo.
+ */
 const revertCall = () =>
-  (ListingRepository.updateListing as any).mock.calls.find(
-    (c: any[]) => c[1]?.externalListingId === OLD_ID,
+  (ListingRepository.revertRepublishPlaceholder as any).mock.calls.find(
+    (c: any[]) => c[2] === OLD_ID,
   );
 
 describe("republishUpListing — revert desliga o retry", () => {
@@ -59,6 +66,10 @@ describe("republishUpListing — revert desliga o retry", () => {
       listingRow,
     );
     vi.spyOn(ListingRepository, "updateListing").mockResolvedValue({} as any);
+    vi.spyOn(
+      ListingRepository,
+      "revertRepublishPlaceholder",
+    ).mockResolvedValue("reverted");
     vi.spyOn(SyncUseCase as any, "extractMlSettingsFromItem").mockReturnValue({});
   });
 
@@ -75,10 +86,69 @@ describe("republishUpListing — revert desliga o retry", () => {
 
     const call = revertCall();
     expect(call, "o revert deve restaurar o MLB antigo").toBeTruthy();
-    expect(call[1]).toMatchObject({
-      externalListingId: OLD_ID,
-      status: "active",
-      // Sem isto, o cron recria o anúncio e duplica no ML.
+    expect(call[0]).toBe("listing-1");
+    expect(call[1]).toMatch(/^PENDING_REPUBLISH_/);
+    expect(call[3]).toBe("active");
+  });
+
+  it("o swap para o placeholder JA desliga o retry", async () => {
+    // Se a linha vinha com retryEnabled: true, o placeholder entraria na fila
+    // do ListingRetryService DURANTE a republicação e o cron criaria um
+    // anúncio duplicado em paralelo.
+    vi.spyOn(ListingUseCase, "createMLListing").mockRejectedValue(
+      new Error("qualquer"),
+    );
+
+    await expect(SyncUseCase.republishUpListing(args)).rejects.toThrow();
+
+    const swap = (ListingRepository.updateListing as any).mock.calls.find(
+      (c: any[]) => String(c[1]?.externalListingId).startsWith("PENDING_"),
+    );
+    expect(swap).toBeTruthy();
+    expect(swap[1]).toMatchObject({
+      status: "pending",
+      retryEnabled: false,
+      nextRetryAt: null,
+    });
+  });
+
+  it("nao sobrescreve a linha quando outro caminho ja gravou o MLB novo", async () => {
+    (
+      ListingRepository.revertRepublishPlaceholder as any
+    ).mockResolvedValue("already_changed");
+    vi.spyOn(ListingUseCase, "createMLListing").mockRejectedValue(
+      new Error("qualquer"),
+    );
+
+    await expect(SyncUseCase.republishUpListing(args)).rejects.toThrow();
+
+    // Nenhum updateListing restaurando o id antigo: sobrescrever deixaria o
+    // anúncio criado em paralelo órfão no ML.
+    const sobrescreveu = (
+      ListingRepository.updateListing as any
+    ).mock.calls.find((c: any[]) => c[1]?.externalListingId === OLD_ID);
+    expect(sobrescreveu).toBeFalsy();
+  });
+
+  it("marca terminal quando o MLB antigo ja foi tomado por outra linha (P2002)", async () => {
+    (ListingRepository.revertRepublishPlaceholder as any).mockResolvedValue(
+      "id_taken",
+    );
+    vi.spyOn(ListingUseCase, "createMLListing").mockRejectedValue(
+      new Error("qualquer"),
+    );
+
+    await expect(SyncUseCase.republishUpListing(args)).rejects.toThrow();
+
+    const terminal = (ListingRepository.updateListing as any).mock.calls.find(
+      (c: any[]) => String(c[1]?.lastError || "").startsWith("[TERMINAL]"),
+    );
+    expect(
+      terminal,
+      "sem isto o placeholder fica preso para sempre (24 casos em producao)",
+    ).toBeTruthy();
+    expect(terminal[1]).toMatchObject({
+      status: "error",
       retryEnabled: false,
       nextRetryAt: null,
     });
@@ -94,12 +164,8 @@ describe("republishUpListing — revert desliga o retry", () => {
 
     const call = revertCall();
     expect(call).toBeTruthy();
-    expect(call[1]).toMatchObject({
-      externalListingId: OLD_ID,
-      status: "active",
-      retryEnabled: false,
-      nextRetryAt: null,
-    });
+    expect(call[2]).toBe(OLD_ID);
+    expect(call[3]).toBe("active");
   });
 
   it("preserva o caminho feliz: republicação bem-sucedida não reverte", async () => {
@@ -120,5 +186,64 @@ describe("republishUpListing — revert desliga o retry", () => {
     expect(result.newExternalListingId).toBe("MLB999999999");
     // Nenhum revert para o id antigo no caminho feliz.
     expect(revertCall()).toBeFalsy();
+  });
+});
+
+describe("ListingRepository.revertRepublishPlaceholder — o compare-and-swap", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const updateMany = () =>
+    vi.spyOn(prisma.productListing, "updateMany") as any;
+
+  it("desliga retryEnabled ao restaurar — a garantia que o cron nao duplique", async () => {
+    const spy = updateMany().mockResolvedValue({ count: 1 } as any);
+
+    const r = await ListingRepository.revertRepublishPlaceholder(
+      "listing-1",
+      "PENDING_REPUBLISH_MLB123_1",
+      OLD_ID,
+      "active",
+    );
+
+    expect(r).toBe("reverted");
+    expect(spy.mock.calls[0][0]).toMatchObject({
+      // O placeholder no WHERE é o compare-and-swap: sem ele, um sucesso
+      // concorrente seria sobrescrito com o MLB antigo.
+      where: { id: "listing-1", externalListingId: "PENDING_REPUBLISH_MLB123_1" },
+      data: {
+        externalListingId: OLD_ID,
+        status: "active",
+        retryEnabled: false,
+        nextRetryAt: null,
+      },
+    });
+  });
+
+  it("devolve already_changed quando a linha ja saiu do placeholder", async () => {
+    updateMany().mockResolvedValue({ count: 0 } as any);
+
+    await expect(
+      ListingRepository.revertRepublishPlaceholder("l", "PENDING_X", OLD_ID, "active"),
+    ).resolves.toBe("already_changed");
+  });
+
+  it("devolve id_taken em P2002 em vez de propagar e prender o placeholder", async () => {
+    updateMany().mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
+    );
+
+    await expect(
+      ListingRepository.revertRepublishPlaceholder("l", "PENDING_X", OLD_ID, "active"),
+    ).resolves.toBe("id_taken");
+  });
+
+  it("propaga erro que nao seja P2002", async () => {
+    updateMany().mockRejectedValue(new Error("conexao caiu"));
+
+    await expect(
+      ListingRepository.revertRepublishPlaceholder("l", "PENDING_X", OLD_ID, "active"),
+    ).rejects.toThrow("conexao caiu");
   });
 });

@@ -620,6 +620,48 @@ export class ListingRepository {
   /**
    * Atualiza campos principais de um listing quando o item for publicado no ML
    */
+  /**
+   * Reverte o placeholder de uma republicação UP — mas SÓ se a linha ainda
+   * estiver nele. É um compare-and-swap, não um update cego.
+   *
+   * O `externalListingId: placeholder` no WHERE é o ponto todo. Entre o
+   * `createMLListing` e o revert, outro caminho (o cron de retry, um
+   * `createMLListing` concorrente) pode ter gravado o MLB NOVO nesta mesma
+   * linha; um UPDATE incondicional sobrescreveria com o MLB ANTIGO e deixaria
+   * o anúncio novo órfão no ML — publicado lá, sem linha aqui.
+   *
+   * O P2002 também é real e não hipotético: enquanto a linha está em
+   * placeholder, NINGUÉM ocupa o MLB antigo, que segue vivo no ML — e o
+   * autodetect cria uma linha por anúncio que encontra. Se ele passar nessa
+   * janela, o revert colide com a unique (marketplaceAccountId,
+   * externalListingId). Hoje isso propaga e o placeholder fica preso para
+   * sempre: a base tem 24 linhas assim, 18 delas exatamente neste cenário.
+   *
+   * @returns "reverted" | "already_changed" | "id_taken"
+   */
+  static async revertRepublishPlaceholder(
+    listingId: string,
+    placeholder: string,
+    oldExternalListingId: string,
+    status: string,
+  ): Promise<"reverted" | "already_changed" | "id_taken"> {
+    try {
+      const r = await prisma.productListing.updateMany({
+        where: { id: listingId, externalListingId: placeholder },
+        data: {
+          externalListingId: oldExternalListingId,
+          status,
+          retryEnabled: false,
+          nextRetryAt: null,
+        },
+      });
+      return r.count > 0 ? "reverted" : "already_changed";
+    } catch (err) {
+      if ((err as { code?: string })?.code === "P2002") return "id_taken";
+      throw err;
+    }
+  }
+
   static async updateListing(
     listingId: string,
     data: {

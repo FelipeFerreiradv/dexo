@@ -37,6 +37,10 @@ import {
   compareMLTitles,
   isMaterialMLTitleChange,
 } from "../lib/ml-title";
+import {
+  classifyMLRemoveError,
+  withRetry,
+} from "../services/listing-removal.helpers";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -4446,6 +4450,10 @@ export class SyncUseCase {
         // não tem vendas nem bids (preserva reputação/vendas de listings
         // com histórico).
         let wasRepublished = false;
+        // `externalListingId` é parâmetro e nunca era reatribuído: depois de
+        // republicar, o log de sucesso e o SyncResult continuavam apontando
+        // para o anúncio fechado.
+        let idAtual = externalListingId;
         if (pendingFamilyNameUpdate) {
           const soldQty = Number(
             (currentItem as { sold_quantity?: number }).sold_quantity || 0,
@@ -4475,6 +4483,12 @@ export class SyncUseCase {
                 newTitle: pendingFamilyNameUpdate,
               });
               wasRepublished = r.republished;
+              if (r.republished && r.newExternalListingId) {
+                // A linha do banco agora aponta para o anúncio NOVO (o
+                // createMLListing reusa a mesma linha). Sem repontar aqui, tudo
+                // que roda depois continua endereçando o MLB ANTIGO, já fechado.
+                idAtual = r.newExternalListingId;
+              }
             } catch (err) {
               const rawMessage =
                 err instanceof Error ? err.message : String(err);
@@ -4522,6 +4536,10 @@ export class SyncUseCase {
         }
 
         result.success = true;
+        // Depois de republicar, o anúncio deste produto é OUTRO — devolver o
+        // MLB fechado faz o chamador (e o relatório de sync do front) apontar
+        // para um item que não existe mais.
+        result.externalListingId = idAtual;
         result.previousStock = currentItem.available_quantity;
         result.newStock = product.stock;
         result.previousPrice = currentItem.price;
@@ -4539,7 +4557,17 @@ export class SyncUseCase {
         // Gate da flag ANTES de qualquer trabalho: desligada (o default), o
         // re-sync não paga import dinâmico nem consulta nenhuma, ficando
         // byte-idêntico ao comportamento anterior.
-        if (process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED === "true") {
+        //
+        // Pulado após republicação: `listingIdParaCompat` é a linha que JÁ
+        // aponta para o anúncio novo, enquanto `externalListingId` é o antigo
+        // e fechado — o reenvio gravava `compatSyncedAt`/`compatDiagnostics`
+        // do item velho na linha do novo. E é desnecessário: o
+        // createMLListing já anexa e VERIFICA as compatibilidades do anúncio
+        // que acabou de criar.
+        if (
+          process.env.ML_COMPAT_RESEND_ON_EDIT_ENABLED === "true" &&
+          !wasRepublished
+        ) {
           try {
             // Reusa o id que `syncProductData` já carregou para aplicar os
             // overrides; só consulta se o chamador não passou (ex.: chamada
@@ -4590,7 +4618,7 @@ export class SyncUseCase {
           `Produto ${product.sku} sincronizado: preÃ§o R$ ${product.price}, estoque ${product.stock}, tÃ­tulo "${product.name}"`,
           {
             productId: product.id,
-            externalListingId,
+            externalListingId: idAtual,
             price: product.price,
             stock: product.stock,
             title: product.name,
@@ -5199,11 +5227,64 @@ export class SyncUseCase {
 
     // 2. Reset externalListingId pra placeholder — createMLListing reusa o
     // mesmo registro e atualiza com o novo MLB-ID.
+    //
+    // O REVERTED_RETRY_STATE também entra AQUI, não só no revert: se a linha
+    // já vinha com `retryEnabled: true` (anúncio que errou antes e depois
+    // recebeu um MLB real), o placeholder entraria na fila do
+    // ListingRetryService DURANTE a republicação — o filtro dele passa por
+    // retryEnabled, sem exigir prefixo PENDING_ — e o cron criaria um anúncio
+    // duplicado em paralelo.
     const placeholder = `PENDING_REPUBLISH_${oldExternalListingId}_${Date.now()}`;
     await ListingRepository.updateListing(listing.id, {
       externalListingId: placeholder,
       status: "pending",
+      ...SyncUseCase.REVERTED_RETRY_STATE,
     });
+
+    /** Revert do placeholder, tolerante a corrida e a colisão de unique. */
+    const reverter = async (): Promise<void> => {
+      const r = await ListingRepository.revertRepublishPlaceholder(
+        listing.id,
+        placeholder,
+        oldExternalListingId,
+        (currentItem.status as string) || "active",
+      );
+      if (r === "reverted") return;
+
+      if (r === "already_changed") {
+        // Outro caminho já gravou um id nesta linha. Sobrescrever com o antigo
+        // deixaria aquele anúncio órfão no ML — melhor não tocar.
+        console.warn(
+          JSON.stringify({
+            event: "ml.up.republish.revert_skipped",
+            reason: "row_changed_concurrently",
+            productId,
+            listingId: listing.id,
+            oldExternalListingId,
+          }),
+        );
+        return;
+      }
+
+      // "id_taken": outra linha (autodetect) já ocupa o MLB antigo nesta conta.
+      // O placeholder é duplicata e NUNCA vai conseguir voltar — marca terminal
+      // para o cron parar de gastar tentativa e para o Suporte conseguir varrer,
+      // seguindo o mesmo padrão do guard anti-duplicata do createMLListing.
+      await ListingRepository.updateListing(listing.id, {
+        status: "error",
+        lastError: `[TERMINAL] Republicacao abortada: o anuncio ${oldExternalListingId} ja tem outra linha nesta conta — remova este pendente ou encerre o anuncio existente`,
+        retryEnabled: false,
+        nextRetryAt: null,
+      });
+      console.warn(
+        JSON.stringify({
+          event: "ml.up.republish.revert_id_taken",
+          productId,
+          listingId: listing.id,
+          oldExternalListingId,
+        }),
+      );
+    };
 
     // 3. Chamar createMLListing — mesmo pipeline usado por novos anúncios
     // (cria item, anexa compatibilidades, reconcilia listing_type, etc.).
@@ -5222,21 +5303,13 @@ export class SyncUseCase {
     } catch (createErr) {
       // Reverter o placeholder para o ID original — o anúncio antigo
       // permanece intocado e nada foi alterado no ML.
-      await ListingRepository.updateListing(listing.id, {
-        externalListingId: oldExternalListingId,
-        status: (currentItem.status as string) || "active",
-        ...SyncUseCase.REVERTED_RETRY_STATE,
-      });
+      await reverter();
       throw createErr;
     }
 
     if (!result.success || !result.externalListingId) {
       // Mesmo tratamento: reverter o placeholder.
-      await ListingRepository.updateListing(listing.id, {
-        externalListingId: oldExternalListingId,
-        status: (currentItem.status as string) || "active",
-        ...SyncUseCase.REVERTED_RETRY_STATE,
-      });
+      await reverter();
       throw new Error(
         `createMLListing retornou success=false: ${result.error || "sem detalhes"}`,
       );
@@ -5244,27 +5317,15 @@ export class SyncUseCase {
 
     const newExternalListingId = result.externalListingId;
 
-    // 4. Fechar anúncio antigo no ML. Não-fatal: se falhar, ficamos com 2
-    // anúncios ativos temporariamente (o user pode fechar manualmente).
-    try {
-      await MLApiService.updateItem(accessToken, oldExternalListingId, {
-        status: "closed",
-      });
-      console.log(
-        `[SYNC] Anúncio antigo ${oldExternalListingId} fechado após republicação para ${newExternalListingId}`,
-      );
-    } catch (closeErr) {
-      console.warn(
-        JSON.stringify({
-          event: "ml.up.republish.old_close_failed",
-          productId,
-          oldExternalListingId,
-          newExternalListingId,
-          error:
-            closeErr instanceof Error ? closeErr.message : String(closeErr),
-        }),
-      );
-    }
+    // 4. Zerar o estoque do anúncio antigo e SÓ ENTÃO fechar.
+    await SyncUseCase.closeOldUpListing({
+      accessToken,
+      oldExternalListingId,
+      newExternalListingId,
+      productId,
+      accountId,
+      userId,
+    });
 
     console.warn(
       JSON.stringify({
@@ -5278,6 +5339,166 @@ export class SyncUseCase {
     );
 
     return { republished: true, newExternalListingId };
+  }
+
+  /**
+   * Encerra o anúncio ANTIGO depois de uma republicação bem-sucedida:
+   * zera o estoque, fecha, e CONFERE que as duas coisas pegaram.
+   *
+   * Por que zerar antes de fechar: o painel de "Gestão de anúncios" do ML
+   * agrupa os itens da mesma família e SOMA o `available_quantity` — inclusive
+   * o dos itens fechados. Medido no anúncio que originou o bug: o antigo
+   * (MLB7319037094) ficou `closed` com `available_quantity: 1` e o vendedor,
+   * que tem UMA peça física, passou a ver "Estoque: 2 un.".
+   *
+   * A ordem é obrigatória, não preferência: PUT em item já fechado devolve
+   * `item.status.invalid`, então depois de fechar não dá mais para zerar.
+   *
+   * Dois PUTs separados, nunca combinados num só body: o modo de falha do
+   * combinado é o ML aplicar o `status` e ignorar a quantidade — exatamente o
+   * silêncio que estamos eliminando. Separados, o estado parcial é
+   * diagnosticável (zerado-mas-aberto é inofensivo; fechado-com-estoque é o bug).
+   *
+   * Não-fatal por design: a republicação já aconteceu e o anúncio novo está
+   * vivo. Quando não dá para confirmar, persistimos o diagnóstico em SystemLog
+   * para o Suporte varrer, em vez de só emitir um console.warn que ninguém lê.
+   */
+  private static async closeOldUpListing(args: {
+    accessToken: string;
+    oldExternalListingId: string;
+    newExternalListingId: string;
+    productId: string;
+    accountId: string;
+    userId: string;
+  }): Promise<void> {
+    const {
+      accessToken,
+      oldExternalListingId,
+      newExternalListingId,
+      productId,
+      accountId,
+      userId,
+    } = args;
+
+    /**
+     * Um PUT no anúncio antigo. Devolve o erro em vez de lançar: já estamos no
+     * caminho best-effort, e um erro idempotente ("already closed", 404) é
+     * sucesso para o nosso propósito.
+     */
+    const put = async (
+      payload: MLItemUpdatePayload,
+    ): Promise<string | null> => {
+      try {
+        await withRetry(
+          () =>
+            MLApiService.updateItem(accessToken, oldExternalListingId, payload),
+          { classify: classifyMLRemoveError },
+        );
+        return null;
+      } catch (err) {
+        const c = classifyMLRemoveError(err);
+        if (c.kind === "idempotent") return null;
+        return c.message || String(err);
+      }
+    };
+
+    if (process.env.ML_UP_REPUBLISH_ZERO_OLD_STOCK_DISABLED === "1") {
+      // Kill-switch: comportamento anterior — só fecha, sem zerar nem conferir.
+      const err = await put({ status: "closed" });
+      if (err) {
+        console.warn(
+          JSON.stringify({
+            event: "ml.up.republish.old_close_failed",
+            productId,
+            oldExternalListingId,
+            newExternalListingId,
+            error: err,
+          }),
+        );
+      }
+      return;
+    }
+
+    const zeroError = await put({ available_quantity: 0 });
+    // Mesmo se a zeragem falhar, ainda vale tentar fechar — fechado com
+    // estoque é melhor que aberto com estoque.
+    const closeError = await put({ status: "closed" });
+
+    let verifiedStatus: string | null = null;
+    let verifiedQuantity: number | null = null;
+    let verifyError: string | null = null;
+    try {
+      const after = await MLApiService.getItemDetails(
+        accessToken,
+        oldExternalListingId,
+      );
+      verifiedStatus = (after?.status as string) ?? null;
+      verifiedQuantity =
+        typeof after?.available_quantity === "number"
+          ? after.available_quantity
+          : null;
+    } catch (err) {
+      verifyError = err instanceof Error ? err.message : String(err);
+    }
+
+    const encerrado =
+      verifiedStatus === "closed" || verifiedStatus === "inactive";
+    const semEstoque = verifiedQuantity === 0;
+
+    if (encerrado && semEstoque) {
+      console.log(
+        JSON.stringify({
+          event: "ml.up.republish.old_closed",
+          productId,
+          oldExternalListingId,
+          newExternalListingId,
+        }),
+      );
+      return;
+    }
+
+    // Não deu para confirmar: o anúncio antigo pode continuar somando estoque
+    // no painel. Isso precisa sobreviver ao próximo sync — `lastError` não
+    // serve (é o canal de retry e é zerado a cada sucesso), e
+    // `compatDiagnostics` é do envio de compatibilidade.
+    const detalhes = {
+      oldExternalListingId,
+      newExternalListingId,
+      verifiedStatus,
+      verifiedQuantity,
+      zeroError,
+      closeError,
+      verifyError,
+    };
+
+    console.warn(
+      JSON.stringify({
+        event: "ml.up.republish.old_close_failed",
+        productId,
+        ...detalhes,
+      }),
+    );
+
+    await SystemLogService.logWarning(
+      "ML_UP_REPUBLISH_ORPHAN",
+      `Anuncio antigo ${oldExternalListingId} nao pode ser confirmado como encerrado com estoque zero apos a republicacao para ${newExternalListingId}`,
+      {
+        userId,
+        resource: "ProductListing",
+        resourceId: productId,
+        details: detalhes,
+      },
+    );
+
+    // WARNING, nunca FAILURE: `logSync` dispara `checkAndAlertTokenHealth` em
+    // FAILURE e geraria alerta falso de "reconecte a conta".
+    await SyncUseCase.logSync(
+      accountId,
+      SyncType.PRODUCT_SYNC,
+      SyncStatus.WARNING,
+      `Republicacao concluida, mas o anuncio antigo ${oldExternalListingId} pode seguir contando estoque no painel do ML`,
+      detalhes,
+    );
   }
 
   /**

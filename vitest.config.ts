@@ -114,6 +114,15 @@ process.env.SHOPEE_INVOICE_ARRANGED_TOLERANT_DISABLED ??= "1";
 // autorizacao morta segue reportando ACTIVE para sempre.
 process.env.SHOPEE_AUTO_DEACTIVATE_DISABLED ??= "1";
 
+// Zerar o estoque do anuncio antigo antes de fecha-lo na republicacao UP:
+// desligado por default na suite para o spec existente (sync-republish-revert-
+// retry) continuar byte-identico — o caminho novo faz um GET de verificacao
+// que ele nao mocka, e o ramo de falha grava SystemLog/SyncLog. Em producao o
+// default e o oposto — ligado —, senao o anuncio fechado segue somando estoque
+// no agrupamento do painel do ML. O spec da correcao
+// (sync-republish-close-old) reabilita explicitamente por caso.
+process.env.ML_UP_REPUBLISH_ZERO_OLD_STOCK_DISABLED ??= "1";
+
 export default defineConfig({
   test: {
     environment: "node",
