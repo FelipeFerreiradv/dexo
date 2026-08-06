@@ -2540,6 +2540,11 @@ export class ListingUseCase {
               "ML createItem noTitle",
             );
           } catch (noTitleErr) {
+            // Este ramo NÃO registrava a causa, então a razão real da falha nas
+            // categorias da allowlist (as que exigem family_name sem title)
+            // sumia antes de chegar ao `pickActionableMLError` — justo o
+            // caminho em que ela é a única informação útil.
+            recordAttemptCause(noTitleErr);
             console.warn(
               "[ListingUseCase] Retentativa sem title falhou:",
               noTitleErr instanceof Error
@@ -2968,6 +2973,10 @@ export class ListingUseCase {
           const actionable = pickActionableMLError(
             attemptCauses,
             categoryIdForML,
+            {
+              somenteObrigatorios:
+                process.env.ML_ERROR_DETAIL_DISABLED === "1",
+            },
           );
           if (actionable) {
             console.warn(
