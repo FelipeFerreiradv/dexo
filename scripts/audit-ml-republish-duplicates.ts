@@ -8,6 +8,7 @@ import path from "node:path";
 import prisma from "../app/lib/prisma";
 import { MLApiService } from "../app/marketplaces/services/ml-api.service";
 import { MLOAuthService } from "../app/marketplaces/services/ml-oauth.service";
+import { areTitlesSimilar } from "../app/lib/title-similarity";
 
 /**
  * Auditoria e limpeza dos anúncios duplicados pela republicação de item User
@@ -998,11 +999,17 @@ async function main(): Promise<void> {
         // Quem o Dexo JÁ conhece — uma consulta só, para a conta inteira.
         const linhasConta = await prisma.productListing.findMany({
           where: { marketplaceAccountId: conta.id },
-          select: { externalListingId: true, product: { select: { sku: true } } },
+          select: {
+            externalListingId: true,
+            product: { select: { sku: true, name: true } },
+          },
         });
         const skuPorItem = new Map<string, string>();
+        const nomePorSku = new Map<string, string>();
         for (const l of linhasConta) {
-          if (l.product?.sku) skuPorItem.set(l.externalListingId, l.product.sku);
+          if (!l.product?.sku) continue;
+          skuPorItem.set(l.externalListingId, l.product.sku);
+          if (l.product.name) nomePorSku.set(l.product.sku, l.product.name);
         }
 
         // Os órfãos são os poucos que sobram. Só neles vale gastar uma chamada
@@ -1012,20 +1019,52 @@ async function main(): Promise<void> {
           `    varredura: ${orfaos.length} anuncio(s) sem linha no Dexo — resolvendo o SKU de cada`,
         );
         let semVinculo = 0;
+        let recusadosPorTitulo = 0;
         for (let i = 0; i < orfaos.length; i += flags.concurrency) {
           const lote = orfaos.slice(i, i + flags.concurrency);
           const skus = await Promise.all(
             lote.map((it) => skuDoOrfao(token, it.id)),
           );
           lote.forEach((it, k) => {
-            if (skus[k]) skuPorItem.set(it.id, skus[k] as string);
-            else semVinculo++;
+            const sku = skus[k];
+            if (!sku) {
+              semVinculo++;
+              return;
+            }
+            const nome = nomePorSku.get(sku);
+            // GUARDA CONTRA SKU FRAGIL.
+            //
+            // O SKU do órfão vem do texto que o vendedor digitou no ML, e nem
+            // sempre é um SKU. Medido na conta mk2: dez anúncios de peças
+            // COMPLETAMENTE diferentes (painel de Punto, coluna de Captiva,
+            // vidro de Cruze...) traziam `SELLER_SKU = "2 piso"` — a
+            // LOCALIZAÇÃO física da prateleira. Todos casavam com o produto
+            // "Mangueira Direção Hyundai Hb20", que tem esse SKU no Dexo.
+            // Sem esta guarda, `--close-live-orphans` encerraria sete anúncios
+            // legítimos de peças que nada têm a ver entre si. São 1.020
+            // produtos com SKU nesse padrão só nessa conta.
+            //
+            // `areTitlesSimilar` existe exatamente para "mesma peça vs peça
+            // diferente" (Jaccard de tokens, limiar 0,4, calibrado no repo).
+            // Medido nos casos acima: 0,00 / 0,07 / 0,08 para as peças
+            // diferentes e 0,90 para a duplicata de verdade.
+            if (!nome || !areTitlesSimilar(nome, String(it.title ?? ""))) {
+              recusadosPorTitulo++;
+              return;
+            }
+            skuPorItem.set(it.id, sku);
           });
           if (flags.delayMs > 0) await sleep(flags.delayMs);
         }
         if (semVinculo > 0) {
           console.warn(
             `    varredura: ${semVinculo} anuncio(s) sem SKU no ML — nao da para ligar a um produto; fora do relatorio`,
+          );
+        }
+        if (recusadosPorTitulo > 0) {
+          console.warn(
+            `    varredura: ${recusadosPorTitulo} anuncio(s) com SKU que NAO bate com o titulo do produto — ` +
+              `provavel SKU reaproveitado como localizacao; fora do relatorio`,
           );
         }
 
