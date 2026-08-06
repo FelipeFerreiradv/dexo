@@ -38,8 +38,10 @@ const produto = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("SyncUseCase.syncMLProductData → corte do PUT redundante", () => {
-  let updateSpy: ReturnType<typeof vi.spyOn>;
-  let logSpy: ReturnType<typeof vi.spyOn>;
+  // `any` de propósito: os spies têm assinaturas diferentes entre si e o
+  // `ReturnType<typeof vi.spyOn>` do vitest 1.6 não unifica.
+  let updateSpy: any;
+  let logSpy: any;
 
   beforeEach(() => {
     vi.spyOn(prisma.syncLog, "create").mockResolvedValue({} as any);
@@ -75,12 +77,12 @@ describe("SyncUseCase.syncMLProductData → corte do PUT redundante", () => {
     expect(updateSpy).not.toHaveBeenCalled();
     expect(r.success).toBe(true);
     const ev = logSpy.mock.calls
-      .map((c) => c[0])
+      .map((c: unknown[]) => c[0])
       .filter(
-        (l): l is string =>
+        (l: unknown): l is string =>
           typeof l === "string" && l.includes("ml.sync.put_skipped"),
       )
-      .map((l) => JSON.parse(l))[0];
+      .map((l: string) => JSON.parse(l))[0];
     expect(ev).toMatchObject({
       event: "ml.sync.put_skipped",
       reason: "no_change",
