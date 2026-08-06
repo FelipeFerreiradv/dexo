@@ -545,14 +545,26 @@ async function fecharOrfao(
  */
 const ML = "https://api.mercadolibre.com";
 
-async function upStock(
-  token: string,
-  upId: string,
-): Promise<{ locations?: Array<{ type: string; quantity: number }> } | null> {
+interface UpStock {
+  locations?: Array<Record<string, unknown> & { type: string; quantity: number }>;
+  /** Versão do estoque, lida do header `x-version` — obrigatória no PUT. */
+  version: string | null;
+}
+
+/**
+ * Lê o estoque do user_product e, junto, a versão.
+ *
+ * O `x-version` NÃO vem no corpo: vem no cabeçalho da resposta do GET, e o ML
+ * exige ele de volta no PUT (sem ele, 400 bad request). Ver "Gestão de estoque
+ * por localização" em developers.mercadolivre.com.br/pt_br/estoque-multi-origem.
+ */
+async function upStock(token: string, upId: string): Promise<UpStock | null> {
   const r = await fetch(`${ML}/user-products/${upId}/stock`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  return r.ok ? ((await r.json()) as never) : null;
+  if (!r.ok) return null;
+  const body = (await r.json()) as UpStock;
+  return { ...body, version: r.headers.get("x-version") };
 }
 
 const somaUp = (s: { locations?: Array<{ quantity: number }> } | null): number =>
@@ -619,22 +631,42 @@ async function zerarEstoqueOrfao(
       return { ok: true, detalhe: "user_product ja estava com estoque 0" };
     }
 
-    const r = await fetch(`${ML}/user-products/${up}/stock`, {
+    // Contrato do ML: o path leva o TIPO da localização e o `x-version` volta
+    // no header. A primeira tentativa (PUT em /stock, sem tipo e sem versão)
+    // deu 404 em produção — não era o endpoint.
+    const tipos = [...new Set((antes.locations ?? []).map((l) => l.type))];
+    if (tipos.length !== 1) {
+      return {
+        ok: false,
+        detalhe: `ABORTADO: ${tipos.length} tipos de localizacao (${tipos.join("/")}) — caso nao previsto, conferir a mao`,
+      };
+    }
+    if (!antes.version) {
+      return {
+        ok: false,
+        detalhe: "GET nao devolveu o header x-version; o PUT seria recusado",
+      };
+    }
+
+    const r = await fetch(`${ML}/user-products/${up}/stock/type/${tipos[0]}`, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
+        "x-version": antes.version,
       },
+      // Devolve as localizações como vieram, só zerando a quantidade: não
+      // inventa shape nem descarta campo que o ML tenha mandado.
       body: JSON.stringify({
-        locations: (antes.locations ?? []).map((l) => ({
-          type: l.type,
-          quantity: 0,
-        })),
+        locations: (antes.locations ?? []).map((l) => ({ ...l, quantity: 0 })),
       }),
     });
     const corpo = (await r.text()).slice(0, 300);
     if (!r.ok) {
-      return { ok: false, detalhe: `HTTP ${r.status} — ${corpo}` };
+      return {
+        ok: false,
+        detalhe: `HTTP ${r.status} em /stock/type/${tipos[0]} (x-version=${antes.version}) — ${corpo}`,
+      };
     }
 
     const depois = await upStock(token, up);
