@@ -131,6 +131,14 @@ export interface MLTitleComparison {
 export function compareMLTitles(
   desired?: string | null,
   remote?: string | null,
+  /**
+   * Piso de contenção. O default protege o caminho DESTRUTIVO (republicação).
+   * O caminho de criação passa 0 porque o `includes()` que ele tinha inline
+   * nunca teve piso — manter o default ali mudaria o comportamento de 12 dos
+   * 220.737 anúncios ativos, e a regra da casa é zero regressão, não "regressão
+   * pequena".
+   */
+  containmentFloor: number = ML_TITLE_CONTAINMENT_FLOOR,
 ): MLTitleComparison {
   const normalizedDesired = normalizeMLTitleForCompare(desired);
   const normalizedRemote = normalizeMLTitleForCompare(remote);
@@ -149,7 +157,7 @@ export function compareMLTitles(
   // Item UP: o ML deriva o title do family_name e ANEXA os atributos que
   // diferenciam a família ("... 2026 Dianteira Direita Branco").
   if (
-    normalizedDesired.length >= ML_TITLE_CONTAINMENT_FLOOR &&
+    normalizedDesired.length >= containmentFloor &&
     normalizedRemote.includes(normalizedDesired)
   ) {
     return { equivalent: true, reason: "remote_contains_desired", ...base };
@@ -158,7 +166,7 @@ export function compareMLTitles(
   // Truncamento: o remoto é prefixo do desejado (anúncio publicado sob um cap
   // menor, ou family_name clipado pelo ML).
   if (
-    normalizedRemote.length >= ML_TITLE_CONTAINMENT_FLOOR &&
+    normalizedRemote.length >= containmentFloor &&
     normalizedDesired.includes(normalizedRemote)
   ) {
     return { equivalent: true, reason: "desired_contains_remote", ...base };
