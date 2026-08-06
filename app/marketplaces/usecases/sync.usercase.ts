@@ -32,6 +32,11 @@ import type { ShopeeItem } from "../types/shopee-api.types";
 import type { MagaluSku } from "../types/magalu-api.types";
 import { normalizeSku } from "@/app/lib/sku";
 import { normalizeListingStatus } from "../lib/listing-status";
+import {
+  buildMLTitleFrom,
+  compareMLTitles,
+  isMaterialMLTitleChange,
+} from "../lib/ml-title";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -3985,13 +3990,88 @@ export class SyncUseCase {
       // SÃ³ sincronizar tÃ­tulo e descriÃ§Ã£o se o anÃºncio estiver ativo
       // AnÃºncios pausados nÃ£o permitem atualizaÃ§Ã£o de tÃ­tulo/descriÃ§Ã£o
       if (currentItem.status === "active" && product.stock > 0) {
-        // Sincronizar nome se foi alterado. Em items UP, o título é derivado
-        // do family_name — usamos PUT /user-products/{up_id} em vez de incluir
-        // `title` no PUT /items (que o ML rejeita com BODY_INVALID_FIELDS).
-        if (product.name && product.name !== currentItem.title) {
+        // Sincronizar nome se foi alterado.
+        if (product.name) {
           if (isUserProductItem) {
-            pendingFamilyNameUpdate = product.name;
-          } else {
+            // Item UP: o que foi PUBLICADO é o nome SANITIZADO (buildMLTitle),
+            // e o ML ainda Title-Case-ia o family_name e ANEXA ao title os
+            // atributos que diferenciam a família. Comparar `product.name` cru
+            // contra `currentItem.title` classificava caixa/acento/pontuação/
+            // atributos-anexados como "título mudou" e disparava republicação —
+            // que FECHA o anúncio e cria outro. Como o anúncio novo nascia do
+            // mesmo nome, nunca convergia: todo save republicava de novo.
+            //
+            // Medido em produção: 4.671 de 9.315 anúncios UP (50,1%) caíam aqui
+            // sem nenhuma renomeação real. No SKU 500542 os dois anúncios
+            // gerados tinham family_name IDÊNTICO — a republicação não propagou
+            // nada, só duplicou o item e dobrou o estoque exibido no painel.
+            if (process.env.ML_UP_TITLE_COMPARE_DISABLED === "1") {
+              // Kill-switch: restaura a comparação crua anterior.
+              if (product.name !== currentItem.title) {
+                pendingFamilyNameUpdate = product.name;
+              }
+            } else {
+              const desiredTitle = buildMLTitleFrom(product);
+
+              // `family_name` é a fonte autoritativa (é o valor que enviamos e
+              // de onde o ML deriva o título); `title` é o derivado, com os
+              // atributos anexados. Basta UM dos dois bater para NÃO republicar
+              // — fail-closed, porque o custo de não propagar um título é
+              // infinitamente menor que o de duplicar o anúncio.
+              const cmpFamily = familyNameFromMl
+                ? compareMLTitles(desiredTitle, familyNameFromMl)
+                : null;
+              const cmpTitle = compareMLTitles(desiredTitle, currentItem.title);
+              const equivalent =
+                !!cmpFamily?.equivalent || cmpTitle.equivalent;
+
+              // Materialidade contra o family_name quando existe: o title tem
+              // tokens a mais (os atributos) e sempre pareceria "mudou".
+              const remoteForMateriality =
+                familyNameFromMl || currentItem.title || "";
+              const material =
+                !equivalent &&
+                isMaterialMLTitleChange(desiredTitle, remoteForMateriality);
+
+              const decision = material ? "republish" : "skip";
+              const reason = equivalent
+                ? (cmpFamily?.equivalent ? cmpFamily.reason : cmpTitle.reason)
+                : material
+                  ? "different"
+                  : "not_material";
+
+              // Log ANTES de a decisão ser consumida. Hoje só existe log DEPOIS
+              // de decidir republicar, o que torna impossível auditar quantas
+              // republicações foram indevidas.
+              const compareLine = JSON.stringify({
+                event: "ml.up.title.compare",
+                productId: product.id,
+                externalListingId,
+                desired: desiredTitle.slice(0, 80),
+                remote: (familyNameFromMl || currentItem.title || "").slice(
+                  0,
+                  80,
+                ),
+                decision,
+                reason,
+              });
+              if (decision === "republish") {
+                console.warn(compareLine);
+              } else {
+                console.log(compareLine);
+              }
+
+              if (material) {
+                // SANITIZADO, não cru: é o valor que createMLListing vai
+                // publicar de fato (buildMLTitle é idempotente sobre ele), então
+                // o log, o family_name criado e a próxima comparação coincidem.
+                pendingFamilyNameUpdate = desiredTitle;
+              }
+            }
+          } else if (product.name !== currentItem.title) {
+            // Item NÃO-UP: INALTERADO de propósito. Falso positivo aqui custa um
+            // PUT redundante; falso negativo custa um título que nunca propaga,
+            // em silêncio. Não trocamos um bug barato por um invisível.
             updateData.title = product.name;
           }
         }
@@ -4137,7 +4217,49 @@ export class SyncUseCase {
         const MAX_ML_ATTEMPTS = 4;
         let succeeded = false;
 
-        for (let attempt = 0; attempt < MAX_ML_ATTEMPTS; attempt++) {
+        // Corte do PUT redundante: `updateData.price` é setado
+        // incondicionalmente lá em cima, então TODO save de produto disparava
+        // um PUT por anúncio mesmo sem nada ter mudado — em ~220 mil anúncios
+        // ativos isso é egress e rate limit do ML puro.
+        //
+        // Compara contra o `currentItem` que já lemos no GET desta mesma
+        // execução, e só corta quando o payload inteiro se resume a price e/ou
+        // available_quantity e os DOIS já batem. Qualquer outra chave (status,
+        // title, attributes, pictures, dimensões) manda como antes: fail-open,
+        // na dúvida envia.
+        const noOpCandidate =
+          process.env.ML_SYNC_SKIP_NOOP_PUT_DISABLED !== "1" &&
+          Object.keys(currentPayload).every(
+            (k) => k === "price" || k === "available_quantity",
+          );
+        const priceMatches =
+          currentPayload.price === undefined ||
+          Number(currentPayload.price) === Number(currentItem.price);
+        const stockMatches =
+          currentPayload.available_quantity === undefined ||
+          Number(currentPayload.available_quantity) ===
+            Number(currentItem.available_quantity);
+
+        if (noOpCandidate && priceMatches && stockMatches) {
+          succeeded = true;
+          updatedItem = currentItem;
+          console.log(
+            JSON.stringify({
+              event: "ml.sync.put_skipped",
+              reason: "no_change",
+              productId: product.id,
+              externalListingId,
+              price: Number(currentItem.price),
+              availableQuantity: Number(currentItem.available_quantity),
+            }),
+          );
+        }
+
+        for (
+          let attempt = 0;
+          !succeeded && attempt < MAX_ML_ATTEMPTS;
+          attempt++
+        ) {
           try {
             updatedItem = await MLApiService.updateItem(
               account.accessToken,
