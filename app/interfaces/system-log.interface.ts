@@ -92,7 +92,16 @@ export type LogAction =
   | "IMAGE_FALLBACK_RATE_HIGH"
   // Rastro LGPD (PR 5): imagem do cliente saiu para o provedor EXTERNO de
   // recorte. SEMPRE gravado (não fica atrás de IMAGE_PIPELINE_METRICS).
-  | "IMAGE_SENT_EXTERNAL";
+  | "IMAGE_SENT_EXTERNAL"
+  // Republicação de item User Product concluída, mas NÃO deu para confirmar
+  // que o anúncio antigo ficou encerrado com estoque zero — ele pode seguir
+  // somando unidades no agrupamento do painel do ML. Precisa de varredura do
+  // Suporte. Ver SyncUseCase.closeOldUpListing.
+  //
+  // Não usar `ProductListing.lastError` para isto: aquele campo é o canal de
+  // retry (prefixo [TERMINAL]) e é zerado a cada sucesso de sync, o que
+  // apagaria o aviso. Mesma razão de `compatDiagnostics` existir separado.
+  | "ML_UP_REPUBLISH_ORPHAN";
 
 export interface SystemLog {
   id: string;
