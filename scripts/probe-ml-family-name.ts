@@ -286,6 +286,28 @@ async function main(): Promise<void> {
         shipping: { mode: "me2", local_pick_up: false, free_shipping: false },
       }),
     },
+    {
+      // HIPOTESE DE CORRECAO. Quando o operador digita o MESMO codigo varias
+      // vezes ("teste, teste, teste"), o dedup do #243 colapsa para 1 tag e a
+      // funcao devolve o atributo INALTERADO — ou seja, a string com as
+      // virgulas. O ML separa por virgula sozinho e recusa os repetidos. Aqui
+      // mandamos o valor JA limpo, no formato singular.
+      nome: "V7",
+      descricao: "family_name, SEM title, OEM singular JA deduplicado",
+      monta: (b) => ({
+        ...b,
+        family_name: titulo,
+        attributes: attributes.map((a) => {
+          if (a.id !== "OEM" || typeof a.value_name !== "string") return a;
+          const tags = a.value_name
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const unicas = [...new Set(tags)];
+          return { ...a, value_name: unicas.join(", ") };
+        }),
+      }),
+    },
   ];
 
   const veredito: Array<{ nome: string; ok: boolean; resumo: string }> = [];

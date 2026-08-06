@@ -118,6 +118,13 @@ const isMissingPackageDimensions = (cause: MLCause) =>
 const isInvalidAttributeValue = (cause: MLCause) =>
   cause?.code === "invalid.item.attribute.values" || cause?.cause_id === 3510;
 
+/** `Attribute OEM has values with names: [teste] duplicated` */
+const DUPLICATED_RE = /attribute\s+(\w+)\s+has values with names:\s*\[([^\]]*)\]/i;
+
+const isDuplicatedAttributeValue = (cause: MLCause) =>
+  cause?.code === "item.attribute.values.name.duplicated" ||
+  cause?.cause_id === 402;
+
 /*
  * `shipping.lost_me1_by_user` (4053) NÃO entra na lista de propósito.
  *
@@ -143,7 +150,11 @@ const isInvalidAttributeValue = (cause: MLCause) =>
 function prioridadeDaCausa(cause: MLCause): number {
   if (isMissingRequiredAttrs(cause)) return 0;
   if (isMissingPackageDimensions(cause)) return 1;
-  if (isInvalidProductIdentifier(cause) || isInvalidAttributeValue(cause)) {
+  if (
+    isInvalidProductIdentifier(cause) ||
+    isInvalidAttributeValue(cause) ||
+    isDuplicatedAttributeValue(cause)
+  ) {
     return 2;
   }
   return 99;
@@ -180,6 +191,17 @@ export function describeMLCause(
     return (
       "O Mercado Livre exige as medidas do pacote nesta categoria. Preencha " +
       "altura, largura, comprimento e peso no cadastro do produto e recrie o anúncio."
+    );
+  }
+
+  if (isDuplicatedAttributeValue(cause)) {
+    const m = DUPLICATED_RE.exec(message);
+    const campo = m?.[1] ? labelFor(m[1]) : "um campo da ficha técnica";
+    const valores = m?.[2]?.trim();
+    return (
+      `O campo ${campo} tem o mesmo valor repetido` +
+      `${valores ? ` ("${valores}")` : ""}, e o Mercado Livre não aceita ` +
+      "repetição. Apague os códigos duplicados na ficha técnica e recrie o anúncio."
     );
   }
 

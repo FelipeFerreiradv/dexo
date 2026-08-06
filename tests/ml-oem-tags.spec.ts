@@ -86,9 +86,17 @@ describe("applyOemTags", () => {
     expect(out[0].values).toBeUndefined();
   });
 
-  it("vírgula sobrando que resulta em 1 tag também fica singular", () => {
+  // EXPECTATIVA ALTERADA em 06/08/2026, com evidência de produção.
+  //
+  // Antes este teste exigia que a vírgula sobrando fosse PRESERVADA
+  // (`"5U0121049,"`). Estava errado: o Mercado Livre separa o `value_name` por
+  // vírgula por conta própria, então o que sobrava era um valor vazio — e, no
+  // caso irmão de códigos repetidos, um `402 ...values.name.duplicated` que
+  // impedia a publicação (medido no SKU 2791). Continua singular, agora limpo.
+  it("vírgula sobrando é removida, e o valor continua singular", () => {
     const out = applyOemTags(attr({ id: "OEM", value_name: "5U0121049," }), OEM_IDS);
-    expect(out[0]).toEqual({ id: "OEM", value_name: "5U0121049," });
+    expect(out[0]).toEqual({ id: "OEM", value_name: "5U0121049" });
+    expect(out[0].values).toBeUndefined();
   });
 
   it("só espaços e vírgulas: entrada devolvida intacta", () => {
@@ -152,5 +160,61 @@ describe("applyOemTags", () => {
       new Set<string>(),
     );
     expect(out[0]).toEqual({ id: "OEM", value_name: "a, b" });
+  });
+});
+
+/**
+ * MEDIDO EM PRODUÇÃO — SKU 2791, 06/08/2026.
+ *
+ * O operador digitou o MESMO código três vezes: "teste, teste, teste". O dedup
+ * colapsa para uma tag só e a versão original desta função devolvia o atributo
+ * INALTERADO — ou seja, com a string de vírgulas intacta.
+ *
+ * O Mercado Livre separa o `value_name` por vírgula por conta própria e recusa
+ * repetidos: `402 item.attribute.values.name.duplicated — Attribute OEM has
+ * values with names: [teste] duplicated`. O anúncio não publicava.
+ *
+ * Confirmado contra a API (POST /items/validate) que mandar o valor já limpo
+ * elimina o 402.
+ */
+describe("applyOemTags — repetidos que colapsam para uma tag só", () => {
+  const OEM = new Set(["OEM"]);
+
+  it("limpa a string quando os códigos repetidos viram um só", () => {
+    const r = applyOemTags(
+      [{ id: "OEM", value_name: "teste, teste, teste" }],
+      OEM,
+    );
+    expect(r[0]).toEqual({ id: "OEM", value_name: "teste" });
+    expect((r[0] as { values?: unknown }).values).toBeUndefined();
+  });
+
+  it("remove vírgula sobrando no fim", () => {
+    const r = applyOemTags([{ id: "OEM", value_name: "5U0121049," }], OEM);
+    expect(r[0]).toEqual({ id: "OEM", value_name: "5U0121049" });
+  });
+
+  it("um código sem separador continua BYTE-IDÊNTICO, pela mesma referência", () => {
+    // A garantia que protege a esmagadora maioria dos produtos.
+    const entrada = [{ id: "OEM", value_name: "5U0121049" }];
+    const r = applyOemTags(entrada, OEM);
+    expect(r[0]).toBe(entrada[0]);
+  });
+
+  it("espaço em volta não conta como separador e não altera o payload", () => {
+    const entrada = [{ id: "OEM", value_name: "  5U0121049  " }];
+    const r = applyOemTags(entrada, OEM);
+    expect(r[0]).toBe(entrada[0]);
+  });
+
+  it("dois códigos distintos seguem virando lista de tags", () => {
+    const r = applyOemTags([{ id: "OEM", value_name: "a, b" }], OEM);
+    expect(r[0]).toEqual({ id: "OEM", values: [{ name: "a" }, { name: "b" }] });
+  });
+
+  it("continua idempotente depois da limpeza", () => {
+    const uma = applyOemTags([{ id: "OEM", value_name: "teste, teste" }], OEM);
+    const duas = applyOemTags(uma, OEM);
+    expect(duas).toEqual(uma);
   });
 });

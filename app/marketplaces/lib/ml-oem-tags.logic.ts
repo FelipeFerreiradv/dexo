@@ -68,10 +68,25 @@ export function applyOemTags(
     if (!attr || !oemIds.has(attr.id)) return attr;
     // Já é lista: idempotência.
     if (Array.isArray(attr.values)) return attr;
-    const tags = splitOemTags(attr.value_name ?? "");
+    const bruto = attr.value_name ?? "";
+    const tags = splitOemTags(bruto);
     // 0 tags: nada a converter (o atributo nem deveria estar aqui).
-    // 1 tag: mantém o singular — caminho de hoje, byte-idêntico.
-    if (tags.length < 2) return attr;
+    if (tags.length === 0) return attr;
+
+    if (tags.length === 1) {
+      // Um código só, digitado sem separador: mantém o singular EXATO — é o
+      // caminho da esmagadora maioria dos produtos e sai byte-idêntico.
+      if (tags[0] === bruto.trim()) return attr;
+
+      // Sobrou uma tag só DEPOIS de separar: o operador repetiu o mesmo código
+      // ("teste, teste, teste") ou deixou vírgula sobrando. Devolver o texto
+      // cru aqui faz o anúncio ser RECUSADO — o ML separa o `value_name` por
+      // vírgula por conta própria e responde
+      // `402 item.attribute.values.name.duplicated`. Medido em produção no SKU
+      // 2791 em 06/08/2026, e resolvido justamente por mandar o valor limpo.
+      return { ...attr, value_name: tags[0] };
+    }
+
     const { value_name: _descartado, value_id: _idDescartado, ...resto } = attr;
     return { ...resto, values: tags.map((name) => ({ name })) };
   });
